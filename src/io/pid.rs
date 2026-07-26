@@ -33,9 +33,17 @@ const TEXT_HEIGHT_MM: f64 = 2.5;
 // marked but not drawn. The marker sits on its own layer to be switched off.
 const SYMBOL_MARKER_RADIUS_MM: f64 = 1.5;
 
+// The library file name says what the marker stands for ("Flanged Nozzle",
+// "Gauge Hatch"), which is the readable half of a symbol until the body can be
+// drawn. Smaller than body text so a label never reads as an annotation, and
+// on its own layer because a dense sheet carries dozens of them.
+const SYMBOL_LABEL_HEIGHT_MM: f64 = 2.0;
+const SYMBOL_LABEL_GAP_MM: f64 = 0.8;
+
 const LAYER_GEOMETRY: &str = "PID-GEOMETRY";
 const LAYER_TEXT: &str = "PID-TEXT";
 const LAYER_SYMBOL: &str = "PID-SYMBOL";
+const LAYER_SYMBOL_LABEL: &str = "PID-SYMBOL-LABEL";
 const LAYER_POINT: &str = "PID-POINT";
 
 /// Parse a `.pid` file and project its decoded Sheet geometry into a document.
@@ -47,7 +55,13 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
 
     let mut doc = CadDocument::new();
     crate::io::linetypes::populate_document(&mut doc);
-    for layer in [LAYER_GEOMETRY, LAYER_TEXT, LAYER_SYMBOL, LAYER_POINT] {
+    for layer in [
+        LAYER_GEOMETRY,
+        LAYER_TEXT,
+        LAYER_SYMBOL,
+        LAYER_SYMBOL_LABEL,
+        LAYER_POINT,
+    ] {
         ensure_layer(&mut doc, layer);
     }
 
@@ -141,12 +155,32 @@ fn build_entities(kind: &PidGraphicKind) -> Vec<EntityType> {
             text.common.layer = LAYER_TEXT.to_string();
             vec![EntityType::Text(text)]
         }
-        PidGraphicKind::SymbolInstance { insertion, .. } => {
+        PidGraphicKind::SymbolInstance {
+            insertion,
+            symbol_path,
+            ..
+        } => {
             let mut marker = Circle::new();
             marker.center = point3(insertion);
             marker.radius = SYMBOL_MARKER_RADIUS_MM;
             marker.common.layer = LAYER_SYMBOL.to_string();
-            vec![EntityType::Circle(marker)]
+            let mut built = vec![EntityType::Circle(marker)];
+
+            if let Some(name) = symbol_path.as_deref().and_then(symbol_name) {
+                let mut label = Text::new();
+                label.value = name;
+                label.height = SYMBOL_LABEL_HEIGHT_MM;
+                // Beside the marker, not on it, and horizontal whatever the
+                // placement angle is -- a rotated label is the harder read.
+                label.insertion_point = Vector3::new(
+                    to_mm(insertion.x) + SYMBOL_MARKER_RADIUS_MM + SYMBOL_LABEL_GAP_MM,
+                    to_mm(insertion.y) - SYMBOL_LABEL_HEIGHT_MM / 2.0,
+                    0.0,
+                );
+                label.common.layer = LAYER_SYMBOL_LABEL.to_string();
+                built.push(EntityType::Text(label));
+            }
+            built
         }
         PidGraphicKind::Point { position } => {
             let mut point = Point::new();
@@ -248,6 +282,22 @@ fn accumulate_bounds(kind: &PidGraphicKind, bounds: &mut Bounds) {
         PidGraphicKind::Point { position } => bounds.add(position),
         PidGraphicKind::Annotation { .. } | PidGraphicKind::Unknown { .. } => {}
     }
+}
+
+/// The symbol's name, which is the file name of the `.sym` it is placed from.
+///
+/// `pid-parse` resolves the placement to a library path off the drawing's
+/// `JSite` layer, and those are UNC paths into a SmartPlant reference share
+/// (`\\WIN-SPID\...\Piping\Valves\Angle\2-Way Angle Globe Valve.sym`), so the
+/// leaf is the name the drafter picked the symbol by.
+fn symbol_name(path: &str) -> Option<String> {
+    let file = path.rsplit(['\\', '/']).next()?.trim();
+    let stem = match file.rfind('.') {
+        Some(dot) if file[dot..].eq_ignore_ascii_case(".sym") => &file[..dot],
+        _ => file,
+    };
+    let stem = stem.trim();
+    (!stem.is_empty()).then(|| stem.to_owned())
 }
 
 fn to_mm(value: f64) -> f64 {

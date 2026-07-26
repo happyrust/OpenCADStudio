@@ -1,5 +1,8 @@
 //! Temporary probe: what does the `.pid` importer actually hand the scene?
 
+use std::collections::BTreeMap;
+
+use acadrust::EntityType;
 use OpenCADStudio::io;
 
 fn main() {
@@ -36,11 +39,36 @@ fn main() {
             );
         }
         let mut owned = 0usize;
+        let mut per_layer: BTreeMap<String, usize> = BTreeMap::new();
+        let mut labels: BTreeMap<String, usize> = BTreeMap::new();
+        let mut heights: BTreeMap<String, usize> = BTreeMap::new();
         for e in doc.entities() {
             if e.common().owner_handle == doc.header.model_space_block_handle {
                 owned += 1;
             }
+            *per_layer.entry(e.common().layer.clone()).or_default() += 1;
+            if let EntityType::Text(t) = e {
+                if t.common.layer == "PID-SYMBOL-LABEL" {
+                    *labels.entry(t.value.clone()).or_default() += 1;
+                } else {
+                    *heights
+                        .entry(format!("{:.2}mm rot={:.0}", t.height, t.rotation))
+                        .or_default() += 1;
+                }
+            }
         }
         println!("  owned_by_model_space = {owned}");
+        println!("  layers:");
+        for (layer, count) in &per_layer {
+            println!("    {layer:<18} {count}");
+        }
+        println!("  symbol labels ({} distinct):", labels.len());
+        for (name, count) in &labels {
+            println!("    {count:>3} x {name}");
+        }
+        println!("  text height/rotation ({} distinct):", heights.len());
+        for (key, count) in &heights {
+            println!("    {count:>3} x {key}");
+        }
     }
 }
