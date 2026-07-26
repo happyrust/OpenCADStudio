@@ -275,6 +275,14 @@ fn font_system() -> &'static Mutex<cosmic_text::FontSystem> {
     FS.get_or_init(|| Mutex::new(cosmic_text::FontSystem::new()))
 }
 
+/// Force the shared cosmic-text font system to load now. Building it scans the
+/// installed system fonts, so leaving it lazy bills that cost to whichever
+/// drawing the user opens first.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn warm_font_system() {
+    let _ = font_system();
+}
+
 /// Lay out and shape `text` in `family` with cosmic-text — ligatures, Arabic
 /// joining, kerning, bidi reordering, and automatic font fallback (a glyph the
 /// chosen family lacks is taken from another installed font). Each resulting

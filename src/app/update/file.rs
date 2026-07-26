@@ -804,15 +804,23 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 };
 
                 // Open-time breakdown so regressions are visible immediately.
-                // `total` is wall time from the Open click to here (post-xref,
-                // pre-first-frame); the phase figures are the background-thread
-                // parse/purge/cache spans plus the UI-thread xref resolve.
+                // `total` is wall time from the Open click to here (post-load,
+                // pre-first-frame); the phase figures are all loader-thread
+                // spans — parse, purge, xref resolve, cache build, geometry
+                // prepare — so the gap to `total` is task/threading overhead.
                 let total_ms = open_started
                     .map(|s| s.elapsed().as_millis() as u32)
                     .unwrap_or(0);
                 self.command_line.push_info(&format!(
-                    "  parse {}ms · purge {}ms · caches {}ms · xref {}ms · total {}ms",
-                    timings.parse_ms, timings.purge_ms, timings.caches_ms, timings.xref_ms, total_ms
+                    "  parse {}ms · purge {}ms · xref {}ms · caches {}ms · prepare {}ms (wires {}ms, index {}ms) · total {}ms",
+                    timings.parse_ms,
+                    timings.purge_ms,
+                    timings.xref_ms,
+                    timings.caches_ms,
+                    timings.prepare_ms,
+                    timings.prepare_wires_ms,
+                    timings.prepare_index_ms,
+                    total_ms
                 ));
 
                 // Caches were built on the background thread inside open_path().

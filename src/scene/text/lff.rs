@@ -148,6 +148,12 @@ fn warn_missing_glyph(font_name: &str, ch: char) {
     }
 }
 
+/// Force the bundled stroke fonts to parse now, so the first drawing with text
+/// does not pay for it mid-open.
+pub fn warm() {
+    let _ = fonts_map();
+}
+
 fn fonts_map() -> &'static HashMap<String, Font> {
     FONTS.get_or_init(|| {
         let mut map = HashMap::default();

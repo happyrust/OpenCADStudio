@@ -1,0 +1,70 @@
+{
+  "stage": "interview",
+  "title": "开档性能基线 — 决策溯源",
+  "goalSlug": "perf-open-baseline",
+  "note": "由代码勘察 + ROADMAP.md 直接推导；未运行 Plannotator 交互评审。",
+  "questions": [
+    {
+      "id": "milestone_focus",
+      "prompt": "下一步 milestone 应聚焦什么？",
+      "recommendedAnswer": "先 Phase 5 性能可观测性，再 Phase 1.1+1.2 开档路径优化（与 ROADMAP Priority Order 一致）。",
+      "recommendedOptionIds": ["perf_baseline"],
+      "options": [
+        { "id": "perf_baseline", "label": "性能基线 + 开档优化" },
+        { "id": "new_feature", "label": "新 CAD 功能" },
+        { "id": "ui_polish", "label": "UI/主题打磨" }
+      ],
+      "answer": "perf_baseline",
+      "required": true
+    },
+    {
+      "id": "profiling_tool",
+      "prompt": "选用哪种 profiling 方案？",
+      "recommendedAnswer": "puffin（纯 Rust、可 feature gate，与 ROADMAP 5.1 一致）；首版不做 tracy 外部 viewer 依赖。",
+      "recommendedOptionIds": ["puffin"],
+      "options": [
+        { "id": "puffin", "label": "puffin + feature flag" },
+        { "id": "tracy", "label": "tracy" },
+        { "id": "manual_only", "label": "仅 wall-clock 日志" }
+      ],
+      "answer": "puffin",
+      "required": true
+    },
+    {
+      "id": "xref_cache_order",
+      "prompt": "XREF 移后台后 DerivedCaches 何时构建？",
+      "recommendedAnswer": "后台线程顺序：load → purge → resolve_xrefs（每 xref inline purge）→ build_derived_caches → 回 UI；避免 UI 线程二次 purge 与 cache 不一致。",
+      "recommendedOptionIds": ["after_xref"],
+      "options": [
+        { "id": "after_xref", "label": "xref 完成后再 build caches" },
+        { "id": "before_xref", "label": "保持现状（caches 在 xref 前）" }
+      ],
+      "answer": "after_xref",
+      "required": true
+    },
+    {
+      "id": "test_samples",
+      "prompt": "性能验收样例如何获取？",
+      "recommendedAnswer": "仓库内若无大样例，在 docs 记录「自备 DWG 规格」（≥10MB、可选含 XREF）；开发机用 2–3 个固定文件做 before/after 表格。",
+      "recommendedOptionIds": ["bring_own"],
+      "options": [
+        { "id": "bring_own", "label": "自备样例 + 记录表" },
+        { "id": "download", "label": "下载公开样例 DWG" }
+      ],
+      "answer": "bring_own",
+      "required": true
+    },
+    {
+      "id": "out_of_scope",
+      "prompt": "明确排除项？",
+      "recommendedAnswer": "单遍实体扫描(1.3)、磁盘 warm cache(1.7)、wire 批处理(3.3)、acadrust 并行解析(1.5)。",
+      "recommendedOptionIds": ["roadmap_deferred"],
+      "options": [
+        { "id": "roadmap_deferred", "label": "按 ROADMAP 延后项" },
+        { "id": "all_phase1", "label": "Phase 1 全部做完" }
+      ],
+      "answer": "roadmap_deferred",
+      "required": true
+    }
+  ]
+}

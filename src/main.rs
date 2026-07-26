@@ -164,6 +164,10 @@ fn main() -> iced::Result {
         // mode. Silently ignored on failure or non-Linux.
         io::file_association::install_thumbnailer();
 
+        // Load the font caches alongside window/GPU startup instead of letting
+        // the first drawing with text pay for them mid-open.
+        scene::text::warm_up_fonts();
+
         app::run()
     }
 }

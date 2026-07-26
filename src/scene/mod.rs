@@ -558,8 +558,9 @@ pub struct DerivedCaches {
     /// whole-drawing tessellation/index build while the progress overlay freezes.
     pub prepared_geometry: Option<PreparedOpenGeometry>,
     /// Background-thread open-phase timings in milliseconds (parse, purge,
-    /// derived-cache build). Filled in by `open_path_with_phase`; surfaced in
-    /// the open-complete breakdown log so open-time regressions are visible.
+    /// xref resolve, derived-cache build, geometry prepare). Filled in by
+    /// `open_path_with_phase`; surfaced in the open-complete breakdown log so
+    /// open-time regressions are visible.
     pub timings: OpenTimings,
 }
 
@@ -570,6 +571,21 @@ pub struct OpenTimings {
     pub purge_ms: u32,
     pub caches_ms: u32,
     pub xref_ms: u32,
+    /// `prepare_open_geometry`: model wire tessellation plus the interaction
+    /// index. On small drawings this already dwarfs the other four phases, so
+    /// it needs its own counter to stay visible.
+    pub prepare_ms: u32,
+    /// Split of `prepare_ms`; whatever is left over is scene setup.
+    pub prepare_wires_ms: u32,
+    pub prepare_index_ms: u32,
+}
+
+/// The two steps inside `prepare_open_geometry` that cost anything, so the
+/// caller can attribute `prepare_ms` without re-instrumenting the scene.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PrepareTimings {
+    pub wires_ms: u32,
+    pub index_ms: u32,
 }
 
 /// Build hatch / image / mesh caches from a document without needing `&mut Scene`.
@@ -843,7 +859,7 @@ pub fn prepare_open_geometry(
     doc: CadDocument,
     caches: &DerivedCaches,
     model_bg: [f32; 4],
-) -> (CadDocument, PreparedOpenGeometry) {
+) -> (CadDocument, PreparedOpenGeometry, PrepareTimings) {
     let mut scene = Scene::new();
     scene.document = doc;
     scene.local_extent_max = caches.local_extent_max;
@@ -857,7 +873,10 @@ pub fn prepare_open_geometry(
     };
     scene.current_layout = "Model".to_string();
     let camera = scene.camera.borrow().clone();
+    let t_wires = iced::time::Instant::now();
     let wires = scene.model_tile_wires_arc(0, &camera, 1.0, 1.0);
+    let wires_ms = t_wires.elapsed().as_millis() as u32;
+    let t_index = iced::time::Instant::now();
     let interaction_index = if scene.interaction_index_worthwhile(&wires) {
         let index =
             Arc::new(crate::scene::pick::interaction_index::InteractionIndex::build(&wires));
@@ -866,12 +885,17 @@ pub fn prepare_open_geometry(
     } else {
         None
     };
+    let index_ms = t_index.elapsed().as_millis() as u32;
     let doc = std::mem::replace(&mut scene.document, CadDocument::new());
     (
         doc,
         PreparedOpenGeometry {
             wires,
             interaction_index,
+        },
+        PrepareTimings {
+            wires_ms,
+            index_ms,
         },
     )
 }

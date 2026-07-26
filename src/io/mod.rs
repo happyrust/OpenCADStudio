@@ -186,13 +186,18 @@ pub async fn open_path_with_phase(
             purge_ms,
             caches_ms: t_caches.elapsed().as_millis() as u32,
                     xref_ms,
+                    ..Default::default()
         };
         caches.corrupt_dropped = dropped;
                 caches.xref_dropped = xref_dropped;
                 caches.xrefs = xref_infos;
                 progress2.set(crate::app::OPEN_PHASE_FINALIZING, 9600, 0, 1);
-                let (prepared_doc, prepared_geometry) =
+                let t_prepare = Instant::now();
+                let (prepared_doc, prepared_geometry, prepare_timings) =
                     crate::scene::prepare_open_geometry(doc, &caches, model_bg);
+                caches.timings.prepare_ms = t_prepare.elapsed().as_millis() as u32;
+                caches.timings.prepare_wires_ms = prepare_timings.wires_ms;
+                caches.timings.prepare_index_ms = prepare_timings.index_ms;
                 doc = prepared_doc;
                 caches.prepared_geometry = Some(prepared_geometry);
                 progress2.set(crate::app::OPEN_PHASE_FINALIZING, 9950, 1, 1);
