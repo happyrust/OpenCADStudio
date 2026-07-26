@@ -17,6 +17,7 @@ OCS is a CAD application for 2D drafting and 3D modeling, built with Rust. Reads
 ### File Formats
 - **DWG** read/write (R13 through R2018)
 - **DXF** read/write (R13 through R2018)
+- **PID** read — SmartPlant / Smart P&ID sheets, via [`pid-parse`](../pid-parse). Imports the source-backed Sheet geometry (lines, polylines, points, text, symbol placements) onto `PID-*` layers; symbol bodies live in the external `.sym` library and are marked rather than drawn.
 - **STL** export (`STLOUT` / `EXPORTSTL`)
 - **STEP AP203** export (`STEPOUT`)
 - **OBJ** import (`IMPORTOBJ`)

@@ -8,6 +8,8 @@ pub mod file_association;
 pub mod edit_lock;
 pub mod obj;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod pid;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod single_instance;
 pub mod pdf_export;
 pub mod plot_style;
@@ -84,9 +86,10 @@ impl OpenProgressState {
 pub async fn pick_open_path() -> Option<(PathBuf, u64)> {
     let handle = crate::sys::file_dialog()
         .set_title("Open CAD file")
-        .add_filter("CAD Files", &["dwg", "dxf", "bak", "sv$", "DWG", "DXF", "BAK"])
+        .add_filter("CAD Files", &["dwg", "dxf", "pid", "bak", "sv$", "DWG", "DXF", "PID", "BAK"])
         .add_filter("DWG Files", &["dwg", "DWG"])
         .add_filter("DXF Files", &["dxf", "DXF"])
+        .add_filter("Smart P&ID Files", &["pid", "PID"])
         .add_filter("Backup / Autosave", &["bak", "sv$", "BAK"])
         .add_filter("All Files", &["*"])
         .pick_file()
@@ -395,6 +398,12 @@ pub(crate) fn load_file_with_progress(
             fix_current_style_names(&mut doc);
             resolve_raster_image_paths(&mut doc, path.parent());
             doc.source_path = Some(path.to_string_lossy().into_owned());
+            Ok(doc)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        "pid" => {
+            let mut doc = pid::load_pid(path)?;
+            fix_current_style_names(&mut doc);
             Ok(doc)
         }
         _ => Err(format!("Unsupported file format: .{ext}")),

@@ -118,6 +118,10 @@ open = "5"
 # `memchr` (1.0.2) via lopdf → nom_locate, and the web build has no filesystem.
 printpdf = { version = "0.9.1", default-features = false }
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "win-system-proxy"] }
+# SmartPlant / Smart P&ID `.pid` reader. Native-only: it reaches SQL Server
+# backups through a bundled sqlite3 and the vendored `oxidized-mdf`, neither
+# of which builds for wasm.
+pid-parse = { path = "../pid-parse" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Web gets the dependency-free manifest/ribbon contract only (no plugin host).
