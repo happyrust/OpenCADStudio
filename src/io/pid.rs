@@ -9,11 +9,12 @@
 // would scatter the sheet across a region a thousand times its own size --
 // and `ProbeOnly` evidence has no position at all.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use acadrust::entities::{Circle, Line, LwPolyline, Point, Text};
 use acadrust::types::{Vector2, Vector3};
 use acadrust::{CadDocument, EntityType};
+use pid_parse::symbol_library::{SymbolLibrary, SymbolPrimitive};
 use pid_parse::{
     build_normalized_geometry, PidGeometryConfidence, PidGraphicKind, PidParser, PidPoint,
 };
@@ -28,10 +29,16 @@ const MM_PER_SOURCE_UNIT: f64 = 1000.0;
 // yet; 2.5mm is the ISO 3098 body-text size a P&ID annotation normally uses.
 const TEXT_HEIGHT_MM: f64 = 2.5;
 
-// A symbol's body lives in an external `.sym` library that the fixtures
-// reference over UNC and `pid-parse` does not decode, so a placement can be
-// marked but not drawn. The marker sits on its own layer to be switched off.
+// A symbol's body lives in an external `.sym` library the drawing references
+// over UNC. With the library on hand the body is drawn; without it, or for a
+// symbol the local copy lacks, the placement falls back to this marker so it
+// is still visible as something rather than silently absent.
 const SYMBOL_MARKER_RADIUS_MM: f64 = 1.5;
+
+// Environment override for the reference-data share holding the `Design`,
+// `Piping`, `Equipment` ... symbol trees. Without it the importer looks for
+// the library next to the drawing.
+const SYMBOL_LIBRARY_ENV: &str = "PID_SYMBOL_LIBRARY";
 
 // The library file name says what the marker stands for ("Flanged Nozzle",
 // "Gauge Hatch"), which is the readable half of a symbol until the body can be
@@ -68,12 +75,14 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
         ensure_layer(&mut doc, layer, visible);
     }
 
+    let mut library = discover_symbol_library(path);
+
     let mut bounds = Bounds::default();
     for entity in &geometry.entities {
         if entity.confidence != PidGeometryConfidence::Decoded {
             continue;
         }
-        let built = build_entities(&entity.kind);
+        let built = build_entities(&entity.kind, library.as_mut());
         if built.is_empty() {
             continue;
         }
@@ -96,7 +105,7 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
     Ok(doc)
 }
 
-fn build_entities(kind: &PidGraphicKind) -> Vec<EntityType> {
+fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) -> Vec<EntityType> {
     match kind {
         PidGraphicKind::Line { start, end } => {
             let mut line = Line::from_points(point3(start), point3(end));
@@ -161,13 +170,38 @@ fn build_entities(kind: &PidGraphicKind) -> Vec<EntityType> {
         PidGraphicKind::SymbolInstance {
             insertion,
             symbol_path,
-            ..
+            rotation,
+            scale,
         } => {
-            let mut marker = Circle::new();
-            marker.center = point3(insertion);
-            marker.radius = SYMBOL_MARKER_RADIUS_MM;
-            marker.common.layer = LAYER_SYMBOL.to_string();
-            let mut built = vec![EntityType::Circle(marker)];
+            let placement = Placement {
+                insertion,
+                rotation: *rotation,
+                scale: *scale,
+            };
+            let body = library
+                .zip(symbol_path.as_deref())
+                .and_then(|(library, path)| library.resolve(path))
+                .filter(|body| !body.primitives.is_empty())
+                .map(|body| {
+                    body.primitives
+                        .iter()
+                        .filter_map(|primitive| place_primitive(primitive, &placement))
+                        .collect::<Vec<_>>()
+                });
+
+            // Only fall back to the marker when the body is genuinely
+            // unavailable. A symbol that resolved to real geometry should not
+            // also carry a dot -- that reads as a second object.
+            let mut built = match body {
+                Some(entities) if !entities.is_empty() => entities,
+                _ => {
+                    let mut marker = Circle::new();
+                    marker.center = point3(insertion);
+                    marker.radius = SYMBOL_MARKER_RADIUS_MM;
+                    marker.common.layer = LAYER_SYMBOL.to_string();
+                    vec![EntityType::Circle(marker)]
+                }
+            };
 
             if let Some(name) = symbol_path.as_deref().and_then(symbol_name) {
                 let mut label = Text::new();
@@ -310,6 +344,138 @@ fn unresolved_unit_line(start: &PidPoint, end: &PidPoint) -> bool {
         && end_y.abs() < 1.0
         && start_x.abs() < 5.0
         && (end_x - MM_PER_SOURCE_UNIT).abs() < 1.0e-3
+}
+
+/// Where a symbol placement puts its library body on the sheet.
+struct Placement<'a> {
+    insertion: &'a PidPoint,
+    rotation: f64,
+    scale: [f64; 2],
+}
+
+impl Placement<'_> {
+    /// Map a point out of the symbol's own space onto the sheet.
+    ///
+    /// `pid-parse` splits the placement's 2x2 matrix into an angle and a
+    /// scale, carrying a reflection as a negative y scale instead of folding
+    /// it into the angle. Recomposing gives rows `sx * (cos, sin)` and
+    /// `sy * (-sin, cos)`, which reproduces the original matrix for the
+    /// rotate / scale / mirror placements a P&ID uses. Symbol bodies are in
+    /// the same source unit as the drawing, so the conversion to mm happens
+    /// once, at the end.
+    fn apply(&self, x: f64, y: f64) -> Vector3 {
+        let (sin, cos) = self.rotation.sin_cos();
+        let [scale_x, scale_y] = self.scale;
+        Vector3::new(
+            to_mm(self.insertion.x + x * scale_x * cos - y * scale_y * sin),
+            to_mm(self.insertion.y + x * scale_x * sin + y * scale_y * cos),
+            0.0,
+        )
+    }
+
+    /// Scale a radius. A placement with different x and y scales would turn a
+    /// circle into an ellipse; P&ID placements mirror and turn but do not
+    /// stretch one axis alone, so the mean is exact in practice and degrades
+    /// gently if that ever stops being true.
+    fn scale_radius(&self, radius: f64) -> f64 {
+        to_mm(radius * (self.scale[0].abs() + self.scale[1].abs()) / 2.0)
+    }
+
+    /// Whether the placement flips handedness, which reverses the direction
+    /// an arc sweeps.
+    fn mirrored(&self) -> bool {
+        self.scale[1] < 0.0
+    }
+}
+
+/// Draw one primitive of a symbol body at its placement.
+fn place_primitive(primitive: &SymbolPrimitive, at: &Placement<'_>) -> Option<EntityType> {
+    match primitive {
+        SymbolPrimitive::Line { start, end } => {
+            let mut line = Line::from_points(at.apply(start.0, start.1), at.apply(end.0, end.1));
+            line.common.layer = LAYER_SYMBOL.to_string();
+            Some(EntityType::Line(line))
+        }
+        SymbolPrimitive::Circle { center, radius } => {
+            let radius = at.scale_radius(*radius);
+            if !radius.is_finite() || radius <= 0.0 {
+                return None;
+            }
+            let mut circle = Circle::new();
+            circle.center = at.apply(center.0, center.1);
+            circle.radius = radius;
+            circle.common.layer = LAYER_SYMBOL.to_string();
+            Some(EntityType::Circle(circle))
+        }
+        SymbolPrimitive::Arc {
+            center,
+            radius,
+            start_angle,
+            end_angle,
+        } => {
+            let radius = at.scale_radius(*radius);
+            if !radius.is_finite() || radius <= 0.0 {
+                return None;
+            }
+            // An arc always runs counter-clockwise from start to end, so a
+            // mirrored placement has to swap the ends as well as reflect the
+            // angles -- otherwise the arc is drawn as its own complement.
+            let (start_angle, end_angle) = if at.mirrored() {
+                (at.rotation - end_angle, at.rotation - start_angle)
+            } else {
+                (at.rotation + start_angle, at.rotation + end_angle)
+            };
+            let mut arc = acadrust::entities::Arc::new();
+            arc.center = at.apply(center.0, center.1);
+            arc.radius = radius;
+            arc.start_angle = start_angle.to_degrees();
+            arc.end_angle = end_angle.to_degrees();
+            arc.common.layer = LAYER_SYMBOL.to_string();
+            Some(EntityType::Arc(arc))
+        }
+        SymbolPrimitive::Polyline { vertices } => {
+            if vertices.len() < 2 {
+                return None;
+            }
+            let points: Vec<Vector2> = vertices
+                .iter()
+                .map(|(x, y)| {
+                    let placed = at.apply(*x, *y);
+                    Vector2::new(placed.x, placed.y)
+                })
+                .collect();
+            let mut polyline = LwPolyline::from_points(points);
+            polyline.common.layer = LAYER_SYMBOL.to_string();
+            Some(EntityType::LwPolyline(polyline))
+        }
+    }
+}
+
+/// Find the `SmartPlant` reference-data symbol library for a drawing.
+///
+/// A `.pid` names its symbols by UNC path into the project's reference share,
+/// which is normally unreachable from wherever the file is being read. The
+/// override says where a local copy lives; failing that, a SmartPlant project
+/// keeps drawings and reference data under one root (`Plant\Drawings\...` next
+/// to `Plant\Ref\Symbols\...`), so walking up from the drawing finds it.
+fn discover_symbol_library(drawing: &Path) -> Option<SymbolLibrary> {
+    if let Some(root) = std::env::var_os(SYMBOL_LIBRARY_ENV) {
+        let root = PathBuf::from(root);
+        if root.is_dir() {
+            return Some(SymbolLibrary::new(root));
+        }
+    }
+    let mut dir = drawing.parent()?;
+    for _ in 0..5 {
+        for candidate in ["Symbols", "Ref/Symbols", "symbols"] {
+            let path = dir.join(candidate);
+            if path.is_dir() {
+                return Some(SymbolLibrary::new(path));
+            }
+        }
+        dir = dir.parent()?;
+    }
+    None
 }
 
 /// The symbol's name, which is the file name of the `.sym` it is placed from.
