@@ -70,5 +70,46 @@ fn main() {
         for (key, count) in &heights {
             println!("    {count:>3} x {key}");
         }
+
+        // A sheet is at most ~1189mm (A0) wide; anything reaching past 900 or
+        // behind 0 either is the border or is the reason the view is wrong.
+        println!("  entities reaching x>900 or x<0:");
+        let mut outliers = 0usize;
+        for e in doc.entities() {
+            let pts: Vec<(f64, f64)> = match e {
+                EntityType::Line(l) => vec![(l.start.x, l.start.y), (l.end.x, l.end.y)],
+                EntityType::LwPolyline(p) => p
+                    .vertices
+                    .iter()
+                    .map(|v| (v.location.x, v.location.y))
+                    .collect(),
+                EntityType::Circle(c) => vec![(c.center.x, c.center.y)],
+                EntityType::Arc(a) => vec![(a.center.x, a.center.y)],
+                EntityType::Text(t) => vec![(t.insertion_point.x, t.insertion_point.y)],
+                EntityType::Point(p) => vec![(p.location.x, p.location.y)],
+                _ => Vec::new(),
+            };
+            if pts.iter().any(|(x, _)| *x > 900.0 || *x < 0.0) {
+                outliers += 1;
+                if outliers <= 12 {
+                    let kind = match e {
+                        EntityType::Line(_) => "Line",
+                        EntityType::LwPolyline(_) => "LwPolyline",
+                        EntityType::Circle(_) => "Circle",
+                        EntityType::Arc(_) => "Arc",
+                        EntityType::Text(_) => "Text",
+                        EntityType::Point(_) => "Point",
+                        _ => "other",
+                    };
+                    let shown: Vec<String> = pts
+                        .iter()
+                        .take(4)
+                        .map(|(x, y)| format!("({x:.1},{y:.1})"))
+                        .collect();
+                    println!("    {kind:<12} {}", shown.join(" "));
+                }
+            }
+        }
+        println!("    total outliers = {outliers}");
     }
 }

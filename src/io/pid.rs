@@ -55,14 +55,17 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
 
     let mut doc = CadDocument::new();
     crate::io::linetypes::populate_document(&mut doc);
-    for layer in [
-        LAYER_GEOMETRY,
-        LAYER_TEXT,
-        LAYER_SYMBOL,
-        LAYER_SYMBOL_LABEL,
-        LAYER_POINT,
+    for (layer, visible) in [
+        (LAYER_GEOMETRY, true),
+        (LAYER_TEXT, true),
+        (LAYER_SYMBOL, true),
+        // "Flanged Nozzle with blind" is wider than the equipment it names, so
+        // on a sheet with 58 placements the labels bury the drawing. They ship
+        // switched off: the answer is in the file, one layer toggle away.
+        (LAYER_SYMBOL_LABEL, false),
+        (LAYER_POINT, true),
     ] {
-        ensure_layer(&mut doc, layer);
+        ensure_layer(&mut doc, layer, visible);
     }
 
     let mut bounds = Bounds::default();
@@ -266,6 +269,9 @@ impl Bounds {
 fn accumulate_bounds(kind: &PidGraphicKind, bounds: &mut Bounds) {
     match kind {
         PidGraphicKind::Line { start, end } => {
+            if unresolved_unit_line(start, end) {
+                return;
+            }
             bounds.add(start);
             bounds.add(end);
         }
@@ -282,6 +288,28 @@ fn accumulate_bounds(kind: &PidGraphicKind, bounds: &mut Bounds) {
         PidGraphicKind::Point { position } => bounds.add(position),
         PidGraphicKind::Annotation { .. } | PidGraphicKind::Unknown { .. } => {}
     }
+}
+
+/// Whether a line is the unit segment a `GLine2d` decodes to when its
+/// parameter range never resolved.
+///
+/// The parametric form is `origin + t * direction` with `direction` a unit
+/// vector, so an unresolved record comes out as the origin walked one whole
+/// source unit along x: `A01` yields `(1e-6, 1e-12) -> (1, 1e-6)` and
+/// `DWG-0201` the same shape twice. At 1000mm that is wider than the sheet
+/// it sits on, and framing on it shrinks the real drawing to a smudge in the
+/// middle of the screen.
+///
+/// The line is still imported -- the record is in the file, and dropping it
+/// would hide a decode gap rather than report it. It just gets no vote on
+/// where the camera goes.
+fn unresolved_unit_line(start: &PidPoint, end: &PidPoint) -> bool {
+    let (start_x, start_y) = (to_mm(start.x), to_mm(start.y));
+    let (end_x, end_y) = (to_mm(end.x), to_mm(end.y));
+    start_y.abs() < 1.0
+        && end_y.abs() < 1.0
+        && start_x.abs() < 5.0
+        && (end_x - MM_PER_SOURCE_UNIT).abs() < 1.0e-3
 }
 
 /// The symbol's name, which is the file name of the `.sym` it is placed from.
@@ -320,11 +348,12 @@ fn point3(point: &PidPoint) -> Vector3 {
     Vector3::new(to_mm(point.x), to_mm(point.y), 0.0)
 }
 
-fn ensure_layer(doc: &mut CadDocument, name: &str) {
+fn ensure_layer(doc: &mut CadDocument, name: &str, visible: bool) {
     if doc.layers.contains(name) {
         return;
     }
     let mut layer = acadrust::tables::Layer::new(name);
     layer.handle = doc.allocate_handle();
+    layer.flags.off = !visible;
     let _ = doc.layers.add(layer);
 }
