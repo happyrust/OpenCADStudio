@@ -35,9 +35,9 @@ const TEXT_HEIGHT_MM: f64 = 2.5;
 // is still visible as something rather than silently absent.
 const SYMBOL_MARKER_RADIUS_MM: f64 = 1.5;
 
-// Environment override for the reference-data share holding the `Design`,
-// `Piping`, `Equipment` ... symbol trees. Without it the importer looks for
-// the library next to the drawing.
+// Environment override for the reference-data shares holding the `Design`,
+// `Piping`, `Equipment` ... symbol trees, `;` separated like PATH. Without it
+// the importer looks for the library next to the drawing.
 const SYMBOL_LIBRARY_ENV: &str = "PID_SYMBOL_LIBRARY";
 
 // The library file name says what the marker stands for ("Flanged Nozzle",
@@ -451,31 +451,35 @@ fn place_primitive(primitive: &SymbolPrimitive, at: &Placement<'_>) -> Option<En
     }
 }
 
-/// Find the `SmartPlant` reference-data symbol library for a drawing.
+/// Find the `SmartPlant` reference-data symbol libraries for a drawing.
 ///
 /// A `.pid` names its symbols by UNC path into the project's reference share,
 /// which is normally unreachable from wherever the file is being read. The
-/// override says where a local copy lives; failing that, a SmartPlant project
+/// override says where local copies live; failing that, a SmartPlant project
 /// keeps drawings and reference data under one root (`Plant\Drawings\...` next
 /// to `Plant\Ref\Symbols\...`), so walking up from the drawing finds it.
+///
+/// Every root found is kept, searched in the order listed. One drawing can
+/// cite several shares, and a machine usually holds a partial copy of each
+/// rather than one merged tree, so stopping at the first root leaves whatever
+/// it does not cover undrawn.
 fn discover_symbol_library(drawing: &Path) -> Option<SymbolLibrary> {
-    if let Some(root) = std::env::var_os(SYMBOL_LIBRARY_ENV) {
-        let root = PathBuf::from(root);
-        if root.is_dir() {
-            return Some(SymbolLibrary::new(root));
-        }
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(list) = std::env::var_os(SYMBOL_LIBRARY_ENV) {
+        roots.extend(std::env::split_paths(&list).filter(|root| root.is_dir()));
     }
-    let mut dir = drawing.parent()?;
+    let mut dir = drawing.parent();
     for _ in 0..5 {
+        let Some(at) = dir else { break };
         for candidate in ["Symbols", "Ref/Symbols", "symbols"] {
-            let path = dir.join(candidate);
-            if path.is_dir() {
-                return Some(SymbolLibrary::new(path));
+            let path = at.join(candidate);
+            if path.is_dir() && !roots.contains(&path) {
+                roots.push(path);
             }
         }
-        dir = dir.parent()?;
+        dir = at.parent();
     }
-    None
+    (!roots.is_empty()).then(|| SymbolLibrary::with_roots(roots))
 }
 
 /// The symbol's name, which is the file name of the `.sym` it is placed from.
