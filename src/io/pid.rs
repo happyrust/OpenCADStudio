@@ -29,6 +29,10 @@ const MM_PER_SOURCE_UNIT: f64 = 1000.0;
 // yet; 2.5mm is the ISO 3098 body-text size a P&ID annotation normally uses.
 const TEXT_HEIGHT_MM: f64 = 2.5;
 
+// What a symbol's template text reads as where the drawing is expected to
+// supply the value. See `carries_a_label`.
+const SYMBOL_TEXT_PLACEHOLDER: &str = "NULL";
+
 // A symbol's body lives in an external `.sym` library the drawing references
 // over UNC. With the library on hand the body is drawn; without it, or for a
 // symbol the local copy lacks, the placement falls back to this marker so it
@@ -448,7 +452,40 @@ fn place_primitive(primitive: &SymbolPrimitive, at: &Placement<'_>) -> Option<En
             polyline.common.layer = LAYER_SYMBOL.to_string();
             Some(EntityType::LwPolyline(polyline))
         }
+        SymbolPrimitive::Text { text, at: origin } => {
+            let value = text.trim();
+            if !carries_a_label(value) {
+                return None;
+            }
+            let mut label = Text::new();
+            label.value = value.to_string();
+            label.insertion_point = at.apply(origin.0, origin.1);
+            // The record holds no height, so this is the same ISO 3098
+            // fallback the sheet's own text gets, scaled with the placement
+            // so a half-size symbol does not carry full-size lettering.
+            label.height = at.scale_radius(TEXT_HEIGHT_MM / MM_PER_SOURCE_UNIT);
+            label.rotation = at.rotation.to_degrees();
+            label.common.layer = LAYER_SYMBOL.to_string();
+            Some(EntityType::Text(label))
+        }
     }
+}
+
+/// Whether a symbol's own text run says anything once its unfilled template
+/// fields are discounted.
+///
+/// The library is a set of templates: a run reads `NULL` wherever the drawing
+/// is expected to supply a value, and 328 of the 1043 runs in the reference
+/// library are nothing but that. Those are not lettering anyone drew, and
+/// putting them on the sheet would print `NULL` across every equipment table.
+/// A run that still has a word in it after the placeholders are discounted --
+/// `HH=NULL`, `设备位号` -- is real lettering and is drawn as it stands,
+/// placeholder included, because guessing at the missing value would be worse
+/// than showing that it is missing.
+fn carries_a_label(text: &str) -> bool {
+    text.replace(SYMBOL_TEXT_PLACEHOLDER, "")
+        .chars()
+        .any(char::is_alphanumeric)
 }
 
 /// Find the `SmartPlant` reference-data symbol libraries for a drawing.
