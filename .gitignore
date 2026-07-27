@@ -41,3 +41,13 @@ __pycache__/
 
 # Window capture taken while checking a local build
 ocs_running.png
+
+# Agent tooling config (session protocols, not project content)
+.cursor/
+
+# docs/screenshots/ holds captures taken while checking a local build --
+# P&ID debugging shots, before/after pairs, the capture helper. Only the two
+# the user guide embeds belong in git.
+docs/screenshots/*
+!docs/screenshots/open-cad-studio-start.png
+!docs/screenshots/save-changes-dialog.png
