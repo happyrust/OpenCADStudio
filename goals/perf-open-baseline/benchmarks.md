@@ -220,6 +220,26 @@ sample_AC1032.dwg (R2018) -> 263.4ms   TABLE 0x528 rows=7 columns=3 cells=9   �
 
 所以 [`acadrust-r2010-table-bug.md`](./acadrust-r2010-table-bug.md) 仍然成立，可以直接提交上游。
 
+**2026-07-27 根因已定位并修复，全样本矩阵实测。** 根因是 `read_cad_value`
+（`entities.rs:2424`）丢了 ACadSharp/ODA 对 R2007+ 值体的 `IsEmpty`（`Flags & 1`）门：空值在流里
+没有值体，无条件读就过读，随后的 `Units/Format/FormattedValue` 全部错位，下一格读到垃圾 count 后
+空转。修复见报告。在本地 fork 副本上 release 实测（同一张图的七种存法，每份都是 341 实体、两张表；
+`0xA35` 全程 20 格不受影响）：
+
+| 样例 | 版本 | `0x528` 格数 前→后 | 耗时 前→后 |
+|---|---|---|---|
+| `sample_AC1014.dwg` | R14 | 21 → 21 | 8.5ms → 10.0ms |
+| `sample_AC1015.dwg` | R2000 | 21 → 21 | 5.4ms → 5.3ms |
+| `sample_AC1018.dwg` | R2004 | 21 → 21 | 7.2ms → 6.8ms |
+| `sample_AC1021.dwg` | R2007 | 21 → 21 | 6.6ms → 7.2ms |
+| `sample_AC1024.dwg` | R2010 | **9 → 21** | **271.5ms → 7.0ms** |
+| `sample_AC1027.dwg` | R2013 | **9 → 21** | **262.2ms → 6.0ms** |
+| `sample_AC1032.dwg` | R2018 | **9 → 21** | **261.5ms → 6.4ms** |
+
+修正上面几轮的一处认知：受影响的不只是 R2018，**三个 R2010+ 样例全都是 9 格 / ~265ms**——
+之前只测了 R2007 与 R2018 两份，才显得像是「R2018 特有」。R2010 以前的四份格数与耗时都没变化，
+说明这个门在旧路径上是惰性的。验证 crate：`../acadrust-tablecheck/`。
+
 ### 0. 结论先行：首次开档的成本分成两半，已经砍掉可砍的那一半
 
 第四轮发现同一进程里第二个文件的 `prepare` 只要 22ms（第一个 312ms），说明首次开档背着

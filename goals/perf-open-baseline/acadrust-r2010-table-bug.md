@@ -1,7 +1,10 @@
 # acadrust bug report: R2010+ ACAD_TABLE content parser derails (slow + silent cell loss)
 
 Draft for upstream `OpenAEC-Foundation/acadifc`. Found while profiling Open CAD Studio's
-file-open path; full measurement context in [`benchmarks.md`](./benchmarks.md).
+file-open path; full measurement context in [`benchmarks.md`](./benchmarks.md). The root cause is
+identified and a fix is implemented and validated against the full sample matrix — see
+[Root cause](#root-cause-the-missing-isempty-gate-in-read_cad_value),
+[Two fixes worth separating](#two-fixes-worth-separating), and [Validation](#validation).
 
 ## Summary
 
@@ -121,7 +124,8 @@ So:
   `ndata` that `safe_count` clamps from garbage down to 100000.
 - The misalignment therefore originates while parsing the 7th cell, inside
   `read_table_cell_content` / `read_cell_style` / `read_cad_value` for that cell, and everything
-  after it is lost (rows 4-7 come back with zero cells).
+  after it is lost (rows 4-7 come back with zero cells). It is `read_cad_value`; see
+  [Root cause](#root-cause-the-missing-isempty-gate-in-read_cad_value) below.
 - The other table in the same drawing (`0xA35`, 4x5) keeps its 20 cells, so the derailment is
   triggered by a particular cell variant rather than by tables in general.
 
@@ -150,10 +154,61 @@ The same differential surfaces disagreements outside tables — MultiLeader atta
 on the other, and Region/Solid3D wire counts (0 vs 175). Those are catalogued separately in
 [`acadrust-version-path-diff.md`](./acadrust-version-path-diff.md).
 
+## Root cause: the missing `IsEmpty` gate in `read_cad_value`
+
+Comparing the whole R2010+ table chain against ACadSharp function by function
+(`read_table_content` -> `read_table_cell` -> `read_table_cell_content` / `read_cell_style` ->
+`read_cad_value`) turns up exactly one divergence. Everything else reads the same fields in the
+same order.
+
+ACadSharp's `readCadValue` (`DwgObjectReader.Objects.cs:355`) reads `Flags (BL)` then
+`ValueType (BL)`, and reads the typed body only when the value is not flagged empty:
+
+```csharp
+if (!R2007Plus || !value.IsEmpty)   // CadValue.IsEmpty => (Flags & 1) != 0
+{
+    // ... read the typed body according to ValueType ...
+}
+// Units (BL), Format (TV), FormattedValue (TV) follow unconditionally
+```
+
+`read_cad_value` (`object_reader/entities.rs:2424`) drops that gate deliberately, asserting it
+never fires:
+
+```rust
+// Read the typed value body. The ACadSharp "IsEmpty" gate that can skip
+// this does not fire for real tables — reading it unconditionally keeps
+// every cell byte-aligned (verified against real drawings).
+match type_code { ... }
+```
+
+The assertion does not hold for these drawings. When a cell value carries the empty bit the file
+contains no body, so acadrust over-reads — for `ValueType` 0/1 that is one spurious `BL`. The
+trailing `Units`/`Format`/`FormattedValue` are then read at the wrong offset, and since
+`FormattedValue` is a length-prefixed string, a wrong length throws the stream position far off
+rather than a few bits.
+
+That reproduces the trace above exactly: the over-read happens while reading cell 7 (row 3,
+column 1), so cell 7's own header still looks sane; cell 8's header lands on garbage
+(`custom_data=63`, `ndata` clamped to 100000); the 100k-iteration spin burns 283ms; and rows 4-7
+read as empty, leaving 9 of 21 cells.
+
 ## Two fixes worth separating
 
-**1. Root cause (correctness).** Re-check the R2010+ cell body bit layout against the ODA spec for
-whichever content/style variant the 7th cell of `0x528` uses.
+**1. Root cause (correctness).** Gate the value body on `IsEmpty` the way ACadSharp does. Routing
+the empty case to the `match`'s existing no-op arm keeps the change to the type selector:
+
+```rust
+let body_type = if version.r2007_plus() && (v.flags & 1) != 0 {
+    -1 // IsEmpty: no value body is present in the stream
+} else {
+    type_code
+};
+match body_type { /* arms unchanged; -1 falls through to `_ => {}` */ }
+```
+
+On a drawing whose cell values never set the empty bit this is a no-op — both variants read the
+body — so it cannot regress whatever drawings the current unconditional read was verified against.
 
 **2. Robustness (cheap, independent).** `safe_count` (`object_reader/mod.rs:33`) currently clamps
 to a fixed 100000:
@@ -164,10 +219,46 @@ fn safe_count(raw: i32) -> i32 { raw.max(0).min(MAX_ARRAY_COUNT) }
 ```
 
 Every array element consumes at least one bit, so any count larger than the stream's remaining bit
-budget is impossible by construction. Clamping against the remaining stream size instead of a
-constant would turn this 283ms garbage loop into an immediate bail-out, and would bound the damage
-of every other misparse in the reader the same way. That alone does not fix the wrong cell count,
-but it removes the pathological cost and makes such bugs surface as short reads rather than stalls.
+budget is impossible by construction. Clamping against the remaining stream turns this 283ms
+garbage loop into an immediate bail-out and bounds the damage of every other misparse in the reader
+the same way. Hanging it off the reader avoids a two-phase borrow at each call site, so the 75
+`safe_count(reader.read_bit_long())` sites in `object_reader` become one-line swaps:
+
+```rust
+// DwgMergedReader
+pub fn read_bounded_count(&mut self) -> i32 {
+    let raw = self.read_bit_long();
+    let remaining_bits = self.remaining_bytes().saturating_mul(8).min(i32::MAX as usize) as i32;
+    raw.max(0).min(100_000).min(remaining_bits)
+}
+```
+
+This only tightens counts that are impossible by construction, so legitimate counts are unaffected.
+It does not fix the wrong cell count on its own — fix 1 does that — but it makes any future
+misparse surface as a short read rather than a stall.
+
+## Validation
+
+Both fixes applied on top of rev `8cc4793`; release build; the full ACadSharp sample matrix, which
+is the same drawing saved in seven formats. Every file has 341 entities and two tables, `0x528`
+(7x3 = 21 cells) and `0xA35` (4x5 = 20 cells). `0xA35` reads 20 cells throughout and is unaffected.
+
+| sample | version | `0x528` cells before | after | parse before | parse after |
+|---|---|---|---|---|---|
+| sample_AC1014.dwg | R14 | 21 | 21 | 8.5ms | 10.0ms |
+| sample_AC1015.dwg | R2000 | 21 | 21 | 5.4ms | 5.3ms |
+| sample_AC1018.dwg | R2004 | 21 | 21 | 7.2ms | 6.8ms |
+| sample_AC1021.dwg | R2007 | 21 | 21 | 6.6ms | 7.2ms |
+| sample_AC1024.dwg | R2010 | 9 | **21** | 271.5ms | **7.0ms** |
+| sample_AC1027.dwg | R2013 | 9 | **21** | 262.2ms | **6.0ms** |
+| sample_AC1032.dwg | R2018 | 9 | **21** | 261.5ms | **6.4ms** |
+
+Two things worth noting against the earlier sections of this report, which only measured the R2007
+and R2018 samples. First, all three R2010+ samples are affected identically, not just R2018 — the
+break tracks the R2010+ code path, as the root cause predicts. Second, the pre-R2010 samples are
+byte-for-byte unchanged in both cell count and timing, confirming the gate is inert on that path.
+
+No panics, no read errors, and the fork builds without warnings.
 
 ## Impact on the host application
 

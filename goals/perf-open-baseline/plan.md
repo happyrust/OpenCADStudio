@@ -159,13 +159,16 @@ xref 合并产生的 corrupt 实体单独计入 `caches.xref_dropped`，在 `fil
    后台线程预加载 LFF（78ms）/ 系统字体库（20ms）/ cosmic-text（21ms）。首次开档 346ms → 226ms。
 4. ✅ **查 R2010+ 解码慢的原因** —— 已定位，且与版本无关：是 `acadrust` 的 R2010+
    ACAD_TABLE 内容解析器走偏，一条表格记录吃掉 283ms，还把 7×3 的表读成 9 个单元格。
-5. **修 acadrust 的 R2010+ 表格解析**（`object_reader/entities.rs:2794` 起）：
-   对着 ODA 规范核 `read_table_content` 的位流顺序。性能与正确性双收益——
-   目前 OCS 打开再另存会静默丢表格单元格。
-   已定位到具体位置：表 `0x528` 的第 7 个单元格解析完后位流就偏了，第 8 个单元格读出
+5. **修 acadrust 的 R2010+ 表格解析** —— 根因已定位、修复已实现并验证，**只差落地**。
+   根因：`read_cad_value`（`object_reader/entities.rs:2424`）丢了 ACadSharp/ODA 对 R2007+ 值体的
+   `IsEmpty`（`Flags & 1`）门，空值被过读，表 `0x528` 第 7 格之后位流就偏了，第 8 格读出
    `ndata=100000`（被 `safe_count` 截断）并空转 283ms。
-   完整复现报告（可直接提交上游）：[`acadrust-r2010-table-bug.md`](./acadrust-r2010-table-bug.md)。
-   诊断用的逐记录计时补丁在 `%TEMP%\acadrust_probe`（未进仓库）。
+   修复 + 独立的 `read_bounded_count()` 兑底，实测三个 R2010+ 样例全部 9 格 → 21 格、
+   ~265ms → 6–7ms，旧版本路径零变化。
+   报告（含根因、补丁、验证矩阵）：[`acadrust-r2010-table-bug.md`](./acadrust-r2010-table-bug.md)。
+   改动在 `../acadifc-fork/`（未推未提交），diff 见 `../acadifc-fork.changes.diff`，
+   验证 crate `../acadrust-tablecheck/`。
+   **剩余动作**：推上游 / 改 path patch，并把 OCS `Cargo.toml` 的 `[patch]` rev 指过去。
 6. **按优先级处理正确性普查的其余分歧**（[`acadrust-version-path-diff.md`](./acadrust-version-path-diff.md)）：
    表格单元格内容是**唯一确认的缺陷**；其次 `wireframe_isolines` 读出负数、
    MultiLeader 附着点（14 个实体、一个字段）、多行属性字段——这三条都还没定性。

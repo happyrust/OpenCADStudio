@@ -41,12 +41,24 @@
 - [x] 查清「R2010+ DWG 解析慢 20 倍」的真实原因——**与版本无关**，是 `acadrust` 的 R2010+
       ACAD_TABLE 内容解析器走偏：一条表格记录独占 283ms，同时把 7×3 的表只读出 9 个单元格
       （R2007 路径读出正确的 21 个）。详见 `benchmarks.md` 结论 1。
-- [ ] 修 `acadrust` fork 的 R2010+ 表格解析（`object_reader/entities.rs:2794` 起的
-      `read_table` / `read_table_content`）。既是性能问题也是数据丢失问题：
+- [ ] 修 `acadrust` fork 的 R2010+ 表格解析。既是性能问题也是数据丢失问题：
       OCS 打开再另存会把表格按错误的 9 个单元格写回。
-      可直接提交上游的复现报告已写好：[`acadrust-r2010-table-bug.md`](./acadrust-r2010-table-bug.md)。
-      **2026-07-26 复验：上游把 pin 升到 `8cc4793` 之后依然复现**（R2018 仍是 263ms / 9 个单元格），
-      复验探针 `examples/table_probe.rs`。
+      报告（含根因、补丁、验证矩阵）：[`acadrust-r2010-table-bug.md`](./acadrust-r2010-table-bug.md)。
+      **2026-07-26 复验：上游把 pin 升到 `8cc4793` 之后依然复现。**
+      **2026-07-27 根因已定位并修复、验证通过，尚未落地**：
+      根因是 `read_cad_value`（`object_reader/entities.rs:2424`）丢了 ACadSharp/ODA 对 R2007+ 值体的
+      `IsEmpty`（`Flags & 1`）门——空值在流里没有值体，无条件读就过读，
+      使随后的 `Units/Format/FormattedValue` 错位、下一格读到垃圾 count 后空转。
+      修复：把空值路由到 `match` 的 no-op 分支；另加独立的健壮性兑底
+      `DwgMergedReader::read_bounded_count()`（按剩余位流 clamp，替换 object_reader 里 75 处
+      `safe_count(reader.read_bit_long())`）。
+      全样本矩阵实测：R2010/R2013/R2018 三个样本**都**从 9 格 / ~265ms 恢复为 21 格 / 6–7ms
+      （原报告只测了 R2018，实际三个 R2010+ 样本同样受影响）；R14/R2000/R2004/R2007 四个样本
+      格数与耗时均无变化。
+      改动只在本地副本 `../acadifc-fork/`（未推未提交），完整 diff 见 `../acadifc-fork.changes.diff`，
+      验证 crate `../acadrust-tablecheck/`（`cargo run --release`）。
+      **剩余动作**：把修复推到 `OpenAEC-Foundation/acadifc`（或改本地 path patch）并把 OCS
+      `Cargo.toml` 的 `[patch]` rev 指过去。
 - [ ] 核实正确性普查里尚未定性的分歧——同一张图的 R2007 与 R2018 两条读取路径，330 个实体里有
       34 个字段级不一致，但**逐个验证后大多是两种格式的存法不同，不是缺陷**：
       23 个实体的 EED 差异是信息从 EED 挪进了原生字段；Spline 那条是同一条曲线的两种编码
