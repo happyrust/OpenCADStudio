@@ -166,9 +166,8 @@ xref 合并产生的 corrupt 实体单独计入 `caches.xref_dropped`，在 `fil
    修复 + 独立的 `read_bounded_count()` 兑底，实测三个 R2010+ 样例全部 9 格 → 21 格、
    ~265ms → 6–7ms，旧版本路径零变化。
    报告（含根因、补丁、验证矩阵）：[`acadrust-r2010-table-bug.md`](./acadrust-r2010-table-bug.md)。
-   改动在 `../acadifc-fork/`（未推未提交），diff 见 `../acadifc-fork.changes.diff`，
-   验证 crate `../acadrust-tablecheck/`。
-   **剩余动作**：推上游 / 改 path patch，并把 OCS `Cargo.toml` 的 `[patch]` rev 指过去。
+   已推到 fork `happyrust/acadifc` 的 `fix/r2010-table-isempty-gate`，`[patch]` 指向 rev `c175c52`，
+   修复已在 OCS 生效。**剩余动作**：给上游提 issue/PR，合入后把 `[patch]` 指回 OpenAEC-Foundation。
 6. **按优先级处理正确性普查的其余分歧**（[`acadrust-version-path-diff.md`](./acadrust-version-path-diff.md)）：
    表格单元格内容是**唯一确认的缺陷**；其次 `wireframe_isolines` 读出负数、
    MultiLeader 附着点（14 个实体、一个字段）、多行属性字段——这三条都还没定性。

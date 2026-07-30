@@ -258,7 +258,23 @@ and R2018 samples. First, all three R2010+ samples are affected identically, not
 break tracks the R2010+ code path, as the root cause predicts. Second, the pre-R2010 samples are
 byte-for-byte unchanged in both cell count and timing, confirming the gate is inert on that path.
 
-No panics, no read errors, and the fork builds without warnings.
+No panics, no read errors, and the fork builds without warnings. acadrust's own test suite is
+unchanged by the two patches: at rev `8cc4793` it fails `test_book_color_roundtrip` and the three
+`dwg_roundtrip_deep_r{2000,2013,2018}` cases, and it fails exactly those four and no others with
+both patches applied.
+
+Both commits are on `happyrust/acadifc`, branch `fix/r2010-table-isempty-gate`, based directly on
+`8cc4793` and split one per fix, if it is easier to pull than to apply.
+
+## Upstream status (2026-07-31)
+
+Fix 1 has landed upstream. `OpenAEC-Foundation/acadifc` rev `a7b1e07` reads the value body under
+`if !version.r2007_plus() || (v.flags & 1) == 0`, inside a refactored `read_cad_value_with_schema`,
+so the gate is in place and OpenCADStudio's `[patch]` stays on upstream rather than the fork.
+
+Fix 2 has not. Upstream still clamps with `safe_count(raw) = raw.max(0).min(MAX_ARRAY_COUNT)` against
+a fixed 100000, so a garbage count read from a derailed stream still costs a 100k-iteration spin. The
+backstop remains worth upstreaming on its own.
 
 ## Impact on the host application
 

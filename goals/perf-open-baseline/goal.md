@@ -55,10 +55,14 @@
       全样本矩阵实测：R2010/R2013/R2018 三个样本**都**从 9 格 / ~265ms 恢复为 21 格 / 6–7ms
       （原报告只测了 R2018，实际三个 R2010+ 样本同样受影响）；R14/R2000/R2004/R2007 四个样本
       格数与耗时均无变化。
-      改动只在本地副本 `../acadifc-fork/`（未推未提交），完整 diff 见 `../acadifc-fork.changes.diff`，
-      验证 crate `../acadrust-tablecheck/`（`cargo run --release`）。
-      **剩余动作**：把修复推到 `OpenAEC-Foundation/acadifc`（或改本地 path patch）并把 OCS
-      `Cargo.toml` 的 `[patch]` rev 指过去。
+      修复已推到 fork `happyrust/acadifc` 分支 `fix/r2010-table-isempty-gate`（两个提交：根因门 +
+      `read_bounded_count` 兑底）。fork 自带测试套件在该 rev 与基线 `8cc4793`
+      失败项完全相同（1 个 lib + 3 个 roundtrip，均为上游既有），零回归。
+      **2026-07-31：根因门已进上游。** `OpenAEC-Foundation/acadifc` rev `a7b1e07` 的
+      `read_cad_value_with_schema` 已带 `if !version.r2007_plus() || (v.flags & 1) == 0` 门，
+      OCS 的 `[patch]` 因此留在上游 `a7b1e07`，不再指向 fork。
+      **剩余动作**：`read_bounded_count` 兑底（fix 2）上游仍未采纳——上游 `safe_count` 还是按常量
+      `MAX_ARRAY_COUNT = 100_000` clamp；要么给上游提 PR，要么接受垃圾 count 时的空转风险。
 - [ ] 核实正确性普查里尚未定性的分歧——同一张图的 R2007 与 R2018 两条读取路径，330 个实体里有
       34 个字段级不一致，但**逐个验证后大多是两种格式的存法不同，不是缺陷**：
       23 个实体的 EED 差异是信息从 EED 挪进了原生字段；Spline 那条是同一条曲线的两种编码
