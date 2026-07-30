@@ -10,7 +10,7 @@ use acadrust::entities::hatch::{
     BoundaryEdge, BoundaryPath, BoundaryPathFlags, HatchPatternLine, LineEdge,
 };
 use acadrust::entities::Hatch;
-use acadrust::types::{Color as AcadColor, Vector2};
+use acadrust::types::{Color as AcadColor, Transform, Vector2};
 use acadrust::EntityType;
 use OpenCADStudio::scene::model::hatch_model::HatchPattern;
 use OpenCADStudio::scene::Scene;
@@ -76,8 +76,10 @@ fn block_internal_hatch_reaches_export() {
     // A blue hatch, wrapped into a block and inserted in model space — the
     // minimal shape of "coloured fill nested in a block".
     let h = scene.add_entity(EntityType::Hatch(square_hatch(5)));
+    // Base point at the origin under the world UCS: both directions are identity.
+    let at_origin = Transform::identity();
     scene
-        .create_block_from_entities(&[h], "LOGO", glam::DVec3::ZERO)
+        .create_block_from_entities(&[h], "LOGO", &at_origin, &at_origin)
         .expect("wrap hatch into a block + insert");
     scene.populate_hatches_from_document();
 
