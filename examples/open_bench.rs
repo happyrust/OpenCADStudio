@@ -68,7 +68,7 @@ fn main() {
         let xref_ms = t_xref.elapsed().as_millis();
 
         let t_caches = Instant::now();
-        let caches = scene::build_derived_caches_with_progress(&doc, &|_: u16| {});
+        let caches = scene::build_derived_caches_with_progress(&doc, &|_: u16| {}, path.parent());
         let caches_ms = t_caches.elapsed().as_millis();
 
         let entities = doc.entity_count();
