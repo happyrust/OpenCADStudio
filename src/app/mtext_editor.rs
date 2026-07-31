@@ -177,6 +177,38 @@ impl MTextEditorState {
         self.height.trim().parse::<f64>().ok().filter(|h| *h > 0.0).unwrap_or(0.25)
     }
 
+    /// Pixels per drawing unit used by the editor preview. The dominant glyph
+    /// height is always displayed at the same screen size; wrapping width must
+    /// never participate in this calculation.
+    pub(in crate::app) fn preview_scale(&self) -> f32 {
+        let mut heights: Vec<f32> = self
+            .glyph_boxes
+            .iter()
+            .filter(|b| b.xmax - b.xmin > 1e-6)
+            .map(|b| b.ymax - b.ymin)
+            .filter(|height| height.is_finite() && *height > 1e-6)
+            .collect();
+        let unit = if heights.is_empty() {
+            self.height_value() as f32
+        } else {
+            heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let (mut best_height, mut best_count, mut index) = (heights[0], 0usize, 0usize);
+            while index < heights.len() {
+                let mut end = index;
+                while end < heights.len() && heights[end] <= heights[index] * 1.05 {
+                    end += 1;
+                }
+                if end - index > best_count {
+                    best_count = end - index;
+                    best_height = heights[(index + end - 1) / 2];
+                }
+                index = end;
+            }
+            best_height
+        };
+        (super::view::overlay::MTEXT_PREVIEW_EM_PX / unit.max(1e-6)).clamp(1e-4, 1e6)
+    }
+
     /// Fold the toolbar's global defaults (font / colour / oblique / width /
     /// char-spacing) onto every span that does not already override them. This
     /// replaces the old hand-built `\f;\C;…` prefix so the value is produced
@@ -565,6 +597,18 @@ impl super::OpenCADStudio {
         self.modal_offset = iced::Vector::ZERO;
         self.modal_resize = iced::Vector::ZERO;
         self.rebuild_mtext_preview();
+        // The preview uses a fixed on-screen text size. Therefore the initial
+        // wrap width is the drawing-unit span that exactly reaches the right
+        // edge of the editor, placing both ruler and slider at their maximum.
+        if handle.is_none() {
+            let initial_width = self.mtext_editor.as_ref().map(|ed| {
+                super::view::overlay::MTEXT_EDITOR_WRITING_WIDTH / ed.preview_scale()
+            });
+            if let (Some(ed), Some(width)) = (self.mtext_editor.as_mut(), initial_width) {
+                ed.rect_width = f64::from(width.max(1e-6));
+            }
+            self.rebuild_mtext_preview();
+        }
         // Place the caret at the end so typing works without a click first.
         let end = self.mtext_vis_count();
         if let Some(ed) = self.mtext_editor.as_mut() {
@@ -1064,6 +1108,14 @@ impl super::OpenCADStudio {
         let Some(ed) = self.mtext_editor.take() else { return false };
         let body_empty = ed.content.text().trim().is_empty();
         let mut mt = ed.build_mtext();
+        let annotative = ed.editing.is_none()
+            && crate::scene::annotative::text_style_is_annotative(
+                &self.tabs[i].scene.document,
+                &mt.style,
+            );
+        if annotative {
+            mt.is_annotative = true;
+        }
         if body_empty {
             // Empty content: drop a new entity; leave an edited one untouched.
             self.refresh_properties();
@@ -1097,7 +1149,17 @@ impl super::OpenCADStudio {
             // Align new MText to the active UCS (text runs along the UCS X axis).
             mt.rotation = self.tabs[i].ucs_rotation_angle();
             self.push_undo_snapshot(i, "MTEXT");
-            self.commit_entity(EntityType::MText(mt));
+            let handle = self.commit_entity_handle(EntityType::MText(mt));
+            if annotative {
+                let scale = self.tabs[i].scene.current_annotation_scale_handle();
+                if let (Some(handle), Some(scale)) = (handle, scale) {
+                    crate::scene::annotative::create_annotation_context(
+                        &mut self.tabs[i].scene.document,
+                        handle,
+                        scale,
+                    );
+                }
+            }
             self.tabs[i].dirty = true;
         }
         self.refresh_properties();
@@ -1119,6 +1181,14 @@ impl super::OpenCADStudio {
             ),
             None => return,
         };
+        let annotative = editing.is_none()
+            && crate::scene::annotative::text_style_is_annotative(
+                &self.tabs[i].scene.document,
+                &mt.style,
+            );
+        if annotative {
+            mt.is_annotative = true;
+        }
         if body_empty {
             return;
         }
@@ -1151,6 +1221,16 @@ impl super::OpenCADStudio {
             self.push_undo_snapshot(i, "MTEXT");
             let handle = self.commit_entity_handle(EntityType::MText(mt));
             self.tabs[i].dirty = true;
+            if annotative {
+                let scale = self.tabs[i].scene.current_annotation_scale_handle();
+                if let (Some(handle), Some(scale)) = (handle, scale) {
+                    crate::scene::annotative::create_annotation_context(
+                        &mut self.tabs[i].scene.document,
+                        handle,
+                        scale,
+                    );
+                }
+            }
             // Bind the editor to the fresh entity so the next Apply updates it.
             if let (Some(h), Some(ed)) = (handle, self.mtext_editor.as_mut()) {
                 ed.editing = Some(h);
