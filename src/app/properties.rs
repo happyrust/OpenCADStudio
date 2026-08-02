@@ -136,8 +136,29 @@ impl OpenCADStudio {
         } else {
             0
         };
+        let prop_vertex = if cur_handles.len() == 1 {
+            let vertex_count = self.tabs[i]
+                .scene
+                .document
+                .get_entity(cur_handles[0])
+                .and_then(|entity| match entity {
+                    acadrust::EntityType::LwPolyline(polyline) => Some(polyline.vertices.len()),
+                    acadrust::EntityType::Polyline2D(polyline) => Some(polyline.vertices.len()),
+                    acadrust::EntityType::Leader(leader) => Some(leader.vertices.len()),
+                    _ => None,
+                });
+            vertex_count.map_or(prop_vertex, |count| prop_vertex.min(count.saturating_sub(1)))
+        } else {
+            prop_vertex
+        };
+        let prop_vertex_indicator_active = if cur_handles == prev_handles {
+            self.tabs[i].properties.prop_vertex_indicator_active
+        } else {
+            false
+        };
         crate::scene::view::dispatch::set_prop_current_vertex(prop_vertex);
 
+        let annotation_scale_handle = self.tabs[i].scene.displayed_annotation_scale_handle();
         let new_panel = {
             let selected = self.tabs[i].scene.selected_entities();
             let mut panel = match selected.len() {
@@ -348,9 +369,10 @@ impl OpenCADStudio {
                 }
                 1 => {
                     let (handle, source_entity) = selected[0];
-                    let contextual = crate::scene::annotative::entity_for_active_context(
+                    let contextual = crate::scene::annotative::entity_for_annotation_context(
                         &self.tabs[i].scene.document,
                         source_entity,
+                        annotation_scale_handle,
                     );
                     let entity = contextual.as_ref();
                     let group_names = self.tabs[i].scene.group_names_for_entity(handle);
@@ -1540,6 +1562,7 @@ impl OpenCADStudio {
             panel.expanded_groups = expanded_groups;
             panel.source_handles = new_handles;
             panel.prop_vertex = prop_vertex;
+            panel.prop_vertex_indicator_active = prop_vertex_indicator_active;
             panel
         };
 
@@ -1666,33 +1689,42 @@ impl OpenCADStudio {
         } else {
             [0.0_f64; 3]
         };
-        let (new_handle, new_grips) = {
+        let (new_handle, new_grips, new_grip_handles) = {
+            let annotation_scale_handle = self.tabs[i].scene.displayed_annotation_scale_handle();
             let selected = self.tabs[i].scene.selected_entities();
-            if selected.len() == 1 {
-                let (handle, entity) = selected[0];
-                let contextual = crate::scene::annotative::entity_for_active_context(
+            let single_handle = (selected.len() == 1).then(|| selected[0].0);
+            let mut grips = Vec::new();
+            let mut handles = Vec::new();
+            for (handle, entity) in selected {
+                let contextual = crate::scene::annotative::entity_for_annotation_context(
                     &self.tabs[i].scene.document,
                     entity,
+                    annotation_scale_handle,
                 );
-                let grips = dispatch::grips(contextual.as_ref())
-                    .into_iter()
-                    .map(|mut g| {
-                        // Subtract in f64: at UTM magnitudes an f32 cast before
-                        // the offset costs ~1 unit and draws the grip off the
-                        // wire.
-                        g.world.x -= wo[0];
-                        g.world.y -= wo[1];
-                        g.world.z -= wo[2];
-                        g
-                    })
-                    .collect();
-                (Some(handle), grips)
-            } else {
-                (None, vec![])
+                for mut grip in dispatch::grips(contextual.as_ref()) {
+                    // Subtract in f64: at UTM magnitudes an f32 cast before
+                    // the offset costs ~1 unit and draws the grip off the wire.
+                    grip.world.x -= wo[0];
+                    grip.world.y -= wo[1];
+                    grip.world.z -= wo[2];
+                    handles.push(handle);
+                    grips.push(grip);
+                }
             }
+            (single_handle, grips, handles)
         };
         self.tabs[i].selected_handle = new_handle;
         self.tabs[i].selected_grips = new_grips;
+        self.tabs[i].selected_grip_handles = new_grip_handles;
+        let available: rustc_hash::FxHashSet<_> = self.tabs[i]
+            .selected_grip_handles
+            .iter()
+            .copied()
+            .zip(self.tabs[i].selected_grips.iter().map(|grip| grip.id))
+            .collect();
+        self.tabs[i]
+            .hot_grips
+            .retain(|key| available.contains(key));
         // Append the dynamic-block visibility (lookup) grip, if the lone
         // selection is a visibility-parametric block reference.
         self.refresh_visibility_grip(wo);
@@ -1710,11 +1742,9 @@ impl OpenCADStudio {
     pub(super) fn invalidate_property_targets(&mut self, i: usize, handles: &[Handle]) {
         let mut context_object_changed = false;
         for &handle in handles {
-            context_object_changed |=
-                crate::scene::annotative::sync_active_context_from_entity(
-                    &mut self.tabs[i].scene.document,
-                    handle,
-                );
+            context_object_changed |= self.tabs[i]
+                .scene
+                .sync_displayed_annotation_context(handle);
             // Hatch / SOLID fills render from prebuilt cached models; rebuild
             // them or pattern edits (scale, background, …) stay invisible
             // (#415).
@@ -1747,25 +1777,19 @@ impl OpenCADStudio {
         mut entity: acadrust::EntityType,
     ) -> Option<Handle> {
         let i = self.active_tab;
+        let tracks_draw_anchor = self.tabs[i].active_cmd.is_some()
+            && matches!(
+                &entity,
+                acadrust::EntityType::Line(_)
+                    | acadrust::EntityType::Arc(_)
+                    | acadrust::EntityType::LwPolyline(_)
+                    | acadrust::EntityType::Polyline(_)
+                    | acadrust::EntityType::Polyline2D(_)
+                    | acadrust::EntityType::Polyline3D(_)
+            );
         let layer = &self.tabs[i].active_layer;
         if layer != "0" || entity.as_entity().layer().is_empty() {
             entity.as_entity_mut().set_layer(layer.clone());
-        }
-
-        // A new dimension adopts the current dimension style (DIMSTYLE), like
-        // AutoCAD — the DIM commands leave the default "Standard" on the entity,
-        // so stamp the header's current style here. ADDSELECTED sets DIMSTYLE to
-        // the template's first, so a cloned dimension keeps its style (#239).
-        if let acadrust::EntityType::Dimension(ref mut d) = entity {
-            let cur = self.tabs[i]
-                .scene
-                .document
-                .header
-                .current_dimstyle_name
-                .clone();
-            if !cur.trim().is_empty() {
-                d.base_mut().style_name = cur;
-            }
         }
 
         // INSUNITS: when inserting a block whose BlockRecord.units differ
@@ -1851,45 +1875,8 @@ impl OpenCADStudio {
                             _ => None,
                         });
                     if let Some((h, s)) = found {
-                        ml.style_handle = Some(h);
-                        // Inherit the style's settings so a new multileader
-                        // reflects the current MLeaderStyle (the renderer reads
-                        // these entity fields). See #94.
-                        // The entity and style enums are distinct types with
-                        // matching discriminants — round-trip through i16.
-                        ml.content_type = (s.content_type as i16).into();
-                        ml.path_type = (s.path_type as i16).into();
-                        ml.line_color = s.line_color;
-                        ml.line_type_handle = s.line_type_handle;
-                        ml.line_weight = s.line_weight;
-                        ml.enable_landing = s.enable_landing;
-                        ml.enable_dogleg = s.enable_dogleg;
-                        ml.dogleg_length = s.landing_distance;
-                        ml.arrowhead_handle = s.arrowhead_handle;
-                        ml.arrowhead_size = s.arrowhead_size;
-                        ml.text_style_handle = s.text_style_handle;
-                        ml.text_color = s.text_color;
-                        ml.text_frame = s.text_frame;
-                        ml.text_height = s.text_height;
-                        ml.context.text_height = s.text_height;
-                        ml.text_left_attachment = (s.text_left_attachment as i16).into();
-                        ml.text_right_attachment = (s.text_right_attachment as i16).into();
-                        ml.text_top_attachment = (s.text_top_attachment as i16).into();
-                        ml.text_bottom_attachment = (s.text_bottom_attachment as i16).into();
-                        ml.text_attachment_direction =
-                            (s.text_attachment_direction as i16).into();
-                        ml.text_alignment = (s.text_alignment as i16).into();
-                        ml.text_angle_type = (s.text_angle_type as i16).into();
-                        ml.block_content_handle = s.block_content_handle;
-                        ml.block_content_color = s.block_content_color;
-                        ml.block_connection_type = (s.block_content_connection as i16).into();
-                        ml.block_rotation = s.block_content_rotation;
-                        ml.block_scale = acadrust::types::Vector3::new(
-                            s.block_content_scale_x,
-                            s.block_content_scale_y,
-                            s.block_content_scale_z,
-                        );
-                        ml.scale_factor = s.scale_factor;
+                        debug_assert_eq!(h, s.handle);
+                        crate::scene::annotative::apply_mleader_style(ml, &s);
                     }
                 }
             }
@@ -1917,8 +1904,54 @@ impl OpenCADStudio {
             _ => {}
         }
 
+        let text_style_annotative = match &entity {
+            acadrust::EntityType::Text(text) => {
+                crate::scene::annotative::text_style_is_annotative(
+                    &self.tabs[i].scene.document,
+                    &text.style,
+                )
+            }
+            acadrust::EntityType::MText(text) => {
+                crate::scene::annotative::text_style_is_annotative(
+                    &self.tabs[i].scene.document,
+                    &text.style,
+                )
+            }
+            acadrust::EntityType::AttributeEntity(attribute) => {
+                crate::scene::annotative::text_style_is_annotative(
+                    &self.tabs[i].scene.document,
+                    &attribute.text_style,
+                )
+            }
+            acadrust::EntityType::AttributeDefinition(attribute) => {
+                crate::scene::annotative::text_style_is_annotative(
+                    &self.tabs[i].scene.document,
+                    &attribute.text_style,
+                )
+            }
+            _ => false,
+        };
+        if text_style_annotative {
+            match &mut entity {
+                acadrust::EntityType::MText(text) => text.is_annotative = true,
+                acadrust::EntityType::AttributeEntity(attribute) => {
+                    attribute.flags.annotative = true
+                }
+                acadrust::EntityType::AttributeDefinition(attribute) => {
+                    attribute.flags.annotative = true
+                }
+                _ => {}
+            }
+        }
+        let needs_annotation_context = crate::scene::annotative::is_annotative(
+            &self.tabs[i].scene.document,
+            &entity,
+        ) || crate::scene::annotative::annotation_style_is_annotative(
+            &self.tabs[i].scene.document,
+            &entity,
+        );
 
-        if matches!(&entity, acadrust::EntityType::Viewport(_))
+        let new_handle = if matches!(&entity, acadrust::EntityType::Viewport(_))
             && self.tabs[i].scene.current_layout != "Model"
         {
             // Assign a unique viewport ID (max existing id + 1, min 2).
@@ -1971,7 +2004,30 @@ impl OpenCADStudio {
             }
         } else {
             Some(self.tabs[i].scene.add_entity(entity))
+        };
+
+        if needs_annotation_context {
+            if let (Some(handle), Some(scale)) = (
+                new_handle,
+                self.tabs[i].scene.creation_annotation_scale_handle(),
+            ) {
+                crate::scene::annotative::create_annotation_context(
+                    &mut self.tabs[i].scene.document,
+                    handle,
+                    scale,
+                );
+                self.tabs[i]
+                    .scene
+                    .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
+            }
         }
+
+        if tracks_draw_anchor {
+            if let Some(handle) = new_handle {
+                self.tabs[i].last_draw_anchor = Some(handle);
+            }
+        }
+        new_handle
     }
 }
 

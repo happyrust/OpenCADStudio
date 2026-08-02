@@ -1,6 +1,6 @@
 [package]
 name = "OpenCADStudio"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
 build = "build.rs"
 
@@ -39,6 +39,9 @@ acadrust = { version = "0.4", features = ["serde"] }
 dwg-thumbnailer = { path = "crates/dwg-thumbnailer" }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
+i18n-embed = { version = "0.16", features = ["fluent-system"] }
+i18n-embed-fl = "0.10"
+rust-embed = "8"
 inventory = "0.3"
 truck-shapeops = { version = "0.4", optional = true }
 rustc-hash = "2"
@@ -58,12 +61,13 @@ windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_Window
 ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "wayland"] }
 
 [patch.crates-io]
-acadrust = { git = "https://github.com/OpenAEC-Foundation/acadifc.git", rev = "1fbd233" }
+acadrust = { git = "https://github.com/OpenAEC-Foundation/acadifc.git", rev = "78b57b0" }
 iced_core = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
 iced_widget = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ocs_plugin_api = { path = "crates/ocs_plugin_api", features = ["host"] }
+i18n-embed = { version = "0.16", features = ["desktop-requester"] }
 rayon = "1"
 open = "5"
 printpdf = { version = "0.9.1", default-features = false }
@@ -75,6 +79,7 @@ pid-parse = { path = "../pid-parse" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ocs_plugin_api = { path = "crates/ocs_plugin_api" }
+i18n-embed = { version = "0.16", features = ["web-sys-requester"] }
 console_error_panic_hook = "0.1"
 log = "0.4"
 getrandom = { version = "0.3", features = ["wasm_js"] }

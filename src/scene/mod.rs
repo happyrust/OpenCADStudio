@@ -458,6 +458,7 @@ struct PaperViewportCache {
     layout_block: Handle,
     sheet: Handle,
     content: Arc<Vec<Handle>>,
+    paper_limits: Option<((f64, f64), (f64, f64))>,
 }
 
 struct PaperSheetRenderCache {
@@ -722,7 +723,11 @@ fn build_derived_caches_impl(
         .par_iter()
         .filter_map(|&handle| {
             let source = doc.get_entity(handle)?;
-            let contextual = annotative::entity_for_active_context(doc, source);
+            let contextual = annotative::entity_for_annotation_context(
+                doc,
+                source,
+                annotative::scale_handle_by_name(doc, &doc.header.current_annotation_scale),
+            );
             let e = contextual.as_ref();
             let (raw, ..) = view::render::render_style_for(doc, e);
             let color = view::render::adapt_to_bg(raw, LOAD_BG);
@@ -1504,6 +1509,10 @@ pub struct Scene {
     /// id — one slot would thrash between them every frame.
     sdf_text_cache:
         RefCell<HashMap<u64, std::sync::Arc<Vec<crate::scene::pipeline::text_gpu::TextVertex>>>>,
+    /// Extra scale representations for highlighted annotative entities. These
+    /// stay outside the resident wire set so rollover and selection never
+    /// invalidate normal geometry, picking, or snapping caches.
+    annotation_highlight_cache: RefCell<HashMap<u64, Arc<Vec<WireModel>>>>,
     /// Per wire-source `(geometry_epoch, gathered text)` of the most recent
     /// SDF-text build. When a new content id misses the cache but the journal
     /// shows no text-bearing entity changed since that epoch, the same glyphs
@@ -1538,19 +1547,22 @@ pub struct Scene {
     pub document: CadDocument,
     /// File-open-prepared index for non-graphical semantic object lookups.
     pub(crate) object_data_cache: crate::entities::object_data::ObjectDataCache,
-    /// Native AcDbLight/Sun inputs. Built once after document load, then
-    /// invalidated only when a light entity changes; ordinary geometry edits
-    /// never rescan a million-entity drawing just to rediscover its lights.
-    lighting_cache: RefCell<Option<Vec<SceneLight>>>,
+    /// Native AcDbLight/Sun inputs, separated by rendered block and viewport
+    /// frozen-layer signature. Invalidated only when a light entity changes;
+    /// ordinary geometry edits never rescan the drawing's lights.
+    lighting_cache: RefCell<HashMap<(Handle, u64), Vec<SceneLight>>>,
     /// Currently selected entity handles.
     pub selected: HashSet<Handle>,
     /// Session-only ISOLATEOBJECTS / HIDEOBJECTS state. Never written to DWG/DXF.
     pub object_isolation: ObjectIsolationState,
     /// Entity handles temporarily removed from the base render while an
-    /// interactive preview (currently grip drag) draws their live replacement.
+    /// interactive grip preview draws their live replacement.
     /// Separate from object isolation so a grip can never activate the
     /// isolation status or be captured in its undo state.
     pub preview_hidden: HashSet<Handle>,
+    /// Source handles replaced by an active command preview. Kept separate
+    /// from grip state so either interaction can clean up only its own hides.
+    command_preview_hidden: HashSet<Handle>,
     /// During in-place block edit (REFEDIT), the handles of the entities being
     /// edited. Everything else is rendered faded toward the background so the
     /// edited geometry stands out while the surrounding drawing stays visible
@@ -1656,21 +1668,22 @@ pub struct Scene {
     /// constants. `[depth, half]` retains a fixed child sub-range for block
     /// composition. Full sort/layout/block changes rebuild the labels.
     draw_depth_cache: RefCell<Option<DrawDepthCache>>,
-    /// Cached hatch fill models, keyed by geometry_epoch. View culling
+    /// Cached hatch fill models, keyed by target block and geometry_epoch. View culling
     /// is handled at draw time via `hatch_skip_flags` in the pipeline,
     /// not at build time — that lets the GPU buffer stay stable across
     /// pan/zoom while still skipping out-of-view hatches.
     /// Keyed by `(geometry_epoch, selection_generation)` — selected hatches
     /// are tinted, so a select/deselect must rebuild even when the geometry
     /// is unchanged (issue #71).
-    hatch_cache: RefCell<HashMap<String, (u64, u64, Arc<Vec<HatchModel>>)>>,
-    /// Cached wipeout fill models, keyed by geometry_epoch. Same
+    hatch_cache: RefCell<HashMap<(Handle, String), (u64, u64, Arc<Vec<HatchModel>>)>>,
+    /// Cached wipeout fill models, keyed by target block and geometry_epoch. Same
     /// reasoning as `hatch_cache`.
-    wipeout_cache: RefCell<HashMap<String, (u64, Arc<Vec<HatchModel>>)>>,
-    /// Cached image models, keyed by geometry_epoch. No camera key needed here.
-    image_cache: RefCell<Option<(u64, Arc<Vec<ImageModel>>)>>,
-    /// Cached mesh models, keyed by geometry_epoch.
-    mesh_cache: RefCell<HashMap<String, (u64, Arc<Vec<MeshLodSet>>)>>,
+    wipeout_cache: RefCell<HashMap<(Handle, String), (u64, Arc<Vec<HatchModel>>)>>,
+    /// Cached image models, keyed by target block and geometry_epoch. No camera
+    /// key needed here.
+    image_cache: RefCell<HashMap<Handle, (u64, Arc<Vec<ImageModel>>)>>,
+    /// Cached mesh models, keyed by target block and geometry_epoch.
+    mesh_cache: RefCell<HashMap<(Handle, String), (u64, Arc<Vec<MeshLodSet>>)>>,
     /// Picking mesh source for a non-model active space, keyed by geometry epoch
     /// and interaction block. Model/MSPACE reuse `mesh_cache` directly.
     interaction_mesh_cache: RefCell<Option<(u64, u64, Arc<Vec<MeshLodSet>>)>>,
@@ -1692,10 +1705,12 @@ pub struct Scene {
     /// filtered variants. Viewports sharing a frozen set share one entry (like
     /// the resident wire set). Empty for a viewport with no frozen layers (it
     /// reuses the unfiltered `*_arc` sets directly).
-    frozen_hatch_cache: RefCell<HashMap<(String, u64), (u64, u64, Arc<Vec<HatchModel>>)>>,
-    frozen_wipeout_cache: RefCell<HashMap<(String, u64), (u64, Arc<Vec<HatchModel>>)>>,
-    frozen_image_cache: RefCell<HashMap<u64, (u64, Arc<Vec<ImageModel>>)>>,
-    frozen_mesh_cache: RefCell<HashMap<(String, u64), (u64, Arc<Vec<MeshLodSet>>)>>,
+    frozen_hatch_cache:
+        RefCell<HashMap<(Handle, String, u64), (u64, u64, Arc<Vec<HatchModel>>)>>,
+    frozen_wipeout_cache:
+        RefCell<HashMap<(Handle, String, u64), (u64, Arc<Vec<HatchModel>>)>>,
+    frozen_image_cache: RefCell<HashMap<(Handle, u64), (u64, Arc<Vec<ImageModel>>)>>,
+    frozen_mesh_cache: RefCell<HashMap<(Handle, String, u64), (u64, Arc<Vec<MeshLodSet>>)>>,
     /// Cached block-INSERT hatches for hit-testing, keyed by geometry_epoch.
     /// Building this explodes every model-space INSERT, so without the cache a
     /// heavy block-instanced drawing re-explodes thousands of inserts on every
@@ -1794,7 +1809,7 @@ pub struct Scene {
     /// background and block epoch. Model and Paper adapt black/white colours
     /// differently; retaining both variants prevents a full block rebuild on
     /// every layout-tab switch.
-    block_defn_cache: RefCell<HashMap<[u32; 4], (u64, Arc<cache::block_cache::BlockCache>)>>,
+    block_defn_cache: RefCell<HashMap<u64, (u64, Arc<cache::block_cache::BlockCache>)>>,
     /// Spatial index + always-emit list for top-level entities
     /// (Phase 2.1). Lazily rebuilt by `entity_index()` on
     /// `geometry_epoch` change. See `EntityIndex` for what each side
@@ -1931,6 +1946,7 @@ impl Scene {
             }]),
             active_model_tile: std::cell::Cell::new(0),
             sdf_text_cache: RefCell::new(HashMap::default()),
+            annotation_highlight_cache: RefCell::new(HashMap::default()),
             last_sdf_text: RefCell::new(HashMap::default()),
             // One pane mapped to tile 0 — matches the single default tile above.
             model_panes: iced::widget::pane_grid::State::new(0).0,
@@ -1938,10 +1954,11 @@ impl Scene {
             selection: Rc::new(RefCell::new(SelectionState::default())),
             document: CadDocument::new(),
             object_data_cache: crate::entities::object_data::ObjectDataCache::default(),
-            lighting_cache: RefCell::new(None),
+            lighting_cache: RefCell::new(HashMap::default()),
             selected: HashSet::default(),
             object_isolation: ObjectIsolationState::default(),
             preview_hidden: HashSet::default(),
+            command_preview_hidden: HashSet::default(),
             refedit_keep: None,
             hover_highlight: None,
             transparency_display: true,
@@ -1964,7 +1981,7 @@ impl Scene {
             draw_depth_cache: RefCell::new(None),
             hatch_cache: RefCell::new(HashMap::default()),
             wipeout_cache: RefCell::new(HashMap::default()),
-            image_cache: RefCell::new(None),
+            image_cache: RefCell::new(HashMap::default()),
             mesh_cache: RefCell::new(HashMap::default()),
             interaction_mesh_cache: RefCell::new(None),
             mesh_pick_lookup_cache: RefCell::new(None),
@@ -2068,13 +2085,21 @@ impl Scene {
     /// Get (or build on miss) the block-definition cache for the current epoch.
     /// Built single-threaded — recursive nested expansion makes parallelization
     /// fiddly and the cache only rebuilds when geometry actually changes.
-    pub(super) fn block_cache_arc(&self) -> Arc<cache::block_cache::BlockCache> {
+    pub(super) fn block_cache_arc_for(
+        &self,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
+    ) -> Arc<cache::block_cache::BlockCache> {
         let bg = if self.current_layout == "Model" {
             self.bg_color
         } else {
             self.paper_bg_color
         };
-        let key = bg.map(f32::to_bits);
+        let mut key = annotation_scale_handle.map(|handle| handle.value()).unwrap_or(0);
+        for component in bg {
+            key = key.rotate_left(13) ^ component.to_bits() as u64;
+        }
+        key = key.rotate_left(13) ^ all_visible as u64;
         {
             let cache = self.block_defn_cache.borrow();
             if let Some((epoch, arc)) = cache.get(&key) {
@@ -2086,10 +2111,15 @@ impl Scene {
         // Block definitions are cached at block-local size (annotation scale
         // 1.0). An annotative block scales as ONE unit at the INSERT level, so
         // its internal geometry / text / attributes must NOT be scaled
-        // individually (that would double-scale — AutoCAD even forbids
-        // annotative attributes inside annotative blocks for this reason).
-        let built =
-            cache::block_cache::BlockCache::build(&self.document, 1.0, bg, &self.draw_depth_map());
+        // individually because that would apply the same scale twice.
+        let built = cache::block_cache::BlockCache::build(
+            &self.document,
+            1.0,
+            annotation_scale_handle,
+            all_visible,
+            bg,
+            &self.draw_depth_map(),
+        );
         let arc = Arc::new(built);
         let mut cache = self.block_defn_cache.borrow_mut();
         cache.retain(|_, (epoch, _)| *epoch == self.block_epoch);
@@ -2104,7 +2134,18 @@ impl Scene {
     /// optional interaction index is cached against the exact same `Arc`.
     pub fn install_prepared_open_geometry(&self, prepared: PreparedOpenGeometry) {
         let block = self.model_space_block_handle();
-        let key = Self::resident_wire_key(block, self.bg_color, None, None);
+        let scale = crate::scene::annotative::scale_handle_by_name(
+            &self.document,
+            &self.document.header.current_annotation_scale,
+        );
+        let key = Self::resident_wire_key(
+            block,
+            self.bg_color,
+            None,
+            scale,
+            self.annotation_all_visible(),
+            None,
+        );
         let gen = WIRE_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
         self.last_model_wire_gen.set(gen);
         self.resident_wire_sets.borrow_mut().insert(
@@ -2405,7 +2446,7 @@ impl Scene {
                     .as_deref()
                     .is_some_and(|entity| matches!(entity, EntityType::Light(_)))
         }) {
-            *self.lighting_cache.borrow_mut() = None;
+            self.lighting_cache.borrow_mut().clear();
         }
         let mut changes: Vec<(Handle, ChangeKind)> = Vec::with_capacity(entities.len());
         for (h, before, after) in entities {
@@ -2449,7 +2490,7 @@ impl Scene {
             // stale ownership.
             self.invalidate_dependency_index();
         }
-        let cached_light_changed = self.lighting_cache.borrow().as_ref().is_some_and(|lights| {
+        let cached_light_changed = self.lighting_cache.borrow().values().any(|lights| {
             changes
                 .iter()
                 .any(|(handle, _)| lights.iter().any(|light| light.handle == *handle))
@@ -2471,7 +2512,7 @@ impl Scene {
                     exists,
                 );
             }
-            *self.lighting_cache.borrow_mut() = None;
+            self.lighting_cache.borrow_mut().clear();
         }
         let epoch = GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed);
         self.geometry_epoch = epoch;
@@ -2538,6 +2579,9 @@ impl Scene {
     pub fn bump_geometry(&mut self) {
         let epoch = GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed);
         self.geometry_epoch = epoch;
+        // A full structural change may move lights between blocks or alter
+        // layer visibility without naming the affected handles.
+        self.lighting_cache.borrow_mut().clear();
         // Default: also invalidate block definitions. Safe for every caller;
         // operations that know blocks are untouched use `bump_geometry_no_blocks`.
         self.block_epoch = GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed);
@@ -2568,6 +2612,7 @@ impl Scene {
     pub fn bump_geometry_no_blocks(&mut self) {
         let epoch = GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed);
         self.geometry_epoch = epoch;
+        self.lighting_cache.borrow_mut().clear();
         self.push_geometry_delta(epoch, Vec::new(), true);
     }
 
@@ -3184,6 +3229,7 @@ impl Scene {
             name: "SOLID".to_string(),
             color: self.paper_bg_color,
             aci: 0,
+            line_weight_px: 1.0,
             angle_offset: 0.0,
             scale: 1.0,
             // Draw-order bias is signed: entity fills/wires land in (-1, 1)
@@ -3377,6 +3423,12 @@ impl Scene {
             return None;
         }
 
+        if let Some(cache) = self.paper_viewport_cache.borrow().get(&self.current_layout) {
+            if cache.epoch == self.geometry_epoch && cache.layout == self.current_layout {
+                return cache.paper_limits;
+            }
+        }
+
         self.document
             .objects
             .values()
@@ -3463,29 +3515,18 @@ impl Scene {
         }
     }
 
-    /// Scale of the first user viewport (id > 1) in the current paper layout,
-    /// used for the status-bar display.  Returns `None` in Model space or if
-    /// no user viewport exists.
+    /// Scale of the active, selected, or first content viewport in the current
+    /// paper layout. Returns `None` in Model space or when no viewport exists.
     pub fn first_viewport_scale(&self) -> Option<f64> {
-        if self.current_layout == "Model" {
+        let handle = self.target_viewport_handle()?;
+        let EntityType::Viewport(vp) = self.document.get_entity(handle)? else {
             return None;
-        }
-        let layout_block = self.current_layout_block_handle();
-        if layout_block.is_null() {
-            return None;
-        }
-        self.document.entities().find_map(|e| {
-            if let EntityType::Viewport(vp) = e {
-                if self.is_content_viewport_in_layout(vp, layout_block) {
-                    return Some(vp_effective_scale(
-                        vp.custom_scale,
-                        vp.view_height,
-                        vp.height,
-                    ));
-                }
-            }
-            None
-        })
+        };
+        Some(vp_effective_scale(
+            vp.custom_scale,
+            vp.view_height,
+            vp.height,
+        ))
     }
 
     /// Annotation/viewport scales defined in the drawing's scale list
@@ -3751,6 +3792,182 @@ impl Scene {
         self.scale_handle_ensuring(&name)
     }
 
+    pub(crate) fn paper_annotation_scale_handle(&self) -> Option<Handle> {
+        self.scale_object_handle("1:1").or_else(|| {
+            self.document.objects.iter().find_map(|(handle, object)| match object {
+                ObjectType::Scale(scale)
+                    if !scale.is_temporary && (scale.factor() - 1.0).abs() <= 1.0e-9 =>
+                {
+                    Some(*handle)
+                }
+                _ => None,
+            })
+        })
+    }
+
+    pub(crate) fn creation_annotation_scale_handle(&mut self) -> Option<Handle> {
+        if self.current_layout == "Model" {
+            return self.current_annotation_scale_handle();
+        }
+        if let Some(viewport) = self.active_viewport {
+            if let Some(scale) = self.viewport_scale_handle(viewport) {
+                return Some(scale);
+            }
+        }
+        if let Some(scale) = self.paper_annotation_scale_handle() {
+            return Some(scale);
+        }
+        self.scale_handle_ensuring("1:1")
+    }
+
+    pub fn set_annotation_scale_named(&mut self, name: &str) -> Option<Handle> {
+        let handle = self.scale_handle_ensuring(name)?;
+        let ObjectType::Scale(scale) = self.document.objects.get(&handle)? else {
+            return None;
+        };
+        let multiplier = scale.inverse_factor();
+        self.annotation_scale = multiplier as f32;
+        self.document.header.current_annotation_scale = scale.name.clone();
+        self.document.header.annotation_scale_value = scale.factor();
+        self.invalidate_annotation_dependencies();
+        Some(handle)
+    }
+
+    fn current_layout_object_handle(&self) -> Option<Handle> {
+        self.document.objects.iter().find_map(|(handle, object)| match object {
+            ObjectType::Layout(layout)
+                if layout.name.eq_ignore_ascii_case(&self.current_layout) =>
+            {
+                Some(*handle)
+            }
+            _ => None,
+        })
+    }
+
+    pub fn annotation_all_visible(&self) -> bool {
+        use acadrust::objects::XRecordValue;
+        let Some(layout) = self.current_layout_object_handle() else {
+            return true;
+        };
+        self.document
+            .xrecord(layout, "OPEN_CAD_ANNOTATION_STATE")
+            .and_then(|record| {
+                record.entries.iter().find_map(|entry| match entry.value {
+                    XRecordValue::Bool(value) if entry.code == 290 => Some(value),
+                    _ => None,
+                })
+            })
+            .unwrap_or(true)
+    }
+
+    pub fn set_annotation_all_visible(&mut self, value: bool) {
+        use acadrust::objects::{XRecordEntry, XRecordValue};
+        let Some(layout) = self.current_layout_object_handle() else {
+            return;
+        };
+        self.document
+            .ensure_xrecord(layout, "OPEN_CAD_ANNOTATION_STATE");
+        if let Some(record) = self
+            .document
+            .xrecord_mut(layout, "OPEN_CAD_ANNOTATION_STATE")
+        {
+            if let Some(entry) = record.entries.iter_mut().find(|entry| entry.code == 290) {
+                entry.value = XRecordValue::Bool(value);
+            } else {
+                record.entries.push(XRecordEntry::bool(290, value));
+            }
+        }
+        self.invalidate_annotation_dependencies();
+    }
+
+    pub fn add_annotation_scale_to_objects(
+        &mut self,
+        scale: Handle,
+        previous_scale: Option<Handle>,
+        mode: u8,
+    ) -> usize {
+        if previous_scale == Some(scale) || !(1..=4).contains(&mode) {
+            return 0;
+        }
+        let viewport_frozen: HashSet<Handle> = self
+            .target_viewport_handle()
+            .and_then(|handle| match self.document.get_entity(handle) {
+                Some(EntityType::Viewport(viewport)) => {
+                    Some(viewport.frozen_layers.iter().copied().collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        let handles: Vec<_> = self
+            .document
+            .entities()
+            .filter(|entity| {
+                if !crate::scene::annotative::is_annotative(&self.document, entity) {
+                    return false;
+                }
+                let memberships = crate::scene::annotative::object_scale_memberships(
+                    &self.document,
+                    entity.common().handle,
+                );
+                if !previous_scale
+                    .is_some_and(|current| memberships.iter().any(|(_, member)| *member == current))
+                {
+                    return false;
+                }
+                let layer = self.document.layers.get(&entity.common().layer);
+                let (off, frozen, locked, viewport_frozen) = layer
+                    .map(|layer| {
+                        (
+                            layer.flags.off,
+                            layer.flags.frozen,
+                            layer.flags.locked,
+                            viewport_frozen.contains(&layer.handle),
+                        )
+                    })
+                    .unwrap_or((false, false, false, false));
+                match mode {
+                    1 => !(off || frozen || locked || viewport_frozen),
+                    2 => !(off || frozen || viewport_frozen),
+                    3 => !locked,
+                    4 => true,
+                    _ => false,
+                }
+            })
+            .map(|entity| entity.common().handle)
+            .collect();
+        let mut added = 0;
+        for handle in handles {
+            let existed = crate::scene::annotative::object_scale_memberships(
+                &self.document,
+                handle,
+            )
+            .iter()
+            .any(|(_, member)| *member == scale);
+            if !existed
+                && crate::scene::annotative::create_annotation_context(
+                    &mut self.document,
+                    handle,
+                    scale,
+                )
+            {
+                added += 1;
+            }
+        }
+        if added > 0 {
+            self.bump_geometry();
+        }
+        added
+    }
+
+    pub(crate) fn displayed_annotation_scale_handle(&self) -> Option<Handle> {
+        if self.current_layout == "Model" {
+            return self.scale_object_handle(&self.document.header.current_annotation_scale);
+        }
+        self.explicit_viewport_handle()
+            .and_then(|viewport| self.viewport_scale_handle(viewport))
+            .or_else(|| self.paper_annotation_scale_handle())
+    }
+
     /// Resolve a named annotation scale to a real `Scale` object handle,
     /// materializing the object from the scale list when the drawing names the
     /// scale (e.g. a virtual fallback scale) but has no `Scale` object for it.
@@ -3758,7 +3975,22 @@ impl Scene {
         if let Some(h) = self.scale_object_handle(name) {
             return Some(h);
         }
-        let (paper, drawing) = self.scale_paper_drawing(name).unwrap_or((1.0, 1.0));
+        let fallback = self
+            .default_scales()
+            .iter()
+            .find(|(label, _)| label.eq_ignore_ascii_case(name))
+            .map(|(_, factor)| (1.0, 1.0 / factor))
+            .or_else(|| {
+                let (paper, drawing) = name.split_once(':')?;
+                let paper = paper.trim().parse::<f64>().ok()?;
+                let drawing = drawing.trim().parse::<f64>().ok()?;
+                (paper > 0.0 && drawing > 0.0).then_some((paper, drawing))
+            })
+            .or_else(|| {
+                let drawing = name.trim().parse::<f64>().ok()?;
+                (drawing > 0.0).then_some((1.0, drawing))
+            })?;
+        let (paper, drawing) = self.scale_paper_drawing(name).unwrap_or(fallback);
         self.add_scale(name, paper, drawing);
         self.scale_object_handle(name)
     }
@@ -3813,6 +4045,53 @@ impl Scene {
         let Some(sh) = self.scale_object_handle(name) else {
             return false;
         };
+        if self
+            .document
+            .header
+            .current_annotation_scale
+            .eq_ignore_ascii_case(name)
+        {
+            return false;
+        }
+        let entity_handles: Vec<_> = self
+            .document
+            .entities()
+            .map(|entity| entity.common().handle)
+            .collect();
+        for entity in entity_handles {
+            crate::scene::annotative::remove_annotation_context_for_scale(
+                &mut self.document,
+                entity,
+                sh,
+            );
+        }
+        let replacement = self.document.objects.iter().find_map(|(handle, object)| match object {
+            ObjectType::Scale(scale) if *handle != sh && !scale.is_temporary => Some(*handle),
+            _ => None,
+        });
+        let viewports: Vec<_> = self
+            .document
+            .entities()
+            .filter_map(|entity| match entity {
+                EntityType::Viewport(viewport)
+                    if self.document.viewport_annotation_scale(viewport.common.handle) == Some(sh) =>
+                {
+                    Some(viewport.common.handle)
+                }
+                _ => None,
+            })
+            .collect();
+        for viewport in viewports {
+            if let Some(replacement) = replacement {
+                self.document
+                    .set_viewport_annotation_scale(viewport, replacement);
+            } else if let Some(record) = self
+                .document
+                .xrecord_mut(viewport, "ASDK_XREC_ANNOTATION_SCALE_INFO")
+            {
+                record.entries.retain(|entry| entry.code != 340);
+            }
+        }
         // Resolve the dictionary before removing the object (the fallback lookup
         // reads a surviving scale's owner).
         let dict_h = self.scalelist_dict_handle();
@@ -3823,6 +4102,7 @@ impl Scene {
                 sl.entries.retain(|(_, h)| *h != sh);
             }
         }
+        self.invalidate_annotation_dependencies();
         true
     }
 
@@ -3921,7 +4201,28 @@ impl Scene {
     /// True when a top-level entity must be omitted for a session-only object
     /// visibility command or an interactive replacement preview.
     fn entity_temporarily_hidden(&self, handle: Handle) -> bool {
-        self.object_isolation.hides(handle) || self.preview_hidden.contains(&handle)
+        self.object_isolation.hides(handle)
+            || self.preview_hidden.contains(&handle)
+            || self.command_preview_hidden.contains(&handle)
+    }
+
+    /// Replace the command-owned source hide set and refresh only handles whose
+    /// visibility changed. An empty slice restores every source on completion.
+    pub fn set_command_preview_hidden(&mut self, handles: &[Handle]) {
+        let desired: HashSet<_> = handles.iter().copied().collect();
+        if desired == self.command_preview_hidden {
+            return;
+        }
+        let changes: Vec<_> = self
+            .command_preview_hidden
+            .symmetric_difference(&desired)
+            .copied()
+            .map(|handle| (handle, ChangeKind::Modified))
+            .collect();
+        self.command_preview_hidden = desired;
+        if !changes.is_empty() {
+            self.bump_entities(&changes);
+        }
     }
 
     /// Set (or clear) the previewed entity that renders with the selection
@@ -4022,6 +4323,7 @@ impl Scene {
     pub fn reset_transient_visibility(&mut self) {
         self.object_isolation = ObjectIsolationState::default();
         self.preview_hidden.clear();
+        self.command_preview_hidden.clear();
     }
 
     /// True if any currently selected entity is a Viewport.
@@ -4052,31 +4354,151 @@ impl Scene {
         })
     }
 
-    /// Set the scale of the active/selected viewport.
-    /// Priority: active_viewport → first selected viewport → first viewport in layout.
-    pub fn set_viewport_scale(&mut self, scale: f64) {
-        let target =
-            self.active_viewport
-                .or_else(|| {
-                    self.selected.iter().copied().find(|&h| {
-                        matches!(self.document.get_entity(h), Some(EntityType::Viewport(_)))
-                    })
-                })
-                .or_else(|| self.first_viewport_handle());
-
-        if let Some(handle) = target {
-            if let Some(EntityType::Viewport(vp)) = self.document.get_entity_mut(handle) {
-                if !vp.status.locked && scale > 1e-9 {
-                    vp.custom_scale = scale;
-                    vp.view_height = vp.height / scale;
-                }
-            }
-            // A viewport scale change alters its anno key in the unified
-            // resident map; drop everything so the abandoned entry can't
-            // linger for the rest of the epoch.
-            self.resident_wire_sets.borrow_mut().clear();
-            self.bump_geometry();
+    fn target_viewport_handle(&self) -> Option<Handle> {
+        if self.current_layout == "Model" {
+            return None;
         }
+        self.active_viewport
+            .filter(|handle| {
+                matches!(self.document.get_entity(*handle), Some(EntityType::Viewport(_)))
+            })
+            .or_else(|| {
+                self.selected.iter().copied().find(|handle| {
+                    matches!(self.document.get_entity(*handle), Some(EntityType::Viewport(_)))
+                })
+            })
+            .or_else(|| self.first_viewport_handle())
+    }
+
+    fn explicit_viewport_handle(&self) -> Option<Handle> {
+        if self.current_layout == "Model" {
+            return None;
+        }
+        self.active_viewport
+            .filter(|handle| {
+                matches!(self.document.get_entity(*handle), Some(EntityType::Viewport(_)))
+            })
+            .or_else(|| {
+                self.selected.iter().copied().find(|handle| {
+                    matches!(self.document.get_entity(*handle), Some(EntityType::Viewport(_)))
+                })
+            })
+    }
+
+    fn viewport_scale_handle(&self, viewport: Handle) -> Option<Handle> {
+        if let Some(handle) = self.document.viewport_annotation_scale(viewport) {
+            if matches!(self.document.objects.get(&handle), Some(ObjectType::Scale(_))) {
+                return Some(handle);
+            }
+        }
+        let EntityType::Viewport(vp) = self.document.get_entity(viewport)? else {
+            return None;
+        };
+        let factor = vp_effective_scale(vp.custom_scale, vp.view_height, vp.height);
+        self.document
+            .objects
+            .iter()
+            .filter_map(|(handle, object)| match object {
+                ObjectType::Scale(scale) if !scale.is_temporary => {
+                    Some((*handle, (scale.factor() - factor).abs()))
+                }
+                _ => None,
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(handle, _)| handle)
+    }
+
+    fn viewport_annotation_multiplier(&self, viewport: Handle) -> f32 {
+        self.viewport_scale_handle(viewport)
+            .and_then(|handle| match self.document.objects.get(&handle) {
+                Some(ObjectType::Scale(scale)) => Some(scale.inverse_factor() as f32),
+                _ => None,
+            })
+            .unwrap_or(self.annotation_scale)
+    }
+
+    pub fn displayed_annotation_scale_name(&self) -> String {
+        if self.current_layout == "Model" {
+            return self.document.header.current_annotation_scale.clone();
+        }
+        self.explicit_viewport_handle()
+            .and_then(|viewport| self.viewport_scale_handle(viewport))
+            .and_then(|handle| match self.document.objects.get(&handle) {
+                Some(ObjectType::Scale(scale)) => Some(scale.name.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                self.paper_annotation_scale_handle()
+                    .and_then(|handle| match self.document.objects.get(&handle) {
+                        Some(ObjectType::Scale(scale)) => Some(scale.name.clone()),
+                        _ => None,
+                    })
+            })
+            .unwrap_or_else(|| "1:1".to_string())
+    }
+
+    pub fn set_viewport_scale_named(&mut self, name: &str) -> Option<Handle> {
+        let scale_handle = self.scale_handle_ensuring(name)?;
+        let factor = match self.document.objects.get(&scale_handle) {
+            Some(ObjectType::Scale(scale)) => scale.factor(),
+            _ => return None,
+        };
+        let viewport = self.explicit_viewport_handle()?;
+        let locked = matches!(
+            self.document.get_entity(viewport),
+            Some(EntityType::Viewport(vp)) if vp.status.locked
+        );
+        if locked || factor <= 1.0e-9 {
+            return None;
+        }
+        if let Some(EntityType::Viewport(vp)) = self.document.get_entity_mut(viewport) {
+            vp.custom_scale = factor;
+            vp.view_height = vp.height / factor;
+        }
+        self.document
+            .set_viewport_annotation_scale(viewport, scale_handle);
+        self.resident_wire_sets.borrow_mut().clear();
+        self.bump_geometry();
+        Some(scale_handle)
+    }
+
+    pub fn viewport_annotation_scale_synced(&self) -> Option<bool> {
+        let viewport = self.explicit_viewport_handle()?;
+        let EntityType::Viewport(vp) = self.document.get_entity(viewport)? else {
+            return None;
+        };
+        let scale = self.viewport_scale_handle(viewport)?;
+        let ObjectType::Scale(scale) = self.document.objects.get(&scale)? else {
+            return None;
+        };
+        let effective = vp_effective_scale(vp.custom_scale, vp.view_height, vp.height);
+        Some((effective - scale.factor()).abs() <= 1.0e-6 * scale.factor().max(1.0))
+    }
+
+    pub fn sync_viewport_annotation_scale(&mut self) -> bool {
+        let Some(viewport) = self.explicit_viewport_handle() else {
+            return false;
+        };
+        let Some(scale_handle) = self.viewport_scale_handle(viewport) else {
+            return false;
+        };
+        let factor = match self.document.objects.get(&scale_handle) {
+            Some(ObjectType::Scale(scale)) => scale.factor(),
+            _ => return false,
+        };
+        let Some(EntityType::Viewport(vp)) = self.document.get_entity_mut(viewport) else {
+            return false;
+        };
+        if vp.status.locked || factor <= 1.0e-9 {
+            return false;
+        }
+        vp.custom_scale = factor;
+        vp.view_height = vp.height / factor;
+        self.document
+            .set_viewport_annotation_scale(viewport, scale_handle);
+        self.resident_wire_sets.borrow_mut().clear();
+        self.bump_geometry();
+        true
     }
 
     /// Sorted list of layout names: "Model" first, then paper layouts by tab order.
@@ -4182,7 +4604,11 @@ impl Scene {
         let block = self
             .block_edit_block
             .unwrap_or_else(|| self.model_space_block_handle());
-        self.resident_wires_for(block, None, None)
+        let scale = crate::scene::annotative::scale_handle_by_name(
+            &self.document,
+            &self.document.header.current_annotation_scale,
+        );
+        self.resident_wires_for(block, None, scale, None)
     }
 
     /// Unified static-hold wire builder — the ONE tessellation path every
@@ -4228,6 +4654,7 @@ impl Scene {
         &self,
         block: Handle,
         anno_scale_override: Option<f32>,
+        annotation_scale_handle: Option<Handle>,
         frozen_layers: Option<&HashSet<Handle>>,
     ) -> Arc<Vec<WireModel>> {
         // Normalize an inert anno override away so distinct viewport scales
@@ -4244,7 +4671,15 @@ impl Scene {
         } else {
             self.paper_bg_color
         };
-        let key = Self::resident_wire_key(block, bg, anno_scale_override, frozen_layers);
+        let all_visible = self.annotation_all_visible();
+        let key = Self::resident_wire_key(
+            block,
+            bg,
+            anno_scale_override,
+            annotation_scale_handle,
+            all_visible,
+            frozen_layers,
+        );
         {
             let sets = self.resident_wire_sets.borrow();
             if let Some(set) = sets.get(&key) {
@@ -4259,7 +4694,15 @@ impl Scene {
         // set. Falls back to the full build below when it can't (no cache entry,
         // journal un-replayable, or a structural assumption violated).
         if let Some(arc) =
-            self.try_resident_patch(key, block, bg, anno_scale_override, frozen_layers)
+            self.try_resident_patch(
+                key,
+                block,
+                bg,
+                anno_scale_override,
+                annotation_scale_handle,
+                all_visible,
+                frozen_layers,
+            )
         {
             return arc;
         }
@@ -4267,7 +4710,15 @@ impl Scene {
         // (wpp = None) — for every space, exactly like the Model static-hold.
         let t_tess = iced::time::Instant::now();
         let mut wires =
-            self.wires_for_block_culled(block, None, None, frozen_layers, anno_scale_override);
+            self.wires_for_block_culled(
+                block,
+                None,
+                None,
+                frozen_layers,
+                anno_scale_override,
+                annotation_scale_handle,
+                all_visible,
+            );
         // Synthesized nonprint markers (geo-location daisy) live in model space
         // only and are derived from document objects, not entities — append them
         // to the freshly built resident set (incremental patches preserve them).
@@ -4311,6 +4762,8 @@ impl Scene {
         block: Handle,
         bg: [f32; 4],
         anno_scale_override: Option<f32>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
         frozen_layers: Option<&HashSet<Handle>>,
     ) -> u64 {
         let mut key: u64 = 0xcbf2_9ce4_8422_2325;
@@ -4323,6 +4776,8 @@ impl Scene {
         mix(anno_scale_override
             .map(|scale| scale.to_bits() as u64)
             .unwrap_or(u64::MAX));
+        mix(annotation_scale_handle.map(|handle| handle.value()).unwrap_or(0));
+        mix(all_visible as u64);
         match frozen_layers {
             Some(frozen) => {
                 let mut signature = 0u64;
@@ -4419,6 +4874,8 @@ impl Scene {
         block: Handle,
         bg: [f32; 4],
         anno_scale_override: Option<f32>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
         frozen_layers: Option<&HashSet<Handle>>,
     ) -> Option<Arc<Vec<WireModel>>> {
         let perf = crate::perf::enabled();
@@ -4468,7 +4925,7 @@ impl Scene {
         } else {
             1.0
         };
-        let blk = self.block_cache_arc();
+        let blk = self.block_cache_arc_for(annotation_scale_handle, all_visible);
         let empty_sel: HashSet<Handle> = HashSet::default();
         let mut new_runs: HashMap<Handle, Vec<WireModel>> = HashMap::default();
         let mut memo_updates: Vec<(Handle, Arc<Vec<WireModel>>)> = Vec::new();
@@ -4480,7 +4937,13 @@ impl Scene {
             let Some(e) = self.document.get_entity(*h) else {
                 continue;
             };
-            if !self.resident_entity_visible(e, block, frozen_layers) {
+            if !self.resident_entity_visible(
+                e,
+                block,
+                frozen_layers,
+                annotation_scale_handle,
+                all_visible,
+            ) {
                 continue;
             }
             visible_changed.insert(*h);
@@ -4490,6 +4953,7 @@ impl Scene {
                 self.active_viewport,
                 bg,
                 anno,
+                annotation_scale_handle,
                 e,
                 Some(&blk),
                 None,
@@ -4774,7 +5238,8 @@ impl Scene {
             }
         }
         let layout_block = self.current_layout_block_handle();
-        let base = self.resident_wires_for(layout_block, None, None);
+        let scale = self.paper_annotation_scale_handle();
+        let base = self.resident_wires_for(layout_block, None, scale, None);
         let mut wires = (*base).clone();
         // The overall "sheet" viewport now IS the paper view itself, so its own
         // border rectangle must not be drawn as an entity on the sheet.
@@ -5114,20 +5579,26 @@ impl Scene {
         // drawings. Key on a signature of `selected` instead, so hover (which
         // never changes `selected`) keeps the cache warm.
         let sel_sig = self.selected_hatch_sig();
-        let space = self.current_layout.clone();
+        let target_block = self.content_render_block_handle();
+        let key = (target_block, self.current_layout.clone());
         {
             let reuse = {
                 let cache = self.hatch_cache.borrow();
-                match cache.get(&space) {
+                match cache.get(&key) {
                     // Selection tint is baked in, so the selected set must also
-                    // match; category = a changed handle that is a hatch/solid fill.
+                    // match; category = a changed direct fill or an INSERT
+                    // whose expanded block tree can contain hatch fills.
                     Some((cached_epoch, cached_sel, arc))
                         if *cached_sel == sel_sig
                             && self.category_cache_valid(
                                 *cached_epoch,
-                                CACHE_CATEGORY_HATCH,
+                                CACHE_CATEGORY_HATCH | CACHE_CATEGORY_INSERT_HATCH,
                                 |h| {
-                                self.hatches.contains_key(&h)
+                                    self.hatches.contains_key(&h)
+                                        || matches!(
+                                            self.document.get_entity(h),
+                                            Some(EntityType::Insert(_))
+                                        )
                                 },
                             ) =>
                     {
@@ -5137,15 +5608,25 @@ impl Scene {
                 }
             };
             if let Some(arc) = reuse {
-                if let Some((e, _, _)) = self.hatch_cache.borrow_mut().get_mut(&space) {
+                if let Some((e, _, _)) = self.hatch_cache.borrow_mut().get_mut(&key) {
                     *e = self.geometry_epoch;
                 }
                 return arc;
             }
         }
-        let arc = Arc::new(self.synced_hatch_models(None));
+        let scale = if self.current_layout == "Model" {
+            self.displayed_annotation_scale_handle()
+        } else {
+            self.paper_annotation_scale_handle()
+        };
+        let arc = Arc::new(self.synced_hatch_models(
+            target_block,
+            None,
+            scale,
+            self.annotation_all_visible(),
+        ));
         self.hatch_cache.borrow_mut().insert(
-            space,
+            key,
             (self.geometry_epoch, sel_sig, Arc::clone(&arc)),
         );
         arc
@@ -5165,11 +5646,12 @@ impl Scene {
     fn selected_hatch_sig(&self) -> u64 {
         let mut sig = 0u64;
         let mut count = 0u64;
-        for h in self
-            .selected
-            .iter()
-            .filter(|handle| self.hatches.contains_key(handle))
-        {
+        for &h in &self.selected {
+            if !self.hatches.contains_key(&h)
+                && !matches!(self.document.get_entity(h), Some(EntityType::Insert(_)))
+            {
+                continue;
+            }
             count += 1;
             sig ^= h.value().wrapping_mul(0x9E37_79B9_7F4A_7C15);
         }
@@ -5177,11 +5659,12 @@ impl Scene {
     }
 
     pub(super) fn wipeout_models_arc(&self) -> Arc<Vec<HatchModel>> {
-        let space = self.current_layout.clone();
+        let target_block = self.content_render_block_handle();
+        let key = (target_block, self.current_layout.clone());
         {
             let reuse = {
                 let cache = self.wipeout_cache.borrow();
-                match cache.get(&space) {
+                match cache.get(&key) {
                     Some((cached_epoch, arc))
                         // wipeout_models scans the whole document for Wipeout
                         // entities; relevance = the changed handle is a Wipeout.
@@ -5202,27 +5685,38 @@ impl Scene {
                 }
             };
             if let Some(arc) = reuse {
-                if let Some((e, _)) = self.wipeout_cache.borrow_mut().get_mut(&space) {
+                if let Some((e, _)) = self.wipeout_cache.borrow_mut().get_mut(&key) {
                     *e = self.geometry_epoch;
                 }
                 return arc;
             }
         }
-        let arc = Arc::new(self.wipeout_models(None));
+        let scale = if self.current_layout == "Model" {
+            self.displayed_annotation_scale_handle()
+        } else {
+            self.paper_annotation_scale_handle()
+        };
+        let arc = Arc::new(self.wipeout_models(
+            target_block,
+            None,
+            scale,
+            self.annotation_all_visible(),
+        ));
         self.wipeout_cache
             .borrow_mut()
-            .insert(space, (self.geometry_epoch, Arc::clone(&arc)));
+            .insert(key, (self.geometry_epoch, Arc::clone(&arc)));
         arc
     }
 
     pub(super) fn images_arc(&self) -> Arc<Vec<ImageModel>> {
+        let target_block = self.content_render_block_handle();
         {
             let reuse = {
                 let cache = self.image_cache.borrow();
-                match *cache {
-                    Some((cached_epoch, ref arc))
+                match cache.get(&target_block) {
+                    Some((cached_epoch, arc))
                         if self.category_cache_valid(
-                            cached_epoch,
+                            *cached_epoch,
                             CACHE_CATEGORY_IMAGE,
                             |h| self.images.contains_key(&h),
                         ) =>
@@ -5235,22 +5729,40 @@ impl Scene {
             if let Some(arc) = reuse {
                 // No image changed since — keep it warm, just advance the sync
                 // epoch so the next replay window stays short.
-                if let Some((ref mut e, _)) = *self.image_cache.borrow_mut() {
+                if let Some((e, _)) = self.image_cache.borrow_mut().get_mut(&target_block) {
                     *e = self.geometry_epoch;
                 }
                 return arc;
             }
         }
-        let arc = Arc::new(self.image_models(None));
-        *self.image_cache.borrow_mut() = Some((self.geometry_epoch, Arc::clone(&arc)));
+        let scale = if self.current_layout == "Model" {
+            self.displayed_annotation_scale_handle()
+        } else {
+            self.paper_annotation_scale_handle()
+        };
+        let arc = Arc::new(self.image_models(
+            target_block,
+            None,
+            scale,
+            self.annotation_all_visible(),
+        ));
+        self.image_cache
+            .borrow_mut()
+            .insert(target_block, (self.geometry_epoch, Arc::clone(&arc)));
         arc
     }
 
-    /// Model image / OLE-frame models, optionally dropping those whose layer is
-    /// frozen in a content viewport (`frozen`). `None` reproduces the full set.
-    fn image_models(&self, frozen: Option<&HashSet<Handle>>) -> Vec<ImageModel> {
+    /// Image / OLE-frame models owned by `target_block`, optionally dropping
+    /// those whose layer is frozen in a content viewport (`frozen`).
+    fn image_models(
+        &self,
+        target_block: Handle,
+        frozen: Option<&HashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
+    ) -> Vec<ImageModel> {
         let depth_map = self.draw_depth_map();
-        self.images
+        let mut models: Vec<ImageModel> = self.images
             .iter()
             .filter_map(|(handle, model)| {
                 let entity = self.document.get_entity(*handle)?;
@@ -5259,6 +5771,11 @@ impl Scene {
                     || self.entity_temporarily_hidden(*handle)
                     || self.layer_hidden(&common.layer)
                     || self.layer_frozen_in(&common.layer, frozen)
+                    || !self.belongs_to_visible_block(
+                        *handle,
+                        common.owner_handle,
+                        target_block,
+                    )
                 {
                     return None;
                 }
@@ -5266,7 +5783,139 @@ impl Scene {
                 m.draw_depth = depth_map.get(&handle.value()).map_or(0.0, |d| d[0]);
                 Some(m)
             })
-            .collect()
+            .collect();
+        for source in self.document.entities() {
+            let contextual = crate::scene::annotative::entity_for_annotation_context(
+                &self.document,
+                source,
+                annotation_scale_handle,
+            );
+            let EntityType::Insert(insert) = contextual.as_ref() else {
+                continue;
+            };
+            let common = &insert.common;
+            if common.invisible
+                || self.entity_temporarily_hidden(common.handle)
+                || self.layer_hidden(&common.layer)
+                || self.layer_frozen_in(&common.layer, frozen)
+                || crate::scene::annotative::annotative_offscale_for(
+                    &self.document,
+                    common,
+                    annotation_scale_handle,
+                    all_visible,
+                )
+                || !self.belongs_to_visible_block(
+                    common.handle,
+                    common.owner_handle,
+                    target_block,
+                )
+            {
+                continue;
+            }
+            self.collect_block_images(
+                &insert.block_name,
+                &insert.get_transform(),
+                0,
+                frozen,
+                annotation_scale_handle,
+                all_visible,
+                &depth_map,
+                &mut models,
+            );
+        }
+        models
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn collect_block_images(
+        &self,
+        block_name: &str,
+        transform: &acadrust::types::Transform,
+        depth: usize,
+        frozen: Option<&HashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
+        depth_map: &HashMap<u64, [f32; 2]>,
+        out: &mut Vec<ImageModel>,
+    ) {
+        if depth > 32 {
+            return;
+        }
+        let Some(record) = self.document.block_records.get(block_name) else {
+            return;
+        };
+        for handle in record.entity_handles.iter().copied() {
+            let Some(source) = self.document.get_entity(handle) else {
+                continue;
+            };
+            let contextual = crate::scene::annotative::entity_for_annotation_context(
+                &self.document,
+                source,
+                annotation_scale_handle,
+            );
+            let entity = contextual.as_ref();
+            let common = entity.common();
+            if common.invisible
+                || self.layer_hidden(&common.layer)
+                || self.layer_frozen_in(&common.layer, frozen)
+                || crate::scene::annotative::annotative_offscale_for(
+                    &self.document,
+                    common,
+                    annotation_scale_handle,
+                    all_visible,
+                )
+            {
+                continue;
+            }
+            if let EntityType::Insert(insert) = entity {
+                let nested = insert.get_transform().then(transform);
+                self.collect_block_images(
+                    &insert.block_name,
+                    &nested,
+                    depth + 1,
+                    frozen,
+                    annotation_scale_handle,
+                    all_visible,
+                    depth_map,
+                    out,
+                );
+                continue;
+            }
+            let Some(model) = self.images.get(&handle) else {
+                continue;
+            };
+            let mut placed = model.clone();
+            for (corner, low) in placed.corners.iter_mut().zip(&mut placed.corners_low) {
+                let point = acadrust::types::Vector3::new(
+                    corner[0] as f64 + low[0] as f64,
+                    corner[1] as f64 + low[1] as f64,
+                    corner[2] as f64 + low[2] as f64,
+                );
+                let point = transform.apply(point);
+                *corner = [point.x as f32, point.y as f32, point.z as f32];
+                *low = [
+                    (point.x - corner[0] as f64) as f32,
+                    (point.y - corner[1] as f64) as f32,
+                    (point.z - corner[2] as f64) as f32,
+                ];
+            }
+            for vertex in &mut placed.verts {
+                let point = acadrust::types::Vector3::new(
+                    vertex.pos[0] as f64 + vertex.pos_low[0] as f64,
+                    vertex.pos[1] as f64 + vertex.pos_low[1] as f64,
+                    vertex.pos[2] as f64 + vertex.pos_low[2] as f64,
+                );
+                let point = transform.apply(point);
+                vertex.pos = [point.x as f32, point.y as f32, point.z as f32];
+                vertex.pos_low = [
+                    (point.x - vertex.pos[0] as f64) as f32,
+                    (point.y - vertex.pos[1] as f64) as f32,
+                    (point.z - vertex.pos[2] as f64) as f32,
+                ];
+            }
+            placed.draw_depth = depth_map.get(&handle.value()).map_or(0.0, |value| value[0]);
+            out.push(placed);
+        }
     }
 
     /// Images owned by the active paper layout block only. The full-canvas
@@ -5274,34 +5923,21 @@ impl Scene {
     /// paper sheet (mirrors `paper_canvas_hatches`).
     pub(super) fn paper_sheet_images(&self) -> Arc<Vec<ImageModel>> {
         let layout_block = self.current_layout_block_handle();
-        let depth_map = self.draw_depth_map();
-        Arc::new(
-            self.images
-                .iter()
-                .filter_map(|(&handle, model)| {
-                    let entity = self.document.get_entity(handle)?;
-                    let c = entity.common();
-                    if c.invisible
-                        || self.entity_temporarily_hidden(handle)
-                        || self.layer_hidden(&c.layer)
-                        || !self.belongs_to_visible_block(handle, c.owner_handle, layout_block)
-                    {
-                        return None;
-                    }
-                    let mut m = model.clone();
-                    m.draw_depth = depth_map.get(&handle.value()).map_or(0.0, |d| d[0]);
-                    Some(m)
-                })
-                .collect(),
-        )
+        Arc::new(self.image_models(
+            layout_block,
+            None,
+            self.paper_annotation_scale_handle(),
+            self.annotation_all_visible(),
+        ))
     }
 
     pub(super) fn meshes_arc(&self) -> Arc<Vec<MeshLodSet>> {
-        let space = self.current_layout.clone();
+        let target_block = self.content_render_block_handle();
+        let key = (target_block, self.current_layout.clone());
         {
             let reuse = {
                 let cache = self.mesh_cache.borrow();
-                match cache.get(&space) {
+                match cache.get(&key) {
                     // Top-level solids seed self.meshes; the instanced_block part
                     // is driven by INSERTs, so an INSERT edit (e.g. a move) must
                     // also invalidate. Block-definition edits route through
@@ -5325,17 +5961,36 @@ impl Scene {
                 }
             };
             if let Some(arc) = reuse {
-                if let Some((e, _)) = self.mesh_cache.borrow_mut().get_mut(&space) {
+                if let Some((e, _)) = self.mesh_cache.borrow_mut().get_mut(&key) {
                     *e = self.geometry_epoch;
                 }
                 return arc;
             }
         }
-        let arc = Arc::new(self.mesh_models(None));
+        let scale = if self.current_layout == "Model" {
+            self.displayed_annotation_scale_handle()
+        } else {
+            self.paper_annotation_scale_handle()
+        };
+        let arc = Arc::new(self.mesh_models(
+            target_block,
+            None,
+            scale,
+            self.annotation_all_visible(),
+        ));
         self.mesh_cache
             .borrow_mut()
-            .insert(space, (self.geometry_epoch, Arc::clone(&arc)));
+            .insert(key, (self.geometry_epoch, Arc::clone(&arc)));
         arc
+    }
+
+    /// Block rendered by model-content viewports. Paper layout entities belong
+    /// only to the sheet viewport; floating paper viewports always show model
+    /// space. BEDIT is the sole exception and renders the edited block itself.
+    fn content_render_block_handle(&self) -> Handle {
+        self.block_edit_block
+            .filter(|block| !block.is_null())
+            .unwrap_or_else(|| self.model_space_block_handle())
     }
 
     fn interaction_block_handle(&self) -> Handle {
@@ -5402,7 +6057,8 @@ impl Scene {
                 }
             }
             let frozen: HashSet<Handle> = frozen.iter().copied().collect();
-            let meshes = self.meshes_for_viewport(&frozen);
+            let viewport = self.active_viewport.unwrap_or(Handle::NULL);
+            let meshes = self.meshes_for_viewport(viewport, &frozen);
             *self.interaction_mesh_cache.borrow_mut() =
                 Some((self.geometry_epoch, key, Arc::clone(&meshes)));
             return meshes;
@@ -5413,19 +6069,12 @@ impl Scene {
                 return Arc::clone(meshes);
             }
         }
-        let mut all: Vec<MeshLodSet> = self
-            .meshes
-            .iter()
-            .filter(|(&handle, _)| {
-                self.mesh_entity_visible(handle)
-                    && self.document.get_entity(handle).is_some_and(|entity| {
-                        self.belongs_to_visible_block(handle, entity.common().owner_handle, block)
-                    })
-            })
-            .map(|(_, set)| set.clone())
-            .collect();
-        all.extend(self.instanced_block_meshes(block, None));
-        let meshes = Arc::new(all);
+        let meshes = Arc::new(self.mesh_models(
+            block,
+            None,
+            self.displayed_annotation_scale_handle(),
+            self.annotation_all_visible(),
+        ));
         *self.interaction_mesh_cache.borrow_mut() =
             Some((self.geometry_epoch, key, Arc::clone(&meshes)));
         meshes
@@ -5468,7 +6117,13 @@ impl Scene {
     /// Solid-mesh set (top-level + block-instanced), optionally dropping those
     /// whose layer is frozen in a content viewport (`frozen`). `None` reproduces
     /// the full set.
-    fn mesh_models(&self, frozen: Option<&HashSet<Handle>>) -> Vec<MeshLodSet> {
+    fn mesh_models(
+        &self,
+        target_block: Handle,
+        frozen: Option<&HashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
+    ) -> Vec<MeshLodSet> {
         // Top-level solids: drop those whose layer is off/frozen or that are
         // flagged invisible / isolated-hidden, mirroring the 2D wire path, plus
         // any whose layer is frozen in the requesting viewport.
@@ -5480,8 +6135,15 @@ impl Scene {
                     && self
                         .document
                         .get_entity(h)
-                        .map(|e| !self.layer_frozen_in(&e.common().layer, frozen))
-                        .unwrap_or(true)
+                        .map(|e| {
+                            !self.layer_frozen_in(&e.common().layer, frozen)
+                                && self.belongs_to_visible_block(
+                                    h,
+                                    e.common().owner_handle,
+                                    target_block,
+                                )
+                        })
+                        .unwrap_or(false)
             })
             .map(|(_, set)| set.clone())
             .collect();
@@ -5489,13 +6151,12 @@ impl Scene {
         // block so a block placed at an INSERT scale renders at the right size
         // (#123) — model space normally, the edited block in a BEDIT editor so
         // model-space solids don't leak into it (#261).
-        all.extend(
-            self.instanced_block_meshes(
-                self.block_edit_block
-                    .unwrap_or_else(|| self.model_space_block_handle()),
-                frozen,
-            ),
-        );
+        all.extend(self.instanced_block_meshes(
+            target_block,
+            frozen,
+            annotation_scale_handle,
+            all_visible,
+        ));
         all
     }
 
@@ -5540,20 +6201,31 @@ impl Scene {
     /// share the build). No frozen layers → the shared unfiltered set.
     pub(super) fn hatch_models_for_viewport(
         &self,
+        viewport: Handle,
         frozen: &HashSet<Handle>,
     ) -> Arc<Vec<HatchModel>> {
-        if frozen.is_empty() {
+        if viewport.is_null() && frozen.is_empty() {
             return self.hatch_models_arc();
         }
-        let sig = Self::frozen_layers_sig(frozen);
-        let key = (self.current_layout.clone(), sig);
+        let target_block = self.content_render_block_handle();
+        let scale = self.viewport_scale_handle(viewport);
+        let all_visible = self.annotation_all_visible();
+        let context_sig = scale.map_or(0, |handle| handle.value())
+            ^ u64::from(all_visible).rotate_left(61);
+        let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
+        let key = (target_block, self.current_layout.clone(), sig);
         let sel = self.selected_hatch_sig();
         if let Some((e, s, arc)) = self.frozen_hatch_cache.borrow().get(&key) {
             if *e == self.geometry_epoch && *s == sel {
                 return Arc::clone(arc);
             }
         }
-        let arc = Arc::new(self.synced_hatch_models(Some(frozen)));
+        let arc = Arc::new(self.synced_hatch_models(
+            target_block,
+            Some(frozen),
+            scale,
+            all_visible,
+        ));
         self.frozen_hatch_cache
             .borrow_mut()
             .insert(key, (self.geometry_epoch, sel, Arc::clone(&arc)));
@@ -5563,19 +6235,30 @@ impl Scene {
     /// Wipeout fills for a content viewport, with its frozen layers removed.
     pub(super) fn wipeout_models_for_viewport(
         &self,
+        viewport: Handle,
         frozen: &HashSet<Handle>,
     ) -> Arc<Vec<HatchModel>> {
-        if frozen.is_empty() {
+        if viewport.is_null() && frozen.is_empty() {
             return self.wipeout_models_arc();
         }
-        let sig = Self::frozen_layers_sig(frozen);
-        let key = (self.current_layout.clone(), sig);
+        let target_block = self.content_render_block_handle();
+        let scale = self.viewport_scale_handle(viewport);
+        let all_visible = self.annotation_all_visible();
+        let context_sig = scale.map_or(0, |handle| handle.value())
+            ^ u64::from(all_visible).rotate_left(61);
+        let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
+        let key = (target_block, self.current_layout.clone(), sig);
         if let Some((e, arc)) = self.frozen_wipeout_cache.borrow().get(&key) {
             if *e == self.geometry_epoch {
                 return Arc::clone(arc);
             }
         }
-        let arc = Arc::new(self.wipeout_models(Some(frozen)));
+        let arc = Arc::new(self.wipeout_models(
+            target_block,
+            Some(frozen),
+            scale,
+            all_visible,
+        ));
         self.frozen_wipeout_cache
             .borrow_mut()
             .insert(key, (self.geometry_epoch, Arc::clone(&arc)));
@@ -5583,36 +6266,65 @@ impl Scene {
     }
 
     /// Image / OLE models for a content viewport, with its frozen layers removed.
-    pub(super) fn images_for_viewport(&self, frozen: &HashSet<Handle>) -> Arc<Vec<ImageModel>> {
-        if frozen.is_empty() {
+    pub(super) fn images_for_viewport(
+        &self,
+        viewport: Handle,
+        frozen: &HashSet<Handle>,
+    ) -> Arc<Vec<ImageModel>> {
+        if viewport.is_null() && frozen.is_empty() {
             return self.images_arc();
         }
-        let sig = Self::frozen_layers_sig(frozen);
-        if let Some((e, arc)) = self.frozen_image_cache.borrow().get(&sig) {
+        let target_block = self.content_render_block_handle();
+        let scale = self.viewport_scale_handle(viewport);
+        let all_visible = self.annotation_all_visible();
+        let context_sig = scale.map_or(0, |handle| handle.value())
+            ^ u64::from(all_visible).rotate_left(61);
+        let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
+        let key = (target_block, sig);
+        if let Some((e, arc)) = self.frozen_image_cache.borrow().get(&key) {
             if *e == self.geometry_epoch {
                 return Arc::clone(arc);
             }
         }
-        let arc = Arc::new(self.image_models(Some(frozen)));
+        let arc = Arc::new(self.image_models(
+            target_block,
+            Some(frozen),
+            scale,
+            all_visible,
+        ));
         self.frozen_image_cache
             .borrow_mut()
-            .insert(sig, (self.geometry_epoch, Arc::clone(&arc)));
+            .insert(key, (self.geometry_epoch, Arc::clone(&arc)));
         arc
     }
 
     /// Solid meshes for a content viewport, with its frozen layers removed.
-    pub(super) fn meshes_for_viewport(&self, frozen: &HashSet<Handle>) -> Arc<Vec<MeshLodSet>> {
-        if frozen.is_empty() {
+    pub(super) fn meshes_for_viewport(
+        &self,
+        viewport: Handle,
+        frozen: &HashSet<Handle>,
+    ) -> Arc<Vec<MeshLodSet>> {
+        if viewport.is_null() && frozen.is_empty() {
             return self.meshes_arc();
         }
-        let sig = Self::frozen_layers_sig(frozen);
-        let key = (self.current_layout.clone(), sig);
+        let target_block = self.content_render_block_handle();
+        let scale = self.viewport_scale_handle(viewport);
+        let all_visible = self.annotation_all_visible();
+        let context_sig = scale.map_or(0, |handle| handle.value())
+            ^ u64::from(all_visible).rotate_left(61);
+        let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
+        let key = (target_block, self.current_layout.clone(), sig);
         if let Some((e, arc)) = self.frozen_mesh_cache.borrow().get(&key) {
             if *e == self.geometry_epoch {
                 return Arc::clone(arc);
             }
         }
-        let arc = Arc::new(self.mesh_models(Some(frozen)));
+        let arc = Arc::new(self.mesh_models(
+            target_block,
+            Some(frozen),
+            scale,
+            all_visible,
+        ));
         self.frozen_mesh_cache
             .borrow_mut()
             .insert(key, (self.geometry_epoch, Arc::clone(&arc)));
@@ -5689,14 +6401,19 @@ impl Scene {
         &self,
         layout_block: Handle,
         frozen: Option<&HashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
     ) -> Vec<MeshLodSet> {
         if self.block_meshes.is_empty() {
             return Vec::new();
         }
         let mut out = Vec::new();
         for source in self.document.entities() {
-            let contextual =
-                crate::scene::annotative::entity_for_active_context(&self.document, source);
+            let contextual = crate::scene::annotative::entity_for_annotation_context(
+                &self.document,
+                source,
+                annotation_scale_handle,
+            );
             let e = contextual.as_ref();
             if e.common().owner_handle != layout_block {
                 continue;
@@ -5707,6 +6424,12 @@ impl Scene {
                 // frozen only in the requesting content viewport.
                 if !self.mesh_entity_visible(ins.common.handle)
                     || self.layer_frozen_in(&ins.common.layer, frozen)
+                    || crate::scene::annotative::annotative_offscale_for(
+                        &self.document,
+                        &ins.common,
+                        annotation_scale_handle,
+                        all_visible,
+                    )
                 {
                     continue;
                 }
@@ -5750,6 +6473,9 @@ impl Scene {
                     0,
                     Some(inherit),
                     &mut out,
+                    frozen,
+                    annotation_scale_handle,
+                    all_visible,
                 );
                 // Tag the instanced meshes with the parent INSERT handle so the
                 // hover / selection highlight (keyed on the mesh name) tints the
@@ -5777,6 +6503,9 @@ impl Scene {
         // colour and AcDbMaterial inheritance for ByBlock/layer-0 children.
         inherit: Option<BlockMeshInherit>,
         out: &mut Vec<MeshLodSet>,
+        frozen: Option<&HashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
     ) {
         if depth > 16 {
             return;
@@ -5789,12 +6518,25 @@ impl Scene {
             let Some(source) = self.document.get_entity(h) else {
                 continue;
             };
-            let contextual =
-                crate::scene::annotative::entity_for_active_context(&self.document, source);
+            let contextual = crate::scene::annotative::entity_for_annotation_context(
+                &self.document,
+                source,
+                annotation_scale_handle,
+            );
             let e = contextual.as_ref();
             // A block-internal solid / nested INSERT on an off/frozen layer
             // (or flagged invisible) must not render, same as a top-level one.
-            if !self.mesh_definition_entity_visible(h) {
+            if !self.mesh_definition_entity_visible(h)
+                || self.layer_frozen_in(&e.common().layer, frozen)
+            {
+                continue;
+            }
+            if crate::scene::annotative::annotative_offscale_for(
+                &self.document,
+                e.common(),
+                annotation_scale_handle,
+                all_visible,
+            ) {
                 continue;
             }
             if let EntityType::Insert(ins) = e {
@@ -5802,7 +6544,16 @@ impl Scene {
                 let child = inherit
                     .as_ref()
                     .map(|parent| self.chain_mesh_inherit(ins, parent));
-                self.expand_block_meshes(&ins.block_name, &composed, depth + 1, child, out);
+                self.expand_block_meshes(
+                    &ins.block_name,
+                    &composed,
+                    depth + 1,
+                    child,
+                    out,
+                    frozen,
+                    annotation_scale_handle,
+                    all_visible,
+                );
             } else if let Some(set) = self.block_meshes.get(&h) {
                 // The solid's own transparency (baked into the cached colour).
                 let own_alpha = set.lods.first().map(|m| m.color[3]).unwrap_or(1.0);
@@ -6005,17 +6756,26 @@ impl Scene {
     }
 
     fn hatch_visible_for_interaction(&self, handle: Handle) -> bool {
-        let Some(common) = self
-            .document
-            .get_entity(handle)
-            .map(|entity| entity.common())
-        else {
+        let Some(entity) = self.document.get_entity(handle) else {
             return false;
         };
+        // Use the SOLID's WCS-aware wire fill for interaction as well as
+        // drawing. Its cached HatchModel is flattened to XY for plotting and
+        // must not leave an invisible selection target at z=0 (#617).
+        if matches!(entity, EntityType::Solid(_)) {
+            return false;
+        }
+        let common = entity.common();
         if common.invisible
             || self.entity_temporarily_hidden(handle)
             || self.layer_hidden(&common.layer)
             || self.interaction_layer_frozen(&common.layer)
+            || crate::scene::annotative::annotative_offscale_for(
+                &self.document,
+                common,
+                self.displayed_annotation_scale_handle(),
+                self.annotation_all_visible(),
+            )
         {
             return false;
         }
@@ -6149,15 +6909,26 @@ impl Scene {
         // only blocks). The hatch-presence test is memoised across inserts.
         let mut hatch_memo: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
+        let annotation_scale_handle = self.displayed_annotation_scale_handle();
+        let all_visible = self.annotation_all_visible();
         for entity in self.document.entities() {
-            let contextual =
-                crate::scene::annotative::entity_for_active_context(&self.document, entity);
+            let contextual = crate::scene::annotative::entity_for_annotation_context(
+                &self.document,
+                entity,
+                annotation_scale_handle,
+            );
             let EntityType::Insert(ins) = contextual.as_ref() else {
                 continue;
             };
             if ins.common.invisible
                 || self.entity_temporarily_hidden(ins.common.handle)
                 || layer_hidden(&ins.common.layer)
+                || crate::scene::annotative::annotative_offscale_for(
+                    &self.document,
+                    &ins.common,
+                    annotation_scale_handle,
+                    all_visible,
+                )
             {
                 continue;
             }
@@ -6175,9 +6946,10 @@ impl Scene {
                 .explode_from_document(&self.document)
                 .into_iter()
                 .map(|sub| {
-                    crate::scene::annotative::entity_for_active_context(
+                    crate::scene::annotative::entity_for_annotation_context(
                         &self.document,
                         &sub,
+                        annotation_scale_handle,
                     )
                     .into_owned()
                 })
@@ -7297,6 +8069,8 @@ impl Scene {
         e: &EntityType,
         block_handle: Handle,
         frozen_layers: Option<&HashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
     ) -> bool {
         let c = e.common();
         if c.invisible {
@@ -7326,14 +8100,12 @@ impl Scene {
                 }
             }
         }
-        // Annotative scale representation: draw only the current scale's copy.
-        // Model-space only (`frozen_layers` is None): a paper-space viewport
-        // renders at its own annotation scale and already hides the off-scale
-        // representations through its per-viewport frozen "0 @ <scale>" layers,
-        // so applying the model-space scale here would fight that.
-        if frozen_layers.is_none()
-            && crate::scene::annotative::annotative_offscale(&self.document, c)
-        {
+        if crate::scene::annotative::annotative_offscale_for(
+            &self.document,
+            c,
+            annotation_scale_handle,
+            all_visible,
+        ) {
             return false;
         }
         self.belongs_to_visible_block(c.handle, c.owner_handle, block_handle)
@@ -7353,6 +8125,8 @@ impl Scene {
         // sheet paths use `self.annotation_scale` / 1.0 respectively.
         // `None` selects the default branch on `current_layout`.
         anno_scale_override: Option<f32>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
     ) -> Vec<WireModel> {
         use acadrust::objects::ObjectType;
 
@@ -7387,8 +8161,15 @@ impl Scene {
         // Visibility test reused by both paths below — and by the resident
         // incremental patch, so a changed entity is included/excluded exactly as
         // a from-scratch build would (no divergence).
-        let visibility_ok =
-            |e: &EntityType| self.resident_entity_visible(e, block_handle, frozen_layers);
+        let visibility_ok = |e: &EntityType| {
+            self.resident_entity_visible(
+                e,
+                block_handle,
+                frozen_layers,
+                annotation_scale_handle,
+                all_visible,
+            )
+        };
 
         // Phase 2.1 — quadtree-driven candidate selection. When a view
         // AABB exists (Model layout with a settled camera), only iterate
@@ -7472,7 +8253,7 @@ impl Scene {
         // Content shown inside a paper-space viewport carries a scale override;
         // only there does PSLTSCALE resize linetypes by the viewport scale.
         let paper = anno_scale_override.is_some();
-        let blk_cache = self.block_cache_arc();
+        let blk_cache = self.block_cache_arc_for(annotation_scale_handle, all_visible);
         let blk_ref: &cache::block_cache::BlockCache = &blk_cache;
         // Zoom-adaptive curve sampling for top-level Edge tessellation. Target
         // ~0.5 px chord height — far-out arcs that used to emit hundreds of
@@ -7531,6 +8312,8 @@ impl Scene {
                     }
                 }
                 mix(anno.to_bits() as u64);
+                mix(annotation_scale_handle.map(|handle| handle.value()).unwrap_or(0));
+                mix(all_visible as u64);
                 for c in bg {
                     mix(c.to_bits() as u64);
                 }
@@ -7579,6 +8362,7 @@ impl Scene {
                         avp,
                         bg,
                         anno,
+                        annotation_scale_handle,
                         e,
                         Some(blk_ref),
                         view_aabb,
@@ -7607,6 +8391,7 @@ impl Scene {
                         avp,
                         bg,
                         anno,
+                        annotation_scale_handle,
                         e,
                         Some(blk_ref),
                         view_aabb,
@@ -7744,6 +8529,12 @@ impl Scene {
                     .map(move |handle| (handle, record.handle))
             })
             .collect();
+        let text_style_names: HashMap<Handle, String> = self
+            .document
+            .text_styles
+            .iter()
+            .map(|style| (style.handle, style.name.clone()))
+            .collect();
 
         let mut roots: HashMap<String, HashSet<Handle>> = HashMap::default();
         let mut parents: HashMap<String, HashSet<String>> = HashMap::default();
@@ -7866,13 +8657,92 @@ impl Scene {
                     }
                 }
                 EntityType::Dimension(dimension) => {
-                    add(&mut index.dim_styles, &dimension.base().style_name)
+                    add(&mut index.dim_styles, &dimension.base().style_name);
+                    if let Some(style) = self
+                        .document
+                        .dim_styles
+                        .get(&dimension.base().style_name)
+                    {
+                        add(&mut index.text_styles, &style.dimtxsty);
+                    }
+                }
+                EntityType::Leader(leader) => {
+                    add(&mut index.dim_styles, &leader.dimension_style);
+                    if let Some(style) = self.document.dim_styles.get(&leader.dimension_style) {
+                        add(&mut index.text_styles, &style.dimtxsty);
+                    }
+                }
+                EntityType::Tolerance(tolerance) => {
+                    add(&mut index.dim_styles, &tolerance.dimension_style_name);
+                    if let Some(style) = self
+                        .document
+                        .dim_styles
+                        .get(&tolerance.dimension_style_name)
+                    {
+                        add(&mut index.text_styles, &style.dimtxsty);
+                    }
                 }
                 EntityType::Table(table) => {
-                    add_handle(&mut index.object_styles, table.table_style_handle)
+                    add_handle(&mut index.object_styles, table.table_style_handle);
+                    if let Some(ObjectType::TableStyle(style)) = table
+                        .table_style_handle
+                        .and_then(|handle| self.document.objects.get(&handle))
+                    {
+                        for row in [
+                            &style.data_row_style,
+                            &style.header_row_style,
+                            &style.title_row_style,
+                        ] {
+                            add(&mut index.text_styles, &row.text_style_name);
+                        }
+                    }
+                    for row in &table.rows {
+                        if let Some(style) = &row.style {
+                            if let Some(name) = style
+                                .text_style_handle
+                                .and_then(|handle| text_style_names.get(&handle))
+                            {
+                                add(&mut index.text_styles, name);
+                            }
+                        }
+                        for cell in &row.cells {
+                            if let Some(style) = &cell.style {
+                                if let Some(name) = style
+                                    .text_style_handle
+                                    .and_then(|handle| text_style_names.get(&handle))
+                                {
+                                    add(&mut index.text_styles, name);
+                                }
+                            }
+                            for content in &cell.contents {
+                                if let Some(name) = content
+                                    .text_style_handle
+                                    .and_then(|handle| text_style_names.get(&handle))
+                                {
+                                    add(&mut index.text_styles, name);
+                                }
+                            }
+                        }
+                    }
                 }
                 EntityType::MultiLeader(leader) => {
-                    add_handle(&mut index.object_styles, leader.style_handle)
+                    add_handle(&mut index.object_styles, leader.style_handle);
+                    for handle in [leader.text_style_handle, leader.context.text_style_handle] {
+                        if let Some(name) = handle.and_then(|handle| text_style_names.get(&handle)) {
+                            add(&mut index.text_styles, name);
+                        }
+                    }
+                    if let Some(ObjectType::MultiLeaderStyle(style)) = leader
+                        .style_handle
+                        .and_then(|handle| self.document.objects.get(&handle))
+                    {
+                        if let Some(name) = style
+                            .text_style_handle
+                            .and_then(|handle| text_style_names.get(&handle))
+                        {
+                            add(&mut index.text_styles, name);
+                        }
+                    }
                 }
                 EntityType::MLine(line) => add_handle(&mut index.object_styles, line.style_handle),
                 _ => {}
@@ -8142,10 +9012,25 @@ impl Scene {
         };
         let anno = if self.current_layout == "Model" {
             self.annotation_scale
+        } else if let Some(viewport) = self.active_viewport {
+            self.viewport_annotation_multiplier(viewport)
         } else {
             1.0
         };
-        let blk_cache = self.block_cache_arc();
+        let annotation_scale_handle = if self.current_layout == "Model" {
+            crate::scene::annotative::scale_handle_by_name(
+                &self.document,
+                &self.document.header.current_annotation_scale,
+            )
+        } else if let Some(viewport) = self.active_viewport {
+            self.viewport_scale_handle(viewport)
+        } else {
+            self.paper_annotation_scale_handle()
+        };
+        let blk_cache = self.block_cache_arc_for(
+            annotation_scale_handle,
+            self.annotation_all_visible(),
+        );
         // tessellate_one is used for one-off lookups (hit test, properties).
         // Skip culling here so the caller always gets the full geometry.
         tessellate_entity(
@@ -8154,6 +9039,7 @@ impl Scene {
             self.active_viewport,
             bg,
             anno,
+            annotation_scale_handle,
             e,
             Some(&blk_cache),
             None,
@@ -8210,7 +9096,23 @@ impl Scene {
             return None;
         }
         let block = self.current_layout_block_handle();
-        let wires = self.wires_for_block_culled(block, None, None, None, None);
+        let scale = if self.current_layout == "Model" {
+            crate::scene::annotative::scale_handle_by_name(
+                &self.document,
+                &self.document.header.current_annotation_scale,
+            )
+        } else {
+            self.paper_annotation_scale_handle()
+        };
+        let wires = self.wires_for_block_culled(
+            block,
+            None,
+            None,
+            None,
+            None,
+            scale,
+            self.annotation_all_visible(),
+        );
         let mut min = glam::DVec2::splat(f64::INFINITY);
         let mut max = glam::DVec2::splat(f64::NEG_INFINITY);
         let mut any = false;
@@ -8267,7 +9169,15 @@ impl Scene {
                     // 3D solids render as meshes, not wires, so fold their
                     // XY AABBs in too — otherwise ZOOM EXTENTS ignores them.
                     for (&handle, set) in &self.meshes {
-                        if !self.mesh_entity_visible(handle) {
+                        if !self.mesh_entity_visible(handle)
+                            || !self.document.get_entity(handle).is_some_and(|entity| {
+                                self.belongs_to_visible_block(
+                                    handle,
+                                    entity.common().owner_handle,
+                                    model_block,
+                                )
+                            })
+                        {
                             continue;
                         }
                         let [ax, ay, bx, by] = set.world_aabb;
@@ -8317,7 +9227,15 @@ impl Scene {
         }
         // Same mesh inclusion for the tessellate fallback path.
         for (&handle, set) in &self.meshes {
-            if !self.mesh_entity_visible(handle) {
+            if !self.mesh_entity_visible(handle)
+                || !self.document.get_entity(handle).is_some_and(|entity| {
+                    self.belongs_to_visible_block(
+                        handle,
+                        entity.common().owner_handle,
+                        model_block,
+                    )
+                })
+            {
                 continue;
             }
             let [ax, ay, bx, by] = set.world_aabb;

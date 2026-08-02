@@ -4,6 +4,68 @@ use acadrust::Handle;
 use iced::Task;
 
 impl OpenCADStudio {
+    /// Point supplied by a bare Enter before LINE/PLINE's first click. Prefer
+    /// the current endpoint of the most recently created path drawable in the
+    /// active space. A loaded drawing has no runtime anchor, so recover its
+    /// newest line/arc/polyline endpoint. An empty space starts at the active
+    /// UCS origin (0,0,0 in user coordinates).
+    fn default_draw_start(&self, i: usize) -> glam::DVec3 {
+        let tab = &self.tabs[i];
+        let endpoint = |entity: &acadrust::EntityType| {
+            let last_grip = match entity {
+                acadrust::EntityType::Line(line) => {
+                    return Some(glam::DVec3::new(
+                        line.end.x,
+                        line.end.y,
+                        line.end.z,
+                    ));
+                }
+                acadrust::EntityType::Arc(_) => Some(2),
+                acadrust::EntityType::LwPolyline(polyline) => {
+                    polyline.vertices.len().checked_sub(1)
+                }
+                acadrust::EntityType::Polyline(polyline) => {
+                    polyline.vertices.len().checked_sub(1)
+                }
+                acadrust::EntityType::Polyline2D(polyline) => {
+                    polyline.vertices.len().checked_sub(1)
+                }
+                acadrust::EntityType::Polyline3D(polyline) => {
+                    polyline.vertices.len().checked_sub(1)
+                }
+                _ => None,
+            }?;
+            crate::scene::view::dispatch::grips(entity)
+                .into_iter()
+                .find(|grip| grip.id == last_grip)
+                .map(|grip| grip.world)
+        };
+
+        if let Some(handle) = tab.last_draw_anchor {
+            if tab.scene.entity_belongs_to_active_space(handle) {
+                if let Some(point) = tab.scene.document.get_entity(handle).and_then(endpoint) {
+                    return point;
+                }
+            }
+        }
+
+        let recovered = tab
+            .scene
+            .document
+            .entities()
+            .filter_map(|entity| {
+                let handle = entity.common().handle;
+                tab.scene
+                    .entity_belongs_to_active_space(handle)
+                    .then(|| endpoint(entity).map(|point| (handle, point)))
+                    .flatten()
+            })
+            .max_by_key(|(handle, _)| handle.value())
+            .map(|(_, point)| point);
+
+        recovered.unwrap_or_else(|| tab.ucs_origin_world())
+    }
+
     /// Drop cursor-relative state that was computed in the drawing space being
     /// left. This is also used by MVIEW, whose command object survives its
     /// intentional paper/model round-trip while its old-space overlays cannot.
@@ -35,7 +97,7 @@ impl OpenCADStudio {
         let i = self.active_tab;
         let had_grip = self.tabs[i].active_grip.take().is_some()
             || self.grip_add_provisional.is_some()
-            || self.grip_preview_handle.is_some();
+            || !self.grip_preview_handles.is_empty();
         if !had_grip {
             return false;
         }
@@ -54,18 +116,25 @@ impl OpenCADStudio {
                 .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
         }
 
-        if let Some(handle) = self.grip_preview_handle.take() {
-            if let Some(original) = self.grip_original.take() {
-                if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
-                    *entity = original;
-                }
+        let handles = std::mem::take(&mut self.grip_preview_handles);
+        let originals = std::mem::take(&mut self.grip_originals);
+        let mut changed_handles: rustc_hash::FxHashSet<_> = handles.iter().copied().collect();
+        for (handle, original) in originals {
+            changed_handles.insert(handle);
+            if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                *entity = original;
             }
+        }
+        for &handle in &handles {
             self.tabs[i].scene.preview_hidden.remove(&handle);
-            self.tabs[i]
-                .scene
-                .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
-        } else {
-            self.grip_original = None;
+        }
+        let changes: Vec<_> = changed_handles
+            .into_iter()
+            .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+            .collect();
+        self.tabs[i].scene.bump_entities(&changes);
+        if let Some(dirty_before) = self.grip_dirty_before.take() {
+            self.tabs[i].dirty = dirty_before;
         }
 
         self.grip_text_verts.clear();
@@ -162,10 +231,30 @@ impl OpenCADStudio {
             }
         }
         let i = self.active_tab;
+        let default_start = matches!(&input, StepInput::Enter)
+            && self.tabs[i]
+                .active_cmd
+                .as_ref()
+                .is_some_and(|command| command.enter_accepts_default_start());
+        let input = if default_start {
+            StepInput::Point(self.default_draw_start(i))
+        } else {
+            input
+        };
         if let StepInput::Point(point) = &input {
             if !self.command_point_allowed(i, *point) {
                 return Task::none();
             }
+        }
+        if default_start {
+            let StepInput::Point(point) = &input else {
+                unreachable!("default command start must be a point");
+            };
+            self.last_point = Some(*point);
+            self.dyn_user_reshaped = false;
+            self.sync_dyn_fields();
+            self.reset_tracking_after_point();
+            self.push_ucs_to_cmd(i);
         }
         let ctrl = self.ctrl_down;
         let shift = self.shift_down;
@@ -404,6 +493,14 @@ impl OpenCADStudio {
             matches!(result, CmdResult::Relaunch(..) | CmdResult::Dispatch(..));
         let task = self.apply_cmd_result_inner(result);
         let i = self.active_tab;
+        let preview_hidden = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .map(|command| command.preview_hidden_handles().to_vec())
+            .unwrap_or_default();
+        self.tabs[i]
+            .scene
+            .set_command_preview_hidden(&preview_hidden);
         if was_active
             && !preserve_selection
             && self.tabs[i].active_cmd.is_none()
@@ -1238,6 +1335,15 @@ impl OpenCADStudio {
                 entity,
                 finish,
             } => {
+                let tracks_draw_anchor = matches!(
+                    &entity,
+                    acadrust::EntityType::Line(_)
+                        | acadrust::EntityType::Arc(_)
+                        | acadrust::EntityType::LwPolyline(_)
+                        | acadrust::EntityType::Polyline(_)
+                        | acadrust::EntityType::Polyline2D(_)
+                        | acadrust::EntityType::Polyline3D(_)
+                );
                 // Replace the live entity's geometry in place, preserving its
                 // handle and layer (the fresh entity from the command carries
                 // defaults — a NULL handle would desync it from the document
@@ -1255,6 +1361,9 @@ impl OpenCADStudio {
                         .scene
                         .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
                     self.tabs[i].dirty = true;
+                }
+                if tracks_draw_anchor {
+                    self.tabs[i].last_draw_anchor = Some(handle);
                 }
                 if finish {
                     self.finish_live_entity_history(i, handle);
@@ -1285,6 +1394,12 @@ impl OpenCADStudio {
                 // document, drop its provisional history entry and keep
                 // prompting. A later second point creates one fresh entry.
                 self.tabs[i].scene.erase_entities(&[handle]);
+                if self.tabs[i]
+                    .last_draw_anchor
+                    .is_some_and(|anchor_handle| anchor_handle == handle)
+                {
+                    self.tabs[i].last_draw_anchor = None;
+                }
                 self.discard_last_undo_entry(i);
                 self.tabs[i].dirty = true;
                 let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
@@ -3048,7 +3163,11 @@ impl OpenCADStudio {
                 self.tabs[i].scene.add_entity_clone(entity)
             })
             .collect();
-        self.merge_clipboard_ext_objects(i, &by_index);
+        let annotation_delta = match translate {
+            Some(crate::command::EntityTransform::Translate(delta)) => delta,
+            _ => glam::DVec3::ZERO,
+        };
+        self.merge_clipboard_ext_objects(i, &by_index, annotation_delta);
         // Recreate any group whose whole membership was copied, so a pasted
         // group stays grouped — cross-drawing too, since the groups were
         // snapshotted into the clipboard at copy time. `by_index` is aligned
@@ -3080,7 +3199,12 @@ impl OpenCADStudio {
     /// references, and re-pointing the pasted entity's `xdictionary_handle` at
     /// the new root. `by_index` is the paste's new entity handles, aligned with
     /// the clipboard order (NULL where the add failed). No-op without captures.
-    pub(super) fn merge_clipboard_ext_objects(&mut self, i: usize, by_index: &[Handle]) {
+    pub(super) fn merge_clipboard_ext_objects(
+        &mut self,
+        i: usize,
+        by_index: &[Handle],
+        annotation_delta: glam::DVec3,
+    ) {
         if self.clipboard_deps.ext_objects.is_empty() {
             return;
         }
@@ -3097,6 +3221,11 @@ impl OpenCADStudio {
                 if let Some(e) = doc.get_entity_mut(new_entity) {
                     e.common_mut().xdictionary_handle = Some(new_root);
                 }
+                crate::scene::annotative::translate_annotation_contexts(
+                    doc,
+                    new_entity,
+                    annotation_delta,
+                );
             }
         }
         // The wires were tessellated before the filters existed; refresh only
@@ -3163,6 +3292,10 @@ fn recreate_ext_subtree(
     if let Some(eh) = entity_handle {
         remap.insert(cap.src_entity_handle, eh);
     }
+    for (old, scale) in &cap.annotation_scales {
+        let target = crate::scene::annotative::ensure_scale_object(doc, scale);
+        remap.insert(*old, target);
+    }
     for (old, _) in &cap.objects {
         remap.insert(*old, doc.allocate_handle());
     }
@@ -3173,6 +3306,50 @@ fn recreate_ext_subtree(
         doc.objects.insert(new_h, obj);
     }
     remap.get(&cap.root).copied()
+}
+
+/// Replace references to a clipboard entity inside one recreated extension
+/// dictionary graph after its final block-owned handle becomes known.
+pub(crate) fn remap_ext_subtree_reference(
+    doc: &mut acadrust::CadDocument,
+    root: Handle,
+    source_entity: Handle,
+    target_entity: Handle,
+) {
+    use acadrust::objects::ObjectType;
+    use rustc_hash::FxHashSet;
+    use std::collections::HashMap;
+
+    let remap = HashMap::from([(source_entity, target_entity)]);
+    let mut seen = FxHashSet::default();
+    let mut pending = vec![root];
+    while let Some(handle) = pending.pop() {
+        if handle.is_null() || !seen.insert(handle) {
+            continue;
+        }
+        let children = match doc.objects.get(&handle) {
+            Some(ObjectType::Dictionary(dictionary)) => {
+                let mut children: Vec<_> =
+                    dictionary.entries.iter().map(|(_, child)| *child).collect();
+                if let Some(extension) = dictionary.xdictionary_handle {
+                    children.push(extension);
+                }
+                children
+            }
+            Some(ObjectType::DictionaryWithDefault(dictionary)) => {
+                let mut children: Vec<_> =
+                    dictionary.entries.iter().map(|(_, child)| *child).collect();
+                children.push(dictionary.default_handle);
+                children
+            }
+            _ => Vec::new(),
+        };
+        pending.extend(children);
+        if let Some(mut object) = doc.objects.remove(&handle) {
+            remap_object(&mut object, handle, &remap);
+            doc.objects.insert(handle, object);
+        }
+    }
 }
 
 /// Rewrite a cloned extension-dictionary object onto fresh handles: set its own
@@ -3219,12 +3396,70 @@ fn remap_object(
         ObjectType::XRecord(x) => {
             x.handle = new_handle;
             x.owner = map(x.owner);
+            for entry in &mut x.entries {
+                if let acadrust::objects::XRecordValue::Handle(handle) = &mut entry.value {
+                    *handle = map(*handle);
+                }
+            }
         }
         ObjectType::Group(g) => {
             g.handle = new_handle;
             g.owner = map(g.owner);
             for h in g.entities.iter_mut() {
                 *h = map(*h);
+            }
+        }
+        ObjectType::ObjectContextData(context) => {
+            context.handle = new_handle;
+            context.owner_handle = map(context.owner_handle);
+            for reactor in &mut context.reactors {
+                *reactor = map(*reactor);
+            }
+            if let Some(dictionary) = &mut context.xdictionary_handle {
+                *dictionary = map(*dictionary);
+            }
+            context.scale = map(context.scale);
+            match &mut context.kind {
+                acadrust::objects::ObjectContextKind::Dim(dimension) => {
+                    dimension.block = map(dimension.block);
+                }
+                acadrust::objects::ObjectContextKind::HatchView(hatch) => {
+                    hatch.view = map(hatch.view);
+                }
+                acadrust::objects::ObjectContextKind::MTextAttribute(attribute) => {
+                    if let Some(embedded) = &mut attribute.context {
+                        embedded.owner_handle = map(embedded.owner_handle);
+                        for reactor in &mut embedded.reactors {
+                            *reactor = map(*reactor);
+                        }
+                        if let Some(dictionary) = &mut embedded.xdictionary_handle {
+                            *dictionary = map(*dictionary);
+                        }
+                        embedded.scale = map(embedded.scale);
+                    }
+                }
+                acadrust::objects::ObjectContextKind::MLeader(mleader) => {
+                    if let Some(handle) = &mut mleader.text_style_handle {
+                        *handle = map(*handle);
+                    }
+                    if let Some(handle) = &mut mleader.block_content_handle {
+                        *handle = map(*handle);
+                    }
+                    if let Some(handle) = &mut mleader.scale_handle {
+                        *handle = map(*handle);
+                    }
+                    for root in &mut mleader.leader_roots {
+                        for line in &mut root.lines {
+                            if let Some(handle) = &mut line.line_type_handle {
+                                *handle = map(*handle);
+                            }
+                            if let Some(handle) = &mut line.arrowhead_handle {
+                                *handle = map(*handle);
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         // Other leaf object kinds don't appear in an entity xdictionary; if one

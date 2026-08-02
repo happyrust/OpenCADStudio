@@ -20,6 +20,7 @@ impl Scene {
 
         let layout_block = self.current_layout_block_handle();
         let sheet = self.current_layout_sheet_viewport_handle();
+        let paper_limits = self.paper_limits();
         let is_content = |handle: Handle| {
             let Some(EntityType::Viewport(vp)) = self.document.get_entity(handle) else {
                 return false;
@@ -62,6 +63,7 @@ impl Scene {
                 layout_block,
                 sheet,
                 content: Arc::clone(&content),
+                paper_limits,
             },
         );
         (layout_block, sheet, content)
@@ -324,6 +326,43 @@ impl Scene {
             height: h,
         })
     }
+
+    /// Physical sheet bounds in canvas pixels. Uses the same forced top-down
+    /// paper transform as the GPU sheet viewport, ignoring stored camera twist.
+    pub fn paper_sheet_screen_rect(
+        &self,
+        canvas_px: (f32, f32),
+    ) -> Option<iced::Rectangle> {
+        let ((x0, y0), (x1, y1)) = self.paper_limits()?;
+        let (canvas_w, canvas_h) = canvas_px;
+        if canvas_w < 1.0 || canvas_h < 1.0 {
+            return None;
+        }
+
+        let cam = self.camera.borrow();
+        let half_h = cam.ortho_size();
+        let half_w = half_h * canvas_w / canvas_h;
+        let tx = cam.target.x as f32;
+        let ty = cam.target.y as f32;
+        drop(cam);
+        let to_px = |wx: f32, wy: f32| -> (f32, f32) {
+            let x = (wx - tx + half_w) / (2.0 * half_w) * canvas_w;
+            let y = (ty + half_h - wy) / (2.0 * half_h) * canvas_h;
+            (x, y)
+        };
+        let min_x = x0.min(x1) as f32;
+        let max_x = x0.max(x1) as f32;
+        let min_y = y0.min(y1) as f32;
+        let max_y = y0.max(y1) as f32;
+        let (left, top) = to_px(min_x, max_y);
+        let (right, bottom) = to_px(max_x, min_y);
+        Some(iced::Rectangle {
+            x: left,
+            y: top,
+            width: (right - left).max(0.0),
+            height: (bottom - top).max(0.0),
+        })
+    }
     // ── Paper-space helpers ───────────────────────────────────────────────
 
     /// Paper-layout hatch fills, restricted to the active layout block (used by
@@ -346,17 +385,35 @@ impl Scene {
                 .unwrap_or(false)
         };
         let mut models: Vec<HatchModel> = Vec::new();
+        let annotation_scale_handle = self.paper_annotation_scale_handle();
+        let all_visible = self.annotation_all_visible();
         for (&handle, model) in self.hatches.iter() {
             let Some(source) = self.document.get_entity(handle) else {
                 continue;
             };
-            let contextual =
-                crate::scene::annotative::entity_for_active_context(&self.document, source);
+            let contextual = crate::scene::annotative::entity_for_annotation_context(
+                &self.document,
+                source,
+                annotation_scale_handle,
+            );
             let entity = contextual.as_ref();
+            // Paper-space SOLIDs already carry WCS-aware wire fill triangles.
+            // Keep their cached XY HatchModel out of the sheet set so the same
+            // entity is not emitted twice (#617). Model fills projected through
+            // floating viewports still use `plot_hatches_for_block` below.
+            if matches!(entity, EntityType::Solid(_)) {
+                continue;
+            }
             let c = entity.common();
             if c.invisible
                 || self.entity_temporarily_hidden(handle)
                 || layer_hidden(&c.layer)
+                || crate::scene::annotative::annotative_offscale_for(
+                    &self.document,
+                    c,
+                    annotation_scale_handle,
+                    all_visible,
+                )
             {
                 continue;
             }
@@ -365,9 +422,10 @@ impl Scene {
             }
             let mut m = match entity {
                 EntityType::Hatch(dxf)
-                    if crate::scene::annotative::active_object_context(
+                    if crate::scene::annotative::active_object_context_for_scale(
                         &self.document,
                         handle,
+                        annotation_scale_handle,
                     )
                     .is_some() =>
                 {
@@ -379,6 +437,7 @@ impl Scene {
             let style = self.render_style(entity);
             m.color = style.0;
             m.aci = style.4;
+            m.line_weight_px = style.3;
             if let EntityType::Hatch(dxf) = entity {
                 // Only re-apply pattern_scale/angle for catalog-derived patterns
                 // (empty stored lines). A pattern built from the hatch's own
@@ -406,7 +465,14 @@ impl Scene {
         } else {
             self.bg_color
         };
-        let exploded = self.exploded_insert_hatch_models(layout_block, hatch_bg, false, None);
+        let exploded = self.exploded_insert_hatch_models(
+            layout_block,
+            hatch_bg,
+            false,
+            None,
+            annotation_scale_handle,
+            all_visible,
+        );
         models.extend(exploded);
         Arc::new(models)
     }
@@ -418,6 +484,8 @@ impl Scene {
         &self,
         block: Handle,
         frozen: Option<&rustc_hash::FxHashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
     ) -> Vec<HatchModel> {
         let layer_hidden = |layer: &str| {
             self.document
@@ -431,23 +499,33 @@ impl Scene {
             let Some(source) = self.document.get_entity(handle) else {
                 continue;
             };
-            let contextual =
-                crate::scene::annotative::entity_for_active_context(&self.document, source);
+            let contextual = crate::scene::annotative::entity_for_annotation_context(
+                &self.document,
+                source,
+                annotation_scale_handle,
+            );
             let entity = contextual.as_ref();
             let common = entity.common();
             if common.invisible
                 || self.entity_temporarily_hidden(handle)
                 || layer_hidden(&common.layer)
                 || self.layer_frozen_in(&common.layer, frozen)
+                || crate::scene::annotative::annotative_offscale_for(
+                    &self.document,
+                    common,
+                    annotation_scale_handle,
+                    all_visible,
+                )
                 || !self.belongs_to_visible_block(handle, common.owner_handle, block)
             {
                 continue;
             }
             let mut hatch = match entity {
                 EntityType::Hatch(dxf)
-                    if crate::scene::annotative::active_object_context(
+                    if crate::scene::annotative::active_object_context_for_scale(
                         &self.document,
                         handle,
+                        annotation_scale_handle,
                     )
                     .is_some() =>
                 {
@@ -459,6 +537,7 @@ impl Scene {
             let style = self.render_style(entity);
             hatch.color = style.0;
             hatch.aci = style.4;
+            hatch.line_weight_px = style.3;
             if let EntityType::Hatch(dxf) = entity {
                 if let model::hatch_model::HatchPattern::Pattern(_) = &hatch.pattern {
                     if dxf.pattern.lines.is_empty() {
@@ -474,6 +553,8 @@ impl Scene {
             self.paper_bg_color,
             false,
             frozen,
+            annotation_scale_handle,
+            all_visible,
         ));
         models
     }
@@ -484,6 +565,9 @@ impl Scene {
         &self,
         block: Handle,
         frozen: Option<&rustc_hash::FxHashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
+        highlight_selection: bool,
     ) -> Vec<HatchModel> {
         let depth_map = self.draw_depth_map();
         let mut models = Vec::new();
@@ -514,8 +598,13 @@ impl Scene {
                 boundary_wcs: None,
                 pattern: model::hatch_model::HatchPattern::Solid,
                 name: "WIPEOUT_FILL".into(),
-                color: self.paper_bg_color,
+                color: if highlight_selection && self.selected.contains(&common.handle) {
+                    [0.15, 0.55, 1.00, 0.35]
+                } else {
+                    self.paper_bg_color
+                },
                 aci: 0,
+                line_weight_px: 1.0,
                 angle_offset: 0.0,
                 scale: 1.0,
                 world_origin,
@@ -525,8 +614,11 @@ impl Scene {
             });
         }
         for entity in self.document.entities() {
-            let contextual =
-                crate::scene::annotative::entity_for_active_context(&self.document, entity);
+            let contextual = crate::scene::annotative::entity_for_annotation_context(
+                &self.document,
+                entity,
+                annotation_scale_handle,
+            );
             let EntityType::Insert(insert) = contextual.as_ref() else {
                 continue;
             };
@@ -540,6 +632,12 @@ impl Scene {
                     .map(|layer| layer.flags.off || layer.flags.frozen)
                     .unwrap_or(false)
                 || self.layer_frozen_in(&common.layer, frozen)
+                || crate::scene::annotative::annotative_offscale_for(
+                    &self.document,
+                    common,
+                    annotation_scale_handle,
+                    all_visible,
+                )
                 || !self.belongs_to_visible_block(common.handle, common.owner_handle, block)
             {
                 continue;
@@ -549,9 +647,15 @@ impl Scene {
                 &insert.block_name,
                 0,
                 frozen,
-                self.paper_bg_color,
+                if highlight_selection && self.selected.contains(&common.handle) {
+                    [0.15, 0.55, 1.00, 0.35]
+                } else {
+                    self.paper_bg_color
+                },
                 &depth_map,
                 &mut models,
+                annotation_scale_handle,
+                all_visible,
             );
         }
         models
@@ -564,53 +668,13 @@ impl Scene {
     /// copy on the paper sheet.
     pub fn paper_canvas_wipeouts(&self) -> Arc<Vec<HatchModel>> {
         let layout_block = self.current_layout_block_handle();
-        let bg_color = self.paper_bg_color;
-        let mut models = Vec::new();
-        for entity in self.document.entities() {
-            let EntityType::Wipeout(wo) = entity else {
-                continue;
-            };
-            if wo.common.invisible
-                || self.entity_temporarily_hidden(wo.common.handle)
-            {
-                continue;
-            }
-            if self
-                .document
-                .layers
-                .get(&wo.common.layer)
-                .map(|l| l.flags.off || l.flags.frozen)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            if !self.belongs_to_visible_block(wo.common.handle, wo.common.owner_handle, layout_block)
-            {
-                continue;
-            }
-            // Paper-block wipeouts live in paper coords — no `world_offset`.
-            let (fill_origin, boundary) = Self::wipeout_boundary_2d(wo);
-            if boundary.len() < 3 {
-                continue;
-            }
-            let mut fill_color = bg_color;
-            if self.selected.contains(&wo.common.handle) {
-                fill_color = [0.15, 0.55, 1.00, 0.35];
-            }
-            models.push(HatchModel {
-                boundary: Arc::new(boundary),
-                boundary_wcs: None,
-                pattern: model::hatch_model::HatchPattern::Solid,
-                name: "WIPEOUT_FILL".into(),
-                color: fill_color,
-                aci: 0,
-                angle_offset: 0.0,
-                scale: 1.0,
-                world_origin: fill_origin,
-                draw_depth: 0.0,
-            });
-        }
-        Arc::new(models)
+        Arc::new(self.plot_wipeouts_for_block(
+            layout_block,
+            None,
+            self.paper_annotation_scale_handle(),
+            self.annotation_all_visible(),
+            true,
+        ))
     }
 
     /// Build a Camera oriented and scaled to match a paper-space Viewport entity.
@@ -755,8 +819,8 @@ impl Scene {
         // Its live zoom is camera magnification, not CANNOSCALE: tying
         // annotation geometry to view_height rebuilt the entire model on every
         // wheel tick whenever the drawing contained one annotative object.
-        // Explicit annotation-scale changes still rebuild through
-        // `self.annotation_scale`; PSLTSCALE is a viewport GPU uniform.
+        // Explicit viewport annotation-scale changes still rebuild the resident
+        // set; PSLTSCALE is a viewport GPU uniform.
         let frozen = match self.document.get_entity(vp_handle) {
             Some(EntityType::Viewport(vp)) => {
                 let f: HSet<Handle> = vp.frozen_layers.iter().cloned().collect();
@@ -765,9 +829,11 @@ impl Scene {
             _ => HSet::default(),
         };
 
+        let scale_handle = self.viewport_scale_handle(vp_handle);
         self.resident_wires_for(
             self.model_space_block_handle(),
-            Some(self.annotation_scale),
+            Some(self.viewport_annotation_multiplier(vp_handle)),
+            scale_handle,
             Some(&frozen),
         )
     }

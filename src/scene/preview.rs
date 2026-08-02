@@ -14,24 +14,35 @@ impl Scene {
         self.preview_wires = wires;
     }
 
-    /// Publish the current cached hatch as a one-entity live fill overlay.
-    /// The edited hatch is hidden from the resident set during a grip drag;
-    /// this keeps its pattern visible without rebuilding the full hatch batch.
-    pub fn set_preview_hatch(&mut self, handle: Handle) {
+    /// Publish all edited hatches as one live fill overlay.
+    pub fn set_preview_hatches(&mut self, handles: &[Handle]) {
+        let mut models = Vec::new();
+        for &handle in handles {
+            // Keep the existing direct Hatch/Solid preview path. INSERT has no
+            // entry in `self.hatches`, so this is a no-op for it and the full
+            // block expansion below supplies its fills.
+            self.append_preview_hatch(handle, &mut models);
+        }
+        models.extend(self.preview_insert_hatch_models(handles));
+        self.preview_hatches = std::sync::Arc::new(models);
+    }
+
+    fn append_preview_hatch(&self, handle: Handle, models: &mut Vec<HatchModel>) {
         let Some(mut model) = self.hatches.get(&handle).cloned() else {
-            self.preview_hatches = std::sync::Arc::new(Vec::new());
             return;
         };
         let Some(entity) = self.document.get_entity(handle) else {
-            self.preview_hatches = std::sync::Arc::new(Vec::new());
             return;
         };
 
+        let style = self.render_style(entity);
+        model.aci = style.4;
+        model.line_weight_px = style.3;
         if !matches!(
             model.pattern,
             crate::scene::model::hatch_model::HatchPattern::Gradient { .. }
         ) {
-            model.color = self.render_style(entity).0;
+            model.color = style.0;
         }
         if self.selected.contains(&handle) {
             model.color = [0.15, 0.55, 1.00, model.color[3]];
@@ -41,29 +52,48 @@ impl Scene {
             .get(&handle.value())
             .map_or(0.0, |depth| depth[0]);
 
-        let mut models = Vec::with_capacity(2);
         if let EntityType::Hatch(hatch) = entity {
             if let Some(background) = crate::entities::hatch::background_color(hatch) {
                 let mut backdrop = model.clone();
                 backdrop.pattern =
                     crate::scene::model::hatch_model::HatchPattern::Solid;
-                backdrop.color = match background {
+                let (background_color, background_aci) = match background {
                     acadrust::types::Color::ByLayer => {
-                        crate::scene::view::render::layer_render_style(
-                            &self.document,
-                            &hatch.common.layer,
+                        let layer = self.document.layers.get(&hatch.common.layer);
+                        let aci = layer
+                            .and_then(|layer| match &layer.color {
+                                acadrust::types::Color::Index(index) => Some(*index),
+                                _ => None,
+                            })
+                            .unwrap_or(0);
+                        (
+                            crate::scene::view::render::layer_render_style(
+                                &self.document,
+                                &hatch.common.layer,
+                            )
+                            .color,
+                            aci,
                         )
-                        .color
                     }
-                    acadrust::types::Color::ByBlock => self.render_style(entity).0,
-                    other => crate::scene::convert::tess_util::aci_to_rgba(&other),
+                    acadrust::types::Color::ByBlock => (style.0, style.4),
+                    acadrust::types::Color::Index(index) => (
+                        crate::scene::convert::tess_util::aci_to_rgba(
+                            &acadrust::types::Color::Index(index),
+                        ),
+                        index,
+                    ),
+                    other => (
+                        crate::scene::convert::tess_util::aci_to_rgba(&other),
+                        0,
+                    ),
                 };
+                backdrop.color = background_color;
+                backdrop.aci = background_aci;
                 backdrop.name = "SOLID".into();
                 models.push(backdrop);
             }
         }
         models.push(model);
-        self.preview_hatches = std::sync::Arc::new(models);
     }
 
     pub fn set_preview_text(&mut self, verts: Vec<crate::scene::pipeline::text_gpu::TextVertex>) {

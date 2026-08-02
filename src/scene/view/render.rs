@@ -52,6 +52,9 @@ pub struct ViewportData {
     /// the main `wires` buffer so a drag re-uploads only this small set each
     /// frame, never the resident base buffer. Drawn on top in the wire pass.
     pub(in crate::scene) preview_wires: Arc<Vec<WireModel>>,
+    /// Non-current scale representations of selected or hovered annotative
+    /// entities. Uploaded with the xray highlight instead of the resident set.
+    pub(in crate::scene) annotation_context_wires: Arc<Vec<WireModel>>,
     /// One/few live hatch models for grip editing. Uploaded through a separate
     /// tiny GPU batch so the resident hatch buffer remains untouched.
     pub(in crate::scene) preview_hatches: Arc<Vec<HatchModel>>,
@@ -802,12 +805,20 @@ impl shader::Primitive for Primitive {
             let highlighted_geometry_changed = inner.cached_selection.0
                 != vp.wire_content_id
                 && !highlighted_geometry_unchanged;
-            if selection_changed || highlighted_geometry_changed {
+            let annotation_context_changed = inner
+                .cached_annotation_highlight_source
+                .as_ref()
+                .map_or(!vp.annotation_context_wires.is_empty(), |previous| {
+                    !(previous.is_empty() && vp.annotation_context_wires.is_empty())
+                        && !Arc::ptr_eq(previous, &vp.annotation_context_wires)
+                });
+            if selection_changed || highlighted_geometry_changed || annotation_context_changed {
                 inner.upload_selected_wires(
                     device,
                     &vp_wires[..],
                     &vp.selected_handles,
                     vp.hover_handle,
+                    &vp.annotation_context_wires,
                     &draw_depths,
                 );
                 // Text highlight rides the same selection key: a pick / rollover
@@ -818,7 +829,10 @@ impl shader::Primitive for Primitive {
                     &vp_wires[..],
                     &vp.selected_handles,
                     vp.hover_handle,
+                    &vp.annotation_context_wires,
                 );
+                inner.cached_annotation_highlight_source =
+                    Some(Arc::clone(&vp.annotation_context_wires));
             }
             // Advance the content id even when an unrelated entity patch kept
             // the existing overlay valid, so future deltas compare to the
@@ -1243,7 +1257,11 @@ fn crop_view_proj(view_proj: glam::Mat4, uo: f32, vo: f32, us: f32, vs: f32) -> 
 // ── Render-style helpers (impl Scene) ────────────────────────────────────
 
 impl Scene {
-    fn build_lighting_cache(&self) -> Vec<SceneLight> {
+    fn build_lighting_cache(
+        &self,
+        target_block: Handle,
+        frozen: &rustc_hash::FxHashSet<Handle>,
+    ) -> Vec<SceneLight> {
         use acadrust::objects::{ClassObjectData, ObjectType};
 
         fn normalized(value: [f64; 3], fallback: [f32; 3]) -> [f32; 3] {
@@ -1385,20 +1403,26 @@ impl Scene {
         for &handle in crate::entities::object_data::light_entities(
             &self.object_data_cache,
         ) {
-            if lights.len() >= 4 {
-                break;
-            }
             if let Some(EntityType::Light(light)) = self.document.get_entity(handle) {
+                let common = &light.common;
+                if self.layer_frozen_in(&common.layer, Some(frozen))
+                    || !self.belongs_to_visible_block(
+                        handle,
+                        common.owner_handle,
+                        target_block,
+                    )
+                {
+                    continue;
+                }
                 if let Some(light) = converted(self, light) {
                     lights.push(light);
                 }
             }
         }
 
-        if lights.len() < 4 {
-            let geo = crate::entities::object_data::geo_objects(
-                &self.object_data_cache,
-            )
+        // SUN is document-global. Keep it after entity lights so the four-light
+        // shader limit prefers visible lights owned by this viewport's block.
+        let geo = crate::entities::object_data::geo_objects(&self.object_data_cache)
             .iter()
             .find_map(|handle| match self.document.objects.get(handle) {
                 Some(ObjectType::GeoData(value))
@@ -1409,61 +1433,88 @@ impl Scene {
                         && value.reference_point.y.abs() <= 90.0 => Some(value),
                 _ => None,
             });
-            for handle in crate::entities::object_data::sun_objects(
-                &self.object_data_cache,
-            ) {
-                let Some(ObjectType::ClassObject(value)) =
-                    self.document.objects.get(handle)
-                else {
-                    continue;
-                };
-                let ClassObjectData::Sun(sun) = &value.data else {
-                    continue;
-                };
-                if !sun.is_on {
-                    continue;
-                }
-                let Some(geo) = geo else {
-                    break;
-                };
-                let Some(direction) = solar_direction(sun, geo) else {
-                    break;
-                };
-                let rgba = tess_util::aci_to_rgba(&sun.color);
-                lights.push(SceneLight {
-                    handle: value.handle,
-                    color_layer: None,
-                    light_type: 1.0,
-                    position: [0.0; 3],
-                    direction,
-                    color: [rgba[0], rgba[1], rgba[2]],
-                    intensity: sun.intensity.max(0.0) as f32,
-                    hotspot_cos: 1.0,
-                    falloff_cos: -1.0,
-                    attenuation_type: 0.0,
-                    attenuation_start: 0.0,
-                    attenuation_end: 0.0,
-                });
-                break;
+        for handle in crate::entities::object_data::sun_objects(&self.object_data_cache) {
+            let Some(ObjectType::ClassObject(value)) = self.document.objects.get(handle) else {
+                continue;
+            };
+            let ClassObjectData::Sun(sun) = &value.data else {
+                continue;
+            };
+            if !sun.is_on {
+                continue;
             }
+            let Some(geo) = geo else {
+                break;
+            };
+            let Some(direction) = solar_direction(sun, geo) else {
+                break;
+            };
+            let rgba = tess_util::aci_to_rgba(&sun.color);
+            lights.push(SceneLight {
+                handle: value.handle,
+                color_layer: None,
+                light_type: 1.0,
+                position: [0.0; 3],
+                direction,
+                color: [rgba[0], rgba[1], rgba[2]],
+                intensity: sun.intensity.max(0.0) as f32,
+                hotspot_cos: 1.0,
+                falloff_cos: -1.0,
+                attenuation_type: 0.0,
+                attenuation_start: 0.0,
+                attenuation_end: 0.0,
+            });
+            break;
         }
         lights
     }
 
-    fn apply_document_lighting(&self, uniforms: &mut Uniforms) {
-        if self.lighting_cache.borrow().is_none() {
-            let lights = self.build_lighting_cache();
-            *self.lighting_cache.borrow_mut() = Some(lights);
+    fn apply_document_lighting(
+        &self,
+        uniforms: &mut Uniforms,
+        target_block: Handle,
+        frozen: &rustc_hash::FxHashSet<Handle>,
+    ) {
+        let key = (target_block, Self::frozen_layers_sig(frozen));
+        if !self.lighting_cache.borrow().contains_key(&key) {
+            let lights = self.build_lighting_cache(target_block, frozen);
+            self.lighting_cache.borrow_mut().insert(key, lights);
         }
         let cache = self.lighting_cache.borrow();
-        let lights = cache.as_deref().unwrap_or_default();
+        let lights = cache.get(&key).map(Vec::as_slice).unwrap_or_default();
+        let visible_lights: Vec<&SceneLight> = lights
+            .iter()
+            .filter(|light| match self.document.get_entity(light.handle) {
+                Some(EntityType::Light(entity)) => {
+                    let common = &entity.common;
+                    !common.invisible
+                        && !self.entity_temporarily_hidden(light.handle)
+                        && !self.layer_hidden(&common.layer)
+                        && !self.layer_frozen_in(&common.layer, Some(frozen))
+                        && self.belongs_to_visible_block(
+                            light.handle,
+                            common.owner_handle,
+                            target_block,
+                        )
+                }
+                Some(_) => false,
+                None => self.document.objects.get(&light.handle).is_some_and(|object| {
+                    matches!(
+                        object,
+                        acadrust::objects::ObjectType::ClassObject(value)
+                            if matches!(&value.data, acadrust::objects::ClassObjectData::Sun(_))
+                    )
+                }),
+            })
+            .take(4)
+            .collect();
         let eye = [
             uniforms.eye_high[0] as f64 + uniforms.eye_low[0] as f64,
             uniforms.eye_high[1] as f64 + uniforms.eye_low[1] as f64,
             uniforms.eye_high[2] as f64 + uniforms.eye_low[2] as f64,
         ];
-        uniforms.lighting[0] = lights.len().min(4) as f32;
-        for (index, light) in lights.iter().take(4).enumerate() {
+        uniforms.lighting[0] = visible_lights.len() as f32;
+        for (index, light) in visible_lights.into_iter().enumerate() {
             let color = light
                 .color_layer
                 .as_deref()
@@ -1849,6 +1900,192 @@ impl Scene {
         verts
     }
 
+    fn annotation_context_highlight_wires(
+        &self,
+        inst: &ViewportInstance,
+    ) -> Arc<Vec<WireModel>> {
+        if self.selected.is_empty() && self.hover_highlight.is_none() {
+            return Arc::new(Vec::new());
+        }
+
+        let content_viewport = !inst.paper_sheet
+            && inst.tile_idx.is_none()
+            && inst.handle != Handle::NULL;
+        let target_block = if inst.paper_sheet {
+            self.current_layout_block_handle()
+        } else {
+            self.content_render_block_handle()
+        };
+        let annotation_scale_handle = if inst.paper_sheet {
+            self.paper_annotation_scale_handle()
+        } else if content_viewport {
+            self.viewport_scale_handle(inst.handle)
+        } else {
+            crate::scene::annotative::scale_handle_by_name(
+                &self.document,
+                &self.document.header.current_annotation_scale,
+            )
+        };
+        let annotation_scale = if inst.paper_sheet {
+            1.0
+        } else if content_viewport {
+            self.viewport_annotation_multiplier(inst.handle)
+        } else {
+            self.annotation_scale
+        };
+        let frozen: rustc_hash::FxHashSet<Handle> = if content_viewport {
+            match self.document.get_entity(inst.handle) {
+                Some(EntityType::Viewport(viewport)) => {
+                    viewport.frozen_layers.iter().copied().collect()
+                }
+                _ => rustc_hash::FxHashSet::default(),
+            }
+        } else {
+            rustc_hash::FxHashSet::default()
+        };
+        let bg = if self.current_layout == "Model" {
+            self.bg_color
+        } else {
+            self.paper_bg_color
+        };
+        let all_visible = self.annotation_all_visible();
+
+        let mut key = 0xcbf2_9ce4_8422_2325_u64;
+        let mut mix = |value: u64| {
+            key = key.rotate_left(17) ^ value.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        };
+        mix(self.geometry_epoch);
+        mix(self.selection_generation);
+        mix(target_block.value());
+        mix(annotation_scale_handle.map_or(0, |handle| handle.value()));
+        mix(annotation_scale.to_bits() as u64);
+        mix(u64::from(content_viewport));
+        mix(u64::from(all_visible));
+        mix(self.active_viewport.map_or(0, |handle| handle.value()));
+        mix(crate::scene::text::sdf_atlas::generation());
+        for component in bg {
+            mix(component.to_bits() as u64);
+        }
+        let mut frozen_sig = frozen.len() as u64;
+        for handle in &frozen {
+            frozen_sig ^= handle
+                .value()
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+        mix(frozen_sig);
+
+        if let Some(wires) = self.annotation_highlight_cache.borrow().get(&key) {
+            return Arc::clone(wires);
+        }
+
+        let mut highlighted: Vec<(Handle, bool)> = self
+            .selected
+            .iter()
+            .copied()
+            .map(|handle| (handle, true))
+            .collect();
+        if let Some(handle) = self
+            .hover_highlight
+            .filter(|handle| !self.selected.contains(handle))
+        {
+            highlighted.push((handle, false));
+        }
+        highlighted.sort_unstable_by_key(|(handle, _)| handle.value());
+
+        let empty_selection = rustc_hash::FxHashSet::default();
+        let mut wires = Vec::new();
+        for (handle, selected) in highlighted {
+            let Some(entity) = self.document.get_entity(handle) else {
+                continue;
+            };
+            if !crate::scene::annotative::is_annotative(&self.document, entity)
+                || !self.resident_entity_visible(
+                    entity,
+                    target_block,
+                    Some(&frozen),
+                    annotation_scale_handle,
+                    true,
+                )
+            {
+                continue;
+            }
+
+            let mut scales: Vec<Handle> = crate::scene::annotative::object_scale_memberships(
+                &self.document,
+                handle,
+            )
+            .into_iter()
+            .map(|(_, scale)| scale)
+            .collect();
+            scales.sort_unstable_by_key(Handle::value);
+            scales.dedup();
+
+            let base_visible = !crate::scene::annotative::annotative_offscale_for(
+                &self.document,
+                entity.common(),
+                annotation_scale_handle,
+                all_visible,
+            );
+            let displayed_scale = base_visible
+                .then(|| {
+                    crate::scene::annotative::active_object_context_for_scale(
+                        &self.document,
+                        handle,
+                        annotation_scale_handle,
+                    )
+                    .map(|context| context.scale)
+                })
+                .flatten();
+            let tint = if selected {
+                WireModel::SELECTED
+            } else {
+                WireModel::HOVER
+            };
+
+            for scale in scales {
+                if displayed_scale == Some(scale) {
+                    continue;
+                }
+                let context_scale = match self.document.objects.get(&scale) {
+                    Some(acadrust::objects::ObjectType::Scale(value)) => {
+                        value.inverse_factor() as f32
+                    }
+                    _ => annotation_scale,
+                };
+                let block_cache = self.block_cache_arc_for(Some(scale), true);
+                let mut context_wires = crate::scene::tessellate_entity(
+                    &self.document,
+                    &empty_selection,
+                    self.active_viewport,
+                    bg,
+                    context_scale,
+                    Some(scale),
+                    entity,
+                    Some(&block_cache),
+                    None,
+                    None,
+                    content_viewport,
+                );
+                for wire in &mut context_wires {
+                    wire.color = tint;
+                    wire.selected = selected;
+                    for vertex in &mut wire.text_verts {
+                        vertex.color = [tint[0], tint[1], tint[2], vertex.color[3]];
+                    }
+                }
+                wires.extend(context_wires);
+            }
+        }
+
+        let wires = Arc::new(wires);
+        let mut cache = self.annotation_highlight_cache.borrow_mut();
+        if cache.len() > 16 {
+            cache.clear();
+        }
+        cache.insert(key, Arc::clone(&wires));
+        wires
+    }
+
     /// Build the unified multi-viewport `Primitive` for the current layout.
     /// Model layout → one full-window viewport (more once tiled); paper
     /// layout → one viewport per floating content viewport. Each entry is
@@ -2106,6 +2343,11 @@ impl Scene {
         } else {
             inst.paper_sheet
         };
+        let annotation_context_wires = if show_live_overlay {
+            self.annotation_context_highlight_wires(inst)
+        } else {
+            Arc::new(Vec::new())
+        };
         let preview_wires = if !show_live_overlay
             || (self.interim_wire.is_none() && self.preview_wires.is_empty())
         {
@@ -2122,6 +2364,26 @@ impl Scene {
             Arc::clone(&self.preview_hatches)
         } else {
             Arc::new(Vec::new())
+        };
+
+        // Per-viewport frozen-layer set for a paper content viewport. Content
+        // viewports hide special fills, media, meshes and lights on VP-frozen
+        // layers too, matching the already-filtered resident wire set.
+        let vp_frozen: rustc_hash::FxHashSet<Handle> = if !inst.paper_sheet
+            && inst.tile_idx.is_none()
+            && inst.handle != acadrust::Handle::NULL
+        {
+            match self.document.get_entity(inst.handle) {
+                Some(EntityType::Viewport(vp)) => vp.frozen_layers.iter().cloned().collect(),
+                _ => rustc_hash::FxHashSet::default(),
+            }
+        } else {
+            rustc_hash::FxHashSet::default()
+        };
+        let lighting_block = if inst.paper_sheet {
+            self.current_layout_block_handle()
+        } else {
+            self.content_render_block_handle()
         };
 
         // Build the camera at the *full* viewport's aspect so the ortho
@@ -2159,7 +2421,7 @@ impl Scene {
         uniforms.viewport_size = [visible_w, visible_h];
         uniforms.flat_shade = if flags.flat_shade { 1.0 } else { 0.0 };
         uniforms.transparency_enable = if self.transparency_display { 1.0 } else { 0.0 };
-        self.apply_document_lighting(&mut uniforms);
+        self.apply_document_lighting(&mut uniforms, lighting_block, &vp_frozen);
 
         // `screen_rect` carries the *visible* sub-rectangle in normalized
         // canvas coords — that's what `Pipeline::prepare` uses to size
@@ -2179,39 +2441,22 @@ impl Scene {
         // model-block hatches. Those belong inside the floating content
         // viewports; rendering them on the full-canvas sheet would let them
         // bleed past the viewport borders whenever model coords overlap the
-        // paper area. Content viewports keep the full set (the model camera +
-        // per-viewport scissor place / clip them correctly).
-        // Per-viewport frozen-layer set for a paper content viewport. Content
-        // viewports must hide FILLS / IMAGES / SOLIDS on their frozen layers too,
-        // not just wires (which `model_wires_for_viewport_arc` already filters).
-        // Empty for the sheet, model tiles and the implicit-model view — none of
-        // which carry a per-viewport freeze — so those reuse the shared sets.
-        let vp_frozen: rustc_hash::FxHashSet<Handle> = if !inst.paper_sheet
-            && inst.tile_idx.is_none()
-            && inst.handle != acadrust::Handle::NULL
-        {
-            match self.document.get_entity(inst.handle) {
-                Some(EntityType::Viewport(vp)) => vp.frozen_layers.iter().cloned().collect(),
-                _ => rustc_hash::FxHashSet::default(),
-            }
-        } else {
-            rustc_hash::FxHashSet::default()
-        };
-
+        // paper area. Content viewport model builders are block-filtered too;
+        // the scissor only clips their already-correct Model Space set.
         let (hatches, wipeout_hatches, paper_images) = if inst.paper_sheet {
             let (hatches, wipeouts, images) = self.paper_sheet_render_models();
             (hatches, wipeouts, Some(images))
         } else {
             (
-                self.hatch_models_for_viewport(&vp_frozen),
-                self.wipeout_models_for_viewport(&vp_frozen),
+                self.hatch_models_for_viewport(inst.handle, &vp_frozen),
+                self.wipeout_models_for_viewport(inst.handle, &vp_frozen),
                 None,
             )
         };
         let images = if let Some(images) = paper_images {
             images
         } else {
-            self.images_for_viewport(&vp_frozen)
+            self.images_for_viewport(inst.handle, &vp_frozen)
         };
         // The paper sheet shows the layout's own 2-D content (fills, borders,
         // annotation) — never the model's 3-D solids. Those are drawn inside
@@ -2223,7 +2468,7 @@ impl Scene {
         let meshes = if inst.paper_sheet {
             Arc::new(Vec::new())
         } else {
-            self.meshes_for_viewport(&vp_frozen)
+            self.meshes_for_viewport(inst.handle, &vp_frozen)
         };
 
         // SDF text quads (behind OCS_TEXT_SDF). The glyph quads ride on each
@@ -2306,6 +2551,7 @@ impl Scene {
             wires: Arc::downgrade(&all_wires),
             clip_boundary_ndc,
             preview_wires,
+            annotation_context_wires,
             preview_hatches,
             face3d_wires,
             text_verts,

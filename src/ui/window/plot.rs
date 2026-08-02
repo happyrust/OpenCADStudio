@@ -99,18 +99,13 @@ pub struct PlotDialogState {
     pub printer: Option<String>,
     /// Output goes to a PDF file instead of a printer.
     pub to_file: bool,
-    #[serde(skip)]
     pub paper: String,
-    #[serde(skip)]
     pub orientation: String,
     pub upside_down: bool,
     pub copies: String,
     pub area: String,
-    #[serde(skip)]
     pub center: bool,
-    #[serde(skip)]
     pub offset_x: String,
-    #[serde(skip)]
     pub offset_y: String,
     pub scale: String,
     #[serde(default = "legacy_fit_to_paper_default")]
@@ -168,7 +163,7 @@ impl Default for PlotDialogState {
             scale: "1:1".into(),
             fit_to_paper: true,
             scales: Vec::new(),
-            scale_lw: true,
+            scale_lw: false,
             quality: "Normal".into(),
             shade: "As displayed".into(),
             background: true,
@@ -677,7 +672,12 @@ pub fn view_window(
             width,
             common_area && !s.fit_to_paper,
         ),
-        check_enabled("Scale lineweights", s.scale_lw, PlotFlag::ScaleLw, common_area),
+        check_enabled(
+            "Scale lineweights",
+            s.scale_lw && !s.fit_to_paper,
+            PlotFlag::ScaleLw,
+            !s.fit_to_paper,
+        ),
     ].spacing(7));
 
     // ── Style and shaded viewport settings ───────────────────────────────

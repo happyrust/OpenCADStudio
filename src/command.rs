@@ -1279,6 +1279,14 @@ pub trait CadCommand: Send {
     /// Called when the user presses Enter (finalize / next option).
     fn on_enter(&mut self) -> CmdResult;
 
+    /// Whether a bare Enter should supply the drawing's continuation point as
+    /// this command's first point instead of calling [`Self::on_enter`]. Draw
+    /// commands opt in only while their first point is still unset; later
+    /// Enter presses retain their normal finish/cancel meaning.
+    fn enter_accepts_default_start(&self) -> bool {
+        false
+    }
+
     /// Called when the user presses Escape (cancel).
     #[allow(dead_code)]
     fn on_escape(&mut self) -> CmdResult {
@@ -1390,6 +1398,13 @@ pub trait CadCommand: Send {
     /// Default: forwards to `on_mouse_move` for backwards compatibility.
     fn on_preview_wires(&mut self, pt: DVec3) -> Vec<WireModel> {
         self.on_mouse_move(pt).into_iter().collect()
+    }
+
+    /// Source entities replaced by the current live preview. The host removes
+    /// these from the resident render until the command commits or cancels.
+    /// Commands such as COPY keep their sources visible and use the default.
+    fn preview_hidden_handles(&self) -> &[Handle] {
+        &[]
     }
 
     /// Returns `true` when the command is waiting for text typed in the command line.

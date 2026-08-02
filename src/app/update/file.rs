@@ -288,6 +288,7 @@ impl OpenCADStudio {
             pick_drag_rect: self.pick_drag_rect,
             bg_color: self.default_bg_color.map(f4_to_u3),
             paper_bg_color: self.default_paper_bg_color.map(f4_to_u3),
+            language: self.language,
         }
     }
 
@@ -317,6 +318,9 @@ impl OpenCADStudio {
         self.pick_drag_rect = s.pick_drag_rect;
         self.default_bg_color = s.bg_color.map(u3_to_f4);
         self.default_paper_bg_color = s.paper_bg_color.map(u3_to_f4);
+        if crate::i18n::set_language(s.language).is_ok() {
+            self.language = s.language;
+        }
         // Push the restored background onto every drawing tab that exists now
         // (the start tab and any initial drawing). Tabs created later pick it
         // up via `apply_bg_default` at their construction site.
@@ -399,6 +403,7 @@ impl OpenCADStudio {
     /// Check if a suspended command exists on the active tab and resume it
     /// with the outcome of the text editor.
     pub(in crate::app) fn post_editor_closed(&mut self, committed: bool) -> Task<Message> {
+        self.reset_modal_geometry();
         let i = self.active_tab;
         if let Some(mut cmd) = self.tabs[i].suspended_cmd.take() {
             let res = cmd.on_editor_closed(committed);
@@ -515,6 +520,7 @@ impl OpenCADStudio {
                 section: self.start_section,
             },
             statusbar: self.statusbar_config.clone(),
+            annotation_auto_scale: self.annotation_auto_scale,
             ribbon: crate::app::config::RibbonConfig {
                 collapse: self.ribbon.collapse_mode(),
             },
@@ -544,6 +550,7 @@ impl OpenCADStudio {
         // (`refresh_recent_thumbs`) — never here on the boot path.
         self.start_section = cfg.start.section;
         self.statusbar_config = cfg.statusbar;
+        self.annotation_auto_scale = cfg.annotation_auto_scale.clamp(-4, 4);
         self.ribbon.set_collapse_mode(cfg.ribbon.collapse);
         self.plot_dialog = cfg.plot;
     }
@@ -2175,8 +2182,13 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         &mut self,
         path: std::path::PathBuf,
     ) -> Task<Message> {
-        let (wires, hatches, wipeouts, group_splits, page_w, page_h, ox, oy, rotation, scale, clip) =
-            self.layout_plot_params();
+        let Some((wires, hatches, wipeouts, group_splits, page_w, page_h, ox, oy, rotation, scale, clip)) =
+            self.direct_plot_params()
+        else {
+            self.command_line
+                .push_error("Nothing to plot: model space contains no printable geometry.");
+            return Task::none();
+        };
         let plot_style = self.dialog_plot_style(&self.plot_dialog);
         let render_options = Self::pdf_plot_options(&self.plot_dialog, group_splits);
         let worker_path = path.clone();
@@ -2289,9 +2301,27 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
     /// draw-origin offset, rotation, unit scale, and optional clip. Shared by
     /// PDF export, preview, and printer output so all three render identically.
     pub(super) fn layout_plot_params(&self) -> LayoutPlotParams {
+        self.layout_plot_params_for(&self.plot_dialog.area)
+    }
+
+    fn layout_plot_params_for(&self, plot_area: &str) -> LayoutPlotParams {
+        use crate::io::paper_sizes::{sheet_mm, Orientation, PaperSize};
         let i = self.active_tab;
         let scene = &self.tabs[i].scene;
         let paper_space = scene.current_layout != "Model";
+        let selected_paper = match self.plot_dialog.paper.as_str() {
+            "A3" => PaperSize::A3,
+            "A2" => PaperSize::A2,
+            "A1" => PaperSize::A1,
+            "A0" => PaperSize::A0,
+            _ => PaperSize::A4,
+        };
+        let selected_orientation = if self.plot_dialog.orientation == "Portrait" {
+            Orientation::Portrait
+        } else {
+            Orientation::Landscape
+        };
+        let selected_sheet = sheet_mm(selected_paper, selected_orientation);
         let (source_wires, hatches, wipeouts, mut group_splits) =
             plot_scene_content(
                 scene,
@@ -2328,8 +2358,8 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
             // area keeps the sheet's current physical bounds; the other area
             // modes use the dialog paper size through `area_plot_job`.
             let dialog_rotation = if self.plot_dialog.upside_down { 180 } else { 0 };
-            let plot_extents = self.plot_dialog.area == "Extents";
-            let plot_layout = self.plot_dialog.area == "Layout";
+            let plot_extents = plot_area == "Extents";
+            let plot_layout = plot_area == "Layout";
             // Page orientation is already represented by the sheet bounds.
             // Only the explicit upside-down choice rotates layout content here.
             let rotation = dialog_rotation;
@@ -2375,11 +2405,24 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     target_y / scale - min_y,
                 )
             } else if plot_layout {
-                // Layout is the one Paper-only plot mode: reproduce the sheet
-                // exactly. Its lower-left paper bound maps to PDF (0, 0);
-                // persisted plot origins/centering are already represented by
-                // the layout geometry and must not shift the sheet again.
-                (mm_per_unit, -x0, -y0)
+                // Map the complete paper-space sheet to the physical paper
+                // selected in the dialog. Layout bounds can be stored in mm,
+                // inches, or carry incomplete legacy metadata; deriving the
+                // scale from the visible sheet avoids applying a stale unit
+                // factor twice while preserving loaded layouts exactly when
+                // their metadata is valid.
+                let bounds_w = (x1 - x0).max(1e-9);
+                let bounds_h = (y1 - y0).max(1e-9);
+                let scale = (selected_sheet.0 / bounds_w)
+                    .min(selected_sheet.1 / bounds_h)
+                    .max(1e-9);
+                let target_x = (selected_sheet.0 - bounds_w * scale) * 0.5;
+                let target_y = (selected_sheet.1 - bounds_h * scale) * 0.5;
+                (
+                    scale,
+                    target_x / scale - x0,
+                    target_y / scale - y0,
+                )
             } else {
                 // Legacy direct callers still get dialog positioning. Normal
                 // Display/Window paths use `area_plot_job` instead.
@@ -2396,9 +2439,14 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 };
                 (scale, target_x / scale - x0, target_y / scale - y0)
             };
+            let (base_page_w, base_page_h) = if plot_layout {
+                selected_sheet
+            } else {
+                (paper_w, paper_h)
+            };
             let (page_w, page_h) = match rotation {
-                90 | 270 => (paper_h, paper_w),
-                _ => (paper_w, paper_h),
+                90 | 270 => (base_page_h, base_page_w),
+                _ => (base_page_w, base_page_h),
             };
             // Layout plots keep the full physical sheet as the PDF page, but
             // ink is restricted to the device's printable rectangle. Extents
@@ -2462,9 +2510,40 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         )
     }
 
-    pub(super) fn on_print_to_printer(&mut self) -> Task<Message> {
+    /// Build direct PDF/printer output using the physical layout sheet in
+    /// paper space and the selected ISO sheet/scale around Model extents.
+    fn direct_plot_params(&self) -> Option<LayoutPlotParams> {
+        if self.tabs[self.active_tab].scene.current_layout != "Model" {
+            return Some(self.layout_plot_params_for("Layout"));
+        }
         let (wires, hatches, wipeouts, group_splits, page_w, page_h, ox, oy, rotation, scale, clip) =
-            self.layout_plot_params();
+            self.extents_plot_job()?;
+        if wires.is_empty() && hatches.is_empty() && wipeouts.is_empty() {
+            return None;
+        }
+        Some((
+            std::sync::Arc::new(wires),
+            hatches,
+            wipeouts,
+            group_splits,
+            page_w,
+            page_h,
+            ox,
+            oy,
+            rotation,
+            scale,
+            clip,
+        ))
+    }
+
+    pub(super) fn on_print_to_printer(&mut self) -> Task<Message> {
+        let Some((wires, hatches, wipeouts, group_splits, page_w, page_h, ox, oy, rotation, scale, clip)) =
+            self.direct_plot_params()
+        else {
+            self.command_line
+                .push_error("Nothing to plot: model space contains no printable geometry.");
+            return Task::none();
+        };
         let plot_style = self.dialog_plot_style(&self.plot_dialog);
         let options = self.plot_print_options(&self.plot_dialog, group_splits);
         self.command_line.push_info("Sending to system printer…");
@@ -2567,6 +2646,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
     /// layout's plot settings and the printers found on the system.
     pub(super) fn on_plot_dialog_open(&mut self) -> Task<Message> {
         use crate::io::paper_sizes::Orientation;
+        let previous = self.plot_dialog.clone();
         let scales: Vec<(String, f64)> = self.tabs[self.active_tab]
             .scene
             .scale_list()
@@ -2586,9 +2666,10 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         d.scales = scales;
         if d.scale.eq_ignore_ascii_case("fit") {
             d.fit_to_paper = true;
+            d.scale_lw = false;
             d.scale = one_to_one.clone();
         } else if !d.scales.iter().any(|(name, _)| name == &d.scale) {
-            d.scale = one_to_one;
+            d.scale = one_to_one.clone();
         }
         d.paper_space = self.tabs[self.active_tab].scene.current_layout != "Model";
         d.paper = self.plot_format.label().to_string();
@@ -2635,26 +2716,40 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         }
         self.plot_dialog.name_input = None;
         self.plot_dialog.name_rename = false;
-        // Refresh the list (<none> / <previous> / layouts / named setups) and
-        // snapshot the just-loaded settings as the `<previous>` restore point.
+        if self.plot_dialog.fit_to_paper {
+            self.plot_dialog.scale_lw = false;
+        }
+        // Refresh document/runtime lists, then restore the live choices from
+        // the preceding dialog session. Previously the snapshot happened
+        // after the layout values above were reloaded, so opening Plot itself
+        // destroyed the user's last paper, area, scale and output choices.
         self.refresh_page_setups();
-        self.plot_prev = Some(self.plot_dialog.clone());
-        // Model space keeps the last-used setup; a paper layout starts from its
-        // embedded setup.
+        self.plot_prev = Some(previous);
+        self.select_page_setup(crate::ui::window::plot::SETUP_PREV);
+        // `<previous>` may come from another tab/drawing whose custom scale is
+        // not present in this document. Validate again after restoring it; the
+        // pre-restore validation above only saw the temporarily reseeded state.
+        if self.plot_dialog.scale.eq_ignore_ascii_case("fit") {
+            self.plot_dialog.fit_to_paper = true;
+            self.plot_dialog.scale = one_to_one.clone();
+        } else if !self
+            .plot_dialog
+            .scales
+            .iter()
+            .any(|(name, _)| name == &self.plot_dialog.scale)
+        {
+            self.plot_dialog.scale = one_to_one;
+        }
+        if self.plot_dialog.fit_to_paper {
+            self.plot_dialog.scale_lw = false;
+        }
+        // A model-space plot cannot use the paper-only Layout area. Other
+        // values remain exactly as the user left them; selecting a layout or
+        // named setup explicitly still reloads that setup below.
         let cur = self.tabs[self.active_tab].scene.current_layout.clone();
         if cur == "Model" {
-            self.select_page_setup(crate::ui::window::plot::SETUP_PREV);
             if self.plot_dialog.area == "Layout" {
                 self.plot_dialog.area = "Window".into();
-                self.normalize_common_plot_dialog();
-            }
-        } else {
-            self.select_page_setup(&format!("*{cur}*"));
-            if self.plot_dialog.area != "Layout" {
-                // A layout may persist Window/Extents/Display together with its
-                // sheet-only origin/rotation. Start common area modes with the
-                // same neutral transform as Model even when no Area-change event
-                // fires after opening the dialog.
                 self.normalize_common_plot_dialog();
             }
         }
@@ -2667,6 +2762,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         self.plot_dialog.offset_x = "0.0".into();
         self.plot_dialog.offset_y = "0.0".into();
         self.plot_dialog.fit_to_paper = true;
+        self.plot_dialog.scale_lw = false;
     }
 
     /// Handle one edit / action from the Plot dialog.
@@ -2766,10 +2862,15 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                     PlotFlag::Background => d.background = !d.background,
                     PlotFlag::MergeLines => d.merge_lines = !d.merge_lines,
                     PlotFlag::FitToPaper if d.area != "Layout" => {
-                        d.fit_to_paper = !d.fit_to_paper
+                        d.fit_to_paper = !d.fit_to_paper;
+                        if d.fit_to_paper {
+                            d.scale_lw = false;
+                        }
                     }
                     PlotFlag::Center if d.area != "Layout" => d.center = !d.center,
-                    PlotFlag::ScaleLw if d.area != "Layout" => d.scale_lw = !d.scale_lw,
+                    PlotFlag::ScaleLw if !d.fit_to_paper => {
+                        d.scale_lw = !d.scale_lw
+                    }
                     PlotFlag::UpsideDown => {
                         d.upside_down = !d.upside_down;
                     }
@@ -2954,6 +3055,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
             d.offset_y = "0.0".into();
             d.upside_down = false;
             d.fit_to_paper = is_model;
+            d.scale_lw = false;
             d.scale = scale_name_for_factor(&d.scales, 1.0)
                 .or_else(|| d.scales.first().map(|(name, _)| name.clone()))
                 .unwrap_or_else(|| "1:1".into());
@@ -3160,7 +3262,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
                 .or_else(|| d.scales.first().map(|(name, _)| name.clone()))
                 .unwrap_or_else(|| "1:1".into());
         }
-        d.scale_lw = ps.flags.scale_lineweights;
+        d.scale_lw = ps.flags.scale_lineweights && !d.fit_to_paper;
         d.lineweights = ps.flags.print_lineweights;
         d.paperspace_last = ps.flags.draw_viewports_first;
         d.shade = match ps.shade_plot_mode {
@@ -3245,6 +3347,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
         // the runtime paper/scale choices still drive this one plot operation.
         self.sync_dialog_plot_runtime();
         self.active_modal = None;
+        self.reset_modal_geometry();
 
         let plot_style = self.dialog_plot_style(&d);
         // Extents, Window and Display use one plot path in both spaces. Only
@@ -3375,7 +3478,7 @@ pub(super) fn on_open_file(&mut self) -> Task<Message> {
     ) -> crate::io::pdf_export::PdfPlotOptions {
         crate::io::pdf_export::PdfPlotOptions {
             object_lineweights: d.lineweights,
-            scale_lineweights: d.scale_lw,
+            scale_lineweights: d.scale_lw && !d.fit_to_paper,
             transparency: d.transparency,
             stamp: d.stamp,
             merge_lines: d.merge_lines,

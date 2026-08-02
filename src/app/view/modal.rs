@@ -1,69 +1,60 @@
 use super::super::{Message, OpenCADStudio};
 use iced::widget::{button, column, container, row, text, Space};
-use iced::{Background, Element, Fit, Theme};
+use iced::{Background, Element, Fill, Fit, Theme};
 
 impl OpenCADStudio {
-    #[cfg(target_arch = "wasm32")]
-    pub(super) fn web_plugin_notice_width(&self) -> u16 {
-        (self.win_size.0 - 48.0).clamp(280.0, 460.0) as u16
-    }
-
     /// Title shown in the active modal's title bar. Keep in sync with the
     /// [`Self::modal_content`] dispatch.
-    pub(super) fn modal_title(&self) -> &'static str {
+    pub(super) fn modal_title(&self) -> String {
         use super::super::ModalKind as K;
         match self.active_modal {
-            Some(K::About) => "About",
-            Some(K::Shortcuts) => "Keyboard Shortcuts",
-            Some(K::Aliases) => "Command Aliases",
-            Some(K::Options) => "Options",
-            Some(K::FindReplace) => "Find and Replace",
-            Some(K::PluginManager) => "Plugin Manager",
-            Some(K::UpdateNotice) => "Update Available",
-            Some(K::Layers) => "Layer Manager",
-            Some(K::LayerStateManager) => "Layer State Manager",
-            Some(K::LayerStateEditor) => "Edit Layer State",
-            Some(K::Plot) => "Plot",
-            Some(K::LayoutManager) => "Layout Manager",
-            Some(K::ScaleManager) => "Scale Manager",
-            Some(K::AnnoObjectScale) => "Annotation Object Scale",
-            Some(K::Plotstyle) => "Plot Style Editor",
-            Some(K::TextStyle) => "Text Style Manager",
-            Some(K::MlStyle) => "Multiline Style Manager",
-            Some(K::TableStyle) => "Table Style Manager",
-            Some(K::MLeaderStyle) => "Multileader Style Manager",
-            Some(K::DimStyle) => "Dimension Style Manager",
-            Some(K::AssocPrompt) => "Default Application",
-            Some(K::AecDropWarning) => "Save Warning",
+            Some(K::About) => crate::tr!("modal-about"),
+            Some(K::Shortcuts) => crate::tr!("modal-keyboard-shortcuts"),
+            Some(K::Aliases) => crate::tr!("modal-command-aliases"),
+            Some(K::Options) => crate::tr!("action-options"),
+            Some(K::FindReplace) => crate::tr!("modal-find-replace"),
+            Some(K::PluginManager) => crate::tr!("modal-plugin-manager"),
+            Some(K::UpdateNotice) => crate::tr!("modal-update-available"),
+            Some(K::Layers) => crate::tr!("modal-layer-manager"),
+            Some(K::LayerStateManager) => crate::tr!("modal-layer-state-manager"),
+            Some(K::LayerStateEditor) => crate::tr!("modal-edit-layer-state"),
+            Some(K::Plot) => crate::tr!("modal-plot"),
+            Some(K::LayoutManager) => crate::tr!("modal-layout-manager"),
+            Some(K::ScaleManager) => crate::tr!("modal-scale-manager"),
+            Some(K::AnnoObjectScale) => crate::tr!("modal-annotation-object-scale"),
+            Some(K::Plotstyle) => crate::tr!("modal-plot-style-editor"),
+            Some(K::TextStyle) => crate::tr!("modal-text-style-manager"),
+            Some(K::MlStyle) => crate::tr!("modal-multiline-style-manager"),
+            Some(K::TableStyle) => crate::tr!("modal-table-style-manager"),
+            Some(K::MLeaderStyle) => crate::tr!("modal-multileader-style-manager"),
+            Some(K::DimStyle) => crate::tr!("modal-dimension-style-manager"),
+            Some(K::AssocPrompt) => crate::tr!("modal-default-application"),
+            Some(K::AecDropWarning) => crate::tr!("modal-save-warning"),
             #[cfg(not(target_arch = "wasm32"))]
-            Some(K::FileInUse) => "Unable to Save Drawing",
+            Some(K::FileInUse) => crate::tr!("modal-unable-save"),
             #[cfg(not(target_arch = "wasm32"))]
-            Some(K::ExternalChange) => "Drawing Changed on Disk",
-            Some(K::LayerDeleteWarning) => "Delete Layer",
-            Some(K::Unsaved) => "Unsaved Changes",
-            Some(K::PointStyle) => "Point Style",
-            Some(K::AttributeEditor) => "Attribute Editor",
-            Some(K::SaveDialog) => "Save Drawing As",
-            None => "",
+            Some(K::ExternalChange) => crate::tr!("modal-drawing-changed"),
+            Some(K::LayerDeleteWarning) => crate::tr!("modal-delete-layer"),
+            Some(K::Unsaved) => crate::tr!("modal-unsaved-changes"),
+            Some(K::PointStyle) => crate::tr!("modal-point-style"),
+            Some(K::AttributeEditor) => crate::tr!("modal-attribute-editor"),
+            Some(K::SaveDialog) => crate::tr!("modal-save-drawing-as"),
+            None => String::new(),
         }
     }
 
     /// Build the currently-open modal dialog's content (Plan B), or `None`.
-    /// Each former pop-up window is constructed here and given a maximum size.
-    /// Iced 0.15 measures the content first, so smaller dialogs stop at their
-    /// intrinsic size while overflowing regions become scrollable at the cap.
+    /// Iced 0.15 measures the content first, so dialogs start at their natural
+    /// size and overflowing regions become scrollable where a cap is supplied.
     pub(super) fn modal_content<'s>(&'s self) -> Option<Element<'s, Message>> {
         let ex = self.modal_resize;
-        let sized = |e: Element<'s, Message>, w: u16, h: u16| -> Element<'s, Message> {
-            container(e)
-                .width(Fit.max(w as f32 + ex.x))
-                .height(Fit.max(h as f32 + ex.y))
-                .into()
-        };
         Some(match self.active_modal? {
-            super::super::ModalKind::About => {
-                sized(crate::ui::window::about::view_window(), 440, 360)
-            }
+            super::super::ModalKind::About => automatic_flow(ex, |flow| {
+                container(crate::ui::window::about::view_window())
+                    .width(flow.width)
+                    .height(flow.height)
+                    .into()
+            }),
             super::super::ModalKind::Shortcuts => {
                 sized_flow(
                     ex,
@@ -99,19 +90,19 @@ impl OpenCADStudio {
                         &self.default_save_format,
                         &self.ui_theme,
                         &self.theme_color_inputs,
+                        self.language,
                         flow,
                     )
                 },
             ),
-            super::super::ModalKind::FindReplace => sized(
+            super::super::ModalKind::FindReplace => automatic_flow(ex, |flow| {
                 crate::ui::window::find_replace::view_window(
                     &self.find_replace.search,
                     &self.find_replace.replacement,
                     &self.find_replace.status,
-                ),
-                560,
-                190,
-            ),
+                    flow,
+                )
+            }),
             super::super::ModalKind::PluginManager => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
@@ -149,11 +140,12 @@ impl OpenCADStudio {
                 }
                 #[cfg(target_arch = "wasm32")]
                 {
-                    sized(
-                        crate::ui::window::plugin_manager::view_web_notice(),
-                        self.web_plugin_notice_width(),
-                        230,
-                    )
+                    automatic_flow(ex, |flow| {
+                        container(crate::ui::window::plugin_manager::view_web_notice())
+                            .width(flow.width)
+                            .height(flow.height)
+                            .into()
+                    })
                 }
             }
             super::super::ModalKind::UpdateNotice => {
@@ -228,13 +220,13 @@ impl OpenCADStudio {
                         },
                     )
                 } else {
-                    sized(
+                    automatic_flow(ex, |flow| {
                         container(text("The selected layer state is no longer available."))
                             .padding(16)
-                            .into(),
-                        520,
-                        180,
-                    )
+                            .width(flow.width)
+                            .height(flow.height)
+                            .into()
+                    })
                 }
             }
             super::super::ModalKind::Plot => {
@@ -620,7 +612,20 @@ impl OpenCADStudio {
             // Dropdown options (names must match the records exactly so the
             // selection can be resolved back to a handle on the update side).
             let mut block_opts: Vec<String> = vec!["Default".to_string()];
-            block_opts.extend(doc.block_records.iter().map(|b| b.name.clone()));
+            block_opts.extend(
+                doc.block_records
+                    .iter()
+                    .filter(|b| {
+                        !b.is_layout()
+                            && !b.is_model_space()
+                            && !b.is_paper_space()
+                            && !b.flags.is_xref
+                            && !b.flags.is_xref_overlay
+                            && !b.flags.is_external
+                            && !b.name.starts_with('*')
+                    })
+                    .map(|b| b.name.clone()),
+            );
             let mut lt_opts: Vec<String> = vec!["ByBlock".to_string()];
             lt_opts.extend(doc.line_types.iter().map(|lt| lt.name.clone()));
             let blk_name = |h: acadrust::types::Handle| -> String {
@@ -764,7 +769,9 @@ impl OpenCADStudio {
                 )
             })
             }
-            super::super::ModalKind::AssocPrompt => sized(default_assoc_dialog_window(), 440, 210),
+            super::super::ModalKind::AssocPrompt => {
+                automatic_flow(ex, default_assoc_dialog_window)
+            }
             super::super::ModalKind::AecDropWarning => {
                 let src_label = self
                     .tabs
@@ -788,15 +795,14 @@ impl OpenCADStudio {
                         crate::io::format_for_version(version, is_dxf)
                     })
                     .unwrap_or_else(|| "DWG".to_string());
-                sized(
+                automatic_flow(ex, |flow| {
                     aec_drop_dialog_window(
                         self.aec_drop_count,
                         &self.save_dialog_format,
                         &src_label,
-                    ),
-                    480,
-                    230,
-                )
+                        flow,
+                    )
+                })
             }
             #[cfg(not(target_arch = "wasm32"))]
             super::super::ModalKind::FileInUse => {
@@ -810,7 +816,7 @@ impl OpenCADStudio {
                         )
                     })
                     .unwrap_or_default();
-                sized(file_in_use_dialog_window(&path, &error), 560, 250)
+                automatic_flow(ex, |flow| file_in_use_dialog_window(&path, &error, flow))
             }
             #[cfg(not(target_arch = "wasm32"))]
             super::super::ModalKind::ExternalChange => {
@@ -819,14 +825,14 @@ impl OpenCADStudio {
                     .as_ref()
                     .map(|conflict| conflict.path.display().to_string())
                     .unwrap_or_default();
-                sized(external_change_dialog_window(&path), 620, 250)
+                automatic_flow(ex, |flow| external_change_dialog_window(&path, flow))
             }
             super::super::ModalKind::LayerDeleteWarning => {
                 let (names, count) = self
                     .layer_delete_pending
                     .clone()
                     .unwrap_or_else(|| (Vec::new(), 0));
-                sized(layer_delete_warning_window(&names, count), 440, 200)
+                automatic_flow(ex, |flow| layer_delete_warning_window(&names, count, flow))
             }
             super::super::ModalKind::Unsaved => {
                 let tab_name = match &self.pending_close {
@@ -843,7 +849,7 @@ impl OpenCADStudio {
                         .unwrap_or_default(),
                     None => String::new(),
                 };
-                sized(unsaved_changes_dialog_window(&tab_name), 420, 160)
+                automatic_flow(ex, |flow| unsaved_changes_dialog_window(&tab_name, flow))
             }
             super::super::ModalKind::PointStyle => sized_flow(
                 ex,
@@ -897,17 +903,13 @@ impl OpenCADStudio {
                 )
             }
             super::super::ModalKind::SaveDialog => {
-                // Native omits the file-name field (the OS dialog collects it),
-                // so it stands shorter than the web build.
-                #[cfg(target_arch = "wasm32")]
-                let h = 200;
-                #[cfg(not(target_arch = "wasm32"))]
-                let h = 150;
-                sized(
-                    save_as_dialog_window(&self.save_dialog_filename, &self.save_dialog_format),
-                    420,
-                    h,
-                )
+                automatic_flow(ex, |flow| {
+                    save_as_dialog_window(
+                        &self.save_dialog_filename,
+                        &self.save_dialog_format,
+                        flow,
+                    )
+                })
             }
         })
     }
@@ -923,6 +925,18 @@ fn sized_flow<'a>(
         build(crate::ui::modal::ModalSizing::INTRINSIC),
         build(crate::ui::modal::ModalSizing::FILL),
         iced::Size::new(max_width as f32, max_height as f32),
+        extra,
+    )
+}
+
+fn automatic_flow<'a>(
+    extra: iced::Vector,
+    mut build: impl FnMut(crate::ui::modal::ModalSizing) -> Element<'a, Message>,
+) -> Element<'a, Message> {
+    crate::ui::modal::intrinsic(
+        build(crate::ui::modal::ModalSizing::INTRINSIC),
+        build(crate::ui::modal::ModalSizing::FILL),
+        iced::Size::new(f32::INFINITY, f32::INFINITY),
         extra,
     )
 }
@@ -957,12 +971,21 @@ fn dialog_muted_text_style(theme: &Theme) -> iced::widget::text::Style {
 /// Compact Save-As options dialog: pick the format/version and a default file
 /// name. The destination folder and overwrite confirmation come from the
 /// native OS save dialog (native) or the browser download (web) that follows.
-fn save_as_dialog_window<'a>(filename: &'a str, format: &'a str) -> Element<'a, Message> {
+fn save_as_dialog_window<'a>(
+    filename: &'a str,
+    format: &'a str,
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'a, Message> {
     let sel_fmt = crate::io::SAVE_FORMAT_OPTIONS
         .iter()
         .copied()
         .find(|&s| s == format);
     let label = |s: &'static str| text(s).size(11).style(dialog_muted_text_style);
+    let field_width = if matches!(sizing.width, iced::Length::Fill) {
+        Fill
+    } else {
+        iced::Length::Shrink
+    };
 
     let mut items: Vec<Element<'a, Message>> = Vec::new();
     items.push(text("Save Drawing As").size(14).into());
@@ -979,10 +1002,11 @@ fn save_as_dialog_window<'a>(filename: &'a str, format: &'a str) -> Element<'a, 
                     .on_input(Message::SaveDialogFilenameChanged)
                     .size(13)
                     .padding([5, 8])
-                    .width(Fit),
+                    .width(field_width),
             ]
             .align_y(iced::Alignment::Center)
             .spacing(6)
+            .width(sizing.width)
             .into(),
         );
         items.push(Space::new().height(8).into());
@@ -999,10 +1023,11 @@ fn save_as_dialog_window<'a>(filename: &'a str, format: &'a str) -> Element<'a, 
                 |value| value.to_string(),
             )
             .on_select(|s: &str| Message::SaveDialogFormatChanged(s.to_string()))
-            .width(Fit),
+            .width(field_width),
         ]
         .align_y(iced::Alignment::Center)
         .spacing(6)
+        .width(sizing.width)
         .into(),
     );
     items.push(Space::new().height(16).into());
@@ -1016,17 +1041,23 @@ fn save_as_dialog_window<'a>(filename: &'a str, format: &'a str) -> Element<'a, 
         .into(),
     );
 
-    let body = column(items).spacing(0);
+    let body = column(items)
+        .spacing(0)
+        .width(sizing.width)
+        .height(sizing.height);
 
     container(body)
         .style(dialog_body_style)
         .padding([14, 16])
-        .width(Fit)
-        .height(Fit)
+        .width(sizing.width)
+        .height(sizing.height)
         .into()
 }
 
-fn unsaved_changes_dialog_window(name: &str) -> Element<'static, Message> {
+fn unsaved_changes_dialog_window(
+    name: &str,
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'static, Message> {
     let body_text = format!("Do you want to save changes to \"{}\"?", name);
 
     container(
@@ -1044,13 +1075,18 @@ fn unsaved_changes_dialog_window(name: &str) -> Element<'static, Message> {
         .spacing(0),
     )
     .style(dialog_body_style)
-    .center(Fit)
+    .center_x(sizing.width)
+    .center_y(sizing.height)
     .padding([24, 28])
     .into()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn file_in_use_dialog_window(path: &str, error: &str) -> Element<'static, Message> {
+fn file_in_use_dialog_window(
+    path: &str,
+    error: &str,
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'static, Message> {
     let file_name = std::path::Path::new(path)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1098,13 +1134,16 @@ fn file_in_use_dialog_window(path: &str, error: &str) -> Element<'static, Messag
     )
     .style(dialog_body_style)
     .padding([18, 20])
-    .width(Fit)
-    .height(Fit)
+    .width(sizing.width)
+    .height(sizing.height)
     .into()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn external_change_dialog_window(path: &str) -> Element<'static, Message> {
+fn external_change_dialog_window(
+    path: &str,
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'static, Message> {
     let file_name = std::path::Path::new(path)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1155,8 +1194,8 @@ fn external_change_dialog_window(path: &str) -> Element<'static, Message> {
     )
     .style(dialog_body_style)
     .padding([18, 20])
-    .width(Fit)
-    .height(Fit)
+    .width(sizing.width)
+    .height(sizing.height)
     .into()
 }
 
@@ -1164,7 +1203,12 @@ fn external_change_dialog_window(path: &str) -> Element<'static, Message> {
 /// (AEC / application) objects that survive only as verbatim source-version
 /// bytes, so saving to a different version or to DXF would drop them. Offers to
 /// save in the source version (keep them) or proceed (drop them).
-fn aec_drop_dialog_window(count: usize, target: &str, src_version: &str) -> Element<'static, Message> {
+fn aec_drop_dialog_window(
+    count: usize,
+    target: &str,
+    src_version: &str,
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'static, Message> {
     let body_text = format!(
         "This drawing contains {count} AEC/Civil objects that \"{target}\" \
          cannot store, so they will not be saved.\n\n\
@@ -1190,7 +1234,8 @@ fn aec_drop_dialog_window(count: usize, target: &str, src_version: &str) -> Elem
         .spacing(0),
     )
     .style(dialog_body_style)
-    .center(Fit)
+    .center_x(sizing.width)
+    .center_y(sizing.height)
     .padding([24, 28])
     .into()
 }
@@ -1199,7 +1244,11 @@ fn aec_drop_dialog_window(count: usize, target: &str, src_version: &str) -> Elem
 /// target folder. "Replace" overwrites; "Cancel" returns to the Save dialog.
 /// Confirm deleting layer(s) that still have objects on them. "Delete Objects"
 /// erases them and removes the layers; "Cancel" leaves everything.
-fn layer_delete_warning_window(names: &[String], count: usize) -> Element<'static, Message> {
+fn layer_delete_warning_window(
+    names: &[String],
+    count: usize,
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'static, Message> {
     let obj = if count == 1 { "object" } else { "objects" };
     let subject = if names.len() == 1 {
         format!("Layer \"{}\"", names[0])
@@ -1229,7 +1278,8 @@ fn layer_delete_warning_window(names: &[String], count: usize) -> Element<'stati
         .spacing(0),
     )
     .style(dialog_body_style)
-    .center(Fit)
+    .center_x(sizing.width)
+    .center_y(sizing.height)
     .padding([24, 28])
     .into()
 }
@@ -1238,7 +1288,9 @@ fn layer_delete_warning_window(names: &[String], count: usize) -> Element<'stati
 /// handler for .dwg / .dxf. "Yes" runs the platform association call; "Not now"
 /// just dismisses. Either answer flips the persisted `default_assoc_prompted`
 /// flag so the dialog never reappears.
-fn default_assoc_dialog_window() -> Element<'static, Message> {
+fn default_assoc_dialog_window(
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'static, Message> {
     container(
         column![
             text("Make Open CAD Studio your default CAD app?")
@@ -1263,7 +1315,8 @@ fn default_assoc_dialog_window() -> Element<'static, Message> {
         .spacing(0),
     )
     .style(dialog_body_style)
-    .center(Fit)
+    .center_x(sizing.width)
+    .center_y(sizing.height)
     .padding([24, 28])
     .into()
 }

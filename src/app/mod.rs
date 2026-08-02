@@ -349,6 +349,8 @@ pub(super) struct OpenCADStudio {
     cycle_candidates: Option<(iced::Point, Vec<acadrust::Handle>)>,
     /// Which status-bar pills the user has chosen to show (persisted).
     statusbar_config: crate::ui::statusbar::statusbar_config::StatusBarConfig,
+    /// Add selected scales to existing annotative objects.
+    annotation_auto_scale: i8,
     /// Last persisted user preferences (DYN/OSNAP/OTRACK/POLAR/…). Compared
     /// after each message so a change is written to disk exactly once.
     last_saved_config: Option<config::AppConfig>,
@@ -429,23 +431,20 @@ pub(super) struct OpenCADStudio {
     /// being placed (follows the cursor). `(entity handle, new-arrow grip id)`.
     /// Esc before the placement click removes it again.
     grip_add_provisional: Option<(acadrust::Handle, usize)>,
-    /// Handle hidden from the base tessellation during an in-progress grip
-    /// drag. While dragging, the edited entity is excluded from the cached
-    /// wire set and shown as a cheap overlay preview instead, so each move
-    /// updates only the overlay rather than re-tessellating the whole model.
-    /// Committed (un-hidden + one re-tess) when the drag ends. `None` = idle.
-    grip_preview_handle: Option<acadrust::Handle>,
+    /// Handles hidden from the base tessellation during an in-progress grip
+    /// drag. The edited entities are shown in the overlay until commit.
+    grip_preview_handles: Vec<acadrust::Handle>,
     /// Pending rollover hit-test. Each idle cursor move stashes
     /// `(last_move_at, point, tab)` here and clears the live highlight;
     /// `HoverDwellTick` runs the pick once the cursor has been still for
     /// `HOVER_DWELL_MS`. Skipping the pick mid-stroke avoids the per-frame
     /// O(N) wire+hatch+mesh sweep that froze the cursor on large drawings.
     hover_dwell: Option<HoverDwell>,
-    /// Snapshot of the edited entity taken at the start of a grip drag, used to
-    /// restore it if the user presses Esc to cancel the drag. The drag mutates
-    /// the document live (so grips / properties track), so cancel reverts from
-    /// this backup. Dropped (kept) on a normal commit.
-    grip_original: Option<acadrust::EntityType>,
+    /// Snapshots of edited entities taken at the start of a grip drag. The drag
+    /// mutates the document live, so Escape restores this group atomically.
+    grip_originals: Vec<(acadrust::Handle, acadrust::EntityType)>,
+    /// Document dirty state before the live grip mutation began.
+    grip_dirty_before: Option<bool>,
     /// Drag-start snapshot of the dragged entity's SDF glyph quads. A whole-
     /// entity text move slides these each frame (translating the already-shaped
     /// glyphs) instead of re-tessellating the run every cursor move (issue #316).
@@ -518,9 +517,12 @@ pub(super) struct OpenCADStudio {
     /// Layer Manager Name column width in px, adjusted by the divider drag.
     layer_name_col_w: f32,
     /// How far the user has dragged the modal's corner resize grip from the
-    /// dialog's natural size (added to each modal's default width/height). Reset
+    /// dialog's natural size (added to its measured width/height). Reset
     /// with `modal_offset` so every dialog opens at its own size.
     modal_resize: iced::Vector,
+    /// Last body size reported by the shared modal frame. Used for drag bounds
+    /// and controls whose range follows the real, automatically measured width.
+    modal_content_size: Option<iced::Size>,
     /// True while the modal's corner resize grip is held.
     modal_resizing: bool,
     // ── Attribute editor dialog (ATTEDIT / double-click a block) ───────────
@@ -853,6 +855,8 @@ pub(super) struct OpenCADStudio {
     save_dialog_for_unsaved: bool,
     /// User preference for the first save of a new/unsaved drawing.
     default_save_format: String,
+    /// Persisted interface language selection.
+    language: crate::i18n::Language,
 
     // ── DimStyle Dialog ───────────────────────────────────────────────────
     /// Name of the style currently shown in the dialog.
@@ -1093,6 +1097,7 @@ pub struct ClipExtObjects {
     pub src_entity_handle: acadrust::Handle,
     pub root: acadrust::Handle,
     pub objects: Vec<(acadrust::Handle, acadrust::objects::ObjectType)>,
+    pub annotation_scales: Vec<(acadrust::Handle, acadrust::objects::Scale)>,
 }
 
 impl ClipboardDeps {
@@ -1154,11 +1159,29 @@ impl ClipboardDeps {
                 }
                 let objects = Self::collect_ext_subtree(doc, root);
                 if !objects.is_empty() {
+                    let mut annotation_scales = Vec::new();
+                    for (_, object) in &objects {
+                        let acadrust::objects::ObjectType::ObjectContextData(context) = object else {
+                            continue;
+                        };
+                        if annotation_scales
+                            .iter()
+                            .any(|(handle, _)| *handle == context.scale)
+                        {
+                            continue;
+                        }
+                        if let Some(acadrust::objects::ObjectType::Scale(scale)) =
+                            doc.objects.get(&context.scale)
+                        {
+                            annotation_scales.push((context.scale, scale.clone()));
+                        }
+                    }
                     ext_objects.push(ClipExtObjects {
                         entity_index,
                         src_entity_handle: c.handle,
                         root,
                         objects,
+                        annotation_scales,
                     });
                 }
             }
@@ -1581,6 +1604,8 @@ pub enum Message {
     OptionsThemeChanged(String),
     /// Edit one of Custom theme's six base colours as #RRGGBB.
     OptionsThemeColorChanged(usize, String),
+    /// Switch the interface language and redraw localized views.
+    LanguageChanged(crate::i18n::Language),
     ClearScene,
     SetWireframe(bool),
     /// Set the active tab's render mode (one of acadrust's seven visual
@@ -1873,9 +1898,12 @@ pub enum Message {
     /// Apply the typed custom polar angle (Enter in the picker's field).
     SubmitPolarCustom,
     /// Set the model-space annotation scale (CANNOSCALE equivalent).
-    SetAnnotationScale(f32),
+    SetAnnotationScale(String),
     /// Set the active viewport's custom_scale (paper space).
-    SetViewportScale(f64),
+    SetViewportScale(String),
+    ToggleAnnotationVisibility,
+    ToggleAnnotationAutoAdd,
+    SyncViewportAnnotationScale,
     /// Toggle the scale picker popup open/closed.
     ToggleScalePopup,
     /// Close the scale picker popup.
@@ -2296,6 +2324,8 @@ pub enum Message {
     MTextApply,
     /// Grab the resizable modal's corner grip (a drag resizes it).
     ModalResizeGrab,
+    /// The shared modal body finished layout at this size.
+    ModalContentResized(iced::Size),
     /// Discard the editor without creating / changing the entity.
     MTextCancel,
     // ── In-place single-line TEXT editor ────────────────────────────────
@@ -2622,6 +2652,10 @@ impl OpenCADStudio {
     }
 
     fn new() -> Self {
+        let config = config::AppConfig::load();
+        if let Err(error) = crate::i18n::set_language(config.settings.language) {
+            eprintln!("Unable to apply saved UI language: {error}");
+        }
         // Boot with only the Welcome/Start tab. The user creates drawings
         // explicitly (File → New); we never auto-spawn Drawing1.
         let start_tab = DocumentTab::new_start();
@@ -2665,6 +2699,7 @@ impl OpenCADStudio {
             selection_filter_popup_open: false,
             status_menu_tooltip_hidden: false,
             statusbar_config: crate::ui::statusbar::statusbar_config::StatusBarConfig::default(),
+            annotation_auto_scale: -4,
             last_saved_config: None,
             otrack_active: None,
             clean_screen: false,
@@ -2700,9 +2735,10 @@ impl OpenCADStudio {
             grip_pending: None,
             visibility_popup: None,
             grip_add_provisional: None,
-            grip_preview_handle: None,
+            grip_preview_handles: Vec::new(),
             hover_dwell: None,
-            grip_original: None,
+            grip_originals: Vec::new(),
+            grip_dirty_before: None,
             grip_text_verts: Vec::new(),
             grip_text_slide: false,
             qselect: None,
@@ -2727,6 +2763,7 @@ impl OpenCADStudio {
             layer_col_dragging: false,
             layer_name_col_w: 130.0,
             modal_resize: iced::Vector::ZERO,
+            modal_content_size: None,
             modal_resizing: false,
             attr_editor_handle: None,
             attr_editor_block: String::new(),
@@ -2798,6 +2835,7 @@ impl OpenCADStudio {
             save_dialog_filename: "drawing.dwg".to_string(),
             save_dialog_for_unsaved: false,
             default_save_format: crate::io::DEFAULT_SAVE_FORMAT.to_string(),
+            language: crate::i18n::Language::default(),
             // Plot style
             active_plot_style: crate::io::plot_style::PlotStyleTable::load_named(
                 crate::io::plot_style::DEFAULT_PLOT_STYLE,
@@ -2968,7 +3006,7 @@ impl OpenCADStudio {
         // so preferences, recents, status-bar layout, ribbon density and print
         // options survive across sessions (issue #68). `last_saved_config` is
         // seeded below so the first change — not the boot — triggers a write.
-        app.apply_config(config::AppConfig::load());
+        app.apply_config(config);
         // Load command aliases from ocad.pgp (writes the shipped default file
         // on first launch). The hide-set keeps aliases out of autocomplete while
         // their target command still shows.

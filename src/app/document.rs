@@ -132,9 +132,16 @@ pub(super) struct DocumentTab {
     /// "Previous" keyword at any Select objects prompt (#426).
     pub(super) prev_selection: Vec<acadrust::Handle>,
     pub(super) last_cmd: Option<String>,
+    /// Most recently created path drawable. A fresh LINE/PLINE can accept its
+    /// current final endpoint with Enter before the first click.
+    pub(super) last_draw_anchor: Option<Handle>,
     pub(super) snap_result: Option<SnapResult>,
     pub(super) active_grip: Option<GripEdit>,
     pub(super) selected_grips: Vec<GripDef>,
+    /// Entity handle for each entry in `selected_grips`.
+    pub(super) selected_grip_handles: Vec<Handle>,
+    /// Shift-selected grips, keyed by entity and object-local grip id.
+    pub(super) hot_grips: rustc_hash::FxHashSet<(Handle, usize)>,
     pub(super) selected_handle: Option<Handle>,
     /// Dynamic-block visibility grip for the current single selection.
     pub(super) visibility_grip: Option<super::visibility::VisibilityGrip>,
@@ -406,6 +413,12 @@ impl DocumentTab {
                     l.max_limits = (297.0, 210.0);
                     l.min_extents = (0.0, 0.0, 0.0);
                     l.max_extents = (297.0, 210.0, 0.0);
+                    l.paper_width = 297.0;
+                    l.paper_height = 210.0;
+                    l.plot_paper_units = 1;
+                    l.plot_scale_numerator = 1.0;
+                    l.plot_scale_denominator = 1.0;
+                    l.paper_size = "ISO_A4_(297.00_x_210.00_MM)".into();
                 }
             }
         }
@@ -427,9 +440,12 @@ impl DocumentTab {
             layers: LayerPanel::default(),
             active_cmd: None,
             last_cmd: None,
+            last_draw_anchor: None,
             snap_result: None,
             active_grip: None,
             selected_grips: vec![],
+            selected_grip_handles: vec![],
+            hot_grips: rustc_hash::FxHashSet::default(),
             selected_handle: None,
             visibility_grip: None,
             wireframe: false,

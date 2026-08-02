@@ -321,6 +321,7 @@ pub(crate) fn tessellate_entity_dim_text(
         active_viewport,
         bg_color,
         anno_scale,
+        None,
         e,
         None,
         view_aabb,
@@ -345,6 +346,7 @@ pub(crate) fn tessellate_entity(
     active_viewport: Option<Handle>,
     bg_color: [f32; 4],
     anno_scale: f32,
+    annotation_scale_handle: Option<Handle>,
     e: &EntityType,
     block_cache: Option<&cache::block_cache::BlockCache>,
     // World-space XY view AABB (post `world_offset` subtraction). When
@@ -357,10 +359,33 @@ pub(crate) fn tessellate_entity(
     // by the viewport's GPU uniform so it never changes resident wire content.
     paper_space: bool,
 ) -> Vec<WireModel> {
-    let contextual = crate::scene::annotative::entity_for_active_context(document, e);
+    let contextual = crate::scene::annotative::entity_for_annotation_context(
+        document,
+        e,
+        annotation_scale_handle,
+    );
     let e = contextual.as_ref();
     let h = e.common().handle;
     let sel = selected.contains(&h);
+    // Per-object annotation contexts store each representation relative to the
+    // native/default scale. Resolve that ratio once before TEXT/MTEXT,
+    // DIMENSION, and MULTILEADER reach their independent tessellation paths.
+    let anno_scale = if matches!(
+        e,
+        EntityType::Text(_)
+            | EntityType::MText(_)
+            | EntityType::Dimension(_)
+            | EntityType::MultiLeader(_)
+    ) {
+        crate::scene::annotative::effective_annotation_scale_for(
+            document,
+            e,
+            anno_scale,
+            annotation_scale_handle,
+        )
+    } else {
+        anno_scale
+    };
 
     // Frustum + LOD cull for non-Insert, non-Viewport entities. Insert is
     // handled separately (its WCS bbox depends on the block defn AABB ×
@@ -491,6 +516,7 @@ pub(crate) fn tessellate_entity(
             pattern,
             1.5,
             1.0,
+            annotation_scale_handle,
             world_per_pixel,
             bg_color,
             false,
@@ -712,15 +738,17 @@ pub(crate) fn tessellate_entity(
 
     // ── Dimension baked-block fast path ─────────────────────────────────────
     //
-    // AutoCAD bakes each dimension's final geometry (extension lines, dim
-    // line, arrows, text MText) into a per-instance block — usually
+    // A saved dimension may carry final geometry (extension lines, dim line,
+    // arrows and text) in a per-instance block — usually
     // `*D<n>`, but custom names like `DIMBLOCK###-4NP` also occur. When the
     // block exists we render its contents through `tessellate_entity` so
     // sub-Text/MText get the standard baseline/greek/full LOD ladder, and
     // DIMTXT × DIMSCALE isn't re-applied on already-baked geometry.
     if let EntityType::Dimension(dim) = e {
         let block_name = &dim.base().block_name;
-        if !block_name.trim().is_empty() {
+        if !block_name.trim().is_empty()
+            && !crate::entities::dimension::uses_custom_arrow_blocks(document, dim)
+        {
             if let Some(br) = document
                 .block_records
                 .iter()
@@ -747,8 +775,8 @@ pub(crate) fn tessellate_entity(
                             continue;
                         };
                         // A dimension's definition points are baked into the
-                        // block as POINTs on the Defpoints layer. AutoCAD never
-                        // draws them as PDMODE glyphs — they're grip markers, not
+                        // block as POINTs on the Defpoints layer. They are grip
+                        // markers rather than PDMODE display geometry, so
                         // geometry — so rendering them adds a stray tick at each
                         // measured point that makes the extension lines look like
                         // they run past the geometry. Skip them.
@@ -774,6 +802,7 @@ pub(crate) fn tessellate_entity(
                             // Block contents are baked at the final WCS size —
                             // don't let downstream paths re-apply anno_scale.
                             1.0,
+                            None,
                             sub,
                             block_cache,
                             view_aabb,
@@ -940,6 +969,7 @@ pub(crate) fn tessellate_entity(
                             active_viewport,
                             bg_color,
                             anno_scale,
+                            annotation_scale_handle,
                             &placed,
                             block_cache,
                             view_aabb,
@@ -980,14 +1010,7 @@ pub(crate) fn tessellate_entity(
         // No baked block (e.g. a table created in-app) — synthesise coloured
         // geometry from the rows + TableStyle so fills/colours/borders/margins
         // are honoured instead of the monochrome fallback.
-        // Annotative tables scale with the current annotation scale (their
-        // stored geometry is at paper size); non-annotative tables are already
-        // model-size, so pass 1.0.
-        let table_anno = if crate::scene::annotative::is_annotative(document, e) {
-            anno_scale
-        } else {
-            1.0
-        };
+        let table_anno = 1.0;
         let mut wires = crate::entities::table::tessellate_table(
             tab,
             document,
@@ -1005,6 +1028,7 @@ pub(crate) fn tessellate_entity(
                 active_viewport,
                 bg_color,
                 1.0,
+                None,
                 &EntityType::Insert(insert),
                 block_cache,
                 view_aabb,
@@ -1184,6 +1208,7 @@ pub(crate) fn tessellate_entity(
                     sub_pattern,
                     sub_line_weight_px,
                     anno_scale,
+                    annotation_scale_handle,
                     world_per_pixel,
                     bg_color,
                     false,
@@ -1246,6 +1271,7 @@ pub(crate) fn tessellate_entity(
         pattern,
         line_weight_px,
         anno_scale,
+        annotation_scale_handle,
         world_per_pixel,
         bg_color,
         false,
@@ -1384,6 +1410,7 @@ pub(crate) fn tessellate_entity(
                             pattern,
                             line_weight_px,
                             anno_scale,
+                            annotation_scale_handle,
                             world_per_pixel,
                             bg_color,
                             false,

@@ -21,6 +21,49 @@ use acadrust::{EntityType as AcadEntityType, Handle};
 use iced::time::Instant;
 use iced::{mouse, Point, Task};
 
+/// Return `(new vertex grip id, old vertex count)` for polyline Add Vertex.
+/// LWPolyline segment grips live after the vertex grips, so translate their id
+/// back to the segment before selecting the inserted vertex.
+fn polyline_add_vertex_target(entity: &AcadEntityType, grip_id: usize) -> Option<(usize, usize)> {
+    match entity {
+        AcadEntityType::LwPolyline(polyline) => {
+            let n = polyline.vertices.len();
+            if n == 0 {
+                None
+            } else if grip_id < n {
+                Some((grip_id + 1, n))
+            } else {
+                let segment = grip_id - n;
+                let segment_count = if polyline.is_closed {
+                    n
+                } else {
+                    n.saturating_sub(1)
+                };
+                (segment < segment_count).then_some((segment + 1, n))
+            }
+        }
+        AcadEntityType::Polyline(polyline) if grip_id < polyline.vertices.len() => {
+            Some((grip_id + 1, polyline.vertices.len()))
+        }
+        AcadEntityType::Polyline2D(polyline) if grip_id < polyline.vertices.len() => {
+            Some((grip_id + 1, polyline.vertices.len()))
+        }
+        AcadEntityType::Polyline3D(polyline) if grip_id < polyline.vertices.len() => {
+            Some((grip_id + 1, polyline.vertices.len()))
+        }
+        _ => None,
+    }
+}
+
+fn polyline_vertex_count(entity: &AcadEntityType) -> Option<usize> {
+    match entity {
+        AcadEntityType::LwPolyline(polyline) => Some(polyline.vertices.len()),
+        AcadEntityType::Polyline(polyline) => Some(polyline.vertices.len()),
+        AcadEntityType::Polyline2D(polyline) => Some(polyline.vertices.len()),
+        AcadEntityType::Polyline3D(polyline) => Some(polyline.vertices.len()),
+        _ => None,
+    }
+}
 
 impl OpenCADStudio {
 pub(super) fn begin_tab_close_queue(&mut self, tab_ids: Vec<u64>) -> Task<Message> {
@@ -313,11 +356,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     }
 
                     if text.is_empty() {
-                        let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_enter());
-                        if let Some(r) = result {
-                            return self.apply_cmd_result(r);
-                        }
-                        return Task::none();
+                        return self.feed_command(crate::command::StepInput::Enter);
                     }
 
                     // OTRACK: while aligned to a tracking ray, a bare distance
@@ -451,11 +490,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 }
                 let i = self.active_tab;
                 if self.tabs[i].active_cmd.is_some() {
-                    let result = self.tabs[i].active_cmd.as_mut().map(|c| c.on_enter());
-                    if let Some(r) = result {
-                        return self.apply_cmd_result(r);
-                    }
-                    Task::none()
+                    self.feed_command(crate::command::StepInput::Enter)
                 } else if let Some(cmd) = self.tabs[i].last_cmd.clone() {
                     self.dispatch_command(&cmd)
                 } else {
@@ -537,6 +572,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 // Cancel layout rename first, then fall through.
                 let i_e = self.active_tab;
                 if self.qselect.take().is_some() {
+                    self.reset_modal_geometry();
                     return Task::none();
                 }
                 {
@@ -736,8 +772,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
     pub(super) fn on_layer_delete_confirm(&mut self) -> Task<Message> {
         let i = self.active_tab;
         self.active_modal = None;
-        self.modal_offset = iced::Vector::ZERO;
-        self.modal_resize = iced::Vector::ZERO;
+        self.reset_modal_geometry();
         let Some((names, _)) = self.layer_delete_pending.take() else {
             return Task::none();
         };
@@ -898,10 +933,11 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     // click places it (click-move-click) — same as picking the
                     // grip directly in the viewport. Without this the menu just
                     // closed and the grip never became hot (issue #48).
-                    if let Some(g) = self.tabs[i]
-                        .selected_grips
+                    if let Some((_, g)) = self.tabs[i]
+                        .selected_grip_handles
                         .iter()
-                        .find(|g| g.id == popup.grip_id)
+                        .zip(self.tabs[i].selected_grips.iter())
+                        .find(|(owner, g)| **owner == popup.handle && g.id == popup.grip_id)
                     {
                         // "Move with Leader" drags the whole multileader; the
                         // others move just the picked grip.
@@ -911,13 +947,12 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             } else {
                                 (popup.grip_id, g.is_midpoint)
                             };
-                        self.tabs[i].active_grip = Some(GripEdit {
-                            handle: popup.handle,
+                        self.tabs[i].active_grip = Some(GripEdit::single(
+                            popup.handle,
                             grip_id,
                             is_translate,
-                            origin_world: g.world,
-                            last_world: g.world,
-                        });
+                            g.world,
+                        ));
                     }
                     return Task::none();
                 }
@@ -966,6 +1001,93 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     }
                     return Task::none();
                 }
+                // Polyline Add Vertex is an interactive placement, not an
+                // immediate midpoint edit. Seed the undo snapshot before the
+                // provisional vertex exists, then engage its new grip so the
+                // regular snap/ortho/polar preview follows the cursor. One
+                // click commits the whole append+move; Escape restores the
+                // original entity.
+                if matches!(item.action, GripMenuAction::AddVertex) {
+                    let placement = self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(popup.handle)
+                        .cloned()
+                        .and_then(|original| {
+                            polyline_add_vertex_target(&original, popup.grip_id)
+                                .map(|(new_gid, old_len)| (original, new_gid, old_len))
+                        });
+                    if let Some((original, new_gid, old_len)) = placement {
+                        let dirty_before = self.tabs[i].dirty;
+                        if let Some(entity) =
+                            self.tabs[i].scene.document.get_entity_mut(popup.handle)
+                        {
+                            entity.apply_grip_menu(popup.grip_id, item.action);
+                        }
+                        let inserted = self.tabs[i]
+                            .scene
+                            .document
+                            .get_entity(popup.handle)
+                            .and_then(polyline_vertex_count)
+                            .is_some_and(|len| len == old_len + 1);
+                        if !inserted {
+                            if let Some(entity) =
+                                self.tabs[i].scene.document.get_entity_mut(popup.handle)
+                            {
+                                *entity = original;
+                            }
+                            self.tabs[i].scene.bump_entities(&[
+                                (popup.handle, crate::scene::ChangeKind::Modified),
+                            ]);
+                            self.tabs[i].dirty = dirty_before;
+                            self.refresh_selected_grips();
+                            self.refresh_properties();
+                            self.command_line.push_error("Cannot add a vertex here.");
+                            return Task::none();
+                        }
+                        self.tabs[i]
+                            .scene
+                            .bump_entities(&[(popup.handle, crate::scene::ChangeKind::Modified)]);
+                        self.tabs[i].dirty = true;
+                        self.refresh_selected_grips();
+                        self.refresh_properties();
+                        let grip_world = self.tabs[i]
+                            .selected_grip_handles
+                            .iter()
+                            .zip(self.tabs[i].selected_grips.iter())
+                            .find(|(owner, grip)| {
+                                **owner == popup.handle && grip.id == new_gid
+                            })
+                            .map(|(_, grip)| grip.world);
+                        if let Some(grip_world) = grip_world {
+                            self.grip_originals = vec![(popup.handle, original)];
+                            self.grip_dirty_before = Some(dirty_before);
+                            self.tabs[i].active_grip = Some(GripEdit::single(
+                                popup.handle,
+                                new_gid,
+                                false,
+                                grip_world,
+                            ));
+                            self.command_line
+                                .push_info("Specify new vertex location:");
+                        } else {
+                            if let Some(entity) =
+                                self.tabs[i].scene.document.get_entity_mut(popup.handle)
+                            {
+                                *entity = original;
+                            }
+                            self.tabs[i].scene.bump_entities(&[
+                                (popup.handle, crate::scene::ChangeKind::Modified),
+                            ]);
+                            self.tabs[i].dirty = dirty_before;
+                            self.refresh_selected_grips();
+                            self.refresh_properties();
+                            self.command_line
+                                .push_error("Cannot place the new vertex.");
+                        }
+                        return Task::none();
+                    }
+                }
                 // One-shot action — apply immediately.
                 self.push_undo_snapshot(i, item.label);
                 // For Add Leader, the new arrow becomes the last grip; remember
@@ -1006,14 +1128,18 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 // Grab the new arrow so it follows the cursor (click places it,
                 // Esc removes it).
                 if let Some(new_gid) = add_leader_gid {
-                    if let Some(g) = self.tabs[i].selected_grips.iter().find(|g| g.id == new_gid) {
-                        self.tabs[i].active_grip = Some(GripEdit {
-                            handle: popup.handle,
-                            grip_id: new_gid,
-                            is_translate: false,
-                            origin_world: g.world,
-                            last_world: g.world,
-                        });
+                    if let Some((_, g)) = self.tabs[i]
+                        .selected_grip_handles
+                        .iter()
+                        .zip(self.tabs[i].selected_grips.iter())
+                        .find(|(owner, g)| **owner == popup.handle && g.id == new_gid)
+                    {
+                        self.tabs[i].active_grip = Some(GripEdit::single(
+                            popup.handle,
+                            new_gid,
+                            false,
+                            g.world,
+                        ));
                         self.grip_add_provisional = Some((popup.handle, new_gid));
                     }
                 }
@@ -1021,18 +1147,18 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                 // in Absolute mode, so the arc re-fits through the cursor as
                 // it moves and the next click seats it (#339).
                 if matches!(item.action, GripMenuAction::ConvertToArc) {
-                    if let Some(g) = self.tabs[i]
-                        .selected_grips
+                    if let Some((_, g)) = self.tabs[i]
+                        .selected_grip_handles
                         .iter()
-                        .find(|g| g.id == popup.grip_id)
+                        .zip(self.tabs[i].selected_grips.iter())
+                        .find(|(owner, g)| **owner == popup.handle && g.id == popup.grip_id)
                     {
-                        self.tabs[i].active_grip = Some(GripEdit {
-                            handle: popup.handle,
-                            grip_id: popup.grip_id,
-                            is_translate: false,
-                            origin_world: g.world,
-                            last_world: g.world,
-                        });
+                        self.tabs[i].active_grip = Some(GripEdit::single(
+                            popup.handle,
+                            popup.grip_id,
+                            false,
+                            g.world,
+                        ));
                     }
                 }
                 Task::none()
@@ -1090,6 +1216,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                     value: String::new(),
                     append: false,
                 });
+                self.reset_modal_geometry();
                 Task::none()
     }
 
@@ -1364,15 +1491,19 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                         // take the resolved value directly (None = the default
                         // "Closed filled" / "ByBlock" option).
                         let doc = &self.tabs[i].scene.document;
+                        let resolved_mleader_style = (field == "mleader_style")
+                            .then(|| {
+                                doc.objects.values().find_map(|object| match object {
+                                    acadrust::objects::ObjectType::MultiLeaderStyle(style)
+                                        if style.name == value => Some(style.clone()),
+                                    _ => None,
+                                })
+                            })
+                            .flatten();
                         let resolved: Option<acadrust::Handle> = match field {
-                            "mleader_style" => doc.objects.iter().find_map(|(h, o)| match o {
-                                acadrust::objects::ObjectType::MultiLeaderStyle(s)
-                                    if s.name == value =>
-                                {
-                                    Some(*h)
-                                }
-                                _ => None,
-                            }),
+                            "mleader_style" => {
+                                resolved_mleader_style.as_ref().map(|style| style.handle)
+                            }
                             "text_style_handle" => doc
                                 .text_styles
                                 .iter()
@@ -1404,15 +1535,20 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                             if self.tabs[i].scene.is_layer_locked(handle) {
                                 continue;
                             }
-                            if let Some(acadrust::EntityType::MultiLeader(ml)) =
+                            let mut style_annotation = None;
+                            if field == "mleader_style" {
+                                if let Some(style) = &resolved_mleader_style {
+                                    crate::scene::annotative::apply_mleader_style_to_object(
+                                        &mut self.tabs[i].scene.document,
+                                        handle,
+                                        style,
+                                    );
+                                    style_annotation = Some(style.is_annotative);
+                                }
+                            } else if let Some(acadrust::EntityType::MultiLeader(ml)) =
                                 self.tabs[i].scene.document.get_entity_mut(handle)
                             {
                                 match field {
-                                    "mleader_style" => {
-                                        if let Some(h) = resolved {
-                                            ml.style_handle = Some(h);
-                                        }
-                                    }
                                     "text_style_handle" => {
                                         if let Some(h) = resolved {
                                             ml.text_style_handle = Some(h);
@@ -1421,6 +1557,24 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
                                     "arrowhead_handle" => ml.arrowhead_handle = resolved,
                                     "line_type_handle" => ml.line_type_handle = resolved,
                                     _ => {}
+                                }
+                            }
+                            if let Some(annotative) = style_annotation {
+                                if annotative {
+                                    if let Some(scale) =
+                                        self.tabs[i].scene.creation_annotation_scale_handle()
+                                    {
+                                        crate::scene::annotative::create_annotation_context(
+                                            &mut self.tabs[i].scene.document,
+                                            handle,
+                                            scale,
+                                        );
+                                    }
+                                } else {
+                                    crate::scene::annotative::clear_annotation_context(
+                                        &mut self.tabs[i].scene.document,
+                                        handle,
+                                    );
                                 }
                             }
                         }
@@ -1907,8 +2061,7 @@ pub(super) fn on_tab_close(&mut self, idx: usize) -> Task<Message> {
     pub(super) fn cancel_attr_editor(&mut self) {
         if self.active_modal == Some(crate::app::ModalKind::AttributeEditor) {
             self.active_modal = None;
-            self.modal_offset = iced::Vector::ZERO;
-            self.modal_resize = iced::Vector::ZERO;
+            self.reset_modal_geometry();
         }
         self.attr_editor_handle = None;
         self.attr_editor_block.clear();

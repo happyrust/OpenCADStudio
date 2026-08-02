@@ -430,7 +430,12 @@ impl Scene {
 
             let frozen: rustc_hash::FxHashSet<Handle> =
                 viewport.frozen_layers.iter().copied().collect();
-            let hatches = self.plot_hatches_for_block(model_block, Some(&frozen));
+            let hatches = self.plot_hatches_for_block(
+                model_block,
+                Some(&frozen),
+                self.viewport_scale_handle(viewport.common.handle),
+                self.annotation_all_visible(),
+            );
             for hatch in hatches {
                 if matches!(&hatch.pattern, HatchPattern::Pattern(_)) {
                     let mut points = Vec::new();
@@ -440,7 +445,7 @@ impl Scene {
                         f32::NEG_INFINITY,
                         f32::NEG_INFINITY,
                     ];
-                    for [a, b] in hatch.pattern_segments() {
+                    for [a, b] in hatch.pattern_segments_for_plot() {
                         let (Some(a), Some(b)) =
                             (project(a[0], a[1]), project(b[0], b[1]))
                         else {
@@ -469,6 +474,7 @@ impl Scene {
                             false,
                         );
                         wire.aci = hatch.aci;
+                        wire.line_weight_px = hatch.line_weight_px;
                         wire.aabb = aabb;
                         pattern_wires.push(wire);
                     }
@@ -481,7 +487,13 @@ impl Scene {
                 }
             }
 
-            for wipeout in self.plot_wipeouts_for_block(model_block, Some(&frozen)) {
+            for wipeout in self.plot_wipeouts_for_block(
+                model_block,
+                Some(&frozen),
+                self.viewport_scale_handle(viewport.common.handle),
+                self.annotation_all_visible(),
+                false,
+            ) {
                 if let Some(wipeout) =
                     project_plot_fill(wipeout, &project, xmin, ymin, xmax, ymax)
                 {

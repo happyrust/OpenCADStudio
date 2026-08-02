@@ -10,7 +10,9 @@ use crate::app::helpers::{
 use crate::app::{Message, OpenCADStudio, POLY_START_DELAY_MS};
 use crate::modules::ModuleEvent;
 use crate::scene::model::object::GripApply;
-use crate::scene::pick::grip::{find_hit_grip, find_hit_grip_paper, find_hit_grip_rte, GripEdit};
+use crate::scene::pick::grip::{
+    find_hit_grip, find_hit_grip_paper, find_hit_grip_rte, GripEdit, GripTarget,
+};
 use crate::scene::{
     self, hover_id, CubeRegion, Scene, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD, VIEWCUBE_PX,
 };
@@ -30,6 +32,51 @@ const UCS_ICON_ARM_PX: f32 = 6.0;
 
 fn pt_pt_d2(a: Point, b: Point) -> f32 {
     (a.x - b.x).powi(2) + (a.y - b.y).powi(2)
+}
+
+fn is_added_polyline_vertex(
+    original: &AcadEntityType,
+    current: &AcadEntityType,
+    vertex_id: usize,
+) -> bool {
+    match (original, current) {
+        (AcadEntityType::LwPolyline(before), AcadEntityType::LwPolyline(after)) => {
+            after.vertices.len() == before.vertices.len() + 1
+                && vertex_id < after.vertices.len()
+        }
+        (AcadEntityType::Polyline2D(before), AcadEntityType::Polyline2D(after)) => {
+            after.vertices.len() == before.vertices.len() + 1
+                && vertex_id < after.vertices.len()
+        }
+        _ => false,
+    }
+}
+
+/// Return the source bulge when `vertex_id` is the provisional point inserted
+/// into an arc segment. Straight segments stay straight during placement.
+fn added_arc_bulge(
+    original: &AcadEntityType,
+    current: &AcadEntityType,
+    vertex_id: usize,
+) -> Option<f64> {
+    if !is_added_polyline_vertex(original, current, vertex_id) {
+        return None;
+    }
+    let prev = vertex_id.checked_sub(1)?;
+    let (n, closed, bulge) = match original {
+        AcadEntityType::LwPolyline(polyline) => (
+            polyline.vertices.len(),
+            polyline.is_closed,
+            polyline.vertices.get(prev)?.bulge,
+        ),
+        AcadEntityType::Polyline2D(polyline) => (
+            polyline.vertices.len(),
+            polyline.is_closed(),
+            polyline.vertices.get(prev)?.bulge,
+        ),
+        _ => return None,
+    };
+    ((closed || prev + 1 < n) && bulge.abs() >= 1e-9).then_some(bulge)
 }
 
 /// Squared distance from `p` to the segment `a`–`b`.
@@ -242,8 +289,64 @@ impl OpenCADStudio {
         }
     }
 
+    fn grip_edit_for_hit(
+        &mut self,
+        i: usize,
+        handle: Handle,
+        grip_id: usize,
+        is_translate: bool,
+        world: glam::DVec3,
+    ) -> GripEdit {
+        if !self.tabs[i].hot_grips.contains(&(handle, grip_id)) {
+            self.tabs[i].hot_grips.clear();
+            return GripEdit::single(handle, grip_id, is_translate, world);
+        }
+
+        let mut targets: Vec<GripTarget> = self.tabs[i]
+            .selected_grip_handles
+            .iter()
+            .copied()
+            .zip(self.tabs[i].selected_grips.iter())
+            .filter(|(owner, grip)| self.tabs[i].hot_grips.contains(&(*owner, grip.id)))
+            .filter(|(_, grip)| grip.id != crate::app::visibility::VIS_GRIP_ID)
+            .map(|(owner, grip)| GripTarget {
+                handle: owner,
+                grip_id: grip.id,
+                is_translate: grip.is_midpoint,
+                last_world: grip.world,
+            })
+            .collect();
+
+        // A midpoint/centre grip translates its whole entity. If that entity also
+        // has hot point grips, applying both would move it twice; one translate
+        // target owns the entity in that case.
+        let translate_handles: rustc_hash::FxHashSet<_> = targets
+            .iter()
+            .filter(|target| target.is_translate)
+            .map(|target| target.handle)
+            .collect();
+        let mut used_translates = rustc_hash::FxHashSet::default();
+        targets.retain(|target| {
+            if translate_handles.contains(&target.handle) {
+                target.is_translate && used_translates.insert(target.handle)
+            } else {
+                true
+            }
+        });
+        if targets.is_empty() {
+            return GripEdit::single(handle, grip_id, is_translate, world);
+        }
+        GripEdit {
+            handle,
+            grip_id,
+            origin_world: world,
+            last_world: world,
+            targets,
+        }
+    }
+
     pub(in crate::app) fn update_grip_hover(&mut self, i: usize, p: iced::Point) {
-        const HOVER_OPEN_MS: u128 = 600;
+        const HOVER_OPEN_MS: u128 = 1_000;
         const POPUP_DISMISS_PX: f32 = 80.0;
         if self.tabs[i].active_cmd.is_some()
             || self.tabs[i].active_grip.is_some()
@@ -253,11 +356,6 @@ impl OpenCADStudio {
             self.grip_popup = None;
             return;
         }
-        let Some(handle) = self.tabs[i].selected_handle else {
-            self.grip_hover = None;
-            self.grip_popup = None;
-            return;
-        };
         let (vw, vh) = self.tabs[i].scene.selection.borrow().vp_size;
         let bounds = iced::Rectangle {
             x: 0.0,
@@ -306,7 +404,12 @@ impl OpenCADStudio {
             find_hit_grip(p, &self.tabs[i].selected_grips, &cam, bounds)
         };
         match hit {
-            Some((grip_id, _, _)) => {
+            Some((grip_index, grip_id, _, _)) => {
+                let Some(&handle) = self.tabs[i].selected_grip_handles.get(grip_index) else {
+                    self.grip_hover = None;
+                    self.grip_popup = None;
+                    return;
+                };
                 let same = self
                     .grip_hover
                     .as_ref()
@@ -745,23 +848,48 @@ impl OpenCADStudio {
                 }
             };
 
-            // First move of this drag: hide the edited entity from the
-            // base tessellation (one re-tess) so subsequent moves only
-            // refresh a cheap overlay preview instead of re-tessellating
-            // the whole model on every move.
-            if self.grip_preview_handle != Some(grip.handle) {
-                if let Some(prev) = self.grip_preview_handle.take() {
-                    self.tabs[i].scene.preview_hidden.remove(&prev);
+            let mut seen_handles = rustc_hash::FxHashSet::default();
+            let edited_handles: Vec<_> = grip
+                .targets
+                .iter()
+                .map(|target| target.handle)
+                .filter(|handle| seen_handles.insert(*handle))
+                .collect();
+
+            // First move of this drag: hide every edited entity from the base
+            // tessellation so subsequent moves refresh only the overlay.
+            if self.grip_preview_handles != edited_handles {
+                if self.grip_dirty_before.is_none() {
+                    self.grip_dirty_before = Some(self.tabs[i].dirty);
                 }
-                // Back up the original geometry so Esc can cancel the drag.
-                self.grip_original = self.tabs[i].scene.document.get_entity(grip.handle).cloned();
-                self.tabs[i].scene.preview_hidden.insert(grip.handle);
-                // Hiding changes exactly one resident run. Publishing a full
-                // delta here made the first grip move rebuild every wire.
-                self.tabs[i]
-                    .scene
-                    .bump_entities(&[(grip.handle, crate::scene::ChangeKind::Modified)]);
-                self.grip_preview_handle = Some(grip.handle);
+                for handle in std::mem::take(&mut self.grip_preview_handles) {
+                    self.tabs[i].scene.preview_hidden.remove(&handle);
+                }
+                // Interactive Add Vertex seeds this with the entity from
+                // before insertion so append + placement is one undo step.
+                // Normal grip drags still snapshot their current entities here.
+                if self.grip_originals.is_empty() {
+                    self.grip_originals = edited_handles
+                        .iter()
+                        .filter_map(|&handle| {
+                            self.tabs[i]
+                                .scene
+                                .document
+                                .get_entity(handle)
+                                .cloned()
+                                .map(|entity| (handle, entity))
+                        })
+                        .collect();
+                }
+                for &handle in &edited_handles {
+                    self.tabs[i].scene.preview_hidden.insert(handle);
+                }
+                let changes: Vec<_> = edited_handles
+                    .iter()
+                    .map(|&handle| (handle, crate::scene::ChangeKind::Modified))
+                    .collect();
+                self.tabs[i].scene.bump_entities(&changes);
+                self.grip_preview_handles = edited_handles.clone();
                 // Snapshot the entity's glyph quads once so each move can
                 // slide the already-shaped text rather than re-shaping it
                 // (issue #316). The fast slide path only runs for a rigid
@@ -769,18 +897,26 @@ impl OpenCADStudio {
                 // dimension re-tessellates) and a Square insertion grip (so
                 // an MTEXT width handle, a Triangle, still re-tessellates so
                 // the re-wrap is exact).
-                let snap = self.tabs[i].scene.wire_models_for(&[grip.handle]);
+                let snap = self.tabs[i].scene.wire_models_for(&edited_handles);
                 self.grip_text_verts = snap
                     .iter()
                     .flat_map(|w| w.text_verts.iter().copied())
                     .collect();
                 let square_grip = self.tabs[i]
-                    .selected_grips
+                    .selected_grip_handles
                     .iter()
-                    .find(|g| g.id == grip.grip_id)
-                    .map(|g| g.shape == crate::scene::model::object::GripShape::Square)
+                    .copied()
+                    .zip(self.tabs[i].selected_grips.iter())
+                    .find(|(owner, grip_def)| {
+                        *owner == grip.handle && grip_def.id == grip.grip_id
+                    })
+                    .map(|(_, grip_def)| {
+                        grip_def.shape == crate::scene::model::object::GripShape::Square
+                    })
                     .unwrap_or(false);
-                self.grip_text_slide = !self.grip_text_verts.is_empty()
+                self.grip_text_slide = edited_handles.len() == 1
+                    && grip.targets.len() == 1
+                    && !self.grip_text_verts.is_empty()
                     && snap.iter().all(|w| w.points.is_empty())
                     && square_grip;
             }
@@ -806,8 +942,10 @@ impl OpenCADStudio {
                 bounds,
                 self.snapper.osnap_radius_px,
             );
-            // Grip drag has no single rubber-band origin for a perp foot.
-            self.snapper.from_point = None;
+            // The engaged grip is the rubber-band origin. Perpendicular
+            // snapping must drop its foot from this point, including when a
+            // hot-grip set is moved by the same drag vector.
+            self.snapper.from_point = Some(grip.origin_world.as_vec3());
             let (go, gr) = self.tabs[i].ucs_grid_basis();
             // `raw` is already model space (viewport camera or paper→model),
             // and the wires are model space, so the snap result is model.
@@ -840,7 +978,7 @@ impl OpenCADStudio {
             }
             if let Some(dir) = self.axis_lock_dir {
                 snapped = axis_lock_apply(snapped, grip.origin_world, dir);
-            } else if snap_hit.is_none() {
+            } else if !snap_hit.is_some_and(|s| s.snap_type != crate::snap::SnapType::Grid) {
                 let base = grip.origin_world;
                 let ucs_xf = self.tabs[i].ucs_xform();
                 if self.ortho_mode {
@@ -861,22 +999,56 @@ impl OpenCADStudio {
 
             let snap_ms = snap_started.elapsed().as_secs_f64() * 1000.0;
             let apply_started = Instant::now();
-            let apply = if grip.is_translate {
-                GripApply::Translate(snapped - grip.last_world)
-            } else {
-                GripApply::Absolute(snapped)
-            };
-            self.tabs[i]
-                .scene
-                .apply_grip(grip.handle, grip.grip_id, apply);
-            if matches!(
-                self.tabs[i].scene.document.get_entity(grip.handle),
-                Some(acadrust::EntityType::Hatch(_))
-            ) {
-                self.tabs[i].scene.set_preview_hatch(grip.handle);
+            let delta = snapped - grip.last_world;
+            let actions: Vec<_> = grip
+                .targets
+                .iter()
+                .map(|target| {
+                    let apply = if target.is_translate {
+                        GripApply::Translate(delta)
+                    } else {
+                        GripApply::Absolute(target.last_world + delta)
+                    };
+                    (target.handle, target.grip_id, apply)
+                })
+                .collect();
+            let refit_arc_targets: Vec<_> = grip
+                .targets
+                .iter()
+                .filter_map(|target| {
+                    let original = self
+                        .grip_originals
+                        .iter()
+                        .find(|(handle, _)| *handle == target.handle)
+                        .map(|(_, entity)| entity)?;
+                    let current = self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(target.handle)?;
+                    added_arc_bulge(original, current, target.grip_id)
+                        .map(|bulge| (target.handle, target.grip_id, bulge))
+                })
+                .collect();
+            for (handle, grip_id, apply) in actions {
+                self.tabs[i].scene.apply_grip(handle, grip_id, apply);
             }
+            for (handle, vertex_id, original_bulge) in refit_arc_targets {
+                if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(handle) {
+                    crate::entities::lwpolyline::refit_added_arc_vertex(
+                        entity,
+                        vertex_id,
+                        original_bulge,
+                    );
+                }
+            }
+            self.tabs[i].scene.set_preview_hatches(&edited_handles);
             self.tabs[i].dirty = true;
-            self.tabs[i].active_grip.as_mut().unwrap().last_world = snapped;
+            if let Some(active) = self.tabs[i].active_grip.as_mut() {
+                active.last_world = snapped;
+                for target in &mut active.targets {
+                    target.last_world += delta;
+                }
+            }
             let apply_ms = apply_started.elapsed().as_secs_f64() * 1000.0;
             let preview_started = Instant::now();
             // Overlay the moved entity (hidden from the base). Pure text
@@ -898,7 +1070,7 @@ impl OpenCADStudio {
                 // preview WireModels carry the entity's glyphs (gathered
                 // for the preview-text buffer in the render path), so a
                 // dimension / MTEXT-width drag keeps its text visible too.
-                let preview = self.tabs[i].scene.wire_models_for(&[grip.handle]);
+                let preview = self.tabs[i].scene.wire_models_for(&edited_handles);
                 self.tabs[i].scene.set_preview_wires(preview);
             }
             let preview_ms = preview_started.elapsed().as_secs_f64() * 1000.0;
@@ -2022,7 +2194,7 @@ impl OpenCADStudio {
             && self.tabs[i].active_grip.is_none()
             && !self.tabs[i].selected_grips.is_empty()
         {
-            if let Some(handle) = self.tabs[i].selected_handle {
+            {
                 let is_paper = self.tabs[i].scene.current_layout != "Model";
                 // In-viewport grips are model-space; project them with the
                 // viewport camera so they hit-test where the GPU draws
@@ -2057,7 +2229,10 @@ impl OpenCADStudio {
                     let cam = self.tabs[i].scene.camera.borrow();
                     find_hit_grip(p, &self.tabs[i].selected_grips, &cam, bounds)
                 };
-                if let Some((grip_id, is_translate, world)) = grip_hit {
+                if let Some((grip_index, grip_id, is_translate, world)) = grip_hit {
+                    let Some(&handle) = self.tabs[i].selected_grip_handles.get(grip_index) else {
+                        return Task::none();
+                    };
                     // The visibility (lookup) grip opens a state
                     // dropdown instead of starting a stretch drag.
                     if grip_id == crate::app::visibility::VIS_GRIP_ID {
@@ -2066,13 +2241,22 @@ impl OpenCADStudio {
                         self.grip_popup = None;
                         return Task::none();
                     }
-                    self.tabs[i].active_grip = Some(GripEdit {
+                    if self.shift_down {
+                        let key = (handle, grip_id);
+                        if !self.tabs[i].hot_grips.remove(&key) {
+                            self.tabs[i].hot_grips.insert(key);
+                        }
+                        self.grip_hover = None;
+                        self.grip_popup = None;
+                        return Task::none();
+                    }
+                    self.tabs[i].active_grip = Some(self.grip_edit_for_hit(
+                        i,
                         handle,
                         grip_id,
                         is_translate,
-                        origin_world: world,
-                        last_world: world,
-                    });
+                        world,
+                    ));
                     self.grip_hover = None;
                     self.grip_popup = None;
                     return Task::none();
@@ -2147,30 +2331,58 @@ impl OpenCADStudio {
                 // Engaging click — stay hot, wait for the placement click.
                 return Task::none();
             }
+            let added_vertex_focus = grip.targets.iter().find_map(|target| {
+                let original = self
+                    .grip_originals
+                    .iter()
+                    .find(|(handle, _)| *handle == target.handle)
+                    .map(|(_, entity)| entity)?;
+                let current = self.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(target.handle)?;
+                is_added_polyline_vertex(original, current, target.grip_id)
+                    .then_some(target.grip_id)
+            });
             self.tabs[i].active_grip = None;
-            // Commit the grip drag: keep the doc's dragged geometry,
-            // un-hide the edited entity and re-tessellate the base
-            // once, dropping the overlay preview.
-            if let Some(h) = self.grip_preview_handle.take() {
-                // Undo entry for the drag (#332): the pre-drag backup
-                // and live dragged image form a one-entity Arc delta. The old
-                // swap/full-document snapshot made a vertex drag O(document).
-                if let Some(orig) = self.grip_original.take() {
-                    self.push_single_entity_history(i, "GRIP", h, std::sync::Arc::new(orig));
+            // Commit the grip drag as one undoable group, then put every
+            // edited entity back into the resident tessellation.
+            let handles = std::mem::take(&mut self.grip_preview_handles);
+            let originals = std::mem::take(&mut self.grip_originals);
+            let dirty_before = self.grip_dirty_before.take().unwrap_or(self.tabs[i].dirty);
+            if !handles.is_empty() {
+                if !originals.is_empty() {
+                    self.push_entity_group_history(
+                        i,
+                        "GRIP",
+                        originals
+                            .into_iter()
+                            .map(|(handle, entity)| (handle, std::sync::Arc::new(entity)))
+                            .collect(),
+                        dirty_before,
+                    );
                     self.tabs[i].dirty = true;
                 }
                 self.grip_text_verts = Vec::new();
                 self.grip_text_slide = false;
-                self.tabs[i].scene.preview_hidden.remove(&h);
+                for &handle in &handles {
+                    self.tabs[i].scene.preview_hidden.remove(&handle);
+                }
                 self.tabs[i].scene.clear_preview_wire();
-                // Only the dragged entity changed — re-tessellate just it.
-                self.tabs[i]
-                    .scene
-                    .bump_entities(&[(h, crate::scene::ChangeKind::Modified)]);
+                let changes: Vec<_> = handles
+                    .into_iter()
+                    .map(|handle| (handle, crate::scene::ChangeKind::Modified))
+                    .collect();
+                self.tabs[i].scene.bump_entities(&changes);
             }
             // Placement confirmed — keep the just-added leader.
             self.grip_add_provisional = None;
             self.tabs[i].snap_result = None;
+            if let Some(vertex_id) = added_vertex_focus {
+                self.tabs[i].properties.prop_vertex = vertex_id;
+                self.tabs[i].properties.prop_vertex_indicator_active = true;
+                crate::scene::view::dispatch::set_prop_current_vertex(vertex_id);
+            }
             self.refresh_properties();
             return Task::none();
         }
@@ -4083,6 +4295,12 @@ impl OpenCADStudio {
                             l.max_limits = (297.0, 210.0);
                             l.min_extents = (0.0, 0.0, 0.0);
                             l.max_extents = (297.0, 210.0, 0.0);
+                            l.paper_width = 297.0;
+                            l.paper_height = 210.0;
+                            l.plot_paper_units = 1;
+                            l.plot_scale_numerator = 1.0;
+                            l.plot_scale_denominator = 1.0;
+                            l.paper_size = "ISO_A4_(297.00_x_210.00_MM)".into();
                             break;
                         }
                     }

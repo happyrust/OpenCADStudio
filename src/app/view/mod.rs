@@ -39,6 +39,40 @@ const PAPER_SPACE_BACKGROUND: Color = Color {
     a: 1.0,
 };
 
+/// Base surface directly under the crosshair. Paper content viewports render
+/// transparently over the sheet/desk, including while MSPACE input is active.
+fn crosshair_background(tab: &DocumentTab, is_paper: bool) -> [f32; 4] {
+    if !is_paper {
+        return tab.scene.bg_color;
+    }
+
+    let desk = [
+        PAPER_SPACE_BACKGROUND.r,
+        PAPER_SPACE_BACKGROUND.g,
+        PAPER_SPACE_BACKGROUND.b,
+        PAPER_SPACE_BACKGROUND.a,
+    ];
+    let (cursor, viewport_size) = {
+        let selection = tab.scene.selection.borrow();
+        (selection.last_move_pos, selection.vp_size)
+    };
+    let Some(cursor) = cursor else {
+        return desk;
+    };
+    if viewport_size.0 <= 0.0 || viewport_size.1 <= 0.0 {
+        return desk;
+    }
+    let on_sheet = tab
+        .scene
+        .paper_sheet_screen_rect(viewport_size)
+        .is_some_and(|rect| rect.contains(cursor));
+    if on_sheet {
+        tab.scene.paper_bg_color
+    } else {
+        desk
+    }
+}
+
 /// Clear gap (px) kept between the render-mode bar (top-left) and the ViewCube
 /// (top-right) before the cube is judged to collide and hides.
 const VIEWCUBE_GAP: f32 = 12.0;
@@ -315,14 +349,19 @@ impl OpenCADStudio {
                     // mark that grip hot so the navigated vertex is visible in
                     // the drawing. Only for a single selected polyline, whose
                     // vertex grips are ids 0..n. (Properties vertex stepper)
-                    let current_vertex_grip: Option<usize> = sel_h.and_then(|h| {
+                    let current_vertex_grip: Option<usize> = tab
+                        .properties
+                        .prop_vertex_indicator_active
+                        .then(|| sel_h)
+                        .flatten()
+                        .and_then(|h| {
                         matches!(
                             tab.scene.document.get_entity(h),
                             Some(acadrust::EntityType::LwPolyline(_))
                                 | Some(acadrust::EntityType::Polyline2D(_))
                         )
                         .then_some(tab.properties.prop_vertex)
-                    });
+                        });
                     // In-viewport grips are model-space; project them with the
                     // viewport camera so they sit on the wire the GPU draws.
                     // Paper entities use the 2-D paper transform; the model tab
@@ -349,7 +388,8 @@ impl OpenCADStudio {
                     };
                     screen_grips
                         .into_iter()
-                        .filter(|(_, screen, _, _, _)| {
+                        .enumerate()
+                        .filter(|(_, (_, screen, _, _, _))| {
                             screen.x.is_finite()
                                 && screen.y.is_finite()
                                 && screen.x >= -bounds.width
@@ -357,12 +397,18 @@ impl OpenCADStudio {
                                 && screen.y >= -bounds.height
                                 && screen.y <= bounds.height * 2.0
                         })
-                        .map(|(grip_id, screen, _is_midpoint, shape, dir)| {
-                            let is_hot = tab
-                                .active_grip
-                                .as_ref()
-                                .map_or(false, |g| Some(g.handle) == sel_h && g.grip_id == grip_id)
-                                || Some(grip_id) == current_vertex_grip;
+                        .map(|(index, (grip_id, screen, _is_midpoint, shape, dir))| {
+                            let owner = tab.selected_grip_handles.get(index).copied();
+                            let is_hot = owner.is_some_and(|handle| {
+                                tab.hot_grips.contains(&(handle, grip_id))
+                                    || tab.active_grip.as_ref().is_some_and(|edit| {
+                                        edit.targets.iter().any(|target| {
+                                            target.handle == handle && target.grip_id == grip_id
+                                        })
+                                    })
+                                    || (Some(handle) == sel_h
+                                        && Some(grip_id) == current_vertex_grip)
+                            });
                             crate::ui::overlay::GripMarker {
                                 pos: screen,
                                 shape,
@@ -580,11 +626,7 @@ impl OpenCADStudio {
                 tab.pan_mode,
                 self.ribbon.open_dropdown.is_some(),
                 hover_locked,
-                if tab.scene.input_uses_model_space() {
-                    tab.scene.bg_color
-                } else {
-                    tab.scene.paper_bg_color
-                },
+                crosshair_background(tab, is_paper),
             )
         };
 
@@ -1288,9 +1330,9 @@ impl OpenCADStudio {
                 viewport_stack = viewport_stack.push(mtext_editor_overlay(
                     ed,
                     styles,
-                    canvas,
                     self.modal_offset,
                     self.modal_resize,
+                    self.modal_content_size,
                 ));
             }
             if let Some(ed) = &self.text_inline {
@@ -1428,6 +1470,7 @@ impl OpenCADStudio {
                         layout_names: layout_names.clone(),
                         polar_custom_input: &self.polar_custom_input,
                         scale_is_model: is_model,
+                        current_scale_name: tab.scene.displayed_annotation_scale_name(),
                         scale_list: tab.scene.scale_picker_list(),
                         has_selection: !tab.scene.selected.is_empty(),
                         selection_types: tab
@@ -1459,6 +1502,9 @@ impl OpenCADStudio {
                         self.show_layout_tabs,
                         tab.scene.annotation_scale,
                         scale_pill_enabled,
+                        tab.scene.annotation_all_visible(),
+                        self.annotation_auto_scale > 0,
+                        tab.scene.viewport_annotation_scale_synced(),
                         tab.scene.document.header.lineweight_display,
                         cursor_coord,
                         coords_mode,
@@ -1506,7 +1552,13 @@ impl OpenCADStudio {
         let qselect_layer: Element<'_, Message> = if let Some(state) = &self.qselect {
             let types = tab.scene.entity_type_names_in_layout();
             let properties = tab.scene.qselect_properties(state.type_filter.as_deref());
-            qselect_overlay(state, &types, &properties)
+            qselect_overlay(
+                state,
+                &types,
+                &properties,
+                self.modal_offset,
+                self.modal_resize,
+            )
         } else {
             iced::widget::Space::new().width(0).height(0).into()
         };
@@ -1571,67 +1623,12 @@ impl OpenCADStudio {
         }
     }
 
-    /// Conservative outer pixel bounds for the active modal, used to clamp drag
-    /// so it cannot be pushed off-screen. Mirrors the maximum dimensions in
-    /// [`Self::modal_content`]; content-sized dialogs may render smaller.
-    /// `None` has no active modal. About uses a safe estimate.
+    /// Measured outer pixel bounds for whichever shared modal is visible, used
+    /// to keep its frame on-screen while dragging.
     pub(crate) fn modal_outer_size(&self) -> Option<(f32, f32)> {
-        use super::ModalKind::*;
-        // Title bar (~26) + spacing (6) + frame padding (10·2) → ~52 vertical;
-        // frame padding → ~20 horizontal.
-        const EXTRA_W: f32 = 20.0;
-        const EXTRA_H: f32 = 52.0;
-        let (w, h) = match self.active_modal? {
-            About => (440, 360),
-            Shortcuts => (720, 520),
-            Options => (520, 500),
-            FindReplace => (560, 190),
-            PluginManager => {
-                #[cfg(target_arch = "wasm32")]
-                {
-                    (self.web_plugin_notice_width(), 230)
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    (940, 600)
-                }
-            }
-            UpdateNotice => (560, 460),
-            Layers => (900, 360),
-            LayerStateManager => (720, 420),
-            LayerStateEditor => (1180, 560),
-            Plot => (760, 540),
-            LayoutManager => (640, 320),
-            Plotstyle => (780, 540),
-            TextStyle => (860, 480),
-            MlStyle => (620, 420),
-            TableStyle => (620, 420),
-            MLeaderStyle => (560, 560),
-            DimStyle => (720, 560),
-            AssocPrompt => (440, 210),
-            Unsaved => (420, 160),
-            AecDropWarning => (480, 230),
-            #[cfg(not(target_arch = "wasm32"))]
-            FileInUse => (560, 250),
-            #[cfg(not(target_arch = "wasm32"))]
-            ExternalChange => (620, 250),
-            #[cfg(target_arch = "wasm32")]
-            SaveDialog => (420, 200),
-            #[cfg(not(target_arch = "wasm32"))]
-            SaveDialog => (420, 150),
-            PointStyle => (360, 470),
-            AttributeEditor => (640, 500),
-            LayerDeleteWarning => (440, 200),
-            Aliases => (480, 520),
-            ScaleManager => (520, 360),
-            AnnoObjectScale => (360, 420),
-        };
-        // Include the user's corner-resize growth so the drag clamp tracks the
-        // dialog's actual footprint.
-        Some((
-            w as f32 + EXTRA_W + self.modal_resize.x,
-            h as f32 + EXTRA_H + self.modal_resize.y,
-        ))
+        let size = self.modal_content_size?;
+        // Frame padding is 10 px per side; title + body spacing is 30 px.
+        Some((size.width + 20.0, size.height + 50.0))
     }
 }
 
@@ -2321,7 +2318,7 @@ fn start_page_content<'a>(
     let headline = text("Open CAD Studio").size(40).style(start_primary_style);
 
     // Plain outlined button (Open / New / Help / Contribute).
-    let outline_btn = |label: &'static str, msg: Message| {
+    let outline_btn = |label: String, msg: Message| {
         button(text(label).size(14))
             .on_press(msg)
             .padding([10, 22])
@@ -2349,7 +2346,7 @@ fn start_page_content<'a>(
         button(
             row![
                 crate::ui::icons::themed_danger_text(crate::ui::icons::HEART, 14.0),
-                text("Donate").size(14),
+                text(crate::tr!("start-donate")).size(14),
             ]
             .spacing(5)
             .align_y(iced::Center),
@@ -2363,8 +2360,8 @@ fn start_page_content<'a>(
     };
 
     let primary_row = WrapFlow::new(vec![
-        outline_btn("New Drawing", Message::TabNew).into(),
-        outline_btn("Open File…", Message::OpenFile).into(),
+        outline_btn(crate::tr!("start-new-drawing"), Message::TabNew).into(),
+        outline_btn(crate::tr!("start-open-file"), Message::OpenFile).into(),
         donate_btn.into(),
     ])
     .spacing_x(12.0)
@@ -2374,16 +2371,16 @@ fn start_page_content<'a>(
     #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut secondary_items: Vec<Element<'a, Message>> = vec![
         outline_btn(
-            "Send Feedback",
+            crate::tr!("start-send-feedback"),
             Message::RibbonToolClick {
                 tool_id: "REPORT".to_string(),
                 event: crate::modules::ModuleEvent::Command("REPORT".to_string()),
             },
         )
         .into(),
-        outline_btn("Options", Message::OptionsOpen).into(),
+        outline_btn(crate::tr!("action-options"), Message::OptionsOpen).into(),
     ];
-    secondary_items.push(outline_btn("Plugins", Message::PluginManagerOpen).into());
+    secondary_items.push(outline_btn(crate::tr!("action-plugins"), Message::PluginManagerOpen).into());
     // The web build is already in the browser, so only the desktop offers a
     // link to the web version.
     #[cfg(not(target_arch = "wasm32"))]
@@ -2406,7 +2403,7 @@ fn start_page_content<'a>(
         .report_natural_width(action_width_out.clone());
 
     let sponsors = column![
-        text("Sponsors").size(15),
+        text(crate::tr!("start-sponsors")).size(15),
         mouse_area(
             container(
                 iced::widget::svg(iced::widget::svg::Handle::from_memory(include_bytes!(
@@ -2508,7 +2505,7 @@ fn start_page_content<'a>(
         // whole thumbnail remains visible when that width changes.
         let thumb_h =
             (panel_w - VIDEO_PANEL_PADDING * 2.0 - VIDEO_SCROLL_GUTTER) * 9.0 / 16.0;
-        let mut list = column![text("Tutorials").size(15)]
+        let mut list = column![text(crate::tr!("start-tutorials")).size(15)]
             .spacing(10)
             .width(Fill)
             // Keep the scrollbar off the thumbnails.
@@ -2548,14 +2545,14 @@ fn start_page_content<'a>(
         }
         if videos.is_empty() {
             let note = if videos_loading {
-                "Loading videos…"
+                crate::tr!("start-loading-videos")
             } else {
-                "Videos load from the internet."
+                crate::tr!("start-videos-online")
             };
             list = list.push(text(note).size(12).style(start_muted_style));
         }
         let playlist_btn = mouse_area(
-            container(text("Open playlist on YouTube").size(12))
+            container(text(crate::tr!("start-open-playlist")).size(12))
             .padding([6, 10])
             .width(Fill)
             .center_x(Fill)
@@ -2608,7 +2605,7 @@ fn start_page_content<'a>(
     // web builds read the CI-generated snapshot. Both sources mark pinned
     // discussions and sort them before the rest of the list.
     let discussions_panel: Element<'a, Message> = {
-        let mut list = column![text("Discussions").size(15)]
+        let mut list = column![text(crate::tr!("start-discussions")).size(15)]
             .spacing(8)
             .width(Fill);
         for discussion in discussions {
@@ -2621,7 +2618,7 @@ fn start_page_content<'a>(
             .align_y(iced::Center);
             if discussion.pinned {
                 meta = meta.push(
-                    text("Pinned")
+                    text(crate::tr!("start-pinned"))
                         .size(10)
                         .style(start_primary_style),
                 );
@@ -2664,14 +2661,14 @@ fn start_page_content<'a>(
         }
         if discussions.is_empty() {
             let note = if discussions_loading {
-                "Loading discussions…"
+                crate::tr!("start-loading-discussions")
             } else {
-                "Discussions load from GitHub."
+                crate::tr!("start-discussions-online")
             };
             list = list.push(text(note).size(12).style(start_muted_style));
         }
         let open_btn = mouse_area(
-            container(text("Open Discussions on GitHub").size(12))
+            container(text(crate::tr!("start-open-discussions")).size(12))
                 .padding([6, 10])
                 .width(Fill)
                 .center_x(Fill)
@@ -2728,7 +2725,7 @@ fn start_page_content<'a>(
     // shows, so the rail always invites support.
     let supporters: Element<'a, Message> = {
         let mut list = column![
-            text("Supporters").size(15),
+            text(crate::tr!("start-supporters")).size(15),
             Space::new().height(iced::Length::Fixed(12.0)),
         ]
         .spacing(6)
@@ -2749,7 +2746,7 @@ fn start_page_content<'a>(
             container(
                 iced::widget::row![
                     crate::ui::icons::themed_danger_text(crate::ui::icons::HEART, 13.0),
-                    text("Support on Patreon").size(12),
+                    text(crate::tr!("start-support-on-patreon")).size(12),
                 ]
                 .spacing(6)
                 .align_y(iced::Center),
@@ -2834,7 +2831,7 @@ fn start_page_content<'a>(
             .height(Fill)
             .into(),
         StartLayout::Compact => {
-            let tab_btn = |label: &'static str, section: super::StartSection| {
+            let tab_btn = |label: String, section: super::StartSection| {
                 let is_active = active == section;
                 button(text(label).size(14))
                     .on_press(Message::StartSectionSelect(section))
@@ -2867,11 +2864,11 @@ fn start_page_content<'a>(
                     })
             };
             let tab_bar = Row::with_children(vec![
-                tab_btn("Recent Files", super::StartSection::Recent).into(),
-                tab_btn("Videos", super::StartSection::Videos).into(),
-                tab_btn("Welcome", super::StartSection::Welcome).into(),
-                tab_btn("Discussions", super::StartSection::Discussions).into(),
-                tab_btn("Supporters", super::StartSection::Supporters).into(),
+                tab_btn(crate::tr!("start-recent-files"), super::StartSection::Recent).into(),
+                tab_btn(crate::tr!("start-videos"), super::StartSection::Videos).into(),
+                tab_btn(crate::tr!("start-welcome"), super::StartSection::Welcome).into(),
+                tab_btn(crate::tr!("start-discussions"), super::StartSection::Discussions).into(),
+                tab_btn(crate::tr!("start-supporters"), super::StartSection::Supporters).into(),
             ])
             .spacing(6.0)
             .align_y(iced::Center)
@@ -2947,11 +2944,11 @@ pub(super) fn recent_files_panel<'a>(
 ) -> Element<'a, Message> {
     // Title mirrors the Supporters rail: size 15 in the bright text colour,
     // followed by a 12px gap before the content.
-    let title = text("Recent Documents").size(15);
+    let title = text(crate::tr!("start-recent-documents")).size(15);
 
     let body: Element<'a, Message> = if recents.is_empty() {
         container(
-            text("Files you open will show up here.")
+            text(crate::tr!("start-no-recent-files"))
                 .size(12)
                 .style(start_muted_style)
         )
@@ -2979,7 +2976,7 @@ pub(super) fn recent_files_panel<'a>(
             // directory line.
             #[cfg(target_arch = "wasm32")]
             let dir = if dir.is_empty() {
-                "Browser storage".to_string()
+                crate::tr!("start-browser-storage")
             } else {
                 dir
             };
@@ -3090,7 +3087,7 @@ pub(super) fn recent_files_panel<'a>(
         .padding([2, 6])
         .width(iced::Length::Fixed(46.0));
     let limit_row = row![
-        text("Keep recent files").size(11).style(start_muted_style).width(Fill),
+        text(crate::tr!("start-keep-recent-files")).size(11).style(start_muted_style).width(Fill),
         button(crate::ui::icons::themed(crate::ui::icons::MINUS, 11.0))
             .on_press(Message::SetRecentLimit(shown.saturating_sub(STEP)))
             .padding([3, 6])

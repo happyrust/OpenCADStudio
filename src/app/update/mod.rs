@@ -93,6 +93,15 @@ mod util;
 mod viewport;
 
 impl OpenCADStudio {
+    pub(in crate::app) fn reset_modal_geometry(&mut self) {
+        self.modal_offset = iced::Vector::ZERO;
+        self.modal_resize = iced::Vector::ZERO;
+        self.modal_content_size = None;
+        self.modal_drag_last = None;
+        self.modal_dragging = false;
+        self.modal_resizing = false;
+    }
+
     fn sync_open_command_history(&mut self) {
         if !self.command_line.history_open {
             return;
@@ -167,10 +176,7 @@ impl OpenCADStudio {
         }
         self.active_modal = None;
         // Recentre / reset the size of the next dialog and drop any drag.
-        self.modal_offset = iced::Vector::ZERO;
-        self.modal_resize = iced::Vector::ZERO;
-        self.modal_drag_last = None;
-        self.modal_dragging = false;
+        self.reset_modal_geometry();
     }
 
     pub fn update(&mut self, msg: Message) -> Task<Message> {
@@ -241,7 +247,7 @@ impl OpenCADStudio {
     /// point has been committed to the active command. Temporary tracking
     /// points are reset on every input so they don't pile up across a
     /// multi-point command and overwhelm the next pick (issue #85).
-    fn reset_tracking_after_point(&mut self) {
+    pub(in crate::app) fn reset_tracking_after_point(&mut self) {
         self.snapper.clear_tracking();
         self.otrack_active = None;
     }
@@ -1423,6 +1429,7 @@ impl OpenCADStudio {
                 if self.active_modal == Some(super::ModalKind::Layers) {
                     self.ribbon.deactivate_tool_if("LAYERS");
                     self.active_modal = None;
+                    self.reset_modal_geometry();
                 } else {
                     self.sync_ribbon_layers();
                     self.active_modal = Some(super::ModalKind::Layers);
@@ -2582,17 +2589,60 @@ impl OpenCADStudio {
             }
             Message::SetAnnotationScale(scale) => {
                 self.scale_popup_open = false;
+                let auto_scale = self.annotation_auto_scale;
                 if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                    tab.scene.annotation_scale = scale;
-                    util::sync_annotation_scale_header(&mut tab.scene);
-                    tab.scene.invalidate_annotation_dependencies();
+                    let previous = tab.scene.displayed_annotation_scale_handle();
+                    if let Some(handle) = tab.scene.set_annotation_scale_named(&scale) {
+                        if auto_scale > 0 {
+                            tab.scene.add_annotation_scale_to_objects(
+                                handle,
+                                previous,
+                                auto_scale as u8,
+                            );
+                        }
+                        tab.dirty = true;
+                    }
                 }
                 Task::none()
             }
             Message::SetViewportScale(scale) => {
                 self.scale_popup_open = false;
+                let auto_scale = self.annotation_auto_scale;
                 if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                    tab.scene.set_viewport_scale(scale);
+                    let previous = tab.scene.displayed_annotation_scale_handle();
+                    if let Some(handle) = tab.scene.set_viewport_scale_named(&scale) {
+                        if auto_scale > 0 {
+                            tab.scene.add_annotation_scale_to_objects(
+                                handle,
+                                previous,
+                                auto_scale as u8,
+                            );
+                        }
+                        tab.dirty = true;
+                    }
+                }
+                Task::none()
+            }
+            Message::ToggleAnnotationVisibility => {
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    let value = !tab.scene.annotation_all_visible();
+                    tab.scene.set_annotation_all_visible(value);
+                    tab.dirty = true;
+                }
+                Task::none()
+            }
+            Message::ToggleAnnotationAutoAdd => {
+                self.annotation_auto_scale = match self.annotation_auto_scale {
+                    0 => 4,
+                    value => -value,
+                };
+                Task::none()
+            }
+            Message::SyncViewportAnnotationScale => {
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    if tab.scene.sync_viewport_annotation_scale() {
+                        tab.dirty = true;
+                    }
                 }
                 Task::none()
             }
@@ -2640,22 +2690,17 @@ impl OpenCADStudio {
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
                 if handles.len() == 1 {
-                    // Only object types that carry a per-object context.
-                    let ok = matches!(
-                        self.tabs[i].scene.document.get_entity(handles[0]),
-                        Some(
-                            acadrust::EntityType::Text(_)
-                                | acadrust::EntityType::MText(_)
-                                | acadrust::EntityType::Insert(_)
-                        )
-                    );
+                    let ok = self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(handles[0])
+                        .is_some_and(crate::scene::annotative::supports_annotation_context);
                     if ok {
                         self.anno_object_scale_target = Some(handles[0]);
                         self.active_modal = Some(crate::app::ModalKind::AnnoObjectScale);
                     } else {
-                        self.command_line.push_info(
-                            "OBJECTSCALE applies to a single Text, MText or block reference.",
-                        );
+                        self.command_line
+                            .push_info("The selected object does not support annotation scales.");
                     }
                 } else {
                     self.command_line
@@ -2809,21 +2854,16 @@ impl OpenCADStudio {
                 // never rolled back when the manager closes.
                 let i = self.active_tab;
                 let sel = self.scale_manager_selected.clone();
-                if let Some((_, anno, _)) = self
-                    .tabs[i]
-                    .scene
-                    .scale_list()
-                    .into_iter()
-                    .find(|(n, _, _)| n.eq_ignore_ascii_case(&sel))
-                {
-                    self.tabs[i].scene.annotation_scale = anno;
-                    self.tabs[i].scene.document.header.current_annotation_scale = sel.clone();
-                    if let Some((p, d)) = self.tabs[i].scene.scale_paper_drawing(&sel) {
-                        if d != 0.0 {
-                            self.tabs[i].scene.document.header.annotation_scale_value = p / d;
-                        }
+                let previous = self.tabs[i].scene.displayed_annotation_scale_handle();
+                if let Some(scale) = self.tabs[i].scene.set_annotation_scale_named(&sel) {
+                    if self.annotation_auto_scale > 0 {
+                        self.tabs[i].scene.add_annotation_scale_to_objects(
+                            scale,
+                            previous,
+                            self.annotation_auto_scale as u8,
+                        );
                     }
-                    self.tabs[i].scene.invalidate_annotation_dependencies();
+                    self.tabs[i].dirty = true;
                 }
                 Task::none()
             }
@@ -3335,6 +3375,7 @@ impl OpenCADStudio {
 
             Message::QSelectClose => {
                 self.qselect = None;
+                self.reset_modal_geometry();
                 Task::none()
             }
 
@@ -3390,6 +3431,7 @@ impl OpenCADStudio {
                 let Some(state) = self.qselect.take() else {
                     return Task::none();
                 };
+                self.reset_modal_geometry();
                 let i = self.active_tab;
                 let matched = self.tabs[i].scene.qselect(
                     state.type_filter.as_deref(),
@@ -3648,7 +3690,7 @@ impl OpenCADStudio {
                                 // object. Off is handled inside set_entity_*.
                                 if !cur {
                                     if let Some(sh) =
-                                        self.tabs[i].scene.current_annotation_scale_handle()
+                                        self.tabs[i].scene.creation_annotation_scale_handle()
                                     {
                                         crate::scene::annotative::create_annotation_context(
                                             &mut self.tabs[i].scene.document,
@@ -3727,6 +3769,7 @@ impl OpenCADStudio {
                     // Wrap around so ◀ from the first vertex lands on the last.
                     let next = (cur + delta as i64).rem_euclid(n as i64) as usize;
                     self.tabs[i].properties.prop_vertex = next;
+                    self.tabs[i].properties.prop_vertex_indicator_active = next != cur as usize;
                     self.refresh_properties();
                 }
                 Task::none()
@@ -4280,6 +4323,22 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::LanguageChanged(language) => {
+                if self.language == language {
+                    return Task::none();
+                }
+                match crate::i18n::set_language(language) {
+                    Ok(()) => {
+                        self.language = language;
+                        self.persist_settings_if_changed();
+                    }
+                    Err(error) => self
+                        .command_line
+                        .push_error(&format!("Unable to change UI language: {error}")),
+                }
+                Task::none()
+            }
+
             Message::AboutOpen => {
                 self.active_modal = Some(super::ModalKind::About);
                 Task::none()
@@ -4401,6 +4460,32 @@ impl OpenCADStudio {
                 self.modal_drag_last = None;
                 Task::none()
             }
+            Message::ModalContentResized(size) => {
+                if !size.width.is_finite()
+                    || !size.height.is_finite()
+                    || size.width <= 0.0
+                    || size.height <= 0.0
+                {
+                    return Task::none();
+                }
+                let first_measurement = self.modal_content_size.replace(size).is_none();
+                if first_measurement {
+                    let initial_width = self.mtext_editor.as_ref().and_then(|editor| {
+                        editor.editing.is_none().then(|| {
+                            (size.width - 2.0 * super::view::overlay::MTEXT_PREVIEW_PAD)
+                                .max(80.0)
+                                / editor.preview_scale()
+                        })
+                    });
+                    if let (Some(editor), Some(width)) =
+                        (self.mtext_editor.as_mut(), initial_width)
+                    {
+                        editor.rect_width = f64::from(width.max(1e-6));
+                        self.rebuild_mtext_preview();
+                    }
+                }
+                Task::none()
+            }
             Message::RibbonLayerFilterChanged(f) => {
                 self.ribbon.layer_filter = f;
                 Task::none()
@@ -4443,8 +4528,11 @@ impl OpenCADStudio {
                         // of being squeezed (the off-centre padding shrinks the
                         // dialog once it overlaps a border).
                         if let Some((cw, ch)) = self.modal_outer_size() {
-                            let ww = self.vp_size.0 + 440.0;
-                            let wh = self.vp_size.1;
+                            let (ww, wh) = if self.mtext_editor.is_some() {
+                                self.vp_size
+                            } else {
+                                self.win_size
+                            };
                             let max_x = ((ww - cw) * 0.5).max(0.0);
                             let max_y = ((wh - ch) * 0.5).max(0.0);
                             self.modal_offset.x = self.modal_offset.x.clamp(-max_x, max_x);
@@ -5055,6 +5143,7 @@ impl OpenCADStudio {
                 self.file_assoc_enabled = true;
                 self.mark_assoc_prompted();
                 self.active_modal = None;
+                self.reset_modal_geometry();
                 // set_default_app registers the handler first, then makes us the
                 // default — boot no longer does this automatically.
                 Task::perform(
@@ -5066,6 +5155,7 @@ impl OpenCADStudio {
                 self.file_assoc_enabled = false;
                 self.mark_assoc_prompted();
                 self.active_modal = None;
+                self.reset_modal_geometry();
                 Task::none()
             }
             Message::AssocResult(result) => {
