@@ -4,15 +4,19 @@
 // geometry projection; this module maps the source-backed part of that
 // projection onto acadrust entities so a `.pid` opens like any other drawing.
 //
-// Only `Decoded` entities are imported. `Inferred` coordinate hints are raw
-// i32 pairs that land in the +/-900k range on real drawings -- plotting them
-// would scatter the sheet across a region a thousand times its own size --
-// and `ProbeOnly` evidence has no position at all.
+// `Decoded` entities are imported as drawing geometry. Two kinds of
+// `Inferred` evidence come in as well, each on its own hidden layer, because
+// their coordinates share the decoded geometry's space: annotation anchors,
+// and the endpoint pairs whose two ends both land on the sheet. The rest
+// stays out -- inferred coordinate hints are raw i32 pairs that land in the
+// +/-900k range on real drawings, so plotting them would scatter the sheet
+// across a region a thousand times its own size, and `ProbeOnly` evidence has
+// no position at all.
 
 use std::path::{Path, PathBuf};
 
 use acadrust::entities::{Circle, Line, LwPolyline, Point, Text};
-use acadrust::types::{Vector2, Vector3};
+use acadrust::types::{Color, Vector2, Vector3};
 use acadrust::{CadDocument, EntityType};
 use pid_parse::symbol_library::{SymbolLibrary, SymbolPrimitive};
 use pid_parse::{
@@ -51,11 +55,27 @@ const SYMBOL_LIBRARY_ENV: &str = "PID_SYMBOL_LIBRARY";
 const SYMBOL_LABEL_HEIGHT_MM: f64 = 2.0;
 const SYMBOL_LABEL_GAP_MM: f64 = 0.8;
 
+// An annotation record carries an anchor and an orientation but no shape, so
+// it is drawn as a stub leaving the anchor along that orientation: the end at
+// the anchor is the position, the direction is the decoded angle. A cross
+// would hide the angle, since the ones observed are all multiples of 90.
+const ANNOTATION_TICK_MM: f64 = 3.0;
+
+// Shortest connectivity link worth drawing, and the same bound used to tell an
+// endpoint that decoded as the origin from one that genuinely sits in the
+// sheet's bottom-left corner. A P&ID's own line work is millimetres apart at
+// the closest, so a tenth of one separates "two places" from "one place
+// twice".
+const CONNECTIVITY_MIN_MM: f64 = 0.1;
+
 const LAYER_GEOMETRY: &str = "PID-GEOMETRY";
 const LAYER_TEXT: &str = "PID-TEXT";
 const LAYER_SYMBOL: &str = "PID-SYMBOL";
 const LAYER_SYMBOL_LABEL: &str = "PID-SYMBOL-LABEL";
 const LAYER_POINT: &str = "PID-POINT";
+const LAYER_ANNOTATION: &str = "PID-ANNOTATION";
+const LAYER_CONNECTIVITY: &str = "PID-CONNECTIVITY";
+const LAYER_UNRESOLVED: &str = "PID-UNRESOLVED";
 
 /// Parse a `.pid` file and project its decoded Sheet geometry into a document.
 pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
@@ -66,37 +86,55 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
 
     let mut doc = CadDocument::new();
     crate::io::linetypes::populate_document(&mut doc);
-    for (layer, visible) in [
-        (LAYER_GEOMETRY, true),
-        (LAYER_TEXT, true),
-        (LAYER_SYMBOL, true),
+    // Colours separate the kinds at a glance: a P&ID is mostly line work, and
+    // an all-white import makes lettering, symbol bodies and the decode's own
+    // loose ends indistinguishable from the piping.
+    for (layer, colour, visible) in [
+        (LAYER_GEOMETRY, Color::WHITE, true),
+        (LAYER_TEXT, Color::GREEN, true),
+        (LAYER_SYMBOL, Color::CYAN, true),
         // "Flanged Nozzle with blind" is wider than the equipment it names, so
         // on a sheet with 58 placements the labels bury the drawing. They ship
         // switched off: the answer is in the file, one layer toggle away.
-        (LAYER_SYMBOL_LABEL, false),
-        (LAYER_POINT, true),
+        (LAYER_SYMBOL_LABEL, Color::GRAY, false),
+        (LAYER_POINT, Color::MAGENTA, true),
+        // Inferred, so hidden by default for the same reason: it is evidence
+        // about the drawing rather than the drawing.
+        (LAYER_ANNOTATION, Color::YELLOW, false),
+        (LAYER_CONNECTIVITY, Color::BLUE, false),
+        // Decoded, but decoded into a shape the record does not really have.
+        // See `unresolved_unit_line`.
+        (LAYER_UNRESOLVED, Color::RED, false),
     ] {
-        ensure_layer(&mut doc, layer, visible);
+        ensure_layer(&mut doc, layer, colour, visible);
     }
 
     let mut library = discover_symbol_library(path);
 
     let mut bounds = Bounds::default();
+    let mut decoded = 0usize;
     for entity in &geometry.entities {
-        if entity.confidence != PidGeometryConfidence::Decoded {
-            continue;
-        }
-        let built = build_entities(&entity.kind, library.as_mut());
+        let built = match entity.confidence {
+            PidGeometryConfidence::Decoded => build_entities(&entity.kind, library.as_mut()),
+            PidGeometryConfidence::Inferred => build_inferred(&entity.kind),
+            PidGeometryConfidence::ProbeOnly => Vec::new(),
+        };
         if built.is_empty() {
             continue;
         }
-        accumulate_bounds(&entity.kind, &mut bounds);
+        // Only the decoded geometry decides where the camera goes. An
+        // inferred item is evidence about the drawing rather than the
+        // drawing, and it is the kind that strays: see `accumulate_bounds`.
+        if entity.confidence == PidGeometryConfidence::Decoded {
+            decoded += 1;
+            accumulate_bounds(&entity.kind, &mut bounds);
+        }
         for one in built {
             let _ = doc.add_entity(one);
         }
     }
 
-    if doc.entity_count() == 0 {
+    if decoded == 0 {
         return Err(format!(
             "No decoded geometry in {}: pid-parse produced {} evidence item(s), none of them source-backed",
             path.display(),
@@ -113,7 +151,12 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
     match kind {
         PidGraphicKind::Line { start, end } => {
             let mut line = Line::from_points(point3(start), point3(end));
-            line.common.layer = LAYER_GEOMETRY.to_string();
+            line.common.layer = if unresolved_unit_line(start, end) {
+                LAYER_UNRESOLVED
+            } else {
+                LAYER_GEOMETRY
+            }
+            .to_string();
             vec![EntityType::Line(line)]
         }
         PidGraphicKind::Polyline { points, closed } => {
@@ -233,6 +276,66 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
     }
 }
 
+/// Draw the inferred kinds that have a usable position.
+///
+/// A `JStyleOverride` record is `SmartPlant`'s tagged instrument / annotation
+/// placement. Its anchor is inferred rather than decoded, but unlike the other
+/// inferred evidence it lands in the same normalized space the decoded
+/// geometry uses -- across the fixtures every anchor sits inside the sheet,
+/// and none of them coincides with a symbol or text placement, so each one is
+/// an object the drawing has and the import would otherwise lose entirely.
+///
+/// An endpoint pair is the drawing's connectivity graph -- which object joins
+/// which -- rather than drafting geometry, and only part of it is expressed in
+/// sheet coordinates: of `DWG-0201`'s 49 pairs, 35 have both ends on the
+/// sheet, 9 mix a normalized end with a raw one, and 5 are raw at both ends.
+/// The mixed and raw ones would draw a segment kilometres long, so only a pair
+/// that passes [`on_sheet_pair`] is kept.
+fn build_inferred(kind: &PidGraphicKind) -> Vec<EntityType> {
+    match kind {
+        PidGraphicKind::Annotation {
+            anchor,
+            rotation_angle,
+            ..
+        } => {
+            let (sin, cos) = rotation_angle.sin_cos();
+            let start = point3(anchor);
+            let mut tick = Line::from_points(
+                start,
+                Vector3::new(
+                    start.x + ANNOTATION_TICK_MM * cos,
+                    start.y + ANNOTATION_TICK_MM * sin,
+                    0.0,
+                ),
+            );
+            tick.common.layer = LAYER_ANNOTATION.to_string();
+            vec![EntityType::Line(tick)]
+        }
+        PidGraphicKind::Line { start, end } if on_sheet_pair(start, end) => {
+            let mut link = Line::from_points(point3(start), point3(end));
+            link.common.layer = LAYER_CONNECTIVITY.to_string();
+            vec![EntityType::Line(link)]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether an inferred endpoint pair describes a link between two places on
+/// the sheet.
+///
+/// Both ends have to be in sheet coordinates, and the pair has to go
+/// somewhere: an unresolved end decodes as the origin, and a link whose ends
+/// coincide -- 2 of `DWG-0201`'s 35 on-sheet pairs -- carries no direction to
+/// draw.
+fn on_sheet_pair(start: &PidPoint, end: &PidPoint) -> bool {
+    let (start_x, start_y) = (to_mm(start.x), to_mm(start.y));
+    let (end_x, end_y) = (to_mm(end.x), to_mm(end.y));
+    [start_x, start_y, end_x, end_y].iter().all(|v| on_sheet(*v))
+        && (start_x.hypot(start_y) > CONNECTIVITY_MIN_MM)
+        && (end_x.hypot(end_y) > CONNECTIVITY_MIN_MM)
+        && ((end_x - start_x).hypot(end_y - start_y) > CONNECTIVITY_MIN_MM)
+}
+
 /// State the opening view, the way a DWG does.
 ///
 /// `Scene::restore_saved_camera` reads the `*Active` VPORT and only falls back
@@ -324,6 +427,8 @@ fn accumulate_bounds(kind: &PidGraphicKind, bounds: &mut Bounds) {
         PidGraphicKind::Text { insertion, .. }
         | PidGraphicKind::SymbolInstance { insertion, .. } => bounds.add(insertion),
         PidGraphicKind::Point { position } => bounds.add(position),
+        // Never reached: both kinds only ever arrive inferred or probe-only,
+        // and the caller frames on decoded geometry alone.
         PidGraphicKind::Annotation { .. } | PidGraphicKind::Unknown { .. } => {}
     }
 }
@@ -339,8 +444,10 @@ fn accumulate_bounds(kind: &PidGraphicKind, bounds: &mut Bounds) {
 /// middle of the screen.
 ///
 /// The line is still imported -- the record is in the file, and dropping it
-/// would hide a decode gap rather than report it. It just gets no vote on
-/// where the camera goes.
+/// would hide a decode gap rather than report it -- but on the hidden
+/// [`LAYER_UNRESOLVED`] rather than among the drawing's own line work, which
+/// is where it was drawing a 1000mm rule straight across the sheet. It gets
+/// no vote on where the camera goes either.
 fn unresolved_unit_line(start: &PidPoint, end: &PidPoint) -> bool {
     let (start_x, start_y) = (to_mm(start.x), to_mm(start.y));
     let (end_x, end_y) = (to_mm(end.x), to_mm(end.y));
@@ -555,12 +662,13 @@ fn point3(point: &PidPoint) -> Vector3 {
     Vector3::new(to_mm(point.x), to_mm(point.y), 0.0)
 }
 
-fn ensure_layer(doc: &mut CadDocument, name: &str, visible: bool) {
+fn ensure_layer(doc: &mut CadDocument, name: &str, colour: Color, visible: bool) {
     if doc.layers.contains(name) {
         return;
     }
     let mut layer = acadrust::tables::Layer::new(name);
     layer.handle = doc.allocate_handle();
+    layer.color = colour;
     layer.flags.off = !visible;
     let _ = doc.layers.add(layer);
 }
