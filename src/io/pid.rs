@@ -145,7 +145,7 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
     }
 
     report_import(path, &geometry, library.as_ref(), drawn);
-    frame_drawing(&mut doc, &bounds);
+    frame_drawing(&mut doc, &bounds, geometry.page_dimensions_mm);
     doc.source_path = Some(path.to_string_lossy().into_owned());
     Ok(doc)
 }
@@ -403,25 +403,39 @@ fn on_sheet_pair(start: &PidPoint, end: &PidPoint) -> bool {
 /// height, and `fit_all` fits every wire including the off-sheet strays that
 /// `on_sheet` keeps out of the framing box. So the importer states the view
 /// itself, over the filtered bounds.
-fn frame_drawing(doc: &mut CadDocument, bounds: &Bounds) {
+///
+/// When the drawing names its template the view opens on that whole sheet
+/// instead, the way it does in `SmartPlant`: an A2 drawing whose content stops
+/// short of the border otherwise opens zoomed past its own title block. The
+/// page is evidence of size only -- `pid-parse` decodes no page transform --
+/// so it is unioned with the content rather than trusted to contain it, and
+/// nothing is drawn for it. A sheet that has a border carries it as real
+/// geometry already.
+fn frame_drawing(doc: &mut CadDocument, bounds: &Bounds, page_mm: Option<(f64, f64)>) {
     if bounds.is_empty() {
         return;
     }
-    let width = bounds.max_x - bounds.min_x;
-    let height = bounds.max_y - bounds.min_y;
 
     doc.header.model_space_extents_min = Vector3::new(bounds.min_x, bounds.min_y, 0.0);
     doc.header.model_space_extents_max = Vector3::new(bounds.max_x, bounds.max_y, 0.0);
+
+    let (min_x, min_y, max_x, max_y) = match page_mm {
+        Some((page_width, page_height)) => (
+            bounds.min_x.min(0.0),
+            bounds.min_y.min(0.0),
+            bounds.max_x.max(page_width),
+            bounds.max_y.max(page_height),
+        ),
+        None => (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y),
+    };
+    let width = max_x - min_x;
+    let height = max_y - min_y;
 
     let mut vport = acadrust::tables::VPort::new("*Active");
     vport.lower_left = Vector2::new(0.0, 0.0);
     vport.upper_right = Vector2::new(1.0, 1.0);
     vport.view_direction = Vector3::new(0.0, 0.0, 1.0);
-    vport.view_target = Vector3::new(
-        (bounds.min_x + bounds.max_x) / 2.0,
-        (bounds.min_y + bounds.max_y) / 2.0,
-        0.0,
-    );
+    vport.view_target = Vector3::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0, 0.0);
     vport.view_center = Vector2::ZERO;
     // `view_height` alone decides the zoom, so a landscape sheet in a window
     // narrower than 4:3 would spill sideways; widen it to cover that case.
