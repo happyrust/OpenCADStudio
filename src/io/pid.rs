@@ -113,6 +113,7 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
 
     let mut bounds = Bounds::default();
     let mut decoded = 0usize;
+    let mut drawn = 0usize;
     for entity in &geometry.entities {
         let built = match entity.confidence {
             PidGeometryConfidence::Decoded => build_entities(&entity.kind, library.as_mut()),
@@ -129,6 +130,7 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
             decoded += 1;
             accumulate_bounds(&entity.kind, &mut bounds);
         }
+        drawn += built.len();
         for one in built {
             let _ = doc.add_entity(one);
         }
@@ -142,9 +144,66 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
         ));
     }
 
+    report_import(path, &geometry, library.as_ref(), drawn);
     frame_drawing(&mut doc, &bounds);
     doc.source_path = Some(path.to_string_lossy().into_owned());
     Ok(doc)
+}
+
+/// Say what the import could not draw, in the log rather than on the sheet.
+///
+/// The two gaps a reader hits in practice are silent otherwise: evidence the
+/// parser could not decode looks like a sparse drawing, and an unreachable
+/// symbol library looks like a sheet full of dots. Both are recoverable --
+/// the second by pointing [`SYMBOL_LIBRARY_ENV`] at a local copy -- but only
+/// if the import says so.
+fn report_import(
+    path: &Path,
+    geometry: &pid_parse::NormalizedPidGeometry,
+    library: Option<&SymbolLibrary>,
+    drawn: usize,
+) {
+    for warning in &geometry.warnings {
+        log::debug!("{}: {warning}", path.display());
+    }
+
+    // The headline number a thin-looking sheet is read against: how much of
+    // the file reached the drawing, and how much the parser saw but could not
+    // place. Counting the evidence rather than the entities keeps it
+    // comparable with `pid-parse`'s own coverage reporting, so the two agree
+    // on how much of the file is understood.
+    let mut placed = 0usize;
+    let mut undrawn = 0usize;
+    for entity in &geometry.entities {
+        match entity.confidence {
+            PidGeometryConfidence::Decoded => placed += 1,
+            PidGeometryConfidence::Inferred | PidGeometryConfidence::ProbeOnly => undrawn += 1,
+        }
+    }
+    log::info!(
+        "{}: drew {drawn} entit(ies) from {placed} decoded record(s); {undrawn} further evidence item(s) are inferred or probe-only and are hidden or dropped",
+        path.display()
+    );
+
+    let Some(library) = library else {
+        log::warn!(
+            "{}: no symbol library found; every symbol is drawn as a marker. Set {SYMBOL_LIBRARY_ENV} to a local copy of the project's reference-data Symbols share.",
+            path.display()
+        );
+        return;
+    };
+    let missing = library.missing();
+    if missing.is_empty() {
+        return;
+    }
+    log::warn!(
+        "{}: {} of {} symbol(s) are not in the library at {:?}; they are drawn as markers. First missing: {}",
+        path.display(),
+        missing.len(),
+        library.lookups(),
+        library.roots(),
+        missing.iter().take(3).copied().collect::<Vec<_>>().join(", ")
+    );
 }
 
 fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) -> Vec<EntityType> {
