@@ -73,6 +73,12 @@ const ANNOTATION_TICK_MM: f64 = 3.0;
 // twice".
 const CONNECTIVITY_MIN_MM: f64 = 0.1;
 
+// How far past the page edge a coordinate can sit and still be part of the
+// drawing. Wide enough for a symbol whose insertion point a misparse nudged
+// off the border, narrow enough to reject the metres-off strays that framing
+// and the connectivity filter exist to keep out.
+const SHEET_MARGIN_MM: f64 = 100.0;
+
 const LAYER_GEOMETRY: &str = "PID-GEOMETRY";
 const LAYER_TEXT: &str = "PID-TEXT";
 const LAYER_SYMBOL: &str = "PID-SYMBOL";
@@ -81,6 +87,7 @@ const LAYER_POINT: &str = "PID-POINT";
 const LAYER_ANNOTATION: &str = "PID-ANNOTATION";
 const LAYER_CONNECTIVITY: &str = "PID-CONNECTIVITY";
 const LAYER_UNRESOLVED: &str = "PID-UNRESOLVED";
+const LAYER_FRAME: &str = "PID-FRAME";
 
 /// Parse a `.pid` file and project its decoded Sheet geometry into a document.
 pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
@@ -96,6 +103,10 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
     // loose ends indistinguishable from the piping.
     for (layer, colour, visible) in [
         (LAYER_GEOMETRY, Color::WHITE, true),
+        // The sheet's own border. It is part of the drawing rather than
+        // evidence about it, so it opens visible and in the same colour as
+        // the line work it encloses.
+        (LAYER_FRAME, Color::WHITE, true),
         (LAYER_TEXT, Color::GREEN, true),
         (LAYER_SYMBOL, Color::CYAN, true),
         // "Flanged Nozzle with blind" is wider than the equipment it names, so
@@ -116,13 +127,15 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
 
     let mut library = discover_symbol_library(path);
 
-    let mut bounds = Bounds::default();
+    let page_mm = geometry.page_dimensions_mm;
+    let band = SheetBand::for_page(page_mm);
+    let mut bounds = Bounds::new(band);
     let mut decoded = 0usize;
     let mut drawn = 0usize;
     for entity in &geometry.entities {
         let built = match entity.confidence {
             PidGeometryConfidence::Decoded => build_entities(&entity.kind, library.as_mut()),
-            PidGeometryConfidence::Inferred => build_inferred(&entity.kind),
+            PidGeometryConfidence::Inferred => build_inferred(&entity.kind, band),
             PidGeometryConfidence::ProbeOnly => Vec::new(),
         };
         if built.is_empty() {
@@ -150,9 +163,75 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
     }
 
     report_import(path, &geometry, library.as_ref(), drawn);
-    frame_drawing(&mut doc, &bounds, geometry.page_dimensions_mm);
+    draw_page_border(&mut doc, page_mm);
+    frame_drawing(&mut doc, &bounds, page_mm);
     doc.source_path = Some(path.to_string_lossy().into_owned());
     Ok(doc)
+}
+
+/// Draw the sheet the drawing states it is on.
+///
+/// A P&ID's border is an OLE object linked into the sheet rather than line
+/// work, so it decodes as a page size and nothing else: `pid-parse` hands
+/// over the extent, and until this is drawn the content hangs in the middle
+/// of an empty background with no edge to read it against.
+///
+/// Only the rectangle is drawn. The title block, the revision table and the
+/// grid divisions inside a real border are the template's own drafting, and
+/// synthesising them would be inventing content the file does not carry.
+fn draw_page_border(doc: &mut CadDocument, page_mm: Option<(f64, f64)>) {
+    let Some((width, height)) = page_mm else {
+        return;
+    };
+    if !(width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0) {
+        return;
+    }
+    let mut border = LwPolyline::from_points(vec![
+        Vector2::new(0.0, 0.0),
+        Vector2::new(width, 0.0),
+        Vector2::new(width, height),
+        Vector2::new(0.0, height),
+    ]);
+    border.is_closed = true;
+    border.common.layer = LAYER_FRAME.to_string();
+    let _ = doc.add_entity(EntityType::LwPolyline(border));
+}
+
+/// The band a converted coordinate has to fall in to count as part of the
+/// drawing.
+///
+/// Framing and the connectivity filter both have to tell a coordinate on the
+/// sheet from one a misparse threw kilometres away. Where the drawing states
+/// its page that is the page plus a margin; without one it falls back to a
+/// window wide enough for an oversized custom sheet, since the largest ISO
+/// size, A0, is 1189 x 841mm.
+#[derive(Clone, Copy)]
+struct SheetBand {
+    min: f64,
+    max: f64,
+}
+
+impl SheetBand {
+    fn for_page(page_mm: Option<(f64, f64)>) -> Self {
+        match page_mm {
+            Some((width, height)) if width.is_finite() && height.is_finite() => Self {
+                min: -SHEET_MARGIN_MM,
+                max: width.max(height) + SHEET_MARGIN_MM,
+            },
+            _ => Self {
+                min: -SHEET_MARGIN_MM,
+                max: 2000.0,
+            },
+        }
+    }
+
+    /// Whether a converted coordinate could plausibly sit on the sheet.
+    ///
+    /// Only framing and connectivity are filtered; the entity itself is still
+    /// imported, so zooming out still finds it.
+    fn holds(self, value: f64) -> bool {
+        value.is_finite() && (self.min..=self.max).contains(&value)
+    }
 }
 
 /// Say what the import could not draw, in the log rather than on the sheet.
@@ -355,7 +434,7 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
 /// sheet, 9 mix a normalized end with a raw one, and 5 are raw at both ends.
 /// The mixed and raw ones would draw a segment kilometres long, so only a pair
 /// that passes [`on_sheet_pair`] is kept.
-fn build_inferred(kind: &PidGraphicKind) -> Vec<EntityType> {
+fn build_inferred(kind: &PidGraphicKind, band: SheetBand) -> Vec<EntityType> {
     match kind {
         PidGraphicKind::Annotation {
             anchor,
@@ -375,7 +454,7 @@ fn build_inferred(kind: &PidGraphicKind) -> Vec<EntityType> {
             tick.common.layer = LAYER_ANNOTATION.to_string();
             vec![EntityType::Line(tick)]
         }
-        PidGraphicKind::Line { start, end } if on_sheet_pair(start, end) => {
+        PidGraphicKind::Line { start, end } if on_sheet_pair(start, end, band) => {
             let mut link = Line::from_points(point3(start), point3(end));
             link.common.layer = LAYER_CONNECTIVITY.to_string();
             vec![EntityType::Line(link)]
@@ -391,12 +470,12 @@ fn build_inferred(kind: &PidGraphicKind) -> Vec<EntityType> {
 /// somewhere: an unresolved end decodes as the origin, and a link whose ends
 /// coincide -- 2 of `DWG-0201`'s 35 on-sheet pairs -- carries no direction to
 /// draw.
-fn on_sheet_pair(start: &PidPoint, end: &PidPoint) -> bool {
+fn on_sheet_pair(start: &PidPoint, end: &PidPoint, band: SheetBand) -> bool {
     let (start_x, start_y) = (to_mm(start.x), to_mm(start.y));
     let (end_x, end_y) = (to_mm(end.x), to_mm(end.y));
     [start_x, start_y, end_x, end_y]
         .iter()
-        .all(|v| on_sheet(*v))
+        .all(|value| band.holds(*value))
         && (start_x.hypot(start_y) > CONNECTIVITY_MIN_MM)
         && (end_x.hypot(end_y) > CONNECTIVITY_MIN_MM)
         && ((end_x - start_x).hypot(end_y - start_y) > CONNECTIVITY_MIN_MM)
@@ -408,16 +487,14 @@ fn on_sheet_pair(start: &PidPoint, end: &PidPoint) -> bool {
 /// to `fit_all` when there is none. Neither default is usable here: a fresh
 /// `CadDocument` ships an `*Active` entry parked at the origin with a 10-unit
 /// height, and `fit_all` fits every wire including the off-sheet strays that
-/// `on_sheet` keeps out of the framing box. So the importer states the view
+/// [`SheetBand`] keeps out of the framing box. So the importer states the view
 /// itself, over the filtered bounds.
 ///
-/// When the drawing names its template the view opens on that whole sheet
-/// instead, the way it does in `SmartPlant`: an A2 drawing whose content stops
-/// short of the border otherwise opens zoomed past its own title block. The
-/// page is evidence of size only -- `pid-parse` decodes no page transform --
-/// so it is unioned with the content rather than trusted to contain it, and
-/// nothing is drawn for it. A sheet that has a border carries it as real
-/// geometry already.
+/// A drawing that states its page opens on that whole sheet, the way it does
+/// in `SmartPlant`: framing on the content alone leaves an A2 whose drafting
+/// stops short of the border opening zoomed past its own title block. The
+/// page is where the border is drawn, so the view and the border agree by
+/// construction.
 fn frame_drawing(doc: &mut CadDocument, bounds: &Bounds, page_mm: Option<(f64, f64)>) {
     if bounds.is_empty() {
         return;
@@ -427,12 +504,7 @@ fn frame_drawing(doc: &mut CadDocument, bounds: &Bounds, page_mm: Option<(f64, f
     doc.header.model_space_extents_max = Vector3::new(bounds.max_x, bounds.max_y, 0.0);
 
     let (min_x, min_y, max_x, max_y) = match page_mm {
-        Some((page_width, page_height)) => (
-            bounds.min_x.min(0.0),
-            bounds.min_y.min(0.0),
-            bounds.max_x.max(page_width),
-            bounds.max_y.max(page_height),
-        ),
+        Some((page_width, page_height)) => (0.0, 0.0, page_width, page_height),
         None => (bounds.min_x, bounds.min_y, bounds.max_x, bounds.max_y),
     };
     let width = max_x - min_x;
@@ -457,23 +529,23 @@ struct Bounds {
     min_y: f64,
     max_x: f64,
     max_y: f64,
+    band: SheetBand,
 }
 
-impl Default for Bounds {
-    fn default() -> Self {
+impl Bounds {
+    fn new(band: SheetBand) -> Self {
         Self {
             min_x: f64::MAX,
             min_y: f64::MAX,
             max_x: f64::MIN,
             max_y: f64::MIN,
+            band,
         }
     }
-}
 
-impl Bounds {
     fn add(&mut self, point: &PidPoint) {
         let (x, y) = (to_mm(point.x), to_mm(point.y));
-        if !on_sheet(x) || !on_sheet(y) {
+        if !self.band.holds(x) || !self.band.holds(y) {
             return;
         }
         self.min_x = self.min_x.min(x);
@@ -759,18 +831,6 @@ fn symbol_name(path: &str) -> Option<String> {
 
 fn to_mm(value: f64) -> f64 {
     value * MM_PER_SOURCE_UNIT
-}
-
-/// Whether a converted coordinate could plausibly sit on a drawing sheet.
-///
-/// A misparsed record still yields the occasional coordinate off the page --
-/// one fixture places a symbol 126mm below it -- and framing to those leaves
-/// the drawing small and off-centre. Only framing is filtered; the entity
-/// itself is still imported, so zooming out still finds it.
-fn on_sheet(value: f64) -> bool {
-    // The largest ISO sheet, A0, is 1189 x 841mm; the bound is loose enough
-    // for an oversized custom sheet and still rejects a metres-off outlier.
-    value.is_finite() && (-100.0..=2000.0).contains(&value)
 }
 
 fn point3(point: &PidPoint) -> Vector3 {

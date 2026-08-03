@@ -58,7 +58,13 @@ fn import_declares_its_layers_and_hides_the_evidence_ones() {
         return;
     };
 
-    for visible in ["PID-GEOMETRY", "PID-TEXT", "PID-SYMBOL", "PID-POINT"] {
+    for visible in [
+        "PID-GEOMETRY",
+        "PID-FRAME",
+        "PID-TEXT",
+        "PID-SYMBOL",
+        "PID-POINT",
+    ] {
         assert!(!is_hidden(&doc, visible), "{visible} must open visible");
     }
     for hidden in [
@@ -159,6 +165,76 @@ fn import_frames_the_drawing_on_its_sheet() {
         "*Active still has the default {}-unit height",
         vport.view_height
     );
+}
+
+/// The sheet's border is drawn, because a `.pid` carries it as an OLE object
+/// linked into the drawing rather than as line work: without this the content
+/// hangs in an empty background with no edge to read it against.
+///
+/// Only the rectangle is drawn. Its corners are the page `pid-parse` decoded
+/// from the drawing's own `igSmartFrame2d` record, so the border and the
+/// opening view agree by construction.
+#[test]
+fn the_sheet_border_is_drawn_at_the_page_the_drawing_states() {
+    let Some(doc) = import("DWG-0201GP06-01.pid") else {
+        return;
+    };
+
+    let borders: Vec<_> = on_layer(&doc, "PID-FRAME").collect();
+    assert_eq!(borders.len(), 1, "one sheet carries one border");
+    let EntityType::LwPolyline(border) = borders[0] else {
+        panic!("the border is a polyline, found {:?}", borders[0]);
+    };
+    assert!(
+        border.is_closed,
+        "an open border does not read as a sheet edge"
+    );
+    assert_eq!(border.vertices.len(), 4, "a sheet is a rectangle");
+
+    let xs: Vec<f64> = border.vertices.iter().map(|v| v.location.x).collect();
+    let ys: Vec<f64> = border.vertices.iter().map(|v| v.location.y).collect();
+    let min_x = xs.iter().copied().fold(f64::MAX, f64::min);
+    let min_y = ys.iter().copied().fold(f64::MAX, f64::min);
+    let width = xs.iter().copied().fold(f64::MIN, f64::max) - min_x;
+    let height = ys.iter().copied().fold(f64::MIN, f64::max) - min_y;
+
+    assert!(
+        min_x.abs() < 1.0e-9 && min_y.abs() < 1.0e-9,
+        "the page starts at the origin, this one at ({min_x}, {min_y})"
+    );
+    // DWG-0201 is an A2 whose own frame measures 594.3 x 420.3mm.
+    assert!(
+        (width - 594.3).abs() < 0.1 && (height - 420.3).abs() < 0.1,
+        "border is {width:.1} x {height:.1}mm, the drawing states 594.3 x 420.3"
+    );
+
+    for entity in on_layer(&doc, "PID-GEOMETRY") {
+        for point in geometry_extremes(entity) {
+            assert!(
+                point.0 > -SHEET_MARGIN_MM && point.0 < width + SHEET_MARGIN_MM,
+                "drawing content at x={} is not on the {width:.1}mm sheet",
+                point.0
+            );
+        }
+    }
+}
+
+/// How far outside the border a drawn coordinate may still sit. A symbol
+/// whose insertion point a misparse nudged past the edge is still part of the
+/// drawing; a coordinate a page-width away is not.
+const SHEET_MARGIN_MM: f64 = 100.0;
+
+fn geometry_extremes(entity: &EntityType) -> Vec<(f64, f64)> {
+    match entity {
+        EntityType::Line(line) => vec![(line.start.x, line.start.y), (line.end.x, line.end.y)],
+        EntityType::LwPolyline(polyline) => polyline
+            .vertices
+            .iter()
+            .map(|v| (v.location.x, v.location.y))
+            .collect(),
+        EntityType::Circle(circle) => vec![(circle.center.x, circle.center.y)],
+        _ => Vec::new(),
+    }
 }
 
 /// Both fixtures import, and the drawing lands on the layers that open
