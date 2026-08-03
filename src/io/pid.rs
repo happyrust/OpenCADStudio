@@ -48,6 +48,11 @@ const SYMBOL_MARKER_RADIUS_MM: f64 = 1.5;
 // the importer looks for the library next to the drawing.
 const SYMBOL_LIBRARY_ENV: &str = "PID_SYMBOL_LIBRARY";
 
+// How far above the drawing to look for that share. A SmartPlant project puts
+// the drawing at `Plant\Drawings\Area\x.pid` and the symbols at `Plant\Ref\
+// Symbols`, so the walk has to clear the deepest drawing subfolder in use.
+const SYMBOL_SEARCH_DEPTH: usize = 5;
+
 // The library file name says what the marker stands for ("Flanged Nozzle",
 // "Gauge Hatch"), which is the readable half of a symbol until the body can be
 // drawn. Smaller than body text so a label never reads as an annotation, and
@@ -679,24 +684,59 @@ fn carries_a_label(text: &str) -> bool {
 /// Every root found is kept, searched in the order listed. One drawing can
 /// cite several shares, and a machine usually holds a partial copy of each
 /// rather than one merged tree, so stopping at the first root leaves whatever
-/// it does not cover undrawn.
+/// it does not cover undrawn. `SymbolLibrary` only settles for a root that
+/// has nothing to draw once the others have been tried, so a root that turns
+/// out to be a two-file sample costs a miss rather than a wrong symbol.
 fn discover_symbol_library(drawing: &Path) -> Option<SymbolLibrary> {
     let mut roots: Vec<PathBuf> = Vec::new();
     if let Some(list) = std::env::var_os(SYMBOL_LIBRARY_ENV) {
         roots.extend(std::env::split_paths(&list).filter(|root| root.is_dir()));
     }
     let mut dir = drawing.parent();
-    for _ in 0..5 {
+    for _ in 0..SYMBOL_SEARCH_DEPTH {
         let Some(at) = dir else { break };
-        for candidate in ["Symbols", "Ref/Symbols", "symbols"] {
-            let path = at.join(candidate);
-            if path.is_dir() && !roots.contains(&path) {
-                roots.push(path);
+        // `Ref` is the level SmartPlant parks reference data at, and it is
+        // the one intermediate name the walk would otherwise step straight
+        // past on its way up.
+        for holder in [at.to_path_buf(), at.join("Ref")] {
+            for candidate in symbol_roots_in(&holder) {
+                if !roots.contains(&candidate) {
+                    roots.push(candidate);
+                }
             }
         }
         dir = at.parent();
     }
     (!roots.is_empty()).then(|| SymbolLibrary::with_roots(roots))
+}
+
+/// The symbol roots directly inside `dir`.
+///
+/// A local copy of a reference share is rarely named exactly `Symbols`: it
+/// arrives as `symbols-full`, `Symbols_2024`, `plant-symbols`. Matching on
+/// the word rather than the whole name finds those, and costs one directory
+/// listing per level -- the library itself still decides whether a root
+/// actually holds the symbol being placed.
+fn symbol_roots_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .to_lowercase()
+                .contains("symbol")
+        })
+        .map(|entry| entry.path())
+        .collect();
+    // `read_dir` order is filesystem order; searching in a stated order keeps
+    // which copy of a symbol wins from depending on how the disk is laid out.
+    found.sort();
+    found
 }
 
 /// The symbol's name, which is the file name of the `.sym` it is placed from.
