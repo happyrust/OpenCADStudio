@@ -394,7 +394,9 @@ fn build_inferred(kind: &PidGraphicKind) -> Vec<EntityType> {
 fn on_sheet_pair(start: &PidPoint, end: &PidPoint) -> bool {
     let (start_x, start_y) = (to_mm(start.x), to_mm(start.y));
     let (end_x, end_y) = (to_mm(end.x), to_mm(end.y));
-    [start_x, start_y, end_x, end_y].iter().all(|v| on_sheet(*v))
+    [start_x, start_y, end_x, end_y]
+        .iter()
+        .all(|v| on_sheet(*v))
         && (start_x.hypot(start_y) > CONNECTIVITY_MIN_MM)
         && (end_x.hypot(end_y) > CONNECTIVITY_MIN_MM)
         && ((end_x - start_x).hypot(end_y - start_y) > CONNECTIVITY_MIN_MM)
