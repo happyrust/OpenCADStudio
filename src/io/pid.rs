@@ -20,14 +20,15 @@ use acadrust::types::{Color, Vector2, Vector3};
 use acadrust::{CadDocument, EntityType};
 use pid_parse::symbol_library::{SymbolLibrary, SymbolPrimitive};
 use pid_parse::{
-    build_normalized_geometry, PidGeometryConfidence, PidGraphicKind, PidParser, PidPoint,
+    build_normalized_geometry, NormalizedPidGeometry, PidDrawingUnits, PidGeometryConfidence,
+    PidGraphicKind, PidParser, PidPoint,
 };
 
-// `pid-parse` reports Sheet units as undecoded, but the decoded extents of
-// every fixture land in 0..1 and match the drawing's own ISO template once
-// multiplied by 1000 (an A2 sheet measures 0.584 x 0.410, an A1 0.827 x 0.551),
-// so the source unit is the metre.
-const MM_PER_SOURCE_UNIT: f64 = 1000.0;
+// Millimetres in a metre, which is the unit a `.pid`'s decoded coordinates
+// come in. It is also the assumption a drawing whose unit `pid-parse` could
+// not state falls back on: the decoded extents of every fixture land in 0..1
+// and match the drawing's own ISO template once multiplied by 1000.
+const MM_PER_METRE: f64 = 1000.0;
 
 // SmartPlant carries text height in the style record, which is not decoded
 // yet; 2.5mm is the ISO 3098 body-text size a P&ID annotation normally uses.
@@ -128,14 +129,16 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
     let mut library = discover_symbol_library(path);
 
     let page_mm = geometry.page_dimensions_mm;
-    let band = SheetBand::for_page(page_mm);
-    let mut bounds = Bounds::new(band);
+    let projection = Projection::for_geometry(&geometry, path);
+    let mut bounds = Bounds::new(projection);
     let mut decoded = 0usize;
     let mut drawn = 0usize;
     for entity in &geometry.entities {
         let built = match entity.confidence {
-            PidGeometryConfidence::Decoded => build_entities(&entity.kind, library.as_mut()),
-            PidGeometryConfidence::Inferred => build_inferred(&entity.kind, band),
+            PidGeometryConfidence::Decoded => {
+                build_entities(&entity.kind, library.as_mut(), projection)
+            }
+            PidGeometryConfidence::Inferred => build_inferred(&entity.kind, projection),
             PidGeometryConfidence::ProbeOnly => Vec::new(),
         };
         if built.is_empty() {
@@ -195,6 +198,79 @@ fn draw_page_border(doc: &mut CadDocument, page_mm: Option<(f64, f64)>) {
     border.is_closed = true;
     border.common.layer = LAYER_FRAME.to_string();
     let _ = doc.add_entity(EntityType::LwPolyline(border));
+}
+
+/// How a drawing's source coordinates become millimetres on its sheet.
+///
+/// Both halves used to be constants written into this file. `pid-parse` now
+/// states the unit its decoded coordinates are in and the page they sit on,
+/// so the conversion and the on-sheet test are read off the drawing instead
+/// of assumed about it.
+#[derive(Clone, Copy)]
+struct Projection {
+    mm_per_unit: f64,
+    band: SheetBand,
+}
+
+impl Projection {
+    fn for_geometry(geometry: &NormalizedPidGeometry, path: &Path) -> Self {
+        Self {
+            mm_per_unit: mm_per_source_unit(geometry, path),
+            band: SheetBand::for_page(geometry.page_dimensions_mm),
+        }
+    }
+
+    /// A source coordinate in millimetres.
+    fn mm(self, value: f64) -> f64 {
+        value * self.mm_per_unit
+    }
+
+    /// A source point in millimetres, flat on the sheet.
+    fn point(self, point: &PidPoint) -> Vector3 {
+        Vector3::new(self.mm(point.x), self.mm(point.y), 0.0)
+    }
+}
+
+/// The millimetres a source unit is worth, as the parser states it.
+///
+/// `pid-parse` puts the unit on each entity's coordinate context rather than
+/// on the document, and only decoded records carry one, so those are what is
+/// read. They agree with each other by construction, because the unit comes
+/// from the sheet's single page frame. A drawing whose frame the parser could
+/// not decode says nothing about units and falls back to the metre, which is
+/// what every fixture measured before the parser could say so -- and the log
+/// then records having assumed it.
+fn mm_per_source_unit(geometry: &NormalizedPidGeometry, path: &Path) -> f64 {
+    let stated = geometry
+        .entities
+        .iter()
+        .filter(|entity| entity.confidence == PidGeometryConfidence::Decoded)
+        .find_map(|entity| millimetres_in(&entity.coordinate_context.units));
+    stated.unwrap_or_else(|| {
+        log::info!(
+            "{}: no decoded coordinate unit; assuming the metre, {MM_PER_METRE}mm per source unit",
+            path.display()
+        );
+        MM_PER_METRE
+    })
+}
+
+/// Millimetres in one of the units `pid-parse` can state.
+///
+/// The unit arrives as a label rather than a factor. The metre is the only
+/// one a decoded page frame produces; the millimetre is here because it is
+/// the identity and costs nothing to be right about. Any other label is a
+/// unit this importer has not been shown, and guessing at its factor would be
+/// worse than falling back and saying so.
+fn millimetres_in(units: &PidDrawingUnits) -> Option<f64> {
+    let PidDrawingUnits::Known { unit } = units else {
+        return None;
+    };
+    match unit.trim().to_ascii_lowercase().as_str() {
+        "m" => Some(MM_PER_METRE),
+        "mm" => Some(1.0),
+        _ => None,
+    }
 }
 
 /// The band a converted coordinate has to fall in to count as part of the
@@ -290,11 +366,15 @@ fn report_import(
     );
 }
 
-fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) -> Vec<EntityType> {
+fn build_entities(
+    kind: &PidGraphicKind,
+    library: Option<&mut SymbolLibrary>,
+    projection: Projection,
+) -> Vec<EntityType> {
     match kind {
         PidGraphicKind::Line { start, end } => {
-            let mut line = Line::from_points(point3(start), point3(end));
-            line.common.layer = if unresolved_unit_line(start, end) {
+            let mut line = Line::from_points(projection.point(start), projection.point(end));
+            line.common.layer = if unresolved_unit_line(start, end, projection) {
                 LAYER_UNRESOLVED
             } else {
                 LAYER_GEOMETRY
@@ -308,7 +388,7 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
             }
             let vertices: Vec<Vector2> = points
                 .iter()
-                .map(|p| Vector2::new(to_mm(p.x), to_mm(p.y)))
+                .map(|p| Vector2::new(projection.mm(p.x), projection.mm(p.y)))
                 .collect();
             let mut polyline = LwPolyline::from_points(vertices);
             polyline.is_closed = *closed;
@@ -317,8 +397,8 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
         }
         PidGraphicKind::Circle { center, radius } => {
             let mut circle = Circle::new();
-            circle.center = point3(center);
-            circle.radius = to_mm(*radius);
+            circle.center = projection.point(center);
+            circle.radius = projection.mm(*radius);
             circle.common.layer = LAYER_GEOMETRY.to_string();
             vec![EntityType::Circle(circle)]
         }
@@ -329,8 +409,8 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
             end_angle,
         } => {
             let mut arc = acadrust::entities::Arc::new();
-            arc.center = point3(center);
-            arc.radius = to_mm(*radius);
+            arc.center = projection.point(center);
+            arc.radius = projection.mm(*radius);
             arc.start_angle = start_angle.to_degrees();
             arc.end_angle = end_angle.to_degrees();
             arc.common.layer = LAYER_GEOMETRY.to_string();
@@ -347,9 +427,9 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
             }
             let mut text = Text::new();
             text.value = value.clone();
-            text.insertion_point = point3(insertion);
+            text.insertion_point = projection.point(insertion);
             text.height = if *height > 0.0 {
-                to_mm(*height)
+                projection.mm(*height)
             } else {
                 TEXT_HEIGHT_MM
             };
@@ -367,6 +447,7 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
                 insertion,
                 rotation: *rotation,
                 scale: *scale,
+                projection,
             };
             let body = library
                 .zip(symbol_path.as_deref())
@@ -386,7 +467,7 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
                 Some(entities) if !entities.is_empty() => entities,
                 _ => {
                     let mut marker = Circle::new();
-                    marker.center = point3(insertion);
+                    marker.center = projection.point(insertion);
                     marker.radius = SYMBOL_MARKER_RADIUS_MM;
                     marker.common.layer = LAYER_SYMBOL.to_string();
                     vec![EntityType::Circle(marker)]
@@ -400,8 +481,8 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
                 // Beside the marker, not on it, and horizontal whatever the
                 // placement angle is -- a rotated label is the harder read.
                 label.insertion_point = Vector3::new(
-                    to_mm(insertion.x) + SYMBOL_MARKER_RADIUS_MM + SYMBOL_LABEL_GAP_MM,
-                    to_mm(insertion.y) - SYMBOL_LABEL_HEIGHT_MM / 2.0,
+                    projection.mm(insertion.x) + SYMBOL_MARKER_RADIUS_MM + SYMBOL_LABEL_GAP_MM,
+                    projection.mm(insertion.y) - SYMBOL_LABEL_HEIGHT_MM / 2.0,
                     0.0,
                 );
                 label.common.layer = LAYER_SYMBOL_LABEL.to_string();
@@ -411,7 +492,7 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
         }
         PidGraphicKind::Point { position } => {
             let mut point = Point::new();
-            point.location = point3(position);
+            point.location = projection.point(position);
             point.common.layer = LAYER_POINT.to_string();
             vec![EntityType::Point(point)]
         }
@@ -434,7 +515,7 @@ fn build_entities(kind: &PidGraphicKind, library: Option<&mut SymbolLibrary>) ->
 /// sheet, 9 mix a normalized end with a raw one, and 5 are raw at both ends.
 /// The mixed and raw ones would draw a segment kilometres long, so only a pair
 /// that passes [`on_sheet_pair`] is kept.
-fn build_inferred(kind: &PidGraphicKind, band: SheetBand) -> Vec<EntityType> {
+fn build_inferred(kind: &PidGraphicKind, projection: Projection) -> Vec<EntityType> {
     match kind {
         PidGraphicKind::Annotation {
             anchor,
@@ -442,7 +523,7 @@ fn build_inferred(kind: &PidGraphicKind, band: SheetBand) -> Vec<EntityType> {
             ..
         } => {
             let (sin, cos) = rotation_angle.sin_cos();
-            let start = point3(anchor);
+            let start = projection.point(anchor);
             let mut tick = Line::from_points(
                 start,
                 Vector3::new(
@@ -454,8 +535,8 @@ fn build_inferred(kind: &PidGraphicKind, band: SheetBand) -> Vec<EntityType> {
             tick.common.layer = LAYER_ANNOTATION.to_string();
             vec![EntityType::Line(tick)]
         }
-        PidGraphicKind::Line { start, end } if on_sheet_pair(start, end, band) => {
-            let mut link = Line::from_points(point3(start), point3(end));
+        PidGraphicKind::Line { start, end } if on_sheet_pair(start, end, projection) => {
+            let mut link = Line::from_points(projection.point(start), projection.point(end));
             link.common.layer = LAYER_CONNECTIVITY.to_string();
             vec![EntityType::Line(link)]
         }
@@ -470,12 +551,12 @@ fn build_inferred(kind: &PidGraphicKind, band: SheetBand) -> Vec<EntityType> {
 /// somewhere: an unresolved end decodes as the origin, and a link whose ends
 /// coincide -- 2 of `DWG-0201`'s 35 on-sheet pairs -- carries no direction to
 /// draw.
-fn on_sheet_pair(start: &PidPoint, end: &PidPoint, band: SheetBand) -> bool {
-    let (start_x, start_y) = (to_mm(start.x), to_mm(start.y));
-    let (end_x, end_y) = (to_mm(end.x), to_mm(end.y));
+fn on_sheet_pair(start: &PidPoint, end: &PidPoint, projection: Projection) -> bool {
+    let (start_x, start_y) = (projection.mm(start.x), projection.mm(start.y));
+    let (end_x, end_y) = (projection.mm(end.x), projection.mm(end.y));
     [start_x, start_y, end_x, end_y]
         .iter()
-        .all(|value| band.holds(*value))
+        .all(|value| projection.band.holds(*value))
         && (start_x.hypot(start_y) > CONNECTIVITY_MIN_MM)
         && (end_x.hypot(end_y) > CONNECTIVITY_MIN_MM)
         && ((end_x - start_x).hypot(end_y - start_y) > CONNECTIVITY_MIN_MM)
@@ -529,23 +610,23 @@ struct Bounds {
     min_y: f64,
     max_x: f64,
     max_y: f64,
-    band: SheetBand,
+    projection: Projection,
 }
 
 impl Bounds {
-    fn new(band: SheetBand) -> Self {
+    fn new(projection: Projection) -> Self {
         Self {
             min_x: f64::MAX,
             min_y: f64::MAX,
             max_x: f64::MIN,
             max_y: f64::MIN,
-            band,
+            projection,
         }
     }
 
     fn add(&mut self, point: &PidPoint) {
-        let (x, y) = (to_mm(point.x), to_mm(point.y));
-        if !self.band.holds(x) || !self.band.holds(y) {
+        let (x, y) = (self.projection.mm(point.x), self.projection.mm(point.y));
+        if !self.projection.band.holds(x) || !self.projection.band.holds(y) {
             return;
         }
         self.min_x = self.min_x.min(x);
@@ -562,7 +643,7 @@ impl Bounds {
 fn accumulate_bounds(kind: &PidGraphicKind, bounds: &mut Bounds) {
     match kind {
         PidGraphicKind::Line { start, end } => {
-            if unresolved_unit_line(start, end) {
+            if unresolved_unit_line(start, end, bounds.projection) {
                 return;
             }
             bounds.add(start);
@@ -600,13 +681,13 @@ fn accumulate_bounds(kind: &PidGraphicKind, bounds: &mut Bounds) {
 /// [`LAYER_UNRESOLVED`] rather than among the drawing's own line work, which
 /// is where it was drawing a 1000mm rule straight across the sheet. It gets
 /// no vote on where the camera goes either.
-fn unresolved_unit_line(start: &PidPoint, end: &PidPoint) -> bool {
-    let (start_x, start_y) = (to_mm(start.x), to_mm(start.y));
-    let (end_x, end_y) = (to_mm(end.x), to_mm(end.y));
+fn unresolved_unit_line(start: &PidPoint, end: &PidPoint, projection: Projection) -> bool {
+    let (start_x, start_y) = (projection.mm(start.x), projection.mm(start.y));
+    let (end_x, end_y) = (projection.mm(end.x), projection.mm(end.y));
     start_y.abs() < 1.0
         && end_y.abs() < 1.0
         && start_x.abs() < 5.0
-        && (end_x - MM_PER_SOURCE_UNIT).abs() < 1.0e-3
+        && (end_x - projection.mm(1.0)).abs() < 1.0e-3
 }
 
 /// Where a symbol placement puts its library body on the sheet.
@@ -614,6 +695,7 @@ struct Placement<'a> {
     insertion: &'a PidPoint,
     rotation: f64,
     scale: [f64; 2],
+    projection: Projection,
 }
 
 impl Placement<'_> {
@@ -630,8 +712,10 @@ impl Placement<'_> {
         let (sin, cos) = self.rotation.sin_cos();
         let [scale_x, scale_y] = self.scale;
         Vector3::new(
-            to_mm(self.insertion.x + x * scale_x * cos - y * scale_y * sin),
-            to_mm(self.insertion.y + x * scale_x * sin + y * scale_y * cos),
+            self.projection
+                .mm(self.insertion.x + x * scale_x * cos - y * scale_y * sin),
+            self.projection
+                .mm(self.insertion.y + x * scale_x * sin + y * scale_y * cos),
             0.0,
         )
     }
@@ -641,7 +725,8 @@ impl Placement<'_> {
     /// stretch one axis alone, so the mean is exact in practice and degrades
     /// gently if that ever stops being true.
     fn scale_radius(&self, radius: f64) -> f64 {
-        to_mm(radius * (self.scale[0].abs() + self.scale[1].abs()) / 2.0)
+        self.projection
+            .mm(radius * (self.scale[0].abs() + self.scale[1].abs()) / 2.0)
     }
 
     /// Whether the placement flips handedness, which reverses the direction
@@ -722,7 +807,7 @@ fn place_primitive(primitive: &SymbolPrimitive, at: &Placement<'_>) -> Option<En
             // The record holds no height, so this is the same ISO 3098
             // fallback the sheet's own text gets, scaled with the placement
             // so a half-size symbol does not carry full-size lettering.
-            label.height = at.scale_radius(TEXT_HEIGHT_MM / MM_PER_SOURCE_UNIT);
+            label.height = at.scale_radius(TEXT_HEIGHT_MM / at.projection.mm_per_unit);
             label.rotation = at.rotation.to_degrees();
             label.common.layer = LAYER_SYMBOL.to_string();
             Some(EntityType::Text(label))
@@ -827,14 +912,6 @@ fn symbol_name(path: &str) -> Option<String> {
     };
     let stem = stem.trim();
     (!stem.is_empty()).then(|| stem.to_owned())
-}
-
-fn to_mm(value: f64) -> f64 {
-    value * MM_PER_SOURCE_UNIT
-}
-
-fn point3(point: &PidPoint) -> Vector3 {
-    Vector3::new(to_mm(point.x), to_mm(point.y), 0.0)
 }
 
 fn ensure_layer(doc: &mut CadDocument, name: &str, colour: Color, visible: bool) {
