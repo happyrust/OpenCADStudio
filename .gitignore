@@ -42,6 +42,9 @@ __pycache__/
 # Window capture taken while checking a local build
 ocs_running.png
 
+# CSV/PNG dumps from the .pid plot probes, regenerated per session
+.plot/
+
 # Agent tooling config (session protocols, not project content)
 .cursor/
 

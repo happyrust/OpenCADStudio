@@ -1,4 +1,8 @@
 //! Temporary probe: what does the `.pid` importer actually hand the scene?
+//!
+//! Both sides of the import are reported, because a thin-looking sheet has
+//! two possible causes and they need telling apart: the parser handed over
+//! little, or the importer filtered a lot out.
 
 use std::collections::BTreeMap;
 
@@ -16,6 +20,7 @@ fn main() {
             }
         };
         println!("{arg}");
+        report_parser_side(&path);
         println!("  entities   = {}", doc.entity_count());
         println!(
             "  ext_min    = ({:.2}, {:.2})  ext_max = ({:.2}, {:.2})",
@@ -111,5 +116,86 @@ fn main() {
             }
         }
         println!("    total outliers = {outliers}");
+    }
+}
+
+/// What `pid-parse` offered, before `load_pid` decided what to draw.
+///
+/// The page line is the one to read first: `page_dimensions_mm` is what the
+/// importer frames on, and `page_transform` says whether the parser knows the
+/// sheet's coordinate space or the importer is falling back to its own
+/// metre-to-millimetre constant.
+fn report_parser_side(path: &std::path::Path) {
+    use pid_parse::{
+        build_normalized_geometry, PidCoordinateSpace, PidDrawingUnits, PidGeometryConfidence,
+        PidGraphicKind, PidPageTransform, PidParser,
+    };
+
+    let parsed = match PidParser::new().parse_file(path) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            println!("  parser    : FAILED {error}");
+            return;
+        }
+    };
+    let geometry = build_normalized_geometry(&parsed);
+
+    println!("  page_mm    = {:?}", geometry.page_dimensions_mm);
+    println!("  records    = {}", geometry.entities.len());
+
+    let mut by_kind: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    let mut spaces: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut units: BTreeMap<String, usize> = BTreeMap::new();
+    let mut transforms: BTreeMap<&str, usize> = BTreeMap::new();
+    for entity in &geometry.entities {
+        let kind = match &entity.kind {
+            PidGraphicKind::Line { .. } => "Line",
+            PidGraphicKind::Polyline { .. } => "Polyline",
+            PidGraphicKind::Arc { .. } => "Arc",
+            PidGraphicKind::Circle { .. } => "Circle",
+            PidGraphicKind::Point { .. } => "Point",
+            PidGraphicKind::Text { .. } => "Text",
+            PidGraphicKind::SymbolInstance { .. } => "SymbolInstance",
+            PidGraphicKind::Annotation { .. } => "Annotation",
+            PidGraphicKind::Unknown { .. } => "Unknown",
+        };
+        let confidence = match entity.confidence {
+            PidGeometryConfidence::Decoded => "decoded",
+            PidGeometryConfidence::Inferred => "inferred",
+            PidGeometryConfidence::ProbeOnly => "probe",
+        };
+        *by_kind.entry((kind, confidence)).or_default() += 1;
+        *spaces
+            .entry(match entity.coordinate_context.coordinate_space {
+                PidCoordinateSpace::SourceSheet => "source_sheet",
+                PidCoordinateSpace::Model => "model",
+                PidCoordinateSpace::Page => "page",
+                PidCoordinateSpace::Viewport => "viewport",
+                PidCoordinateSpace::Unknown => "unknown",
+            })
+            .or_default() += 1;
+        *units
+            .entry(match &entity.coordinate_context.units {
+                PidDrawingUnits::Known { unit } => format!("known:{unit}"),
+                PidDrawingUnits::Unknown { .. } => "unknown".into(),
+            })
+            .or_default() += 1;
+        *transforms
+            .entry(match &entity.coordinate_context.page_transform {
+                PidPageTransform::Available { .. } => "available",
+                PidPageTransform::Unavailable { .. } => "unavailable",
+            })
+            .or_default() += 1;
+    }
+
+    println!("  kind x confidence:");
+    for ((kind, confidence), count) in &by_kind {
+        println!("    {kind:<15} {confidence:<9} {count}");
+    }
+    println!("  coordinate_space = {spaces:?}");
+    println!("  units            = {units:?}");
+    println!("  page_transform   = {transforms:?}");
+    for warning in &geometry.warnings {
+        println!("  warning: {warning}");
     }
 }
