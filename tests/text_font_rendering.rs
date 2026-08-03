@@ -49,7 +49,14 @@ fn expand_block_mtext(
 
     let ins = Insert::new("LABEL_BLOCK", insert_at);
     doc.add_entity(EntityType::Insert(ins.clone())).unwrap();
-    let cache = BlockCache::build(&doc, 1.0, [0.0, 0.0, 0.0, 1.0], &Default::default());
+    let cache = BlockCache::build(
+        &doc,
+        1.0,
+        None,
+        false,
+        [0.0, 0.0, 0.0, 1.0],
+        &Default::default(),
+    );
     expand_insert(
         &cache,
         &ins,
