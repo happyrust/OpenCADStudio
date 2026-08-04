@@ -8,10 +8,15 @@
 // `Inferred` evidence come in as well, each on its own hidden layer, because
 // their coordinates share the decoded geometry's space: annotation anchors,
 // and the endpoint pairs whose two ends both land on the sheet. The rest
-// stays out -- inferred coordinate hints are raw i32 pairs that land in the
-// +/-900k range on real drawings, so plotting them would scatter the sheet
-// across a region a thousand times its own size, and `ProbeOnly` evidence has
-// no position at all.
+// stays out, and inferred `Point` is the part of "the rest" worth naming: it
+// is the largest inferred category on every fixture, so dropping it looks
+// like a loss. It is not. Of the 321 across the four fixtures, none is
+// drawing content -- 261 come from a sliding window over raw bytes rather
+// than from a record, and the ones that do land on the sheet either sit at
+// the origin or duplicate an anchor already drawn. Measured in
+// `pid-parse/docs/analysis/2026-08-04-inferred-points-negative-note.md`;
+// `igPoint2d` is the only point family the format has, and all of it
+// decodes. `ProbeOnly` evidence has no position at all.
 
 use std::path::{Path, PathBuf};
 
