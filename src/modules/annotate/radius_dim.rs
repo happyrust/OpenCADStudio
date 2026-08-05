@@ -2,10 +2,11 @@ use acadrust::entities::{Dimension, DimensionRadius};
 use acadrust::types::Vector3;
 use acadrust::EntityType;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use glam::{DVec3, Vec3};
+use crate::t;
 
 pub const ICON: IconKind = IconKind::Svg(include_bytes!("../../../assets/icons/dim_radius.svg"));
 
@@ -26,6 +27,7 @@ enum Step {
 
 pub struct RadiusDimensionCommand {
     step: Step,
+    plane: WorkingPlane,
     /// Optional text that replaces the measured value (None = measurement).
     text_override: Option<String>,
     /// True while the next typed line is captured as the text override.
@@ -40,6 +42,7 @@ impl RadiusDimensionCommand {
     pub fn new() -> Self {
         Self {
             step: Step::CenterPoint,
+            plane: WorkingPlane::default(),
             text_override: None,
             awaiting_text: false,
             text_angle: None,
@@ -49,22 +52,26 @@ impl RadiusDimensionCommand {
 }
 
 impl CadCommand for RadiusDimensionCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "DIMRADIUS"
     }
 
     fn prompt(&self) -> String {
         if self.awaiting_text {
-            return "DIMRADIUS  Enter dimension text (blank = measured value):".into();
+            return t!("DIMRADIUS  Enter dimension text (blank = measured value):").into_owned();
         }
         if self.awaiting_angle {
-            return "DIMRADIUS  Specify text angle (degrees):".into();
+            return t!("DIMRADIUS  Specify text angle (degrees):").into_owned();
         }
         match self.step {
-            Step::CenterPoint => "DIMRADIUS  Specify center point:".into(),
-            Step::RadiusPoint(_) => "DIMRADIUS  Specify radius point:".into(),
+            Step::CenterPoint => t!("DIMRADIUS  Specify center point:").into_owned(),
+            Step::RadiusPoint(_) => t!("DIMRADIUS  Specify radius point:").into_owned(),
             Step::TextPoint { .. } => {
-                "DIMRADIUS  Specify dimension line location  [Text/Angle]:".into()
+                t!("DIMRADIUS  Specify dimension line location  [Text/Angle]:").into_owned()
             }
         }
     }
@@ -80,6 +87,9 @@ impl CadCommand for RadiusDimensionCommand {
                 CmdResult::NeedPoint
             }
             Step::TextPoint { center, point } => {
+                let center = self.plane.to_local(center);
+                let point = self.plane.to_local(point);
+                let pt = self.plane.to_local(pt);
                 let mut dim = DimensionRadius::new(v3(center), v3(point));
                 dim.base.definition_point = v3(point);
                 dim.base.text_middle_point = v3(pt);
@@ -91,7 +101,9 @@ impl CadCommand for RadiusDimensionCommand {
                 if let Some(a) = self.text_angle {
                     dim.base.text_rotation = a;
                 }
-                CmdResult::CommitAndExit(EntityType::Dimension(Dimension::Radius(dim)))
+                CmdResult::CommitAndExit(self.plane.place_entity(EntityType::Dimension(
+                    Dimension::Radius(dim),
+                )))
             }
         }
     }
@@ -189,6 +201,7 @@ fn preview_wire(points: Vec<Vec3>) -> WireModel {
         world_width: 0.0,
         depth_override: None,
         fill_is_3d: false,
+        fill_is_2d_solid: false,
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
             dash_from_start: false,

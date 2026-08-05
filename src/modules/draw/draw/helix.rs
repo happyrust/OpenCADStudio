@@ -15,8 +15,9 @@
 use acadrust::entities::Polyline3D;
 use acadrust::types::Vector3;
 use acadrust::EntityType;
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult, DynField};
+use crate::command::{CadCommand, CmdResult, DynField, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use glam::DVec3;
@@ -57,6 +58,7 @@ pub struct HelixCommand {
     top_radius: f64,
     height: f64,
     turns: f64,
+    plane: WorkingPlane,
 }
 
 impl HelixCommand {
@@ -68,6 +70,7 @@ impl HelixCommand {
             top_radius: 0.0,
             height: 0.0,
             turns: DEFAULT_TURNS,
+            plane: WorkingPlane::default(),
         }
     }
 
@@ -81,11 +84,12 @@ impl HelixCommand {
             let angle = turns * std::f64::consts::TAU * frac;
             let radius = base_radius + (top_radius - base_radius) * frac;
             let z = height * frac;
-            pts.push(DVec3::new(
-                self.center.x + radius * angle.cos(),
-                self.center.y + radius * angle.sin(),
-                self.center.z + z,
-            ));
+            pts.push(
+                self.center
+                    + self.plane.x * (radius * angle.cos())
+                    + self.plane.y * (radius * angle.sin())
+                    + self.plane.z * z,
+            );
         }
         pts
     }
@@ -109,17 +113,21 @@ impl HelixCommand {
 }
 
 impl CadCommand for HelixCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "HELIX"
     }
 
     fn prompt(&self) -> String {
         match self.step {
-            Step::Center => "HELIX  Specify centre point of base:".to_string(),
-            Step::BaseRadius => "HELIX  Specify base radius:".to_string(),
-            Step::TopRadius => "HELIX  Specify top radius <same as base>:".to_string(),
-            Step::Height => "HELIX  Specify helix height:".to_string(),
-            Step::Turns => "HELIX  Enter number of turns <3>:".to_string(),
+            Step::Center => t!("HELIX  Specify centre point of base:").into_owned(),
+            Step::BaseRadius => t!("HELIX  Specify base radius:").into_owned(),
+            Step::TopRadius => t!("HELIX  Specify top radius <same as base>:").into_owned(),
+            Step::Height => t!("HELIX  Specify helix height:").into_owned(),
+            Step::Turns => t!("HELIX  Enter number of turns <3>:").into_owned(),
         }
     }
 
@@ -133,7 +141,8 @@ impl CadCommand for HelixCommand {
             Step::BaseRadius => {
                 // A point click resolves the base radius as the planar distance
                 // from the centre to the picked point.
-                let r = ((pt.x - self.center.x).powi(2) + (pt.y - self.center.y).powi(2)).sqrt();
+                let delta = self.plane.vector_to_local(pt - self.center);
+                let r = delta.x.hypot(delta.y);
                 if r > 0.0 {
                     self.base_radius = r;
                     self.step = Step::TopRadius;
@@ -141,14 +150,15 @@ impl CadCommand for HelixCommand {
                 CmdResult::NeedPoint
             }
             Step::TopRadius => {
-                let r = ((pt.x - self.center.x).powi(2) + (pt.y - self.center.y).powi(2)).sqrt();
+                let delta = self.plane.vector_to_local(pt - self.center);
+                let r = delta.x.hypot(delta.y);
                 self.top_radius = if r > 0.0 { r } else { self.base_radius };
                 self.step = Step::Height;
                 CmdResult::NeedPoint
             }
             Step::Height => {
                 // Use the elevation of the picked point relative to the centre.
-                let h = pt.z - self.center.z;
+                let h = (pt - self.center).dot(self.plane.z);
                 if h.abs() > 0.0 {
                     self.height = h;
                     self.step = Step::Turns;
@@ -249,7 +259,8 @@ impl CadCommand for HelixCommand {
         match self.step {
             Step::Center => None,
             Step::BaseRadius => {
-                let r = ((pt.x - self.center.x).powi(2) + (pt.y - self.center.y).powi(2)).sqrt();
+                let delta = self.plane.vector_to_local(pt - self.center);
+                let r = delta.x.hypot(delta.y);
                 if r <= 0.0 {
                     return None;
                 }
@@ -266,12 +277,13 @@ impl CadCommand for HelixCommand {
                 // Use the parameters fixed so far; for the height step let the
                 // cursor elevation drive the live height.
                 let height = if self.step == Step::Height {
-                    pt.z - self.center.z
+                    (pt - self.center).dot(self.plane.z)
                 } else {
                     self.height
                 };
                 let top = if self.step == Step::TopRadius {
-                    let r = ((pt.x - self.center.x).powi(2) + (pt.y - self.center.y).powi(2)).sqrt();
+                    let delta = self.plane.vector_to_local(pt - self.center);
+                    let r = delta.x.hypot(delta.y);
                     if r > 0.0 {
                         r
                     } else {

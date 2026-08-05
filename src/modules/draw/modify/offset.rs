@@ -28,6 +28,7 @@ use cavalier_contours::polyline::{
     Polyline as CavPolyline,
 };
 use glam::{DVec3, Vec3};
+use crate::t;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::draw::defaults;
@@ -782,9 +783,6 @@ enum Step {
         /// pre-selection when OFFSET starts with objects selected (#422).
         targets: Vec<EntityType>,
         locked: Option<f64>,
-        /// True when the targets came from the pre-selection: the commit ends
-        /// the command instead of looping back for another pick.
-        from_selection: bool,
         /// Keep the side-pick step active and use each new result as the source
         /// for the next offset.
         multiple: bool,
@@ -795,6 +793,10 @@ pub struct OffsetCommand {
     step: Step,
     all_entities: Vec<EntityType>,
     entity_index: ModifyEntityIndex,
+    /// Live entity supplied by the scene before an object-pick is handled.
+    /// Unlike the command's opening snapshot, this also includes objects
+    /// created by earlier offsets while the command remains active.
+    picked: Option<EntityType>,
     /// Pre-selected offsettable objects (pick-first, #422); consumed when the
     /// distance step resolves.
     preselected: Vec<EntityType>,
@@ -821,6 +823,7 @@ impl OffsetCommand {
             step: Step::Distance,
             all_entities,
             entity_index,
+            picked: None,
             preselected: Vec::new(),
         }
     }
@@ -833,6 +836,7 @@ impl OffsetCommand {
             step: Step::Distance,
             all_entities,
             entity_index,
+            picked: None,
             preselected: targets,
         }
     }
@@ -847,7 +851,6 @@ impl OffsetCommand {
             self.step = Step::PickSide {
                 targets: std::mem::take(&mut self.preselected),
                 locked,
-                from_selection: true,
                 multiple: false,
             };
         }
@@ -862,12 +865,12 @@ impl CadCommand for OffsetCommand {
 
     fn prompt(&self) -> String {
         match &self.step {
-            Step::Distance => format!(
-                "OFFSET  Specify offset distance or [Through] <{:.4}>:",
-                defaults::get_offset_dist()
-            ),
+            Step::Distance => {
+                let d = format!("{:.4}", defaults::get_offset_dist());
+                t!("OFFSET  Specify offset distance or [Through] <%{d}>:", d = d).into_owned()
+            }
             Step::SelectObject { .. } => {
-                "OFFSET  Select object to offset (Enter to finish):".into()
+                t!("OFFSET  Select object to offset (Enter to finish):").into_owned()
             }
             Step::PickSide {
                 targets,
@@ -875,22 +878,36 @@ impl CadCommand for OffsetCommand {
                 multiple,
                 ..
             } => {
-                let n = if targets.len() > 1 {
-                    format!(" ({} objects)", targets.len())
+                let n: std::borrow::Cow<'_, str> = if targets.len() > 1 {
+                    t!(" (%{count} objects)", count = targets.len())
                 } else {
-                    String::new()
+                    std::borrow::Cow::Borrowed("")
                 };
                 match (locked, multiple) {
                     (Some(d), false) => {
-                        format!("OFFSET{n}  Click side or [Multiple]  [distance {d:.4}]:")
+                        let d = format!("{:.4}", d);
+                        t!(
+                            "OFFSET%{n}  Click side or [Multiple]  [distance %{d}]:",
+                            n = n,
+                            d = d
+                        )
+                        .into_owned()
                     }
                     (Some(d), true) => {
-                        format!("OFFSET{n} Multiple  Click next side [distance {d:.4}]:")
+                        let d = format!("{:.4}", d);
+                        t!(
+                            "OFFSET%{n} Multiple  Click next side [distance %{d}]:",
+                            n = n,
+                            d = d
+                        )
+                        .into_owned()
                     }
                     (None, false) => {
-                        format!("OFFSET{n}  Click through point or [Multiple]:")
+                        t!("OFFSET%{n}  Click through point or [Multiple]:", n = n).into_owned()
                     }
-                    (None, true) => format!("OFFSET{n} Multiple  Click next through point:"),
+                    (None, true) => {
+                        t!("OFFSET%{n} Multiple  Click next through point:", n = n).into_owned()
+                    }
                 }
             }
         }
@@ -899,7 +916,7 @@ impl CadCommand for OffsetCommand {
     fn options(&self) -> Vec<crate::command::CmdOption> {
         match &self.step {
             Step::Distance => vec![
-                crate::command::CmdOption::new("Through", "T"),
+                crate::command::CmdOption::new(t!("Through").as_ref(), "T"),
                 crate::command::CmdOption::enter(&format!(
                     "{:.4}",
                     defaults::get_offset_dist()
@@ -907,13 +924,21 @@ impl CadCommand for OffsetCommand {
             ],
             Step::PickSide {
                 multiple: false, ..
-            } => vec![crate::command::CmdOption::new("Multiple", "M")],
+            } => vec![crate::command::CmdOption::new(t!("Multiple").as_ref(), "M")],
             _ => Vec::new(),
         }
     }
 
     fn needs_entity_pick(&self) -> bool {
         matches!(self.step, Step::SelectObject { .. })
+    }
+
+    fn inject_before_entity_pick(&self) -> bool {
+        true
+    }
+
+    fn inject_picked_entity(&mut self, entity: EntityType) {
+        self.picked = Some(entity);
     }
 
     fn on_entity_pick(&mut self, handle: Handle, _pt: DVec3) -> CmdResult {
@@ -925,9 +950,11 @@ impl CadCommand for OffsetCommand {
             return CmdResult::NeedPoint;
         }
 
-        let entity = self
-            .entity_index.get(&self.all_entities, handle)
-            .cloned();
+        let entity = self.picked.take().or_else(|| {
+            self.entity_index
+                .get(&self.all_entities, handle)
+                .cloned()
+        });
 
         // Accept every type compute_offsets can offset — including XLine (#296),
         // and Ellipse/Spline whose offset functions existed but weren't reachable.
@@ -936,7 +963,6 @@ impl CadCommand for OffsetCommand {
                 self.step = Step::PickSide {
                     targets: vec![e],
                     locked,
-                    from_selection: false,
                     multiple: false,
                 };
                 CmdResult::NeedPoint
@@ -1029,13 +1055,12 @@ impl CadCommand for OffsetCommand {
     }
 
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
-        let (locked, targets, from_selection, multiple) = match &self.step {
+        let (locked, targets, multiple) = match &self.step {
             Step::PickSide {
                 locked,
                 targets,
-                from_selection,
                 multiple,
-            } => (*locked, targets.clone(), *from_selection, *multiple),
+            } => (*locked, targets.clone(), *multiple),
             _ => return CmdResult::NeedPoint,
         };
         // Each target offsets by its own through-distance (or the locked
@@ -1058,7 +1083,6 @@ impl CadCommand for OffsetCommand {
             self.step = Step::PickSide {
                 targets: news.clone(),
                 locked,
-                from_selection,
                 multiple: true,
             };
             return if news.len() == 1 {
@@ -1067,17 +1091,13 @@ impl CadCommand for OffsetCommand {
                 CmdResult::CommitEntities(news)
             };
         }
-        if from_selection {
-            // Pre-selection commit ends the command in one undo step.
-            return CmdResult::ReplaceMany(vec![], news);
-        }
         // Classic loop (#418): commit this offset and go back to the object
         // pick at the same distance, until Enter / Esc finishes.
         self.step = Step::SelectObject { locked };
         if news.len() == 1 {
             CmdResult::CommitEntity(news.pop().unwrap())
         } else {
-            CmdResult::ReplaceMany(vec![], news)
+            CmdResult::CommitEntities(news)
         }
     }
 

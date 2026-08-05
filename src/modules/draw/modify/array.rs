@@ -14,9 +14,10 @@
 //   1. Center point → 2. Item count (text) → 3. Total angle in degrees (text)
 
 use acadrust::Handle;
-use glam::{DVec3, Mat4};
+use glam::DVec3;
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult, EntityTransform};
+use crate::command::{CadCommand, CmdResult, EntityTransform, WorkingPlane};
 use crate::modules::draw::defaults;
 use crate::modules::IconKind;
 use crate::scene::model::wire_model::WireModel;
@@ -62,7 +63,7 @@ pub struct ArrayRectCommand {
     default_cols: u32,
     default_row_sp: f64,
     default_col_sp: f64,
-    ucs: Mat4,
+    plane: WorkingPlane,
 }
 
 impl ArrayRectCommand {
@@ -75,18 +76,17 @@ impl ArrayRectCommand {
             default_cols: defaults::get_array_cols() as u32,
             default_row_sp: defaults::get_array_row_sp(),
             default_col_sp: defaults::get_array_col_sp(),
-            ucs: Mat4::IDENTITY,
+            plane: WorkingPlane::default(),
         }
     }
 
-    /// Row/column offsets run along the active UCS axes (`ucs` rotates the
-    /// world-frame grid step), identity = world.
+    /// Row/column offsets run along the active coordinate axes.
     fn build_transforms(
         rows: u32,
         cols: u32,
         row_sp: f64,
         col_sp: f64,
-        ucs: Mat4,
+        plane: WorkingPlane,
     ) -> Vec<EntityTransform> {
         let mut t = Vec::new();
         for r in 0..rows {
@@ -94,9 +94,11 @@ impl ArrayRectCommand {
                 if r == 0 && c == 0 {
                     continue;
                 }
-                t.push(EntityTransform::Translate(ucs.as_dmat4().transform_vector3(
-                    glam::DVec3::new(col_sp * c as f64, row_sp * r as f64, 0.0),
-                )));
+                t.push(EntityTransform::Translate(plane.vector_to_world(DVec3::new(
+                    col_sp * c as f64,
+                    row_sp * r as f64,
+                    0.0,
+                ))));
             }
         }
         t
@@ -108,25 +110,30 @@ impl CadCommand for ArrayRectCommand {
         "ARRAYRECT"
     }
 
-    fn set_ucs(&mut self, ucs: Mat4) {
-        self.ucs = ucs;
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
     }
 
     fn prompt(&self) -> String {
         match self.step {
-            RectStep::Rows => format!("ARRAYRECT  Enter row count <{}>:", self.default_rows),
-            RectStep::Cols { rows } => format!(
+            RectStep::Rows => {
+                crate::tf!("ARRAYRECT  Enter row count <{}>:", self.default_rows).into_owned()
+            }
+            RectStep::Cols { rows } => crate::tf!(
                 "ARRAYRECT  Enter column count <{}>  [{rows} rows]:",
                 self.default_cols
-            ),
-            RectStep::RowSp { rows, cols } => format!(
+            )
+            .into_owned(),
+            RectStep::RowSp { rows, cols } => crate::tf!(
                 "ARRAYRECT  Row spacing <{:.0}>  [{rows}×{cols}]:",
                 self.default_row_sp
-            ),
-            RectStep::ColSp { rows, cols, row_sp } => format!(
+            )
+            .into_owned(),
+            RectStep::ColSp { rows, cols, row_sp } => crate::tf!(
                 "ARRAYRECT  Column spacing <{:.0}>  [{rows}×{cols}, row={row_sp:.0}]:",
                 self.default_col_sp
-            ),
+            )
+            .into_owned(),
         }
     }
 
@@ -188,7 +195,7 @@ impl CadCommand for ArrayRectCommand {
                 };
                 Some(CmdResult::BatchCopy(
                     self.handles.clone(),
-                    Self::build_transforms(rows, cols, row_sp, col_sp, self.ucs),
+                    Self::build_transforms(rows, cols, row_sp, col_sp, self.plane),
                 ))
             }
         }
@@ -213,7 +220,7 @@ impl CadCommand for ArrayRectCommand {
             }
             RectStep::ColSp { rows, cols, row_sp } => (rows, cols, row_sp, self.default_col_sp),
         };
-        Self::build_transforms(rows, cols, row_sp, col_sp, self.ucs)
+        Self::build_transforms(rows, cols, row_sp, col_sp, self.plane)
             .iter()
             .flat_map(|t| {
                 if let EntityTransform::Translate(delta) = t {
@@ -256,6 +263,7 @@ pub struct ArrayPolarCommand {
     step: PolarStep,
     default_count: u32,
     default_angle: f64,
+    plane: WorkingPlane,
 }
 
 impl ArrayPolarCommand {
@@ -266,28 +274,35 @@ impl ArrayPolarCommand {
             step: PolarStep::Center,
             default_count: defaults::get_array_p_count() as u32,
             default_angle: defaults::get_array_p_angle(),
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for ArrayPolarCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "ARRAYPOLAR"
     }
 
     fn prompt(&self) -> String {
         match &self.step {
-            PolarStep::Center => format!(
+            PolarStep::Center => crate::tf!(
                 "ARRAYPOLAR  Specify center point  [{} objects]:",
                 self.handles.len()
-            ),
+            )
+            .into_owned(),
             PolarStep::Count { .. } => {
-                format!("ARRAYPOLAR  Enter item count <{}>:", self.default_count)
+                crate::tf!("ARRAYPOLAR  Enter item count <{}>:", self.default_count).into_owned()
             }
-            PolarStep::Angle { count, .. } => format!(
+            PolarStep::Angle { count, .. } => crate::tf!(
                 "ARRAYPOLAR  Enter total angle in degrees <{:.0}>  [{count} items]:",
                 self.default_angle
-            ),
+            )
+            .into_owned(),
         }
     }
 
@@ -334,6 +349,7 @@ impl CadCommand for ArrayPolarCommand {
                 let transforms = (1..count)
                     .map(|n| EntityTransform::Rotate {
                         center,
+                        axis: self.plane.z,
                         angle_rad: step_rad * n as f64,
                     })
                     .collect();
@@ -355,12 +371,13 @@ impl CadCommand for ArrayPolarCommand {
             }
         };
         let step_rad = total_deg.to_radians() / count as f64;
+        let axis = self.plane.z.as_vec3();
         let mut out: Vec<WireModel> = (1..count)
             .flat_map(|n| {
                 let angle_rad = (step_rad * n as f64) as f32;
                 self.wire_models
                     .iter()
-                    .map(move |w| w.rotated(center, angle_rad))
+                    .map(move |wire| wire.rotated_about_axis(center, axis, angle_rad))
             })
             .collect();
         // Rubber-band from center to cursor while picking the center point.
@@ -667,6 +684,7 @@ impl ArrayPathCommand {
                     let center = Self::rigid_center(p0, p, dth);
                     EntityTransform::Rotate {
                         center,
+                        axis: DVec3::Z,
                         angle_rad: dth,
                     }
                 }
@@ -699,12 +717,13 @@ impl CadCommand for ArrayPathCommand {
 
     fn prompt(&self) -> String {
         match &self.step {
-            PathStep::SelectPath => format!(
+            PathStep::SelectPath => crate::tf!(
                 "ARRAYPATH  Select path entity  [{} objects]:",
                 self.handles.len()
-            ),
+            )
+            .into_owned(),
             PathStep::Count { .. } => {
-                format!("ARRAYPATH  Enter item count <{}>:", self.default_count)
+                crate::tf!("ARRAYPATH  Enter item count <{}>:", self.default_count).into_owned()
             }
         }
     }
@@ -805,7 +824,7 @@ impl CadCommand for ArrayPathCommand {
                     .iter()
                     .map(|w| w.translated(delta.as_vec3()))
                     .collect::<Vec<_>>(),
-                EntityTransform::Rotate { center, angle_rad } => self
+                EntityTransform::Rotate { center, angle_rad, .. } => self
                     .wire_models
                     .iter()
                     .map(|w| w.rotated(center.as_vec3(), *angle_rad as f32))
@@ -911,29 +930,58 @@ impl CadCommand for Array3DCommand {
 
     fn prompt(&self) -> String {
         match self.step {
-            Array3DStep::Rows => "ARRAY3D  Enter row count:".into(),
-            Array3DStep::Cols { rows } => format!("ARRAY3D  Enter column count  [{rows} rows]:"),
-            Array3DStep::Levels { rows, cols } => {
-                format!("ARRAY3D  Enter level count  [{rows}×{cols}]:")
+            Array3DStep::Rows => t!("ARRAY3D  Enter row count:").into_owned(),
+            Array3DStep::Cols { rows } => {
+                t!("ARRAY3D  Enter column count  [%{rows} rows]:", rows = rows).into_owned()
             }
-            Array3DStep::RowSp { rows, cols, levels } => {
-                format!("ARRAY3D  Row spacing  [{rows}×{cols}×{levels}]:")
-            }
+            Array3DStep::Levels { rows, cols } => t!(
+                "ARRAY3D  Enter level count  [%{rows}×%{cols}]:",
+                rows = rows,
+                cols = cols
+            )
+            .into_owned(),
+            Array3DStep::RowSp { rows, cols, levels } => t!(
+                "ARRAY3D  Row spacing  [%{rows}×%{cols}×%{levels}]:",
+                rows = rows,
+                cols = cols,
+                levels = levels
+            )
+            .into_owned(),
             Array3DStep::ColSp {
                 rows,
                 cols,
                 levels,
                 row_sp,
-            } => format!("ARRAY3D  Column spacing  [{rows}×{cols}×{levels}, row={row_sp:.0}]:"),
+            } => {
+                let rs = format!("{:.0}", row_sp);
+                t!(
+                    "ARRAY3D  Column spacing  [%{rows}×%{cols}×%{levels}, row=%{rs}]:",
+                    rows = rows,
+                    cols = cols,
+                    levels = levels,
+                    rs = rs
+                )
+                .into_owned()
+            }
             Array3DStep::LvlSp {
                 rows,
                 cols,
                 levels,
                 row_sp,
                 col_sp,
-            } => format!(
-                "ARRAY3D  Level spacing  [{rows}×{cols}×{levels}, r={row_sp:.0} c={col_sp:.0}]:"
-            ),
+            } => {
+                let rs = format!("{:.0}", row_sp);
+                let cs = format!("{:.0}", col_sp);
+                t!(
+                    "ARRAY3D  Level spacing  [%{rows}×%{cols}×%{levels}, r=%{rs} c=%{cs}]:",
+                    rows = rows,
+                    cols = cols,
+                    levels = levels,
+                    rs = rs,
+                    cs = cs
+                )
+                .into_owned()
+            }
         }
     }
 

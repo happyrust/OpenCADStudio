@@ -26,6 +26,7 @@ use crate::modules::draw::modify::spline_ops::{
 };
 use crate::modules::IconKind;
 use crate::scene::model::wire_model::WireModel;
+use crate::t;
 
 use super::entity_index::ModifyEntityIndex;
 
@@ -3084,6 +3085,23 @@ impl TrimCommand {
         }
         CmdResult::ReplaceMany(repl, Vec::new())
     }
+
+    fn stage_replacements(&mut self, replacements: &[(Handle, Vec<EntityType>)]) {
+        for (handle, _) in replacements {
+            if let Some(index) = self
+                .all_entities
+                .iter()
+                .position(|entity| entity.common().handle == *handle)
+            {
+                self.all_entities.remove(index);
+            }
+            self.edge_set.retain(|edge| edge != handle);
+        }
+        for (_, entities) in replacements {
+            self.all_entities.extend(entities.iter().cloned());
+        }
+        self.rebuild_geos();
+    }
 }
 
 impl CadCommand for TrimCommand {
@@ -3092,22 +3110,33 @@ impl CadCommand for TrimCommand {
     }
 
     fn prompt(&self) -> String {
-        let edge = if self.implied_edges { " [Edge: Extend]" } else { "" };
+        let edge = if self.implied_edges {
+            t!(" [Edge: Extend]")
+        } else {
+            std::borrow::Cow::Borrowed("")
+        };
         match &self.mode {
             TrimMode::Pick => {
-                format!("TRIM{edge}  Click segment to remove (Shift+click extends):")
+                crate::tf!("TRIM{edge}  Click segment to remove (Shift+click extends):")
+                    .into_owned()
             }
-            TrimMode::SelectEdges => format!(
+            TrimMode::SelectEdges => crate::tf!(
                 "TRIM  Select cutting edges [{} picked, Enter = done]:",
                 self.edge_set.len()
-            ),
-            TrimMode::Fence(pts) => format!(
+            )
+            .into_owned(),
+            TrimMode::Fence(pts) => crate::tf!(
                 "TRIM{edge}  Fence: pick points [{} placed, Enter = trim crossed]:",
                 pts.len()
-            ),
-            TrimMode::CrossFirst => format!("TRIM{edge}  Crossing: first corner:"),
-            TrimMode::CrossSecond(_) => format!("TRIM{edge}  Crossing: opposite corner:"),
-            TrimMode::Erase => "TRIM  Erase: click objects to delete [Enter = done]:".into(),
+            )
+            .into_owned(),
+            TrimMode::CrossFirst => crate::tf!("TRIM{edge}  Crossing: first corner:").into_owned(),
+            TrimMode::CrossSecond(_) => {
+                crate::tf!("TRIM{edge}  Crossing: opposite corner:").into_owned()
+            }
+            TrimMode::Erase => {
+                t!("TRIM  Erase: click objects to delete [Enter = done]:").into_owned()
+            }
         }
     }
 
@@ -3235,29 +3264,52 @@ impl CadCommand for TrimCommand {
     }
 
     fn on_entity_replaced(&mut self, _old: Handle, new_handles: &[acadrust::Handle]) {
-        // The last new_handles.len() entries in all_entities are the trimmed pieces
-        // that were appended with NULL handles. Assign their real document handles.
-        let start = self.all_entities.len().saturating_sub(new_handles.len());
-        for (e, &h) in self.all_entities[start..]
+        // Batch gestures stage several NULL-handle replacement groups before
+        // the document assigns real handles. The host applies them in the same
+        // order, so fill the first remaining placeholders on each callback.
+        let mut handles = new_handles.iter().copied();
+        for entity in self
+            .all_entities
             .iter_mut()
-            .zip(new_handles.iter())
+            .filter(|entity| entity.common().handle.is_null())
         {
-            match e {
-                EntityType::Line(l) => l.common.handle = h,
-                EntityType::Arc(a) => a.common.handle = h,
-                EntityType::Ray(r) => r.common.handle = h,
-                EntityType::XLine(x) => x.common.handle = h,
-                EntityType::Ellipse(e) => e.common.handle = h,
-                EntityType::Spline(s) => s.common.handle = h,
-                // A trimmed (closed or open) polyline is re-emitted as an
-                // LwPolyline; without its real handle it can't be found on a
-                // second pick, so the same polyline couldn't be trimmed twice
-                // in one TRIM command.
-                EntityType::LwPolyline(p) => p.common.handle = h,
-                _ => {}
-            }
+            let Some(handle) = handles.next() else {
+                break;
+            };
+            entity.as_entity_mut().set_handle(handle);
         }
         self.rebuild_geos();
+    }
+
+    fn on_drag_selection(
+        &mut self,
+        fence: &[[f64; 2]],
+        window: Option<([f64; 2], [f64; 2])>,
+    ) -> Option<CmdResult> {
+        if !matches!(self.mode, TrimMode::Pick) || fence.len() < 2 {
+            return None;
+        }
+        let window = window.map(|(min, max)| CrossingWindow {
+            min,
+            max,
+            pick: fence[0],
+        });
+        let replacements = fence_pass(
+            &self.all_entities,
+            &self.geos,
+            fence,
+            window,
+            self.shift,
+        );
+        if replacements.is_empty() {
+            return Some(CmdResult::NeedPoint);
+        }
+        self.stage_replacements(&replacements);
+        Some(CmdResult::ReplaceManyContinue(replacements))
+    }
+
+    fn accepts_drag_selection(&self) -> bool {
+        matches!(self.mode, TrimMode::Pick)
     }
 
     fn on_hover_entity(&mut self, handle: Handle, pt: DVec3) -> Vec<WireModel> {
@@ -3778,22 +3830,33 @@ impl CadCommand for ExtendCommand {
     }
 
     fn prompt(&self) -> String {
-        let edge = if self.implied_edges { " [Edge: Extend]" } else { "" };
+        let edge = if self.implied_edges {
+            t!(" [Edge: Extend]")
+        } else {
+            std::borrow::Cow::Borrowed("")
+        };
         match &self.mode {
-            TrimMode::Pick => format!(
+            TrimMode::Pick => crate::tf!(
                 "EXTEND{edge}  Click near end of object to extend (Shift+click trims):"
-            ),
-            TrimMode::SelectEdges => format!(
+            )
+            .into_owned(),
+            TrimMode::SelectEdges => crate::tf!(
                 "EXTEND  Select boundary edges [{} picked, Enter = done]:",
                 self.edge_set.len()
-            ),
-            TrimMode::Fence(pts) => format!(
+            )
+            .into_owned(),
+            TrimMode::Fence(pts) => crate::tf!(
                 "EXTEND{edge}  Fence: pick points [{} placed, Enter = extend crossed]:",
                 pts.len()
-            ),
-            TrimMode::CrossFirst => format!("EXTEND{edge}  Crossing: first corner:"),
-            TrimMode::CrossSecond(_) => format!("EXTEND{edge}  Crossing: opposite corner:"),
-            TrimMode::Erase => "EXTEND  [Enter = done]:".into(),
+            )
+            .into_owned(),
+            TrimMode::CrossFirst => {
+                crate::tf!("EXTEND{edge}  Crossing: first corner:").into_owned()
+            }
+            TrimMode::CrossSecond(_) => {
+                crate::tf!("EXTEND{edge}  Crossing: opposite corner:").into_owned()
+            }
+            TrimMode::Erase => t!("EXTEND  [Enter = done]:").into_owned(),
         }
     }
 
@@ -4547,6 +4610,7 @@ fn preview_wire(points: Vec<[f32; 3]>, color: [f32; 4], name: &str) -> WireModel
         world_width: 0.0,
         depth_override: None,
         fill_is_3d: false,
+        fill_is_2d_solid: false,
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
         dash_from_start: false,
@@ -4671,9 +4735,9 @@ impl CadCommand for ExtrimCommand {
 
     fn prompt(&self) -> String {
         if self.boundary.is_none() {
-            "EXTRIM  Select cutting boundary:".into()
+            crate::t!("EXTRIM  Select cutting boundary:").into_owned()
         } else {
-            "EXTRIM  Click the side to trim away:".into()
+            crate::t!("EXTRIM  Click the side to trim away:").into_owned()
         }
     }
 

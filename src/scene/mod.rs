@@ -8,6 +8,7 @@
 pub mod annotative;
 pub mod cache;
 pub mod convert;
+pub mod creation_style;
 pub mod model;
 pub mod pick;
 pub mod pipeline;
@@ -130,7 +131,7 @@ pub use pick::selection_state::SelectionState;
 pub use pipeline::uniforms::Uniforms;
 pub use pipeline::viewcube::{
     hit_test, hit_test_cardinal, hover_id, CubeRegion, NudgeDir, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD,
-    VIEWCUBE_PX, VIEWCUBE_REGION_PX,
+    VIEWCUBE_PX, VIEWCUBE_REGION_PX, VIEWCUBE_RENDER_PX,
 };
 use view::camera::Camera;
 pub use view::camera::Projection;
@@ -534,6 +535,8 @@ pub(crate) fn valid_block_name(name: &str) -> bool {
 /// Produced in the file-load background task so the UI thread only assigns.
 #[derive(Debug, Clone)]
 pub struct DerivedCaches {
+    pub read_stats: Option<acadrust::ReadStats>,
+    pub source_sha256: Option<String>,
     pub local_extent_max: f32,
     pub local_center: [f64; 2],
     pub hatches: HashMap<Handle, HatchModel>,
@@ -841,6 +844,8 @@ fn build_derived_caches_impl(
     }
 
     DerivedCaches {
+        read_stats: None,
+        source_sha256: None,
         local_extent_max,
         local_center,
         hatches,
@@ -1594,6 +1599,10 @@ pub struct Scene {
     /// preview wires, layer visibility, layout). The GPU pipeline uses this to
     /// skip re-uploading unchanged geometry buffers every frame.
     pub geometry_epoch: u64,
+    /// Geometry epoch represented by the model bounds cached on the live
+    /// camera. Projection switches refresh those bounds through the same
+    /// filtered fit path when this falls behind `geometry_epoch`.
+    projection_bounds_epoch: std::cell::Cell<u64>,
     /// Separate epoch for the (expensive) block-definition tessellation cache.
     /// Bumped together with `geometry_epoch` by `bump_geometry`, but NOT by
     /// `bump_geometry_no_blocks` — so edits that provably can't change any
@@ -1668,6 +1677,9 @@ pub struct Scene {
     /// constants. `[depth, half]` retains a fixed child sub-range for block
     /// composition. Full sort/layout/block changes rebuild the labels.
     draw_depth_cache: RefCell<Option<DrawDepthCache>>,
+    /// Shared empty map for 3-D wireframe, where true depth wins instead of
+    /// the entity submission order used by the optimized 2-D style.
+    no_draw_depths: Arc<HashMap<u64, [f32; 2]>>,
     /// Cached hatch fill models, keyed by target block and geometry_epoch. View culling
     /// is handled at draw time via `hatch_skip_flags` in the pipeline,
     /// not at build time — that lets the GPU buffer stay stable across
@@ -1969,6 +1981,7 @@ impl Scene {
             interim_wire: None,
             camera_generation: 0,
             geometry_epoch: GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed),
+            projection_bounds_epoch: std::cell::Cell::new(0),
             block_epoch: GEOMETRY_EPOCH.fetch_add(1, Ordering::Relaxed),
             selection_generation: 0,
             wire_cache: RefCell::new(None),
@@ -1979,6 +1992,7 @@ impl Scene {
             interaction_handle_index_cache: RefCell::new(None),
             sort_cache: RefCell::new(None),
             draw_depth_cache: RefCell::new(None),
+            no_draw_depths: Arc::new(HashMap::default()),
             hatch_cache: RefCell::new(HashMap::default()),
             wipeout_cache: RefCell::new(HashMap::default()),
             image_cache: RefCell::new(HashMap::default()),
@@ -3820,6 +3834,28 @@ impl Scene {
         self.scale_handle_ensuring("1:1")
     }
 
+    pub(crate) fn creation_annotation_multiplier(&self) -> f64 {
+        if self.current_layout == "Model" {
+            return self.annotation_scale.max(1.0e-9) as f64;
+        }
+        let Some(handle) = self.active_viewport else {
+            return 1.0;
+        };
+        let Some(EntityType::Viewport(viewport)) = self.document.get_entity(handle) else {
+            return 1.0;
+        };
+        let paper_to_model = vp_effective_scale(
+            viewport.custom_scale,
+            viewport.view_height,
+            viewport.height,
+        );
+        if paper_to_model.is_finite() && paper_to_model > 1.0e-9 {
+            1.0 / paper_to_model
+        } else {
+            1.0
+        }
+    }
+
     pub fn set_annotation_scale_named(&mut self, name: &str) -> Option<Handle> {
         let handle = self.scale_handle_ensuring(name)?;
         let ObjectType::Scale(scale) = self.document.objects.get(&handle)? else {
@@ -4232,16 +4268,31 @@ impl Scene {
         if self.hover_highlight == handle {
             return;
         }
-        // Hover is folded into the highlight set (selected ∪ {hover}) that
-        // drives the xray overlay. A hover handle that's already selected
-        // contributes nothing, so the effective set is unchanged — skip the
-        // overlay refresh then. The field is still updated for hit-test / UI.
-        let contribution = |h: Option<Handle>| h.filter(|h| !self.selected.contains(h));
-        let changed = contribution(self.hover_highlight) != contribution(handle);
+        // Selectable groups roll over as one unit, matching click selection.
+        // Exclude already-selected members because they already contribute to
+        // the overlay and remain in the selected colour.
+        let contribution = |scene: &Scene, hovered: Option<Handle>| {
+            hovered
+                .map(|handle| scene.handles_expanded_for_selectable_groups(&[handle]))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|handle| !scene.selected.contains(handle))
+                .collect::<HashSet<_>>()
+        };
+        let changed = contribution(self, self.hover_highlight) != contribution(self, handle);
         self.hover_highlight = handle;
         if changed {
             self.bump_selection();
         }
+    }
+
+    /// Handles that currently contribute the rollover colour. The stored hover
+    /// remains the picked member for hit-test/UI bookkeeping; rendering expands
+    /// it to the same selectable group that a click would select.
+    pub fn hover_highlight_handles(&self) -> HashSet<Handle> {
+        self.hover_highlight
+            .map(|handle| self.handles_expanded_for_selectable_groups(&[handle]))
+            .unwrap_or_default()
     }
 
     /// Keep the current selection visible and temporarily filter every other
@@ -9167,7 +9218,8 @@ impl Scene {
                         }
                     }
                     // 3D solids render as meshes, not wires, so fold their
-                    // XY AABBs in too — otherwise ZOOM EXTENTS ignores them.
+                    // complete 3D boxes in too — otherwise view fitting loses
+                    // both solid-only drawings and their depth.
                     for (&handle, set) in &self.meshes {
                         if !self.mesh_entity_visible(handle)
                             || !self.document.get_entity(handle).is_some_and(|entity| {
@@ -9181,8 +9233,9 @@ impl Scene {
                             continue;
                         }
                         let [ax, ay, bx, by] = set.world_aabb;
-                        let lo = glam::Vec3::new(ax, ay, 0.0);
-                        let hi = glam::Vec3::new(bx, by, 0.0);
+                        let [az, bz] = set.z_aabb;
+                        let lo = glam::Vec3::new(ax, ay, az);
+                        let hi = glam::Vec3::new(bx, by, bz);
                         if lo.is_finite() && hi.is_finite() {
                             min = min.min(lo);
                             max = max.max(hi);
@@ -9239,8 +9292,9 @@ impl Scene {
                 continue;
             }
             let [ax, ay, bx, by] = set.world_aabb;
-            let lo = glam::Vec3::new(ax, ay, 0.0);
-            let hi = glam::Vec3::new(bx, by, 0.0);
+            let [az, bz] = set.z_aabb;
+            let lo = glam::Vec3::new(ax, ay, az);
+            let hi = glam::Vec3::new(bx, by, bz);
             if lo.is_finite() && hi.is_finite() {
                 min = min.min(lo);
                 max = max.max(hi);

@@ -2,22 +2,18 @@ use acadrust::entities::{Dimension, DimensionLinear};
 use acadrust::types::Vector3;
 use acadrust::EntityType;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
-use glam::{DVec3, Mat4, Vec3};
+use glam::DVec3;
+use crate::t;
 
-/// World-space measurement axis for a linear dimension between `first` and
-/// `second`, chosen as the UCS X or Y axis (whichever the span is closer to).
-/// `ucs` is the UCS→wire affine; identity gives the world X/Y behaviour.
-fn measure_axis(first: DVec3, second: DVec3, ucs: Mat4) -> DVec3 {
-    let ux = ucs.transform_vector3(Vec3::X).normalize_or(Vec3::X).as_dvec3();
-    let uy = ucs.transform_vector3(Vec3::Y).normalize_or(Vec3::Y).as_dvec3();
-    let du = ucs.inverse().transform_vector3((second - first).as_vec3());
-    if du.x.abs() >= du.y.abs() {
-        ux
+fn measure_axis(first: DVec3, second: DVec3) -> DVec3 {
+    let delta = second - first;
+    if delta.x.abs() >= delta.y.abs() {
+        DVec3::X
     } else {
-        uy
+        DVec3::Y
     }
 }
 
@@ -40,7 +36,7 @@ enum Step {
 
 pub struct LinearDimensionCommand {
     step: Step,
-    ucs: Mat4,
+    plane: WorkingPlane,
     /// Optional text that replaces the measured value (None = measurement).
     text_override: Option<String>,
     /// True while the next typed line is captured as the text override.
@@ -55,7 +51,7 @@ impl LinearDimensionCommand {
     pub fn new() -> Self {
         Self {
             step: Step::FirstPoint,
-            ucs: Mat4::IDENTITY,
+            plane: WorkingPlane::default(),
             text_override: None,
             awaiting_text: false,
             text_angle: None,
@@ -69,24 +65,24 @@ impl CadCommand for LinearDimensionCommand {
         "DIMLINEAR"
     }
 
-    fn set_ucs(&mut self, ucs: Mat4) {
-        self.ucs = ucs;
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
     }
 
     fn prompt(&self) -> String {
         if self.awaiting_text {
-            return "DIMLINEAR  Enter dimension text (blank = measured value):".into();
+            return t!("DIMLINEAR  Enter dimension text (blank = measured value):").into_owned();
         }
         if self.awaiting_angle {
-            return "DIMLINEAR  Specify text angle (degrees):".into();
+            return t!("DIMLINEAR  Specify text angle (degrees):").into_owned();
         }
         match self.step {
-            Step::FirstPoint => "DIMLINEAR  Specify first extension line origin:".into(),
+            Step::FirstPoint => t!("DIMLINEAR  Specify first extension line origin:").into_owned(),
             Step::SecondPoint(_) => {
-                "DIMLINEAR  Specify second extension line origin  [Text/Angle]:".into()
+                t!("DIMLINEAR  Specify second extension line origin  [Text/Angle]:").into_owned()
             }
             Step::DimensionLine { .. } => {
-                "DIMLINEAR  Specify dimension line location  [Text/Angle]:".into()
+                t!("DIMLINEAR  Specify dimension line location  [Text/Angle]:").into_owned()
             }
         }
     }
@@ -102,21 +98,12 @@ impl CadCommand for LinearDimensionCommand {
                 CmdResult::NeedPoint
             }
             Step::DimensionLine { first, second } => {
+                let first = self.plane.to_local(first);
+                let second = self.plane.to_local(second);
+                let pt = self.plane.to_local(pt);
                 let mut dim = DimensionLinear::new(v3(first), v3(second));
-                // Measure along the UCS axis the span is closest to; the DXF
-                // rotation is that axis's angle in world space.
-                let axis = measure_axis(first, second, self.ucs);
+                let axis = measure_axis(first, second);
                 dim.rotation = axis.y.atan2(axis.x);
-                // Bake the UCS X-axis angle as the text rotation so the
-                // measurement text reads horizontally in the UCS (i.e. square on
-                // screen) regardless of the style's force-horizontal flags,
-                // which would otherwise pin it to world-horizontal and tilt it
-                // under a rotated UCS. Left at 0 (natural) when there's no UCS.
-                let ux = self.ucs.transform_vector3(Vec3::X);
-                let ucs_ang = (ux.y as f64).atan2(ux.x as f64);
-                if ucs_ang.abs() > 1e-9 {
-                    dim.base.text_rotation = ucs_ang;
-                }
                 dim.definition_point = v3(pt);
                 dim.base.definition_point = v3(pt);
                 dim.base.text_middle_point = v3(linear_text_pos(first, second, pt, axis));
@@ -127,7 +114,9 @@ impl CadCommand for LinearDimensionCommand {
                 if let Some(a) = self.text_angle {
                     dim.base.text_rotation = a;
                 }
-                CmdResult::CommitAndExit(EntityType::Dimension(Dimension::Linear(dim)))
+                CmdResult::CommitAndExit(self.plane.place_entity(EntityType::Dimension(
+                    Dimension::Linear(dim),
+                )))
             }
         }
     }
@@ -205,8 +194,15 @@ impl CadCommand for LinearDimensionCommand {
             Step::FirstPoint => None,
             Step::SecondPoint(first) => Some(preview_wire(vec![first, pt])),
             Step::DimensionLine { first, second } => {
-                let axis = measure_axis(first, second, self.ucs);
-                Some(preview_wire(linear_dimension_preview(first, second, pt, axis)))
+                let first = self.plane.to_local(first);
+                let second = self.plane.to_local(second);
+                let pt = self.plane.to_local(pt);
+                let axis = measure_axis(first, second);
+                let points = linear_dimension_preview(first, second, pt, axis)
+                    .into_iter()
+                    .map(|point| self.plane.to_world(point))
+                    .collect();
+                Some(preview_wire(points))
             }
         }
     }
@@ -222,6 +218,7 @@ fn preview_wire(points: Vec<DVec3>) -> WireModel {
         world_width: 0.0,
         depth_override: None,
         fill_is_3d: false,
+        fill_is_2d_solid: false,
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
             dash_from_start: false,

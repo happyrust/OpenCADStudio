@@ -11,6 +11,132 @@ use crate::scene::Scene;
 use acadrust::{EntityType, Handle};
 use glam::DVec3;
 
+// ── Working plane ─────────────────────────────────────────────────────────
+
+/// Full-precision coordinate frame used by interactive commands.
+///
+/// Points delivered to commands remain WCS points. Commands that construct
+/// planar geometry use this frame for their local calculations, then convert
+/// the result back to WCS for storage and preview.
+#[derive(Clone, Copy, Debug)]
+pub struct WorkingPlane {
+    pub origin: DVec3,
+    pub x: DVec3,
+    pub y: DVec3,
+    pub z: DVec3,
+}
+
+impl Default for WorkingPlane {
+    fn default() -> Self {
+        Self {
+            origin: DVec3::ZERO,
+            x: DVec3::X,
+            y: DVec3::Y,
+            z: DVec3::Z,
+        }
+    }
+}
+
+impl WorkingPlane {
+    pub fn is_identity(self) -> bool {
+        self.origin.abs_diff_eq(DVec3::ZERO, 1e-12)
+            && self.x.abs_diff_eq(DVec3::X, 1e-12)
+            && self.y.abs_diff_eq(DVec3::Y, 1e-12)
+            && self.z.abs_diff_eq(DVec3::Z, 1e-12)
+    }
+
+    pub fn new(origin: DVec3, x: DVec3, y: DVec3) -> Self {
+        let x = x.normalize_or(DVec3::X);
+        let raw_y = y.normalize_or(DVec3::Y);
+        let fallback = if x.dot(DVec3::Z).abs() < 0.999 {
+            DVec3::Z
+        } else {
+            DVec3::Y
+        };
+        let z = x.cross(raw_y).normalize_or(x.cross(fallback).normalize());
+        let y = z.cross(x).normalize();
+        Self { origin, x, y, z }
+    }
+
+    pub fn to_world(self, point: DVec3) -> DVec3 {
+        self.origin + self.x * point.x + self.y * point.y + self.z * point.z
+    }
+
+    pub fn to_local(self, point: DVec3) -> DVec3 {
+        let delta = point - self.origin;
+        DVec3::new(delta.dot(self.x), delta.dot(self.y), delta.dot(self.z))
+    }
+
+    pub fn vector_to_world(self, vector: DVec3) -> DVec3 {
+        self.x * vector.x + self.y * vector.y + self.z * vector.z
+    }
+
+    pub fn vector_to_local(self, vector: DVec3) -> DVec3 {
+        DVec3::new(vector.dot(self.x), vector.dot(self.y), vector.dot(self.z))
+    }
+
+    pub fn angle(self, from: DVec3, to: DVec3) -> Option<f64> {
+        let direction = self.vector_to_local(to - from);
+        (direction.x.hypot(direction.y) > f64::EPSILON)
+            .then(|| direction.y.atan2(direction.x))
+    }
+
+    pub fn to_world_transform(self) -> acadrust::types::Transform {
+        use acadrust::types::{Matrix4, Transform};
+        Transform::from_matrix(Matrix4 {
+            m: [
+                [self.x.x, self.y.x, self.z.x, self.origin.x],
+                [self.x.y, self.y.y, self.z.y, self.origin.y],
+                [self.x.z, self.y.z, self.z.z, self.origin.z],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        })
+    }
+
+    pub fn to_local_transform(self) -> acadrust::types::Transform {
+        use acadrust::types::{Matrix4, Transform};
+        Transform::from_matrix(Matrix4 {
+            m: [
+                [self.x.x, self.x.y, self.x.z, -self.origin.dot(self.x)],
+                [self.y.x, self.y.y, self.y.z, -self.origin.dot(self.y)],
+                [self.z.x, self.z.y, self.z.z, -self.origin.dot(self.z)],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        })
+    }
+
+    pub fn place_entity(self, mut entity: EntityType) -> EntityType {
+        crate::scene::view::dispatch::apply_transform(
+            &mut entity,
+            &EntityTransform::Affine(self.to_world_transform()),
+        );
+        entity
+    }
+}
+
+#[cfg(test)]
+mod working_plane_tests {
+    use super::*;
+
+    #[test]
+    fn translated_and_rotated_frame_round_trips_points_and_vectors() {
+        let plane = WorkingPlane::new(
+            DVec3::new(125_000.25, -42_000.5, 810.75),
+            DVec3::new(0.0, 1.0, 0.0),
+            DVec3::new(0.0, 0.0, 1.0),
+        );
+        let local = DVec3::new(12.5, -3.25, 7.75);
+        let vector = DVec3::new(-2.0, 5.0, 1.5);
+
+        assert!(plane
+            .to_local(plane.to_world(local))
+            .abs_diff_eq(local, 1e-9));
+        assert!(plane
+            .vector_to_local(plane.vector_to_world(vector))
+            .abs_diff_eq(vector, 1e-12));
+    }
+}
+
 /// Domain object resolved under the cursor for ObjectPick snapping.
 #[derive(Clone, Copy, Debug)]
 pub struct ObjectPickHit {
@@ -20,19 +146,46 @@ pub struct ObjectPickHit {
     pub label: &'static str,
 }
 
+#[derive(Clone)]
+pub struct SelectionEntity {
+    pub handle: Handle,
+    pub entity: EntityType,
+    pub surface_area: Option<f64>,
+}
+
+#[derive(Clone)]
+pub enum AreaPreviewSource {
+    Handles(Vec<Handle>),
+    Boundary(Vec<[f64; 2]>),
+}
+
+#[derive(Clone)]
+pub struct AreaPreviewRegion {
+    pub source: AreaPreviewSource,
+    pub subtract: bool,
+}
+
 // ── Transform ─────────────────────────────────────────────────────────────
 
 /// A geometric transformation applied to existing entities.
 #[derive(Clone)]
 pub enum EntityTransform {
-    /// Move every point by the given world-space delta (world XY plane).
+    /// Move every point by the given world-space delta.
     Translate(DVec3),
-    /// Rotate around `center` by `angle_rad` in the world XY plane.
-    Rotate { center: DVec3, angle_rad: f64 },
+    /// Rotate around the axis through `center`.
+    Rotate {
+        center: DVec3,
+        axis: DVec3,
+        angle_rad: f64,
+    },
     /// Uniform scale from `center` by `factor`.
     Scale { center: DVec3, factor: f64 },
-    /// Mirror across the line through `p1`→`p2` in the world XY plane.
-    Mirror { p1: DVec3, p2: DVec3 },
+    /// Mirror through the plane containing `p1`→`p2` and the working normal.
+    Mirror {
+        p1: DVec3,
+        p2: DVec3,
+        working_normal: DVec3,
+    },
     /// General affine transform. Used when a complete UCS basis must be baked
     /// into block-local geometry instead of stored as drawing UCS state.
     Affine(acadrust::types::Transform),
@@ -106,7 +259,7 @@ impl CadCommand for ValuePromptCommand {
     }
 
     fn prompt(&self) -> String {
-        self.prompt.to_string()
+        crate::t!(self.prompt).into_owned()
     }
 
     fn wants_text_input(&self) -> bool {
@@ -177,9 +330,18 @@ impl CadCommand for RenameCommand {
 
     fn prompt(&self) -> String {
         match &self.step {
-            RenameStep::Type => "RENAME  Select the object type to rename:".to_string(),
-            RenameStep::Old { ty } => format!("RENAME {ty}  Enter the current name:"),
-            RenameStep::New { ty, old } => format!("RENAME {ty}  Rename \"{old}\" to:"),
+            RenameStep::Type => crate::t!("RENAME  Select the object type to rename:").into_owned(),
+            RenameStep::Old { ty } => crate::t!(
+                "RENAME %{type}  Enter the current name:",
+                type = ty
+            )
+            .into_owned(),
+            RenameStep::New { ty, old } => crate::t!(
+                "RENAME %{type}  Rename \"%{old}\" to:",
+                type = ty,
+                old = old
+            )
+            .into_owned(),
         }
     }
 
@@ -274,8 +436,10 @@ impl CadCommand for UserRegCommand {
 
     fn prompt(&self) -> String {
         match self.slot {
-            None => format!("{}  which register?  [1-5]:", self.name),
-            Some(n) => format!("{}{n}  new value:", self.name),
+            None => crate::t!("%{name}  which register?  [1-5]:", name = self.name)
+                .into_owned(),
+            Some(n) => crate::t!("%{name}%{slot}  new value:", name = self.name, slot = n)
+                .into_owned(),
         }
     }
 
@@ -369,8 +533,8 @@ impl CadCommand for KeywordCommand {
 
     fn prompt(&self) -> String {
         match self.pending {
-            Some((_, value_prompt)) => value_prompt.to_string(),
-            None => self.prompt.to_string(),
+            Some((_, value_prompt)) => crate::t!(value_prompt).into_owned(),
+            None => crate::t!(self.prompt).into_owned(),
         }
     }
 
@@ -464,8 +628,8 @@ impl CadCommand for TwoValuePromptCommand {
 
     fn prompt(&self) -> String {
         match &self.first {
-            None => self.prompt1.to_string(),
-            Some(_) => self.prompt2.to_string(),
+            None => crate::t!(self.prompt1).into_owned(),
+            Some(_) => crate::t!(self.prompt2).into_owned(),
         }
     }
 
@@ -548,11 +712,15 @@ impl CadCommand for SelectThenKeywordCommand {
 
     fn prompt(&self) -> String {
         if self.gathering {
-            return format!("{}  select objects, then press Enter:", self.name);
+            return crate::t!(
+                "%{name}  select objects, then press Enter:",
+                name = self.name
+            )
+            .into_owned();
         }
         match self.pending {
-            Some((_, value_prompt)) => value_prompt.to_string(),
-            None => self.prompt.to_string(),
+            Some((_, value_prompt)) => crate::t!(value_prompt).into_owned(),
+            None => crate::t!(self.prompt).into_owned(),
         }
     }
 
@@ -655,9 +823,13 @@ impl CadCommand for SelectThenValueCommand {
 
     fn prompt(&self) -> String {
         if self.gathering {
-            format!("{}  select objects, then press Enter:", self.name)
+            crate::t!(
+                "%{name}  select objects, then press Enter:",
+                name = self.name
+            )
+            .into_owned()
         } else {
-            self.value_prompt.to_string()
+            crate::t!(self.value_prompt).into_owned()
         }
     }
 
@@ -740,11 +912,15 @@ impl CadCommand for SelectThenTwoValueCommand {
 
     fn prompt(&self) -> String {
         if self.gathering {
-            format!("{}  select objects, then press Enter:", self.name)
+            crate::t!(
+                "%{name}  select objects, then press Enter:",
+                name = self.name
+            )
+            .into_owned()
         } else if self.first.is_none() {
-            self.prompt1.to_string()
+            crate::t!(self.prompt1).into_owned()
         } else {
-            self.prompt2.to_string()
+            crate::t!(self.prompt2).into_owned()
         }
     }
 
@@ -849,6 +1025,8 @@ pub enum CmdResult {
     /// Replace / delete multiple entities and add new ones; command ends.
     /// Each pair: (handle_to_erase, replacement_entities) — empty vec = delete only.
     ReplaceMany(Vec<(Handle, Vec<EntityType>)>, Vec<EntityType>),
+    /// Replace several entities as one undo step while keeping the command active.
+    ReplaceManyContinue(Vec<(Handle, Vec<EntityType>)>),
     /// Cancel: discard any preview and end the command.
     Cancel,
     /// Cancel because the active drawing space changed. Cleanup is identical
@@ -883,6 +1061,12 @@ pub enum CmdResult {
     ZoomToWindow { p1: DVec3, p2: DVec3 },
     /// Print a measurement result to the command line and end the command.
     Measurement(String),
+    /// Print a measurement result and keep the command active.
+    ReportMeasurement(String),
+    /// Print a measurement result, clear the current selection, and keep the command active.
+    ReportMeasurementAndDeselect(String),
+    /// Clear the current selection and keep the command active at its updated step.
+    DeselectAndContinue,
     /// Break `handle` at points `p1` and `p2`; replace with computed fragments.
     BreakEntity { handle: Handle, p1: DVec3, p2: DVec3 },
     /// Attempt to join the given entities into fewer merged entities.
@@ -1220,14 +1404,14 @@ impl CmdOption {
     /// Button whose keyword is typed on click, e.g. `("Ttr", "TTR")`.
     pub fn new(label: &str, keyword: &str) -> Self {
         Self {
-            label: label.to_string(),
+            label: crate::t!(label).into_owned(),
             keyword: keyword.to_string(),
         }
     }
     /// A "finish" button that submits the step like Enter.
     pub fn enter(label: &str) -> Self {
         Self {
-            label: label.to_string(),
+            label: crate::t!(label).into_owned(),
             keyword: String::new(),
         }
     }
@@ -1248,12 +1432,10 @@ pub trait CadCommand: Send {
         Vec::new()
     }
 
-    /// Push the active UCS into the command as a UCS→render(wire)-space affine
-    /// (identity = plain WCS). Commands that build axis-aligned geometry (RECT,
-    /// rectangular ARRAY, …) override this to store it and rotate their implicit
-    /// axes into the UCS; most commands work purely from picked points and
-    /// ignore it. Called before each point / preview dispatch.
-    fn set_ucs(&mut self, _ucs: glam::Mat4) {}
+    /// Push the active coordinate frame in full precision. Geometry commands
+    /// use it for plane-local construction; inquiry and modify commands use it
+    /// for local deltas, angles and transformation axes.
+    fn set_working_plane(&mut self, _plane: WorkingPlane) {}
 
     /// Push the live Ctrl-key state into the command before each preview/commit
     /// dispatch. Commands that offer a Ctrl toggle (e.g. arc-direction flip on
@@ -1381,6 +1563,24 @@ pub trait CadCommand: Send {
     /// Commands that stay active across replaces should update their internal snapshots here.
     fn on_entity_replaced(&mut self, _old: Handle, _new_handles: &[Handle]) {}
 
+    /// Consume a lasso or drag-box gesture while the command is active.
+    /// `fence` is the gesture boundary in drawing coordinates; `window` is
+    /// present for rectangular gestures. Returning `Some` prevents the normal
+    /// selection system from selecting the crossed entities.
+    fn on_drag_selection(
+        &mut self,
+        _fence: &[[f64; 2]],
+        _window: Option<([f64; 2], [f64; 2])>,
+    ) -> Option<CmdResult> {
+        None
+    }
+
+    /// Whether an empty click may start a two-corner selection box for this
+    /// command instead of being reported as a missed entity pick.
+    fn accepts_drag_selection(&self) -> bool {
+        false
+    }
+
     /// Called on every mouse-move when `needs_entity_pick()` is true.
     /// Return preview wires showing the operation result under the cursor.
     /// Default: empty (no preview).
@@ -1448,11 +1648,21 @@ pub trait CadCommand: Send {
         false
     }
 
+    fn selection_forces_add(&self) -> bool {
+        false
+    }
+
     /// Called after a selection action completes while `is_selection_gathering` is true.
     /// `handles` is the full set of currently selected entities.
     /// Return `Relaunch` to fire the pending command, or `NeedPoint` to keep gathering.
     fn on_selection_complete(&mut self, _handles: Vec<Handle>) -> CmdResult {
         CmdResult::Cancel
+    }
+
+    fn inject_selection_entities(&mut self, _entities: Vec<SelectionEntity>) {}
+
+    fn area_preview_regions(&self) -> Option<Vec<AreaPreviewRegion>> {
+        None
     }
 
     /// Returns `true` when the current step picks a corner of a selection
@@ -1543,6 +1753,11 @@ pub trait CadCommand: Send {
     /// that need to read/modify it (e.g. DIMTEDIT, MLEADERADD, MLEADERREMOVE).
     /// Default: no-op.
     fn inject_picked_entity(&mut self, _entity: acadrust::EntityType) {}
+
+    /// Supply the tessellated surface area associated with the picked entity.
+    /// Commands that measure mesh-backed objects can opt in without owning the
+    /// scene's render cache.
+    fn inject_picked_surface_area(&mut self, _area: f64) {}
 
     /// What the command is asking for at this step, used to label the
     /// dynamic-input overlay. Default is a point pick; commands waiting

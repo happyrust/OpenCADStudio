@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "OpenCADStudio"
-version = "0.9.1"
+version = "0.9.3"
 dependencies = [
  "acadrust",
  "ashpd",
@@ -53,6 +53,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "truck-meshalgo",
  "truck-modeling",
  "truck-polymesh",
@@ -85,7 +86,7 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 [[package]]
 name = "acadrust"
 version = "0.4.0"
-source = "git+https://github.com/OpenAEC-Foundation/acadifc.git?rev=78b57b0#78b57b000d708864d304ec52cf5cd1eba1bb2626"
+source = "git+https://github.com/OpenAEC-Foundation/acadifc.git?rev=ab388a7#ab388a7de9b38f7b06e963c35b45fb35d9fee97a"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
@@ -4064,6 +4065,7 @@ dependencies = [
  "console_error_panic_hook",
  "getrandom 0.3.4",
  "js-sys",
+ "sha2 0.10.9",
  "wasm-bindgen",
 ]
 

@@ -7,6 +7,7 @@
 use acadrust::entities::{Ray as RayEnt, XLine as XLineEnt};
 use acadrust::types::Vector3;
 use acadrust::EntityType;
+use crate::t;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::scene::model::wire_model::WireModel;
@@ -33,16 +34,16 @@ impl CadCommand for RayCommand {
 
     fn prompt(&self) -> String {
         if self.base.is_none() {
-            "RAY  Specify start point:".into()
+            crate::t!("RAY  Specify start point:").into_owned()
         } else {
-            "RAY  Specify through point:".into()
+            crate::t!("RAY  Specify through point:").into_owned()
         }
     }
 
     fn options(&self) -> Vec<crate::command::CmdOption> {
         use crate::command::CmdOption;
         if self.base.is_some() {
-            vec![CmdOption::enter("Done")]
+            vec![CmdOption::enter(t!("Done").as_ref())]
         } else {
             vec![]
         }
@@ -88,6 +89,7 @@ impl CadCommand for RayCommand {
             world_width: 0.0,
             depth_override: None,
             fill_is_3d: false,
+            fill_is_2d_solid: false,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -132,16 +134,16 @@ impl CadCommand for XLineCommand {
 
     fn prompt(&self) -> String {
         if self.base.is_none() {
-            "XLINE  Specify a point:".into()
+            t!("XLINE  Specify a point:").into_owned()
         } else {
-            "XLINE  Specify through point:".into()
+            t!("XLINE  Specify through point:").into_owned()
         }
     }
 
     fn options(&self) -> Vec<crate::command::CmdOption> {
         use crate::command::CmdOption;
         if self.base.is_some() {
-            vec![CmdOption::enter("Done")]
+            vec![CmdOption::enter(t!("Done").as_ref())]
         } else {
             vec![]
         }
@@ -186,6 +188,7 @@ impl CadCommand for XLineCommand {
             world_width: 0.0,
             depth_override: None,
             fill_is_3d: false,
+            fill_is_2d_solid: false,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,

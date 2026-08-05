@@ -1,8 +1,9 @@
 // DIST command — measure distance and angle between two picked points.
 
 use glam::DVec3;
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::scene::model::wire_model::WireModel;
 
 pub struct DistCommand {
@@ -10,34 +11,42 @@ pub struct DistCommand {
     // loses ~0.03–0.06 units at survey-scale coordinates (e.g. eastings near
     // 5e5), which made snapped-endpoint measurements read off by that much.
     first: Option<DVec3>,
+    plane: WorkingPlane,
 }
 
 impl DistCommand {
     pub fn new() -> Self {
-        Self { first: None }
+        Self {
+            first: None,
+            plane: WorkingPlane::default(),
+        }
     }
 }
 
 impl CadCommand for DistCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "DIST"
     }
 
     fn prompt(&self) -> String {
         if self.first.is_none() {
-            "DIST  Specify first point:".into()
+            t!("DIST  Specify first point:").into_owned()
         } else {
-            "DIST  Specify second point:".into()
+            t!("DIST  Specify second point:").into_owned()
         }
     }
 
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Some(p1) = self.first {
-            let delta = pt - p1;
+            let delta = self.plane.vector_to_local(pt - p1);
             let dist = delta.length();
             let dx = delta.x;
-            let dy = delta.y; // drawing plane is world XY
-            let dz = delta.z; // elevation
+            let dy = delta.y;
+            let dz = delta.z;
 
             // Angle in XY plane — degrees from +X
             let angle_xy = dy.atan2(dx).to_degrees();
@@ -45,9 +54,22 @@ impl CadCommand for DistCommand {
             let dist_xy = dx.hypot(dy);
             let angle_z = dz.atan2(dist_xy).to_degrees();
 
-            let msg = format!(
-                "Distance = {dist:.4},  Angle in XY Plane = {angle_xy:.4}°,  Angle from XY Plane = {angle_z:.4}°\n  Delta X = {dx:.4},  Delta Y = {dy:.4},  Delta Z = {dz:.4}",
-            );
+            let dist_s = format!("{dist:.4}");
+            let angle_xy_s = format!("{angle_xy:.4}");
+            let angle_z_s = format!("{angle_z:.4}");
+            let dx_s = format!("{dx:.4}");
+            let dy_s = format!("{dy:.4}");
+            let dz_s = format!("{dz:.4}");
+            let msg = t!(
+                "Distance = %{dist},  Angle in XY Plane = %{angle_xy}°,  Angle from XY Plane = %{angle_z}°\n  Delta X = %{dx},  Delta Y = %{dy},  Delta Z = %{dz}",
+                dist = dist_s,
+                angle_xy = angle_xy_s,
+                angle_z = angle_z_s,
+                dx = dx_s,
+                dy = dy_s,
+                dz = dz_s,
+            )
+            .into_owned();
             CmdResult::Measurement(msg)
         } else {
             self.first = Some(pt);
@@ -67,6 +89,7 @@ impl CadCommand for DistCommand {
             world_width: 0.0,
             depth_override: None,
             fill_is_3d: false,
+            fill_is_2d_solid: false,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,

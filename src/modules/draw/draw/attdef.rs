@@ -10,8 +10,9 @@ use acadrust::entities::AttributeDefinition;
 use acadrust::types::Vector3;
 use acadrust::EntityType;
 use glam::DVec3;
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::scene::model::wire_model::WireModel;
 
 enum Step {
@@ -32,32 +33,58 @@ enum Step {
 
 pub struct AttdefCommand {
     step: Step,
-    /// Text height in world units.
     height: f64,
+    text_style: String,
+    width_factor: f64,
+    oblique_angle: f64,
+    plane: WorkingPlane,
 }
 
 impl AttdefCommand {
-    pub fn new() -> Self {
+    pub fn with_text_defaults(
+        height: f64,
+        text_style: String,
+        width_factor: f64,
+        oblique_angle: f64,
+    ) -> Self {
         Self {
             step: Step::Tag,
-            height: 0.2,
+            height,
+            text_style,
+            width_factor,
+            oblique_angle,
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for AttdefCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "ATTDEF"
     }
 
     fn prompt(&self) -> String {
         match &self.step {
-            Step::Tag => "ATTDEF  Enter attribute tag (no spaces):".into(),
-            Step::Prompt { tag } => format!("ATTDEF  Enter prompt for '{tag}' (Enter=use tag):"),
-            Step::Default { tag, .. } => {
-                format!("ATTDEF  Enter default value for '{tag}' (Enter=blank):")
-            }
-            Step::Insertion { tag, .. } => format!("ATTDEF  Specify insertion point for '{tag}':"),
+            Step::Tag => t!("ATTDEF  Enter attribute tag (no spaces):").into_owned(),
+            Step::Prompt { tag } => t!(
+                "ATTDEF  Enter prompt for '%{tag}' (Enter=use tag):",
+                tag = tag
+            )
+            .into_owned(),
+            Step::Default { tag, .. } => t!(
+                "ATTDEF  Enter default value for '%{tag}' (Enter=blank):",
+                tag = tag
+            )
+            .into_owned(),
+            Step::Insertion { tag, .. } => t!(
+                "ATTDEF  Specify insertion point for '%{tag}':",
+                tag = tag
+            )
+            .into_owned(),
         }
     }
 
@@ -113,16 +140,23 @@ impl CadCommand for AttdefCommand {
             default,
         } = &self.step
         {
+            let point = self.plane.to_local(pt);
             let mut attdef = AttributeDefinition {
                 tag: tag.clone(),
                 prompt: prompt.clone(),
                 default_value: default.clone(),
-                insertion_point: Vector3::new(pt.x, pt.y, pt.z),
+                insertion_point: Vector3::new(point.x, point.y, point.z),
                 height: self.height,
+                text_style: self.text_style.clone(),
+                width_factor: self.width_factor,
+                oblique_angle: self.oblique_angle,
                 ..Default::default()
             };
             attdef.common.layer = "0".into();
-            CmdResult::CommitAndExit(EntityType::AttributeDefinition(attdef))
+            CmdResult::CommitAndExit(
+                self.plane
+                    .place_entity(EntityType::AttributeDefinition(attdef)),
+            )
         } else {
             CmdResult::NeedPoint
         }
@@ -153,30 +187,35 @@ impl CadCommand for AttdefCommand {
         }
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         if !matches!(self.step, Step::Insertion { .. }) {
             return None;
         }
         // Show a small cross at the insertion point.
-        let d = 0.15_f32;
+        let d = 0.15;
+        let points = [
+            pt - self.plane.x * d,
+            pt + self.plane.x * d,
+            DVec3::splat(f64::NAN),
+            pt - self.plane.y * d,
+            pt + self.plane.y * d,
+        ];
         Some(WireModel {
             taper_widths: Vec::new(),
             world_width: 0.0,
             depth_override: None,
             fill_is_3d: false,
+            fill_is_2d_solid: false,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,
             dash_align_end: None,
             text_verts: Vec::new(),
             name: "attdef_preview".into(),
-            points: vec![
-                [pt.x - d, pt.y, pt.z],
-                [pt.x + d, pt.y, pt.z],
-                [f32::NAN, 0.0, 0.0],
-                [pt.x, pt.y, pt.z - d],
-                [pt.x, pt.y, pt.z + d],
-            ],
+            points: points
+                .iter()
+                .map(|point| point.as_vec3().to_array())
+                .collect(),
             points_low: Vec::new(),
             color: WireModel::CYAN,
             selected: false,

@@ -17,8 +17,9 @@
 use acadrust::types::Vector3;
 use acadrust::{EntityType, Handle, Line};
 use glam::DVec3;
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 
 // ── Ribbon definition ─────────────────────────────────────────────────────
@@ -190,6 +191,7 @@ pub struct CenterLineCommand {
     /// The entity injected by the host before `on_entity_pick` runs; `None`
     /// until the host injects it.
     picked: Option<EntityType>,
+    plane: WorkingPlane,
 }
 
 impl CenterLineCommand {
@@ -197,28 +199,38 @@ impl CenterLineCommand {
         Self {
             first: None,
             picked: None,
+            plane: WorkingPlane::default(),
         }
     }
 
     /// Extract a `LineGeom` from a picked entity; `None` for anything else.
-    fn as_line(entity: &EntityType) -> Option<LineGeom> {
+    fn as_line(&self, entity: &EntityType) -> Option<LineGeom> {
         match entity {
-            EntityType::Line(l) => Some(LineGeom::from_line(l)),
+            EntityType::Line(line) => {
+                let mut geom = LineGeom::from_line(line);
+                geom.start = self.plane.to_local(geom.start);
+                geom.end = self.plane.to_local(geom.end);
+                Some(geom)
+            }
             _ => None,
         }
     }
 }
 
 impl CadCommand for CenterLineCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "CENTERLINE"
     }
 
     fn prompt(&self) -> String {
         if self.first.is_none() {
-            "CENTERLINE  Select first line:".to_string()
+            t!("CENTERLINE  Select first line:").into_owned()
         } else {
-            "CENTERLINE  Select second line:".to_string()
+            t!("CENTERLINE  Select second line:").into_owned()
         }
     }
 
@@ -240,7 +252,7 @@ impl CadCommand for CenterLineCommand {
         }
         // Resolve the just-picked entity; ignore the pick if it isn't a Line.
         let picked = self.picked.take();
-        let geom = match picked.as_ref().and_then(Self::as_line) {
+        let geom = match picked.as_ref().and_then(|entity| self.as_line(entity)) {
             Some(g) => g,
             None => return CmdResult::NeedPoint,
         };
@@ -256,7 +268,9 @@ impl CadCommand for CenterLineCommand {
                 CmdResult::NeedPoint
             }
             Some(first) => match compute_center_line(first, geom) {
-                Some(line) => CmdResult::CommitAndExit(EntityType::Line(line)),
+                Some(line) => CmdResult::CommitAndExit(
+                    self.plane.place_entity(EntityType::Line(line)),
+                ),
                 // Degenerate combination (coincident / no usable result):
                 // keep prompting for a usable second line.
                 None => CmdResult::NeedPoint,

@@ -12,46 +12,47 @@ use crate::entities::common::{
 };
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable};
 use crate::scene::model::object::{GripApply, GripDef, PropSection};
+use crate::t;
 
 fn base_props(base: &DimensionBase) -> Vec<crate::scene::model::object::Property> {
     vec![
         crate::scene::model::object::Property {
-            label: "Text".into(),
+            label: t!("Text").into_owned(),
             field: "text",
             value: crate::scene::model::object::PropValue::EditText(base.text.clone()),
         },
         crate::scene::model::object::Property {
-            label: "User Text".into(),
+            label: t!("User Text").into_owned(),
             field: "user_text",
             value: crate::scene::model::object::PropValue::EditText(
                 base.user_text.clone().unwrap_or_default(),
             ),
         },
         crate::scene::model::object::Property {
-            label: "Style".into(),
+            label: t!("Style").into_owned(),
             field: "style_name",
             value: crate::scene::model::object::PropValue::EditText(base.style_name.clone()),
         },
-        edit("Text X", "text_x", base.text_middle_point.x),
-        edit("Text Y", "text_y", base.text_middle_point.y),
-        edit("Text Z", "text_z", base.text_middle_point.z),
+        edit(t!("Text X").as_ref(), "text_x", base.text_middle_point.x),
+        edit(t!("Text Y").as_ref(), "text_y", base.text_middle_point.y),
+        edit(t!("Text Z").as_ref(), "text_z", base.text_middle_point.z),
         edit(
-            "Text Rotation (deg)",
+            t!("Text Rotation (deg)").as_ref(),
             "text_rotation",
             base.text_rotation.to_degrees(),
         ),
         edit(
-            "Horizontal Dir (deg)",
+            t!("Horizontal Dir (deg)").as_ref(),
             "horizontal_direction",
             base.horizontal_direction.to_degrees(),
         ),
         edit(
-            "Line Spacing",
+            t!("Line Spacing").as_ref(),
             "line_spacing_factor",
             base.line_spacing_factor,
         ),
         ro(
-            "Measurement",
+            t!("Measurement").as_ref(),
             "measurement",
             format!("{:.4}", base.actual_measurement),
         ),
@@ -68,7 +69,7 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
                 d.definition_point,
             ));
             props.push(edit(
-                "Ext Rotation (deg)",
+                t!("Ext Rotation (deg)").as_ref(),
                 "ext_line_rotation",
                 d.ext_line_rotation.to_degrees(),
             ));
@@ -79,20 +80,20 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
                 d.second_point,
                 d.definition_point,
             ));
-            props.push(edit_angle("Rotation", "rotation", d.rotation.to_degrees()));
+            props.push(edit_angle(t!("Rotation").as_ref(), "rotation", d.rotation.to_degrees()));
             props.push(edit(
-                "Ext Rotation (deg)",
+                t!("Ext Rotation (deg)").as_ref(),
                 "ext_line_rotation",
                 d.ext_line_rotation.to_degrees(),
             ));
         }
         Dimension::Radius(d) => {
             props.extend(radius_like_props(d.angle_vertex, d.definition_point));
-            props.push(edit("Leader Length", "leader_length", d.leader_length));
+            props.push(edit(t!("Leader Length").as_ref(), "leader_length", d.leader_length));
         }
         Dimension::Diameter(d) => {
             props.extend(radius_like_props(d.angle_vertex, d.definition_point));
-            props.push(edit("Leader Length", "leader_length", d.leader_length));
+            props.push(edit(t!("Leader Length").as_ref(), "leader_length", d.leader_length));
         }
         Dimension::Angular2Ln(d) => {
             props.extend(angular_props(
@@ -101,9 +102,9 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
                 d.second_point,
                 d.definition_point,
             ));
-            props.push(edit("Arc X", "dimension_arc_x", d.dimension_arc.x));
-            props.push(edit("Arc Y", "dimension_arc_y", d.dimension_arc.y));
-            props.push(edit("Arc Z", "dimension_arc_z", d.dimension_arc.z));
+            props.push(edit(t!("Arc X").as_ref(), "dimension_arc_x", d.dimension_arc.x));
+            props.push(edit(t!("Arc Y").as_ref(), "dimension_arc_y", d.dimension_arc.y));
+            props.push(edit(t!("Arc Z").as_ref(), "dimension_arc_z", d.dimension_arc.z));
         }
         Dimension::Angular3Pt(d) => {
             props.extend(angular_props(
@@ -114,17 +115,17 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
             ));
         }
         Dimension::Ordinate(d) => {
-            props.push(edit("Origin X", "definition_x", d.definition_point.x));
-            props.push(edit("Origin Y", "definition_y", d.definition_point.y));
-            props.push(edit("Origin Z", "definition_z", d.definition_point.z));
-            props.push(edit("Feature X", "feature_x", d.feature_location.x));
-            props.push(edit("Feature Y", "feature_y", d.feature_location.y));
-            props.push(edit("Feature Z", "feature_z", d.feature_location.z));
-            props.push(edit("Leader X", "leader_x", d.leader_endpoint.x));
-            props.push(edit("Leader Y", "leader_y", d.leader_endpoint.y));
-            props.push(edit("Leader Z", "leader_z", d.leader_endpoint.z));
+            props.push(edit(t!("Origin X").as_ref(), "definition_x", d.definition_point.x));
+            props.push(edit(t!("Origin Y").as_ref(), "definition_y", d.definition_point.y));
+            props.push(edit(t!("Origin Z").as_ref(), "definition_z", d.definition_point.z));
+            props.push(edit(t!("Feature X").as_ref(), "feature_x", d.feature_location.x));
+            props.push(edit(t!("Feature Y").as_ref(), "feature_y", d.feature_location.y));
+            props.push(edit(t!("Feature Z").as_ref(), "feature_z", d.feature_location.z));
+            props.push(edit(t!("Leader X").as_ref(), "leader_x", d.leader_endpoint.x));
+            props.push(edit(t!("Leader Y").as_ref(), "leader_y", d.leader_endpoint.y));
+            props.push(edit(t!("Leader Z").as_ref(), "leader_z", d.leader_endpoint.z));
             props.push(ro(
-                "Ordinate Type",
+                t!("Ordinate Type").as_ref(),
                 "ordinate_type",
                 if d.is_ordinate_type_x { "X" } else { "Y" },
             ));
@@ -137,42 +138,42 @@ fn properties(dim: &Dimension) -> Vec<PropSection> {
                 d.definition_point,
             ));
             props.push(edit(
-                "Arc Start (deg)",
+                t!("Arc Start (deg)").as_ref(),
                 "arc_start_parameter",
                 d.arc_start_parameter.to_degrees(),
             ));
             props.push(edit(
-                "Arc End (deg)",
+                t!("Arc End (deg)").as_ref(),
                 "arc_end_parameter",
                 d.arc_end_parameter.to_degrees(),
             ));
-            props.push(ro("Partial", "is_partial", d.is_partial.to_string()));
-            props.push(ro("Has Leader", "has_leader", d.has_leader.to_string()));
-            props.push(edit("Leader 1 X", "leader1_x", d.first_leader_point.x));
-            props.push(edit("Leader 1 Y", "leader1_y", d.first_leader_point.y));
-            props.push(edit("Leader 1 Z", "leader1_z", d.first_leader_point.z));
-            props.push(edit("Leader 2 X", "leader2_x", d.second_leader_point.x));
-            props.push(edit("Leader 2 Y", "leader2_y", d.second_leader_point.y));
-            props.push(edit("Leader 2 Z", "leader2_z", d.second_leader_point.z));
+            props.push(ro(t!("Partial").as_ref(), "is_partial", d.is_partial.to_string()));
+            props.push(ro(t!("Has Leader").as_ref(), "has_leader", d.has_leader.to_string()));
+            props.push(edit(t!("Leader 1 X").as_ref(), "leader1_x", d.first_leader_point.x));
+            props.push(edit(t!("Leader 1 Y").as_ref(), "leader1_y", d.first_leader_point.y));
+            props.push(edit(t!("Leader 1 Z").as_ref(), "leader1_z", d.first_leader_point.z));
+            props.push(edit(t!("Leader 2 X").as_ref(), "leader2_x", d.second_leader_point.x));
+            props.push(edit(t!("Leader 2 Y").as_ref(), "leader2_y", d.second_leader_point.y));
+            props.push(edit(t!("Leader 2 Z").as_ref(), "leader2_z", d.second_leader_point.z));
         }
         Dimension::LargeRadial(d) => {
-            props.push(edit("Center X", "definition_x", d.definition_point.x));
-            props.push(edit("Center Y", "definition_y", d.definition_point.y));
-            props.push(edit("Center Z", "definition_z", d.definition_point.z));
-            props.push(edit("Chord X", "chord_x", d.chord_point.x));
-            props.push(edit("Chord Y", "chord_y", d.chord_point.y));
-            props.push(edit("Chord Z", "chord_z", d.chord_point.z));
-            props.push(edit("Override Center X", "override_x", d.override_center.x));
-            props.push(edit("Override Center Y", "override_y", d.override_center.y));
-            props.push(edit("Override Center Z", "override_z", d.override_center.z));
-            props.push(edit("Jog X", "jog_x", d.jog_point.x));
-            props.push(edit("Jog Y", "jog_y", d.jog_point.y));
-            props.push(edit("Jog Z", "jog_z", d.jog_point.z));
-            props.push(edit_angle("Jog Angle", "jog_angle", d.jog_angle.to_degrees()));
+            props.push(edit(t!("Center X").as_ref(), "definition_x", d.definition_point.x));
+            props.push(edit(t!("Center Y").as_ref(), "definition_y", d.definition_point.y));
+            props.push(edit(t!("Center Z").as_ref(), "definition_z", d.definition_point.z));
+            props.push(edit(t!("Chord X").as_ref(), "chord_x", d.chord_point.x));
+            props.push(edit(t!("Chord Y").as_ref(), "chord_y", d.chord_point.y));
+            props.push(edit(t!("Chord Z").as_ref(), "chord_z", d.chord_point.z));
+            props.push(edit(t!("Override Center X").as_ref(), "override_x", d.override_center.x));
+            props.push(edit(t!("Override Center Y").as_ref(), "override_y", d.override_center.y));
+            props.push(edit(t!("Override Center Z").as_ref(), "override_z", d.override_center.z));
+            props.push(edit(t!("Jog X").as_ref(), "jog_x", d.jog_point.x));
+            props.push(edit(t!("Jog Y").as_ref(), "jog_y", d.jog_point.y));
+            props.push(edit(t!("Jog Z").as_ref(), "jog_z", d.jog_point.z));
+            props.push(edit_angle(t!("Jog Angle").as_ref(), "jog_angle", d.jog_angle.to_degrees()));
         }
     }
     vec![PropSection {
-        title: "Geometry".into(),
+        title: t!("Geometry").into_owned(),
         props,
     }]
 }
@@ -183,15 +184,15 @@ fn linear_like_props(
     definition: acadrust::types::Vector3,
 ) -> Vec<crate::scene::model::object::Property> {
     vec![
-        edit("First X", "first_x", first.x),
-        edit("First Y", "first_y", first.y),
-        edit("First Z", "first_z", first.z),
-        edit("Second X", "second_x", second.x),
-        edit("Second Y", "second_y", second.y),
-        edit("Second Z", "second_z", second.z),
-        edit("Definition X", "definition_x", definition.x),
-        edit("Definition Y", "definition_y", definition.y),
-        edit("Definition Z", "definition_z", definition.z),
+        edit(t!("First X").as_ref(), "first_x", first.x),
+        edit(t!("First Y").as_ref(), "first_y", first.y),
+        edit(t!("First Z").as_ref(), "first_z", first.z),
+        edit(t!("Second X").as_ref(), "second_x", second.x),
+        edit(t!("Second Y").as_ref(), "second_y", second.y),
+        edit(t!("Second Z").as_ref(), "second_z", second.z),
+        edit(t!("Definition X").as_ref(), "definition_x", definition.x),
+        edit(t!("Definition Y").as_ref(), "definition_y", definition.y),
+        edit(t!("Definition Z").as_ref(), "definition_z", definition.z),
     ]
 }
 
@@ -200,12 +201,12 @@ fn radius_like_props(
     point: acadrust::types::Vector3,
 ) -> Vec<crate::scene::model::object::Property> {
     vec![
-        edit("Center X", "center_x", center.x),
-        edit("Center Y", "center_y", center.y),
-        edit("Center Z", "center_z", center.z),
-        edit("Point X", "point_x", point.x),
-        edit("Point Y", "point_y", point.y),
-        edit("Point Z", "point_z", point.z),
+        edit(t!("Center X").as_ref(), "center_x", center.x),
+        edit(t!("Center Y").as_ref(), "center_y", center.y),
+        edit(t!("Center Z").as_ref(), "center_z", center.z),
+        edit(t!("Point X").as_ref(), "point_x", point.x),
+        edit(t!("Point Y").as_ref(), "point_y", point.y),
+        edit(t!("Point Z").as_ref(), "point_z", point.z),
     ]
 }
 
@@ -216,18 +217,18 @@ fn angular_props(
     definition: acadrust::types::Vector3,
 ) -> Vec<crate::scene::model::object::Property> {
     vec![
-        edit("Vertex X", "vertex_x", vertex.x),
-        edit("Vertex Y", "vertex_y", vertex.y),
-        edit("Vertex Z", "vertex_z", vertex.z),
-        edit("First X", "first_x", first.x),
-        edit("First Y", "first_y", first.y),
-        edit("First Z", "first_z", first.z),
-        edit("Second X", "second_x", second.x),
-        edit("Second Y", "second_y", second.y),
-        edit("Second Z", "second_z", second.z),
-        edit("Definition X", "definition_x", definition.x),
-        edit("Definition Y", "definition_y", definition.y),
-        edit("Definition Z", "definition_z", definition.z),
+        edit(t!("Vertex X").as_ref(), "vertex_x", vertex.x),
+        edit(t!("Vertex Y").as_ref(), "vertex_y", vertex.y),
+        edit(t!("Vertex Z").as_ref(), "vertex_z", vertex.z),
+        edit(t!("First X").as_ref(), "first_x", first.x),
+        edit(t!("First Y").as_ref(), "first_y", first.y),
+        edit(t!("First Z").as_ref(), "first_z", first.z),
+        edit(t!("Second X").as_ref(), "second_x", second.x),
+        edit(t!("Second Y").as_ref(), "second_y", second.y),
+        edit(t!("Second Z").as_ref(), "second_z", second.z),
+        edit(t!("Definition X").as_ref(), "definition_x", definition.x),
+        edit(t!("Definition Y").as_ref(), "definition_y", definition.y),
+        edit(t!("Definition Z").as_ref(), "definition_z", definition.z),
     ]
 }
 
@@ -627,14 +628,34 @@ fn apply_transform(dim: &mut Dimension, t: &EntityTransform) {
         EntityTransform::Translate(d) => dim.translate(acadrust::types::Vector3::new(
             d.x as f64, d.y as f64, d.z as f64,
         )),
-        EntityTransform::Rotate { center, angle_rad } => {
-            transform_dimension_points(dim, |pt| rotate_point(pt, *center, *angle_rad))
+        EntityTransform::Rotate { center, axis, angle_rad } => {
+            if axis.normalize_or(DVec3::Z).abs_diff_eq(DVec3::Z, 1e-10) {
+                transform_dimension_points(dim, |pt| rotate_point(pt, *center, *angle_rad))
+            } else {
+                crate::scene::view::transform::apply_standard_transform(
+                    dim,
+                    *center,
+                    *axis,
+                    *angle_rad,
+                );
+            }
         }
         EntityTransform::Scale { center, factor } => {
             transform_dimension_points(dim, |pt| scale_point(pt, *center, *factor))
         }
-        EntityTransform::Mirror { p1, p2 } => {
-            transform_dimension_points(dim, |pt| mirror_point(pt, *p1, *p2))
+        EntityTransform::Mirror { p1, p2, working_normal } => {
+            if working_normal.normalize_or(DVec3::Z).abs_diff_eq(DVec3::Z, 1e-10) {
+                transform_dimension_points(dim, |pt| mirror_point(pt, *p1, *p2))
+            } else {
+                acadrust::Entity::apply_transform(
+                    dim,
+                    &crate::scene::view::transform::reflection_about_working_line(
+                        *p1,
+                        *p2,
+                        *working_normal,
+                    ),
+                );
+            }
         }
         EntityTransform::Affine(transform) => {
             let old_normal = dim.base().normal;
@@ -1150,133 +1171,133 @@ pub fn style_sections(style: &DimStyle) -> Vec<crate::scene::model::object::Prop
 
     vec![
         PropSection {
-            title: "Lines & Arrows".into(),
+            title: t!("Lines & Arrows").into_owned(),
             props: vec![
-                ro("Arrow size", "dim_arrow_size", f(s.dimasz)),
-                ro("Dim line color", "dim_line_color", s.dimclrd.to_string()),
+                ro(t!("Arrow size").as_ref(), "dim_arrow_size", f(s.dimasz)),
+                ro(t!("Dim line color").as_ref(), "dim_line_color", s.dimclrd.to_string()),
                 ro(
-                    "Dim line lineweight",
+                    t!("Dim line lineweight").as_ref(),
                     "dim_line_lineweight",
                     s.dimlwd.to_string(),
                 ),
-                ro("Ext line color", "dim_ext_line_color", s.dimclre.to_string()),
+                ro(t!("Ext line color").as_ref(), "dim_ext_line_color", s.dimclre.to_string()),
                 ro(
-                    "Ext line lineweight",
+                    t!("Ext line lineweight").as_ref(),
                     "dim_ext_line_lineweight",
                     s.dimlwe.to_string(),
                 ),
-                ro("Dim line 1", "dim_line_1", onoff(!s.dimsd1)),
-                ro("Dim line 2", "dim_line_2", onoff(!s.dimsd2)),
-                ro("Ext line 1", "dim_ext_line_1", onoff(!s.dimse1)),
-                ro("Ext line 2", "dim_ext_line_2", onoff(!s.dimse2)),
-                ro("Dim line ext", "dim_line_ext", f(s.dimdle)),
-                ro("Ext line ext", "dim_ext_line_ext", f(s.dimexe)),
-                ro("Ext line offset", "dim_ext_line_offset", f(s.dimexo)),
-                ro("Ext line fixed", "dim_ext_line_fixed", yn(s.dimfxlon)),
+                ro(t!("Dim line 1").as_ref(), "dim_line_1", onoff(!s.dimsd1)),
+                ro(t!("Dim line 2").as_ref(), "dim_line_2", onoff(!s.dimsd2)),
+                ro(t!("Ext line 1").as_ref(), "dim_ext_line_1", onoff(!s.dimse1)),
+                ro(t!("Ext line 2").as_ref(), "dim_ext_line_2", onoff(!s.dimse2)),
+                ro(t!("Dim line ext").as_ref(), "dim_line_ext", f(s.dimdle)),
+                ro(t!("Ext line ext").as_ref(), "dim_ext_line_ext", f(s.dimexe)),
+                ro(t!("Ext line offset").as_ref(), "dim_ext_line_offset", f(s.dimexo)),
+                ro(t!("Ext line fixed").as_ref(), "dim_ext_line_fixed", yn(s.dimfxlon)),
                 ro(
-                    "Ext line fixed length",
+                    t!("Ext line fixed length").as_ref(),
                     "dim_ext_line_fixed_length",
                     f(s.dimfxl),
                 ),
             ],
         },
         PropSection {
-            title: "Text".into(),
+            title: t!("Text").into_owned(),
             props: vec![
-                ro("Fill color", "dim_text_fill_color", s.dimtfillclr.to_string()),
-                ro("Text color", "dim_text_color", s.dimclrt.to_string()),
-                ro("Text height", "dim_text_height", f(s.dimtxt)),
-                ro("Text offset", "dim_text_offset", f(s.dimgap)),
-                ro("Text pos vert", "dim_text_pos_vert", s.dimtad.to_string()),
-                ro("Text pos hor", "dim_text_pos_hor", s.dimjust.to_string()),
-                ro("Text outside align", "dim_text_outside_align", yn(s.dimtoh)),
-                ro("Text inside align", "dim_text_inside_align", yn(s.dimtih)),
-                ro("Text style", "dim_text_style", s.dimtxsty.clone()),
+                ro(t!("Fill color").as_ref(), "dim_text_fill_color", s.dimtfillclr.to_string()),
+                ro(t!("Text color").as_ref(), "dim_text_color", s.dimclrt.to_string()),
+                ro(t!("Text height").as_ref(), "dim_text_height", f(s.dimtxt)),
+                ro(t!("Text offset").as_ref(), "dim_text_offset", f(s.dimgap)),
+                ro(t!("Text pos vert").as_ref(), "dim_text_pos_vert", s.dimtad.to_string()),
+                ro(t!("Text pos hor").as_ref(), "dim_text_pos_hor", s.dimjust.to_string()),
+                ro(t!("Text outside align").as_ref(), "dim_text_outside_align", yn(s.dimtoh)),
+                ro(t!("Text inside align").as_ref(), "dim_text_inside_align", yn(s.dimtih)),
+                ro(t!("Text style").as_ref(), "dim_text_style", s.dimtxsty.clone()),
             ],
         },
         PropSection {
-            title: "Fit".into(),
+            title: t!("Fit").into_owned(),
             props: vec![
-                ro("Fit", "dim_fit", s.dimatfit.to_string()),
-                ro("Text inside", "dim_text_inside", yn(s.dimtix)),
-                ro("Text movement", "dim_text_movement", s.dimtmove.to_string()),
-                ro("Dim scale overall", "dim_scale_overall", f(s.dimscale)),
-                ro("Dim line forced", "dim_line_forced", yn(s.dimtofl)),
-                ro("Dim line inside", "dim_line_inside", yn(s.dimsoxd)),
+                ro(t!("Fit").as_ref(), "dim_fit", s.dimatfit.to_string()),
+                ro(t!("Text inside").as_ref(), "dim_text_inside", yn(s.dimtix)),
+                ro(t!("Text movement").as_ref(), "dim_text_movement", s.dimtmove.to_string()),
+                ro(t!("Dim scale overall").as_ref(), "dim_scale_overall", f(s.dimscale)),
+                ro(t!("Dim line forced").as_ref(), "dim_line_forced", yn(s.dimtofl)),
+                ro(t!("Dim line inside").as_ref(), "dim_line_inside", yn(s.dimsoxd)),
             ],
         },
         PropSection {
-            title: "Primary Units".into(),
+            title: t!("Primary Units").into_owned(),
             props: vec![
-                ro("Dim units", "dim_units", s.dimlunit.to_string()),
-                ro("Precision", "dim_precision", s.dimdec.to_string()),
-                ro("Decimal separator", "dim_decimal_separator", dsep),
-                ro("Dim prefix/suffix", "dim_prefix_suffix", s.dimpost.clone()),
-                ro("Dim roundoff", "dim_roundoff", f(s.dimrnd)),
+                ro(t!("Dim units").as_ref(), "dim_units", s.dimlunit.to_string()),
+                ro(t!("Precision").as_ref(), "dim_precision", s.dimdec.to_string()),
+                ro(t!("Decimal separator").as_ref(), "dim_decimal_separator", dsep),
+                ro(t!("Dim prefix/suffix").as_ref(), "dim_prefix_suffix", s.dimpost.clone()),
+                ro(t!("Dim roundoff").as_ref(), "dim_roundoff", f(s.dimrnd)),
                 ro(
-                    "Suppress leading zeros",
+                    t!("Suppress leading zeros").as_ref(),
                     "dim_suppress_leading_zeros",
                     yn(s.dimzin & 4 != 0),
                 ),
                 ro(
-                    "Suppress trailing zeros",
+                    t!("Suppress trailing zeros").as_ref(),
                     "dim_suppress_trailing_zeros",
                     yn(s.dimzin & 8 != 0),
                 ),
-                ro("Dim scale linear", "dim_scale_linear", f(s.dimlfac)),
-                ro("Angle format", "dim_angle_format", s.dimaunit.to_string()),
-                ro("Angle precision", "dim_angle_precision", s.dimadec.to_string()),
+                ro(t!("Dim scale linear").as_ref(), "dim_scale_linear", f(s.dimlfac)),
+                ro(t!("Angle format").as_ref(), "dim_angle_format", s.dimaunit.to_string()),
+                ro(t!("Angle precision").as_ref(), "dim_angle_precision", s.dimadec.to_string()),
             ],
         },
         PropSection {
-            title: "Alternate Units".into(),
+            title: t!("Alternate Units").into_owned(),
             props: vec![
-                ro("Alt enabled", "dim_alt_enabled", yn(s.dimalt)),
-                ro("Alt format", "dim_alt_format", s.dimaltu.to_string()),
-                ro("Alt precision", "dim_alt_precision", s.dimaltd.to_string()),
-                ro("Alt scale factor", "dim_alt_scale_factor", f(s.dimaltf)),
-                ro("Alt roundoff", "dim_alt_roundoff", f(s.dimaltrnd)),
-                ro("Alt prefix/suffix", "dim_alt_prefix_suffix", s.dimapost.clone()),
+                ro(t!("Alt enabled").as_ref(), "dim_alt_enabled", yn(s.dimalt)),
+                ro(t!("Alt format").as_ref(), "dim_alt_format", s.dimaltu.to_string()),
+                ro(t!("Alt precision").as_ref(), "dim_alt_precision", s.dimaltd.to_string()),
+                ro(t!("Alt scale factor").as_ref(), "dim_alt_scale_factor", f(s.dimaltf)),
+                ro(t!("Alt roundoff").as_ref(), "dim_alt_roundoff", f(s.dimaltrnd)),
+                ro(t!("Alt prefix/suffix").as_ref(), "dim_alt_prefix_suffix", s.dimapost.clone()),
                 ro(
-                    "Alt suppress leading zeros",
+                    t!("Alt suppress leading zeros").as_ref(),
                     "dim_alt_suppress_leading_zeros",
                     yn(s.dimaltz & 4 != 0),
                 ),
                 ro(
-                    "Alt suppress trailing zeros",
+                    t!("Alt suppress trailing zeros").as_ref(),
                     "dim_alt_suppress_trailing_zeros",
                     yn(s.dimaltz & 8 != 0),
                 ),
             ],
         },
         PropSection {
-            title: "Tolerances".into(),
+            title: t!("Tolerances").into_owned(),
             props: vec![
-                ro("Tolerance display", "dim_tolerance_display", tol_display),
-                ro("Tolerance limit lower", "dim_tolerance_limit_lower", f(s.dimtm)),
-                ro("Tolerance limit upper", "dim_tolerance_limit_upper", f(s.dimtp)),
+                ro(t!("Tolerance display").as_ref(), "dim_tolerance_display", tol_display),
+                ro(t!("Tolerance limit lower").as_ref(), "dim_tolerance_limit_lower", f(s.dimtm)),
+                ro(t!("Tolerance limit upper").as_ref(), "dim_tolerance_limit_upper", f(s.dimtp)),
                 ro(
-                    "Tolerance precision",
+                    t!("Tolerance precision").as_ref(),
                     "dim_tolerance_precision",
                     s.dimtdec.to_string(),
                 ),
                 ro(
-                    "Tolerance text height",
+                    t!("Tolerance text height").as_ref(),
                     "dim_tolerance_text_height",
                     f(s.dimtfac),
                 ),
                 ro(
-                    "Tolerance pos vert",
+                    t!("Tolerance pos vert").as_ref(),
                     "dim_tolerance_pos_vert",
                     s.dimtolj.to_string(),
                 ),
                 ro(
-                    "Tolerance suppress leading zeros",
+                    t!("Tolerance suppress leading zeros").as_ref(),
                     "dim_tolerance_suppress_leading_zeros",
                     yn(s.dimtzin & 4 != 0),
                 ),
                 ro(
-                    "Tolerance suppress trailing zeros",
+                    t!("Tolerance suppress trailing zeros").as_ref(),
                     "dim_tolerance_suppress_trailing_zeros",
                     yn(s.dimtzin & 8 != 0),
                 ),
@@ -1388,27 +1409,6 @@ fn apply_dimension_breaks(
     *lines = output;
 }
 
-pub(crate) fn uses_custom_arrow_blocks(document: &CadDocument, dim: &Dimension) -> bool {
-    let style_name = &dim.base().style_name;
-    let Some(style) = document.dim_styles.iter().find(|style| {
-        style.name.eq_ignore_ascii_case(style_name)
-            || (style_name.trim().is_empty() && style.name.eq_ignore_ascii_case("Standard"))
-    }) else {
-        return false;
-    };
-    if style.dimtsz > 1e-9 {
-        return false;
-    }
-    let is_custom = |handle| {
-        crate::scene::convert::tessellate::arrow_block_is_custom(document, handle)
-    };
-    if style.dimsah {
-        is_custom(style.dimblk1) || is_custom(style.dimblk2)
-    } else {
-        is_custom(style.dimblk)
-    }
-}
-
 pub trait DimensionTess {
     fn tessellate(
         &self,
@@ -1480,14 +1480,129 @@ fn tessellate_dimension_inner(
     // recursive call goes through the LOD ladder, not the truck path.)
 
     let style_name = &dim.base().style_name;
-    let style = document.dim_styles.iter().find(|s| {
+    let source_style = document.dim_styles.iter().find(|s| {
         s.name.eq_ignore_ascii_case(style_name)
             || (style_name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
     });
+    let mut effective_style = source_style.cloned();
+    if let Some(style) = &mut effective_style {
+        use crate::entities::dim_override as ov;
+        let data = &dim.base().common.extended_data;
+        macro_rules! real {
+            ($field:ident, $code:ident) => {
+                if let Some(value) = ov::real(data, ov::$code) {
+                    style.$field = value;
+                }
+            };
+        }
+        macro_rules! int {
+            ($field:ident, $code:ident) => {
+                if let Some(value) = ov::int(data, ov::$code) {
+                    style.$field = value;
+                }
+            };
+        }
+        macro_rules! flag {
+            ($field:ident, $code:ident) => {
+                if let Some(value) = ov::int(data, ov::$code) {
+                    style.$field = value != 0;
+                }
+            };
+        }
+        macro_rules! handle {
+            ($field:ident, $code:ident) => {
+                if let Some(value) = ov::handle(data, ov::$code) {
+                    style.$field = value;
+                }
+            };
+        }
+        real!(dimscale, DIMSCALE);
+        real!(dimasz, DIMASZ);
+        real!(dimexo, DIMEXO);
+        real!(dimdli, DIMDLI);
+        real!(dimexe, DIMEXE);
+        real!(dimrnd, DIMRND);
+        real!(dimdle, DIMDLE);
+        real!(dimtp, DIMTP);
+        real!(dimtm, DIMTM);
+        real!(dimfxl, DIMFXL);
+        real!(dimjogang, DIMJOGANG);
+        real!(dimtxt, DIMTXT);
+        real!(dimcen, DIMCEN);
+        real!(dimtsz, DIMTSZ);
+        real!(dimaltf, DIMALTF);
+        real!(dimlfac, DIMLFAC);
+        real!(dimtvp, DIMTVP);
+        real!(dimtfac, DIMTFAC);
+        real!(dimgap, DIMGAP);
+        real!(dimaltrnd, DIMALTRND);
+        flag!(dimtol, DIMTOL);
+        flag!(dimlim, DIMLIM);
+        flag!(dimtih, DIMTIH);
+        flag!(dimtoh, DIMTOH);
+        flag!(dimse1, DIMSE1);
+        flag!(dimse2, DIMSE2);
+        flag!(dimalt, DIMALT);
+        flag!(dimtofl, DIMTOFL);
+        flag!(dimsah, DIMSAH);
+        flag!(dimtix, DIMTIX);
+        flag!(dimsoxd, DIMSOXD);
+        flag!(dimsd1, DIMSD1);
+        flag!(dimsd2, DIMSD2);
+        flag!(dimupt, DIMUPT);
+        flag!(dimfxlon, DIMFXLON);
+        flag!(dimtxtdirection, DIMTXTDIRECTION);
+        int!(dimzin, DIMZIN);
+        int!(dimazin, DIMAZIN);
+        int!(dimarcsym, DIMARCSYM);
+        int!(dimclrd, DIMCLRD);
+        int!(dimclre, DIMCLRE);
+        int!(dimclrt, DIMCLRT);
+        int!(dimadec, DIMADEC);
+        int!(dimaltd, DIMALTD);
+        int!(dimdec, DIMDEC);
+        int!(dimtdec, DIMTDEC);
+        int!(dimaltu, DIMALTU);
+        int!(dimalttd, DIMALTTD);
+        int!(dimaunit, DIMAUNIT);
+        int!(dimfrac, DIMFRAC);
+        int!(dimlunit, DIMLUNIT);
+        int!(dimdsep, DIMDSEP);
+        int!(dimtmove, DIMTMOVE);
+        int!(dimjust, DIMJUST);
+        int!(dimtolj, DIMTOLJ);
+        int!(dimtzin, DIMTZIN);
+        int!(dimaltz, DIMALTZ);
+        int!(dimalttz, DIMALTTZ);
+        int!(dimatfit, DIMATFIT);
+        int!(dimtfill, DIMTFILL);
+        int!(dimtfillclr, DIMTFILLCLR);
+        int!(dimlwd, DIMLWD);
+        int!(dimlwe, DIMLWE);
+        handle!(dimldrblk, DIMLDRBLK);
+        handle!(dimblk, DIMBLK);
+        handle!(dimblk1, DIMBLK1);
+        handle!(dimblk2, DIMBLK2);
+        handle!(dimltex_handle, DIMLTYPE);
+        handle!(dimltex1_handle, DIMLTEX1);
+        handle!(dimltex2_handle, DIMLTEX2);
+        if let Some(value) = ov::string(data, ov::DIMPOST) {
+            style.dimpost = value;
+        }
+        if let Some(value) = ov::string(data, ov::DIMAPOST) {
+            style.dimapost = value;
+        }
+        if let Some(value) = ov::handle(data, ov::DIMTXSTY) {
+            style.dimtxsty_handle = value;
+            if let Some(record) = document.text_styles.iter().find(|record| record.handle == value) {
+                style.dimtxsty = record.name.clone();
+            }
+        }
+    }
+    let style = effective_style.as_ref();
 
-    // DIMSCALE rule:
-    //   dimstyle.dimscale > 0  →  final multiplier; ignore anno_scale.
-    //   dimstyle.dimscale == 0 →  annotative: use anno_scale (= 1/vp_scale).
+    // A positive style scale is fixed. A zero style scale uses the multiplier
+    // resolved by the scene for the current annotation or viewport context.
     let dim_scale = style
         .map(|s| {
             if s.dimscale > 1e-6 {
@@ -1654,7 +1769,7 @@ fn tessellate_dimension_inner(
     // preserved on save:
     //   - base.insertion_point: legacy anchor reference; render uses
     //     text_middle_point + dim-line geometry instead.
-    //   - base.block_name: AutoCAD-style "*D..." anonymous block name for
+    //   - base.block_name: generated anonymous block name for
     //     the dim graphics — we re-tessellate so don't need it.
     //   - base.version: DXF format marker (metadata only).
     let _ = (
@@ -1730,6 +1845,7 @@ fn tessellate_dimension_inner(
                     world_width: 0.0,
                     depth_override: None,
                     fill_is_3d: false,
+                    fill_is_2d_solid: false,
                     pick_tris: Vec::new(),
                     pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -1759,6 +1875,7 @@ fn tessellate_dimension_inner(
                     world_width: 0.0,
                     depth_override: None,
                     fill_is_3d: false,
+                    fill_is_2d_solid: false,
                     pick_tris: Vec::new(),
                     pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -1788,6 +1905,7 @@ fn tessellate_dimension_inner(
                 world_width: 0.0,
                 depth_override: None,
                 fill_is_3d: false,
+                fill_is_2d_solid: false,
                 pick_tris: Vec::new(),
                 pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -1818,6 +1936,7 @@ fn tessellate_dimension_inner(
         world_width: 0.0,
         depth_override: None,
         fill_is_3d: false,
+        fill_is_2d_solid: false,
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -1864,6 +1983,7 @@ fn tessellate_dimension_inner(
                     world_width: 0.0,
                     depth_override: None,
                     fill_is_3d: false,
+                    fill_is_2d_solid: false,
                     pick_tris: Vec::new(),
                     pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -2390,7 +2510,7 @@ fn append_linear_dimension(
 
     // DIMDLE: dim line overshoots the ext line by `dimdle` at each end,
     // but only when ticks are in use (DIMTSZ > 0). With arrowheads this
-    // is ignored, matching AutoCAD.
+    // is ignored.
     let dle = if params.ticks { params.dimdle } else { 0.0 };
     let dir_d1_to_d2 = normalized_or(d2 - d1, axis);
     let d1_out = d1 - dir_d1_to_d2 * dle;
@@ -2403,30 +2523,50 @@ fn append_linear_dimension(
     let gap = (d2 - d1).length();
     let arrows_outside = !params.ticks && params.arrow_len > 1e-6 && gap < 2.0 * params.arrow_len;
 
-    // DIMSD1/DIMSD2: when *both* set, omit the dim line entirely. AutoCAD
-    // splits at text otherwise — without that pivot info, leave as-is.
-    if !(suppress.dim1 && suppress.dim2) {
-        // Break the dim line where the text sits on it, so a DIMTFILL
-        // background reads over the line (2-D fills draw under all wires, so the
-        // line is gapped rather than z-masked).
-        let mut drew = false;
-        if let Some((tc, half_w, half_h)) = params.text_break {
-            let dir = normalized_or(d2_out - d1_out, axis);
-            let len = (d2_out - d1_out).length();
-            let along = (tc - d1_out).dot(dir);
-            let perp_dist = (tc - (d1_out + dir * along)).length();
-            if perp_dist < half_h && along - half_w > 0.0 && along + half_w < len {
-                add_segment(&mut g.dim_lines, d1_out, d1_out + dir * (along - half_w));
-                add_segment(&mut g.dim_lines, d1_out + dir * (along + half_w), d2_out);
-                drew = true;
+    // The two suppression flags address the portions at the first and second
+    // measured points independently. The text gap is also the natural split;
+    // when there is no gap, split at the projected text position or midpoint.
+    let line_dir = normalized_or(d2_out - d1_out, axis);
+    let line_len = (d2_out - d1_out).length();
+    let mut split = line_len * 0.5;
+    let mut left_end = split;
+    let mut right_start = split;
+    if let Some((text_center, half_width, half_height)) = params.text_break {
+        let along = (text_center - d1_out).dot(line_dir);
+        if along > 0.0 && along < line_len {
+            split = along;
+            left_end = split;
+            right_start = split;
+            let perpendicular = (text_center - (d1_out + line_dir * along)).length();
+            if perpendicular < half_height
+                && along - half_width > 0.0
+                && along + half_width < line_len
+            {
+                left_end = along - half_width;
+                right_start = along + half_width;
             }
         }
-        if !drew {
-            add_segment(&mut g.dim_lines, d1_out, d2_out);
-        }
-        if arrows_outside && !params.dimsoxd {
-            let stub = params.arrow_len * 2.0;
+    }
+    if !suppress.dim1 && left_end > 1e-6 {
+        add_segment(
+            &mut g.dim_lines,
+            d1_out,
+            d1_out + line_dir * left_end,
+        );
+    }
+    if !suppress.dim2 && line_len - right_start > 1e-6 {
+        add_segment(
+            &mut g.dim_lines,
+            d1_out + line_dir * right_start,
+            d2_out,
+        );
+    }
+    if arrows_outside && !params.dimsoxd {
+        let stub = params.arrow_len * 2.0;
+        if !suppress.dim1 {
             add_segment(&mut g.dim_lines, d1 - dir_d1_to_d2 * stub, d1);
+        }
+        if !suppress.dim2 {
             add_segment(&mut g.dim_lines, d2, d2 + dir_d1_to_d2 * stub);
         }
     }
@@ -2837,8 +2977,8 @@ fn dimension_text_parts(
     let base = dim.base();
     let is_angular = matches!(dim, Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_));
 
-    // Auto-generated body (the value AutoCAD would emit if the user did not
-    // override it). Built first so user_text "<>" substitution can re-use it.
+    // Auto-generated body used when the user did not override it. Built first
+    // so user_text "<>" substitution can re-use it.
     let primary_raw = if is_angular {
         format_angular_value(dim.measurement(), style)
     } else {
@@ -3167,7 +3307,7 @@ fn format_fractional(value: f64, dimfrac: i16) -> String {
 }
 
 /// Power-of-two denominator for architectural / fractional output. DIMFRAC is
-/// the exponent-ish knob AutoCAD pairs with DIMLUNIT; clamp it to a readable
+/// the exponent-like fraction-format knob; clamp it to a readable
 /// range (16ths … 1024ths).
 fn arch_denom(dimfrac: i16) -> u64 {
     let exp = (dimfrac.clamp(0, 8) as u32).max(2) + 2; // 4..=10 → 16..=1024

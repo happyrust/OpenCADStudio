@@ -10,6 +10,7 @@ use glam::DVec3;
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
+use crate::t;
 
 pub const ICON: IconKind = IconKind::Svg(include_bytes!("../../../assets/icons/dim_tedit.svg"));
 
@@ -49,8 +50,10 @@ impl CadCommand for DimTeditCommand {
 
     fn prompt(&self) -> String {
         match &self.step {
-            Step::PickDim => "DIMTEDIT  Select dimension:".into(),
-            Step::PickTextPos { .. } => "DIMTEDIT  Specify new location for dimension text:".into(),
+            Step::PickDim => t!("DIMTEDIT  Select dimension:").into_owned(),
+            Step::PickTextPos { .. } => {
+                t!("DIMTEDIT  Specify new location for dimension text:").into_owned()
+            }
         }
     }
 
@@ -104,6 +107,7 @@ impl CadCommand for DimTeditCommand {
             world_width: 0.0,
             depth_override: None,
             fill_is_3d: false,
+            fill_is_2d_solid: false,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,

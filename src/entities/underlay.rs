@@ -5,6 +5,8 @@
 // Props:  position, scales, rotation, contrast, fade, flags.
 
 use acadrust::entities::{Underlay, UnderlayDisplayFlags};
+use crate::t;
+use glam::DVec3;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{center_grip, edit_angle_prop as edit_angle, edit_prop as edit, ro_prop as ro, square_grip};
@@ -224,26 +226,26 @@ impl PropertyEditable for Underlay {
 
         vec![
             PropSection {
-                title: "Geometry".into(),
+                title: t!("Geometry").into_owned(),
                 props: vec![
-                    edit("Position X", "ul_ix", self.insertion_point.x),
-                    edit("Position Y", "ul_iy", self.insertion_point.y),
-                    edit("Position Z", "ul_iz", self.insertion_point.z),
-                    edit("Scale X", "ul_sx", self.x_scale),
-                    edit("Scale Y", "ul_sy", self.y_scale),
-                    edit("Scale Z", "ul_sz", self.z_scale),
-                    ro("Width", "ul_width", format!("{:.4}", width)),
-                    ro("Height", "ul_height", format!("{:.4}", height)),
-                    edit_angle("Rotation", "ul_rot", self.rotation.to_degrees()),
+                    edit(t!("Position X").as_ref(), "ul_ix", self.insertion_point.x),
+                    edit(t!("Position Y").as_ref(), "ul_iy", self.insertion_point.y),
+                    edit(t!("Position Z").as_ref(), "ul_iz", self.insertion_point.z),
+                    edit(t!("Scale X").as_ref(), "ul_sx", self.x_scale),
+                    edit(t!("Scale Y").as_ref(), "ul_sy", self.y_scale),
+                    edit(t!("Scale Z").as_ref(), "ul_sz", self.z_scale),
+                    ro(t!("Width").as_ref(), "ul_width", format!("{:.4}", width)),
+                    ro(t!("Height").as_ref(), "ul_height", format!("{:.4}", height)),
+                    edit_angle(t!("Rotation").as_ref(), "ul_rot", self.rotation.to_degrees()),
                 ],
             },
             PropSection {
-                title: "Underlay Adjust".into(),
+                title: t!("Underlay Adjust").into_owned(),
                 props: vec![
-                    edit("Contrast", "ul_contrast", self.contrast as f64),
-                    edit("Fade", "ul_fade", self.fade as f64),
+                    edit(t!("Contrast").as_ref(), "ul_contrast", self.contrast as f64),
+                    edit(t!("Fade").as_ref(), "ul_fade", self.fade as f64),
                     Property {
-                        label: "Monochrome".into(),
+                        label: t!("Monochrome").into_owned(),
                         field: "ul_mono",
                         value: PropValue::BoolToggle {
                             field: "ul_mono",
@@ -251,7 +253,7 @@ impl PropertyEditable for Underlay {
                         },
                     },
                     Property {
-                        label: "Adjust Colors for Background".into(),
+                        label: t!("Adjust Colors for Background").into_owned(),
                         field: "ul_adjust_bg",
                         value: PropValue::BoolToggle {
                             field: "ul_adjust_bg",
@@ -261,14 +263,14 @@ impl PropertyEditable for Underlay {
                 ],
             },
             PropSection {
-                title: "Misc".into(),
+                title: t!("Misc").into_owned(),
                 props: vec![
                     // Underlay name/path/layers live on the separate
                     // UnderlayDefinition object, not reachable from the entity.
-                    ro("Underlay name", "ul_name", String::new()),
-                    ro("Underlay path", "ul_path", String::new()),
+                    ro(t!("Underlay name").as_ref(), "ul_name", String::new()),
+                    ro(t!("Underlay path").as_ref(), "ul_path", String::new()),
                     Property {
-                        label: "Show underlay".into(),
+                        label: t!("Show underlay").into_owned(),
                         field: "ul_on",
                         value: PropValue::BoolToggle {
                             field: "ul_on",
@@ -276,7 +278,7 @@ impl PropertyEditable for Underlay {
                         },
                     },
                     Property {
-                        label: "Clipping".into(),
+                        label: t!("Clipping").into_owned(),
                         field: "ul_clip",
                         value: PropValue::BoolToggle {
                             field: "ul_clip",
@@ -284,14 +286,14 @@ impl PropertyEditable for Underlay {
                         },
                     },
                     Property {
-                        label: "Show clipped".into(),
+                        label: t!("Show clipped").into_owned(),
                         field: "ul_clip_inverted",
                         value: PropValue::BoolToggle {
                             field: "ul_clip_inverted",
                             value: self.clip_inverted,
                         },
                     },
-                    ro("Underlay layers", "ul_layers", String::new()),
+                    ro(t!("Underlay layers").as_ref(), "ul_layers", String::new()),
                 ],
             },
         ]
@@ -382,7 +384,18 @@ impl Transformable for Underlay {
                 self.insertion_point.y += d.y as f64;
                 self.insertion_point.z += d.z as f64;
             }
-            EntityTransform::Mirror { p1, p2 } => {
+            EntityTransform::Mirror { p1, p2, working_normal } => {
+                if !working_normal.normalize_or(DVec3::Z).abs_diff_eq(DVec3::Z, 1e-10) {
+                    acadrust::Entity::apply_transform(
+                        self,
+                        &crate::scene::view::transform::reflection_about_working_line(
+                            *p1,
+                            *p2,
+                            *working_normal,
+                        ),
+                    );
+                    return;
+                }
                 reflect_xy_point(
                     &mut self.insertion_point.x,
                     &mut self.insertion_point.y,
@@ -407,7 +420,16 @@ impl Transformable for Underlay {
                 self.y_scale *= f;
                 self.z_scale *= f;
             }
-            EntityTransform::Rotate { center, angle_rad } => {
+            EntityTransform::Rotate { center, axis, angle_rad } => {
+                if !axis.normalize_or(DVec3::Z).abs_diff_eq(DVec3::Z, 1e-10) {
+                    crate::scene::view::transform::apply_standard_transform(
+                        self,
+                        *center,
+                        *axis,
+                        *angle_rad,
+                    );
+                    return;
+                }
                 let bx = center.x as f64;
                 let by = center.y as f64;
                 let a = *angle_rad as f64;

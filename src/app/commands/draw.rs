@@ -13,8 +13,28 @@ impl OpenCADStudio {
 
             "MLINE" => {
                 use crate::modules::draw::draw::mline::MlineCommand;
-                let style = self.tabs[i].scene.document.header.multiline_style.clone();
-                let cmd_obj = MlineCommand::with_style(style);
+                let style_name = self.tabs[i].scene.document.header.multiline_style.clone();
+                let style = self.tabs[i]
+                    .scene
+                    .document
+                    .objects
+                    .iter()
+                    .find_map(|(handle, object)| match object {
+                        acadrust::objects::ObjectType::MLineStyle(style)
+                            if style.name.eq_ignore_ascii_case(&style_name) =>
+                        {
+                            Some((*handle, style.elements.len()))
+                        }
+                        _ => None,
+                    });
+                let (style_handle, element_count) = style
+                    .map(|(handle, count)| (Some(handle), count))
+                    .unwrap_or((None, 2));
+                let cmd_obj = MlineCommand::with_style(
+                    style_name,
+                    style_handle,
+                    element_count,
+                );
                 self.command_line.push_info(&cmd_obj.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd_obj));
             }
@@ -47,7 +67,15 @@ impl OpenCADStudio {
 
             "ATTDEF" => {
                 use crate::modules::draw::draw::attdef::AttdefCommand;
-                let cmd = AttdefCommand::new();
+                let defaults = crate::scene::creation_style::current_text_defaults(
+                    &self.tabs[i].scene.document,
+                );
+                let cmd = AttdefCommand::with_text_defaults(
+                    defaults.height,
+                    defaults.style_name,
+                    defaults.width_factor,
+                    defaults.oblique_angle,
+                );
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -76,7 +104,7 @@ impl OpenCADStudio {
                     .collect();
                 if selected_handles.is_empty() {
                     self.command_line
-                        .push_error("ATTEDIT: select an Insert entity first.");
+                        .push_error(crate::t!("ATTEDIT: select an Insert entity first.").as_ref());
                 } else {
                     let mut found_any = false;
                     for sh in &selected_handles {
@@ -90,17 +118,17 @@ impl OpenCADStudio {
                             if rest.is_empty() {
                                 // List attributes.
                                 if ins.attributes.is_empty() {
-                                    self.command_line.push_output(&format!(
+                                    self.command_line.push_output(crate::tf!(
                                         "  Insert {:x}: no attributes.",
                                         sh.value()
-                                    ));
+                                    ).as_ref());
                                 } else {
                                     for attr in &ins.attributes {
-                                        self.command_line.push_output(&format!(
+                                        self.command_line.push_output(crate::tf!(
                                             "  [{tag}] = {val}",
                                             tag = attr.tag,
                                             val = attr.get_value()
-                                        ));
+                                        ).as_ref());
                                     }
                                 }
                             }
@@ -108,7 +136,7 @@ impl OpenCADStudio {
                     }
                     if !found_any {
                         self.command_line
-                            .push_error("ATTEDIT: no Insert entities in selection.");
+                            .push_error(crate::t!("ATTEDIT: no Insert entities in selection.").as_ref());
                     }
                     // If tag + value supplied, mutate attributes.
                     if parts.len() == 2 && !parts[0].is_empty() {
@@ -133,13 +161,13 @@ impl OpenCADStudio {
                         }
                         if changed > 0 {
                             self.tabs[i].dirty = true;
-                            self.command_line.push_output(&format!(
+                            self.command_line.push_output(crate::tf!(
                                 "ATTEDIT: updated {changed} attribute(s) [{tag_up}] = {new_val}."
-                            ));
+                            ).as_ref());
                         } else {
-                            self.command_line.push_error(&format!(
+                            self.command_line.push_error(crate::tf!(
                                 "ATTEDIT: tag '{tag_up}' not found in selection."
-                            ));
+                            ).as_ref());
                         }
                     }
                 }
@@ -187,13 +215,13 @@ impl OpenCADStudio {
                             }
                         }
                         self.tabs[i].dirty = true;
-                        self.command_line.push_output(&format!(
+                        self.command_line.push_output(crate::tf!(
                             "ATTDISP {sub}: {count} attribute definition(s) updated."
-                        ));
+                        ).as_ref());
                     }
                     _ => {
                         self.command_line
-                            .push_info("Usage: ATTDISP ON | OFF | NORMAL");
+                            .push_info(crate::t!("Usage: ATTDISP ON | OFF | NORMAL").as_ref());
                     }
                 }
             }
@@ -327,7 +355,7 @@ impl OpenCADStudio {
                     }
                     None => {
                         self.command_line
-                            .push_info("ARC Continue  No previous line or arc to continue.");
+                            .push_info(crate::t!("ARC Continue  No previous line or arc to continue.").as_ref());
                     }
                 }
             }
@@ -599,7 +627,7 @@ impl OpenCADStudio {
                         self.tabs[i].active_cmd = Some(Box::new(cmd));
                     } else {
                         self.command_line
-                            .push_error("HATCHEDIT: selected entity is not a hatch.");
+                            .push_error(crate::t!("HATCHEDIT: selected entity is not a hatch.").as_ref());
                     }
                 } else {
                     let cmd = HatcheditCommand::new();
@@ -721,7 +749,7 @@ impl OpenCADStudio {
                     self.tabs[i].dirty = true;
                     self.refresh_properties();
                     self.command_line
-                        .push_output(&format!("{n} object(s) erased."));
+                        .push_output(crate::tf!("{n} object(s) erased.").as_ref());
                     if let Some(pd) = pending {
                         self.commit_undo_delta(i, pd);
                     }
@@ -783,7 +811,7 @@ impl OpenCADStudio {
                     return Some(self.solid_polysolid(nums[0], nums[1]));
                 }
                 self.command_line
-                    .push_info("Usage: POLYSOLID <width> <height>   (select a polyline first)");
+                    .push_info(crate::t!("Usage: POLYSOLID <width> <height>   (select a polyline first)").as_ref());
             }
 
             // SPLINEFIT — fit a smooth spline through the selected polyline's points.
@@ -829,7 +857,7 @@ impl OpenCADStudio {
                 }
                 if loops.is_empty() {
                     self.command_line
-                        .push_error("REGION: select closed polylines or circles.");
+                        .push_error(crate::t!("REGION: select closed polylines or circles.").as_ref());
                 } else {
                     self.push_undo_snapshot(i, "REGION");
                     let count = loops.len();
@@ -845,7 +873,7 @@ impl OpenCADStudio {
                     }
                     self.tabs[i].dirty = true;
                     self.command_line
-                        .push_output(&format!("REGION: created {count} region(s)."));
+                        .push_output(crate::tf!("REGION: created {count} region(s).").as_ref());
                 }
             }
 
@@ -871,7 +899,7 @@ impl OpenCADStudio {
                     return Some(self.solid_pyramid(nums[0], nums[1], sides));
                 }
                 self.command_line
-                    .push_info("Usage: PYRAMID <radius> <height> [sides]   (default 4 sides)");
+                    .push_info(crate::t!("Usage: PYRAMID <radius> <height> [sides]   (default 4 sides)").as_ref());
             }
 
             // SECTION [X|Y|Z] <value> — draw the cross-section outline of the solid.
@@ -1049,7 +1077,11 @@ impl OpenCADStudio {
             // ── Annotate commands ──────────────────────────────────────────
             "TEXT" => {
                 use crate::modules::annotate::text::TextCommand;
-                let new_cmd = TextCommand::new();
+                let height = crate::scene::creation_style::current_text_defaults(
+                    &self.tabs[i].scene.document,
+                )
+                .height;
+                let new_cmd = TextCommand::with_height(height);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
@@ -1070,7 +1102,7 @@ impl OpenCADStudio {
                 }
                 if sel.len() == 1 {
                     self.command_line
-                        .push_error("DDEDIT: selected entity is not text.");
+                        .push_error(crate::t!("DDEDIT: selected entity is not text.").as_ref());
                 } else {
                     let cmd = DdeditCommand::new();
                     self.command_line.push_info(&cmd.prompt());
@@ -1080,7 +1112,11 @@ impl OpenCADStudio {
 
             "MTEXT" => {
                 use crate::modules::annotate::mtext::MTextCommand;
-                let new_cmd = MTextCommand::new();
+                let height = crate::scene::creation_style::current_text_defaults(
+                    &self.tabs[i].scene.document,
+                )
+                .height;
+                let new_cmd = MTextCommand::with_height(height);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
@@ -1093,7 +1129,7 @@ impl OpenCADStudio {
                     "Multiple"
                 };
                 self.command_line
-                    .push_output(&format!("Current settings: Edit mode = {}", mode_str));
+                    .push_output(crate::tf!("Current settings: Edit mode = {}", mode_str).as_ref());
                 let new_cmd = TexteditCommand::new(self.texteditmode);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));

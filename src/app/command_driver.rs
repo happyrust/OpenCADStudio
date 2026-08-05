@@ -1,9 +1,19 @@
 use super::{Message, OpenCADStudio};
-use crate::command::{CmdResult, StepInput};
+use crate::command::{CmdResult, SelectionEntity, StepInput};
 use acadrust::Handle;
 use iced::Task;
 
 impl OpenCADStudio {
+    fn refresh_area_preview(&mut self, i: usize) {
+        let regions = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .and_then(|command| command.area_preview_regions());
+        if let Some(regions) = regions {
+            self.tabs[i].scene.set_area_preview_regions(&regions);
+        }
+    }
+
     /// Point supplied by a bare Enter before LINE/PLINE's first click. Prefer
     /// the current endpoint of the most recently created path drawable in the
     /// active space. A loaded drawing has no runtime anchor, so recover its
@@ -79,6 +89,7 @@ impl OpenCADStudio {
         self.otrack_active = None;
         self.axis_lock_dir = None;
         self.dyn_user_reshaped = false;
+        self.dyn_coord_absolute = false;
         self.grip_hover = None;
         self.grip_popup = None;
         self.grip_pending = None;
@@ -88,6 +99,7 @@ impl OpenCADStudio {
         self.ucs_icon_selected = false;
         self.ucs_icon_hover = false;
         self.tabs[i].pan_mode = false;
+        self.tabs[i].orbit_mode = false;
         let _ = self.on_viewport_exit();
     }
 
@@ -172,7 +184,7 @@ impl OpenCADStudio {
                 tasks.push(self.apply_cmd_result(CmdResult::CancelForSpaceChange));
             } else if message_pending {
                 self.command_line
-                    .push_info("Command cancelled because the active drawing space changed.");
+                    .push_info(crate::t!("Command cancelled because the active drawing space changed.").as_ref());
             }
             cancellation_reported = true;
         }
@@ -186,7 +198,7 @@ impl OpenCADStudio {
         }
         if !cancellation_reported && (grip_cancelled || suspended_cancelled || editor_cancelled) {
             self.command_line
-                .push_info("Command cancelled because the active drawing space changed.");
+                .push_info(crate::t!("Command cancelled because the active drawing space changed.").as_ref());
         }
 
         self.command_line.input.clear();
@@ -210,7 +222,7 @@ impl OpenCADStudio {
             .is_some_and(|command| command.name() != "LIMITS")
             && self.tabs[i].scene.drawing_limit_check_enabled();
         if checks_limits && !self.tabs[i].scene.point_inside_drawing_limits(point) {
-            self.command_line.push_error("Outside limits.");
+            self.command_line.push_error(crate::t!("Outside limits.").as_ref());
             return false;
         }
         true
@@ -252,9 +264,35 @@ impl OpenCADStudio {
             };
             self.last_point = Some(*point);
             self.dyn_user_reshaped = false;
+            self.dyn_coord_absolute = false;
             self.sync_dyn_fields();
             self.reset_tracking_after_point();
             self.push_ucs_to_cmd(i);
+        }
+        if let StepInput::SelectionComplete(handles) = &input {
+            let entities = {
+                let scene = &self.tabs[i].scene;
+                handles
+                    .iter()
+                    .filter_map(|handle| {
+                        scene.document.get_entity(*handle).cloned().map(|entity| {
+                            let surface_area = scene
+                                .meshes
+                                .get(handle)
+                                .or_else(|| scene.block_meshes.get(handle))
+                                .map(|mesh| mesh.metrics.surface_area);
+                            SelectionEntity {
+                                handle: *handle,
+                                entity,
+                                surface_area,
+                            }
+                        })
+                    })
+                    .collect()
+            };
+            if let Some(command) = self.tabs[i].active_cmd.as_mut() {
+                command.inject_selection_entities(entities);
+            }
         }
         let ctrl = self.ctrl_down;
         let shift = self.shift_down;
@@ -389,7 +427,7 @@ impl OpenCADStudio {
             self.tabs[i].scene.select_entity(h, false);
         }
         self.command_line
-            .push_info(&format!("{count} object(s) added to selection."));
+            .push_info(crate::tf!("{count} object(s) added to selection.").as_ref());
         self.refresh_properties();
         let handles: Vec<Handle> = self.tabs[i]
             .scene
@@ -397,14 +435,7 @@ impl OpenCADStudio {
             .into_iter()
             .map(|(h, _)| h)
             .collect();
-        let result = self.tabs[i]
-            .active_cmd
-            .as_mut()
-            .map(|cmd| cmd.on_selection_complete(handles));
-        Some(match result {
-            Some(r) => self.apply_cmd_result(r),
-            None => Task::none(),
-        })
+        Some(self.feed_command(StepInput::SelectionComplete(handles)))
     }
 
     pub(super) fn feed_active_cmd(&mut self, token: &str) {
@@ -555,6 +586,7 @@ impl OpenCADStudio {
                 // and typed digits land in it rather than the command line,
                 // instead of waiting for the next cursor move to resync.
                 self.sync_dyn_fields();
+                self.refresh_area_preview(i);
             }
             CmdResult::Preview(wire) => {
                 self.tabs[i].scene.set_preview_wires(vec![wire]);
@@ -754,7 +786,7 @@ impl OpenCADStudio {
                     });
                 let Some((min_x, min_y, max_x, max_y)) = bounds else {
                     self.command_line
-                        .push_error("MVIEW: the clipping boundary has no usable area.");
+                        .push_error(crate::t!("MVIEW: the clipping boundary has no usable area.").as_ref());
                     self.tabs[i].active_cmd = None;
                     if let Some(pending) = pending {
                         self.commit_undo_delta(i, pending);
@@ -763,7 +795,7 @@ impl OpenCADStudio {
                 };
                 if max_x - min_x < 1e-6 || max_y - min_y < 1e-6 {
                     self.command_line
-                        .push_error("MVIEW: the clipping boundary has no usable area.");
+                        .push_error(crate::t!("MVIEW: the clipping boundary has no usable area.").as_ref());
                     self.tabs[i].active_cmd = None;
                     if let Some(pending) = pending {
                         self.commit_undo_delta(i, pending);
@@ -1051,7 +1083,7 @@ impl OpenCADStudio {
                         self.tabs[i].active_cmd = None;
                         self.tabs[i].snap_result = None;
                         self.command_line
-                            .push_output(&format!("Block \"{name}\" created."));
+                            .push_output(crate::tf!("Block \"{name}\" created.").as_ref());
                         self.refresh_properties();
                     }
                     Err(err) => {
@@ -1098,7 +1130,7 @@ impl OpenCADStudio {
                 self.restore_pre_cmd_tangent();
                 let noun = if count == 1 { "copy" } else { "copies" };
                 self.command_line
-                    .push_output(&format!("{label}: {count} {noun} created."));
+                    .push_output(crate::tf!("{label}: {count} {noun} created.").as_ref());
                 self.refresh_properties();
                 if let Some(pd) = pending {
                     self.commit_undo_delta(i, pd);
@@ -1133,7 +1165,32 @@ impl OpenCADStudio {
                 self.tabs[i].snap_result = None;
                 if was_catchment {
                     self.command_line
-                        .push_info("Catchment tagged successfully.");
+                        .push_info(crate::t!("Catchment tagged successfully.").as_ref());
+                }
+                self.refresh_properties();
+            }
+            CmdResult::ReplaceManyContinue(replacements) => {
+                let label = self.history_label_from_active_cmd(i, "TRIM");
+                self.push_undo_snapshot(i, label);
+                for (handle, entities) in replacements {
+                    self.tabs[i].scene.erase_entities(&[handle]);
+                    let new_handles: Vec<Handle> = entities
+                        .into_iter()
+                        .map(|entity| self.tabs[i].scene.add_entity(entity))
+                        .collect();
+                    if let Some(command) = self.tabs[i].active_cmd.as_mut() {
+                        command.on_entity_replaced(handle, &new_handles);
+                    }
+                }
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].snap_result = None;
+                if let Some(prompt) = self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .map(|command| command.prompt())
+                {
+                    self.command_line.push_info(&prompt);
                 }
                 self.refresh_properties();
             }
@@ -1171,7 +1228,7 @@ impl OpenCADStudio {
                             // Report honestly rather than claiming success while
                             // changing nothing. (#181 / DIM-020)
                             self.command_line
-                                .push_info("DIMBREAK: not yet implemented — nothing changed.");
+                                .push_info(crate::t!("DIMBREAK: not yet implemented — nothing changed.").as_ref());
                             self.tabs[i].active_cmd = None;
                             self.tabs[i].snap_result = None;
                             return Task::none();
@@ -1181,7 +1238,7 @@ impl OpenCADStudio {
                                 apply_dimspace(&mut self.tabs[i].scene, encoded);
                             }
                             self.push_undo_snapshot(i, "DIMSPACE");
-                            self.command_line.push_output("DIMSPACE  Spacing adjusted.");
+                            self.command_line.push_output(crate::t!("DIMSPACE  Spacing adjusted.").as_ref());
                             self.tabs[i].dirty = true;
                             self.tabs[i].active_cmd = None;
                             self.tabs[i].snap_result = None;
@@ -1192,7 +1249,7 @@ impl OpenCADStudio {
                             // model (not yet present) to store and render the jog.
                             // Report honestly rather than faking success. (DIM-019)
                             self.command_line
-                                .push_info("DIMJOGLINE: not yet implemented — nothing changed.");
+                                .push_info(crate::t!("DIMJOGLINE: not yet implemented — nothing changed.").as_ref());
                             self.tabs[i].active_cmd = None;
                             self.tabs[i].snap_result = None;
                             return Task::none();
@@ -1203,7 +1260,7 @@ impl OpenCADStudio {
                             }
                             self.push_undo_snapshot(i, "MLEADERALIGN");
                             self.command_line
-                                .push_output("MLEADERALIGN  Leaders aligned.");
+                                .push_output(crate::t!("MLEADERALIGN  Leaders aligned.").as_ref());
                             self.tabs[i].dirty = true;
                             self.tabs[i].active_cmd = None;
                             self.tabs[i].snap_result = None;
@@ -1215,7 +1272,7 @@ impl OpenCADStudio {
                             }
                             self.push_undo_snapshot(i, "MLEADERCOLLECT");
                             self.command_line
-                                .push_output("MLEADERCOLLECT  Leaders collected.");
+                                .push_output(crate::t!("MLEADERCOLLECT  Leaders collected.").as_ref());
                             self.tabs[i].dirty = true;
                             self.tabs[i].active_cmd = None;
                             self.tabs[i].snap_result = None;
@@ -1461,10 +1518,10 @@ impl OpenCADStudio {
                     self.invalidate_property_targets(i, &dest);
                     self.tabs[i].dirty = true;
                     self.command_line
-                        .push_info(&format!("Layer matched to \"{layer}\"."));
+                        .push_info(crate::tf!("Layer matched to \"{layer}\".").as_ref());
                     self.sync_ribbon_layers();
                 } else {
-                    self.command_line.push_error("Source object not found.");
+                    self.command_line.push_error(crate::t!("Source object not found.").as_ref());
                 }
             }
             CmdResult::MatchProperties { dest, src } => {
@@ -1605,14 +1662,14 @@ impl OpenCADStudio {
                     self.tabs[i].scene.bump_entities(&changes);
                     self.refresh_properties();
                     self.command_line
-                        .push_info(&format!("Properties matched to {} object(s).", dest.len()));
+                        .push_info(crate::tf!("Properties matched to {} object(s).", dest.len()).as_ref());
                     // Clear the consumed target selection and keep prompting.
                     self.tabs[i].scene.deselect_all();
                     if let Some(cmd) = &self.tabs[i].active_cmd {
                         self.command_line.push_info(&cmd.prompt());
                     }
                 } else {
-                    self.command_line.push_error("Source object not found.");
+                    self.command_line.push_error(crate::t!("Source object not found.").as_ref());
                     self.tabs[i].active_cmd = None;
                     self.tabs[i].snap_result = None;
                     self.tabs[i].scene.clear_preview_wire();
@@ -1623,7 +1680,7 @@ impl OpenCADStudio {
                 self.tabs[i].snap_result = None;
                 self.tabs[i].scene.clear_preview_wire();
                 if self.clipboard.is_empty() {
-                    self.command_line.push_error("Clipboard is empty.");
+                    self.command_line.push_error(crate::t!("Clipboard is empty.").as_ref());
                 } else {
                     let delta = base_pt - self.clipboard_base;
                     let translate = crate::command::EntityTransform::Translate(delta);
@@ -1640,7 +1697,7 @@ impl OpenCADStudio {
                     self.refresh_layer_panel();
                     self.refresh_properties();
                     self.command_line
-                        .push_info(&format!("{count} object(s) pasted."));
+                        .push_info(crate::tf!("{count} object(s) pasted.").as_ref());
                 }
             }
             CmdResult::CreateGroup { handles, name } => {
@@ -1652,7 +1709,7 @@ impl OpenCADStudio {
                 self.tabs[i].dirty = true;
                 self.commit_group_undo(i, undo);
                 self.command_line
-                    .push_info(&format!("Group \"{}\" created.", name));
+                    .push_info(crate::tf!("Group \"{}\" created.", name).as_ref());
             }
             CmdResult::DeleteGroups { handles } => {
                 self.tabs[i].active_cmd = None;
@@ -1664,10 +1721,10 @@ impl OpenCADStudio {
                 self.commit_group_undo(i, undo);
                 if count > 0 {
                     self.command_line
-                        .push_info(&format!("{} group(s) dissolved.", count));
+                        .push_info(crate::tf!("{} group(s) dissolved.", count).as_ref());
                 } else {
                     self.command_line
-                        .push_info("No groups found for selected objects.");
+                        .push_info(crate::t!("No groups found for selected objects.").as_ref());
                 }
             }
             CmdResult::VpLayerUpdate {
@@ -1747,14 +1804,14 @@ impl OpenCADStudio {
                     self.push_undo_snapshot(i, "VPLAYER");
                     self.tabs[i].dirty = true;
                     if frozen_count > 0 {
-                        self.command_line.push_info(&format!(
+                        self.command_line.push_info(crate::tf!(
                             "VPLAYER: {frozen_count} layer(s) frozen in viewport."
-                        ));
+                        ).as_ref());
                     }
                     if thawed_count > 0 {
-                        self.command_line.push_info(&format!(
+                        self.command_line.push_info(crate::tf!(
                             "VPLAYER: {thawed_count} layer(s) thawed in viewport."
-                        ));
+                        ).as_ref());
                     }
                     // Sync layer panel so VP freeze columns update immediately.
                     let doc_layers = self.tabs[i].scene.document.layers.clone();
@@ -1778,7 +1835,7 @@ impl OpenCADStudio {
                 self.tabs[i]
                     .scene
                     .zoom_to_window(p1.as_vec3(), p2.as_vec3());
-                self.command_line.push_output("Zoom Window");
+                self.command_line.push_output(crate::t!("Zoom Window").as_ref());
             }
             CmdResult::Measurement(msg) => {
                 self.tabs[i].active_cmd = None;
@@ -1786,6 +1843,36 @@ impl OpenCADStudio {
                 self.tabs[i].scene.clear_preview_wire();
                 self.restore_pre_cmd_tangent();
                 self.command_line.push_output(&msg);
+            }
+            CmdResult::ReportMeasurement(msg) => {
+                self.tabs[i].snap_result = None;
+                self.tabs[i].scene.clear_preview_wire();
+                self.refresh_area_preview(i);
+                self.command_line.push_output(&msg);
+                if let Some(prompt) = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt()) {
+                    self.command_line.push_info(&prompt);
+                }
+            }
+            CmdResult::ReportMeasurementAndDeselect(msg) => {
+                self.tabs[i].snap_result = None;
+                self.tabs[i].scene.deselect_all();
+                self.tabs[i].scene.clear_preview_wire();
+                self.refresh_area_preview(i);
+                self.refresh_properties();
+                self.command_line.push_output(&msg);
+                if let Some(prompt) = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt()) {
+                    self.command_line.push_info(&prompt);
+                }
+            }
+            CmdResult::DeselectAndContinue => {
+                self.tabs[i].snap_result = None;
+                self.tabs[i].scene.deselect_all();
+                self.tabs[i].scene.clear_preview_wire();
+                self.refresh_area_preview(i);
+                self.refresh_properties();
+                if let Some(prompt) = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt()) {
+                    self.command_line.push_info(&prompt);
+                }
             }
             CmdResult::AlignSelected {
                 handles,
@@ -1826,6 +1913,7 @@ impl OpenCADStudio {
                             &handles,
                             &crate::command::EntityTransform::Rotate {
                                 center: glam::DVec3::ZERO,
+                                axis: glam::DVec3::Z,
                                 angle_rad,
                             },
                         );
@@ -1844,7 +1932,7 @@ impl OpenCADStudio {
                     self.tabs[i].active_cmd = None;
                     self.tabs[i].snap_result = None;
                     self.restore_pre_cmd_tangent();
-                    self.command_line.push_output("ALIGN: applied.");
+                    self.command_line.push_output(crate::t!("ALIGN: applied.").as_ref());
                     self.refresh_properties();
                     if let Some(pd) = pending {
                         self.commit_undo_delta(i, pd);
@@ -1869,12 +1957,12 @@ impl OpenCADStudio {
                         self.tabs[i].scene.erase_entities(&[handle]);
                         self.tabs[i].scene.add_entity(new_entity);
                         self.tabs[i].dirty = true;
-                        self.command_line.push_output("LENGTHEN: applied.");
+                        self.command_line.push_output(crate::t!("LENGTHEN: applied.").as_ref());
                         self.refresh_properties();
                     }
                     None => {
                         self.command_line
-                            .push_error("LENGTHEN: entity type not supported.");
+                            .push_error(crate::t!("LENGTHEN: entity type not supported.").as_ref());
                     }
                 }
                 self.tabs[i].active_cmd = None;
@@ -1898,10 +1986,10 @@ impl OpenCADStudio {
                     }
                     self.tabs[i].dirty = true;
                     self.command_line
-                        .push_output(&format!("DIVIDE: {count} point(s) placed."));
+                        .push_output(crate::tf!("DIVIDE: {count} point(s) placed.").as_ref());
                 } else {
                     self.command_line
-                        .push_error("DIVIDE: entity type not supported or N < 2.");
+                        .push_error(crate::t!("DIVIDE: entity type not supported or N < 2.").as_ref());
                 }
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
@@ -1927,10 +2015,10 @@ impl OpenCADStudio {
                     }
                     self.tabs[i].dirty = true;
                     self.command_line
-                        .push_output(&format!("MEASURE: {count} point(s) placed."));
+                        .push_output(crate::tf!("MEASURE: {count} point(s) placed.").as_ref());
                 } else {
                     self.command_line
-                        .push_error("MEASURE: entity type not supported or distance too large.");
+                        .push_error(crate::t!("MEASURE: entity type not supported or distance too large.").as_ref());
                 }
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
@@ -1956,7 +2044,7 @@ impl OpenCADStudio {
                             }
                             None => self
                                 .command_line
-                                .push_error("PEDIT: cannot convert this entity."),
+                                .push_error(crate::t!("PEDIT: cannot convert this entity.").as_ref()),
                         }
                     }
                     _ => {
@@ -1976,12 +2064,12 @@ impl OpenCADStudio {
                             self.tabs[i]
                                 .scene
                                 .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
-                            self.command_line.push_output("PEDIT: applied.");
+                            self.command_line.push_output(crate::t!("PEDIT: applied.").as_ref());
                             self.refresh_properties();
                         } else {
                             self.discard_last_undo_entry(i);
                             self.command_line
-                                .push_error("PEDIT: operation not applicable to this entity.");
+                                .push_error(crate::t!("PEDIT: operation not applicable to this entity.").as_ref());
                         }
                     }
                 }
@@ -2011,9 +2099,9 @@ impl OpenCADStudio {
                         self.tabs[i].active_cmd = None;
                         self.tabs[i].snap_result = None;
                         self.restore_pre_cmd_tangent();
-                        self.command_line.push_output(&format!(
+                        self.command_line.push_output(crate::tf!(
                             "JOIN: {count_in} object(s) joined into {count_out}."
-                        ));
+                        ).as_ref());
                         self.refresh_properties();
                     }
                     None => {
@@ -2049,7 +2137,7 @@ impl OpenCADStudio {
                         self.tabs[i].snap_result = None;
                         self.restore_pre_cmd_tangent();
                         self.command_line
-                            .push_output(&format!("BREAK: {} fragment(s).", count));
+                            .push_output(crate::tf!("BREAK: {} fragment(s).", count).as_ref());
                         self.refresh_properties();
                     }
                     None => {
@@ -2058,7 +2146,7 @@ impl OpenCADStudio {
                         self.tabs[i].scene.clear_preview_wire();
                         self.restore_pre_cmd_tangent();
                         self.command_line
-                            .push_error("BREAK: entity type not supported.");
+                            .push_error(crate::t!("BREAK: entity type not supported.").as_ref());
                     }
                 }
             }
@@ -2072,7 +2160,7 @@ impl OpenCADStudio {
                     let y1 = p1.y.max(p2.y);
                     self.plot_window = Some((x0, y0, x1, y1));
                     self.command_line
-                        .push_output(&format!("Plot window: {x0:.2},{y0:.2} to {x1:.2},{y1:.2}"));
+                        .push_output(crate::tf!("Plot window: {x0:.2},{y0:.2} to {x1:.2},{y1:.2}").as_ref());
                     // Pick window closed the plot dialog so the viewport could
                     // receive the two clicks — bring the dialog back with the
                     // window now active.
@@ -2089,9 +2177,9 @@ impl OpenCADStudio {
                     let x2 = p1.x.max(p2.x);
                     let y2 = p1.y.max(p2.y);
                     self.plot_window = Some((x1, y1, x2, y2));
-                    self.command_line.push_output(&format!(
+                    self.command_line.push_output(crate::tf!(
                         "Plot window: {x1:.2},{y1:.2} to {x2:.2},{y2:.2}"
-                    ));
+                    ).as_ref());
                     self.plot_dialog.area = "Window".to_string();
                     self.active_modal = Some(super::ModalKind::Plot);
                 }
@@ -2127,7 +2215,7 @@ impl OpenCADStudio {
                 }
                 if handles.is_empty() {
                     self.command_line
-                        .push_output("STRETCH: nothing crosses the window.");
+                        .push_output(crate::t!("STRETCH: nothing crosses the window.").as_ref());
                     self.tabs[i].active_cmd = None;
                     self.tabs[i].snap_result = None;
                     self.tabs[i].scene.clear_preview_wire();
@@ -2395,7 +2483,7 @@ impl OpenCADStudio {
                 self.tabs[i].scene.clear_preview_wire();
                 self.restore_pre_cmd_tangent();
                 self.command_line
-                    .push_output(&format!("STRETCH: {count} entity(ies) stretched."));
+                    .push_output(crate::tf!("STRETCH: {count} entity(ies) stretched.").as_ref());
                 self.refresh_properties();
                 if let Some(pending) = pending {
                     self.commit_undo_delta(i, pending);
@@ -2418,7 +2506,7 @@ impl OpenCADStudio {
                             .insert(handle, crate::scene::MeshLodSet::from_single(mesh));
                     }
                     self.tabs[i].dirty = true;
-                    self.command_line.push_output("Solid created.");
+                    self.command_line.push_output(crate::t!("Solid created.").as_ref());
                 }
                 if let Some(pd) = pending {
                     self.commit_undo_delta(i, pd);
@@ -2492,15 +2580,15 @@ impl OpenCADStudio {
                         // ACIS geometry (else the solid is dropped by other CAD apps).
                         self.tabs[i].scene.solid_models.insert(new_handle, solid);
                         self.tabs[i].dirty = true;
-                        self.command_line.push_output("EXTRUDE: solid created.");
+                        self.command_line.push_output(crate::t!("EXTRUDE: solid created.").as_ref());
                         if let Some(pd) = pending {
                             self.commit_undo_delta(i, pd);
                         }
                     } else {
-                        self.command_line.push_error("EXTRUDE: could not build profile. Select a closed 2D entity (Circle, LwPolyline, etc.).");
+                        self.command_line.push_error(crate::t!("EXTRUDE: could not build profile. Select a closed 2D entity (Circle, LwPolyline, etc.).").as_ref());
                     }
                 } else {
-                    self.command_line.push_error("EXTRUDE: entity not found.");
+                    self.command_line.push_error(crate::t!("EXTRUDE: entity not found.").as_ref());
                 }
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
@@ -2577,16 +2665,16 @@ impl OpenCADStudio {
                             .insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
                         self.tabs[i].dirty = true;
                         self.command_line
-                            .push_output(&format!("REVOLVE: solid created ({:.0}°).", angle_deg));
+                            .push_output(crate::tf!("REVOLVE: solid created ({:.0}°).", angle_deg).as_ref());
                         if let Some(pd) = pending {
                             self.commit_undo_delta(i, pd);
                         }
                     } else {
                         self.command_line
-                            .push_error("REVOLVE: could not revolve profile.");
+                            .push_error(crate::t!("REVOLVE: could not revolve profile.").as_ref());
                     }
                 } else {
-                    self.command_line.push_error("REVOLVE: entity not found.");
+                    self.command_line.push_error(crate::t!("REVOLVE: entity not found.").as_ref());
                 }
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
@@ -2755,12 +2843,12 @@ impl OpenCADStudio {
                         .meshes
                         .insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
                     self.tabs[i].dirty = true;
-                    self.command_line.push_output("SWEEP: solid created.");
+                    self.command_line.push_output(crate::t!("SWEEP: solid created.").as_ref());
                     if let Some(pd) = pending {
                         self.commit_undo_delta(i, pd);
                     }
                 } else {
-                    self.command_line.push_error("SWEEP: could not sweep profile along path. Use a closed 2D profile and a Line or Polyline path.");
+                    self.command_line.push_error(crate::t!("SWEEP: could not sweep profile along path. Use a closed 2D profile and a Line or Polyline path.").as_ref());
                 }
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
@@ -2849,15 +2937,15 @@ impl OpenCADStudio {
                         .meshes
                         .insert(new_handle, crate::scene::MeshLodSet::from_single(mesh));
                     self.tabs[i].dirty = true;
-                    self.command_line.push_output(&format!(
+                    self.command_line.push_output(crate::tf!(
                         "LOFT: solid created from {} profiles.",
                         handles.len()
-                    ));
+                    ).as_ref());
                     if let Some(pd) = pending {
                         self.commit_undo_delta(i, pd);
                     }
                 } else {
-                    self.command_line.push_error("LOFT: could not loft profiles. Ensure sections have the same edge count and are compatible.");
+                    self.command_line.push_error(crate::t!("LOFT: could not loft profiles. Ensure sections have the same edge count and are compatible.").as_ref());
                 }
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
@@ -2893,10 +2981,10 @@ impl OpenCADStudio {
                     // Re-add with updated model
                     self.tabs[i].scene.add_hatch(model);
                     self.tabs[i].dirty = true;
-                    self.command_line.push_output("HATCHEDIT: hatch updated.");
+                    self.command_line.push_output(crate::t!("HATCHEDIT: hatch updated.").as_ref());
                 } else {
                     self.command_line
-                        .push_error("HATCHEDIT: hatch entity not found.");
+                        .push_error(crate::t!("HATCHEDIT: hatch entity not found.").as_ref());
                 }
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
@@ -2942,7 +3030,7 @@ impl OpenCADStudio {
                     crate::app::text_inline::can_edit_text(handle, &self.tabs[i].scene.document);
                 if !is_editable {
                     self.command_line
-                        .push_error("TEXTEDIT: selected entity is not text.");
+                        .push_error(crate::t!("TEXTEDIT: selected entity is not text.").as_ref());
                     let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
                     if let Some(p) = prompt {
                         self.command_line.push_info(&p);
@@ -2970,7 +3058,7 @@ impl OpenCADStudio {
                 self.texteditmode = val;
                 let display_val = if val { 1 } else { 0 };
                 self.command_line
-                    .push_output(&format!("TEXTEDITMODE set to {display_val}"));
+                    .push_output(crate::tf!("TEXTEDITMODE set to {display_val}").as_ref());
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
                 self.tabs[i].scene.clear_preview_wire();
@@ -3014,11 +3102,11 @@ impl OpenCADStudio {
                 }
                 if updated {
                     self.tabs[i].dirty = true;
-                    self.command_line.push_output("DDEDIT: text updated.");
+                    self.command_line.push_output(crate::t!("DDEDIT: text updated.").as_ref());
                 } else {
                     self.discard_last_undo_entry(i);
                     self.command_line
-                        .push_error("DDEDIT: entity type not supported.");
+                        .push_error(crate::t!("DDEDIT: entity type not supported.").as_ref());
                 }
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
@@ -3026,12 +3114,17 @@ impl OpenCADStudio {
                 self.restore_pre_cmd_tangent();
             }
         }
-        // Keep the command-line input focused at all times — every typed
-        // character is meant to route there (the command processor reads
-        // its keystroke stream from this widget). When no command is
-        // running the ribbon tool button still has to visually deactivate.
+        // When no command is running the ribbon tool button still has to
+        // visually deactivate. Keyboard focus is assigned below to whichever
+        // editor currently owns typed input.
         if self.tabs[i].active_cmd.is_none() {
             self.ribbon.deactivate_tool();
+        }
+        // The rich text canvas owns keyboard editing itself. Leaving the
+        // hidden command input focused would make it consume Left/Right before
+        // the editor can handle them.
+        if self.mtext_editor.is_some() {
+            return self.unfocus_widgets();
         }
         // The in-place TEXT editor needs keyboard focus on its own field.
         if self.text_inline.is_some() {

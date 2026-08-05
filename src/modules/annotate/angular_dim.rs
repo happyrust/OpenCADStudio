@@ -2,10 +2,11 @@ use acadrust::entities::{Dimension, DimensionAngular3Pt};
 use acadrust::types::Vector3;
 use acadrust::EntityType;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use glam::{DVec3, Vec3};
+use crate::t;
 
 pub const ICON: IconKind = IconKind::Svg(include_bytes!("../../../assets/icons/dim_angular.svg"));
 
@@ -34,25 +35,37 @@ enum Step {
 
 pub struct AngularDimensionCommand {
     step: Step,
+    plane: WorkingPlane,
 }
 
 impl AngularDimensionCommand {
     pub fn new() -> Self {
-        Self { step: Step::Vertex }
+        Self {
+            step: Step::Vertex,
+            plane: WorkingPlane::default(),
+        }
     }
 }
 
 impl CadCommand for AngularDimensionCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "DIMANGULAR"
     }
 
     fn prompt(&self) -> String {
         match self.step {
-            Step::Vertex => "DIMANGULAR  Specify angle vertex:".into(),
-            Step::FirstRay(_) => "DIMANGULAR  Specify first extension line point:".into(),
-            Step::SecondRay { .. } => "DIMANGULAR  Specify second extension line point:".into(),
-            Step::ArcPoint { .. } => "DIMANGULAR  Specify dimension arc location:".into(),
+            Step::Vertex => t!("DIMANGULAR  Specify angle vertex:").into_owned(),
+            Step::FirstRay(_) => {
+                t!("DIMANGULAR  Specify first extension line point:").into_owned()
+            }
+            Step::SecondRay { .. } => {
+                t!("DIMANGULAR  Specify second extension line point:").into_owned()
+            }
+            Step::ArcPoint { .. } => t!("DIMANGULAR  Specify dimension arc location:").into_owned(),
         }
     }
 
@@ -79,13 +92,19 @@ impl CadCommand for AngularDimensionCommand {
                 first,
                 second,
             } => {
+                let vertex = self.plane.to_local(vertex);
+                let first = self.plane.to_local(first);
+                let second = self.plane.to_local(second);
+                let pt = self.plane.to_local(pt);
                 let mut dim = DimensionAngular3Pt::new(v3(vertex), v3(first), v3(second));
                 dim.definition_point = v3(pt);
                 dim.base.definition_point = v3(pt);
                 dim.base.text_middle_point = v3(pt);
                 dim.base.insertion_point = v3(pt);
                 dim.base.actual_measurement = dim.measurement_degrees();
-                CmdResult::CommitAndExit(EntityType::Dimension(Dimension::Angular3Pt(dim)))
+                CmdResult::CommitAndExit(self.plane.place_entity(EntityType::Dimension(
+                    Dimension::Angular3Pt(dim),
+                )))
             }
         }
     }
@@ -114,12 +133,24 @@ impl CadCommand for AngularDimensionCommand {
                 vertex,
                 first,
                 second,
-            } => Some(preview_wire(angular_preview(
-                vertex.as_vec3(),
-                first.as_vec3(),
-                second.as_vec3(),
-                pt,
-            ))),
+            } => {
+                let points = angular_preview(
+                    self.plane.to_local(vertex).as_vec3(),
+                    self.plane.to_local(first).as_vec3(),
+                    self.plane.to_local(second).as_vec3(),
+                    self.plane.to_local(pt.as_dvec3()).as_vec3(),
+                )
+                .into_iter()
+                .map(|point| {
+                    if point.x.is_nan() {
+                        point
+                    } else {
+                        self.plane.to_world(point.as_dvec3()).as_vec3()
+                    }
+                })
+                .collect();
+                Some(preview_wire(points))
+            }
         }
     }
 }
@@ -134,6 +165,7 @@ fn preview_wire(points: Vec<Vec3>) -> WireModel {
         world_width: 0.0,
         depth_override: None,
         fill_is_3d: false,
+        fill_is_2d_solid: false,
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
             dash_from_start: false,

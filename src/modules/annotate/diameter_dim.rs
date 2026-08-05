@@ -5,9 +5,10 @@ use acadrust::types::Vector3;
 use acadrust::EntityType;
 use glam::{DVec3, Vec3};
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
+use crate::t;
 
 pub const ICON: IconKind = IconKind::Svg(include_bytes!("../../../assets/icons/dim_diameter.svg"));
 
@@ -28,6 +29,7 @@ enum Step {
 
 pub struct DiameterDimensionCommand {
     step: Step,
+    plane: WorkingPlane,
     /// Optional text that replaces the measured value (None = measurement).
     text_override: Option<String>,
     /// True while the next typed line is captured as the text override.
@@ -42,6 +44,7 @@ impl DiameterDimensionCommand {
     pub fn new() -> Self {
         Self {
             step: Step::CenterPoint,
+            plane: WorkingPlane::default(),
             text_override: None,
             awaiting_text: false,
             text_angle: None,
@@ -51,22 +54,26 @@ impl DiameterDimensionCommand {
 }
 
 impl CadCommand for DiameterDimensionCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "DIMDIAMETER"
     }
 
     fn prompt(&self) -> String {
         if self.awaiting_text {
-            return "DIMDIAMETER  Enter dimension text (blank = measured value):".into();
+            return t!("DIMDIAMETER  Enter dimension text (blank = measured value):").into_owned();
         }
         if self.awaiting_angle {
-            return "DIMDIAMETER  Specify text angle (degrees):".into();
+            return t!("DIMDIAMETER  Specify text angle (degrees):").into_owned();
         }
         match self.step {
-            Step::CenterPoint => "DIMDIAMETER  Specify center point:".into(),
-            Step::ArcPoint(_) => "DIMDIAMETER  Specify point on circle:".into(),
+            Step::CenterPoint => t!("DIMDIAMETER  Specify center point:").into_owned(),
+            Step::ArcPoint(_) => t!("DIMDIAMETER  Specify point on circle:").into_owned(),
             Step::TextPoint { .. } => {
-                "DIMDIAMETER  Specify dimension line location  [Text/Angle]:".into()
+                t!("DIMDIAMETER  Specify dimension line location  [Text/Angle]:").into_owned()
             }
         }
     }
@@ -82,6 +89,9 @@ impl CadCommand for DiameterDimensionCommand {
                 CmdResult::NeedPoint
             }
             Step::TextPoint { center, arc_pt } => {
+                let center = self.plane.to_local(center);
+                let arc_pt = self.plane.to_local(arc_pt);
+                let pt = self.plane.to_local(pt);
                 let mut dim = DimensionDiameter::new(v3(center), v3(arc_pt));
                 dim.base.definition_point = v3(arc_pt);
                 dim.base.text_middle_point = v3(pt);
@@ -93,7 +103,9 @@ impl CadCommand for DiameterDimensionCommand {
                 if let Some(a) = self.text_angle {
                     dim.base.text_rotation = a;
                 }
-                CmdResult::CommitAndExit(EntityType::Dimension(Dimension::Diameter(dim)))
+                CmdResult::CommitAndExit(self.plane.place_entity(EntityType::Dimension(
+                    Dimension::Diameter(dim),
+                )))
             }
         }
     }
@@ -184,6 +196,7 @@ fn preview_line(a: Vec3, b: Vec3) -> WireModel {
         world_width: 0.0,
         depth_override: None,
         fill_is_3d: false,
+        fill_is_2d_solid: false,
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
             dash_from_start: false,

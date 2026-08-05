@@ -10,6 +10,7 @@ use crate::ui::{LayerPanel, PropertiesPanel};
 use acadrust::tables::Ucs;
 use acadrust::{CadDocument, EntityType, Handle};
 use iced;
+use crate::t;
 use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -120,6 +121,9 @@ pub(super) struct DocumentTab {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) disk_fingerprint: Option<crate::io::edit_lock::FileFingerprint>,
     pub(super) dirty: bool,
+    /// Direct Save is redirected to Save As after open-time repairs so the
+    /// source drawing cannot be overwritten accidentally.
+    pub(super) recovery_save_as_required: bool,
     /// Monotonic committed-edit/undo/redo revision. Background save completion
     /// uses it with scene epochs so an older snapshot never clears newer work.
     pub(super) edit_revision: u64,
@@ -205,6 +209,9 @@ pub(super) struct DocumentTab {
     /// device with no middle mouse button (a trackpad / web client). Exited
     /// with Esc or by starting another command.
     pub(super) pan_mode: bool,
+    /// Interactive 3-D orbit mode. While active, a left-button drag follows
+    /// the same camera-orbit path as Shift + middle-button drag.
+    pub(super) orbit_mode: bool,
     /// Per-plugin document state (`plugin::BuiltinPlugin` manifest id → state).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(super) plugin_state: HashMap<&'static str, Box<dyn Any + Send + Sync>>,
@@ -250,11 +257,22 @@ impl DocumentTab {
     /// is identity (plain WCS).
     pub(super) fn model_ucs_from_header(&self) -> Option<Ucs> {
         let h = &self.scene.document.header;
-        let mut u = Ucs::new(h.model_space_ucs_name.clone());
+        let mut u = if h.model_space_ucs_name.is_empty() {
+            Ucs::new("*ACTIVE*")
+        } else {
+            self.scene
+                .document
+                .ucss
+                .get(&h.model_space_ucs_name)
+                .cloned()
+                .unwrap_or_else(|| Ucs::new(h.model_space_ucs_name.clone()))
+        };
         u.origin = h.model_space_ucs_origin;
         u.x_axis = h.model_space_ucs_x_axis;
         u.y_axis = h.model_space_ucs_y_axis;
-        if super::helpers::UcsXform::from_ucs(&u).is_identity() {
+        if h.model_space_ucs_name.is_empty()
+            && super::helpers::UcsXform::from_ucs(&u).is_identity()
+        {
             None
         } else {
             Some(u)
@@ -271,11 +289,21 @@ impl DocumentTab {
         if !vp.ucs_per_viewport {
             return None;
         }
-        let mut u = Ucs::new("*VPUCS*");
+        let mut u = if vp.ucs_handle.is_null() {
+            Ucs::new("*VPUCS*")
+        } else {
+            self.scene
+                .document
+                .ucss
+                .iter()
+                .find(|ucs| ucs.handle == vp.ucs_handle)
+                .cloned()
+                .unwrap_or_else(|| Ucs::new("*VPUCS*"))
+        };
         u.origin = vp.ucs_origin;
         u.x_axis = vp.ucs_x_axis;
         u.y_axis = vp.ucs_y_axis;
-        if super::helpers::UcsXform::from_ucs(&u).is_identity() {
+        if vp.ucs_handle.is_null() && super::helpers::UcsXform::from_ucs(&u).is_identity() {
             None
         } else {
             Some(u)
@@ -362,34 +390,6 @@ impl DocumentTab {
         self.scene.viewcube_ucs = self.ucs_xform().rotation_mat();
     }
 
-    /// UCS→render(wire)-space affine for commands that build axis-aligned
-    /// geometry. Columns are the UCS axes; translation is the UCS origin in wire
-    /// space. Identity outside model space (no UCS there).
-    pub(super) fn ucs_wire_affine(&self) -> glam::Mat4 {
-        if !self.editing_model_space() {
-            return glam::Mat4::IDENTITY;
-        }
-        let (o, x, y, z) = self.ucs_xform().axes();
-        let origin = glam::Vec3::new(o.x as f32, o.y as f32, o.z as f32);
-        glam::Mat4::from_cols(
-            x.as_vec3().extend(0.0),
-            y.as_vec3().extend(0.0),
-            z.as_vec3().extend(0.0),
-            origin.extend(1.0),
-        )
-    }
-
-    /// World-space rotation angle (radians) of the active UCS X axis — the
-    /// default rotation for new text-bearing objects so their text aligns to
-    /// the user's coordinate system. Zero outside model space / with no UCS.
-    pub(super) fn ucs_rotation_angle(&self) -> f64 {
-        if !self.editing_model_space() {
-            return 0.0;
-        }
-        let (_, x, ..) = self.ucs_xform().axes();
-        (x.y as f64).atan2(x.x as f64)
-    }
-
     /// Grid origin (render/wire space) and UCS→world rotation for grid snap and
     /// the grid overlay. Identity / origin-at-zero outside model space.
     pub(super) fn ucs_grid_basis(&self) -> (glam::Vec3, glam::Mat4) {
@@ -433,6 +433,7 @@ impl DocumentTab {
             #[cfg(not(target_arch = "wasm32"))]
             disk_fingerprint: None,
             dirty: false,
+            recovery_save_as_required: false,
             edit_revision: 0,
             prev_selection: Vec::new(),
             tab_title: format!("Drawing{}", n),
@@ -474,6 +475,7 @@ impl DocumentTab {
             thumbnail_cache_key: None,
             is_start: false,
             pan_mode: false,
+            orbit_mode: false,
             plugin_state: HashMap::new(),
             suspended_cmd: None,
         }
@@ -496,7 +498,13 @@ impl DocumentTab {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string(),
-            None => self.tab_title.clone(),
+            None => {
+                if self.is_start {
+                    t!("Start").into_owned()
+                } else {
+                    self.tab_title.clone()
+                }
+            }
         }
     }
 }

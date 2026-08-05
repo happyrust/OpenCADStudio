@@ -64,6 +64,7 @@ pub const COPY: &[u8] = include_bytes!("../../assets/icons/ui/copy.svg");
 pub const MENU: &[u8] = include_bytes!("../../assets/icons/ui/menu.svg");
 pub const MOVE: &[u8] = include_bytes!("../../assets/icons/ui/move.svg");
 pub const RESIZE: &[u8] = include_bytes!("../../assets/icons/ui/resize.svg");
+pub const PIN: &[u8] = include_bytes!("../../assets/icons/ui/pin.svg");
 pub const SPLIT_V: &[u8] = include_bytes!("../../assets/icons/ui/split_v.svg");
 pub const SPLIT_H: &[u8] = include_bytes!("../../assets/icons/ui/split_h.svg");
 pub const GRID: &[u8] = include_bytes!("../../assets/icons/ui/grid.svg");
@@ -219,18 +220,6 @@ pub fn semantic<'a, M: 'a>(bytes: &'static [u8], size: f32) -> Element<'a, M> {
         bytes,
         size,
         opacity: 1.0,
-    })
-}
-
-/// Render a disabled multi-colour tool icon without flattening its colour roles.
-pub fn semantic_disabled<'a, M: 'a>(
-    bytes: &'static [u8],
-    size: f32,
-) -> Element<'a, M> {
-    Element::new(SemanticIcon {
-        bytes,
-        size,
-        opacity: 0.42,
     })
 }
 
@@ -449,6 +438,20 @@ pub fn themed_primary<'a, M: 'a>(bytes: &'static [u8], size: f32) -> Element<'a,
         .into()
 }
 
+/// Render an icon with the foreground chosen for a weak primary surface.
+pub fn themed_primary_weak_text<'a, M: 'a>(
+    bytes: &'static [u8],
+    size: f32,
+) -> Element<'a, M> {
+    svg(svg::Handle::from_memory(bytes))
+        .width(size)
+        .height(size)
+        .style(|theme: &Theme, _| svg::Style {
+            color: Some(theme.palette().primary.weak.text),
+        })
+        .into()
+}
+
 /// Render a positive-state chrome icon with the active Iced theme's success color.
 pub fn themed_success<'a, M: 'a>(bytes: &'static [u8], size: f32) -> Element<'a, M> {
     svg(svg::Handle::from_memory(bytes))
@@ -569,8 +572,8 @@ pub fn themed_arrow_left<'a, M: 'a>(size: f32) -> Element<'a, M> {
     themed(TRI_LEFT, size)
 }
 
-pub fn themed_primary_arrow_down<'a, M: 'a>(size: f32) -> Element<'a, M> {
-    themed_primary(TRI_DOWN, size)
+pub fn themed_primary_weak_arrow_down<'a, M: 'a>(size: f32) -> Element<'a, M> {
+    themed_primary_weak_text(TRI_DOWN, size)
 }
 
 pub fn themed_secondary_arrow_down<'a, M: 'a>(size: f32) -> Element<'a, M> {

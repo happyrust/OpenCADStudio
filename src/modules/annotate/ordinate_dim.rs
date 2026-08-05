@@ -13,9 +13,10 @@ use acadrust::types::Vector3;
 use acadrust::EntityType;
 use glam::{DVec3, Vec3};
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
+use crate::t;
 
 pub fn tool() -> ToolDef {
     ToolDef {
@@ -33,25 +34,31 @@ enum Step {
 
 pub struct OrdinateDimCommand {
     step: Step,
+    plane: WorkingPlane,
 }
 
 impl OrdinateDimCommand {
     pub fn new() -> Self {
         Self {
             step: Step::FeaturePoint,
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for OrdinateDimCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "DIMORDINATE"
     }
 
     fn prompt(&self) -> String {
         match self.step {
-            Step::FeaturePoint => "DIMORDINATE  Specify feature location:".into(),
-            Step::LeaderEndpoint { .. } => "DIMORDINATE  Specify leader endpoint:".into(),
+            Step::FeaturePoint => t!("DIMORDINATE  Specify feature location:").into_owned(),
+            Step::LeaderEndpoint { .. } => t!("DIMORDINATE  Specify leader endpoint:").into_owned(),
         }
     }
 
@@ -62,6 +69,8 @@ impl CadCommand for OrdinateDimCommand {
                 CmdResult::NeedPoint
             }
             Step::LeaderEndpoint { feature } => {
+                let feature = self.plane.to_local(feature);
+                let pt = self.plane.to_local(pt);
                 let is_x = is_x_type(feature, pt);
                 let elbow = ordinate_elbow(feature, pt, is_x);
                 let mut dim = DimensionOrdinate::new(v3(feature), v3(pt), is_x);
@@ -72,7 +81,9 @@ impl CadCommand for OrdinateDimCommand {
                 // the wrong (XZ) plane, dropping the Y coordinate. (#150)
                 dim.definition_point = v3(elbow);
                 dim.base.definition_point = v3(elbow);
-                CmdResult::CommitAndExit(EntityType::Dimension(Dimension::Ordinate(dim)))
+                CmdResult::CommitAndExit(self.plane.place_entity(EntityType::Dimension(
+                    Dimension::Ordinate(dim),
+                )))
             }
         }
     }
@@ -85,8 +96,13 @@ impl CadCommand for OrdinateDimCommand {
             Step::LeaderEndpoint { feature } => feature,
             _ => return None,
         };
+        let feature = self.plane.to_local(feature);
+        let pt = self.plane.to_local(pt);
         let is_x = is_x_type(feature, pt);
         let elbow = ordinate_elbow(feature, pt, is_x);
+        let feature = self.plane.to_world(feature);
+        let elbow = self.plane.to_world(elbow);
+        let pt = self.plane.to_world(pt);
         // Screen-only rubber band: downcast to f32 at the preview boundary.
         Some(preview_wire(vec![
             feature.as_vec3(),
@@ -125,6 +141,7 @@ fn preview_wire(points: Vec<Vec3>) -> WireModel {
         world_width: 0.0,
         depth_override: None,
         fill_is_3d: false,
+        fill_is_2d_solid: false,
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
             dash_from_start: false,

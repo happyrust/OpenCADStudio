@@ -26,6 +26,15 @@ mod collapse;
 use collapse::{CollapsePanels, Panel};
 pub use collapse::CollapseMode;
 use crate::ui::wrap_bar::{PosReport, WrapBar, WrapFlow};
+use crate::t;
+
+pub(crate) fn tooltip_content(text: String) -> Element<'static, Message> {
+    widgets::make_tip(text)
+}
+
+pub(crate) fn tooltip_style(theme: &Theme) -> container::Style {
+    widgets::tip_style(theme)
+}
 
 // ── Ribbon state ───────────────────────────────────────────────────────────
 
@@ -312,7 +321,6 @@ impl Ribbon {
     fn toggle_state(&self) -> widgets::ToggleState {
         use widgets::ToggleState;
         ToggleState {
-            start_mode: false,
             wireframe: self.wireframe,
             ortho_mode: self.ortho_mode,
             show_viewcube: self.show_viewcube,
@@ -394,11 +402,11 @@ impl Ribbon {
     ) -> Element<'_, Message> {
         // ── Quick-access file commands + undo/redo, one merged flow ────────
         let lead = iced::widget::Row::with_children(vec![
-            quick_access_btn(crate::ui::icons::DOC_NEW, "New", "NEW", is_start).into(),
-            quick_access_btn(crate::ui::icons::FOLDER_OPEN, "Open", "OPEN", is_start).into(),
-            quick_access_btn(crate::ui::icons::SAVE, "Save", "SAVE", is_start).into(),
-            quick_access_btn(crate::ui::icons::FILE_EXPORT, "Save As", "SAVEAS", is_start).into(),
-            quick_access_btn(crate::ui::icons::PRINT, "Print", "PRINT", is_start).into(),
+            quick_access_btn(crate::ui::icons::DOC_NEW, "New", "NEW").into(),
+            quick_access_btn(crate::ui::icons::FOLDER_OPEN, "Open", "OPEN").into(),
+            quick_access_btn(crate::ui::icons::SAVE, "Save", "SAVE").into(),
+            quick_access_btn(crate::ui::icons::FILE_EXPORT, "Save As", "SAVEAS").into(),
+            quick_access_btn(crate::ui::icons::PRINT, "Print", "PRINT").into(),
             render_history_control("Undo", UNDO_HISTORY_ID, undo_count, &self.open_dropdown).into(),
             render_history_control("Redo", REDO_HISTORY_ID, redo_count, &self.open_dropdown).into(),
         ])
@@ -571,8 +579,7 @@ impl Ribbon {
                 let panels: Vec<Panel<'_>> = groups
                     .iter()
                     .map(|g| {
-                        let mut ts = self.toggle_state();
-                        ts.start_mode = is_start;
+                        let ts = self.toggle_state();
                         Panel {
                         id: g.title.to_string(),
                         full: render_group(
@@ -671,7 +678,7 @@ impl Ribbon {
                 text("").into()
             };
 
-        let tool_bar = container(tool_area)
+        let tool_bar: Element<'_, Message> = container(tool_area)
             .style(|theme: &Theme| container::Style {
                 background: Some(Background::Color(
                     theme.palette().background.weakest.color,
@@ -683,7 +690,44 @@ impl Ribbon {
                 },
                 ..Default::default()
             })
-            .width(Length::Fill);
+            .width(Length::Fill)
+            .into();
+
+        let tool_bar = if is_start {
+            // The Start tab has no drawing context. One theme-aware shield
+            // fades and blocks only the tool area; the tabs and application
+            // controls above it remain available and clearly identifiable.
+            let shield = mouse_area(
+                container(iced::widget::Space::new())
+                    .width(Fill)
+                    .height(Fill)
+                    .style(|theme: &Theme| container::Style {
+                        background: Some(Background::Color(
+                            theme
+                                .palette()
+                                .background
+                                .strongest
+                                .color
+                                .scale_alpha(0.58),
+                        )),
+                        ..Default::default()
+                    }),
+            )
+            .on_press(Message::CloseRibbonDropdown)
+            .interaction(iced::mouse::Interaction::Idle);
+            let shield = iced::widget::tooltip(
+                shield,
+                make_tip(t!("Open or create a drawing to use ribbon commands.").into_owned()),
+                iced::widget::tooltip::Position::Bottom,
+            )
+            .gap(6.0)
+            .delay(std::time::Duration::from_millis(400))
+            .style(tip_style);
+
+            iced::widget::stack![tool_bar, iced::widget::opaque(shield)].into()
+        } else {
+            tool_bar
+        };
 
         column![tab_bar, tool_bar].into()
     }
@@ -695,7 +739,11 @@ impl Ribbon {
         undo_labels: &[String],
         redo_labels: &[String],
         win: (f32, f32),
+        is_start: bool,
     ) -> Option<Element<'_, Message>> {
+        if is_start {
+            return None;
+        }
         let open_id = self.open_dropdown.as_deref()?;
 
         if open_id == UNDO_HISTORY_ID || open_id == REDO_HISTORY_ID {
@@ -742,7 +790,7 @@ impl Ribbon {
                     button(
                         row![
                             crate::ui::icons::themed_check_cell(m == current),
-                            text(m.label()).size(11),
+                            text(t!(m.label())).size(11),
                         ]
                         .spacing(4)
                         .align_y(iced::Center),
@@ -824,7 +872,7 @@ impl Ribbon {
                         .width(Length::Fixed(20.0))
                         .into();
                 let label_el =
-                    text(*label)
+                    text(t!(*label))
                         .size(11)
                         .style(move |theme: &Theme| iced::widget::text::Style {
                             color: (!is_current).then_some(
@@ -958,14 +1006,14 @@ impl Ribbon {
         let row_count = rows.len().max(1);
         let list_h = (row_count as f32 * 26.0).min(420.0);
         // Search box (#343): filters the list live as the user types.
-        let search = iced::widget::text_input("Search layers…", &self.layer_filter)
+        let search = iced::widget::text_input(t!("Search layers…").as_ref(), &self.layer_filter)
             .on_input(Message::RibbonLayerFilterChanged)
             .size(11)
             .padding([4, 6]);
         let state_manager = button(
             row![
                 crate::ui::icons::themed_arrow_right(9.0),
-                text("Layer State Manager…").size(11),
+                text(t!("Layer State Manager…")).size(11),
             ]
             .spacing(7)
             .align_y(iced::Center),
@@ -1081,7 +1129,7 @@ impl Ribbon {
 
         if let Some(mgr) = manager_cmd {
             rows.push(
-                button(text("Manage…").size(11))
+                button(text(t!("Manage…")).size(11))
                     .on_press(Message::Command(mgr.to_string()))
                     .style(popup_row_style)
                     .width(Fill)
@@ -1323,7 +1371,7 @@ fn render_group<'a>(
 
     column![
         tools_el,
-        container(text(group.title).size(9).style(muted_text_style)).padding([1, 4]),
+        container(text(t!(group.title)).size(9).style(muted_text_style)).padding([1, 4]),
     ]
     .align_x(iced::Center)
     .spacing(0)
@@ -1397,6 +1445,7 @@ fn collapse_button<'a>(
     compact: bool,
 ) -> Element<'a, Message> {
     let title = group.title;
+    let localized_title = t!(title).into_owned();
 
     // Tightest form: one button = the panel's FIRST tool icon + its title + ▾.
     // Clicking opens the flyout listing every tool; no tool runs directly at this
@@ -1406,23 +1455,31 @@ fn collapse_button<'a>(
             Some(ik) => make_icon(ik, SMALL_ICON),
             None => text("").into(),
         };
-        return button(
+        let content = button(
             column![
                 icon,
                 row![
-                    text(title.to_string()).size(9).style(muted_text_style),
+                    text(localized_title.clone())
+                        .size(9)
+                        .width(Fill)
+                        .align_x(iced::Center)
+                        .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
+                        .style(muted_text_style),
                     crate::ui::icons::themed_secondary_arrow_down(8.0),
                 ]
                 .spacing(3)
+                .width(Fill)
                 .align_y(iced::Center),
             ]
             .align_x(iced::Center)
-            .spacing(2),
+            .spacing(2)
+            .width(Fill),
         )
         .on_press(Message::ToggleRibbonPanel(title.to_string()))
         .style(button::subtle)
-        .padding([3, 5])
-        .into();
+        .width(Fill)
+        .padding([3, 5]);
+        return automatic_large_button(localized_title, content.into());
     }
 
     // Collapsed (not yet tight): a large representative-tool face — a live button
@@ -1463,15 +1520,23 @@ fn collapse_button<'a>(
 
     let opener = button(
         row![
-            text(title.to_string()).size(9).style(muted_text_style),
+            text(localized_title.clone())
+                .size(9)
+                .width(Fill)
+                .align_x(iced::Center)
+                .wrapping(iced::advanced::text::Wrapping::WordOrGlyph)
+                .style(muted_text_style),
             crate::ui::icons::themed_secondary_arrow_down(8.0),
         ]
         .spacing(3)
+        .width(Fill)
         .align_y(iced::Center),
     )
     .on_press(Message::ToggleRibbonPanel(title.to_string()))
     .style(button::subtle)
+    .width(Fill)
     .padding([1, 4]);
+    let opener = automatic_large_button(localized_title, opener.into());
 
     // The large face fills a fixed slot so a collapsed panel is shorter than a full
     // 3-row panel, letting `CollapsePanels` shrink the ribbon row.

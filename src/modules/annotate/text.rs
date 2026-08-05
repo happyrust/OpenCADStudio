@@ -2,6 +2,7 @@ use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use glam::DVec3;
+use crate::t;
 
 pub const ICON: IconKind = IconKind::Svg(include_bytes!("../../../assets/icons/text.svg"));
 
@@ -20,12 +21,14 @@ enum Step {
 
 pub struct TextCommand {
     step: Step,
+    height: f64,
 }
 
 impl TextCommand {
-    pub fn new() -> Self {
+    pub fn with_height(height: f64) -> Self {
         Self {
             step: Step::InsertPoint,
+            height,
         }
     }
 }
@@ -37,7 +40,7 @@ impl CadCommand for TextCommand {
 
     fn prompt(&self) -> String {
         match &self.step {
-            Step::InsertPoint => "TEXT  Specify insertion point:".into(),
+            Step::InsertPoint => t!("TEXT  Specify insertion point:").into_owned(),
         }
     }
 
@@ -47,7 +50,7 @@ impl CadCommand for TextCommand {
             pos: pt,
             handle: None,
             initial: String::new(),
-            height: 0.25,
+            height: self.height,
         }
     }
 

@@ -1,9 +1,11 @@
 use acadrust::entities::Arc;
+use crate::t;
 use truck_modeling::{builder, Point3};
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
-    center_grip, edit_angle_prop as edit_angle, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
+    center_grip, edit_angle_prop as edit_angle, edit_prop as edit, parse_f64, ro_prop as ro,
+    square_grip,
 };
 use crate::entities::traits::TruckConvertible;
 use crate::scene::convert::acad_to_truck::{extrusion_wall_tris, TruckEntity, TruckObject};
@@ -102,26 +104,114 @@ fn to_truck(arc: &Arc) -> TruckEntity {
     }
 }
 
-fn angle_span(start: f32, end: f32) -> f32 {
-    let mut span = end - start;
-    if span < 0.0 {
-        span += std::f32::consts::TAU;
+fn control_points(arc: &Arc) -> [glam::DVec3; 3] {
+    let center = glam::DVec3::new(arc.center.x, arc.center.y, arc.center.z);
+    let sweep = (arc.end_angle - arc.start_angle).rem_euclid(TAU);
+    let point = |angle: f64| {
+        center
+            + glam::DVec3::new(
+                arc.radius * angle.cos(),
+                arc.radius * angle.sin(),
+                0.0,
+            )
+    };
+    [
+        point(arc.start_angle),
+        point(arc.start_angle + sweep * 0.5),
+        point(arc.end_angle),
+    ]
+}
+
+fn circumcircle(
+    a: glam::DVec3,
+    b: glam::DVec3,
+    c: glam::DVec3,
+) -> Option<(glam::DVec3, f64)> {
+    // Work relative to the first point so large drawing coordinates do not
+    // lose the small differences that define the circle.
+    let ab = b - a;
+    let ac = c - a;
+    let bc = c - b;
+    let scale2 = ab
+        .length_squared()
+        .max(ac.length_squared())
+        .max(bc.length_squared());
+    if scale2 < 1.0e-18 {
+        return None;
     }
-    span
+    let det = 2.0 * (ab.x * ac.y - ab.y * ac.x);
+    if det.abs() <= scale2 * 1.0e-12 {
+        return None;
+    }
+    let ab2 = ab.x * ab.x + ab.y * ab.y;
+    let ac2 = ac.x * ac.x + ac.y * ac.y;
+    let center = a
+        + glam::DVec3::new(
+            (ab2 * ac.y - ac2 * ab.y) / det,
+            (ab.x * ac2 - ac.x * ab2) / det,
+            0.0,
+        );
+    let radius = center.distance(a);
+    radius.is_finite().then_some((center, radius))
+}
+
+pub(crate) fn refit_grips(
+    arc: &mut Arc,
+    original: &Arc,
+    edits: &[(usize, glam::DVec3)],
+) -> bool {
+    let mut points = control_points(original);
+    let mut changed = false;
+    for &(grip_id, point) in edits {
+        let index = match grip_id {
+            1 => 0,
+            2 => 2,
+            3 => 1,
+            _ => continue,
+        };
+        points[index] = point;
+        changed = true;
+    }
+    if !changed {
+        return false;
+    }
+
+    let Some((center, radius)) = circumcircle(points[0], points[1], points[2]) else {
+        return false;
+    };
+    if radius <= 1.0e-9 {
+        return false;
+    }
+
+    let start = (points[0].y - center.y).atan2(points[0].x - center.x);
+    let middle = (points[1].y - center.y).atan2(points[1].x - center.x);
+    let end = (points[2].y - center.y).atan2(points[2].x - center.x);
+    let sweep = (end - start).rem_euclid(TAU);
+    let middle_sweep = (middle - start).rem_euclid(TAU);
+    // Crossing the two fixed points makes the three-point definition
+    // degenerate before it reverses. Keep the last valid preview instead of
+    // swapping the start and end grip identities under the cursor.
+    if sweep <= 1.0e-9 || middle_sweep > sweep + 1.0e-9 {
+        return false;
+    }
+
+    arc.center.x = center.x;
+    arc.center.y = center.y;
+    arc.center.z = original.center.z;
+    arc.radius = radius;
+    arc.start_angle = start;
+    arc.end_angle = end;
+    true
 }
 
 fn grips(arc: &Arc) -> Vec<GripDef> {
     let ctr = glam::DVec3::new(arc.center.x, arc.center.y, arc.center.z);
-    let r = arc.radius;
-    let sa = arc.start_angle as f32;
-    let ea = arc.end_angle as f32;
-    let ma = (sa + angle_span(sa, ea) * 0.5) as f64;
-    let (sa, ea) = (arc.start_angle, arc.end_angle);
+    let [start, middle, end] = control_points(arc);
     vec![
         center_grip(0, ctr),
-        square_grip(1, ctr + glam::DVec3::new(r * sa.cos(), r * sa.sin(), 0.0)),
-        square_grip(2, ctr + glam::DVec3::new(r * ea.cos(), r * ea.sin(), 0.0)),
-        center_grip(3, ctr + glam::DVec3::new(r * ma.cos(), r * ma.sin(), 0.0)),
+        square_grip(1, start),
+        square_grip(2, end),
+        square_grip(3, middle),
     ]
 }
 
@@ -152,26 +242,26 @@ fn properties(arc: &Arc) -> Vec<PropSection> {
     let (ex, ey, ez) = arc_pt(ea);
 
     vec![PropSection {
-        title: "Geometry".into(),
+        title: t!("Geometry").into_owned(),
         props: vec![
-            ro("Start X", "start_x", format!("{sx:.4}")),
-            ro("Start Y", "start_y", format!("{sy:.4}")),
-            ro("Start Z", "start_z", format!("{sz:.4}")),
-            edit("Center X", "center_x", arc.center.x),
-            edit("Center Y", "center_y", arc.center.y),
-            edit("Center Z", "center_z", arc.center.z),
-            ro("End X", "end_x", format!("{ex:.4}")),
-            ro("End Y", "end_y", format!("{ey:.4}")),
-            ro("End Z", "end_z", format!("{ez:.4}")),
-            edit("Radius", "radius", arc.radius),
-            edit_angle("Start angle", "start_angle", sa.to_degrees()),
-            edit_angle("End angle", "end_angle", ea.to_degrees()),
-            ro("Total angle", "total_angle", format!("{total_angle:.2}")),
-            ro("Arc length", "arc_length", format!("{arc_length:.4}")),
-            ro("Area", "area", format!("{area:.4}")),
-            ro("Normal X", "normal_x", format!("{:.4}", arc.normal.x)),
-            ro("Normal Y", "normal_y", format!("{:.4}", arc.normal.y)),
-            ro("Normal Z", "normal_z", format!("{:.4}", arc.normal.z)),
+            ro(t!("Start X").as_ref(), "start_x", format!("{sx:.4}")),
+            ro(t!("Start Y").as_ref(), "start_y", format!("{sy:.4}")),
+            ro(t!("Start Z").as_ref(), "start_z", format!("{sz:.4}")),
+            edit(t!("Center X").as_ref(), "center_x", arc.center.x),
+            edit(t!("Center Y").as_ref(), "center_y", arc.center.y),
+            edit(t!("Center Z").as_ref(), "center_z", arc.center.z),
+            ro(t!("End X").as_ref(), "end_x", format!("{ex:.4}")),
+            ro(t!("End Y").as_ref(), "end_y", format!("{ey:.4}")),
+            ro(t!("End Z").as_ref(), "end_z", format!("{ez:.4}")),
+            edit(t!("Radius").as_ref(), "radius", arc.radius),
+            edit_angle(t!("Start angle").as_ref(), "start_angle", sa.to_degrees()),
+            edit_angle(t!("End angle").as_ref(), "end_angle", ea.to_degrees()),
+            ro(t!("Total angle").as_ref(), "total_angle", format!("{total_angle:.2}")),
+            ro(t!("Arc length").as_ref(), "arc_length", format!("{arc_length:.4}")),
+            ro(t!("Area").as_ref(), "area", format!("{area:.4}")),
+            ro(t!("Normal X").as_ref(), "normal_x", format!("{:.4}", arc.normal.x)),
+            ro(t!("Normal Y").as_ref(), "normal_y", format!("{:.4}", arc.normal.y)),
+            ro(t!("Normal Z").as_ref(), "normal_z", format!("{:.4}", arc.normal.z)),
         ],
     }]
 }
@@ -203,31 +293,9 @@ fn apply_grip(arc: &mut Arc, grip_id: usize, apply: GripApply) {
             arc.center.y = p.y;
             arc.center.z = p.z;
         }
-        (1, GripApply::Absolute(p)) => {
-            let dx = p.x - arc.center.x;
-            let dy = p.y - arc.center.y;
-            arc.start_angle = dy.atan2(dx);
-        }
-        (2, GripApply::Absolute(p)) => {
-            let dx = p.x - arc.center.x;
-            let dy = p.y - arc.center.y;
-            arc.end_angle = dy.atan2(dx);
-        }
-        (3, GripApply::Translate(d)) => {
-            let sa = arc.start_angle;
-            let ea = arc.end_angle;
-            let span = angle_span(sa as f32, ea as f32) as f64;
-            let mid_a = sa + span * 0.5;
-            let current_mid_x = arc.center.x + arc.radius * mid_a.cos();
-            let current_mid_y = arc.center.y + arc.radius * mid_a.sin();
-            let new_mid_x = current_mid_x + d.x;
-            let new_mid_y = current_mid_y + d.y;
-            let dx = new_mid_x - arc.center.x;
-            let dy = new_mid_y - arc.center.y;
-            let new_r = (dx * dx + dy * dy).sqrt();
-            if new_r > 1e-6 {
-                arc.radius = new_r;
-            }
+        (1..=3, GripApply::Absolute(p)) => {
+            let original = arc.clone();
+            let _ = refit_grips(arc, &original, &[(grip_id, p)]);
         }
         _ => {}
     }
@@ -313,6 +381,29 @@ impl crate::entities::traits::Grippable for Arc {
             A::Lengthen => Some("Distance"),
             _ => None,
         }
+    }
+
+    fn grip_menu_point_value(
+        &self,
+        grip_id: usize,
+        action: crate::scene::model::object::GripMenuAction,
+        point: glam::DVec3,
+    ) -> Option<f64> {
+        use crate::scene::model::object::GripMenuAction as A;
+        if !matches!(action, A::Lengthen) || self.radius <= 1.0e-9 {
+            return None;
+        }
+        let cursor_angle = (point.y - self.center.y).atan2(point.x - self.center.x);
+        let current_sweep = (self.end_angle - self.start_angle).rem_euclid(TAU);
+        let desired_sweep = match grip_id {
+            1 => (self.end_angle - cursor_angle).rem_euclid(TAU),
+            2 => (cursor_angle - self.start_angle).rem_euclid(TAU),
+            _ => return None,
+        };
+        if desired_sweep <= 1.0e-9 {
+            return None;
+        }
+        Some((desired_sweep - current_sweep) * self.radius)
     }
 
     fn apply_grip_menu_value(

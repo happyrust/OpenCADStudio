@@ -3,15 +3,16 @@
 // Command: SOLID (reachable as SO / SOLID2D — the bare SOLID verb currently
 // toggles the shaded display) — pick three or four corner points and commit a
 // filled triangle or quadrilateral. Four points may be picked either around
-// the perimeter (the natural order shown by the rubber band) or in AutoCAD's
+// the perimeter (the natural order shown by the rubber band) or in the
 // traditional Z pattern. The command normalizes both forms to the DXF corner
 // order before committing. Enter after the third point commits a triangle.
 
 use acadrust::entities::Solid;
 use acadrust::types::Vector3;
 use acadrust::EntityType;
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 use glam::DVec3;
@@ -33,11 +34,15 @@ pub fn tool() -> ToolDef {
 pub struct Solid2dCommand {
     /// Corner points picked so far (3 → triangle, 4 → quadrilateral).
     points: Vec<DVec3>,
+    plane: WorkingPlane,
 }
 
 impl Solid2dCommand {
     pub fn new() -> Self {
-        Self { points: Vec::new() }
+        Self {
+            points: Vec::new(),
+            plane: WorkingPlane::default(),
+        }
     }
 
     fn v3(p: DVec3) -> Vector3 {
@@ -85,16 +90,20 @@ impl Solid2dCommand {
 }
 
 impl CadCommand for Solid2dCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "SOLID"
     }
 
     fn prompt(&self) -> String {
         match self.points.len() {
-            0 => "SOLID  Specify first point:".to_string(),
-            1 => "SOLID  Specify second point:".to_string(),
-            2 => "SOLID  Specify third point:".to_string(),
-            _ => "SOLID  Specify fourth point:".to_string(),
+            0 => t!("SOLID  Specify first point:").into_owned(),
+            1 => t!("SOLID  Specify second point:").into_owned(),
+            2 => t!("SOLID  Specify third point:").into_owned(),
+            _ => t!("SOLID  Specify fourth point:").into_owned(),
         }
     }
 
@@ -102,7 +111,7 @@ impl CadCommand for Solid2dCommand {
         use crate::command::CmdOption;
         // After three corners Enter commits a triangle; offer a Done button.
         if self.points.len() == 3 {
-            vec![CmdOption::enter("Done")]
+            vec![CmdOption::enter(t!("Done").as_ref())]
         } else {
             Vec::new()
         }
@@ -111,8 +120,13 @@ impl CadCommand for Solid2dCommand {
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
         self.points.push(pt);
         if self.points.len() == 4 {
-            let solid = Self::solid_from_four_points(&self.points);
-            CmdResult::CommitAndExit(EntityType::Solid(solid))
+            let local: Vec<DVec3> = self
+                .points
+                .iter()
+                .map(|point| self.plane.to_local(*point))
+                .collect();
+            let solid = Self::solid_from_four_points(&local);
+            CmdResult::CommitAndExit(self.plane.place_entity(EntityType::Solid(solid)))
         } else {
             CmdResult::NeedPoint
         }
@@ -120,9 +134,13 @@ impl CadCommand for Solid2dCommand {
 
     fn on_enter(&mut self) -> CmdResult {
         if self.points.len() == 3 {
-            let p = &self.points;
+            let p: Vec<DVec3> = self
+                .points
+                .iter()
+                .map(|point| self.plane.to_local(*point))
+                .collect();
             let solid = Solid::triangle(Self::v3(p[0]), Self::v3(p[1]), Self::v3(p[2]));
-            CmdResult::CommitAndExit(EntityType::Solid(solid))
+            CmdResult::CommitAndExit(self.plane.place_entity(EntityType::Solid(solid)))
         } else {
             CmdResult::Cancel
         }

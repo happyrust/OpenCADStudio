@@ -296,11 +296,12 @@ pub struct Pipeline {
     /// a pick bumps only `selection_generation`, refreshing the overlay without
     /// touching the main wire buffers.
     pub cached_selection: (u64, u64),
-    /// `(wire_content_id, face3d_fill_active)` the Face3D edge/fill buffers were
-    /// uploaded for. A stable content id avoids retaining the resident wire Arc:
+    /// `(wire_content_id, face3d_fill_active, show_2d_solid_fills)` the Face3D
+    /// edge/fill buffers were uploaded for. A stable content id avoids retaining
+    /// the resident wire Arc:
     /// that Arc must stay uniquely owned by Scene so a small edit can splice it
     /// in place instead of rebuilding the whole drawing.
-    pub cached_face3d_key: (u64, bool),
+    pub cached_face3d_key: (u64, bool, bool),
     /// Handle → indices into the resident wire set, built once per wire upload
     /// (when `cached_wire_id` changes). Lets the selection/hover xray overlay
     /// gather just the highlighted entity's wires (`O(highlighted)`) instead of
@@ -1473,7 +1474,14 @@ impl Pipeline {
         // ── Text (SDF glyph quads) ─────────────────────────────────────────
         let text_atlas_bgl = text_gpu::TextAtlasGpu::bind_group_layout(device);
         let (text_pipeline, text_highlight_pipeline) =
-            text_gpu::create_pipelines(device, &frame_bgl, &text_atlas_bgl, format, MSAA_SAMPLES);
+            text_gpu::create_pipelines(
+                device,
+                &frame_bgl,
+                &text_atlas_bgl,
+                format,
+                MSAA_SAMPLES,
+                &content_stencil,
+            );
 
         let viewcube = ViewCubePipeline::new(device, queue, format);
 
@@ -1703,7 +1711,7 @@ impl Pipeline {
             cached_epoch: (u64::MAX, u64::MAX, u64::MAX),
             cached_wire_id: u64::MAX,
             cached_selection: (u64::MAX, u64::MAX),
-            cached_face3d_key: (u64::MAX, false),
+            cached_face3d_key: (u64::MAX, false, false),
             wire_handle_index: std::sync::Arc::new(rustc_hash::FxHashMap::default()),
             render_sig: u64::MAX,
             skip_geometry: false,
@@ -1786,13 +1794,12 @@ impl Pipeline {
         device: &wgpu::Device,
         wires: &[WireModel],
         selected: &rustc_hash::FxHashSet<acadrust::Handle>,
-        hover: Option<acadrust::Handle>,
+        hovered: &rustc_hash::FxHashSet<acadrust::Handle>,
         annotation_context_wires: &[WireModel],
         depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
     ) {
         let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
-        let hover = hover.filter(|h| !selected.contains(h));
-        if selected.is_empty() && hover.is_none() && annotation_context_wires.is_empty() {
+        if selected.is_empty() && hovered.is_empty() && annotation_context_wires.is_empty() {
             self.gpu_selected_wires = vec![];
             return;
         }
@@ -1811,7 +1818,7 @@ impl Pipeline {
                 }
             }
         }
-        if let Some(h) = hover {
+        for h in hovered.iter().filter(|handle| !selected.contains(handle)) {
             if let Some(idxs) = self.wire_handle_index.get(&h.value()) {
                 let mut slots = idxs.clone();
                 slots.sort_unstable();
@@ -1850,7 +1857,11 @@ impl Pipeline {
                 crate::perf_record!(
                     "[perf] wire-highlight {:>7.1}ms handles={} wires={}",
                     elapsed_ms,
-                    selected.len() + usize::from(hover.is_some()),
+                    selected.len()
+                        + hovered
+                            .iter()
+                            .filter(|handle| !selected.contains(handle))
+                            .count(),
                     selected_wires.len() + hover_wires.len(),
                 );
             }
@@ -1866,12 +1877,11 @@ impl Pipeline {
         device: &wgpu::Device,
         wires: &[WireModel],
         selected: &rustc_hash::FxHashSet<acadrust::Handle>,
-        hover: Option<acadrust::Handle>,
+        hovered: &rustc_hash::FxHashSet<acadrust::Handle>,
         annotation_context_wires: &[WireModel],
     ) {
         let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
-        let hover = hover.filter(|h| !selected.contains(h));
-        if selected.is_empty() && hover.is_none() && annotation_context_wires.is_empty() {
+        if selected.is_empty() && hovered.is_empty() && annotation_context_wires.is_empty() {
             self.text_highlight_vbuf = None;
             self.text_highlight_vcount = 0;
             return;
@@ -1895,7 +1905,7 @@ impl Pipeline {
         for h in selected {
             push(h.value(), WireModel::SELECTED, wires, &mut out);
         }
-        if let Some(h) = hover {
+        for h in hovered.iter().filter(|handle| !selected.contains(handle)) {
             push(h.value(), WireModel::HOVER, wires, &mut out);
         }
         for wire in annotation_context_wires {
@@ -2260,6 +2270,7 @@ impl Pipeline {
         face3d_wires: &[WireModel],
         all_wires: &[WireModel],
         wireframe_only: bool,
+        show_2d_solid_fills: bool,
         depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
     ) {
         let perf_started = crate::perf::enabled().then(iced::time::Instant::now);
@@ -2270,11 +2281,15 @@ impl Pipeline {
         // Fill buffer split: 3D quads + PolyfaceMesh / PolygonMesh face
         // tris go to `chunks_3d` (gated by `keep_3d_mesh_fills`);
         // 2D fills (text-LOD greek, MultiLeader background) go to
-        // `chunks_2d` and are visible in every mode.
+        // `chunks_2d`. The 3-D wireframe additionally removes only legacy
+        // planar SOLID interiors; HATCH is handled by a separate pass.
         let keep_3d_mesh_fills = !wireframe_only;
+        let solid_fill_hidden = |wire: &WireModel| {
+            !show_2d_solid_fills && wire.fill_is_2d_solid
+        };
         let has_any_2d_fill = all_wires
             .iter()
-            .any(|w| !w.fill_tris.is_empty() && w.points.is_empty());
+            .any(|w| !w.fill_tris.is_empty() && w.points.is_empty() && !solid_fill_hidden(w));
         let has_any_3d_fill = !face3d_wires.is_empty()
             || all_wires
                 .iter()
@@ -2288,6 +2303,7 @@ impl Pipeline {
                 face3d_wires,
                 all_wires,
                 keep_3d_mesh_fills,
+                show_2d_solid_fills,
                 depth_map,
             ));
         }
@@ -2631,7 +2647,7 @@ impl Pipeline {
     pub fn update_mesh_highlight(
         &mut self,
         selected: &rustc_hash::FxHashSet<acadrust::Handle>,
-        hover: Option<acadrust::Handle>,
+        hovered: &rustc_hash::FxHashSet<acadrust::Handle>,
     ) {
         let mut out = Vec::new();
         for handle in selected {
@@ -2642,7 +2658,7 @@ impl Pipeline {
                 }));
             }
         }
-        if let Some(handle) = hover.filter(|handle| !selected.contains(handle)) {
+        for handle in hovered.iter().filter(|handle| !selected.contains(handle)) {
             if let Some(ranges) = self.mesh_ranges_by_handle.get(&handle) {
                 out.extend(ranges.iter().copied().map(|range| MeshHighlightDraw {
                     range,

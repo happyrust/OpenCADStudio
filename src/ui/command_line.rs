@@ -4,16 +4,34 @@ use iced::time::Instant;
 
 use crate::app::Message;
 use crate::command::CmdOption;
+use crate::t;
 use iced::widget::{
-    button, column, container, opaque, row, rule, text, text_editor, text_input, tooltip, Space,
+    button, column, container, opaque, row, rule, scrollable, stack, text, text_editor,
+    text_input, tooltip, Space,
 };
-use iced::{Background, Border, Color, Element, Length, Theme};
+use iced::{Background, Border, Color, Element, Length, Padding, Theme};
+use std::ops::Range;
 
 pub const CMD_INPUT_ID: &str = "cmd_input";
+pub const HISTORY_SCROLL_ID: &str = "command_history_scroll";
 
 /// How long a history entry stays visible on the overlay before fading
 /// out. Picking the full archive happens through the dropdown button.
 const HISTORY_VISIBLE_SECS: f32 = 3.0;
+
+/// Resizable full-history editor bounds. The live upper bound also follows the
+/// window height so the command input and a useful drawing area remain visible.
+pub const HISTORY_HEIGHT_MIN: f32 = 72.0;
+pub const HISTORY_HEIGHT_DEFAULT: f32 = 180.0;
+pub const HISTORY_HEIGHT_MAX: f32 = 560.0;
+
+pub fn history_max_height(window_height: f32) -> f32 {
+    if window_height.is_finite() {
+        (window_height * 0.60).clamp(HISTORY_HEIGHT_MIN, HISTORY_HEIGHT_MAX)
+    } else {
+        HISTORY_HEIGHT_DEFAULT
+    }
+}
 
 /// How many autocomplete matches the suggestion popup shows at once.
 const AUTOCOMPLETE_LIMIT: usize = 8;
@@ -49,8 +67,8 @@ pub struct CommandLine {
     /// instead of submitting. Saved in the user config.
     pub literal_spaces: bool,
     pub history: Vec<HistoryEntry>,
-    /// Commands the user has typed (for ↑/↓ recall). Holds the raw typed
-    /// strings so the line can be re-edited; distinct from `recent_commands`.
+    /// Successfully dispatched commands used for ↑/↓ recall, newest last.
+    /// Stored separately because recall also maintains its own cursor and draft.
     pub cmd_recall: Vec<String>,
     /// Commands actually dispatched, from any source (command line, ribbon,
     /// context menu, shortcuts), newest last. Drives the right-click "Repeat"
@@ -62,9 +80,10 @@ pub struct CommandLine {
     recall_draft: String,
     /// When `true`, the dropdown showing the full backlog is open.
     pub history_open: bool,
+    /// Persisted height of the full-history editor in logical pixels.
+    pub history_height: f32,
     /// Index of the currently-highlighted autocomplete suggestion, or
-    /// `None` when the user hasn't yet started navigating with the
-    /// arrow keys. Reset on every keystroke.
+    /// `None` before keyboard navigation begins. Reset when input changes.
     pub autocomplete_cursor: Option<usize>,
     /// Command names contributed by loaded plugins, refreshed whenever the
     /// enabled-plugin set changes. Merged into autocomplete alongside the
@@ -108,9 +127,62 @@ pub enum EntryKind {
     Info,
 }
 
+/// Per-logical-line entry kinds for the selectable full-history editor.
+/// Keeping this metadata beside the editor's plain text preserves drag
+/// selection and copy while allowing the renderer to restore each entry's
+/// original color.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HistoryHighlightSettings {
+    line_kinds: Vec<EntryKind>,
+}
+
+#[derive(Debug)]
+struct HistoryHighlighter {
+    settings: HistoryHighlightSettings,
+    current_line: usize,
+}
+
+impl iced::advanced::text::Highlighter for HistoryHighlighter {
+    type Settings = HistoryHighlightSettings;
+    type Highlight = EntryKind;
+    type Iterator<'a> = std::option::IntoIter<(Range<usize>, EntryKind)>;
+
+    fn new(settings: &Self::Settings) -> Self {
+        Self {
+            settings: settings.clone(),
+            current_line: 0,
+        }
+    }
+
+    fn update(&mut self, settings: &Self::Settings) {
+        self.settings = settings.clone();
+        self.current_line = 0;
+    }
+
+    fn change_line(&mut self, line: usize) {
+        self.current_line = line;
+    }
+
+    fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
+        let kind = self
+            .settings
+            .line_kinds
+            .get(self.current_line)
+            .cloned()
+            .unwrap_or(EntryKind::Output);
+        self.current_line += 1;
+        Some((0..line.len(), kind)).into_iter()
+    }
+
+    fn current_line(&self) -> usize {
+        self.current_line
+    }
+}
+
 impl CommandLine {
     pub fn new() -> Self {
         let mut cl = Self::default();
+        cl.history_height = HISTORY_HEIGHT_DEFAULT;
         cl.push_info(&crate::tr!("command-line-ready"));
         cl.push_info(&crate::tr!("command-line-hint"));
         cl
@@ -130,23 +202,15 @@ impl CommandLine {
             Some((verb, rest)) => format!("{} {}", verb.to_uppercase(), rest),
             None => raw.to_uppercase(),
         };
-        // Record in recall list (avoid duplicates at the top).
-        if self.cmd_recall.last().map(|s| s.as_str()) != Some(raw.as_str()) {
-            self.cmd_recall.push(raw);
-            if self.cmd_recall.len() > 50 {
-                self.cmd_recall.remove(0);
-            }
-        }
-        self.recall_cursor = None;
-        self.recall_draft.clear();
         self.push_command(&self.input.clone());
         self.input.clear();
         Some(cmd)
     }
 
-    /// Record a dispatched command for the right-click "Repeat" menu, skipping
-    /// a consecutive duplicate and capping the list. Called from the dispatch
-    /// choke point so commands from every source are captured.
+    /// Record a successfully dispatched command for both the right-click
+    /// "Repeat" menu and ↑/↓ recall. Consecutive duplicates are skipped and
+    /// both lists are capped. Called from the dispatch choke point so commands
+    /// from every source are captured.
     pub fn record_recent(&mut self, cmd: &str) {
         let cmd = cmd.trim();
         if cmd.is_empty() {
@@ -158,6 +222,22 @@ impl CommandLine {
                 self.recent_commands.remove(0);
             }
         }
+        if self.cmd_recall.last().map(String::as_str) != Some(cmd) {
+            self.cmd_recall.push(cmd.to_string());
+            if self.cmd_recall.len() > 50 {
+                self.cmd_recall.remove(0);
+            }
+        }
+        self.cancel_history_navigation();
+    }
+
+    pub fn history_navigation_active(&self) -> bool {
+        self.recall_cursor.is_some()
+    }
+
+    pub fn cancel_history_navigation(&mut self) {
+        self.recall_cursor = None;
+        self.recall_draft.clear();
     }
 
     /// Navigate to the previous command in recall history (↑).
@@ -194,20 +274,20 @@ impl CommandLine {
     }
 
     pub fn push_command(&mut self, cmd: &str) {
-        self.push(EntryKind::Command, format!("Command: {cmd}"));
+        self.push(EntryKind::Command, format!("{} {cmd}", t!("Command:")));
     }
     pub fn push_output(&mut self, msg: &str) {
         self.push(EntryKind::Output, msg.to_string());
     }
     pub fn push_error(&mut self, msg: &str) {
-        self.push(EntryKind::Error, format!("*Invalid*  {msg}"));
+        self.push(EntryKind::Error, format!("*{}*  {msg}", t!("Invalid")));
     }
     /// Append an error unless it is already the latest history line. Repeated
     /// retry failures should refresh the concise message, not flood history
     /// with identical copies (#498).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn push_error_once(&mut self, msg: &str) {
-        let text = format!("*Invalid*  {msg}");
+        let text = format!("*{}*  {msg}", t!("Invalid"));
         if let Some(last) = self
             .history
             .last_mut()
@@ -297,6 +377,17 @@ impl CommandLine {
             .join("\n")
     }
 
+    fn history_highlight_settings(&self) -> HistoryHighlightSettings {
+        let line_kinds = self
+            .history
+            .iter()
+            .flat_map(|entry| {
+                std::iter::repeat(entry.kind.clone()).take(entry.text.split('\n').count())
+            })
+            .collect();
+        HistoryHighlightSettings { line_kinds }
+    }
+
     /// Drop every history line. The step-prompt mirror is reset too so a
     /// later step still repins correctly.
     pub fn clear_history(&mut self) {
@@ -304,42 +395,41 @@ impl CommandLine {
         self.step_prompt = None;
     }
 
-    /// Move the autocomplete highlight up one entry. Wraps to the last
-    /// match. Returns `true` when there was a list to navigate.
+    /// Move the autocomplete highlight up one entry. Wraps to the last match.
     pub fn autocomplete_prev(&mut self) -> bool {
         let len = self.autocomplete_matches().len();
         if len == 0 {
             return false;
         }
-        // No explicit cursor means the top match (index 0) is highlighted,
-        // so ↑ from there wraps to the last entry.
-        let cur = self.autocomplete_cursor.unwrap_or(0);
-        let next = if cur == 0 { len - 1 } else { cur - 1 };
-        self.autocomplete_cursor = Some(next);
+        let current = self.autocomplete_cursor.unwrap_or(0).min(len - 1);
+        self.autocomplete_cursor = Some(if current == 0 {
+            len - 1
+        } else {
+            current - 1
+        });
         true
     }
 
-    /// Move the autocomplete highlight down one entry. Wraps to the
-    /// first match. Returns `true` when there was a list to navigate.
+    /// Move the autocomplete highlight down one entry. Wraps to the first match.
     pub fn autocomplete_next(&mut self) -> bool {
         let len = self.autocomplete_matches().len();
         if len == 0 {
             return false;
         }
-        // No explicit cursor means the top match (index 0) is highlighted,
-        // so ↓ from there advances to the next entry (wrapping at the end).
-        let cur = self.autocomplete_cursor.unwrap_or(0);
-        let next = if cur + 1 < len { cur + 1 } else { 0 };
-        self.autocomplete_cursor = Some(next);
+        let current = self.autocomplete_cursor.unwrap_or(0).min(len - 1);
+        self.autocomplete_cursor = Some(if current + 1 < len {
+            current + 1
+        } else {
+            0
+        });
         true
     }
 
-    /// The command name the user has currently highlighted in the
-    /// autocomplete popup, if any.
+    /// The command name explicitly highlighted in the autocomplete popup.
     pub fn selected_suggestion(&self) -> Option<String> {
         let matches = self.autocomplete_matches();
         self.autocomplete_cursor
-            .and_then(|i| matches.get(i).cloned())
+            .and_then(|index| matches.get(index).cloned())
     }
 
     /// Autocomplete suggestions for the current input — see
@@ -357,6 +447,7 @@ impl CommandLine {
         show_autocomplete: bool,
         dyn_capturing: bool,
         history_content: &'a text_editor::Content,
+        window_height: f32,
     ) -> Element<'a, Message> {
         // Only the most recent entries pushed within the last few
         // seconds show on the overlay. The dropdown button keeps the
@@ -374,6 +465,7 @@ impl CommandLine {
             visible.push(pinned);
         }
         let start = visible.len().saturating_sub(4);
+        let has_recent_history = start < visible.len();
         let history_rows = visible[start..]
             .iter()
             .fold(column![].spacing(0), |col, entry| {
@@ -481,9 +573,12 @@ impl CommandLine {
                 .on_input(Message::CommandInput)
                 .on_submit(Message::CommandSubmit);
         }
-        let input = input
-            .size(11)
-            .padding([4, 6]);
+        let input = input.size(11).padding(Padding {
+            top: 4.0,
+            right: 30.0,
+            bottom: 4.0,
+            left: 6.0,
+        });
         // Autocomplete suggestions panel, shown above the input row
         // when the user has typed a prefix that matches at least one
         // command. Each row is a button — clicking it dispatches the
@@ -493,13 +588,10 @@ impl CommandLine {
             if matches.is_empty() {
                 container(column![]).height(0).into()
             } else {
-                // Before any arrow-key navigation, the top match is
-                // highlighted so it's visible that Enter runs it — the
-                // standard DWG command-line behavior.
                 let cursor = self.autocomplete_cursor.unwrap_or(0);
                 let mut col = column![].spacing(0).width(Length::Fill);
                 for (idx, cmd) in matches.iter().enumerate() {
-                    let is_selected = cursor == idx;
+                    let is_selected = idx == cursor;
                     let row = button(text(cmd.clone()).size(11))
                         .on_press(Message::CommandSuggestionPick(cmd.clone()))
                         .width(Length::Fill)
@@ -545,9 +637,18 @@ impl CommandLine {
         };
         let dropdown_btn = button(dropdown_icon)
             .on_press(Message::CommandHistoryToggle)
-        .style(button::subtle)
-        .padding([2, 6]);
-        let input_row = row![prompt, literal_btn, input, dropdown_btn]
+            .style(button::text)
+            .padding([4, 8]);
+        let input_with_history = stack![
+            input,
+            container(dropdown_btn)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Right)
+                .align_y(iced::alignment::Vertical::Center),
+        ]
+        .width(Length::Fill);
+        let input_row = row![prompt, literal_btn, input_with_history]
             .spacing(4)
             .align_y(iced::Center);
 
@@ -555,16 +656,22 @@ impl CommandLine {
         // whole log is rendered in ONE read-only `text_editor` (backed by
         // `history_content`) rather than per-line labels, so a single mouse
         // drag selects across lines and Ctrl+C copies the lot — issue #232.
-        // Edits are dropped in the update handler, keeping it read-only. The
-        // editor scrolls internally past `max_height`; `opaque` stops its
-        // mouse-wheel events bubbling to the viewport shader behind it (else
-        // scrolling the history zoomed the drawing).
+        // Edits are dropped in the update handler, keeping it read-only. A
+        // surrounding scrollable supplies the visible scrollbar while
+        // `opaque` stops its mouse-wheel events reaching the drawing behind it.
         let dropdown: Element<'a, Message> = if self.history_open {
+            let history_height = self
+                .history_height
+                .clamp(HISTORY_HEIGHT_MIN, history_max_height(window_height));
             let log = text_editor(history_content)
                 .on_action(Message::CommandHistoryEdit)
                 .size(11)
                 .padding([2, 8])
-                .height(Length::Fit.max(180.0))
+                .height(Length::Shrink)
+                .highlight_with::<HistoryHighlighter>(
+                    self.history_highlight_settings(),
+                    history_highlight_format,
+                )
                 .style(|theme: &Theme, _status| {
                     let palette = theme.palette();
                     text_editor::Style {
@@ -575,11 +682,20 @@ impl CommandLine {
                         selection: palette.primary.base.color.scale_alpha(0.5),
                     }
                 });
+            let log = scrollable(log)
+                .id(iced::widget::Id::new(HISTORY_SCROLL_ID))
+                .height(Length::Fixed(history_height))
+                .direction(scrollable::Direction::Vertical(
+                    scrollable::Scrollbar::new()
+                        .width(8)
+                        .scroller_width(6),
+                ))
+                .anchor_bottom();
             // Header strip: a Copy-all and a Clear button pinned above the log.
             let copy_btn = button(
                 row![
                     crate::ui::icons::themed_success(crate::ui::icons::COPY, 11.0),
-                    text("Copy").size(11),
+                    text(t!("Copy")).size(11),
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
@@ -590,7 +706,7 @@ impl CommandLine {
             let clear_btn = button(
                 row![
                     crate::ui::icons::themed_warning(crate::ui::icons::TRASH, 11.0),
-                    text("Clear").size(11),
+                    text(t!("Clear")).size(11),
                 ]
                 .spacing(4)
                 .align_y(iced::Center),
@@ -607,7 +723,25 @@ impl CommandLine {
             .padding([2, 6]);
             let panel = container(column![header, log])
                 .width(Length::Fill)
-                .padding([4, 0]);
+                .padding([4, 8]);
+            let resize = iced::widget::mouse_area(
+                container(crate::ui::icons::themed_primary(
+                    crate::ui::icons::RESIZE,
+                    15.0,
+                ))
+                .padding([0, 2]),
+            )
+            .on_press(Message::CommandHistoryResizeGrab)
+            .on_double_click(Message::CommandHistoryHeightReset)
+            .interaction(iced::mouse::Interaction::ResizingVertically);
+            let panel = stack![
+                panel,
+                container(resize)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(iced::alignment::Horizontal::Left)
+                    .align_y(iced::alignment::Vertical::Top),
+            ];
             opaque(panel).into()
         } else {
             container(column![]).height(0).into()
@@ -616,7 +750,7 @@ impl CommandLine {
         // The transient recent lines and the full archive are two views of the
         // same history. Showing both while the archive is open creates a fake
         // second history region and visually disconnects the input row (#555).
-        let recent_history: Element<'a, Message> = if self.history_open {
+        let recent_history: Element<'a, Message> = if self.history_open || !has_recent_history {
             container(column![]).height(0).into()
         } else {
             container(history_rows)
@@ -636,34 +770,40 @@ impl CommandLine {
             container(column![]).height(0).into()
         };
 
-        container(column![
-            autocomplete,
-            dropdown,
-            recent_history,
-            history_divider,
-            container(input_row)
-                .style(|theme: &Theme| {
-                    let palette = theme.palette();
-                    container::Style {
-                    background: Some(Background::Color(palette.background.weakest.color)),
-                    ..Default::default()
-                    }
-                })
-                .width(Length::Fill)
-                // Match the drawing tab bar / status bar height, and vertically
-                // centre the prompt/input/dropdown within it (issue #216).
-                .center_y(Length::Fixed(30.0)),
-        ])
-        .style(|theme: &Theme| {
+        let history_open = self.history_open;
+        container(
+            column![
+                autocomplete,
+                dropdown,
+                recent_history,
+                history_divider,
+                container(input_row)
+                    .style(|theme: &Theme| {
+                        let palette = theme.palette();
+                        container::Style {
+                            background: Some(Background::Color(
+                                palette.background.weakest.color,
+                            )),
+                            ..Default::default()
+                        }
+                    })
+                    .width(Length::Fill)
+                    // Match the drawing tab bar / status bar height, and vertically
+                    // centre the prompt/input/dropdown within it (issue #216).
+                    .center_y(Length::Fixed(30.0)),
+            ]
+            .width(Length::Fill),
+        )
+        .style(move |theme: &Theme| {
             let palette = theme.palette();
             container::Style {
-            background: Some(Background::Color(palette.background.base.color)),
-            border: Border {
-                color: palette.background.neutral.color,
-                width: 1.0,
-                radius: 4.0.into(),
-            },
-            ..Default::default()
+                background: Some(Background::Color(palette.background.base.color)),
+                border: Border {
+                    color: palette.background.neutral.color,
+                    width: if history_open { 1.0 } else { 0.0 },
+                    radius: 4.0.into(),
+                },
+                ..Default::default()
             }
         })
         .width(Length::Fill.max(720.0))
@@ -757,9 +897,20 @@ fn history_color(theme: &Theme, kind: &EntryKind) -> Color {
     }
 }
 
+fn history_highlight_format(
+    kind: &EntryKind,
+    theme: &Theme,
+) -> iced::advanced::text::highlighter::Format<iced::Font> {
+    iced::advanced::text::highlighter::Format {
+        color: Some(history_color(theme, kind)),
+        font: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ranked_matches, CommandLine};
+    use crate::t;
     use rustc_hash::FxHashMap;
 
     fn aliases(pairs: &[(&str, &str)]) -> FxHashMap<String, String> {
@@ -814,8 +965,44 @@ mod tests {
     fn issue_498_repeated_save_error_is_not_duplicated() {
         let mut line = CommandLine::new();
         let initial_len = line.history.len();
-        line.push_error_once("Unable to save: file is in use.");
-        line.push_error_once("Unable to save: file is in use.");
+        line.push_error_once(t!("Unable to save: file is in use.").as_ref());
+        line.push_error_once(t!("Unable to save: file is in use.").as_ref());
         assert_eq!(line.history.len(), initial_len + 1);
+    }
+
+    #[test]
+    fn command_recall_walks_both_directions_and_restores_the_draft() {
+        let mut line = CommandLine::new();
+        for command in ["LINE", "LINE", "CIRCLE"] {
+            line.record_recent(command);
+        }
+        line.input = "PARTIAL".to_string();
+
+        line.history_prev();
+        assert_eq!(line.input, "CIRCLE");
+        line.history_prev();
+        assert_eq!(line.input, "LINE");
+        line.history_prev();
+        assert_eq!(line.input, "LINE");
+        line.history_next();
+        assert_eq!(line.input, "CIRCLE");
+        line.history_next();
+        assert_eq!(line.input, "PARTIAL");
+        assert_eq!(line.cmd_recall, vec!["LINE".to_string(), "CIRCLE".to_string()]);
+    }
+
+    #[test]
+    fn recalled_command_can_be_edited_before_submit() {
+        let mut line = CommandLine::new();
+        line.record_recent("MOVE");
+        line.history_prev();
+        line.input.push_str(" 0,0 10,0");
+        let submitted = line.submit().expect("edited command");
+        assert_eq!(submitted, "MOVE 0,0 10,0");
+        line.record_recent(&submitted);
+        assert_eq!(
+            line.cmd_recall.last().map(String::as_str),
+            Some("MOVE 0,0 10,0")
+        );
     }
 }

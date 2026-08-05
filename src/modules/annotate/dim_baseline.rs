@@ -14,6 +14,7 @@ use glam::{DVec3, Vec3};
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
+use crate::t;
 
 pub const ICON: IconKind = IconKind::Svg(include_bytes!("../../../assets/icons/dim_baseline.svg"));
 
@@ -130,9 +131,9 @@ impl CadCommand for DimBaselineCommand {
 
     fn prompt(&self) -> String {
         if !self.ready {
-            "DIMBASELINE  No base dimension found. Place a dimension first.".into()
+            t!("DIMBASELINE  No base dimension found. Place a dimension first.").into_owned()
         } else {
-            "DIMBASELINE  Specify a second extension line origin (Enter to exit):".into()
+            t!("DIMBASELINE  Specify a second extension line origin (Enter to exit):").into_owned()
         }
     }
 
@@ -183,6 +184,7 @@ impl CadCommand for DimBaselineCommand {
             world_width: 0.0,
             depth_override: None,
             fill_is_3d: false,
+            fill_is_2d_solid: false,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,

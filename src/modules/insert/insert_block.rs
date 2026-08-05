@@ -2,8 +2,9 @@ use acadrust::entities::{AttributeDefinition, AttributeEntity, Entity, Insert};
 use acadrust::types::Vector3;
 use acadrust::EntityType;
 use glam::{DVec3, Vec3};
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 
@@ -58,6 +59,7 @@ pub struct InsertBlockCommand {
     /// is measured from, so `on_preview_wires` can rubber-band it to the
     /// cursor. Set by paste-as-block; empty for a plain INSERT.
     preview: Option<(Vec<WireModel>, Vec3)>,
+    plane: WorkingPlane,
 }
 
 impl InsertBlockCommand {
@@ -71,6 +73,7 @@ impl InsertBlockCommand {
             awaiting: None,
             pending_insert: None,
             preview: None,
+            plane: WorkingPlane::default(),
         }
     }
 
@@ -88,11 +91,16 @@ impl InsertBlockCommand {
             awaiting: None,
             pending_insert: None,
             preview: Some((preview_wires, base)),
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for InsertBlockCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "INSERT"
     }
@@ -105,15 +113,16 @@ impl CadCommand for InsertBlockCommand {
                 } else {
                     format!("  [{}]", self.available.join(", "))
                 };
-                format!("INSERT  Enter block name:{hint}")
+                t!("INSERT  Enter block name:%{hint}", hint = hint).into_owned()
             }
             Step::Point { name } => match self.awaiting {
-                Some(AwaitKind::Scale) => "INSERT  Specify scale factor <1>:".to_string(),
-                Some(AwaitKind::Rotation) => "INSERT  Specify rotation angle <0>:".to_string(),
-                None => format!(
-                    "INSERT  Specify insertion point for \"{}\"  [Scale/Rotate]:",
-                    name
-                ),
+                Some(AwaitKind::Scale) => t!("INSERT  Specify scale factor <1>:").into_owned(),
+                Some(AwaitKind::Rotation) => t!("INSERT  Specify rotation angle <0>:").into_owned(),
+                None => t!(
+                    "INSERT  Specify insertion point for \"%{name}\"  [Scale/Rotate]:",
+                    name = name
+                )
+                .into_owned(),
             },
             Step::FillAttr { attdefs, idx, .. } => {
                 if let Some(ad) = attdefs.get(*idx) {
@@ -127,9 +136,14 @@ impl CadCommand for InsertBlockCommand {
                     } else {
                         ad.prompt.as_str()
                     };
-                    format!("INSERT  {prompt_text}{default_hint}:")
+                    t!(
+                        "INSERT  %{prompt}%{hint}:",
+                        prompt = prompt_text,
+                        hint = default_hint
+                    )
+                    .into_owned()
                 } else {
-                    "INSERT  Filling attributes...".into()
+                    t!("INSERT  Filling attributes...").into_owned()
                 }
             }
         }
@@ -139,10 +153,15 @@ impl CadCommand for InsertBlockCommand {
         match &self.step {
             Step::Name => CmdResult::NeedPoint,
             Step::Point { name } => {
-                let mut ins = Insert::new(name.clone(), Vector3::new(pt.x, pt.y, pt.z));
+                let point = self.plane.to_local(pt);
+                let mut ins = Insert::new(
+                    name.clone(),
+                    Vector3::new(point.x, point.y, point.z),
+                );
                 ins.set_x_scale(self.x_scale);
                 ins.set_y_scale(self.y_scale);
                 ins.rotation = self.rotation_rad;
+                ins.apply_transform(&self.plane.to_world_transform());
                 let block_name = name.clone();
                 self.pending_insert = Some(ins);
                 // Signal the host to check for attdefs.

@@ -76,9 +76,10 @@ impl OpenCADStudio {
             // template-property override too (#239).
             self.restore_add_selected_defaults();
         }
-        // Starting any command leaves interactive PAN mode (the PAN arm below
-        // re-enables it).
+        // Starting any command leaves interactive navigation modes (their own
+        // command arms below re-enable the selected one).
         self.tabs[i].pan_mode = false;
+        self.tabs[i].orbit_mode = false;
         // Reset the last committed point so the first click of the new command
         // is not constrained by ortho/polar relative to a previous command's endpoint.
         self.last_point = None;
@@ -96,6 +97,7 @@ impl OpenCADStudio {
         // default (LIMITS then compares an unintended lower-left point with
         // the displayed default upper-right).
         self.dyn_user_reshaped = false;
+        self.dyn_coord_absolute = false;
         self.tabs[i].dyn_fields.clear();
         self.tabs[i].dyn_active = 0;
 
@@ -116,7 +118,7 @@ impl OpenCADStudio {
         // rather than keeping a second, blunter copy (#388, #389).
         if self.tabs[i].is_start && !start_allowed(cmd) {
             self.command_line
-                .push_info("No drawing open. Use NEW or OPEN to start a drawing.");
+                .push_info(crate::t!("No drawing open. Use NEW or OPEN to start a drawing.").as_ref());
             return Task::none();
         }
 
@@ -164,7 +166,7 @@ impl OpenCADStudio {
             }
         }
         self.command_line
-            .push_error(&format!("Unknown command: {cmd}"));
+            .push_error(crate::tf!("Unknown command: {cmd}").as_ref());
         self.finish_dispatch(cmd)
     }
 
@@ -281,6 +283,7 @@ inventory::submit!(crate::command::CommandRegistration {
         // Standard aliases for existing commands.
         "BMAKE",
         "EXPORTPDF",
+        "PRINTALL",
         "DDIM",
         // Inquiry: list the whole drawing database.
         "DBLIST",

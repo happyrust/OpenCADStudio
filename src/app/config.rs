@@ -27,6 +27,8 @@ pub struct AppConfig {
     pub start: StartConfig,
     /// Which status-bar pills the user has hidden.
     pub statusbar: StatusBarConfig,
+    /// Dock position, width and auto-collapse behavior of the Properties panel.
+    pub properties: PropertiesDockConfig,
     /// Add a newly selected annotation scale to existing annotative objects.
     pub annotation_auto_scale: i8,
     /// Ribbon collapse density.
@@ -34,6 +36,8 @@ pub struct AppConfig {
     /// Print dialog preferences (only the persisted fields; runtime state is
     /// skipped by `PlotDialogState`'s serde attributes).
     pub plot: PlotDialogState,
+    /// Complete editable keyboard shortcut table.
+    pub shortcuts: ShortcutConfig,
 }
 
 impl Default for AppConfig {
@@ -44,9 +48,49 @@ impl Default for AppConfig {
             recent: RecentConfig::default(),
             start: StartConfig::default(),
             statusbar: StatusBarConfig::default(),
+            properties: PropertiesDockConfig::default(),
             annotation_auto_scale: -4,
             ribbon: RibbonConfig::default(),
             plot: PlotDialogState::default(),
+            shortcuts: ShortcutConfig::default(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShortcutConfig {
+    pub bindings: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for ShortcutConfig {
+    fn default() -> Self {
+        Self {
+            bindings: super::shortcuts::default_bindings(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DockSide {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PropertiesDockConfig {
+    pub side: DockSide,
+    pub width: f32,
+    pub auto_collapse: bool,
+}
+
+impl Default for PropertiesDockConfig {
+    fn default() -> Self {
+        Self {
+            side: DockSide::Left,
+            width: 250.0,
+            auto_collapse: false,
         }
     }
 }

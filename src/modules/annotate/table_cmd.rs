@@ -12,9 +12,10 @@ use acadrust::types::Vector3;
 use acadrust::EntityType;
 use glam::DVec3;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
+use crate::t;
 
 pub const ICON: IconKind = IconKind::Svg(include_bytes!("../../../assets/icons/table.svg"));
 
@@ -40,30 +41,81 @@ enum Step {
 
 pub struct TableCommand {
     step: Step,
+    style_handle: Option<acadrust::Handle>,
+    column_width: f64,
+    row_height: f64,
+    preview_scale: f64,
+    plane: WorkingPlane,
 }
 
 impl TableCommand {
     pub fn new() -> Self {
         Self {
             step: Step::Columns,
+            style_handle: None,
+            column_width: COL_WIDTH,
+            row_height: ROW_HEIGHT,
+            preview_scale: 1.0,
+            plane: WorkingPlane::default(),
+        }
+    }
+
+    pub fn with_style(
+        style_handle: acadrust::Handle,
+        style: &acadrust::objects::TableStyle,
+        annotation_multiplier: f64,
+    ) -> Self {
+        let text_height = style
+            .data_row_style
+            .text_height
+            .max(style.header_row_style.text_height)
+            .max(style.title_row_style.text_height)
+            .max(1.0e-6);
+        let row_height = text_height * 1.5 + style.vertical_margin * 2.0;
+        let column_width = text_height * 8.0 + style.horizontal_margin * 2.0;
+        Self {
+            step: Step::Columns,
+            style_handle: Some(style_handle),
+            column_width,
+            row_height,
+            preview_scale: if style.annotative {
+                annotation_multiplier
+            } else {
+                1.0
+            },
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for TableCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "TABLE"
     }
 
     fn prompt(&self) -> String {
         match &self.step {
-            Step::Columns => format!("TABLE  Enter number of columns [{DEFAULT_COLS}]:"),
-            Step::Rows { cols } => format!(
-                "TABLE  Enter number of rows (incl. header) [{DEFAULT_ROWS}]  ({cols} cols):"
-            ),
-            Step::Insertion { cols, rows } => {
-                format!("TABLE  Specify insertion point  [{cols}×{rows}]:")
-            }
+            Step::Columns => t!(
+                "TABLE  Enter number of columns [%{cols}]:",
+                cols = DEFAULT_COLS
+            )
+            .into_owned(),
+            Step::Rows { cols } => t!(
+                "TABLE  Enter number of rows (incl. header) [%{rows}]  (%{cols} cols):",
+                rows = DEFAULT_ROWS,
+                cols = cols
+            )
+            .into_owned(),
+            Step::Insertion { cols, rows } => t!(
+                "TABLE  Specify insertion point  [%{cols}×%{rows}]:",
+                cols = cols,
+                rows = rows
+            )
+            .into_owned(),
         }
     }
 
@@ -118,31 +170,40 @@ impl CadCommand for TableCommand {
 
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if let Step::Insertion { cols, rows } = self.step {
-            let ins = Vector3::new(pt.x, pt.y, pt.z);
-            let table = TableBuilder::new(rows, cols)
+            let point = self.plane.to_local(pt);
+            let ins = Vector3::new(point.x, point.y, point.z);
+            let mut table = TableBuilder::new(rows, cols)
                 .at(ins)
-                .row_height(ROW_HEIGHT)
-                .column_width(COL_WIDTH)
+                .row_height(self.row_height)
+                .column_width(self.column_width)
                 .build();
-            CmdResult::CommitAndExit(EntityType::Table(table))
+            table.table_style_handle = self.style_handle;
+            CmdResult::CommitAndExit(self.plane.place_entity(EntityType::Table(table)))
         } else {
             CmdResult::NeedPoint
         }
     }
 
-    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> { let pt = pt.as_vec3();
+    fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         if let Step::Insertion { cols, rows } = self.step {
             // Preview: outline of the table bounding box.
-            let w = (cols as f32) * COL_WIDTH as f32;
-            let h = (rows as f32) * ROW_HEIGHT as f32;
-            let x = pt.x;
-            let y = pt.y;
-            let z = pt.z;
+            let w = (cols as f32) * (self.column_width * self.preview_scale) as f32;
+            let h = (rows as f32) * (self.row_height * self.preview_scale) as f32;
+            let point = self.plane.to_local(pt);
+            let corners = [
+                point,
+                point + DVec3::X * w as f64,
+                point + DVec3::new(w as f64, -(h as f64), 0.0),
+                point - DVec3::Y * h as f64,
+            ]
+            .map(|corner| self.plane.to_world(corner).as_vec3().to_array());
+            let [p0, p1, p2, p3] = corners;
             Some(WireModel {
                 taper_widths: Vec::new(),
                 world_width: 0.0,
                 depth_override: None,
                 fill_is_3d: false,
+                fill_is_2d_solid: false,
                 pick_tris: Vec::new(),
                 pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -150,14 +211,7 @@ impl CadCommand for TableCommand {
             text_verts: Vec::new(),
                 name: "table_preview".into(),
                 points: vec![
-                    [x, y, z],
-                    [x + w, y, z],
-                    [x + w, y, z],
-                    [x + w, y, z - h],
-                    [x + w, y, z - h],
-                    [x, y, z - h],
-                    [x, y, z - h],
-                    [x, y, z],
+                    p0, p1, p1, p2, p2, p3, p3, p0,
                 ],
                 points_low: Vec::new(),
                 color: WireModel::CYAN,

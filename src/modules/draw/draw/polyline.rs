@@ -13,8 +13,9 @@ use acadrust::entities::LwVertex;
 use acadrust::types::Vector2;
 use acadrust::{EntityType, Handle, LwPolyline};
 use glam::{DVec2, DVec3, Vec2, Vec3};
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 
@@ -51,6 +52,7 @@ pub struct PlineCommand {
     /// document makes the partial polyline snappable while later vertices are
     /// being placed. (#119)
     live_handle: Option<Handle>,
+    plane: WorkingPlane,
 }
 
 impl PlineCommand {
@@ -61,6 +63,7 @@ impl PlineCommand {
             mode: SegMode::Line,
             last_tangent: None,
             live_handle: None,
+            plane: WorkingPlane::default(),
         }
     }
 
@@ -77,7 +80,11 @@ impl PlineCommand {
         // following Arc segment stays tangent-continuous.
         let n = self.vertices.len();
         self.last_tangent = if n >= 2 {
-            seg_exit_tangent(self.vertices[n - 2], self.vertices[n - 1], self.bulges[n - 2])
+            seg_exit_tangent(
+                self.plane.to_local(self.vertices[n - 2]),
+                self.plane.to_local(self.vertices[n - 1]),
+                self.bulges[n - 2],
+            )
         } else {
             None
         };
@@ -115,8 +122,12 @@ impl PlineCommand {
         if self.vertices.len() < 2 {
             return None;
         }
-        let lw_verts: Vec<LwVertex> = self
+        let local: Vec<DVec3> = self
             .vertices
+            .iter()
+            .map(|vertex| self.plane.to_local(*vertex))
+            .collect();
+        let lw_verts: Vec<LwVertex> = local
             .iter()
             .enumerate()
             .map(|(i, v)| {
@@ -127,10 +138,11 @@ impl PlineCommand {
             .collect();
         let pline = LwPolyline {
             vertices: lw_verts,
+            elevation: local.first().map_or(0.0, |point| point.z),
             is_closed: closed,
             ..Default::default()
         };
-        Some(EntityType::LwPolyline(pline))
+        Some(self.plane.place_entity(EntityType::LwPolyline(pline)))
     }
 }
 
@@ -249,22 +261,28 @@ pub(crate) fn arc_sample_points(a: Vec3, bulge: f64, b: Vec3, n: usize) -> Vec<[
 // ── CadCommand impl ────────────────────────────────────────────────────────
 
 impl CadCommand for PlineCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "PLINE"
     }
 
     fn prompt(&self) -> String {
         let mode_tag = match self.mode {
-            SegMode::Line => "Line",
-            SegMode::Arc => "Arc",
+            SegMode::Line => t!("Line"),
+            SegMode::Arc => t!("Arc"),
         };
         if self.vertices.is_empty() {
-            "PLINE  Specify start point:".into()
+            t!("PLINE  Specify start point:").into_owned()
         } else {
-            format!(
-                "PLINE [{mode_tag}]  Next pt  [{}pts]:",
-                self.vertices.len()
+            t!(
+                "PLINE [%{mode}]  Next pt  [%{count}pts]:",
+                mode = mode_tag,
+                count = self.vertices.len()
             )
+            .into_owned()
         }
     }
 
@@ -276,11 +294,11 @@ impl CadCommand for PlineCommand {
             Vec::new()
         } else {
             vec![
-                CmdOption::new("Arc", "A"),
-                CmdOption::new("Line", "L"),
-                CmdOption::new("Close", "C"),
-                CmdOption::new("Undo", "U"),
-                CmdOption::enter("Done"),
+                CmdOption::new(t!("Arc").as_ref(), "A"),
+                CmdOption::new(t!("Line").as_ref(), "L"),
+                CmdOption::new(t!("Close").as_ref(), "C"),
+                CmdOption::new(t!("Undo").as_ref(), "U"),
+                CmdOption::enter(t!("Done").as_ref()),
             ]
         }
     }
@@ -288,11 +306,13 @@ impl CadCommand for PlineCommand {
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
         if !self.vertices.is_empty() {
             let last = *self.vertices.last().unwrap();
+            let last_local = self.plane.to_local(last);
+            let pt_local = self.plane.to_local(pt);
             let last_idx = self.vertices.len() - 1;
 
             let bulge = match self.mode {
                 SegMode::Line => {
-                    let d = DVec2::new(pt.x - last.x, pt.y - last.y);
+                    let d = DVec2::new(pt_local.x - last_local.x, pt_local.y - last_local.y);
                     if d.length_squared() > 1e-10 {
                         // Direction only — f32 is sufficient for tangent continuity.
                         self.last_tangent = Some(d.normalize().as_vec2());
@@ -300,8 +320,8 @@ impl CadCommand for PlineCommand {
                     0.0
                 }
                 SegMode::Arc => {
-                    let a = DVec2::new(last.x, last.y);
-                    let b = DVec2::new(pt.x, pt.y);
+                    let a = DVec2::new(last_local.x, last_local.y);
+                    let b = DVec2::new(pt_local.x, pt_local.y);
                     let tangent = self
                         .last_tangent
                         .map(|t| t.as_dvec2())
@@ -414,11 +434,13 @@ impl CadCommand for PlineCommand {
     }
 
     fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
-        let pt = pt.as_vec3();
+        let pt_world = pt;
         // The committed vertices already render as a real document entity, so
         // the preview is just the pending segment from the last vertex to the
         // cursor. (#119)  Downcast to f32 for the pixel-space rubber band.
-        let last = self.vertices.last()?.as_vec3();
+        let last_world = *self.vertices.last()?;
+        let last = self.plane.to_local(last_world).as_vec3();
+        let pt = self.plane.to_local(pt_world).as_vec3();
 
         let mut pts: Vec<[f32; 3]> = Vec::new();
         match self.mode {
@@ -439,9 +461,13 @@ impl CadCommand for PlineCommand {
             }
         }
 
+        let world_points = pts
+            .into_iter()
+            .map(|point| self.plane.to_world(Vec3::from_array(point).as_dvec3()).as_vec3().to_array())
+            .collect();
         Some(WireModel::solid(
             "rubber_band".into(),
-            pts,
+            world_points,
             WireModel::CYAN,
             false,
         ))

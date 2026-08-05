@@ -9,8 +9,9 @@ use acadrust::entities::MLine;
 use acadrust::types::Vector3;
 use acadrust::EntityType;
 use glam::DVec3;
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::scene::model::wire_model::WireModel;
 
 pub struct MlineCommand {
@@ -18,6 +19,9 @@ pub struct MlineCommand {
     scale: f64,
     waiting_scale: bool,
     style_name: String,
+    style_handle: Option<acadrust::Handle>,
+    style_element_count: usize,
+    plane: WorkingPlane,
 }
 
 impl MlineCommand {
@@ -28,34 +32,53 @@ impl MlineCommand {
             scale: 1.0,
             waiting_scale: false,
             style_name: "Standard".into(),
+            style_handle: None,
+            style_element_count: 2,
+            plane: WorkingPlane::default(),
         }
     }
 
-    pub fn with_style(style_name: impl Into<String>) -> Self {
+    pub fn with_style(
+        style_name: impl Into<String>,
+        style_handle: Option<acadrust::Handle>,
+        style_element_count: usize,
+    ) -> Self {
         Self {
             points: vec![],
             scale: 1.0,
             waiting_scale: false,
             style_name: style_name.into(),
+            style_handle,
+            style_element_count: style_element_count.max(1),
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for MlineCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "MLINE"
     }
 
     fn prompt(&self) -> String {
         if self.waiting_scale {
-            "MLINE  Enter scale factor:".into()
+            t!("MLINE  Enter scale factor:").into_owned()
         } else if self.points.is_empty() {
-            format!("MLINE  Specify start point (scale={:.2}):", self.scale)
-        } else {
-            format!(
-                "MLINE  Specify next point ({} pts, Enter to finish, C to close, S to set scale):",
-                self.points.len()
+            t!(
+                "MLINE  Specify start point (scale=%{scale}):",
+                scale = format!("{:.2}", self.scale)
             )
+            .into_owned()
+        } else {
+            t!(
+                "MLINE  Specify next point (%{count} pts, Enter to finish, C to close, S to set scale):",
+                count = self.points.len()
+            )
+            .into_owned()
         }
     }
 
@@ -88,8 +111,19 @@ impl CadCommand for MlineCommand {
 
         // Close command
         if (up == "C" || up == "CLOSE") && self.points.len() >= 3 {
-            let entity = build_mline(&self.points, self.scale, true, &self.style_name);
-            return Some(CmdResult::CommitAndExit(entity));
+            let entity = build_mline(
+                &self
+                    .points
+                    .iter()
+                    .map(|point| self.plane.to_local(*point))
+                    .collect::<Vec<_>>(),
+                self.scale,
+                true,
+                &self.style_name,
+                self.style_handle,
+                self.style_element_count,
+            );
+            return Some(CmdResult::CommitAndExit(self.plane.place_entity(entity)));
         }
 
         // Scale: "S" alone → prompt for value
@@ -120,8 +154,19 @@ impl CadCommand for MlineCommand {
         if self.points.len() < 2 {
             return CmdResult::Cancel;
         }
-        let entity = build_mline(&self.points, self.scale, false, &self.style_name);
-        CmdResult::CommitAndExit(entity)
+        let entity = build_mline(
+            &self
+                .points
+                .iter()
+                .map(|point| self.plane.to_local(*point))
+                .collect::<Vec<_>>(),
+            self.scale,
+            false,
+            &self.style_name,
+            self.style_handle,
+            self.style_element_count,
+        );
+        CmdResult::CommitAndExit(self.plane.place_entity(entity))
     }
 
     fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
@@ -140,6 +185,7 @@ impl CadCommand for MlineCommand {
             world_width: 0.0,
             depth_override: None,
             fill_is_3d: false,
+            fill_is_2d_solid: false,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -165,18 +211,25 @@ impl CadCommand for MlineCommand {
     }
 }
 
-fn build_mline(pts: &[DVec3], scale: f64, closed: bool, style_name: &str) -> EntityType {
-    let verts: Vec<Vector3> = pts
-        .iter()
-        .map(|p| Vector3::new(p.x, p.y, p.z))
-        .collect();
-    let mut mline = if closed {
-        MLine::closed_from_points(&verts)
-    } else {
-        MLine::from_points(&verts)
-    };
+fn build_mline(
+    pts: &[DVec3],
+    scale: f64,
+    closed: bool,
+    style_name: &str,
+    style_handle: Option<acadrust::Handle>,
+    style_element_count: usize,
+) -> EntityType {
+    let mut mline = MLine::new();
     mline.scale_factor = scale;
     mline.style_name = style_name.to_string();
+    mline.style_handle = style_handle;
+    mline.style_element_count = style_element_count;
+    for point in pts {
+        mline.add_vertex(Vector3::new(point.x, point.y, point.z));
+    }
+    if closed {
+        mline.close();
+    }
     EntityType::MLine(mline)
 }
 

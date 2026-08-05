@@ -15,10 +15,12 @@ use acadrust::types::{Color as AcadColor, LineWeight};
 use acadrust::Handle;
 use iced::widget::{
     button, canvas, column, combo_box, container, mouse_area, row, scrollable, text, text_input,
+    tooltip, Space,
 };
 use iced::{
     mouse, Background, Border, Color, Element, Length, Padding, Point, Rectangle, Size, Theme,
 };
+use crate::t;
 
 // ── Row-height-derived constants ─────────────────────────────────────────
 const FONT_SZ: f32 = ROW_H * 0.42; // ≈11 px
@@ -60,9 +62,9 @@ pub struct LwItem(pub LineWeight);
 impl fmt::Display for LwItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            LineWeight::ByLayer => write!(f, "ByLayer"),
-            LineWeight::ByBlock => write!(f, "ByBlock"),
-            LineWeight::Default => write!(f, "Default"),
+            LineWeight::ByLayer => write!(f, "{}", crate::t!("ByLayer")),
+            LineWeight::ByBlock => write!(f, "{}", crate::t!("ByBlock")),
+            LineWeight::Default => write!(f, "{}", crate::t!("Default")),
             LineWeight::Value(v) => write!(f, "{:.2} mm", v as f64 / 100.0),
         }
     }
@@ -244,6 +246,27 @@ pub fn attr_edit_key(tag: &str) -> String {
     format!("\x01attr\x01{tag}")
 }
 
+/// A translated choice label paired with the unchanged value stored in the
+/// drawing and emitted by the properties panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalizedChoice {
+    pub raw: String,
+    label: String,
+}
+
+impl LocalizedChoice {
+    pub fn new(raw: String) -> Self {
+        let label = crate::i18n::translate(&raw).into_owned();
+        Self { raw, label }
+    }
+}
+
+impl fmt::Display for LocalizedChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
 // ── PropertiesPanel ───────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -255,7 +278,7 @@ pub struct PropertiesPanel {
     /// Linetype items (name + ASCII art) from the document — used for combo_box options.
     pub linetype_items: Vec<LinetypeItem>,
     pub selection_group_combo: combo_box::State<SelectionGroup>,
-    pub choice_combos: HashMap<String, combo_box::State<String>>,
+    pub choice_combos: HashMap<String, combo_box::State<LocalizedChoice>>,
     pub layer_combo: combo_box::State<String>,
     pub lineweight_combo: combo_box::State<LwItem>,
     pub linetype_combo: combo_box::State<LinetypeItem>,
@@ -333,7 +356,7 @@ impl Default for PropertiesPanel {
 impl PropertiesPanel {
     pub fn empty() -> Self {
         Self {
-            title: "No Selection".into(),
+            title: t!("No selection").into_owned(),
             ..Default::default()
         }
     }
@@ -345,9 +368,54 @@ impl PropertiesPanel {
             .unwrap_or_default()
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, width: f32, auto_collapse: bool) -> Element<'_, Message> {
         // ── Header ──────────────────────────────────────────────────────────
-        let header = container(text("Properties").size(12))
+        let pin_icon = if auto_collapse {
+            crate::ui::icons::themed_primary_weak_text(crate::ui::icons::PIN, 12.0)
+        } else {
+            crate::ui::icons::themed_secondary(crate::ui::icons::PIN, 12.0)
+        };
+        let pin = button(pin_icon)
+            .on_press(Message::PropertiesAutoCollapseToggle)
+            .style(move |theme: &Theme, status| {
+                let mut style = button::subtle(theme, status);
+                if auto_collapse {
+                    let palette = theme.palette();
+                    style.background = Some(Background::Color(palette.primary.weak.color));
+                    style.text_color = palette.primary.weak.text;
+                    style.border.color = palette.primary.base.color;
+                    style.border.width = 1.0;
+                }
+                style
+            })
+            .padding([3, 5]);
+        let pin = tooltip(pin, text(t!("Auto")).size(10), tooltip::Position::Bottom).gap(4);
+
+        let close = button(crate::ui::icons::themed_secondary(
+            crate::ui::icons::CLOSE,
+            12.0,
+        ))
+        .on_press(Message::PropertiesClose)
+        .style(button::subtle)
+        .padding([3, 5]);
+        let close = tooltip(
+            close,
+            text(t!("Close")).size(10),
+            tooltip::Position::Bottom,
+        )
+        .gap(4);
+
+        let header = mouse_area(
+            container(
+                row![
+                    text(t!("Properties")).size(12),
+                    Space::new().width(Length::Fill),
+                    pin,
+                    close,
+                ]
+                .spacing(3)
+                .align_y(iced::Center),
+            )
             .style(|theme: &Theme| container::Style {
                 background: Some(Background::Color(
                     theme.palette().background.weak.color,
@@ -355,7 +423,10 @@ impl PropertiesPanel {
                 ..Default::default()
             })
             .width(Length::Fill)
-            .padding([6, 10]);
+            .padding([3, 6]),
+        )
+        .on_press(Message::PropertiesDockGrab)
+        .interaction(iced::mouse::Interaction::Grab);
 
         // ── Title bar (entity type / "No Selection") ─────────────────────
         let title_content: Element<'_, Message> = if self.selection_groups.is_empty() {
@@ -397,7 +468,7 @@ impl PropertiesPanel {
         // ── Content ─────────────────────────────────────────────────────────
         let content: Element<'_, Message> = if self.sections.is_empty() {
             container(
-                text("Select an object to view properties")
+                text(t!("Select an object to view properties"))
                     .size(10)
                     .style(hint_text_style),
             )
@@ -424,7 +495,7 @@ impl PropertiesPanel {
                 ..Default::default()
                 }
             })
-            .width(250)
+            .width(Length::Fixed(width))
             .height(Length::Fill)
             .into()
     }
@@ -433,7 +504,7 @@ impl PropertiesPanel {
     /// editable section rows as the docked panel, sized to its content.
     /// Returns `None` when nothing is selected.
     pub fn quick_view(&self) -> Option<Element<'_, Message>> {
-        if self.sections.is_empty() {
+        if self.source_handles.is_empty() || self.sections.is_empty() {
             return None;
         }
         let title = container(
@@ -456,13 +527,15 @@ impl PropertiesPanel {
             .width(Length::Fill)
             .padding([4, 10]);
 
-        let mut col = column![title].spacing(0);
+        let mut sections = column![].spacing(0);
         for section in &self.sections {
-            col = col.push(self.render_section(section));
+            sections = sections.push(self.render_section(section));
         }
 
+        let content = scrollable(sections).height(Length::Shrink);
+
         Some(
-            container(col)
+            container(column![title, content].spacing(0))
                 .style(|theme: &Theme| {
                     let palette = theme.palette();
                     container::Style {
@@ -823,10 +896,13 @@ impl PropertiesPanel {
         let selected = if current == VARIES_LABEL {
             None
         } else {
-            Some(current.to_string())
+            Some(LocalizedChoice::new(current.to_string()))
         };
-        let combo = combo_box(state, VARIES_LABEL, selected.as_ref(), move |value| {
-            Message::PropGeomChoiceChanged { field, value }
+        let combo = combo_box(state, VARIES_LABEL, selected.as_ref(), move |choice| {
+            Message::PropGeomChoiceChanged {
+                field,
+                value: choice.raw,
+            }
         })
         .size(FONT_SZ)
         .padding(Padding {
@@ -1058,7 +1134,7 @@ impl PropertiesPanel {
             return prop_row_widget(label, head.into());
         }
 
-        let search = text_input("Search patterns…", &self.hatch_pattern_search)
+        let search = text_input(t!("Search patterns…").as_ref(), &self.hatch_pattern_search)
             .id(iced::widget::Id::new("hatch-pattern-search"))
             .on_input(Message::PropHatchPatternSearchChanged)
             .on_submit(Message::PropHatchPatternConfirm)
@@ -1127,7 +1203,7 @@ impl PropertiesPanel {
 
         let results: Element<'_, Message> = if visible.is_empty() {
             container(
-                text("No matching patterns")
+                text(t!("No matching patterns"))
                     .size(FONT_SZ)
                     .style(hint_text_style),
             )
@@ -1227,9 +1303,13 @@ pub fn color_picker_dropdown<'a>(
             } else {
                 crate::ui::icons::themed_arrow_down(9.0)
             },
-            text(if palette_open { "Less" } else { "More Colors…" })
-                .size(10)
-                .style(hint_text_style),
+            text(if palette_open {
+                t!("Less").into_owned()
+            } else {
+                t!("More Colors…").into_owned()
+            })
+            .size(10)
+            .style(hint_text_style),
         ]
         .spacing(4)
         .align_y(iced::Center),
@@ -1365,7 +1445,11 @@ fn render_stepper_row<'a>(label: &'a str, display: &'a str) -> Element<'a, Messa
 }
 
 fn render_bool_row<'a>(label: &'a str, field: &'static str, value: bool) -> Element<'a, Message> {
-    let btn_label = if value { "Yes" } else { "No" };
+    let btn_label = if value {
+        t!("Yes").into_owned()
+    } else {
+        t!("No").into_owned()
+    };
     let btn =
         button(
             text(btn_label)
@@ -1617,7 +1701,7 @@ fn prop_row_widget<'a>(label: &'a str, widget: Element<'a, Message>) -> Element<
 
 /// A plain text button used inside the color picker for ByLayer / ByBlock.
 fn picker_text_btn(label: &str, msg: Message) -> Element<'_, Message> {
-    button(text(label).size(FONT_SZ))
+    button(text(t!(label)).size(FONT_SZ))
         .on_press(msg)
         .style(button::secondary)
         .padding([2, 8])

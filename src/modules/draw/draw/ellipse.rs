@@ -7,8 +7,9 @@
 
 use acadrust::types::Vector3;
 use acadrust::{Ellipse, EntityType};
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult};
+use crate::command::{CadCommand, CmdResult, WorkingPlane};
 use crate::modules::IconKind;
 use crate::scene::model::wire_model::WireModel;
 use glam::DVec3;
@@ -56,13 +57,14 @@ fn ellipse_wire(
     ratio: f64,   // minor/major
     t_start: f64,
     t_end: f64,
+    plane: WorkingPlane,
 ) -> WireModel {
     let r_major = major.length();
     if r_major < 1e-9 {
         return WireModel::solid("rubber_band".into(), vec![], WireModel::CYAN, false);
     }
     let major_dir = major / r_major;
-    let v = DVec3::Z.cross(major_dir).normalize();
+    let v = plane.z.cross(major_dir).normalize_or(plane.y);
     let segs = 64u32;
     // Unwrap t_end so the arc goes counter-clockwise.
     let t_e = if t_end <= t_start { t_end + TAU } else { t_end };
@@ -87,13 +89,21 @@ fn param_angle(center: DVec3, major_dir: DVec3, v: DVec3, pt: DVec3, ratio: f64)
 }
 
 /// Build the final Ellipse entity.
-fn make_ellipse(center: DVec3, major: DVec3, ratio: f64, t_start: f64, t_end: f64) -> Ellipse {
+fn make_ellipse(
+    center: DVec3,
+    major: DVec3,
+    ratio: f64,
+    t_start: f64,
+    t_end: f64,
+    plane: WorkingPlane,
+) -> Ellipse {
     Ellipse {
         center: Vector3::new(center.x, center.y, center.z),
         major_axis: Vector3::new(major.x, major.y, major.z),
         minor_axis_ratio: ratio,
         start_parameter: t_start,
         end_parameter: t_end,
+        normal: Vector3::new(plane.z.x, plane.z.y, plane.z.z),
         ..Default::default()
     }
 }
@@ -109,29 +119,36 @@ enum CtrStep {
 
 pub struct EllipseCommand {
     step: CtrStep,
+    plane: WorkingPlane,
 }
 
 impl EllipseCommand {
     pub fn new() -> Self {
         Self {
             step: CtrStep::Center,
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for EllipseCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "ELLIPSE"
     }
 
     fn prompt(&self) -> String {
         match &self.step {
-            CtrStep::Center => "ELLIPSE  Specify center:".into(),
-            CtrStep::MajorAxis { .. } => "ELLIPSE  Specify major axis endpoint:".into(),
-            CtrStep::MinorRatio { major, .. } => format!(
+            CtrStep::Center => t!("ELLIPSE  Specify center:").into_owned(),
+            CtrStep::MajorAxis { .. } => t!("ELLIPSE  Specify major axis endpoint:").into_owned(),
+            CtrStep::MinorRatio { major, .. } => crate::tf!(
                 "ELLIPSE  Specify minor axis point or type half-length  [major r={:.3}]:",
                 major.length()
-            ),
+            )
+            .into_owned(),
         }
     }
 
@@ -168,7 +185,7 @@ impl CadCommand for EllipseCommand {
                 let (center, major) = (*center, *major);
                 let ratio = minor_ratio(center, major, pt);
                 CmdResult::CommitAndExit(EntityType::Ellipse(make_ellipse(
-                    center, major, ratio, 0.0, TAU,
+                    center, major, ratio, 0.0, TAU, self.plane,
                 )))
             }
         }
@@ -193,7 +210,7 @@ impl CadCommand for EllipseCommand {
             if r_minor > 0.0 {
                 let ratio = (r_minor / major.length()).clamp(1e-6, 1.0);
                 return Some(CmdResult::CommitAndExit(EntityType::Ellipse(make_ellipse(
-                    *center, *major, ratio, 0.0, TAU,
+                    *center, *major, ratio, 0.0, TAU, self.plane,
                 ))));
             }
         }
@@ -205,7 +222,7 @@ impl CadCommand for EllipseCommand {
             CtrStep::MajorAxis { center } => Some(line_wire(*center, pt)),
             CtrStep::MinorRatio { center, major } => {
                 let ratio = minor_ratio(*center, *major, pt).max(0.001);
-                Some(ellipse_wire(*center, *major, ratio, 0.0, TAU))
+                Some(ellipse_wire(*center, *major, ratio, 0.0, TAU, self.plane))
             }
             _ => None,
         }
@@ -248,29 +265,40 @@ enum AxisStep {
 
 pub struct EllipseAxisCommand {
     step: AxisStep,
+    plane: WorkingPlane,
 }
 
 impl EllipseAxisCommand {
     pub fn new() -> Self {
         Self {
             step: AxisStep::Pt1,
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for EllipseAxisCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "ELLIPSE_AXIS"
     }
 
     fn prompt(&self) -> String {
         match &self.step {
-            AxisStep::Pt1 => "ELLIPSE (Axis)  Specify first endpoint of major axis:".into(),
-            AxisStep::Pt2 { .. } => "ELLIPSE (Axis)  Specify second endpoint of major axis:".into(),
-            AxisStep::MinorRatio { major, .. } => format!(
+            AxisStep::Pt1 => {
+                t!("ELLIPSE (Axis)  Specify first endpoint of major axis:").into_owned()
+            }
+            AxisStep::Pt2 { .. } => {
+                t!("ELLIPSE (Axis)  Specify second endpoint of major axis:").into_owned()
+            }
+            AxisStep::MinorRatio { major, .. } => crate::tf!(
                 "ELLIPSE (Axis)  Specify minor axis point or type half-length  [major r={:.3}]:",
                 major.length()
-            ),
+            )
+            .into_owned(),
         }
     }
 
@@ -290,7 +318,7 @@ impl CadCommand for EllipseAxisCommand {
                 let (center, major) = (*center, *major);
                 let ratio = minor_ratio(center, major, pt);
                 CmdResult::CommitAndExit(EntityType::Ellipse(make_ellipse(
-                    center, major, ratio, 0.0, TAU,
+                    center, major, ratio, 0.0, TAU, self.plane,
                 )))
             }
         }
@@ -306,7 +334,7 @@ impl CadCommand for EllipseAxisCommand {
             if r_minor > 0.0 {
                 let ratio = (r_minor / major.length()).clamp(1e-6, 1.0);
                 return Some(CmdResult::CommitAndExit(EntityType::Ellipse(make_ellipse(
-                    *center, *major, ratio, 0.0, TAU,
+                    *center, *major, ratio, 0.0, TAU, self.plane,
                 ))));
             }
         }
@@ -319,7 +347,7 @@ impl CadCommand for EllipseAxisCommand {
             AxisStep::Pt2 { p1 } => Some(line_wire(*p1, pt)),
             AxisStep::MinorRatio { center, major } => {
                 let ratio = minor_ratio(*center, *major, pt).max(0.001);
-                Some(ellipse_wire(*center, *major, ratio, 0.0, TAU))
+                Some(ellipse_wire(*center, *major, ratio, 0.0, TAU, self.plane))
             }
         }
     }
@@ -378,6 +406,7 @@ pub struct EllipseArcCommand {
     step: ArcStep,
     prev_pt: Option<DVec3>,
     cw: bool,
+    plane: WorkingPlane,
 }
 
 impl EllipseArcCommand {
@@ -386,30 +415,43 @@ impl EllipseArcCommand {
             step: ArcStep::Center,
             prev_pt: None,
             cw: false,
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for EllipseArcCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "ELLIPSE_ARC"
     }
 
     fn prompt(&self) -> String {
         match &self.step {
-            ArcStep::Center => "ELLIPSE ARC  Specify center:".into(),
-            ArcStep::MajorAxis { .. } => "ELLIPSE ARC  Specify major axis endpoint:".into(),
-            ArcStep::MinorRatio { major, .. } => format!(
-                "ELLIPSE ARC  Specify minor axis point or type half-length  [major r={:.3}]:",
-                major.length()
-            ),
-            ArcStep::StartAngle { .. } => {
-                "ELLIPSE ARC  Specify start angle point or type degrees:".into()
+            ArcStep::Center => t!("ELLIPSE ARC  Specify center:").into_owned(),
+            ArcStep::MajorAxis { .. } => t!("ELLIPSE ARC  Specify major axis endpoint:").into_owned(),
+            ArcStep::MinorRatio { major, .. } => {
+                let r = format!("{:.3}", major.length());
+                t!(
+                    "ELLIPSE ARC  Specify minor axis point or type half-length  [major r=%{r}]:",
+                    r = r
+                )
+                .into_owned()
             }
-            ArcStep::EndAngle { t_start, .. } => format!(
-                "ELLIPSE ARC  Specify end angle point or type degrees  [start={:.1}°]:",
-                t_start.to_degrees()
-            ),
+            ArcStep::StartAngle { .. } => {
+                t!("ELLIPSE ARC  Specify start angle point or type degrees:").into_owned()
+            }
+            ArcStep::EndAngle { t_start, .. } => {
+                let sa = format!("{:.1}°", t_start.to_degrees());
+                t!(
+                    "ELLIPSE ARC  Specify end angle point or type degrees  [start=%{sa}]:",
+                    sa = sa
+                )
+                .into_owned()
+            }
         }
     }
 
@@ -443,7 +485,7 @@ impl CadCommand for EllipseArcCommand {
                 ratio,
             } => {
                 let (center, major, ratio) = (*center, *major, *ratio);
-                let t_start = angle_from_point(center, major, ratio, pt);
+                let t_start = angle_from_point(center, major, ratio, pt, self.plane);
                 self.prev_pt = None; // reset direction tracking for end-angle step
                 self.step = ArcStep::EndAngle {
                     center,
@@ -460,11 +502,11 @@ impl CadCommand for EllipseArcCommand {
                 t_start,
             } => {
                 let (center, major, ratio, t_start) = (*center, *major, *ratio, *t_start);
-                let t_end = angle_from_point(center, major, ratio, pt);
+                let t_end = angle_from_point(center, major, ratio, pt, self.plane);
                 let entity = if self.cw {
-                    make_ellipse(center, major, ratio, t_end, t_start)
+                    make_ellipse(center, major, ratio, t_end, t_start, self.plane)
                 } else {
-                    make_ellipse(center, major, ratio, t_start, t_end)
+                    make_ellipse(center, major, ratio, t_start, t_end, self.plane)
                 };
                 CmdResult::CommitAndExit(EntityType::Ellipse(entity))
             }
@@ -515,7 +557,7 @@ impl CadCommand for EllipseArcCommand {
                 // Typed degrees: positive = CCW, negative = CW.
                 let t_end = val.to_radians();
                 return Some(CmdResult::CommitAndExit(EntityType::Ellipse(make_ellipse(
-                    *center, *major, *ratio, *t_start, t_end,
+                    *center, *major, *ratio, *t_start, t_end, self.plane,
                 ))));
             }
             _ => {}
@@ -528,7 +570,7 @@ impl CadCommand for EllipseArcCommand {
             ArcStep::MajorAxis { center } => Some(line_wire(*center, pt)),
             ArcStep::MinorRatio { center, major } => {
                 let ratio = minor_ratio(*center, *major, pt).max(0.001);
-                Some(ellipse_wire(*center, *major, ratio, 0.0, TAU))
+                Some(ellipse_wire(*center, *major, ratio, 0.0, TAU, self.plane))
             }
             ArcStep::StartAngle { center, .. } => {
                 // Only the start angle is being chosen here — show a line from
@@ -549,8 +591,8 @@ impl CadCommand for EllipseArcCommand {
                 // tolerance ignores jitter; the reference advances only on a
                 // clear move so slow sweeps accumulate.
                 if let Some(prev) = self.prev_pt {
-                    let t_prev = angle_from_point(*center, *major, *ratio, prev);
-                    let t_cur = angle_from_point(*center, *major, *ratio, pt);
+                    let t_prev = angle_from_point(*center, *major, *ratio, prev, self.plane);
+                    let t_cur = angle_from_point(*center, *major, *ratio, pt, self.plane);
                     let mut d = t_cur - t_prev;
                     while d > std::f64::consts::PI {
                         d -= TAU;
@@ -565,11 +607,11 @@ impl CadCommand for EllipseArcCommand {
                 } else {
                     self.prev_pt = Some(pt);
                 }
-                let t_end = angle_from_point(*center, *major, *ratio, pt);
+                let t_end = angle_from_point(*center, *major, *ratio, pt, self.plane);
                 Some(if self.cw {
-                    ellipse_wire(*center, *major, *ratio, t_end, *t_start)
+                    ellipse_wire(*center, *major, *ratio, t_end, *t_start, self.plane)
                 } else {
-                    ellipse_wire(*center, *major, *ratio, *t_start, t_end)
+                    ellipse_wire(*center, *major, *ratio, *t_start, t_end, self.plane)
                 })
             }
             _ => None,
@@ -623,13 +665,19 @@ fn minor_ratio(center: DVec3, major: DVec3, pt: DVec3) -> f64 {
     (r_minor / r_major).clamp(1e-6, 1.0)
 }
 
-fn angle_from_point(center: DVec3, major: DVec3, ratio: f64, pt: DVec3) -> f64 {
+fn angle_from_point(
+    center: DVec3,
+    major: DVec3,
+    ratio: f64,
+    pt: DVec3,
+    plane: WorkingPlane,
+) -> f64 {
     let r_major = major.length();
     if r_major < 1e-9 {
         return 0.0;
     }
     let major_dir = major / r_major;
-    let v = DVec3::Z.cross(major_dir).normalize();
+    let v = plane.z.cross(major_dir).normalize_or(plane.y);
     param_angle(center, major_dir, v, pt, ratio)
 }
 

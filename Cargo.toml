@@ -1,6 +1,6 @@
 [package]
 name = "OpenCADStudio"
-version = "0.9.1"
+version = "0.9.3"
 edition = "2021"
 build = "build.rs"
 
@@ -48,6 +48,7 @@ rust-embed = "8"
 inventory = "0.3"
 truck-shapeops = { version = "0.4", optional = true }
 rustc-hash = "2"
+sha2 = "0.10"
 fontdb = "0.23"
 ttf-parser = "0.25"
 cosmic-text = "0.15"
@@ -64,7 +65,7 @@ windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_Window
 ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "wayland"] }
 
 [patch.crates-io]
-acadrust = { git = "https://github.com/OpenAEC-Foundation/acadifc.git", rev = "78b57b0" }
+acadrust = { git = "https://github.com/OpenAEC-Foundation/acadifc.git", rev = "ab388a7" }
 iced_core = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
 iced_widget = { git = "https://github.com/iced-rs/iced.git", rev = "23604ff22ab0aad9e00b9327cb7b8546ed84db39" }
 
@@ -83,6 +84,7 @@ pid-parse = { path = "../pid-parse" }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ocs_plugin_api = { path = "crates/ocs_plugin_api" }
 i18n-embed = { version = "0.16", features = ["web-sys-requester"] }
+rust-embed = { version = "8", features = ["debug-embed"] }
 console_error_panic_hook = "0.1"
 # ahash (via acadrust) pulls getrandom 0.3, which needs the `wasm_js` backend
 # enabled to support wasm32-unknown-unknown (plus the matching rustflag in

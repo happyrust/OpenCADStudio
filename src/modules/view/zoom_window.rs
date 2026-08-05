@@ -1,6 +1,7 @@
 // ZOOM WINDOW command — pick two corners to define the zoom area.
 
 use glam::{DVec3, Vec3};
+use crate::t;
 
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
@@ -36,9 +37,9 @@ impl CadCommand for ZoomWindowCommand {
 
     fn prompt(&self) -> String {
         if self.first.is_none() {
-            "ZOOM WINDOW  Specify first corner:".into()
+            t!("ZOOM WINDOW  Specify first corner:").into_owned()
         } else {
-            "ZOOM WINDOW  Specify opposite corner:".into()
+            t!("ZOOM WINDOW  Specify opposite corner:").into_owned()
         }
     }
 
@@ -76,6 +77,7 @@ impl CadCommand for ZoomWindowCommand {
             world_width: 0.0,
             depth_override: None,
             fill_is_3d: false,
+            fill_is_2d_solid: false,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,

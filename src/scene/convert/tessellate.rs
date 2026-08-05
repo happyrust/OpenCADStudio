@@ -376,6 +376,7 @@ pub fn tessellate(
                     world_width: 0.0,
                     depth_override: None,
                     fill_is_3d: false,
+                    fill_is_2d_solid: false,
                     pick_tris: Vec::new(),
                     pick_tris_low: Vec::new(),
                     // MLINE dashes: A-type aligned, but the end-dash length is
@@ -487,17 +488,19 @@ pub fn tessellate(
                 };
 
                 let anno = anno_scale as f64;
-                // SDF text is decided PER GROUP by whether the group carries a
-                // `GlyphRun`: a run-group renders as textured quads (built
-                // below) so its strokes are suppressed; a run-less group keeps
-                // its strokes. TEXT / MTEXT / dim / block / mleader text are all
-                // run-groups → fully SDF; a composite object that packs geometry
-                // and text into one Text object (a tolerance frame: box lines =
-                // run-less, cell text = run-groups) keeps the geometry as
-                // strokes and draws only the text as SDF.
+                // Run groups normally render as textured quads. Web runs that
+                // require bidi or joined-script shaping keep their already
+                // shaped vector geometry because the per-glyph SDF path has no
+                // cluster-position data.
                 for group in stroke_groups
                     .iter()
-                    .filter(|g| force_text_strokes || g.run.is_none())
+                    .filter(|group| {
+                        force_text_strokes
+                            || group.run.is_none()
+                            || group.run.as_ref().is_some_and(|run| {
+                                crate::scene::text::web_font::requires_shaping(&run.text)
+                            })
+                    })
                 {
                     let lx_v = group.origin[0];
                     let ly_v = group.origin[1];
@@ -548,6 +551,9 @@ pub fn tessellate(
                         // colours (bin key) win, falling back to entity colour.
                         for group in &stroke_groups {
                             let Some(run) = &group.run else { continue };
+                            if crate::scene::text::web_font::requires_shaping(&run.text) {
+                                continue;
+                            }
                             let slx_v = (group.origin[0] - ref_lx_v) * anno + ref_lx_v;
                             let sly_v = (group.origin[1] - ref_ly_v) * anno + ref_ly_v;
                             // Base colour only (inline `\C` wins). Selection /
@@ -669,6 +675,7 @@ pub fn tessellate(
                                         world_width: 0.0,
                                         depth_override: None,
                                         fill_is_3d: false,
+                                        fill_is_2d_solid: false,
                                         pick_tris: Vec::new(),
                                         pick_tris_low: Vec::new(),
                                         dash_from_start: false,
@@ -709,6 +716,7 @@ pub fn tessellate(
                                         world_width: 0.0,
                                         depth_override: None,
                                         fill_is_3d: false,
+                                        fill_is_2d_solid: false,
                                         pick_tris: Vec::new(),
                                         pick_tris_low: Vec::new(),
                                         dash_from_start: false,
@@ -756,6 +764,7 @@ pub fn tessellate(
                             world_width: 0.0,
                             depth_override: None,
                             fill_is_3d: false,
+                            fill_is_2d_solid: false,
                             pick_tris: Vec::new(),
                             pick_tris_low: Vec::new(),
                             dash_from_start: false,
@@ -784,6 +793,7 @@ pub fn tessellate(
                         world_width: 0.0,
                         depth_override: None,
                         fill_is_3d: false,
+                        fill_is_2d_solid: false,
                         pick_tris: Vec::new(),
                         pick_tris_low: Vec::new(),
                         dash_from_start: false,
@@ -842,6 +852,7 @@ pub fn tessellate(
                             world_width: 0.0,
                             depth_override: None,
                             fill_is_3d: false,
+                            fill_is_2d_solid: false,
                             pick_tris: Vec::new(),
                             pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -882,6 +893,7 @@ pub fn tessellate(
                             world_width: 0.0,
                             depth_override: None,
                             fill_is_3d: false,
+                            fill_is_2d_solid: false,
                             pick_tris: Vec::new(),
                             pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -919,6 +931,7 @@ pub fn tessellate(
                         world_width: 0.0,
                         depth_override: None,
                         fill_is_3d: false,
+                        fill_is_2d_solid: false,
                         pick_tris: Vec::new(),
                         pick_tris_low: Vec::new(),
                         dash_from_start: false,
@@ -949,6 +962,7 @@ pub fn tessellate(
                         world_width: 0.0,
                         depth_override: None,
                         fill_is_3d: false,
+                        fill_is_2d_solid: false,
                         pick_tris: Vec::new(),
                         pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -1001,6 +1015,7 @@ pub fn tessellate(
                             world_width: 0.0,
                             depth_override: None,
                             fill_is_3d: false,
+                            fill_is_2d_solid: false,
                             pick_tris: Vec::new(),
                             pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -1052,6 +1067,7 @@ pub fn tessellate(
                         world_width: 0.0,
                         depth_override: None,
                         fill_is_3d: false,
+                        fill_is_2d_solid: false,
                         pick_tris: Vec::new(),
                         pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -1096,6 +1112,7 @@ pub fn tessellate(
                         world_width: polyline_band_width(entity),
                         depth_override: None,
                         fill_is_3d: false,
+                        fill_is_2d_solid: false,
                         pick_tris,
                         pick_tris_low,
             dash_from_start: false,
@@ -1189,6 +1206,7 @@ pub fn tessellate(
                         world_width: 0.0,
                         depth_override: None,
                         fill_is_3d: false,
+                        fill_is_2d_solid: false,
                         pick_tris,
                         pick_tris_low,
             dash_from_start: false,
@@ -1248,6 +1266,7 @@ pub fn tessellate(
                         fill_tris,
                         fill_tris_low,
                         fill_is_3d,
+                        fill_is_2d_solid: matches!(entity, EntityType::Solid(_)),
                         depth_override: None,
                     });
                 }
@@ -1258,6 +1277,7 @@ pub fn tessellate(
                         world_width: 0.0,
                         depth_override: None,
                         fill_is_3d: false,
+                        fill_is_2d_solid: false,
                         pick_tris: Vec::new(),
                         pick_tris_low: Vec::new(),
             dash_from_start: false,
@@ -1301,6 +1321,7 @@ pub fn tessellate(
                     world_width: polyline_band_width(entity),
                     depth_override: None,
                     fill_is_3d: false,
+                    fill_is_2d_solid: false,
                     pick_tris,
                     pick_tris_low,
             dash_from_start: false,
@@ -1345,6 +1366,7 @@ pub fn tessellate(
                     world_width,
                     depth_override: None,
                     fill_is_3d: false,
+                    fill_is_2d_solid: false,
                     pick_tris,
                     pick_tris_low,
                     dash_from_start: false,
@@ -1477,6 +1499,7 @@ pub fn tessellate(
         world_width: 0.0,
         depth_override: None,
         fill_is_3d: false,
+        fill_is_2d_solid: false,
         pick_tris,
         pick_tris_low,
             dash_from_start: false,
@@ -1536,28 +1559,6 @@ pub(crate) fn arrow_from_block(
     }
     custom_arrow_from_block(doc, record, dimasz)
         .unwrap_or_else(|| arrow_from_block_name(None, dimasz))
-}
-
-pub(crate) fn arrow_block_is_custom(
-    doc: &CadDocument,
-    handle: acadrust::types::Handle,
-) -> bool {
-    if handle.is_null() {
-        return false;
-    }
-    doc.block_records
-        .iter()
-        .find(|record| record.handle == handle)
-        .is_some_and(|record| {
-            !record.entity_handles.is_empty()
-                && !record.is_layout()
-                && !record.is_model_space()
-                && !record.is_paper_space()
-                && !record.flags.is_xref
-                && !record.flags.is_xref_overlay
-                && !record.flags.is_external
-                && builtin_arrow_from_block_name(&record.name, 1.0).is_none()
-        })
 }
 
 fn arrow_from_block_name(name: Option<&str>, dimasz: f32) -> ArrowKind {
@@ -1742,6 +1743,10 @@ fn collect_custom_arrow_entity(
             stack.pop();
             return;
         }
+        EntityType::Hatch(hatch) => {
+            append_custom_hatch_fill(hatch, root_base, fill);
+            return;
+        }
         _ => {}
     }
 
@@ -1764,6 +1769,69 @@ fn collect_custom_arrow_entity(
         append_custom_wire_points(&wire.points, &wire.points_low, root_base, lines);
         append_custom_fill_points(&wire.fill_tris, &wire.fill_tris_low, root_base, fill);
     }
+}
+
+fn append_custom_hatch_fill(
+    hatch: &acadrust::entities::Hatch,
+    base: acadrust::types::Vector3,
+    out: &mut Vec<[f32; 3]>,
+) {
+    use lyon_tessellation::math::point;
+    use lyon_tessellation::path::Path;
+    use lyon_tessellation::{
+        BuffersBuilder, FillOptions, FillRule, FillTessellator, FillVertex, VertexBuffers,
+    };
+
+    let Some(model) = crate::scene::Scene::hatch_model_from_dxf(hatch, [1.0; 4]) else {
+        return;
+    };
+
+    let mut builder = Path::builder();
+    let mut ring: Vec<[f32; 2]> = Vec::new();
+    let mut finish_ring = |ring: &mut Vec<[f32; 2]>| {
+        if ring.len() >= 3 {
+            builder.begin(point(ring[0][0], ring[0][1]));
+            for p in &ring[1..] {
+                builder.line_to(point(p[0], p[1]));
+            }
+            builder.end(true);
+        }
+        ring.clear();
+    };
+    for &[x, y] in model.boundary.iter() {
+        if x.is_nan() || y.is_nan() {
+            finish_ring(&mut ring);
+            continue;
+        }
+        ring.push([
+            (model.world_origin[0] + x as f64 - base.x) as f32,
+            (model.world_origin[1] + y as f64 - base.y) as f32,
+        ]);
+    }
+    finish_ring(&mut ring);
+
+    let mut geometry: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
+    let mut tessellator = FillTessellator::new();
+    if tessellator
+        .tessellate_path(
+            &builder.build(),
+            &FillOptions::default().with_fill_rule(FillRule::EvenOdd),
+            &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| {
+                vertex.position().to_array()
+            }),
+        )
+        .is_err()
+    {
+        return;
+    }
+    let z = -base.z as f32;
+    out.extend(
+        geometry
+            .indices
+            .iter()
+            .filter_map(|&index| geometry.vertices.get(index as usize))
+            .map(|&[x, y]| [x, y, z]),
+    );
 }
 
 fn append_custom_wire_points(
@@ -1928,7 +1996,7 @@ fn fallback_geometry(entity: &EntityType) -> Geometry {
 
 /// Extract pre-computed edge-wire points from Solid3D / Region / Body entities.
 ///
-/// AutoCAD stores explicit wire geometry (from SOLVIEW / 3DPLOT) alongside the
+/// Some drawings store explicit wire geometry alongside the
 /// ACIS data.  We use this as a visible fallback when the SAT tessellator
 /// produces no mesh (e.g. binary SAB data or unsupported geometry).
 fn solid_wire_fallback(entity: &EntityType) -> Vec<[f64; 3]> {
@@ -2117,7 +2185,7 @@ pub(crate) fn add_polyline(points: &mut Vec<[f32; 3]>, polyline: &[Vec3]) {
 
 /// Returns the text position of a dimension in DXF world-space (f64, no offset applied).
 /// Used when building a synthetic Text entity so tessellate() can apply world_offset itself.
-/// When the saved `text_middle_point` is zero (i.e. AutoCAD never wrote one),
+/// When the saved `text_middle_point` is zero (no explicit point was written),
 /// computes a fallback from the dim geometry and applies DIMTAD/DIMGAP.
 pub(crate) fn normalized_or(v: Vec3, fallback: Vec3) -> Vec3 {
     if v.length_squared() <= 1e-12 {

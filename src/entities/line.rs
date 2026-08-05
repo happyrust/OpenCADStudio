@@ -1,4 +1,5 @@
 use acadrust::{entities::Line, Entity};
+use crate::t;
 use truck_modeling::{builder, Point3};
 
 use crate::command::EntityTransform;
@@ -81,19 +82,19 @@ fn properties(line: &Line) -> Vec<PropSection> {
     let dz = line.end.z - line.start.z;
     let angle = dy.atan2(dx).to_degrees().rem_euclid(360.0);
     vec![PropSection {
-        title: "Geometry".into(),
+        title: t!("Geometry").into_owned(),
         props: vec![
-            edit("Start X", "start_x", line.start.x),
-            edit("Start Y", "start_y", line.start.y),
-            edit("Start Z", "start_z", line.start.z),
-            edit("End X", "end_x", line.end.x),
-            edit("End Y", "end_y", line.end.y),
-            edit("End Z", "end_z", line.end.z),
-            ro("Delta X", "delta_x", format!("{dx:.4}")),
-            ro("Delta Y", "delta_y", format!("{dy:.4}")),
-            ro("Delta Z", "delta_z", format!("{dz:.4}")),
-            ro("Length", "length", format!("{:.4}", line.length())),
-            ro("Angle", "angle", format!("{angle:.2}")),
+            edit(t!("Start X").as_ref(), "start_x", line.start.x),
+            edit(t!("Start Y").as_ref(), "start_y", line.start.y),
+            edit(t!("Start Z").as_ref(), "start_z", line.start.z),
+            edit(t!("End X").as_ref(), "end_x", line.end.x),
+            edit(t!("End Y").as_ref(), "end_y", line.end.y),
+            edit(t!("End Z").as_ref(), "end_z", line.end.z),
+            ro(t!("Delta X").as_ref(), "delta_x", format!("{dx:.4}")),
+            ro(t!("Delta Y").as_ref(), "delta_y", format!("{dy:.4}")),
+            ro(t!("Delta Z").as_ref(), "delta_z", format!("{dz:.4}")),
+            ro(t!("Length").as_ref(), "length", format!("{:.4}", line.length())),
+            ro(t!("Angle").as_ref(), "angle", format!("{angle:.2}")),
         ],
     }]
 }
@@ -144,14 +145,21 @@ fn apply_transform(line: &mut Line, t: &EntityTransform) {
                 d.x as f64, d.y as f64, d.z as f64,
             ));
         }
-        EntityTransform::Rotate { center, angle_rad } => {
-            crate::scene::view::transform::apply_standard_transform(line, *center, *angle_rad);
+        EntityTransform::Rotate { center, axis, angle_rad } => {
+            crate::scene::view::transform::apply_standard_transform(line, *center, *axis, *angle_rad);
         }
         EntityTransform::Scale { center, factor } => {
             crate::scene::view::transform::apply_standard_scale(line, *center, *factor);
         }
-        EntityTransform::Mirror { p1, p2 } => {
-            crate::scene::view::transform::mirror_xy_line(line, *p1, *p2);
+        EntityTransform::Mirror { p1, p2, working_normal } => {
+            acadrust::Entity::apply_transform(
+                line,
+                &crate::scene::view::transform::reflection_about_working_line(
+                    *p1,
+                    *p2,
+                    *working_normal,
+                ),
+            );
         }
         EntityTransform::Affine(transform) => {
             acadrust::Entity::apply_transform(line, transform);
@@ -207,6 +215,34 @@ impl crate::entities::traits::Grippable for Line {
             A::Lengthen => Some("Distance"),
             _ => None,
         }
+    }
+
+    fn grip_menu_point_value(
+        &self,
+        grip_id: usize,
+        action: crate::scene::model::object::GripMenuAction,
+        point: glam::DVec3,
+    ) -> Option<f64> {
+        use crate::scene::model::object::GripMenuAction as A;
+        if !matches!(action, A::Lengthen) {
+            return None;
+        }
+        let direction = glam::DVec3::new(
+            self.end.x - self.start.x,
+            self.end.y - self.start.y,
+            self.end.z - self.start.z,
+        );
+        let length = direction.length();
+        if length < 1.0e-12 {
+            return None;
+        }
+        let unit = direction / length;
+        let value = match grip_id {
+            0 => (glam::DVec3::new(self.start.x, self.start.y, self.start.z) - point).dot(unit),
+            1 => (point - glam::DVec3::new(self.end.x, self.end.y, self.end.z)).dot(unit),
+            _ => return None,
+        };
+        (length + value > 1.0e-9).then_some(value)
     }
 
     fn apply_grip_menu_value(

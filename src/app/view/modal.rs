@@ -1,6 +1,8 @@
 use super::super::{Message, OpenCADStudio};
+use crate::t;
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Background, Element, Fill, Fit, Theme};
+use std::borrow::Cow;
 
 impl OpenCADStudio {
     /// Title shown in the active modal's title bar. Keep in sync with the
@@ -19,6 +21,7 @@ impl OpenCADStudio {
             Some(K::LayerStateManager) => crate::tr!("modal-layer-state-manager"),
             Some(K::LayerStateEditor) => crate::tr!("modal-edit-layer-state"),
             Some(K::Plot) => crate::tr!("modal-plot"),
+            Some(K::PrintAll) => t!("Print All").into_owned(),
             Some(K::LayoutManager) => crate::tr!("modal-layout-manager"),
             Some(K::ScaleManager) => crate::tr!("modal-scale-manager"),
             Some(K::AnnoObjectScale) => crate::tr!("modal-annotation-object-scale"),
@@ -39,6 +42,8 @@ impl OpenCADStudio {
             Some(K::PointStyle) => crate::tr!("modal-point-style"),
             Some(K::AttributeEditor) => crate::tr!("modal-attribute-editor"),
             Some(K::SaveDialog) => crate::tr!("modal-save-drawing-as"),
+            Some(K::Recovery) => crate::tr!("modal-recovery-report"),
+            Some(K::RecoveryPrompt) => crate::tr!("modal-recovery-prompt"),
             None => String::new(),
         }
     }
@@ -49,12 +54,9 @@ impl OpenCADStudio {
     pub(super) fn modal_content<'s>(&'s self) -> Option<Element<'s, Message>> {
         let ex = self.modal_resize;
         Some(match self.active_modal? {
-            super::super::ModalKind::About => automatic_flow(ex, |flow| {
-                container(crate::ui::window::about::view_window())
-                    .width(flow.width)
-                    .height(flow.height)
-                    .into()
-            }),
+            super::super::ModalKind::About => {
+                automatic_flow(ex, crate::ui::window::about::view_window)
+            }
             super::super::ModalKind::Shortcuts => {
                 sized_flow(
                     ex,
@@ -62,7 +64,7 @@ impl OpenCADStudio {
                     520,
                     |flow| {
                         crate::ui::window::shortcuts::view_window(
-                            &self.shortcut_overrides,
+                            &self.shortcut_editor_rows,
                             flow,
                         )
                     },
@@ -221,7 +223,7 @@ impl OpenCADStudio {
                     )
                 } else {
                     automatic_flow(ex, |flow| {
-                        container(text("The selected layer state is no longer available."))
+                        container(text(t!("The selected layer state is no longer available.")))
                             .padding(16)
                             .width(flow.width)
                             .height(flow.height)
@@ -234,9 +236,27 @@ impl OpenCADStudio {
                     ex,
                     760,
                     540,
-                    |flow| crate::ui::window::plot::view_window(&self.plot_dialog, flow),
+                    |flow| {
+                        crate::ui::window::plot::view_window(
+                            &self.plot_dialog,
+                            self.print_all_options,
+                            flow,
+                        )
+                    },
                 )
             }
+            super::super::ModalKind::PrintAll => sized_flow(
+                ex,
+                520,
+                420,
+                |flow| {
+                    crate::ui::window::print_all::view_window(
+                        &self.print_all_layouts,
+                        self.plot_dialog.printer.as_deref(),
+                        flow,
+                    )
+                },
+            ),
             super::super::ModalKind::LayoutManager => {
                 let i = self.active_tab;
                 let layouts = self.tabs[i].scene.layout_names();
@@ -360,6 +380,7 @@ impl OpenCADStudio {
             ),
             super::super::ModalKind::TextStyle => {
                 let tab = &self.tabs[self.active_tab];
+                let doc = &tab.scene.document;
                 let styles: Vec<String> = tab
                     .scene
                     .document
@@ -367,23 +388,77 @@ impl OpenCADStudio {
                     .iter()
                     .map(|s| s.name.clone())
                     .collect();
-                let (backward, upside_down, annotative) = tab
-                    .scene
-                    .document
+                let selected_style = doc
                     .text_styles
-                    .get(&self.textstyle_selected)
-                    .map(|s| (s.flags.backward, s.flags.upside_down, s.annotative))
-                    .unwrap_or((false, false, false));
+                    .get(&self.textstyle_selected);
+                let (backward, upside_down, vertical, annotative, read_only) = selected_style
+                    .map(|style| {
+                        (
+                            style.flags.backward,
+                            style.flags.upside_down,
+                            style.is_vertical,
+                            style.annotative,
+                            style.xref_dependent,
+                        )
+                    })
+                    .unwrap_or((false, false, false, false, false));
+                let in_use = self.style_in_use(
+                    crate::app::StyleKind::Text,
+                    &self.textstyle_selected,
+                );
+                let compare_opts: Vec<String> = styles
+                    .iter()
+                    .filter(|name| !name.eq_ignore_ascii_case(&self.textstyle_selected))
+                    .cloned()
+                    .collect();
+                let compare_name = compare_opts
+                    .iter()
+                    .find(|name| name.eq_ignore_ascii_case(&self.textstyle_compare))
+                    .cloned()
+                    .or_else(|| compare_opts.first().cloned())
+                    .unwrap_or_default();
+                let mut comparison_sections = Vec::new();
+                if let (Some(a), Some(b)) = (selected_style, doc.text_styles.get(&compare_name)) {
+                    if (
+                        &a.font_file,
+                        &a.big_font_file,
+                        &a.true_type_font,
+                        a.is_shape_file,
+                    ) != (
+                        &b.font_file,
+                        &b.big_font_file,
+                        &b.true_type_font,
+                        b.is_shape_file,
+                    ) {
+                        comparison_sections.push(crate::i18n::translate("Fonts").into_owned());
+                    }
+                    if (a.height, a.width_factor, a.oblique_angle, a.last_height)
+                        != (b.height, b.width_factor, b.oblique_angle, b.last_height)
+                    {
+                        comparison_sections.push(crate::i18n::translate("Size").into_owned());
+                    }
+                    if (a.flags, a.is_vertical, a.annotative)
+                        != (b.flags, b.is_vertical, b.annotative)
+                    {
+                        comparison_sections.push(crate::i18n::translate("Effects").into_owned());
+                    }
+                }
                 sized_flow(
                     ex,
-                    860,
-                    480,
+                    960,
+                    680,
                     |flow| {
                         crate::ui::style::textstyle::view_window(
                             crate::ui::style::textstyle::TextStyleView {
                                 styles: styles.clone(),
                                 selected: &self.textstyle_selected,
                                 current: &tab.scene.document.header.current_text_style_name,
+                                tab: self.textstyle_tab,
+                                compare_name: compare_name.clone(),
+                                compare_opts: compare_opts.clone(),
+                                comparison_sections: comparison_sections.clone(),
+                                read_only,
+                                in_use,
                                 font_buf: &self.textstyle_font,
                                 width_buf: &self.textstyle_width,
                                 oblique_buf: &self.textstyle_oblique,
@@ -392,6 +467,7 @@ impl OpenCADStudio {
                                 ttf_buf: &self.textstyle_ttf,
                                 backward,
                                 upside_down,
+                                vertical,
                                 annotative,
                                 rename_active: self.style_rename.as_deref(),
                                 rename_buf: &self.style_rename_buf,
@@ -418,18 +494,60 @@ impl OpenCADStudio {
                     ObjectType::MLineStyle(s) if s.name == self.mlstyle_selected => Some(s),
                     _ => None,
                 });
+                let compare_opts: Vec<String> = styles
+                    .iter()
+                    .filter(|name| !name.eq_ignore_ascii_case(&self.mlstyle_selected))
+                    .cloned()
+                    .collect();
+                let compare_name = compare_opts
+                    .iter()
+                    .find(|name| name.eq_ignore_ascii_case(&self.mlstyle_compare))
+                    .cloned()
+                    .or_else(|| compare_opts.first().cloned())
+                    .unwrap_or_default();
+                let compare_style = tab.scene.document.objects.values().find_map(|object| match object {
+                    ObjectType::MLineStyle(style) if style.name == compare_name => Some(style),
+                    _ => None,
+                });
+                let mut comparison_sections = Vec::new();
+                if let (Some(a), Some(b)) = (selected_style, compare_style) {
+                    if (&a.description, a.flags, a.fill_color, a.start_angle, a.end_angle)
+                        != (&b.description, b.flags, b.fill_color, b.start_angle, b.end_angle)
+                    {
+                        comparison_sections.push(crate::i18n::translate("Caps and Fill").into_owned());
+                    }
+                    if a.elements != b.elements {
+                        comparison_sections.push(crate::i18n::translate("Elements").into_owned());
+                    }
+                }
+                let in_use = self.style_in_use(
+                    crate::app::StyleKind::MLine,
+                    &self.mlstyle_selected,
+                );
                 sized_flow(
                     ex,
-                    620,
-                    420,
+                    960,
+                    680,
                     |flow| {
                         crate::ui::style::mlstyle::view_window(
-                            styles.clone(),
-                            &self.mlstyle_selected,
-                            selected_style,
-                            tab.scene.document.header.multiline_style.clone(),
-                            self.style_rename.as_deref(),
-                            &self.style_rename_buf,
+                            crate::ui::style::mlstyle::MlStyleView {
+                                styles: styles.clone(),
+                                selected: &self.mlstyle_selected,
+                                style: selected_style,
+                                current: tab.scene.document.header.multiline_style.clone(),
+                                tab: self.mlstyle_tab,
+                                compare_name: compare_name.clone(),
+                                compare_opts: compare_opts.clone(),
+                                comparison_sections: comparison_sections.clone(),
+                                in_use,
+                                description: &self.mln_description,
+                                start_angle: &self.mln_start_angle,
+                                end_angle: &self.mln_end_angle,
+                                fill_color: &self.mln_fill_color,
+                                elements: &self.mln_elements,
+                                rename_active: self.style_rename.as_deref(),
+                                rename_buf: &self.style_rename_buf,
+                            },
                             flow,
                         )
                     },
@@ -452,32 +570,89 @@ impl OpenCADStudio {
                     ObjectType::TableStyle(s) if s.name == self.tablestyle_selected => Some(s),
                     _ => None,
                 });
+                let compare_opts: Vec<String> = styles
+                    .iter()
+                    .filter(|name| !name.eq_ignore_ascii_case(&self.tablestyle_selected))
+                    .cloned()
+                    .collect();
+                let compare_name = compare_opts
+                    .iter()
+                    .find(|name| name.eq_ignore_ascii_case(&self.tablestyle_compare))
+                    .cloned()
+                    .or_else(|| compare_opts.first().cloned())
+                    .unwrap_or_default();
+                let compare_style = tab.scene.document.objects.values().find_map(|object| match object {
+                    ObjectType::TableStyle(style) if style.name == compare_name => Some(style),
+                    _ => None,
+                });
+                let mut comparison_sections = Vec::new();
+                if let (Some(a), Some(b)) = (selected_style, compare_style) {
+                    if (
+                        &a.description,
+                        a.flow_direction,
+                        a.horizontal_margin,
+                        a.vertical_margin,
+                        a.title_suppressed,
+                        a.header_suppressed,
+                        a.annotative,
+                    ) != (
+                        &b.description,
+                        b.flow_direction,
+                        b.horizontal_margin,
+                        b.vertical_margin,
+                        b.title_suppressed,
+                        b.header_suppressed,
+                        b.annotative,
+                    ) {
+                        comparison_sections.push(crate::i18n::translate("General").into_owned());
+                    }
+                    for (label, different) in [
+                        ("Data Row", a.data_row_style != b.data_row_style),
+                        ("Header Row", a.header_row_style != b.header_row_style),
+                        ("Title Row", a.title_row_style != b.title_row_style),
+                    ] {
+                        if different {
+                            comparison_sections.push(crate::i18n::translate(label).into_owned());
+                        }
+                    }
+                }
+                let in_use = self.style_in_use(
+                    crate::app::StyleKind::Table,
+                    &self.tablestyle_selected,
+                );
                 sized_flow(
                     ex,
-                    620,
-                    420,
+                    960,
+                    680,
                     |flow| {
                         crate::ui::style::tablestyle::view_window(
-                            styles.clone(),
-                            &self.tablestyle_selected,
-                            &self.ribbon.active_table_style,
-                            selected_style,
-                            &self.ts_hmargin,
-                            &self.ts_vmargin,
-                            &self.ts_description,
-                            &self.ts_cell_textstyle,
-                            &self.ts_cell_height,
-                            &self.ts_cell_textcolor,
-                            &self.ts_cell_fillcolor,
-                            &self.ts_cell_datatype,
-                            &self.ts_cell_unittype,
-                            &self.ts_cell_format,
-                            &self.ts_border_lw,
-                            &self.ts_border_color,
-                            &self.ts_border_spacing,
-                            self.style_rename.as_deref(),
-                            &self.style_rename_buf,
-                            self.ts_color_open,
+                            crate::ui::style::tablestyle::TableStyleView {
+                                styles: styles.clone(),
+                                selected: &self.tablestyle_selected,
+                                current: &tab.scene.document.header.current_table_style_name,
+                                style: selected_style,
+                                tab: self.tablestyle_tab,
+                                compare_name: compare_name.clone(),
+                                compare_opts: compare_opts.clone(),
+                                comparison_sections: comparison_sections.clone(),
+                                in_use,
+                                hmargin: &self.ts_hmargin,
+                                vmargin: &self.ts_vmargin,
+                                description: &self.ts_description,
+                                cell_textstyle: &self.ts_cell_textstyle,
+                                cell_height: &self.ts_cell_height,
+                                cell_textcolor: &self.ts_cell_textcolor,
+                                cell_fillcolor: &self.ts_cell_fillcolor,
+                                cell_datatype: &self.ts_cell_datatype,
+                                cell_unittype: &self.ts_cell_unittype,
+                                cell_format: &self.ts_cell_format,
+                                border_lw: &self.ts_border_lw,
+                                border_color: &self.ts_border_color,
+                                border_spacing: &self.ts_border_spacing,
+                                rename_active: self.style_rename.as_deref(),
+                                rename_buf: &self.style_rename_buf,
+                                color_open: self.ts_color_open,
+                            },
                             flow,
                         )
                     },
@@ -505,7 +680,9 @@ impl OpenCADStudio {
                 let doc = &tab.scene.document;
                 let mut block_opts: Vec<String> = vec!["None".to_string()];
                 block_opts.extend(doc.block_records.iter().map(|b| b.name.clone()));
-                let mut lt_opts: Vec<String> = vec!["None".to_string()];
+                let mut arrow_opts: Vec<String> = vec!["Closed filled".to_string()];
+                arrow_opts.extend(doc.block_records.iter().map(|b| b.name.clone()));
+                let mut lt_opts: Vec<String> = vec!["ByBlock".to_string()];
                 lt_opts.extend(doc.line_types.iter().map(|lt| lt.name.clone()));
                 let mut textstyle_opts: Vec<String> = vec!["None".to_string()];
                 textstyle_opts.extend(doc.text_styles.iter().map(|t| t.name.clone()));
@@ -527,8 +704,8 @@ impl OpenCADStudio {
                             .iter()
                             .find(|lt| lt.handle == h)
                             .map(|lt| lt.name.clone())
-                            .unwrap_or_else(|| "None".to_string()),
-                        None => "None".to_string(),
+                            .unwrap_or_else(|| "ByBlock".to_string()),
+                        None => "ByBlock".to_string(),
                     }
                 };
                 let opt_ts = |h: Option<acadrust::types::Handle>| -> String {
@@ -546,16 +723,153 @@ impl OpenCADStudio {
                     match selected_style {
                         Some(s) => (
                             opt_lt(s.line_type_handle),
-                            opt_block(s.arrowhead_handle),
+                            s.arrowhead_handle
+                                .and_then(|handle| {
+                                    doc.block_records
+                                        .iter()
+                                        .find(|record| record.handle == handle)
+                                        .map(|record| record.name.clone())
+                                })
+                                .unwrap_or_else(|| "Closed filled".to_string()),
                             opt_ts(s.text_style_handle),
                             opt_block(s.block_content_handle),
                         ),
                         None => Default::default(),
                     };
+                let compare_opts: Vec<String> = styles
+                    .iter()
+                    .filter(|name| !name.eq_ignore_ascii_case(&self.mleaderstyle_selected))
+                    .cloned()
+                    .collect();
+                let compare_name = compare_opts
+                    .iter()
+                    .find(|name| name.eq_ignore_ascii_case(&self.mleaderstyle_compare))
+                    .cloned()
+                    .or_else(|| compare_opts.first().cloned())
+                    .unwrap_or_default();
+                let compare_style = doc.objects.values().find_map(|object| match object {
+                    ObjectType::MultiLeaderStyle(style) if style.name == compare_name => Some(style),
+                    _ => None,
+                });
+                let mut comparison_sections = Vec::new();
+                if let (Some(a), Some(b)) = (selected_style, compare_style) {
+                    if (
+                        &a.description,
+                        a.path_type,
+                        a.line_color,
+                        a.line_type_handle,
+                        a.line_weight,
+                        a.arrowhead_handle,
+                        a.arrowhead_size,
+                        a.break_gap_size,
+                    ) != (
+                        &b.description,
+                        b.path_type,
+                        b.line_color,
+                        b.line_type_handle,
+                        b.line_weight,
+                        b.arrowhead_handle,
+                        b.arrowhead_size,
+                        b.break_gap_size,
+                    ) {
+                        comparison_sections.push(crate::i18n::translate("Leader Format").into_owned());
+                    }
+                    if (
+                        a.enable_landing,
+                        a.enable_dogleg,
+                        a.landing_distance,
+                        a.landing_gap,
+                        a.scale_factor,
+                        a.align_space,
+                        a.max_leader_points,
+                        a.first_segment_angle,
+                        a.second_segment_angle,
+                        a.leader_draw_order,
+                        a.multileader_draw_order,
+                        a.is_annotative,
+                    ) != (
+                        b.enable_landing,
+                        b.enable_dogleg,
+                        b.landing_distance,
+                        b.landing_gap,
+                        b.scale_factor,
+                        b.align_space,
+                        b.max_leader_points,
+                        b.first_segment_angle,
+                        b.second_segment_angle,
+                        b.leader_draw_order,
+                        b.multileader_draw_order,
+                        b.is_annotative,
+                    ) {
+                        comparison_sections.push(crate::i18n::translate("Leader Structure").into_owned());
+                    }
+                    if (
+                        a.content_type,
+                        &a.default_text,
+                        a.text_style_handle,
+                        a.text_height,
+                        a.text_color,
+                        a.text_angle_type,
+                        a.text_alignment,
+                    ) != (
+                        b.content_type,
+                        &b.default_text,
+                        b.text_style_handle,
+                        b.text_height,
+                        b.text_color,
+                        b.text_angle_type,
+                        b.text_alignment,
+                    ) || (
+                        a.text_left_attachment,
+                        a.text_right_attachment,
+                        a.text_top_attachment,
+                        a.text_bottom_attachment,
+                        a.text_attachment_direction,
+                        a.text_frame,
+                        a.text_always_left,
+                    ) != (
+                        b.text_left_attachment,
+                        b.text_right_attachment,
+                        b.text_top_attachment,
+                        b.text_bottom_attachment,
+                        b.text_attachment_direction,
+                        b.text_frame,
+                        b.text_always_left,
+                    ) {
+                        comparison_sections.push(crate::i18n::translate("Content").into_owned());
+                    }
+                    if (
+                        a.block_content_handle,
+                        a.block_content_color,
+                        a.block_content_connection,
+                        a.block_content_rotation,
+                        a.block_content_scale_x,
+                        a.block_content_scale_y,
+                        a.block_content_scale_z,
+                        a.enable_block_scale,
+                        a.enable_block_rotation,
+                    ) != (
+                        b.block_content_handle,
+                        b.block_content_color,
+                        b.block_content_connection,
+                        b.block_content_rotation,
+                        b.block_content_scale_x,
+                        b.block_content_scale_y,
+                        b.block_content_scale_z,
+                        b.enable_block_scale,
+                        b.enable_block_rotation,
+                    ) {
+                        comparison_sections.push(crate::i18n::translate("Block Content").into_owned());
+                    }
+                }
+                let in_use = self.style_in_use(
+                    crate::app::StyleKind::MLeader,
+                    &self.mleaderstyle_selected,
+                );
                 sized_flow(
                     ex,
-                    560,
-                    560,
+                    960,
+                    680,
                     |flow| {
                         crate::ui::style::mleaderstyle::view_window(
                             crate::ui::style::mleaderstyle::MLeaderStyleView {
@@ -563,6 +877,11 @@ impl OpenCADStudio {
                                 selected: &self.mleaderstyle_selected,
                                 style: selected_style,
                                 current: tab.active_mleader_style.clone(),
+                                tab: self.mleaderstyle_tab,
+                                compare_name: compare_name.clone(),
+                                compare_opts: compare_opts.clone(),
+                                comparison_sections: comparison_sections.clone(),
+                                in_use,
                                 landing_distance: &self.mls_landing_distance,
                                 landing_gap: &self.mls_landing_gap,
                                 arrowhead_size: &self.mls_arrowhead_size,
@@ -583,6 +902,7 @@ impl OpenCADStudio {
                                 block_scale_y: &self.mls_block_scale_y,
                                 block_scale_z: &self.mls_block_scale_z,
                                 block_opts: block_opts.clone(),
+                                arrow_opts: arrow_opts.clone(),
                                 lt_opts: lt_opts.clone(),
                                 textstyle_opts: textstyle_opts.clone(),
                                 line_type_name: line_type_name.clone(),
@@ -628,6 +948,13 @@ impl OpenCADStudio {
             );
             let mut lt_opts: Vec<String> = vec!["ByBlock".to_string()];
             lt_opts.extend(doc.line_types.iter().map(|lt| lt.name.clone()));
+            let text_style_opts: Vec<String> =
+                doc.text_styles.iter().map(|style| style.name.clone()).collect();
+            let text_style_fixed_height = doc
+                .text_styles
+                .get(&self.ds_dimtxsty)
+                .map(|style| style.height)
+                .filter(|height| *height > 0.0);
             let blk_name = |h: acadrust::types::Handle| -> String {
                 if h.is_null() {
                     "Default".to_string()
@@ -651,6 +978,70 @@ impl OpenCADStudio {
                 }
             };
             let ds_sel = doc.dim_styles.get(&self.dimstyle_selected);
+            let read_only = ds_sel.is_some_and(|style| {
+                style.xref_reference || style.xref_dependent || !style.xref_handle.is_null()
+            });
+            let in_use = doc.entities().any(|entity| {
+                matches!(entity, acadrust::EntityType::Dimension(dimension)
+                    if dimension.base().style_name.eq_ignore_ascii_case(&self.dimstyle_selected))
+            });
+            let compare_opts: Vec<String> = styles
+                .iter()
+                .filter(|name| !name.eq_ignore_ascii_case(&self.dimstyle_selected))
+                .cloned()
+                .collect();
+            let compare_name = compare_opts
+                .iter()
+                .find(|name| name.eq_ignore_ascii_case(&self.dimstyle_compare))
+                .cloned()
+                .or_else(|| compare_opts.first().cloned())
+                .unwrap_or_default();
+            let mut comparison_sections = Vec::new();
+            if let (Some(a), Some(b)) = (ds_sel, doc.dim_styles.get(&compare_name)) {
+                if (a.dimdle, a.dimdli, a.dimgap, a.dimclrd, a.dimlwd, a.dimsd1, a.dimsd2)
+                    != (b.dimdle, b.dimdli, b.dimgap, b.dimclrd, b.dimlwd, b.dimsd1, b.dimsd2)
+                    || (a.dimexe, a.dimexo, a.dimclre, a.dimlwe, a.dimse1, a.dimse2, a.dimfxl, a.dimfxlon)
+                        != (b.dimexe, b.dimexo, b.dimclre, b.dimlwe, b.dimse1, b.dimse2, b.dimfxl, b.dimfxlon)
+                    || (a.dimltex_handle, a.dimltex1_handle, a.dimltex2_handle)
+                        != (b.dimltex_handle, b.dimltex1_handle, b.dimltex2_handle)
+                {
+                    comparison_sections.push(crate::i18n::translate("Lines").into_owned());
+                }
+                if (a.dimasz, a.dimblk, a.dimblk1, a.dimblk2, a.dimldrblk, a.dimsah, a.dimcen, a.dimtsz)
+                    != (b.dimasz, b.dimblk, b.dimblk1, b.dimblk2, b.dimldrblk, b.dimsah, b.dimcen, b.dimtsz)
+                    || (a.dimarcsym, a.dimjogang) != (b.dimarcsym, b.dimjogang)
+                {
+                    comparison_sections.push(crate::i18n::translate("Symbols and Arrows").into_owned());
+                }
+                if (a.dimclrt, a.dimtxt, &a.dimtxsty, a.dimjust, a.dimtad, a.dimtvp)
+                    != (b.dimclrt, b.dimtxt, &b.dimtxsty, b.dimjust, b.dimtad, b.dimtvp)
+                    || (a.dimtih, a.dimtoh, a.dimtfill, a.dimtfillclr, a.dimtxtdirection)
+                        != (b.dimtih, b.dimtoh, b.dimtfill, b.dimtfillclr, b.dimtxtdirection)
+                {
+                    comparison_sections.push(crate::i18n::translate("Text").into_owned());
+                }
+                if (a.dimatfit, a.dimtix, a.dimsoxd, a.dimtmove, a.dimupt, a.dimtofl, a.dimscale, a.annotative)
+                    != (b.dimatfit, b.dimtix, b.dimsoxd, b.dimtmove, b.dimupt, b.dimtofl, b.dimscale, b.annotative)
+                {
+                    comparison_sections.push(crate::i18n::translate("Fit").into_owned());
+                }
+                if (a.dimlfac, a.dimlunit, a.dimdec, &a.dimpost, a.dimdsep, a.dimrnd, a.dimzin, a.dimfrac)
+                    != (b.dimlfac, b.dimlunit, b.dimdec, &b.dimpost, b.dimdsep, b.dimrnd, b.dimzin, b.dimfrac)
+                    || (a.dimaunit, a.dimadec, a.dimazin) != (b.dimaunit, b.dimadec, b.dimazin)
+                {
+                    comparison_sections.push(crate::i18n::translate("Primary Units").into_owned());
+                }
+                if (a.dimalt, a.dimaltf, a.dimaltd, a.dimaltu, a.dimalttd, a.dimaltrnd, &a.dimapost, a.dimaltz, a.dimalttz)
+                    != (b.dimalt, b.dimaltf, b.dimaltd, b.dimaltu, b.dimalttd, b.dimaltrnd, &b.dimapost, b.dimaltz, b.dimalttz)
+                {
+                    comparison_sections.push(crate::i18n::translate("Alternate Units").into_owned());
+                }
+                if (a.dimtol, a.dimlim, a.dimtp, a.dimtm, a.dimtdec, a.dimtfac, a.dimtolj, a.dimtzin)
+                    != (b.dimtol, b.dimlim, b.dimtp, b.dimtm, b.dimtdec, b.dimtfac, b.dimtolj, b.dimtzin)
+                {
+                    comparison_sections.push(crate::i18n::translate("Tolerances").into_owned());
+                }
+            }
             let (
                 dimblk_name,
                 dimblk1_name,
@@ -671,7 +1062,7 @@ impl OpenCADStudio {
                 ),
                 None => Default::default(),
             };
-            sized_flow(ex, 720, 560, |flow| {
+            sized_flow(ex, 960, 680, |flow| {
                 crate::ui::style::dimstyle::view_window(
                 styles.clone(),
                 &self.dimstyle_selected,
@@ -732,14 +1123,12 @@ impl OpenCADStudio {
                     dimtmove: &self.ds_dimtmove,
                     dimupt: self.ds_dimupt,
                     dimtofl: self.ds_dimtofl,
-                    dimfit: &self.ds_dimfit,
                     dimdsep: &self.ds_dimdsep,
                     dimrnd: &self.ds_dimrnd,
                     dimzin: &self.ds_dimzin,
                     dimfrac: &self.ds_dimfrac,
                     dimaunit: &self.ds_dimaunit,
                     dimadec: &self.ds_dimadec,
-                    dimunit: &self.ds_dimunit,
                     dimazin: &self.ds_dimazin,
                     dimalt: self.ds_dimalt,
                     dimaltf: &self.ds_dimaltf,
@@ -761,6 +1150,13 @@ impl OpenCADStudio {
                     dimltex2_name: dimltex2_name.clone(),
                     block_opts: block_opts.clone(),
                     lt_opts: lt_opts.clone(),
+                    text_style_opts: text_style_opts.clone(),
+                    text_style_fixed_height,
+                    compare_name: compare_name.clone(),
+                    compare_opts: compare_opts.clone(),
+                    comparison_sections: comparison_sections.clone(),
+                    read_only,
+                    in_use,
                     color_open: self.ds_color_open.clone(),
                 },
                 self.style_rename.as_deref(),
@@ -911,6 +1307,27 @@ impl OpenCADStudio {
                     )
                 })
             }
+            super::super::ModalKind::Recovery => {
+                let report = self.recovery_report.as_ref()?;
+                sized_flow(ex, 680, 460, |flow| {
+                    crate::ui::window::recovery::view_window(
+                        report,
+                        self.pending_opens.is_empty(),
+                        flow,
+                    )
+                })
+            }
+            super::super::ModalKind::RecoveryPrompt => {
+                let opening = self.opening.as_ref()?;
+                let error = opening.recovery_error.as_deref()?;
+                automatic_flow(ex, |flow| {
+                    crate::ui::window::recovery::view_prompt(
+                        &opening.name,
+                        error,
+                        flow,
+                    )
+                })
+            }
         })
     }
 }
@@ -941,12 +1358,12 @@ fn automatic_flow<'a>(
     )
 }
 
-fn dialog_button(
-    label: &'static str,
+fn dialog_button<'a>(
+    label: impl Into<Cow<'a, str>>,
     message: Message,
     style: fn(&Theme, button::Status) -> button::Style,
-) -> Element<'static, Message> {
-    button(text(label).size(13))
+) -> Element<'a, Message> {
+    button(text(label.into()).size(13))
         .on_press(message)
         .style(style)
         .padding([6, 18])
@@ -980,7 +1397,7 @@ fn save_as_dialog_window<'a>(
         .iter()
         .copied()
         .find(|&s| s == format);
-    let label = |s: &'static str| text(s).size(11).style(dialog_muted_text_style);
+    let label = |s: Cow<'static, str>| text(s).size(11).style(dialog_muted_text_style);
     let field_width = if matches!(sizing.width, iced::Length::Fill) {
         Fill
     } else {
@@ -988,7 +1405,7 @@ fn save_as_dialog_window<'a>(
     };
 
     let mut items: Vec<Element<'a, Message>> = Vec::new();
-    items.push(text("Save Drawing As").size(14).into());
+    items.push(text(t!("Save Drawing As")).size(14).into());
     items.push(Space::new().height(12).into());
 
     // Web has no native file dialog, so the file name is typed here. On native
@@ -997,7 +1414,7 @@ fn save_as_dialog_window<'a>(
     {
         items.push(
             row![
-                label("File name:").width(70),
+                label(t!("File name:")).width(70),
                 iced::widget::text_input("drawing.dwg", filename)
                     .on_input(Message::SaveDialogFilenameChanged)
                     .size(13)
@@ -1016,7 +1433,7 @@ fn save_as_dialog_window<'a>(
 
     items.push(
         row![
-            label("Format:").width(70),
+            label(t!("Format:")).width(70),
             iced::widget::pick_list(
                 sel_fmt,
                 crate::io::SAVE_FORMAT_OPTIONS,
@@ -1034,9 +1451,9 @@ fn save_as_dialog_window<'a>(
     items.push(
         row![
             Space::new().width(Fit),
-            dialog_button("Save as...", Message::SaveDialogConfirm, button::primary),
+            dialog_button(t!("Save as..."), Message::SaveDialogConfirm, button::primary),
             Space::new().width(8),
-            dialog_button("Cancel", Message::SaveDialogCancel, button::secondary),
+            dialog_button(t!("Cancel"), Message::SaveDialogCancel, button::secondary),
         ]
         .into(),
     );
@@ -1058,18 +1475,20 @@ fn unsaved_changes_dialog_window(
     name: &str,
     sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'static, Message> {
-    let body_text = format!("Do you want to save changes to \"{}\"?", name);
-
     container(
         column![
-            text(body_text).size(13),
+            text(name.to_owned()).size(14),
+            iced::widget::Space::new().height(4),
+            text(crate::tr!("modal-unsaved-save-prompt"))
+                .size(12)
+                .style(dialog_muted_text_style),
             iced::widget::Space::new().height(20),
             row![
-                dialog_button("Save", Message::UnsavedDialogSave, button::primary),
+                dialog_button(t!("Save"), Message::UnsavedDialogSave, button::primary),
                 iced::widget::Space::new().width(8),
-                dialog_button("Discard", Message::UnsavedDialogDiscard, button::danger),
+                dialog_button(t!("Discard"), Message::UnsavedDialogDiscard, button::danger),
                 iced::widget::Space::new().width(8),
-                dialog_button("Cancel", Message::UnsavedDialogCancel, button::secondary),
+                dialog_button(t!("Cancel"), Message::UnsavedDialogCancel, button::secondary),
             ],
         ]
         .spacing(0),
@@ -1090,19 +1509,18 @@ fn file_in_use_dialog_window(
     let file_name = std::path::Path::new(path)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Drawing".to_string());
-    let heading = format!("\"{file_name}\" could not be saved.");
-    let path_line = format!("Path: {path}");
-    let details = format!("Details: {error}");
+        .unwrap_or_else(|| t!("Drawing").into_owned());
+    let heading = t!("\"%{file_name}\" could not be saved.", file_name = file_name);
+    let path_line = t!("Path: %{path}", path = path);
+    let details = t!("Details: %{error}", error = error);
 
     container(
         column![
             text(heading).size(14),
             Space::new().height(8),
-            text(
-                "The file is open or being used by another application. \
-                 Close it there and retry, or save this drawing under a different name."
-            )
+            text(t!(
+                "The file is open or being used by another application. Close it there and retry, or save this drawing under a different name."
+            ))
             .size(13)
             .width(Fit),
             Space::new().height(12),
@@ -1112,19 +1530,19 @@ fn file_in_use_dialog_window(
             Space::new().height(18),
             row![
                 dialog_button(
-                    "Retry",
+                    t!("Retry"),
                     Message::SaveFileInUseRetry,
                     button::primary
                 ),
                 Space::new().width(8),
                 dialog_button(
-                    "Save As",
+                    t!("Save As"),
                     Message::SaveFileInUseSaveAs,
                     button::secondary
                 ),
                 Space::new().width(8),
                 dialog_button(
-                    "Cancel",
+                    t!("Cancel"),
                     Message::SaveFileInUseCancel,
                     button::secondary
                 ),
@@ -1147,18 +1565,17 @@ fn external_change_dialog_window(
     let file_name = std::path::Path::new(path)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Drawing".to_string());
-    let heading = format!("\"{file_name}\" was changed by another application.");
-    let path_line = format!("Path: {path}");
+        .unwrap_or_else(|| t!("Drawing").into_owned());
+    let heading = t!("\"%{file_name}\" was changed by another application.", file_name = file_name);
+    let path_line = t!("Path: %{path}", path = path);
 
     container(
         column![
             text(heading).size(14),
             Space::new().height(8),
-            text(
-                "Saving now could destroy those external changes. Reload the disk copy, \
-                 save your local work elsewhere, or explicitly overwrite it."
-            )
+            text(t!(
+                "Saving now could destroy those external changes. Reload the disk copy, save your local work elsewhere, or explicitly overwrite it."
+            ))
             .size(13)
             .width(Fit),
             Space::new().height(12),
@@ -1166,25 +1583,25 @@ fn external_change_dialog_window(
             Space::new().height(18),
             row![
                 dialog_button(
-                    "Reload from Disk",
+                    t!("Reload from Disk"),
                     Message::ExternalChangeReload,
                     button::primary
                 ),
                 Space::new().width(8),
                 dialog_button(
-                    "Save As",
+                    t!("Save As"),
                     Message::ExternalChangeSaveAs,
                     button::secondary
                 ),
                 Space::new().width(8),
                 dialog_button(
-                    "Overwrite",
+                    t!("Overwrite"),
                     Message::ExternalChangeOverwrite,
                     button::danger
                 ),
                 Space::new().width(8),
                 dialog_button(
-                    "Cancel",
+                    t!("Cancel"),
                     Message::ExternalChangeCancel,
                     button::secondary
                 ),
@@ -1209,10 +1626,11 @@ fn aec_drop_dialog_window(
     src_version: &str,
     sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'static, Message> {
-    let body_text = format!(
-        "This drawing contains {count} AEC/Civil objects that \"{target}\" \
-         cannot store, so they will not be saved.\n\n\
-         To keep them, save in the source version ({src_version})."
+    let body_text = t!(
+        "This drawing contains %{count} AEC/Civil objects that \"%{target}\" cannot store, so they will not be saved.\n\nTo keep them, save in the source version (%{src_version}).",
+        count = count,
+        target = target,
+        src_version = src_version,
     );
 
     container(
@@ -1221,14 +1639,14 @@ fn aec_drop_dialog_window(
             iced::widget::Space::new().height(20),
             row![
                 dialog_button(
-                    "Save in source version",
+                    t!("Save in source version"),
                     Message::AecDropSameVersion,
                     button::primary
                 ),
                 iced::widget::Space::new().width(8),
-                dialog_button("Save anyway", Message::AecDropProceed, button::warning),
+                dialog_button(t!("Save anyway"), Message::AecDropProceed, button::warning),
                 iced::widget::Space::new().width(8),
-                dialog_button("Back", Message::AecDropBack, button::secondary),
+                dialog_button(t!("Back"), Message::AecDropBack, button::secondary),
             ],
         ]
         .spacing(0),
@@ -1249,16 +1667,25 @@ fn layer_delete_warning_window(
     count: usize,
     sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'static, Message> {
-    let obj = if count == 1 { "object" } else { "objects" };
-    let subject = if names.len() == 1 {
-        format!("Layer \"{}\"", names[0])
+    let obj = if count == 1 { t!("object") } else { t!("objects") };
+    let has = if names.len() == 1 { t!("has") } else { t!("hold") };
+    let those = if count == 1 {
+        t!("that object")
     } else {
-        format!("{} selected layers", names.len())
+        t!("those objects")
     };
-    let body_text = format!(
-        "{subject} still {} {count} {obj}.\n\nDeleting will also remove {} from the drawing. Continue?",
-        if names.len() == 1 { "has" } else { "hold" },
-        if count == 1 { "that object" } else { "those objects" }
+    let subject = if names.len() == 1 {
+        t!("Layer \"%{name}\"", name = names[0]).into_owned()
+    } else {
+        t!("%{count} selected layers", count = names.len()).into_owned()
+    };
+    let body_text = t!(
+        "%{subject} still %{has} %{count} %{obj}.\n\nDeleting will also remove %{those} from the drawing. Continue?",
+        subject = subject,
+        has = has,
+        count = count,
+        obj = obj,
+        those = those,
     );
 
     container(
@@ -1267,12 +1694,12 @@ fn layer_delete_warning_window(
             iced::widget::Space::new().height(20),
             row![
                 dialog_button(
-                    "Delete Objects",
+                    t!("Delete Objects"),
                     Message::LayerDeleteConfirm,
                     button::danger
                 ),
                 iced::widget::Space::new().width(8),
-                dialog_button("Cancel", Message::CloseModal, button::secondary),
+                dialog_button(t!("Cancel"), Message::CloseModal, button::secondary),
             ],
         ]
         .spacing(0),
@@ -1293,19 +1720,19 @@ fn default_assoc_dialog_window(
 ) -> Element<'static, Message> {
     container(
         column![
-            text("Make Open CAD Studio your default CAD app?")
+            text(t!("Make Open CAD Studio your default CAD app?"))
                 .size(15),
             iced::widget::Space::new().height(10),
-            text("Open .dwg and .dxf drawings in Open CAD Studio by default. You can change this later in your system settings.")
+            text(t!("Open .dwg and .dxf drawings in Open CAD Studio by default. You can change this later in your system settings."))
                 .size(12)
                 .style(dialog_muted_text_style),
             iced::widget::Space::new().height(22),
             row![
                 iced::widget::Space::new().width(Fit),
-                dialog_button("Not now", Message::AssocPromptNo, button::secondary),
+                dialog_button(t!("Not now"), Message::AssocPromptNo, button::secondary),
                 iced::widget::Space::new().width(8),
                 dialog_button(
-                    "Yes, set as default",
+                    t!("Yes, set as default"),
                     Message::AssocPromptYes,
                     button::primary
                 ),

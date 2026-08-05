@@ -116,6 +116,8 @@ pub struct UserSettings {
     /// instead of submitting (as if every line started with `>`), until the
     /// user toggles it back off.
     pub literal_spaces: bool,
+    /// Height of the expanded command-history editor in logical pixels.
+    pub command_history_height: f32,
     /// Running object-snap set + master toggle as an `$OSMODE`-style bitmask.
     /// App-level, not per-drawing: modern DWG (R2000+) has no file slot for
     /// OSMODE (it moved to the registry), so the set follows the user. A
@@ -145,6 +147,8 @@ pub struct UserSettings {
     /// PICKDRAG (#226): `false` (default) = press-drag draws the freeform
     /// lasso; `true` = press-drag draws a rectangle marquee instead.
     pub pick_drag_rect: bool,
+    /// Show the floating Quick Properties panel when objects are selected.
+    pub quick_properties: bool,
     /// Persisted viewport background colours (0–255 RGB); `None` = app default
     /// (dark grey model / off-white paper). Applied to every drawing tab on
     /// launch and to tabs opened later, so a chosen background survives restarts
@@ -167,6 +171,7 @@ impl Default for UserSettings {
             disabled_plugins: Vec::new(),
             plugin_repos: Vec::new(),
             literal_spaces: false,
+            command_history_height: crate::ui::command_line::HISTORY_HEIGHT_DEFAULT,
             // Snapper::default(): END|MID|CEN|NODE|QUAD|INT|NEA (575), master
             // off (suppress bit 16384).
             osmode: 575 | OSMODE_SUPPRESS,
@@ -178,6 +183,7 @@ impl Default for UserSettings {
             default_save_format: crate::io::DEFAULT_SAVE_FORMAT.to_string(),
             pick_add: true,
             pick_drag_rect: false,
+            quick_properties: false,
             bg_color: None,
             paper_bg_color: None,
             language: crate::i18n::Language::default(),

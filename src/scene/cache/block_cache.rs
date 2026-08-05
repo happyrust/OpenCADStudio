@@ -28,7 +28,7 @@ const MAX_NESTING_DEPTH: usize = 32;
 /// Skip wires whose world-AABB projects to fewer than this many pixels in
 /// the active view. Picks up tiny detail at zoom-out so the tessellator
 /// doesn't waste time on geometry that contributes a few sub-pixel marks
-/// to the final image. 2 px is the AutoCAD-default "small element" floor
+/// to the final image. Two pixels is a practical small-element floor:
 /// — visibly the same image, dramatically fewer wires.
 const MIN_PIXEL_SIZE: f32 = 2.0;
 
@@ -48,6 +48,9 @@ pub struct LocalWire {
     pub tangent_geoms: Vec<TangentGeom>,
     pub fill_tris: Vec<[f32; 3]>,
     pub fill_tris_low: Vec<[f32; 3]>,
+    /// Preserves the planar SOLID classification through block expansion so
+    /// it never gets merged with unrelated annotation fills of the same style.
+    pub fill_is_2d_solid: bool,
     /// Thickness-wall pick geometry, transformed by the insert like `points`
     /// so a block child's extruded wall stays selectable at the instance's
     /// place and scale. Never reaches the GPU.
@@ -426,66 +429,16 @@ fn build_defn(
                     nested_ins, doc, bg_color, depth_map,
                 )));
             }
-            // A dimension nested in a block bakes its geometry (extension /
-            // dim lines, arrows, text) into a per-instance `*D` block, exactly
-            // like a top-level dimension. The top-level path expands that block
-            // in `tessellate_entity`; the block-expand path calls the plain
-            // `tessellate::tessellate`, which does NOT, so nested dimensions
-            // drew nothing. Expand the `*D` block's entities here as block-local
-            // subs so they transform with the parent insert. (Empty block_name
-            // — a non-baked dimension — falls through to the default arm.)
-            EntityType::Dimension(dim)
-                if !dim.base().block_name.trim().is_empty()
-                    && !crate::entities::dimension::uses_custom_arrow_blocks(doc, dim) =>
-            {
-                let dblk = doc
-                    .block_records
-                    .iter()
-                    .find(|br| br.name.eq_ignore_ascii_case(&dim.base().block_name));
-                if let Some(dblk) = dblk {
-                    // The `*D` block content is baked in the coordinate space it
-                    // occupied when the dimension was created — for a dimension
-                    // inside a block that is often the ORIGINAL WCS, not the
-                    // block-local space. The dimension's insertion_point (DXF
-                    // 12) is the offset that maps the baked content into the
-                    // dimension's own (block-local) space; it is zero for
-                    // dimensions baked in place, so this is a no-op there.
-                    let ins = dim.base().insertion_point;
-                    for &deh in &dblk.entity_handles {
-                        let Some(dsub) = doc.get_entity(deh) else {
-                            continue;
-                        };
-                        // Definition points are baked as POINTs on Defpoints —
-                        // grip markers, never drawn (matches the top-level path).
-                        if matches!(dsub, EntityType::Point(_)) {
-                            continue;
-                        }
-                        if dsub.common().invisible || layer_hidden(doc, &dsub.common().layer) {
-                            continue;
-                        }
-                        let mut placed = dsub.clone();
-                        placed.as_entity_mut().translate(ins);
-                        // An arrowhead is baked as a nested INSERT of an arrow
-                        // block — route it through the nested-ref machinery so
-                        // the arrow block expands (tessellate_sub_local doesn't
-                        // expand inserts).
-                        if let EntityType::Insert(arrow) = &placed {
-                            subs.push(LocalSub::Nested(build_nested_ref(
-                                arrow, doc, bg_color, depth_map,
-                            )));
-                        } else {
-                            for lw in tessellate_sub_local(
-                                doc,
-                                &placed,
-                                anno_scale,
-                                annotation_scale_handle,
-                                bg_color,
-                                depth_map,
-                            ) {
-                                subs.push(LocalSub::Wire(lw));
-                            }
-                        }
-                    }
+            EntityType::Dimension(_) => {
+                for wire in tessellate_sub_local(
+                    doc,
+                    entity,
+                    anno_scale,
+                    annotation_scale_handle,
+                    bg_color,
+                    depth_map,
+                ) {
+                    subs.push(LocalSub::Wire(wire));
                 }
             }
             // A table nested in a block bakes its geometry (gridlines, cell
@@ -706,21 +659,38 @@ fn tessellate_sub_local(
     // Pass `local_offset` as the f64 world-offset so tessellate subtracts it
     // before casting to f32 — same precision-preservation trick used for
     // top-level entities, applied per-defn.
-    let wires_out = tessellate::tessellate(
-        doc,
-        h,
-        sub,
-        false,
-        sub_color,
-        pat_len,
-        pat,
-        lw_px,
-        anno_scale,
-        annotation_scale_handle,
-        None,
-        bg_color,
-        false,
-    );
+    let wires_out = if let EntityType::Dimension(dimension) = sub {
+        use crate::entities::dimension::DimensionTess;
+        dimension.tessellate(
+            doc,
+            h,
+            false,
+            sub_color,
+            lw_px,
+            anno_scale,
+            &HashSet::default(),
+            None,
+            bg_color,
+            None,
+            None,
+        )
+    } else {
+        tessellate::tessellate(
+            doc,
+            h,
+            sub,
+            false,
+            sub_color,
+            pat_len,
+            pat,
+            lw_px,
+            anno_scale,
+            annotation_scale_handle,
+            None,
+            bg_color,
+            false,
+        )
+    };
     if wires_out.is_empty() {
         return vec![];
     }
@@ -769,6 +739,7 @@ fn tessellate_sub_local(
             tangent_geoms: wire.tangent_geoms,
             fill_tris: wire.fill_tris,
             fill_tris_low: wire.fill_tris_low,
+            fill_is_2d_solid: wire.fill_is_2d_solid,
             pick_tris: wire.pick_tris,
             pick_tris_low: wire.pick_tris_low,
             color: wire.color,
@@ -1224,6 +1195,9 @@ struct StyleKey {
     /// discriminator, so greek fills must stay in their own batches even
     /// when their color/style would otherwise collide with regular wires.
     is_fill_only: bool,
+    /// Part of the batch key so planar SOLID fills remain independently
+    /// switchable after block geometry is merged by style.
+    fill_is_2d_solid: bool,
     /// Bit-cast composed block-local depth for band wires (`0` = no override).
     /// Keeps bands of different in-block draw ranks in separate batches so
     /// each finalized WireModel carries one correct `depth_override`.
@@ -1253,6 +1227,7 @@ struct BatchEntry {
     /// reconstructs `high + low`). Without it absolute f32 fills quantize to
     /// ~0.5 m and the greek-text rectangles shear.
     fill_tris_low: Vec<[f32; 3]>,
+    fill_is_2d_solid: bool,
     /// Accumulated thickness-wall pick geometry, paired high/low like
     /// `fill_tris`. Pick-only — no GPU batch reads this.
     pick_tris: Vec<[f32; 3]>,
@@ -1294,6 +1269,7 @@ impl BatchEntry {
         aci: u8,
         plinegen: bool,
         _is_fill_only: bool,
+        fill_is_2d_solid: bool,
     ) -> Self {
         // `is_fill_only` is part of the StyleKey hash so greek fills never
         // share a batch with regular wires (otherwise the finalized
@@ -1308,6 +1284,7 @@ impl BatchEntry {
             world_width,
             aci,
             plinegen,
+            fill_is_2d_solid,
             min_x: f32::INFINITY,
             min_y: f32::INFINITY,
             max_x: f32::NEG_INFINITY,
@@ -1341,6 +1318,7 @@ impl Batches {
                     world_width: b.world_width,
                     depth_override: b.local_depth,
                     fill_is_3d: false,
+                    fill_is_2d_solid: b.fill_is_2d_solid,
                     pick_tris: b.pick_tris,
                     pick_tris_low: b.pick_tris_low,
                     dash_from_start: false,
@@ -1385,6 +1363,7 @@ fn style_key(
     aci: u8,
     plinegen: bool,
     is_fill_only: bool,
+    fill_is_2d_solid: bool,
     local_depth: Option<f32>,
 ) -> StyleKey {
     StyleKey {
@@ -1410,6 +1389,7 @@ fn style_key(
         aci,
         plinegen,
         is_fill_only,
+        fill_is_2d_solid,
         depth_bits: local_depth.map_or(0, f32::to_bits),
     }
 }
@@ -1741,6 +1721,7 @@ fn emit_wire(
         lw.aci,
         lw.plinegen,
         lw.is_fill_only,
+        lw.fill_is_2d_solid,
         local_depth,
     );
 
@@ -1763,6 +1744,7 @@ fn emit_wire(
             lw.aci,
             lw.plinegen,
             lw.is_fill_only,
+            lw.fill_is_2d_solid,
         )
     });
     entry.local_depth = local_depth;

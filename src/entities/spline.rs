@@ -1,6 +1,7 @@
 use acadrust::entities::Spline;
+use crate::t;
 use truck_modeling::{
-    base::{BoundedCurve, ParametricCurve, Vector4},
+    base::{BoundedCurve, ParameterDivision1D, ParametricCurve, Vector4},
     builder, BSplineCurve, Curve, Edge, KnotVec, NurbsCurve, Point3, Wire,
 };
 
@@ -126,6 +127,77 @@ fn to_truck(spl: &Spline) -> TruckEntity {
     }
 }
 
+pub(crate) fn measurement_polyline(spl: &Spline) -> Vec<[f64; 3]> {
+    let count = spl.control_points.len();
+    if count < 2 {
+        if spl.fit_points.len() < 2 {
+            return spl.control_points.iter().map(|p| [p.x, p.y, p.z]).collect();
+        }
+        return if spl.flags.closed || spl.flags.periodic {
+            catmull_rom_polyline(&spl.fit_points, true)
+        } else {
+            fit_spline_polyline(spl)
+        };
+    }
+
+    let degree = spl.degree.max(0) as usize;
+    if degree == 0 || degree >= count {
+        return spl.control_points.iter().map(|p| [p.x, p.y, p.z]).collect();
+    }
+    let knot_vec = if spl.knots.len() == count + degree + 1 {
+        KnotVec::from(spl.knots.clone())
+    } else {
+        KnotVec::uniform_knot(degree, count - 1)
+    };
+
+    let mut min = [f64::INFINITY; 3];
+    let mut max = [f64::NEG_INFINITY; 3];
+    for point in &spl.control_points {
+        min[0] = min[0].min(point.x);
+        min[1] = min[1].min(point.y);
+        min[2] = min[2].min(point.z);
+        max[0] = max[0].max(point.x);
+        max[1] = max[1].max(point.y);
+        max[2] = max[2].max(point.z);
+    }
+    let diagonal = ((max[0] - min[0]).powi(2)
+        + (max[1] - min[1]).powi(2)
+        + (max[2] - min[2]).powi(2))
+    .sqrt();
+    let tolerance = crate::scene::convert::tess_util::fill_chord_tol(diagonal.max(1.0));
+
+    if spl.weights.len() == count {
+        let controls = spl
+            .control_points
+            .iter()
+            .zip(&spl.weights)
+            .map(|(point, &weight)| {
+                let weight = if weight.abs() < 1e-12 { 1.0 } else { weight };
+                Vector4::new(
+                    point.x * weight,
+                    point.y * weight,
+                    point.z * weight,
+                    weight,
+                )
+            })
+            .collect::<Vec<_>>();
+        let curve = NurbsCurve::new(BSplineCurve::new(knot_vec, controls));
+        let range = curve.range_tuple();
+        let (_, points) = curve.parameter_division(range, tolerance);
+        points.into_iter().map(|point| [point.x, point.y, point.z]).collect()
+    } else {
+        let controls = spl
+            .control_points
+            .iter()
+            .map(|point| Point3::new(point.x, point.y, point.z))
+            .collect::<Vec<_>>();
+        let curve = BSplineCurve::new(knot_vec, controls);
+        let range = curve.range_tuple();
+        let (_, points) = curve.parameter_division(range, tolerance);
+        points.into_iter().map(|point| [point.x, point.y, point.z]).collect()
+    }
+}
+
 /// Sample a Catmull-Rom spline through `pts` into a dense polyline. The curve
 /// passes through every input point; open ends use reflected phantom points so
 /// they don't kink, closed curves wrap around.
@@ -194,9 +266,8 @@ fn catmull_rom_polyline(pts: &[acadrust::types::Vector3], closed: bool) -> Vec<[
 
 /// Interpolate an open fit-point spline into a dense polyline: the C² cubic that
 /// passes through every fit point, clamped to the stored start/end tangents when
-/// present (natural end otherwise). This is what a fit spline *is* — the same
-/// interpolation AutoCAD-family tools draw — so its ends follow the specified
-/// tangents instead of the local slopes Catmull-Rom would use.
+/// present (natural end otherwise), so its ends follow the specified tangents
+/// instead of the local slopes Catmull-Rom would use.
 fn fit_spline_polyline(spl: &Spline) -> Vec<[f64; 3]> {
     let p: Vec<[f64; 3]> = spl.fit_points.iter().map(|q| [q.x, q.y, q.z]).collect();
     let n = p.len();
@@ -383,58 +454,58 @@ fn properties(spline: &Spline) -> Vec<PropSection> {
 
     vec![
         PropSection {
-            title: "Data Points".into(),
+            title: t!("Data Points").into_owned(),
             props: vec![
-                ro("Show", "show", show),
-                ro("Degree", "degree", spline.degree.to_string()),
+                ro(t!("Show").as_ref(), "show", show),
+                ro(t!("Degree").as_ref(), "degree", spline.degree.to_string()),
                 ro(
-                    "Control Point Count",
+                    t!("Control Point Count").as_ref(),
                     "ctrl_pt_count",
                     spline.control_points.len().to_string(),
                 ),
-                ro("Control Point", "ctrl_pt_index", "0"),
+                ro(t!("Control Point").as_ref(), "ctrl_pt_index", "0"),
                 edit(
-                    "Control Point X",
+                    t!("Control Point X").as_ref(),
                     "ctrl_pt_x",
                     cp0.map(|p| p.x).unwrap_or(0.0),
                 ),
                 edit(
-                    "Control Point Y",
+                    t!("Control Point Y").as_ref(),
                     "ctrl_pt_y",
                     cp0.map(|p| p.y).unwrap_or(0.0),
                 ),
                 edit(
-                    "Control Point Z",
+                    t!("Control Point Z").as_ref(),
                     "ctrl_pt_z",
                     cp0.map(|p| p.z).unwrap_or(0.0),
                 ),
-                edit("Weight", "weight", w0.unwrap_or(1.0)),
-                ro("Knot Parameterization", "knot_param", knot_param),
+                edit(t!("Weight").as_ref(), "weight", w0.unwrap_or(1.0)),
+                ro(t!("Knot Parameterization").as_ref(), "knot_param", knot_param),
                 ro(
-                    "Fit Point Count",
+                    t!("Fit Point Count").as_ref(),
                     "fit_pt_count",
                     spline.fit_points.len().to_string(),
                 ),
-                ro("Fit Point", "fit_pt_index", "0"),
-                edit("Fit Point X", "fit_pt_x", fp0.map(|p| p.x).unwrap_or(0.0)),
-                edit("Fit Point Y", "fit_pt_y", fp0.map(|p| p.y).unwrap_or(0.0)),
-                edit("Fit Point Z", "fit_pt_z", fp0.map(|p| p.z).unwrap_or(0.0)),
-                edit("Fit Tolerance", "fit_tolerance", spline.fit_tolerance),
-                edit("Start Tangent X", "start_tan_x", spline.begin_tangent.x),
-                edit("Start Tangent Y", "start_tan_y", spline.begin_tangent.y),
-                edit("Start Tangent Z", "start_tan_z", spline.begin_tangent.z),
-                edit("End Tangent X", "end_tan_x", spline.end_tangent.x),
-                edit("End Tangent Y", "end_tan_y", spline.end_tangent.y),
-                edit("End Tangent Z", "end_tan_z", spline.end_tangent.z),
+                ro(t!("Fit Point").as_ref(), "fit_pt_index", "0"),
+                edit(t!("Fit Point X").as_ref(), "fit_pt_x", fp0.map(|p| p.x).unwrap_or(0.0)),
+                edit(t!("Fit Point Y").as_ref(), "fit_pt_y", fp0.map(|p| p.y).unwrap_or(0.0)),
+                edit(t!("Fit Point Z").as_ref(), "fit_pt_z", fp0.map(|p| p.z).unwrap_or(0.0)),
+                edit(t!("Fit Tolerance").as_ref(), "fit_tolerance", spline.fit_tolerance),
+                edit(t!("Start Tangent X").as_ref(), "start_tan_x", spline.begin_tangent.x),
+                edit(t!("Start Tangent Y").as_ref(), "start_tan_y", spline.begin_tangent.y),
+                edit(t!("Start Tangent Z").as_ref(), "start_tan_z", spline.begin_tangent.z),
+                edit(t!("End Tangent X").as_ref(), "end_tan_x", spline.end_tangent.x),
+                edit(t!("End Tangent Y").as_ref(), "end_tan_y", spline.end_tangent.y),
+                edit(t!("End Tangent Z").as_ref(), "end_tan_z", spline.end_tangent.z),
             ],
         },
         PropSection {
-            title: "Misc".into(),
+            title: t!("Misc").into_owned(),
             props: vec![
-                ro("Closed", "closed", yes_no(closed)),
-                ro("Planar", "planar", yes_no(spline.flags.planar)),
-                ro("Length", "length", format!("{length:.4}")),
-                ro("Area", "area", area),
+                ro(t!("Closed").as_ref(), "closed", yes_no(closed)),
+                ro(t!("Planar").as_ref(), "planar", yes_no(spline.flags.planar)),
+                ro(t!("Length").as_ref(), "length", format!("{length:.4}")),
+                ro(t!("Area").as_ref(), "area", area),
             ],
         },
     ]

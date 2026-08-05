@@ -10,8 +10,9 @@
 
 use acadrust::Handle;
 use glam::DVec3;
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult, EntityTransform};
+use crate::command::{CadCommand, CmdResult, EntityTransform, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 
@@ -40,6 +41,7 @@ pub struct MirrorCommand {
     text_ghosts: Vec<(WireModel, DVec3)>,
     mirror_text: bool,
     step: Step,
+    plane: WorkingPlane,
 }
 
 impl MirrorCommand {
@@ -55,26 +57,40 @@ impl MirrorCommand {
             text_ghosts,
             mirror_text,
             step: Step::P1,
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for MirrorCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "MIRROR"
     }
 
     fn prompt(&self) -> String {
         match &self.step {
-            Step::P1 => format!(
-                "MIRROR  Specify first mirror-line point  [{} objects]:",
-                self.handles.len()
-            ),
-            Step::P2(p1) => format!(
-                "MIRROR  Specify second point  [p1={:.2},{:.2}]:",
-                p1.x, p1.y
-            ),
-            Step::AskErase { .. } => "MIRROR  Erase source objects? [Yes/No] <No>:".to_string(),
+            Step::P1 => t!(
+                "MIRROR  Specify first mirror-line point  [%{count} objects]:",
+                count = self.handles.len()
+            )
+            .into_owned(),
+            Step::P2(p1) => {
+                let px = format!("{:.2}", p1.x);
+                let py = format!("{:.2}", p1.y);
+                t!(
+                    "MIRROR  Specify second point  [p1=%{px},%{py}]:",
+                    px = px,
+                    py = py
+                )
+                .into_owned()
+            }
+            Step::AskErase { .. } => {
+                t!("MIRROR  Erase source objects? [Yes/No] <No>:").into_owned()
+            }
         }
     }
 
@@ -137,18 +153,32 @@ impl CadCommand for MirrorCommand {
         let mut out: Vec<WireModel> = self
             .wire_models
             .iter()
-            .map(|w| w.mirrored(p1.as_vec3(), p2.as_vec3()))
+            .map(|w| {
+                w.mirrored_in_plane(
+                    p1.as_vec3(),
+                    p2.as_vec3(),
+                    self.plane.z.as_vec3(),
+                )
+            })
             .collect();
         // Text ghosts honour MIRRTEXT: on → true glyph mirror (full reflection);
         // off → keep glyphs readable, relocate to the mirror-symmetric position
         // by reflecting the box centre and translating.
         for (w, center) in &self.text_ghosts {
             if self.mirror_text {
-                out.push(w.mirrored(p1.as_vec3(), p2.as_vec3()));
+                out.push(w.mirrored_in_plane(
+                    p1.as_vec3(),
+                    p2.as_vec3(),
+                    self.plane.z.as_vec3(),
+                ));
             } else {
-                let (mut cx, mut cy) = (center.x, center.y);
-                crate::scene::view::transform::reflect_xy_point(&mut cx, &mut cy, p1, p2);
-                let delta = glam::Vec3::new((cx - center.x) as f32, (cy - center.y) as f32, 0.0);
+                let reflected = crate::scene::view::transform::reflected_point(
+                    *center,
+                    p1,
+                    p2,
+                    self.plane.z,
+                );
+                let delta = (reflected - *center).as_vec3();
                 out.push(w.translated(delta));
             }
         }
@@ -170,7 +200,11 @@ impl MirrorCommand {
     /// Commit the mirror. `erase` true flips the originals in place; false
     /// keeps them and adds a mirrored copy. Either way the command ends.
     fn finish(&self, p1: DVec3, p2: DVec3, erase: bool) -> CmdResult {
-        let xform = EntityTransform::Mirror { p1, p2 };
+        let xform = EntityTransform::Mirror {
+            p1,
+            p2,
+            working_normal: self.plane.z,
+        };
         if erase {
             CmdResult::TransformSelected(self.handles.clone(), xform)
         } else {

@@ -6,6 +6,7 @@
 use crate::command::{CadCommand, CmdResult};
 use crate::scene::model::wire_model::WireModel;
 use glam::DVec3;
+use crate::t;
 
 pub struct PlotWindowCommand {
     p1: Option<DVec3>,
@@ -24,9 +25,9 @@ impl CadCommand for PlotWindowCommand {
 
     fn prompt(&self) -> String {
         if self.p1.is_none() {
-            "PLOTWINDOW  Specify first corner of plot window:".into()
+            t!("PLOTWINDOW  Specify first corner of plot window:").into_owned()
         } else {
-            "PLOTWINDOW  Specify opposite corner:".into()
+            t!("PLOTWINDOW  Specify opposite corner:").into_owned()
         }
     }
 
@@ -57,6 +58,7 @@ impl CadCommand for PlotWindowCommand {
             world_width: 0.0,
             depth_override: None,
             fill_is_3d: false,
+            fill_is_2d_solid: false,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
             dash_from_start: false,

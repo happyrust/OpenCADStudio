@@ -4,8 +4,9 @@ use acadrust::entities::{Wipeout, WipeoutClipType};
 use acadrust::types::{Vector2, Vector3};
 use acadrust::{EntityType, Handle};
 use glam::DVec3;
+use crate::t;
 
-use crate::command::{CadCommand, CmdOption, CmdResult};
+use crate::command::{CadCommand, CmdOption, CmdResult, WorkingPlane};
 use crate::modules::{IconKind, ModuleEvent, ToolDef};
 use crate::scene::model::wire_model::WireModel;
 
@@ -24,6 +25,7 @@ pub struct WipeoutCommand {
     mode: WipeoutMode,
     first: Option<DVec3>,
     points: Vec<DVec3>,
+    plane: WorkingPlane,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -39,6 +41,7 @@ impl WipeoutCommand {
             mode: WipeoutMode::Draw,
             first: None,
             points: Vec::new(),
+            plane: WorkingPlane::default(),
         }
     }
 
@@ -47,6 +50,7 @@ impl WipeoutCommand {
             mode: WipeoutMode::Polyline,
             first: None,
             points: Vec::new(),
+            plane: WorkingPlane::default(),
         }
     }
 
@@ -56,12 +60,18 @@ impl WipeoutCommand {
             mode: WipeoutMode::Rectangular,
             first: None,
             points: Vec::new(),
+            plane: WorkingPlane::default(),
         }
     }
 
     fn finish_draw(&self) -> CmdResult {
-        match make_poly_wipeout(&self.points) {
-            Some(entity) => CmdResult::CommitAndExit(entity),
+        let local: Vec<DVec3> = self
+            .points
+            .iter()
+            .map(|point| self.plane.to_local(*point))
+            .collect();
+        match make_poly_wipeout(&local) {
+            Some(entity) => CmdResult::CommitAndExit(self.plane.place_entity(entity)),
             None => CmdResult::NeedPoint,
         }
     }
@@ -73,6 +83,10 @@ impl WipeoutCommand {
 }
 
 impl CadCommand for WipeoutCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "WIPEOUT"
     }
@@ -80,20 +94,24 @@ impl CadCommand for WipeoutCommand {
     fn prompt(&self) -> String {
         match self.mode {
             WipeoutMode::Draw if self.points.is_empty() => {
-                "WIPEOUT  Specify first point or [Polyline]:".into()
+                t!("WIPEOUT  Specify first point or [Polyline]:").into_owned()
             }
-            WipeoutMode::Draw => format!(
-                "WIPEOUT  Specify next point or [Undo/Close] ({} points):",
-                self.points.len()
-            ),
+            WipeoutMode::Draw => {
+                let n = self.points.len();
+                t!(
+                    "WIPEOUT  Specify next point or [Undo/Close] (%{n} points):",
+                    n = n
+                )
+                .into_owned()
+            }
             WipeoutMode::Polyline => {
-                "WIPEOUT Polyline  Select a closed planar polyline:".into()
+                t!("WIPEOUT Polyline  Select a closed planar polyline:").into_owned()
             }
             WipeoutMode::Rectangular if self.first.is_none() => {
-                "WIPEOUT Rectangular  Specify first corner:".into()
+                t!("WIPEOUT Rectangular  Specify first corner:").into_owned()
             }
             WipeoutMode::Rectangular => {
-                "WIPEOUT Rectangular  Specify opposite corner:".into()
+                t!("WIPEOUT Rectangular  Specify opposite corner:").into_owned()
             }
         }
     }
@@ -101,11 +119,11 @@ impl CadCommand for WipeoutCommand {
     fn options(&self) -> Vec<CmdOption> {
         match self.mode {
             WipeoutMode::Draw if self.points.is_empty() => {
-                vec![CmdOption::new("Polyline", "P")]
+                vec![CmdOption::new(t!("Polyline").as_ref(), "P")]
             }
             WipeoutMode::Draw => vec![
-                CmdOption::new("Undo", "U"),
-                CmdOption::new("Close", "C"),
+                CmdOption::new(t!("Undo").as_ref(), "U"),
+                CmdOption::new(t!("Close").as_ref(), "C"),
             ],
             _ => Vec::new(),
         }
@@ -126,7 +144,11 @@ impl CadCommand for WipeoutCommand {
             }
             WipeoutMode::Rectangular => {
                 if let Some(first) = self.first {
-                    CmdResult::CommitAndExit(make_rect_wipeout(first, point))
+                    let first = self.plane.to_local(first);
+                    let point = self.plane.to_local(point);
+                    CmdResult::CommitAndExit(
+                        self.plane.place_entity(make_rect_wipeout(first, point)),
+                    )
                 } else {
                     self.first = Some(point);
                     CmdResult::NeedPoint
@@ -223,15 +245,21 @@ impl CadCommand for WipeoutCommand {
             }
             WipeoutMode::Rectangular => {
                 let first = self.first?;
+                let corners = {
+                    let first_local = self.plane.to_local(first);
+                    let point_local = self.plane.to_local(point);
+                    [
+                        first_local,
+                        DVec3::new(point_local.x, first_local.y, first_local.z),
+                        DVec3::new(point_local.x, point_local.y, first_local.z),
+                        DVec3::new(first_local.x, point_local.y, first_local.z),
+                        first_local,
+                    ]
+                    .map(|corner| self.plane.to_world(corner))
+                };
                 Some(WireModel::solid_f64(
                     "wipeout_preview".into(),
-                    vec![
-                        [first.x, first.y, first.z],
-                        [point.x, first.y, first.z],
-                        [point.x, point.y, first.z],
-                        [first.x, point.y, first.z],
-                        [first.x, first.y, first.z],
-                    ],
+                    corners.iter().map(|p| [p.x, p.y, p.z]).collect(),
                     WireModel::CYAN,
                     false,
                 ))

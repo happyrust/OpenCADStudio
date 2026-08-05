@@ -10,8 +10,9 @@
 
 use acadrust::types::Vector3;
 use acadrust::{Circle, EntityType};
+use crate::t;
 
-use crate::command::{CadCommand, CmdResult, DynField, TangentObject};
+use crate::command::{CadCommand, CmdResult, DynField, TangentObject, WorkingPlane};
 use crate::modules::draw::defaults;
 use crate::modules::IconKind;
 use crate::scene::model::wire_model::WireModel;
@@ -58,16 +59,18 @@ pub const ICON: IconKind = ICON_CR;
 
 // ── Shared geometry ────────────────────────────────────────────────────────
 
-fn circle_wire(center: DVec3, radius: f64) -> WireModel {
+fn circle_wire(center: DVec3, radius: f64, plane: WorkingPlane) -> WireModel {
     let segs = 64u32;
     let mut pts: Vec<[f64; 3]> = (0..=segs)
         .map(|i| {
             let a = (i as f64) * TAU / segs as f64;
-            [
-                center.x + radius * a.cos(),
-                center.y + radius * a.sin(),
-                center.z,
-            ]
+            let point = center
+                + plane.vector_to_world(DVec3::new(
+                    radius * a.cos(),
+                    radius * a.sin(),
+                    0.0,
+                ));
+            [point.x, point.y, point.z]
         })
         .collect();
     if let Some(first) = pts.first().cloned() {
@@ -76,17 +79,24 @@ fn circle_wire(center: DVec3, radius: f64) -> WireModel {
     WireModel::solid_f64("rubber_band".into(), pts, WireModel::CYAN, false)
 }
 
-fn make_circle(center: DVec3, radius: f64) -> EntityType {
-    EntityType::Circle(Circle {
+fn make_circle(center: DVec3, radius: f64, plane: WorkingPlane) -> EntityType {
+    let center = plane.to_local(center);
+    plane.place_entity(EntityType::Circle(Circle {
         center: Vector3::new(center.x, center.y, center.z),
         radius,
         ..Default::default()
-    })
+    }))
 }
 
 /// Circumscribed circle through three points.
 /// Returns `None` if the points are collinear.
-fn circumcircle(a: DVec3, b: DVec3, c: DVec3) -> Option<(DVec3, f64)> {
+fn circumcircle(
+    a: DVec3,
+    b: DVec3,
+    c: DVec3,
+    plane: WorkingPlane,
+) -> Option<(DVec3, f64)> {
+    let (a, b, c) = (plane.to_local(a), plane.to_local(b), plane.to_local(c));
     let ax = a.x;
     let ay = a.y;
     let bx = b.x;
@@ -106,7 +116,25 @@ fn circumcircle(a: DVec3, b: DVec3, c: DVec3) -> Option<(DVec3, f64)> {
         + (cx * cx + cy * cy) * (bx - ax))
         / d;
     let center = DVec3::new(ux, uy, a.z);
-    Some((center, center.distance(a)))
+    Some((plane.to_world(center), center.distance(a)))
+}
+
+fn plane_distance(a: DVec3, b: DVec3, plane: WorkingPlane) -> f64 {
+    let d = plane.vector_to_local(b - a);
+    d.x.hypot(d.y)
+}
+
+fn tangent_object_local(object: TangentObject, plane: WorkingPlane) -> TangentObject {
+    match object {
+        TangentObject::Line { p1, p2 } => TangentObject::Line {
+            p1: plane.to_local(p1),
+            p2: plane.to_local(p2),
+        },
+        TangentObject::Circle { center, radius } => TangentObject::Circle {
+            center: plane.to_local(center),
+            radius,
+        },
+    }
 }
 
 // ── Command: Center, Radius ────────────────────────────────────────────────
@@ -114,6 +142,7 @@ fn circumcircle(a: DVec3, b: DVec3, c: DVec3) -> Option<(DVec3, f64)> {
 pub struct CircleCommand {
     step: StepCR,
     default_r: f64,
+    plane: WorkingPlane,
 }
 enum StepCR {
     Center,
@@ -125,21 +154,34 @@ impl CircleCommand {
         Self {
             step: StepCR::Center,
             default_r: defaults::get_circle_radius(),
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for CircleCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "CIRCLE"
     }
     fn prompt(&self) -> String {
         match &self.step {
-            StepCR::Center => "CIRCLE  Specify center point:".into(),
-            StepCR::Radius(c) => format!(
-                "CIRCLE  Specify radius or type value  <{:.4}>  [center ({:.3},{:.3})]:",
-                self.default_r, c.x, c.y
-            ),
+            StepCR::Center => t!("CIRCLE  Specify center point:").into_owned(),
+            StepCR::Radius(c) => {
+                let r = format!("{:.4}", self.default_r);
+                let cx = format!("{:.3}", c.x);
+                let cy = format!("{:.3}", c.y);
+                t!(
+                    "CIRCLE  Specify radius or type value  <%{r}>  [center (%{cx},%{cy})]:",
+                    r = r,
+                    cx = cx,
+                    cy = cy
+                )
+                .into_owned()
+            }
         }
     }
 
@@ -151,7 +193,7 @@ impl CadCommand for CircleCommand {
                 CmdOption::new("2P", "2P"),
                 CmdOption::new("Ttr", "TTR"),
                 CmdOption::new("Ttt", "TTT"),
-                CmdOption::new("Diameter", "D"),
+                CmdOption::new(t!("Diameter").as_ref(), "D"),
             ],
             StepCR::Radius(_) => vec![],
         }
@@ -167,9 +209,9 @@ impl CadCommand for CircleCommand {
                 CmdResult::NeedPoint
             }
             StepCR::Radius(c) => {
-                let r = c.distance(pt);
+                let r = plane_distance(*c, pt, self.plane);
                 defaults::set_circle_radius(r);
-                CmdResult::CommitAndExit(make_circle(*c, r))
+                CmdResult::CommitAndExit(make_circle(*c, r, self.plane))
             }
         }
     }
@@ -177,7 +219,7 @@ impl CadCommand for CircleCommand {
         if let StepCR::Radius(c) = &self.step {
             let c = *c;
             let r = self.default_r;
-            return CmdResult::CommitAndExit(make_circle(c, r));
+            return CmdResult::CommitAndExit(make_circle(c, r, self.plane));
         }
         CmdResult::Cancel
     }
@@ -186,7 +228,7 @@ impl CadCommand for CircleCommand {
     }
     fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         if let StepCR::Radius(c) = &self.step {
-            Some(circle_wire(*c, c.distance(pt)))
+            Some(circle_wire(*c, plane_distance(*c, pt, self.plane), self.plane))
         } else {
             None
         }
@@ -208,7 +250,7 @@ impl CadCommand for CircleCommand {
             let r: f64 = text.trim().replace(',', ".").parse().ok()?;
             if r > 0.0 {
                 defaults::set_circle_radius(r);
-                return Some(CmdResult::CommitAndExit(make_circle(*c, r)));
+                return Some(CmdResult::CommitAndExit(make_circle(*c, r, self.plane)));
             }
         }
         None
@@ -242,6 +284,7 @@ impl CadCommand for CircleCommand {
 pub struct CircleCDCommand {
     step: StepCR,
     default_d: f64,
+    plane: WorkingPlane,
 }
 
 impl CircleCDCommand {
@@ -249,21 +292,27 @@ impl CircleCDCommand {
         Self {
             step: StepCR::Center,
             default_d: defaults::get_circle_diam(),
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for CircleCDCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "CIRCLE_CD"
     }
     fn prompt(&self) -> String {
         match &self.step {
-            StepCR::Center => "CIRCLE CD  Specify center point:".into(),
-            StepCR::Radius(c) => format!(
+            StepCR::Center => t!("CIRCLE CD  Specify center point:").into_owned(),
+            StepCR::Radius(c) => crate::tf!(
                 "CIRCLE CD  Specify diameter or type value  <{:.4}>  [center ({:.3},{:.3})]:",
                 self.default_d, c.x, c.y
-            ),
+            )
+            .into_owned(),
         }
     }
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
@@ -273,9 +322,9 @@ impl CadCommand for CircleCDCommand {
                 CmdResult::NeedPoint
             }
             StepCR::Radius(c) => {
-                let d = c.distance(pt) * 2.0;
+                let d = plane_distance(*c, pt, self.plane) * 2.0;
                 defaults::set_circle_diam(d);
-                CmdResult::CommitAndExit(make_circle(*c, d / 2.0))
+                CmdResult::CommitAndExit(make_circle(*c, d / 2.0, self.plane))
             }
         }
     }
@@ -283,7 +332,7 @@ impl CadCommand for CircleCDCommand {
         if let StepCR::Radius(c) = &self.step {
             let c = *c;
             let d = self.default_d;
-            return CmdResult::CommitAndExit(make_circle(c, (d / 2.0) as f64));
+            return CmdResult::CommitAndExit(make_circle(c, d / 2.0, self.plane));
         }
         CmdResult::Cancel
     }
@@ -293,7 +342,7 @@ impl CadCommand for CircleCDCommand {
     fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         // Preview radius = distance to cursor; on commit that distance becomes the radius (diameter = 2x).
         if let StepCR::Radius(c) = &self.step {
-            Some(circle_wire(*c, c.distance(pt)))
+            Some(circle_wire(*c, plane_distance(*c, pt, self.plane), self.plane))
         } else {
             None
         }
@@ -303,7 +352,7 @@ impl CadCommand for CircleCDCommand {
             let d: f64 = text.trim().replace(',', ".").parse().ok()?;
             if d > 0.0 {
                 defaults::set_circle_diam(d);
-                return Some(CmdResult::CommitAndExit(make_circle(*c, d / 2.0)));
+                return Some(CmdResult::CommitAndExit(make_circle(*c, d / 2.0, self.plane)));
             }
         }
         None
@@ -329,23 +378,31 @@ impl CadCommand for CircleCDCommand {
 
 pub struct Circle2PCommand {
     p1: Option<DVec3>,
+    plane: WorkingPlane,
 }
 
 impl Circle2PCommand {
     pub fn new() -> Self {
-        Self { p1: None }
+        Self {
+            p1: None,
+            plane: WorkingPlane::default(),
+        }
     }
 }
 
 impl CadCommand for Circle2PCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "CIRCLE_2P"
     }
     fn prompt(&self) -> String {
         if self.p1.is_none() {
-            "CIRCLE 2P  Specify first end of diameter:".into()
+            crate::t!("CIRCLE 2P  Specify first end of diameter:").into_owned()
         } else {
-            "CIRCLE 2P  Specify second end of diameter:".into()
+            crate::t!("CIRCLE 2P  Specify second end of diameter:").into_owned()
         }
     }
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
@@ -356,8 +413,8 @@ impl CadCommand for Circle2PCommand {
             }
             Some(p1) => {
                 let center = (p1 + pt) * 0.5;
-                let radius = p1.distance(pt) / 2.0;
-                CmdResult::CommitAndExit(make_circle(center, radius))
+                let radius = plane_distance(p1, pt, self.plane) / 2.0;
+                CmdResult::CommitAndExit(make_circle(center, radius, self.plane))
             }
         }
     }
@@ -370,8 +427,8 @@ impl CadCommand for Circle2PCommand {
     fn on_mouse_move(&mut self, pt: DVec3) -> Option<WireModel> {
         let p1 = self.p1?;
         let center = (p1 + pt) * 0.5;
-        let radius = p1.distance(pt) / 2.0;
-        Some(circle_wire(center, radius))
+        let radius = plane_distance(p1, pt, self.plane) / 2.0;
+        Some(circle_wire(center, radius, self.plane))
     }
 }
 
@@ -379,23 +436,31 @@ impl CadCommand for Circle2PCommand {
 
 pub struct Circle3PCommand {
     pts: Vec<DVec3>,
+    plane: WorkingPlane,
 }
 
 impl Circle3PCommand {
     pub fn new() -> Self {
-        Self { pts: Vec::new() }
+        Self {
+            pts: Vec::new(),
+            plane: WorkingPlane::default(),
+        }
     }
 }
 
 impl CadCommand for Circle3PCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "CIRCLE_3P"
     }
     fn prompt(&self) -> String {
         match self.pts.len() {
-            0 => "CIRCLE 3P  Specify first point:".into(),
-            1 => "CIRCLE 3P  Specify second point:".into(),
-            _ => "CIRCLE 3P  Specify third point:".into(),
+            0 => crate::t!("CIRCLE 3P  Specify first point:").into_owned(),
+            1 => crate::t!("CIRCLE 3P  Specify second point:").into_owned(),
+            _ => crate::t!("CIRCLE 3P  Specify third point:").into_owned(),
         }
     }
     fn on_point(&mut self, pt: DVec3) -> CmdResult {
@@ -404,8 +469,10 @@ impl CadCommand for Circle3PCommand {
             return CmdResult::NeedPoint;
         }
         let (a, b, c) = (self.pts[0], self.pts[1], self.pts[2]);
-        match circumcircle(a, b, c) {
-            Some((center, radius)) => CmdResult::CommitAndExit(make_circle(center, radius)),
+        match circumcircle(a, b, c, self.plane) {
+            Some((center, radius)) => {
+                CmdResult::CommitAndExit(make_circle(center, radius, self.plane))
+            }
             None => {
                 self.pts.pop();
                 CmdResult::NeedPoint
@@ -425,14 +492,14 @@ impl CadCommand for Circle3PCommand {
                 // Show circle preview with p1→cursor as diameter (same as 2P).
                 let p1 = self.pts[0];
                 let center = (p1 + pt) * 0.5;
-                let radius = p1.distance(pt) / 2.0;
-                Some(circle_wire(center, radius))
+                let radius = plane_distance(p1, pt, self.plane) / 2.0;
+                Some(circle_wire(center, radius, self.plane))
             }
             _ => {
                 // Show circumcircle preview if non-collinear, else polyline.
                 let (a, b) = (self.pts[0], self.pts[1]);
-                if let Some((center, radius)) = circumcircle(a, b, pt) {
-                    Some(circle_wire(center, radius))
+                if let Some((center, radius)) = circumcircle(a, b, pt, self.plane) {
+                    Some(circle_wire(center, radius, self.plane))
                 } else {
                     Some(WireModel::solid_f64(
                         "rubber_band".into(),
@@ -850,6 +917,7 @@ fn ttt_solve_sign(objs: &[TangentObject; 3], eps: &[f64; 3]) -> Vec<(DVec3, f64)
 
 pub struct CircleTTRCommand {
     step: StepTTR,
+    plane: WorkingPlane,
 }
 
 enum StepTTR {
@@ -870,11 +938,16 @@ impl CircleTTRCommand {
     pub fn new() -> Self {
         Self {
             step: StepTTR::First,
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for CircleTTRCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "CIRCLE_TTR"
     }
@@ -897,9 +970,9 @@ impl CadCommand for CircleTTRCommand {
 
     fn prompt(&self) -> String {
         match &self.step {
-            StepTTR::First => "CIRCLE TTR  Select first tangent object:".into(),
-            StepTTR::Second { .. } => "CIRCLE TTR  Select second tangent object:".into(),
-            StepTTR::Radius { .. } => "CIRCLE TTR  Specify radius:".into(),
+            StepTTR::First => crate::t!("CIRCLE TTR  Select first tangent object:").into_owned(),
+            StepTTR::Second { .. } => crate::t!("CIRCLE TTR  Select second tangent object:").into_owned(),
+            StepTTR::Radius { .. } => crate::t!("CIRCLE TTR  Specify radius:").into_owned(),
         }
     }
 
@@ -908,6 +981,8 @@ impl CadCommand for CircleTTRCommand {
     }
 
     fn on_tangent_point(&mut self, obj: TangentObject, hit: DVec3) -> CmdResult {
+        let obj = tangent_object_local(obj, self.plane);
+        let hit = self.plane.to_local(hit);
         match &self.step {
             StepTTR::First => {
                 self.step = StepTTR::Second {
@@ -945,7 +1020,11 @@ impl CadCommand for CircleTTRCommand {
             let hint = (*hit1 + *hit2) * 0.5;
             let candidates = ttr_candidates(*obj1, *obj2, r);
             if let Some(center) = best_of(&candidates, hint) {
-                Some(CmdResult::CommitAndExit(make_circle(center, r)))
+                Some(CmdResult::CommitAndExit(make_circle(
+                    self.plane.to_world(center),
+                    r,
+                    self.plane,
+                )))
             } else {
                 Some(CmdResult::Cancel)
             }
@@ -970,6 +1049,7 @@ impl CadCommand for CircleTTRCommand {
 pub struct CircleTTTCommand {
     objs: Vec<TangentObject>,
     hits: Vec<DVec3>,
+    plane: WorkingPlane,
 }
 
 impl CircleTTTCommand {
@@ -977,11 +1057,16 @@ impl CircleTTTCommand {
         Self {
             objs: Vec::new(),
             hits: Vec::new(),
+            plane: WorkingPlane::default(),
         }
     }
 }
 
 impl CadCommand for CircleTTTCommand {
+    fn set_working_plane(&mut self, plane: WorkingPlane) {
+        self.plane = plane;
+    }
+
     fn name(&self) -> &'static str {
         "CIRCLE_TTT"
     }
@@ -992,9 +1077,9 @@ impl CadCommand for CircleTTTCommand {
 
     fn prompt(&self) -> String {
         match self.objs.len() {
-            0 => "CIRCLE TTT  Select first tangent object:".into(),
-            1 => "CIRCLE TTT  Select second tangent object:".into(),
-            _ => "CIRCLE TTT  Select third tangent object:".into(),
+            0 => crate::t!("CIRCLE TTT  Select first tangent object:").into_owned(),
+            1 => crate::t!("CIRCLE TTT  Select second tangent object:").into_owned(),
+            _ => crate::t!("CIRCLE TTT  Select third tangent object:").into_owned(),
         }
     }
 
@@ -1003,15 +1088,19 @@ impl CadCommand for CircleTTTCommand {
     }
 
     fn on_tangent_point(&mut self, obj: TangentObject, hit: DVec3) -> CmdResult {
-        self.objs.push(obj);
-        self.hits.push(hit);
+        self.objs.push(tangent_object_local(obj, self.plane));
+        self.hits.push(self.plane.to_local(hit));
         if self.objs.len() < 3 {
             return CmdResult::NeedPoint;
         }
         let hint = self.hits.iter().fold(DVec3::ZERO, |a, &b| a + b) / 3.0;
         let candidates = ttt_candidates(self.objs[0], self.objs[1], self.objs[2]);
         match best_circle_of(&candidates, hint) {
-            Some((center, r)) => CmdResult::CommitAndExit(make_circle(center, r)),
+            Some((center, r)) => CmdResult::CommitAndExit(make_circle(
+                self.plane.to_world(center),
+                r,
+                self.plane,
+            )),
             None => {
                 self.objs.pop();
                 self.hits.pop();
