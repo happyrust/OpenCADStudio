@@ -4,16 +4,16 @@
 // geometry projection; this module maps the source-backed part of that
 // projection onto acadrust entities so a `.pid` opens like any other drawing.
 //
-// `Decoded` entities are imported as drawing geometry. Two kinds of
-// `Inferred` evidence come in as well, each on its own hidden layer, because
-// their coordinates share the decoded geometry's space: annotation anchors,
-// and the endpoint pairs whose two ends both land on the sheet. The rest
-// stays out, and inferred `Point` is the part of "the rest" worth naming: it
-// is the largest inferred category on every fixture, so dropping it looks
-// like a loss. It is not. Of the 321 across the four fixtures, none is
-// drawing content -- 261 come from a sliding window over raw bytes rather
-// than from a record, and the ones that do land on the sheet either sit at
-// the origin or duplicate an anchor already drawn. Measured in
+// `Decoded` entities are imported as drawing geometry. One kind of
+// `Inferred` evidence comes in as well, on its own hidden layer, because its
+// coordinates share the decoded geometry's space: the endpoint pairs whose
+// two ends both land on the sheet. The rest stays out, and inferred `Point`
+// is the part of "the rest" worth naming: it is the largest inferred
+// category on every fixture, so dropping it looks like a loss. It is not. Of
+// the 321 across the four fixtures, none is drawing content -- 261 come from
+// a sliding window over raw bytes rather than from a record, and the ones
+// that do land on the sheet either sit at the origin or duplicate a
+// placement the drawing already carries. Measured in
 // `pid-parse/docs/analysis/2026-08-04-inferred-points-negative-note.md`;
 // `igPoint2d` is the only point family the format has, and all of it
 // decodes. `ProbeOnly` evidence has no position at all.
@@ -70,6 +70,8 @@ const SYMBOL_LABEL_GAP_MM: f64 = 0.8;
 // it is drawn as a stub leaving the anchor along that orientation: the end at
 // the anchor is the position, the direction is the decoded angle. A cross
 // would hide the angle, since the ones observed are all multiples of 90.
+// Nothing reaches this while the anchor read stands retracted; see
+// `build_inferred`.
 const ANNOTATION_TICK_MM: f64 = 3.0;
 
 // Shortest connectivity link worth drawing, and the same bound used to tell an
@@ -120,8 +122,10 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
         // switched off: the answer is in the file, one layer toggle away.
         (LAYER_SYMBOL_LABEL, Color::GRAY, false),
         (LAYER_POINT, Color::MAGENTA, true),
-        // Inferred, so hidden by default for the same reason: it is evidence
-        // about the drawing rather than the drawing.
+        // Empty since the `JStyleOverride` anchor read was retracted -- see
+        // `build_inferred`. Still declared, and still hidden: the records are
+        // in the file, and a layer that is present and empty says so where a
+        // missing one would not.
         (LAYER_ANNOTATION, Color::YELLOW, false),
         (LAYER_CONNECTIVITY, Color::BLUE, false),
         // Decoded, but decoded into a shape the record does not really have.
@@ -507,12 +511,16 @@ fn build_entities(
 
 /// Draw the inferred kinds that have a usable position.
 ///
-/// A `JStyleOverride` record is `SmartPlant`'s tagged instrument / annotation
-/// placement. Its anchor is inferred rather than decoded, but unlike the other
-/// inferred evidence it lands in the same normalized space the decoded
-/// geometry uses -- across the fixtures every anchor sits inside the sheet,
-/// and none of them coincides with a symbol or text placement, so each one is
-/// an object the drawing has and the import would otherwise lose entirely.
+/// The `Annotation` arm is unreachable as it stands, and kept for when it is
+/// not. It drew a stub at the anchor a `JStyleOverride` record (PSM `0x0030`)
+/// was read to carry in payload `+0..15`, on the strength of those sixteen
+/// bytes holding two normalized f64 across every fixture. `style.dll`'s own
+/// version-3 serialiser reads them as four independent u32 instead, so the
+/// anchor was a coincidence rather than a position, and `pid-parse` emits the
+/// family as `ProbeOnly` now -- measured in that crate's
+/// `docs/analysis/2026-08-04-jstyleoverride-native-reader-settles-it.md`. The
+/// kind stays in the parser's vocabulary, so if the real anchor is ever
+/// located these stubs come back with it.
 ///
 /// An endpoint pair is the drawing's connectivity graph -- which object joins
 /// which -- rather than drafting geometry, and only part of it is expressed in

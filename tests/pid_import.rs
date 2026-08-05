@@ -77,6 +77,47 @@ fn import_declares_its_layers_and_hides_the_evidence_ones() {
     }
 }
 
+/// `PID-ANNOTATION` is declared, hidden, and empty.
+///
+/// It used to carry one stub per `JStyleOverride` record (PSM `0x0030`),
+/// placed at an anchor read from payload `+0..15` as two f64. `style.dll`'s
+/// own version-3 serialiser reads those same sixteen bytes as four
+/// independent u32, so the anchor was never a coordinate; `pid-parse` emits
+/// the family as `ProbeOnly` evidence now, and probe evidence carries no
+/// position to draw. Settled in pid-parse's
+/// `docs/analysis/2026-08-04-jstyleoverride-native-reader-settles-it.md`.
+///
+/// The layer keeps its declaration rather than going away with its contents.
+/// The records are still in the file and still reach the importer, so an
+/// empty layer states a decode gap that a missing one would hide -- and if
+/// the anchor's real offset is ever found, the stubs come back here.
+#[test]
+fn the_annotation_layer_is_declared_but_draws_nothing() {
+    for name in [
+        "DWG-0201GP06-01.pid",
+        "DWG-0202GP06-01.pid",
+        "D06.pid",
+        "工艺管道及仪表流程-1.pid",
+    ] {
+        let Some(doc) = import(name) else {
+            continue;
+        };
+        assert!(
+            doc.layers.get("PID-ANNOTATION").is_some(),
+            "{name}: PID-ANNOTATION stays declared even while it is empty"
+        );
+        assert!(
+            is_hidden(&doc, "PID-ANNOTATION"),
+            "{name}: PID-ANNOTATION must open hidden"
+        );
+        assert_eq!(
+            on_layer(&doc, "PID-ANNOTATION").count(),
+            0,
+            "{name}: the JStyleOverride anchor read is retracted, so nothing may reach PID-ANNOTATION"
+        );
+    }
+}
+
 /// A `GLine2d` whose parameter range never resolved decodes as the origin
 /// walked one whole source unit -- a 1000mm rule straight across a 594mm
 /// sheet. It stays in the document, because the record is in the file, but on
