@@ -55,6 +55,7 @@ fn expand_block_mtext(
         None,
         false,
         [0.0, 0.0, 0.0, 1.0],
+        None,
         &Default::default(),
     );
     expand_insert(
