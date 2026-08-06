@@ -11,6 +11,14 @@
 //! text,x,y,height,rotation_deg,"value"
 //! ```
 //!
+//! A row that draws with its own width and colour rather than the layer's
+//! carries a trailing `@RRGGBB:WW` token, `WW` being the line weight in
+//! hundredths of a millimetre the way DXF stores it. It goes last, and it is
+//! the only non-numeric field a `poly` can have, so a reader that only wants
+//! geometry drops it without needing to know the row's arity. Without it the
+//! dump cannot show what the style table is for: a 0.13mm instrument line and
+//! a 0.7mm process header have the same coordinates either way.
+//!
 //! Arcs are emitted as sampled polylines rather than as their own row, which
 //! keeps the plotter from having to know this crate's angle convention.
 //!
@@ -19,6 +27,7 @@
 //! The layer list is exact names, not a prefix: `PID-SYMBOL` and
 //! `PID-SYMBOL-LABEL` are different things and the latter ships hidden.
 
+use acadrust::types::{Color, LineWeight};
 use acadrust::EntityType;
 use OpenCADStudio::io;
 
@@ -47,12 +56,12 @@ fn main() {
                 continue;
             }
         }
-        match entity {
+        let row = match entity {
             EntityType::Line(l) => {
-                println!("line,{},{},{},{}", l.start.x, l.start.y, l.end.x, l.end.y);
+                format!("line,{},{},{},{}", l.start.x, l.start.y, l.end.x, l.end.y)
             }
             EntityType::Circle(c) => {
-                println!("circle,{},{},{}", c.center.x, c.center.y, c.radius);
+                format!("circle,{},{},{}", c.center.x, c.center.y, c.radius)
             }
             EntityType::Arc(a) => {
                 let (from, to) = (a.start_angle.to_radians(), a.end_angle.to_radians());
@@ -74,7 +83,7 @@ fn main() {
                         ]
                     })
                     .collect();
-                println!("poly,{}", points.join(","));
+                format!("poly,{}", points.join(","))
             }
             EntityType::LwPolyline(p) => {
                 if p.vertices.len() < 2 {
@@ -85,20 +94,38 @@ fn main() {
                     .iter()
                     .flat_map(|v| [v.location.x.to_string(), v.location.y.to_string()])
                     .collect();
-                println!("poly,{}", points.join(","));
+                format!("poly,{}", points.join(","))
             }
             EntityType::Text(t) => {
                 if t.value.trim().is_empty() {
                     continue;
                 }
-                println!(
+                format!(
                     "text,{},{},{},{},{:?}",
                     t.insertion_point.x, t.insertion_point.y, t.height, t.rotation, t.value
-                );
+                )
             }
-            _ => {}
-        }
+            _ => continue,
+        };
+        println!("{row}{}", style_token(entity));
     }
+}
+
+/// The width and colour an entity draws with, as a trailing `@RRGGBB:WW`
+/// token, or nothing where it draws `ByLayer`.
+///
+/// `ByLayer` is what a symbol body and the diagnostic layers keep, so an
+/// absent token is a statement rather than a gap: the style table had nothing
+/// to say about that row.
+fn style_token(entity: &EntityType) -> String {
+    let common = entity.common();
+    let Color::Rgb { r, g, b } = common.color else {
+        return String::new();
+    };
+    let LineWeight::Value(weight) = common.line_weight else {
+        return String::new();
+    };
+    format!(",@{r:02X}{g:02X}{b:02X}:{weight}")
 }
 
 fn layer_of(entity: &EntityType) -> Option<&str> {

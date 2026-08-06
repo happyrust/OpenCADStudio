@@ -50,6 +50,94 @@ fn is_hidden(doc: &CadDocument, layer: &str) -> bool {
         .off
 }
 
+/// Line work comes in at the width and colour the drawing asks for.
+///
+/// Until `pid-parse` could resolve a geometry record to its style, every line
+/// arrived at the layer's white default, so a 0.13mm instrument line and a
+/// 0.7mm process header were indistinguishable. The import now reads both off
+/// the drawing's own style table, and this pins the result: a regression
+/// would show up as line work back on `ByLayer`, which is invisible in a
+/// count of entities.
+#[test]
+fn line_work_carries_the_width_and_colour_the_drawing_states() {
+    let Some(doc) = import("DWG-0201GP06-01.pid") else {
+        return;
+    };
+
+    let mut palette: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut unstyled = 0usize;
+    for layer in ["PID-GEOMETRY", "PID-POINT"] {
+        for entity in on_layer(&doc, layer) {
+            let common = entity.common();
+            match (common.color, common.line_weight) {
+                (
+                    acadrust::types::Color::Rgb { r, g, b },
+                    acadrust::types::LineWeight::Value(w),
+                ) => {
+                    *palette
+                        .entry(format!("{w:>3} #{r:02X}{g:02X}{b:02X}"))
+                        .or_default() += 1;
+                }
+                _ => unstyled += 1,
+            }
+        }
+    }
+
+    assert_eq!(
+        unstyled, 0,
+        "every entity on the drawing layers should carry a resolved style, got palette {palette:?}"
+    );
+    // Widths are hundredths of a millimetre, so 70 is the 0.7mm process
+    // header and 10 the 0.1mm point tick. Olive #808000 on the heavy lines
+    // and green #008000 on the thin ones is this drawing's own palette.
+    let expected: std::collections::BTreeMap<String, usize> = [
+        (" 10 #000000", 53),
+        (" 10 #0000FF", 11),
+        (" 18 #008000", 4),
+        (" 35 #000000", 43),
+        (" 35 #FE0060", 3),
+        (" 70 #808000", 24),
+    ]
+    .iter()
+    .map(|(key, count)| ((*key).to_string(), *count))
+    .collect();
+    assert_eq!(palette, expected);
+}
+
+/// Lettering comes in at the height the drawing's character style states.
+///
+/// It used to be a flat ISO 2.5mm for every label, because the height was not
+/// reachable. Most of a P&ID's lettering turns out to be 1/8 inch, so that
+/// default was a quarter too small across the sheet.
+#[test]
+fn lettering_carries_the_height_the_drawing_states() {
+    let Some(doc) = import("DWG-0201GP06-01.pid") else {
+        return;
+    };
+
+    let mut heights: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for entity in on_layer(&doc, "PID-TEXT") {
+        if let EntityType::Text(text) = entity {
+            *heights.entry(format!("{:.3}", text.height)).or_default() += 1;
+        }
+    }
+
+    // 3.175 is 1/8 inch, 1.500 and 3.500 are ISO 3098 sizes. 2.500 is also
+    // the fallback, so it is the one bucket that proves nothing on its own;
+    // the other four are heights the old fixed default could not produce.
+    let expected: std::collections::BTreeMap<String, usize> = [
+        ("1.500", 2),
+        ("2.464", 3),
+        ("2.500", 9),
+        ("3.175", 21),
+        ("3.500", 2),
+    ]
+    .iter()
+    .map(|(key, count)| ((*key).to_string(), *count))
+    .collect();
+    assert_eq!(heights, expected);
+}
+
 /// Every layer the importer names exists, and the ones carrying evidence
 /// rather than drawing ship switched off.
 #[test]

@@ -21,8 +21,9 @@
 use std::path::{Path, PathBuf};
 
 use acadrust::entities::{Circle, Line, LwPolyline, Point, Text};
-use acadrust::types::{Color, Vector2, Vector3};
+use acadrust::types::{Color, LineWeight, Vector2, Vector3};
 use acadrust::{CadDocument, EntityType};
+use pid_parse::style_link::{LineStyleIndex, ResolvedLineStyle};
 use pid_parse::symbol_library::{SymbolLibrary, SymbolPrimitive};
 use pid_parse::{
     build_normalized_geometry, NormalizedPidGeometry, PidDrawingUnits, PidGeometryConfidence,
@@ -137,6 +138,22 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
 
     let mut library = discover_symbol_library(path);
 
+    // Line width and colour are the drawing's own, read from its style table:
+    // each geometry record names a style id, and that record carries a width
+    // in metres and a Win32 COLORREF. See `pid-parse`'s `style_link` module
+    // and `docs/analysis/2026-08-05-geometry-index-is-the-style-link.md`.
+    // Until this landed every line came in at the layer's white default, so a
+    // 0.13mm instrument line and a 0.7mm process header looked identical.
+    // A file whose style table will not read keeps that old behaviour rather
+    // than failing the import.
+    let styles = pid_parse::style_link::line_styles_for_file(path).unwrap_or_default();
+    // Character height comes from the same table, one hop further along: a
+    // text record names a paragraph style, and the height is on the character
+    // style that paragraph style names. Most of a P&ID's lettering turns out
+    // to be 1/8 inch, so `TEXT_HEIGHT_MM` was reading a quarter too small.
+    // Records whose height does not resolve keep that fallback.
+    let text_heights = pid_parse::style_link::text_heights_for_file(path).unwrap_or_default();
+
     let page_mm = geometry.page_dimensions_mm;
     let projection = Projection::for_geometry(&geometry, path);
     let mut bounds = Bounds::new(projection);
@@ -161,7 +178,15 @@ pub fn load_pid(path: &Path) -> Result<CadDocument, String> {
             accumulate_bounds(&entity.kind, &mut bounds);
         }
         drawn += built.len();
-        for one in built {
+        let symbology = style_for(&styles, entity);
+        let height_mm = height_for(&text_heights, entity).map(|h| projection.mm(h.height_m));
+        for mut one in built {
+            if let Some(style) = symbology {
+                apply_symbology(&mut one, style);
+            }
+            if let Some(mm) = height_mm {
+                apply_text_height(&mut one, mm);
+            }
             let _ = doc.add_entity(one);
         }
     }
@@ -373,6 +398,71 @@ fn report_import(
         library.roots(),
         missing.iter().take(3).copied().collect::<Vec<_>>().join(", ")
     );
+}
+
+/// The style table's entry for one normalized entity, if it has one.
+///
+/// The join is `(stream path, graphic oid)`, which is what `pid-parse` keys
+/// the table on. Only the three families that carry a style reference are in
+/// it, so text, symbols and every kind of evidence simply miss.
+fn style_for<'a>(
+    styles: &'a LineStyleIndex,
+    entity: &pid_parse::PidGraphicEntity,
+) -> Option<&'a ResolvedLineStyle> {
+    let stream = entity.source.stream_path.as_deref()?;
+    let oid = entity.graphic_oid?;
+    styles.get(&(stream.to_string(), oid))
+}
+
+/// The character height the drawing states for one text record, if it has
+/// one. Same `(stream path, graphic oid)` join as [`style_for`].
+fn height_for<'a>(
+    heights: &'a pid_parse::style_link::TextHeightIndex,
+    entity: &pid_parse::PidGraphicEntity,
+) -> Option<&'a pid_parse::style_link::ResolvedTextHeight> {
+    let stream = entity.source.stream_path.as_deref()?;
+    let oid = entity.graphic_oid?;
+    heights.get(&(stream.to_string(), oid))
+}
+
+/// Letter a text entity at the height its style states, in millimetres.
+///
+/// Only the sheet's own lettering. A symbol's internal text is drawn from the
+/// `.sym` library, whose records carry no height of their own, so it keeps
+/// the scaled fallback rather than borrowing a height from the label beside
+/// it.
+fn apply_text_height(entity: &mut EntityType, height_mm: f64) {
+    if !(height_mm.is_finite() && height_mm > 0.0) {
+        return;
+    }
+    if let EntityType::Text(text) = entity {
+        if text.common.layer == LAYER_TEXT {
+            text.height = height_mm;
+        }
+    }
+}
+
+/// Give an entity the width and colour its source record asks for.
+///
+/// Only the two layers carrying the drawing's own line work are painted.
+/// `PID-UNRESOLVED` and `PID-CONNECTIVITY` are diagnostics whose layer colour
+/// *is* the diagnosis, and repainting them in the drawing's palette would
+/// hide the thing they exist to show.
+fn apply_symbology(entity: &mut EntityType, style: &ResolvedLineStyle) {
+    let common = entity.common_mut();
+    if common.layer != LAYER_GEOMETRY && common.layer != LAYER_POINT {
+        return;
+    }
+    let [r, g, b] = style.symbology.rgb();
+    common.color = Color::from_rgb(r, g, b);
+    // DXF stores line weight in hundredths of a millimetre. The source values
+    // are mostly on the ISO 128 ladder; the 0.10mm point ticks are not, and
+    // are carried across as measured rather than snapped, because snapping
+    // would report a width the drawing does not ask for.
+    let hundredths = (style.symbology.width_mm() * 100.0).round();
+    if (0.0..=211.0).contains(&hundredths) {
+        common.line_weight = LineWeight::Value(hundredths as i16);
+    }
 }
 
 fn build_entities(
