@@ -12,6 +12,7 @@ pub mod creation_style;
 pub mod model;
 pub mod pick;
 pub mod pipeline;
+pub(crate) mod render_graph;
 pub mod text;
 pub mod view;
 
@@ -1494,6 +1495,12 @@ struct SceneLight {
     attenuation_type: f32,
     attenuation_start: f32,
     attenuation_end: f32,
+    cast_shadows: bool,
+    shadow_softness: f32,
+    shadow_map_size: u32,
+    web_profile: [f32; 8],
+    web_rotation: [f32; 3],
+    web_enabled: bool,
 }
 
 pub struct Scene {
@@ -1723,11 +1730,9 @@ pub struct Scene {
         RefCell<HashMap<(Handle, String, u64), (u64, Arc<Vec<HatchModel>>)>>,
     frozen_image_cache: RefCell<HashMap<(Handle, u64), (u64, Arc<Vec<ImageModel>>)>>,
     frozen_mesh_cache: RefCell<HashMap<(Handle, String, u64), (u64, Arc<Vec<MeshLodSet>>)>>,
-    /// Cached block-INSERT hatches for hit-testing, keyed by geometry_epoch.
-    /// Building this explodes every model-space INSERT, so without the cache a
-    /// heavy block-instanced drawing re-explodes thousands of inserts on every
-    /// hover. The set is geometry-derived, so a camera move / hover never
-    /// invalidates it.
+    /// Cached block-instance hatches for hit-testing, keyed by geometry_epoch.
+    /// The set is geometry-derived, so a camera move or hover never invalidates
+    /// the shared graph result.
     insert_hatch_cache: RefCell<Option<(u64, u64, Arc<HashMap<Handle, Vec<HatchModel>>>)>>,
     /// Sheet "dressing" cache over the unified resident set: the paper sheet
     /// drops its own border wire and appends the printable-area guide.
@@ -2103,6 +2108,7 @@ impl Scene {
         &self,
         annotation_scale_handle: Option<Handle>,
         all_visible: bool,
+        viewport: Option<Handle>,
     ) -> Arc<cache::block_cache::BlockCache> {
         let bg = if self.current_layout == "Model" {
             self.bg_color
@@ -2114,6 +2120,7 @@ impl Scene {
             key = key.rotate_left(13) ^ component.to_bits() as u64;
         }
         key = key.rotate_left(13) ^ all_visible as u64;
+        key = key.rotate_left(13) ^ viewport.map(|handle| handle.value()).unwrap_or(0);
         {
             let cache = self.block_defn_cache.borrow();
             if let Some((epoch, arc)) = cache.get(&key) {
@@ -2132,6 +2139,7 @@ impl Scene {
             annotation_scale_handle,
             all_visible,
             bg,
+            viewport,
             &self.draw_depth_map(),
         );
         let arc = Arc::new(built);
@@ -2158,6 +2166,7 @@ impl Scene {
             None,
             scale,
             self.annotation_all_visible(),
+            None,
             None,
         );
         let gen = WIRE_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
@@ -4659,7 +4668,7 @@ impl Scene {
             &self.document,
             &self.document.header.current_annotation_scale,
         );
-        self.resident_wires_for(block, None, scale, None)
+        self.resident_wires_for(block, None, scale, None, None)
     }
 
     /// Unified static-hold wire builder — the ONE tessellation path every
@@ -4707,6 +4716,7 @@ impl Scene {
         anno_scale_override: Option<f32>,
         annotation_scale_handle: Option<Handle>,
         frozen_layers: Option<&HashSet<Handle>>,
+        style_viewport: Option<Handle>,
     ) -> Arc<Vec<WireModel>> {
         // Normalize an inert anno override away so distinct viewport scales
         // share one resident set when annotation can't change the wires.
@@ -4730,6 +4740,7 @@ impl Scene {
             annotation_scale_handle,
             all_visible,
             frozen_layers,
+            style_viewport,
         );
         {
             let sets = self.resident_wire_sets.borrow();
@@ -4753,6 +4764,7 @@ impl Scene {
                 annotation_scale_handle,
                 all_visible,
                 frozen_layers,
+                style_viewport,
             )
         {
             return arc;
@@ -4769,6 +4781,7 @@ impl Scene {
                 anno_scale_override,
                 annotation_scale_handle,
                 all_visible,
+                style_viewport,
             );
         // Synthesized nonprint markers (geo-location daisy) live in model space
         // only and are derived from document objects, not entities — append them
@@ -4816,6 +4829,7 @@ impl Scene {
         annotation_scale_handle: Option<Handle>,
         all_visible: bool,
         frozen_layers: Option<&HashSet<Handle>>,
+        style_viewport: Option<Handle>,
     ) -> u64 {
         let mut key: u64 = 0xcbf2_9ce4_8422_2325;
         let mut mix =
@@ -4829,6 +4843,7 @@ impl Scene {
             .unwrap_or(u64::MAX));
         mix(annotation_scale_handle.map(|handle| handle.value()).unwrap_or(0));
         mix(all_visible as u64);
+        mix(style_viewport.map(|handle| handle.value()).unwrap_or(0));
         match frozen_layers {
             Some(frozen) => {
                 let mut signature = 0u64;
@@ -4928,7 +4943,11 @@ impl Scene {
         annotation_scale_handle: Option<Handle>,
         all_visible: bool,
         frozen_layers: Option<&HashSet<Handle>>,
+        style_viewport: Option<Handle>,
     ) -> Option<Arc<Vec<WireModel>>> {
+        if style_viewport.is_some() {
+            return None;
+        }
         let perf = crate::perf::enabled();
         let t_patch = iced::time::Instant::now();
         // The entry must exist, be stale, and be uniquely held so we can move
@@ -4976,7 +4995,7 @@ impl Scene {
         } else {
             1.0
         };
-        let blk = self.block_cache_arc_for(annotation_scale_handle, all_visible);
+        let blk = self.block_cache_arc_for(annotation_scale_handle, all_visible, style_viewport);
         let empty_sel: HashSet<Handle> = HashSet::default();
         let mut new_runs: HashMap<Handle, Vec<WireModel>> = HashMap::default();
         let mut memo_updates: Vec<(Handle, Arc<Vec<WireModel>>)> = Vec::new();
@@ -5001,7 +5020,7 @@ impl Scene {
             let raw = tessellate_entity(
                 &self.document,
                 &empty_sel,
-                self.active_viewport,
+                style_viewport.or(self.active_viewport),
                 bg,
                 anno,
                 annotation_scale_handle,
@@ -5290,7 +5309,7 @@ impl Scene {
         }
         let layout_block = self.current_layout_block_handle();
         let scale = self.paper_annotation_scale_handle();
-        let base = self.resident_wires_for(layout_block, None, scale, None);
+        let base = self.resident_wires_for(layout_block, None, scale, None, None);
         let mut wires = (*base).clone();
         // The overall "sheet" viewport now IS the paper view itself, so its own
         // border rectangle must not be drawn as an entity on the sheet.
@@ -5675,6 +5694,7 @@ impl Scene {
             None,
             scale,
             self.annotation_all_visible(),
+            None,
         ));
         self.hatch_cache.borrow_mut().insert(
             key,
@@ -5796,6 +5816,7 @@ impl Scene {
             None,
             scale,
             self.annotation_all_visible(),
+            None,
         ));
         self.image_cache
             .borrow_mut()
@@ -5811,162 +5832,81 @@ impl Scene {
         frozen: Option<&HashSet<Handle>>,
         annotation_scale_handle: Option<Handle>,
         all_visible: bool,
+        viewport: Option<Handle>,
     ) -> Vec<ImageModel> {
         let depth_map = self.draw_depth_map();
-        let mut models: Vec<ImageModel> = self.images
-            .iter()
-            .filter_map(|(handle, model)| {
-                let entity = self.document.get_entity(*handle)?;
-                let common = entity.common();
-                if common.invisible
-                    || self.entity_temporarily_hidden(*handle)
-                    || self.layer_hidden(&common.layer)
-                    || self.layer_frozen_in(&common.layer, frozen)
-                    || !self.belongs_to_visible_block(
-                        *handle,
-                        common.owner_handle,
-                        target_block,
-                    )
-                {
-                    return None;
-                }
-                let mut m = model.clone();
-                m.draw_depth = depth_map.get(&handle.value()).map_or(0.0, |d| d[0]);
-                Some(m)
+        let graph = render_graph::RenderSceneGraph::new(
+            &self.document,
+            frozen,
+            annotation_scale_handle,
+            all_visible,
+            depth_map.as_ref(),
+        )
+        .with_viewport(viewport);
+        let mut models = Vec::new();
+        let root = if self.block_edit_block.is_none() {
+            viewport.map(|viewport| render_graph::SceneRoot::Viewport {
+                paper_block: self.current_layout_block_handle(),
+                viewport,
+                model_block: target_block,
             })
-            .collect();
-        for source in self.document.entities() {
-            let contextual = crate::scene::annotative::entity_for_annotation_context(
-                &self.document,
-                source,
-                annotation_scale_handle,
-            );
-            let EntityType::Insert(insert) = contextual.as_ref() else {
-                continue;
-            };
-            let common = &insert.common;
-            if common.invisible
-                || self.entity_temporarily_hidden(common.handle)
-                || self.layer_hidden(&common.layer)
-                || self.layer_frozen_in(&common.layer, frozen)
-                || crate::scene::annotative::annotative_offscale_for(
-                    &self.document,
-                    common,
-                    annotation_scale_handle,
-                    all_visible,
-                )
-                || !self.belongs_to_visible_block(
-                    common.handle,
-                    common.owner_handle,
-                    target_block,
-                )
-            {
-                continue;
-            }
-            self.collect_block_images(
-                &insert.block_name,
-                &insert.get_transform(),
-                0,
-                frozen,
-                annotation_scale_handle,
-                all_visible,
-                &depth_map,
-                &mut models,
-            );
+        } else {
+            None
         }
+        .unwrap_or_else(|| self.render_scene_root(target_block));
+        graph.walk_root(
+            root,
+            |entity, context| {
+                context.is_instanced()
+                    || !self.entity_temporarily_hidden(entity.common().handle)
+            },
+            |entity, context| {
+                let handle = entity.common().handle;
+                let Some(model) = self.images.get(&handle) else {
+                    return;
+                };
+                let mut placed = model.clone();
+                if context.is_instanced() {
+                    for (corner, low) in
+                        placed.corners.iter_mut().zip(&mut placed.corners_low)
+                    {
+                        let point = acadrust::types::Vector3::new(
+                            corner[0] as f64 + low[0] as f64,
+                            corner[1] as f64 + low[1] as f64,
+                            corner[2] as f64 + low[2] as f64,
+                        );
+                        let point = context.transform.apply(point);
+                        *corner = [point.x as f32, point.y as f32, point.z as f32];
+                        *low = [
+                            (point.x - corner[0] as f64) as f32,
+                            (point.y - corner[1] as f64) as f32,
+                            (point.z - corner[2] as f64) as f32,
+                        ];
+                    }
+                    for vertex in &mut placed.verts {
+                        let point = acadrust::types::Vector3::new(
+                            vertex.pos[0] as f64 + vertex.pos_low[0] as f64,
+                            vertex.pos[1] as f64 + vertex.pos_low[1] as f64,
+                            vertex.pos[2] as f64 + vertex.pos_low[2] as f64,
+                        );
+                        let point = context.transform.apply(point);
+                        vertex.pos = [
+                            point.x as f32,
+                            point.y as f32,
+                            point.z as f32,
+                        ];
+                        vertex.pos_low = [
+                            (point.x - vertex.pos[0] as f64) as f32,
+                            (point.y - vertex.pos[1] as f64) as f32,
+                            (point.z - vertex.pos[2] as f64) as f32,
+                        ];
+                    }
+                }
+                placed.draw_depth = context.draw_depth(handle, depth_map.as_ref());
+                models.push(placed);
+            },
+        );
         models
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn collect_block_images(
-        &self,
-        block_name: &str,
-        transform: &acadrust::types::Transform,
-        depth: usize,
-        frozen: Option<&HashSet<Handle>>,
-        annotation_scale_handle: Option<Handle>,
-        all_visible: bool,
-        depth_map: &HashMap<u64, [f32; 2]>,
-        out: &mut Vec<ImageModel>,
-    ) {
-        if depth > 32 {
-            return;
-        }
-        let Some(record) = self.document.block_records.get(block_name) else {
-            return;
-        };
-        for handle in record.entity_handles.iter().copied() {
-            let Some(source) = self.document.get_entity(handle) else {
-                continue;
-            };
-            let contextual = crate::scene::annotative::entity_for_annotation_context(
-                &self.document,
-                source,
-                annotation_scale_handle,
-            );
-            let entity = contextual.as_ref();
-            let common = entity.common();
-            if common.invisible
-                || self.layer_hidden(&common.layer)
-                || self.layer_frozen_in(&common.layer, frozen)
-                || crate::scene::annotative::annotative_offscale_for(
-                    &self.document,
-                    common,
-                    annotation_scale_handle,
-                    all_visible,
-                )
-            {
-                continue;
-            }
-            if let EntityType::Insert(insert) = entity {
-                let nested = insert.get_transform().then(transform);
-                self.collect_block_images(
-                    &insert.block_name,
-                    &nested,
-                    depth + 1,
-                    frozen,
-                    annotation_scale_handle,
-                    all_visible,
-                    depth_map,
-                    out,
-                );
-                continue;
-            }
-            let Some(model) = self.images.get(&handle) else {
-                continue;
-            };
-            let mut placed = model.clone();
-            for (corner, low) in placed.corners.iter_mut().zip(&mut placed.corners_low) {
-                let point = acadrust::types::Vector3::new(
-                    corner[0] as f64 + low[0] as f64,
-                    corner[1] as f64 + low[1] as f64,
-                    corner[2] as f64 + low[2] as f64,
-                );
-                let point = transform.apply(point);
-                *corner = [point.x as f32, point.y as f32, point.z as f32];
-                *low = [
-                    (point.x - corner[0] as f64) as f32,
-                    (point.y - corner[1] as f64) as f32,
-                    (point.z - corner[2] as f64) as f32,
-                ];
-            }
-            for vertex in &mut placed.verts {
-                let point = acadrust::types::Vector3::new(
-                    vertex.pos[0] as f64 + vertex.pos_low[0] as f64,
-                    vertex.pos[1] as f64 + vertex.pos_low[1] as f64,
-                    vertex.pos[2] as f64 + vertex.pos_low[2] as f64,
-                );
-                let point = transform.apply(point);
-                vertex.pos = [point.x as f32, point.y as f32, point.z as f32];
-                vertex.pos_low = [
-                    (point.x - vertex.pos[0] as f64) as f32,
-                    (point.y - vertex.pos[1] as f64) as f32,
-                    (point.z - vertex.pos[2] as f64) as f32,
-                ];
-            }
-            placed.draw_depth = depth_map.get(&handle.value()).map_or(0.0, |value| value[0]);
-            out.push(placed);
-        }
     }
 
     /// Images owned by the active paper layout block only. The full-canvas
@@ -5979,6 +5919,7 @@ impl Scene {
             None,
             self.paper_annotation_scale_handle(),
             self.annotation_all_visible(),
+            None,
         ))
     }
 
@@ -6028,6 +5969,7 @@ impl Scene {
             None,
             scale,
             self.annotation_all_visible(),
+            None,
         ));
         self.mesh_cache
             .borrow_mut()
@@ -6042,6 +5984,20 @@ impl Scene {
         self.block_edit_block
             .filter(|block| !block.is_null())
             .unwrap_or_else(|| self.model_space_block_handle())
+    }
+
+    fn render_scene_root(&self, block: Handle) -> render_graph::SceneRoot {
+        let role = if self.block_edit_block == Some(block) {
+            render_graph::BlockRootRole::DefinitionEdit
+        } else if block == self.model_space_block_handle() {
+            render_graph::BlockRootRole::ModelSpace
+        } else {
+            render_graph::BlockRootRole::PaperSpace
+        };
+        render_graph::SceneRoot::Block(render_graph::BlockRoot {
+            record: block,
+            role,
+        })
     }
 
     fn interaction_block_handle(&self) -> Handle {
@@ -6125,6 +6081,7 @@ impl Scene {
             None,
             self.displayed_annotation_scale_handle(),
             self.annotation_all_visible(),
+            self.active_viewport,
         ));
         *self.interaction_mesh_cache.borrow_mut() =
             Some((self.geometry_epoch, key, Arc::clone(&meshes)));
@@ -6174,6 +6131,7 @@ impl Scene {
         frozen: Option<&HashSet<Handle>>,
         annotation_scale_handle: Option<Handle>,
         all_visible: bool,
+        viewport: Option<Handle>,
     ) -> Vec<MeshLodSet> {
         // Top-level solids: drop those whose layer is off/frozen or that are
         // flagged invisible / isolated-hidden, mirroring the 2D wire path, plus
@@ -6196,7 +6154,33 @@ impl Scene {
                         })
                         .unwrap_or(false)
             })
-            .map(|(_, set)| set.clone())
+            .map(|(&handle, set)| {
+                let mut set = set.clone();
+                if let Some(entity) = self.document.get_entity(handle) {
+                    let style = crate::scene::view::render::render_style_for_viewport(
+                        &self.document,
+                        entity,
+                        viewport,
+                    );
+                    let attached_material = set
+                        .material
+                        .as_ref()
+                        .is_some_and(|material| material.handle.is_some());
+                    for mesh in &mut set.lods {
+                        if !attached_material {
+                            mesh.color[0..3].copy_from_slice(&style.0[0..3]);
+                        }
+                        mesh.color[3] = style.0[3];
+                    }
+                    if let Some(material) = set.material.as_mut() {
+                        if !attached_material {
+                            material.diffuse[0..3].copy_from_slice(&style.0[0..3]);
+                        }
+                        material.diffuse[3] = style.0[3];
+                    }
+                }
+                set
+            })
             .collect();
         // Block-definition solids are instanced per INSERT of the ACTIVE space's
         // block so a block placed at an INSERT scale renders at the right size
@@ -6207,6 +6191,7 @@ impl Scene {
             frozen,
             annotation_scale_handle,
             all_visible,
+            viewport,
         ));
         all
     }
@@ -6262,7 +6247,8 @@ impl Scene {
         let scale = self.viewport_scale_handle(viewport);
         let all_visible = self.annotation_all_visible();
         let context_sig = scale.map_or(0, |handle| handle.value())
-            ^ u64::from(all_visible).rotate_left(61);
+            ^ u64::from(all_visible).rotate_left(61)
+            ^ viewport.value().rotate_left(23);
         let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
         let key = (target_block, self.current_layout.clone(), sig);
         let sel = self.selected_hatch_sig();
@@ -6276,6 +6262,7 @@ impl Scene {
             Some(frozen),
             scale,
             all_visible,
+            Some(viewport),
         ));
         self.frozen_hatch_cache
             .borrow_mut()
@@ -6296,7 +6283,8 @@ impl Scene {
         let scale = self.viewport_scale_handle(viewport);
         let all_visible = self.annotation_all_visible();
         let context_sig = scale.map_or(0, |handle| handle.value())
-            ^ u64::from(all_visible).rotate_left(61);
+            ^ u64::from(all_visible).rotate_left(61)
+            ^ viewport.value().rotate_left(23);
         let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
         let key = (target_block, self.current_layout.clone(), sig);
         if let Some((e, arc)) = self.frozen_wipeout_cache.borrow().get(&key) {
@@ -6329,7 +6317,8 @@ impl Scene {
         let scale = self.viewport_scale_handle(viewport);
         let all_visible = self.annotation_all_visible();
         let context_sig = scale.map_or(0, |handle| handle.value())
-            ^ u64::from(all_visible).rotate_left(61);
+            ^ u64::from(all_visible).rotate_left(61)
+            ^ viewport.value().rotate_left(23);
         let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
         let key = (target_block, sig);
         if let Some((e, arc)) = self.frozen_image_cache.borrow().get(&key) {
@@ -6342,6 +6331,7 @@ impl Scene {
             Some(frozen),
             scale,
             all_visible,
+            Some(viewport),
         ));
         self.frozen_image_cache
             .borrow_mut()
@@ -6362,7 +6352,8 @@ impl Scene {
         let scale = self.viewport_scale_handle(viewport);
         let all_visible = self.annotation_all_visible();
         let context_sig = scale.map_or(0, |handle| handle.value())
-            ^ u64::from(all_visible).rotate_left(61);
+            ^ u64::from(all_visible).rotate_left(61)
+            ^ viewport.value().rotate_left(23);
         let sig = Self::frozen_layers_sig(frozen) ^ context_sig;
         let key = (target_block, self.current_layout.clone(), sig);
         if let Some((e, arc)) = self.frozen_mesh_cache.borrow().get(&key) {
@@ -6375,6 +6366,7 @@ impl Scene {
             Some(frozen),
             scale,
             all_visible,
+            Some(viewport),
         ));
         self.frozen_mesh_cache
             .borrow_mut()
@@ -6454,188 +6446,116 @@ impl Scene {
         frozen: Option<&HashSet<Handle>>,
         annotation_scale_handle: Option<Handle>,
         all_visible: bool,
+        viewport: Option<Handle>,
     ) -> Vec<MeshLodSet> {
         if self.block_meshes.is_empty() {
             return Vec::new();
         }
+        let depth_map = self.draw_depth_map();
+        let graph = render_graph::RenderSceneGraph::new(
+            &self.document,
+            frozen,
+            annotation_scale_handle,
+            all_visible,
+            depth_map.as_ref(),
+        )
+        .with_viewport(viewport);
         let mut out = Vec::new();
-        for source in self.document.entities() {
-            let contextual = crate::scene::annotative::entity_for_annotation_context(
-                &self.document,
-                source,
-                annotation_scale_handle,
-            );
-            let e = contextual.as_ref();
-            if e.common().owner_handle != layout_block {
-                continue;
-            }
-            if let EntityType::Insert(ins) = e {
-                // INSERT on an off/frozen (or invisible) layer hides the whole
-                // instance, block-internal solids included — including a layer
-                // frozen only in the requesting content viewport.
-                if !self.mesh_entity_visible(ins.common.handle)
-                    || self.layer_frozen_in(&ins.common.layer, frozen)
-                    || crate::scene::annotative::annotative_offscale_for(
-                        &self.document,
-                        &ins.common,
-                        annotation_scale_handle,
-                        all_visible,
-                    )
-                {
-                    continue;
+        graph.walk_root(
+            self.render_scene_root(layout_block),
+            |entity, context| {
+                context.is_instanced()
+                    || !self.entity_temporarily_hidden(entity.common().handle)
+            },
+            |entity, context| {
+                if !context.is_instanced() {
+                    return;
                 }
-                // Colour inheritance sources for block-internal solids (#221).
-                let bg = self.current_bg();
-                let ins_color = crate::scene::view::render::adapt_to_bg(
-                    crate::scene::view::render::render_style_for(&self.document, e).0,
-                    bg,
-                );
-                let l0 = crate::scene::view::render::adapt_to_bg(
-                    crate::scene::view::render::layer_render_style(
-                        &self.document,
-                        &ins.common.layer,
-                    )
-                    .color,
-                    bg,
-                );
-                let inherit = BlockMeshInherit {
-                    insert_color: ins_color,
-                    layer0_color: l0,
-                    insert_material:
-                        crate::scene::model::material_model::resolve_material_with_base(
-                            &self.document,
-                            e,
-                            ins_color,
-                            None,
-                            self.material_base_dir.as_deref(),
-                        ),
-                    layer0_material:
-                        crate::scene::model::material_model::resolve_layer_material_with_base(
-                            &self.document,
-                            &ins.common.layer,
-                            l0,
-                            self.material_base_dir.as_deref(),
-                        ),
+                let handle = entity.common().handle;
+                let Some(set) = self.block_meshes.get(&handle) else {
+                    return;
                 };
-                let start = out.len();
-                self.expand_block_meshes(
-                    &ins.block_name,
-                    &ins.get_transform(),
-                    0,
-                    Some(inherit),
-                    &mut out,
-                    frozen,
-                    annotation_scale_handle,
-                    all_visible,
-                );
-                // Tag the instanced meshes with the parent INSERT handle so the
-                // hover / selection highlight (keyed on the mesh name) tints the
-                // block, not the inner solid's own handle which nothing selects.
-                let name = ins.common.handle.value().to_string();
-                for set in &mut out[start..] {
-                    for m in &mut set.lods {
-                        m.name = name.clone();
+                let inherit = self.mesh_inherit_for_path(&context.insert_path);
+                let own_alpha =
+                    set.lods.first().map(|mesh| mesh.color[3]).unwrap_or(1.0);
+                let mut transformed =
+                    transform_block_mesh_lod_set(set, &context.transform);
+                if let Some(color) = self.block_mesh_override_color(
+                    entity,
+                    handle,
+                    inherit.as_ref(),
+                    own_alpha,
+                ) {
+                    for mesh in &mut transformed.lods {
+                        mesh.color = color;
                     }
-                }
-            }
-        }
-        out
-    }
-
-    /// Recursively emit transformed instances of a block's solid meshes,
-    /// composing nested-INSERT transforms. (#123)
-    fn expand_block_meshes(
-        &self,
-        block_name: &str,
-        accum: &acadrust::types::Transform,
-        depth: usize,
-        // Block-child colour inheritance sources, bg-adapted:
-        // `Some` only on the render path; pick paths pass `None`. Carries both
-        // colour and AcDbMaterial inheritance for ByBlock/layer-0 children.
-        inherit: Option<BlockMeshInherit>,
-        out: &mut Vec<MeshLodSet>,
-        frozen: Option<&HashSet<Handle>>,
-        annotation_scale_handle: Option<Handle>,
-        all_visible: bool,
-    ) {
-        if depth > 16 {
-            return;
-        }
-        let Some(br) = self.document.block_records.get(block_name) else {
-            return;
-        };
-        let handles: Vec<Handle> = br.entity_handles.clone();
-        for h in handles {
-            let Some(source) = self.document.get_entity(h) else {
-                continue;
-            };
-            let contextual = crate::scene::annotative::entity_for_annotation_context(
-                &self.document,
-                source,
-                annotation_scale_handle,
-            );
-            let e = contextual.as_ref();
-            // A block-internal solid / nested INSERT on an off/frozen layer
-            // (or flagged invisible) must not render, same as a top-level one.
-            if !self.mesh_definition_entity_visible(h)
-                || self.layer_frozen_in(&e.common().layer, frozen)
-            {
-                continue;
-            }
-            if crate::scene::annotative::annotative_offscale_for(
-                &self.document,
-                e.common(),
-                annotation_scale_handle,
-                all_visible,
-            ) {
-                continue;
-            }
-            if let EntityType::Insert(ins) = e {
-                let composed = ins.get_transform().then(accum);
-                let child = inherit
-                    .as_ref()
-                    .map(|parent| self.chain_mesh_inherit(ins, parent));
-                self.expand_block_meshes(
-                    &ins.block_name,
-                    &composed,
-                    depth + 1,
-                    child,
-                    out,
-                    frozen,
-                    annotation_scale_handle,
-                    all_visible,
-                );
-            } else if let Some(set) = self.block_meshes.get(&h) {
-                // The solid's own transparency (baked into the cached colour).
-                let own_alpha = set.lods.first().map(|m| m.color[3]).unwrap_or(1.0);
-                let mut ts = transform_block_mesh_lod_set(set, accum);
-                // Re-resolve colour against the INSERT context: a block-internal
-                // solid that is ByBlock or on layer "0" + ByLayer can't be
-                // coloured at cache-build time (no insert context there). (#221)
-                if let Some(c) =
-                    self.block_mesh_override_color(e, h, inherit.as_ref(), own_alpha)
-                {
-                    for lod in &mut ts.lods {
-                        lod.color = c;
-                    }
-                    if let Some(material) = ts.material.as_mut() {
+                    if let Some(material) = transformed.material.as_mut() {
                         if material.handle.is_none() {
-                            material.diffuse = c;
+                            material.diffuse = color;
                         }
                     }
                 }
                 if let Some(material) =
-                    self.block_mesh_override_material(e, inherit.as_ref())
+                    self.block_mesh_override_material(entity, inherit.as_ref())
                 {
                     material.apply_to_with_face_overrides(
-                        &mut ts,
+                        &mut transformed,
                         &self.document,
                         self.material_base_dir.as_deref(),
                     );
                 }
-                out.push(ts);
-            }
+                let root_name = context.root_handle.value().to_string();
+                for mesh in &mut transformed.lods {
+                    mesh.name = root_name.clone();
+                }
+                out.push(transformed);
+            },
+        );
+        out
+    }
+
+    fn mesh_inherit_for_path(
+        &self,
+        path: &[DxfInsert],
+    ) -> Option<BlockMeshInherit> {
+        let first = path.first()?;
+        let entity = EntityType::Insert(first.clone());
+        let bg = self.current_bg();
+        let insert_color = crate::scene::view::render::adapt_to_bg(
+            crate::scene::view::render::render_style_for(&self.document, &entity).0,
+            bg,
+        );
+        let layer0_color = crate::scene::view::render::adapt_to_bg(
+            crate::scene::view::render::layer_render_style(
+                &self.document,
+                &first.common.layer,
+            )
+            .color,
+            bg,
+        );
+        let mut inherit = BlockMeshInherit {
+            insert_color,
+            layer0_color,
+            insert_material:
+                crate::scene::model::material_model::resolve_material_with_base(
+                    &self.document,
+                    &entity,
+                    insert_color,
+                    None,
+                    self.material_base_dir.as_deref(),
+                ),
+            layer0_material:
+                crate::scene::model::material_model::resolve_layer_material_with_base(
+                    &self.document,
+                    &first.common.layer,
+                    layer0_color,
+                    self.material_base_dir.as_deref(),
+                ),
+        };
+        for insert in &path[1..] {
+            inherit = self.chain_mesh_inherit(insert, &inherit);
         }
+        Some(inherit)
     }
 
     /// Background colour for the current layout (model vs paper).
@@ -6835,93 +6755,7 @@ impl Scene {
 
     /// Per-Insert hatch models in the current layout, keyed by the Insert
     /// handle so a click on a block-internal hatch can select the parent
-    /// Insert (AutoCAD behaviour: sub-entities of a block aren't directly
-    /// selectable; the click resolves to the Insert).
-    /// Whether a block definition (recursively) contains any Hatch. Memoised in
-    /// `memo` across calls; lets the pick path skip exploding solid-only blocks.
-    fn block_has_hatch(
-        &self,
-        block_name: &str,
-        memo: &mut std::collections::HashMap<String, bool>,
-    ) -> bool {
-        if let Some(&v) = memo.get(block_name) {
-            return v;
-        }
-        // Seed `false` first so a cyclic block reference terminates.
-        memo.insert(block_name.to_string(), false);
-        let result = self
-            .document
-            .block_records
-            .get(block_name)
-            .map(|br| {
-                br.entity_handles
-                    .iter()
-                    .any(|&h| match self.document.get_entity(h) {
-                        Some(EntityType::Hatch(_)) => true,
-                        Some(EntityType::Insert(ins)) => {
-                            self.block_has_hatch(&ins.block_name, memo)
-                        }
-                        // A dimension bakes its geometry into a per-instance `*D`
-                        // block; a custom filled arrowhead lives there as a nested
-                        // Insert(hatch). Recurse so the fill explosion knows to
-                        // descend the dimension (see `explode_including_dims`).
-                        Some(EntityType::Dimension(dim)) => {
-                            !dim.base().block_name.trim().is_empty()
-                                && self.block_has_hatch(&dim.base().block_name, memo)
-                        }
-                        _ => false,
-                    })
-            })
-            .unwrap_or(false);
-        memo.insert(block_name.to_string(), result);
-        result
-    }
-
-    /// Transitively true when a block (or a block it nests) contains a wide
-    /// LwPolyline / Polyline2D — one carrying a non-zero width. Gate for the
-    /// block-explode wide-fill pass, mirroring [`Self::block_has_hatch`] so a
-    /// solid-only block is never exploded just to look for width bands. (#222)
-    fn block_has_wide_poly(
-        &self,
-        block_name: &str,
-        memo: &mut std::collections::HashMap<String, bool>,
-    ) -> bool {
-        if let Some(&v) = memo.get(block_name) {
-            return v;
-        }
-        // Seed `false` first so a cyclic block reference terminates.
-        memo.insert(block_name.to_string(), false);
-        let result = self
-            .document
-            .block_records
-            .get(block_name)
-            .map(|br| {
-                br.entity_handles
-                    .iter()
-                    .any(|&h| match self.document.get_entity(h) {
-                        Some(EntityType::LwPolyline(p)) => {
-                            p.constant_width > 1e-9
-                                || p.vertices
-                                    .iter()
-                                    .any(|v| v.start_width > 1e-9 || v.end_width > 1e-9)
-                        }
-                        Some(EntityType::Polyline2D(p)) => {
-                            p.start_width > 1e-9
-                                || p.end_width > 1e-9
-                                || p.vertices
-                                    .iter()
-                                    .any(|v| v.start_width > 1e-9 || v.end_width > 1e-9)
-                        }
-                        Some(EntityType::Insert(ins)) => {
-                            self.block_has_wide_poly(&ins.block_name, memo)
-                        }
-                        _ => false,
-                    })
-            })
-            .unwrap_or(false);
-        memo.insert(block_name.to_string(), result);
-        result
-    }
+    /// Insert; block-owned leaves resolve to their owning instance.
 
     pub fn insert_hatches_for_click(&self) -> Arc<HashMap<Handle, Vec<HatchModel>>> {
         let interaction_block = self.interaction_block_handle();
@@ -6955,13 +6789,26 @@ impl Scene {
         let layer_hidden =
             |layer: &str| self.layer_hidden(layer) || self.interaction_layer_frozen(layer);
         let mut out: HashMap<Handle, Vec<HatchModel>> = HashMap::default();
-        // Exploding an INSERT to find block-internal hatches is expensive, so
-        // skip blocks that contain no hatch at all (the common case for solid-
-        // only blocks). The hatch-presence test is memoised across inserts.
+        // Skip block subtrees that contain no hatch at all. The presence test
+        // is memoised across instances.
         let mut hatch_memo: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
         let annotation_scale_handle = self.displayed_annotation_scale_handle();
         let all_visible = self.annotation_all_visible();
+        let depth_map = self.draw_depth_map();
+        let frozen: HashSet<Handle> = self
+            .interaction_viewport_frozen_layers()
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect();
+        let graph = render_graph::RenderSceneGraph::new(
+            &self.document,
+            (!frozen.is_empty()).then_some(&frozen),
+            annotation_scale_handle,
+            all_visible,
+            depth_map.as_ref(),
+        );
         for entity in self.document.entities() {
             let contextual = crate::scene::annotative::entity_for_annotation_context(
                 &self.document,
@@ -6990,33 +6837,52 @@ impl Scene {
             ) {
                 continue;
             }
-            if !self.block_has_hatch(&ins.block_name, &mut hatch_memo) {
+            if !render_graph::block_contains_hatch(
+                &self.document,
+                &ins.block_name,
+                &mut hatch_memo,
+            ) {
                 continue;
             }
-            for sub in ins
-                .explode_from_document(&self.document)
-                .into_iter()
-                .map(|sub| {
-                    crate::scene::annotative::entity_for_annotation_context(
-                        &self.document,
-                        &sub,
-                        annotation_scale_handle,
-                    )
-                    .into_owned()
-                })
-                .map(crate::modules::draw::modify::explode::normalize_insert_entity)
-            {
-                let EntityType::Hatch(dxf) = sub else {
-                    continue;
-                };
-                if dxf.common.invisible || layer_hidden(&dxf.common.layer) {
-                    continue;
-                }
-                let color = self.render_style(&EntityType::Hatch(dxf.clone())).0;
-                if let Some(model) = Self::hatch_model_from_dxf(&dxf, color) {
+            graph.walk_insert(
+                ins,
+                ins.common.handle,
+                |_, _| true,
+                |entity, context| {
+                    let EntityType::Hatch(source) = entity else {
+                        return;
+                    };
+                    let mut placed = EntityType::Hatch(source.clone());
+                    placed.apply_transform(&context.transform);
+                    let EntityType::Hatch(hatch) = placed else {
+                        return;
+                    };
+                    let color = crate::scene::view::render::adapt_to_bg(
+                        context.style_for(&self.document, entity).0,
+                        self.current_bg(),
+                    );
+                    let Some(mut model) = Self::hatch_model_from_dxf(&hatch, color)
+                    else {
+                        return;
+                    };
+                    for clip in &context.clips {
+                        let clip: Vec<[f32; 2]> = clip
+                            .iter()
+                            .map(|point| [point[0] as f32, point[1] as f32])
+                            .collect();
+                        let clipped = pick::xclip::clip_hatch_boundary(
+                            &model.boundary,
+                            model.world_origin,
+                            &clip,
+                        );
+                        if clipped.is_empty() {
+                            return;
+                        }
+                        model.boundary = Arc::new(clipped);
+                    }
                     out.entry(ins.common.handle).or_default().push(model);
-                }
-            }
+                },
+            );
         }
         let arc = Arc::new(out);
         *self.insert_hatch_cache.borrow_mut() =
@@ -8178,6 +8044,7 @@ impl Scene {
         anno_scale_override: Option<f32>,
         annotation_scale_handle: Option<Handle>,
         all_visible: bool,
+        style_viewport: Option<Handle>,
     ) -> Vec<WireModel> {
         use acadrust::objects::ObjectType;
 
@@ -8283,7 +8150,7 @@ impl Scene {
         // `geometry_epoch` (a full model re-tessellation).
         let empty_sel: HashSet<Handle> = HashSet::default();
         let sel: &HashSet<Handle> = &empty_sel;
-        let avp = self.active_viewport;
+        let avp = style_viewport.or(self.active_viewport);
         // A paper-space content viewport renders MODEL block entities while
         // the user is sitting in a paper layout — that path expects
         // `world_offset` subtraction even though `current_layout != "Model"`.
@@ -8304,7 +8171,7 @@ impl Scene {
         // Content shown inside a paper-space viewport carries a scale override;
         // only there does PSLTSCALE resize linetypes by the viewport scale.
         let paper = anno_scale_override.is_some();
-        let blk_cache = self.block_cache_arc_for(annotation_scale_handle, all_visible);
+        let blk_cache = self.block_cache_arc_for(annotation_scale_handle, all_visible, style_viewport);
         let blk_ref: &cache::block_cache::BlockCache = &blk_cache;
         // Zoom-adaptive curve sampling for top-level Edge tessellation. Target
         // ~0.5 px chord height — far-out arcs that used to emit hundreds of
@@ -9081,6 +8948,7 @@ impl Scene {
         let blk_cache = self.block_cache_arc_for(
             annotation_scale_handle,
             self.annotation_all_visible(),
+            self.active_viewport,
         );
         // tessellate_one is used for one-off lookups (hit test, properties).
         // Skip culling here so the caller always gets the full geometry.
@@ -9163,6 +9031,7 @@ impl Scene {
             None,
             scale,
             self.annotation_all_visible(),
+            None,
         );
         let mut min = glam::DVec2::splat(f64::INFINITY);
         let mut max = glam::DVec2::splat(f64::NEG_INFINITY);

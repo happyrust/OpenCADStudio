@@ -239,6 +239,9 @@ impl OpenCADStudio {
         self.command_line.set_step_options(opts);
         // Persist UI preferences whenever a toggle changes them (issue #68).
         self.persist_settings_if_changed();
+        // The block panel watches the drawing's block list and rebuilds its
+        // thumbnails whenever the names change (BLOCK define, file open, …).
+        self.refresh_block_palette_if_stale();
         // OTRACK acquires tracking points only while a command or grip drag is
         // running; drop them once neither is active so the temporary tracking
         // points / vectors disappear when the command ends (issue #64).
@@ -261,6 +264,9 @@ impl OpenCADStudio {
         }
         #[cfg(target_arch = "wasm32")]
         crate::sys::set_unsaved_changes_warning(self.tabs.iter().any(|tab| tab.dirty));
+        if self.tabs[i].active_cmd.is_none() {
+            self.block_palette.placing = None;
+        }
         task
     }
 
@@ -2680,6 +2686,8 @@ impl OpenCADStudio {
                 // End of a Shift+MMB orbit — drop the captured pivot so the next
                 // gesture recomputes it against the current selection. (#229)
                 sel.orbit_pivot = None;
+                drop(sel);
+                self.arm_hover_after_navigation(i);
                 Task::none()
             }
 
@@ -2698,6 +2706,7 @@ impl OpenCADStudio {
 
             Message::ViewCubeHome => {
                 let i = self.active_tab;
+                self.clear_navigation_hover(i);
                 let r_ucs = self.tabs[i].scene.viewcube_ucs_mat();
                 if self.tabs[i].scene.active_viewport.is_some() {
                     self.tabs[i]
@@ -2713,6 +2722,7 @@ impl OpenCADStudio {
 
             Message::ViewCubeRoll(cw) => {
                 let i = self.active_tab;
+                self.clear_navigation_hover(i);
                 let ang = if cw {
                     std::f32::consts::FRAC_PI_2
                 } else {
@@ -2738,6 +2748,7 @@ impl OpenCADStudio {
                     NudgeDir::Right => (true, true),
                 };
                 let i = self.active_tab;
+                self.clear_navigation_hover(i);
                 if self.tabs[i].scene.active_viewport.is_some() {
                     self.tabs[i]
                         .scene
@@ -5960,6 +5971,7 @@ impl OpenCADStudio {
             }
             Message::PlotDialogOpen => self.on_plot_dialog_open(),
             Message::PlotDlg(m) => self.on_plot_dlg(m),
+            Message::BlockPalette(m) => self.on_block_palette(m),
             Message::PrintAllOpen => self.on_print_all_open(),
             Message::PrintAllToggle(name) => {
                 if let Some((_, selected)) = self
