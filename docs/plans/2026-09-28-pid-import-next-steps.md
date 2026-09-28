@@ -1,4 +1,4 @@
-# `.pid` 解析与加载显示 · 进度复盘与下一步 · 开发计划（2026-09-28 开单，同日批准；R1 / W0 同日落地，R2 改向等批）
+# `.pid` 解析与加载显示 · 进度复盘与下一步 · 开发计划（2026-09-28 开单，同日批准；R1 / W0 同日落地，R2 改向为 P-D12「死记录不画」并批准，pid-parse 侧已落地）
 
 > 用户 2026-09-28（zhimo 会话 fable-5-1-4）：「继续分析 D:\work\plant-code\cad\OpenCADStudio 当前的PID解析和加载显示的开发进度，使用 plannator 制定下一步的开发方案。」
 > 基线：OCS `07cec253`（`main`，2026-09-24；`.pid` 相关最后一个代码提交是 `6b629e2e`）；pid-parse `181d37e`（`codex/phase32c-bundle-closeout`，领先本地 `main` 2 个文档提交）。
@@ -178,7 +178,19 @@ OCS 主工作树被 `rvt` 会话占着：R / B3 的 OCS 侧在干净 worktree �
   其余（`quick-xml` / `uuid v5` / `encoding_rs` / `schemars` / `env_logger` / `serde_json`）全部编过。**W1 由此缩成**：一个时间类型垫片（wasm 下 `use web_time::SystemTime`）+ `PidParser::parse_reader` 薄壳（`cfb::reader::parse_pid_package_from_reader` 已经在）——估计 ≤ 半天；W2 不变。
 - 没做的：`tests/` 里 17 个 backup / publish 测试文件没标 `required-features`（`--no-default-features --tests` 会编不过），默认特性不受影响；W1 顺手加 `[[test]]` 条目或把它们搬进 `tests/backup/`。
 
-### R1 之后的改向（等批；⭕ = 推荐）
+### P-D12 · pid-parse 侧落地（`a68bf55`，用户批 P-D12 – P-D14 后同日）
+
+- `PSM_TYPE_FLAG_NATIVE_SKIP` / `PsmHeader::native_reader_skips` / `parse_live_psm_header`：22 个族解码器的 `decode_at` 都从它起步——类型字带 `0x8000` 的记录哪个族都不解、几何不发射、`style_link` 不索引；
+  `parse_psm_header` 照旧读出旗标（普查与探针要看见）。第三类普查 `native_skipped_record_census` → `SheetGeometry::skipped_records` → `NormalizedPidGeometry::skipped_graphic_records`，
+  与「拒收」「无解码器」不相交、不进 warnings。
+- 语料 **42 条**（比 R1 探针多一条：0202 `/Sheet6615` 的矩形本身也带位，整个孤儿存储已退役）：工艺 `igSymbol2d` 27 + `igTextBox` 1；0202 `igLine2d` 4 + `igRectangle2d` 1；0201 `igSmartFrame2d` 5；A01 `igLine2d` 4。
+- 棘轮重钉：工艺放置 58 → **31**、放置笔画 (287, 237) → (181, 157)、显示笔画 237 → 157；0202 线 46 → 42、A01 80 → 76；线样式关联 669 → 638；调色板 `As Drawn` x43 → x17 等；
+  文字形状 3 12 → 11、选择子 257 / 12 → 248 / 11；「156 条标签对 155 条索引」的 oid 6345 碰撞消失；活矩形 3 → 2。拒收 / 无解码器两表不动。golden 四份重签（0202 219 → 215、工艺 476 → 448、A01 117 → 113）。
+  新棘轮 `the_records_the_native_reader_skips_are_counted_apart`。
+- 验证：40 个测试二进制 **1476 全绿**（`--lib` 1121），`clippy --all-targets -D warnings` 两种特性零告警，rustfmt 干净。分析 `docs/analysis/2026-09-28-the-native-reader-skips-a-flagged-record.md`，CHANGELOG 两条（P-D12 / W0），`task_plan` 指针。
+- **OCS 侧待做**（不改码）：干净 worktree 里 `pid_import` 重钉（工艺实体 / 放置数，0202 / A01 各少 4 条线）、批量基线 CSV 与 README、四图 `--export` 新哈希、逐实体比只许少不许多或挪。
+
+### R1 之后的改向（2026-09-28 用户批准 P-D12 – P-D14 按推荐；⭕ = 推荐）
 
 | # | 决策 | 结论 |
 |---|---|---|
@@ -189,4 +201,5 @@ OCS 主工作树被 `rvt` 会话占着：R / B3 的 OCS 侧在干净 worktree �
 ## 门禁记录
 
 - 2026-09-28：用户经 zhimo「继续分析 … PID解析和加载显示的开发进度，使用 plannator 制定下一步的开发方案」→ 本单（会话 fable-5-1-4），送 Plannotator 批注。P-D1 – P-D11 等批。
-- 2026-09-28：Plannotator 批准（无批注）；用户「按推荐顺序开工（R1 先，W0 并行）」→ R1 / W0 同日落地（pid-parse `cc6626e`）。R1 量出 R2 不值、死记录被画 → **P-D12 – P-D14 等批**（会话 fable-5-1-4）。
+- 2026-09-28：Plannotator 批准（无批注）；用户「按推荐顺序开工（R1 先，W0 并行）」→ R1 / W0 同日落地（pid-parse `cc6626e`）。R1 量出 R2 不值、死记录被画 → P-D12 – P-D14 送批（会话 fable-5-1-4）。
+- 2026-09-28：用户「批 P-D12 / P-D13 / P-D14：死记录不画开工，W1 接着做，R2 登记不做」→ P-D12 pid-parse 侧同日落地（`a68bf55`）；OCS 侧重钉与 W1 接着做（会话 fable-5-1-4）。
