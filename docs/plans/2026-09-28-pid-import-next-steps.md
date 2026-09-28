@@ -195,6 +195,14 @@ OCS 主工作树被 `rvt` 会话占着：R / B3 的 OCS 侧在干净 worktree �
     去掉的 = 0202 四条 `PID-GEOMETRY` 线（该层随之不建，图层表 15 → 14）、A01 四条 `Default` 线、工艺 80 条 `Default` 线 + 27 条 `PID-SYMBOL-LABEL` 名字 + `Labels` 上的旧文本 `250-LNG-57602- - `——与 42 条死记录逐条对上（0201 的五份页框早已按范围去重）。
   - 验证：`pid_import` 52 / 52、`--lib io::pid` 54 / 54（worktree，debug）；批量报告六张 `status = ok`；`missing` 与拒收 / 无解码器列不变（0 / 0 / 4 / 1 / 4 / 8）。**P-D12 两仓落地。**
 
+### W1（pid-parse `50560a1`，P-D14）
+
+- `StorageTimestamps` / `cfb/reader.rs` / `inspect` 改用 `web_time::SystemTime`（native 上就是 `std` 的类型，wasm32 上与 `cfb` 同型）→ **`cargo check --lib --no-default-features --target wasm32-unknown-unknown` 通过**。
+- `PidParser::parse_reader` / `::parse_package_from_reader`（`Read + Seek`）；棘轮 `a_reader_parses_the_same_document_as_a_path`：五图字节路与路径路的流 / 已解码族 / 投影实体逐一相同。
+- 20 个 backup / publish / `inspect_cli` 测试标 `required-features = ["backup"]`，`log` / `env_logger` 随特性可选：`cargo test --no-default-features` 编得过、跑得绿；默认特性 40 个二进制 **1477 全绿**；clippy 两种特性零告警；rustfmt 干净。
+- 顺带：pid-parse 多了直接依赖 `web-time`，OCS 的 `Cargo.lock` 下次构建会在 `pid-parse` 条目下多记一行（W2 随手提交）。
+- **下一项 W2（OCS）**：`load_pid_from_bytes`（符号库查找 / `sysfont::face_file_name` / `PID_SYMBOL_LIBRARY` 三处 native-only 分支）、`ocs_web_worker` 路由 `pid`、`trunk build`、网页版四图实体数对 native。
+
 ### R1 之后的改向（2026-09-28 用户批准 P-D12 – P-D14 按推荐；⭕ = 推荐）
 
 | # | 决策 | 结论 |
@@ -208,3 +216,4 @@ OCS 主工作树被 `rvt` 会话占着：R / B3 的 OCS 侧在干净 worktree �
 - 2026-09-28：用户经 zhimo「继续分析 … PID解析和加载显示的开发进度，使用 plannator 制定下一步的开发方案」→ 本单（会话 fable-5-1-4），送 Plannotator 批注。P-D1 – P-D11 等批。
 - 2026-09-28：Plannotator 批准（无批注）；用户「按推荐顺序开工（R1 先，W0 并行）」→ R1 / W0 同日落地（pid-parse `cc6626e`）。R1 量出 R2 不值、死记录被画 → P-D12 – P-D14 送批（会话 fable-5-1-4）。
 - 2026-09-28：用户「批 P-D12 / P-D13 / P-D14：死记录不画开工，W1 接着做，R2 登记不做」→ P-D12 pid-parse 侧同日落地（`a68bf55`）；OCS 侧重钉与 W1 接着做（会话 fable-5-1-4）。
+- 2026-09-29（凌晨）：P-D12 OCS 侧落地（`08ec2f1c`，干净 worktree 里做与验、逐实体比改后 ⊂ 改前）；W1 落地（pid-parse `50560a1`）。**待做：W2、B3、S1、H1（点头）、V2 / B2（等材料）**（会话 fable-5-1-4）。
