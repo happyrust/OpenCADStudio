@@ -6,6 +6,11 @@ DWG-0202 副本），每张一行——`load_pid` 的导入摘要（实体 / 记
 
 - 基线：OCS `72ae8f42` + pid-parse `686c9d5`（`DependencyObject` 按成员数校验之后，0201 的 `missing` 为 0），debug 构建。四张主图的 `dxf_sha256` 与计划里 T2 的新基线逐一相同；
   publish 目录那张 DWG-0202 旁边带 `_Data.xml`，语义进了 XDATA，所以哈希与 `test-file/` 那张不同。
+- **2026-09-28 重签**（OCS `dbe8ffd8` 的干净 worktree + pid-parse `a68bf55`，计划 `2026-09-28-pid-import-next-steps.md` P-D12）：pid-parse 不再解码类型字带 `0x8000`
+  的记录（原生读取器跳过的、文件已退役的旧副本），OCS 代码未动。变的三张：DWG-0202 `drawn` 313 → 309 / `decoded` 179 → 175（`/Sheet6615` 孤儿存储的四条边线）、
+  A01 126 → 122 / 116 → 112（`/JSite204/Sheet6` 四条线）、工艺 686 → 578 / 427 → 399 / `cache_bodies` 58 → 31 / `hidden_strokes` 50 → 24（27 个退役放置副本 + 一条旧管道号）；
+  D06 与 DWG-0201 的哈希一字不变（0201 的五份页框副本本来就按范围去重）。改前 / 改后的 DXF 逐实体比（去掉句柄类组码）：**改后是改前的子集**，没有一个实体新增或挪动，头变量除 `HANDSEED` 外相同；
+  去掉的是 0202 四条 `PID-GEOMETRY` 线（该层随之不再建，图层表 15 → 14 条）、A01 四条 `Default` 线、工艺 80 条 `Default` 线 + 27 条 `PID-SYMBOL-LABEL` 名字 + `Labels` 上那条 `250-LNG-57602- - `。
 - `import_ms` 只作参考，随机器与负载变。
 
 重跑与对比：

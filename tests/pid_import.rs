@@ -319,11 +319,13 @@ fn the_import_leaves_a_summary_the_app_can_show() {
     };
     assert_eq!(summary.parametric_placements, names_with_defaults(&doc));
     // The tank's fifth dimension (`0E($1+$2)/10`) has no name; the Black Box
-    // is one template placed twice; DWG-0202 places no parametric symbol and
-    // gets no line at all.
+    // is one template placed once (its second placement record carries the
+    // type word's 0x8000 bit -- an earlier copy of the same oid the native
+    // reader skips, and pid-parse a68bf55 with it); DWG-0202 places no
+    // parametric symbol and gets no line at all.
     for (name, expected) in [
         ("D06.pid", (4, 1, 1)),
-        ("工艺管道及仪表流程-1.pid", (4, 1, 2)),
+        ("工艺管道及仪表流程-1.pid", (4, 1, 1)),
         ("DWG-0202GP06-01.pid", (0, 0, 0)),
     ] {
         let Some((doc, summary)) = import_with_summary(name) else {
@@ -3491,11 +3493,15 @@ fn a_placement_draws_the_body_the_drawing_carries_and_skips_its_hidden_layers() 
     // 1. The corpus, by stroke count: the displayed part of every cached
     //    body over every placement, nothing lettered, no marker, and the
     //    import's own tally of where the bodies came from.
+    // The gongyi drawing read 237 / 58 / 50 until pid-parse a68bf55: 27 of
+    // its placement records carry the type word's 0x8000 bit -- earlier
+    // copies of 13 live placements at the same insertion, which the native
+    // reader skips -- and drew every body a second to fourth time over.
     for (name, strokes, placements, hidden_strokes) in [
         ("DWG-0201GP06-01.pid", 81, 20, 31),
         ("DWG-0202GP06-01.pid", 120, 23, 26),
         ("D06.pid", 32, 6, 8),
-        ("工艺管道及仪表流程-1.pid", 237, 58, 50),
+        ("工艺管道及仪表流程-1.pid", 157, 31, 24),
     ] {
         let Some((doc, summary)) = import_with_summary(name) else {
             continue;
@@ -3632,12 +3638,15 @@ fn a_placement_draws_the_body_the_drawing_carries_and_skips_its_hidden_layers() 
         );
     }
 
-    // 4. 工艺's Remarks: 35 three-line marks and not one arc on the layer.
+    // 4. 工艺's Remarks: 11 three-line marks and not one arc on the layer.
+    //    35 until pid-parse a68bf55 -- 24 of the placement records are
+    //    earlier copies of 11 live ones (type word 0x8000), each drawn on
+    //    top of its replacement.
     if let Some(doc) = import("工艺管道及仪表流程-1.pid") {
         let remarks = of_role(&doc, "symbol-label")
             .filter(|entity| matches!(entity, EntityType::Text(text) if text.value == "Remarks"))
             .count();
-        assert_eq!(remarks, 35, "工艺 places Remarks 35 times");
+        assert_eq!(remarks, 11, "工艺 places Remarks 11 times");
         assert!(
             of_role(&doc, "symbol").all(|entity| !matches!(entity, EntityType::Arc(_))),
             "no cached body of 工艺 carries an arc; the library's Remarks cloud is not drawn"

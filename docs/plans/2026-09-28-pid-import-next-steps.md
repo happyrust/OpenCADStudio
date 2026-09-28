@@ -188,7 +188,12 @@ OCS 主工作树被 `rvt` 会话占着：R / B3 的 OCS 侧在干净 worktree �
   文字形状 3 12 → 11、选择子 257 / 12 → 248 / 11；「156 条标签对 155 条索引」的 oid 6345 碰撞消失；活矩形 3 → 2。拒收 / 无解码器两表不动。golden 四份重签（0202 219 → 215、工艺 476 → 448、A01 117 → 113）。
   新棘轮 `the_records_the_native_reader_skips_are_counted_apart`。
 - 验证：40 个测试二进制 **1476 全绿**（`--lib` 1121），`clippy --all-targets -D warnings` 两种特性零告警，rustfmt 干净。分析 `docs/analysis/2026-09-28-the-native-reader-skips-a-flagged-record.md`，CHANGELOG 两条（P-D12 / W0），`task_plan` 指针。
-- **OCS 侧待做**（不改码）：干净 worktree 里 `pid_import` 重钉（工艺实体 / 放置数，0202 / A01 各少 4 条线）、批量基线 CSV 与 README、四图 `--export` 新哈希、逐实体比只许少不许多或挪。
+- **OCS 侧落地（本次提交，干净 worktree `ocs-pid-0928` 于 `dbe8ffd8` 上做与验，OCS 代码未动）**：
+  - `pid_import` 三处重钉：工艺 `(strokes, placements, hidden)` 237 / 58 / 50 → **157 / 31 / 24**、`Remarks` 放置 35 → **11**（24 份旧副本）、参数化放置 `(4, 1, 2)` → `(4, 1, 1)`（Black Box 的第二条放置记录是旧副本）；**52 / 52** 绿。
+  - 批量基线 `report.csv` 重签：0202 313 / 179 → 309 / 175、A01 126 / 116 → 122 / 112、工艺 686 / 427 / 58 → 578 / 399 / 31；D06、0201 哈希不变。新哈希：0202 `8333316B…`、A01 `49D15B97…`、工艺 `BB9341CF…`（publish 副本 0202 `B53E5FE9…`）。
+  - **逐实体比**（同一 worktree 另配 pid-parse `cc6626e` 导出的「改前」DXF，先验证其哈希与旧基线逐一相同；脚本去句柄类组码后比多重集）：六张图**改后都是改前的子集**，无新增、无挪动，头变量除 `HANDSEED` 外相同；
+    去掉的 = 0202 四条 `PID-GEOMETRY` 线（该层随之不建，图层表 15 → 14）、A01 四条 `Default` 线、工艺 80 条 `Default` 线 + 27 条 `PID-SYMBOL-LABEL` 名字 + `Labels` 上的旧文本 `250-LNG-57602- - `——与 42 条死记录逐条对上（0201 的五份页框早已按范围去重）。
+  - 验证：`pid_import` 52 / 52、`--lib io::pid` 54 / 54（worktree，debug）；批量报告六张 `status = ok`；`missing` 与拒收 / 无解码器列不变（0 / 0 / 4 / 1 / 4 / 8）。**P-D12 两仓落地。**
 
 ### R1 之后的改向（2026-09-28 用户批准 P-D12 – P-D14 按推荐；⭕ = 推荐）
 
