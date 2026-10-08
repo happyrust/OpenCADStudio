@@ -33,8 +33,8 @@
 //! same in either layer mode. Names are exact, not a prefix: `PID-SYMBOL` and
 //! `PID-SYMBOL-LABEL` are different things and the latter ships hidden.
 
-use acadrust::types::{Color, LineWeight};
-use acadrust::EntityType;
+use codec::types::{Color, LineWeight};
+use codec::EntityType;
 use OpenCADStudio::io;
 
 const ARC_STEPS: usize = 48;
@@ -70,7 +70,7 @@ fn role_of(entity: &EntityType) -> Option<String> {
         .values
         .iter()
         .find_map(|value| match value {
-            acadrust::xdata::XDataValue::String(text) => {
+            codec::xdata::XDataValue::String(text) => {
                 text.strip_prefix("role=").map(str::to_string)
             }
             _ => None,

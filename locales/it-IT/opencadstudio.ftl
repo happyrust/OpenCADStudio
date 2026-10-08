@@ -1144,6 +1144,10 @@ common =
     .opened-drawing-but-recent-copy-could-not-be-stored = Disegno aperto, ma impossibile conservare la copia recente: __ocs_fmt_0__
     .select-pdf-underlay = { draw.select }: PDF · { properties.underlay }
     .pdf-files = { common.files } (PDF)
+    .dwf-files = DWF Files
+    .dgn-files = DGN Files
+    .select-dwf-file = Select DWF File
+    .select-dgn-file = Select DGN File
     .pdfattach = PDFATTACH: __ocs_fmt_0__
     .select-external-reference-file = { draw.select } · { properties.external-reference } · { common.files }
     .cad-files = { common.files } (CAD)
@@ -1506,6 +1510,8 @@ common =
     .layouts-selected = layout selezionati
     .pdf = PDF
     .svg = SVG
+    .dwf = DWF
+    .dgn = DGN
     .select-the-layouts-to-output-each-page-is-printed-in-layout-mode = Seleziona i layout da produrre. Ogni pagina viene stampata in modalità Layout.
     .select-all-1fc9a3 = { common.select-all }
     .select-none = { draw.select }: { common.none-title-case }
@@ -2277,6 +2283,57 @@ common =
     .row-s-skipped-duplicate-parameter-name = __ocs_fmt_0__ row(s) skipped: duplicate parameter name.
     .surface-s-cannot-be-thickened-because-the-offset-intersects-itself = __ocs_fmt_0__ surface(s) cannot be thickened because the offset intersects itself.
     .conflicting = ⚠ __ocs_fmt_0__ conflicting
+    .allow-exploding = Consenti esplosione
+    .angstroms = Angstrom
+    .astronomical-units = Unità astronomiche
+    .behavior = Comportamento
+    .block-already-exists-will-redefine-upon-ok = Il blocco "__ocs_fmt_0__" esiste già — verrà ridefinito con OK
+    .block-creates-a-block-definition-from-objects-you-select = BLOCCO crea una definizione di blocco dagli oggetti selezionati.
+    .block-definition = Definizione blocco
+    .block-name = Nome blocco
+    .block-name-already-exists-do-you-want-to-redefine-it =
+        Il blocco "__ocs_fmt_0__" esiste già.
+        Ridefinirlo?
+    .block-name-cannot-be-empty = Il nome del blocco non può essere vuoto.
+    .block-name-cannot-contain-invalid-chars = Il nome del blocco non può contenere: \ / : * ? " < > | = `
+    .block-name-cannot-start-with-star = Il nome del blocco non può iniziare con '*'.
+    .block-unit-label = Unità blocco:
+    .convert-to-block = Converti in blocco
+    .count-objects-selected = __ocs_fmt_0__ oggetti selezionati
+    .decameters = Decametri
+    .decimeters = Decimetri
+    .enter-block-description = Inserisci descrizione blocco...
+    .gigameters = Gigametri
+    .hectometers = Ettometri
+    .hyperlink-ellipsis = Collegamento ipertestuale...
+    .hyperlink-star = Collegamento ipertestuale*
+    .invalid-character-in-block-name = Carattere non valido '__ocs_fmt_0__' nel nome del blocco (\ / : * ? " < > | = ` non consentiti)
+    .light-years = Anni luce
+    .match-block-orientation = Allinea orientamento blocco
+    .microinches = Micropollici
+    .microns = Micron
+    .mils = Mils
+    .nanometers = Nanometri
+    .no-objects-selected = Nessun oggetto selezionato
+    .no-objects-selected-you-must-select-objects-to-define-a-block = Nessun oggetto selezionato. Selezionare gli oggetti per definire un blocco.
+    .objects-title-case = Oggetti
+    .parsecs = Parsec
+    .pick-point = Scegli punto
+    .retain = Mantieni
+    .scale-uniformly = Scala uniforme
+    .specify-on-screen = Specifica sullo schermo
+    .to-layout = al layout
+    .us-survey-feet = Piedi topografici USA
+    .entire-drawing = Intero disegno
+    .delete-from-drawing = Elimina dal disegno
+    .destination = Destinazione
+    .file-name-and-path = Nome file e percorso:
+    .insert-units-label = Unità di inserimento:
+    .wblock-err-no-block-name = Selezionare o immettere il nome di un blocco.
+    .wblock-err-block-not-found = Il blocco "__ocs_fmt_0__" non esiste nel disegno.
+    .wblock-err-no-path = Specificare un nome file e un percorso.
+    .wblock-err-current-drawing = Impossibile scrivere nel file di disegno corrente.
+    .wblock-help-info = WBLOCK scrive gli oggetti, un blocco o l'intero disegno in un nuovo file di disegno.
 errors =
     .save-warning = Salva avviso
     .unable-to-save-drawing = Impossibile salvare il disegno
@@ -3476,6 +3533,128 @@ annotate =
     .tolerance-specify-insertion-point = TOLERANCE Specificare il punto di inserimento:
 
 insert =
+    .pdfui-pdf-scale = PDF scale: __ocs_fmt_0__:1
+    .pdfui-specify-insertion-point = Specify insertion point:
+    .pdfui-no-pdf-underlays = No PDF underlays found.
+    .pdfui-imports-the-geometry-fills-raster-images-and-text-of-a-pdf-f = Imports the geometry, fills, raster images and text of a PDF file as drawing objects.
+    .pdfui-turns-the-layers-of-a-pdf-underlay-on-or-off = Turns the layers of a PDF underlay on or off.
+    .pdfui-attaches-a-pdf-file-as-an-underlay = Attaches a PDF file as an underlay.
+    .pdfui-rotation = Rotation:
+    .pdfui-scale = Scale:
+    .pdfui-specify-insertion-point-on-screen = Specify insertion point on-screen
+    .pdfui-page-size-size = Page size: __ocs_fmt_0__
+    .pdfui-total-count = Total: __ocs_fmt_0__
+    .pdfui-pages = Pages
+    .pdfui-placement = Placement
+    .pdfui-on-screen = On screen
+    .pdfui-file-details = File details
+    .pdfui-page-count = __ocs_fmt_0__ pages
+    .pdfui-selected-pages = Selected pages: __ocs_fmt_0__
+    .pdfui-layer-summary = __ocs_fmt_0__ layers, __ocs_fmt_1__ hidden
+    .pdfui-page = Page:
+    .pdfui-page-to-import = Page to import
+    .pdfui-infer-linetypes-from-collinear-dashes = Infer linetypes from collinear dashes
+    .pdfui-apply-lineweight-properties = Apply lineweight properties
+    .pdfui-convert-solid-fills-to-hatches = Convert solid fills to hatches
+    .pdfui-join-line-and-arc-segments = Join line and arc segments
+    .pdfui-import-as-block = Import as block
+    .pdfui-import-options = Import options
+    .pdfui-create-object-layers = Create object layers
+    .pdfui-use-pdf-layers = Use PDF layers
+    .pdfui-raster-images = Raster images
+    .pdfui-truetype-text = TrueType text
+    .pdfui-solid-fills = Solid fills
+    .pdfui-vector-geometry = Vector geometry
+    .pdfui-pdf-data-to-import = PDF data to import
+    .pdfui-select-an-underlay-to-view-its-layers = Select an underlay to view its layers.
+    .pdfui-this-file-does-not-contain-any-layers = This file does not contain any layers
+    .pdfui-search-for-layer = Search for layer
+    .pdfui-reference-name = Reference name:
+    .pdfui-page-size = Page size:
+    .ul-attach-underlay = Attach Underlay
+    .ul-attach-dwf = Attach DWF
+    .ul-attach-dgn = Attach DGN
+    .ul-attach-dwf-underlay = Attach DWF Underlay
+    .ul-attach-dgn-underlay = Attach DGN Underlay
+    .ul-sheet-count = __ocs_fmt_0__ sheets
+    .ul-model-count = __ocs_fmt_0__ models
+    .ul-sheets = Sheets
+    .ul-models = Models
+    .ul-selected-sheet = Selected sheet: __ocs_fmt_0__
+    .ul-selected-model = Selected model: __ocs_fmt_0__
+    .ul-sheet-size = Sheet size:
+    .ul-model-size = Model size:
+    .ul-conversion-units = Conversion units
+    .ul-master-units = Master units
+    .ul-sub-units = Sub units
+    .ul-sub-units-scale = Sub units make the default scale __ocs_fmt_0__
+    .ul-attaches-dwf = Attaches a DWF or DWFx file as an underlay.
+    .ul-attaches-dgn = Attaches a DGN file as an underlay.
+    .pdfui-select-one-or-more-pages-from-the-pdf-file = Select one or more pages from the PDF file:
+    .pdfui-import-pdf = Import PDF
+    .pdfui-pdf-import-settings = PDF Import Settings
+    .pdfui-underlay-layers = Underlay Layers
+    .pdfui-attach-pdf-underlay = Attach PDF Underlay
+    .pdfui-pdf-import = PDF Import
+    .pdfui-pdf-layers = PDF Layers
+    .pdfui-import-as-objects =
+        Import As
+        Objects
+    .pdfui-edit-layers =
+        Edit
+        Layers
+    .pdfui-external-references =
+        External
+        References
+    .pdfui-enable-snap =
+        Enable
+        Snap
+    .pdfui-show-underlay =
+        Show
+        Underlay
+    .pdfui-remove-clipping =
+        Remove
+        Clipping
+    .pdfui-create-clipping-boundary =
+        Create Clipping
+        Boundary
+    .pdfui-display-in-monochrome =
+        Display in
+        Monochrome
+    .select-pdf-file = Select PDF File
+    .refui-requires-int-90 = Requires an integer between -90 and 90.
+    .refui-xref-fading = Xref fading
+    .refui-edit-reference = Edit Reference
+    .refui-edit-reference-in-place =
+        Edit Reference
+        In-Place
+    .refui-open-reference =
+        Open
+        Reference
+    .refui-snap-to-underlays-off = Snap to Underlays OFF
+    .refui-snap-to-underlays-on = Snap to Underlays ON
+    .refui-snap-to-underlays = Snap to Underlays
+    .xref-attach-dialog-title = Attach External Reference
+    .xref-attach-browse = Browse...
+    .xref-attach-reference-type = Reference Type
+    .xref-attach-uniform-scale = Uniform Scale
+    .xref-attach-insertion-point = Insertion point
+    .xref-attach-angle = Angle:
+    .xref-attach-block-unit = Block Unit
+    .xref-attach-unit = Unit:
+    .xref-attach-factor = Factor:
+    .xref-attach-found-in = Found in:
+    .xref-attach-saved-path = Saved path:
+    .xref-attach-show-details = Show Details
+    .xref-attach-hide-details = Hide Details
+    .xref-attach-select-file = Select Reference File
+    .xref-attach-all-files = All Reference Files
+    .xref-attach-help = Inserts references to external files such as other drawings, raster images, and underlays.
+    .xref-attach-invalid-input = Invalid input.
+    .xref-insertion-point-x = Insertion point X
+    .xref-insertion-point-y = Insertion point Y
+    .xref-insertion-point-z = Insertion point Z
+    .xref-layer-property-overrides = Layer property overrides
     .point-clouds =
         Punto
         Nuvole
@@ -3520,6 +3699,12 @@ insert =
     .frames-print = Cornici e stampa
     .frames-off = Cornici disattivate
     .frames-on = Cornici attivate
+    .hide-frames = Hide frames
+    .display-and-plot-frames = Display and plot frames
+    .display-not-plot-frames = Display but don't plot frames
+    .frames-vary = *Frames vary*
+    .regenerating-model = Regenerating model.
+    .requires-int-0-2 = Requires an integer between 0 and 2.
     .insert-prompt-hint = INSERT __ocs_arg_prompt____ocs_arg_hint__:
     .insert-enter-block-name-hint = INSERT Enter nome del blocco:__ocs_arg_hint__
     .insert-filling-attributes = INSERT Attributi di riempimento...
@@ -3656,6 +3841,9 @@ insert =
     .xref-old-path-prefix = vecchio prefisso percorso
     .xref-attach-dwg = Attach DWG
     .xref-attach-image = Attach Image
+    .select-images = Select image(s):
+    .transparency-mode-on = Enter transparency mode [ON/OFF] <ON>:
+    .transparency-mode-off = Enter transparency mode [ON/OFF] <OFF>:
     .xref-attach-menu = Attach...
     .xref-change-path-type = Change Path Type
     .xref-find-and-replace-menu = Find and Replace...
@@ -3767,6 +3955,9 @@ insert =
     .xattach-specify-scale-factor-1-0-x-y-z-or-pick-corner = XATTACH  Specify scale factor <1.0> (X,Y,Z or pick Corner):
     .xopen-opening = XOPEN: opening "__ocs_fmt_0__".
     .xref = XREF: __ocs_fmt_0__
+    .block-select-objects = BLOCK  Selezionare oggetti:
+    .block-specify-insertion-base-point = BLOCK  Specificare punto base di inserimento:
+    .wblock-specify-insertion-base-point = WBLOCK  Specificare il punto base di inserimento:
 model =
     .create = Crea
     .boolean = Operazioni booleane
@@ -4222,6 +4413,12 @@ view =
     .ucs-specify-point-in-positive-xy-plane = UCS  { common.specify }: XY · { common.positive-direction } · { common.point }:
 
 properties =
+    .applied = Applied
+    .pdf-underlay = PDF Underlay
+    .dwf-underlay = DWF Underlay
+    .dgn-underlay = DGN Underlay
+    .page-number = Page number
+    .layer-display-overrides = Layer display overrides
     .arrowhead-size = Dimensione punta freccia
     .attachment = Collegamento
     .chord = Corda
@@ -5097,8 +5294,6 @@ plot =
     .this-printer-reports-no-driver-options = This printer reports no driver options.
     .could-not-read-the-printer-s-options-error = Could not read the printer's options: __ocs_fmt_0__
     .reading-the-printer-s-options = Reading the printer's options…
-    .printing-preferences-saved-for-printer = Printing preferences saved for __ocs_fmt_0__.
-    .printing-preferences-unchanged = Printing preferences unchanged.
     .printer-properties = Printer properties
     .merge-overlapping-lines = Unisci linee sovrapposte
     .multi-page-svg-export-is-not-available-in-the-w = Multi-page SVG export is not available in the web version; EXPORTSVG downloads the current layout.

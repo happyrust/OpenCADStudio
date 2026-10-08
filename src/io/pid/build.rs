@@ -300,7 +300,7 @@ pub(super) fn build_entities(
             start_angle,
             end_angle,
         } => {
-            let mut arc = acadrust::entities::Arc::new();
+            let mut arc = codec::entities::Arc::new();
             arc.center = projection.point(center);
             arc.radius = projection.mm(*radius);
             // Radians on both sides -- see the angle-unit note by the layer

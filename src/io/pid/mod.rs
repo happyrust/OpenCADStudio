@@ -21,11 +21,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use acadrust::entities::hatch::{BoundaryEdge, BoundaryPath, BoundaryPathFlags, LineEdge};
-use acadrust::entities::{Circle, Hatch, Line, LwPolyline, Point, Text, TextHorizontalAlignment};
-use acadrust::tables::linetype::{LineType, LineTypeElement};
-use acadrust::types::{Color, LineWeight, Vector2, Vector3};
-use acadrust::{CadDocument, EntityType, TableEntry};
+use codec::entities::hatch::{BoundaryEdge, BoundaryPath, BoundaryPathFlags, LineEdge};
+use codec::entities::{Circle, Hatch, Line, LwPolyline, Point, Text, TextHorizontalAlignment};
+use codec::tables::linetype::{LineType, LineTypeElement};
+use codec::types::{Color, LineWeight, Vector2, Vector3};
+use codec::{CadDocument, EntityType, TableEntry};
 use pid_parse::style_link::{
     DashPattern, LineStyleIndex, MarkerStatus, PointMarker, ResolvedFill, ResolvedLineStyle,
     StyleNameIndex, TextAlignment,
@@ -585,7 +585,7 @@ fn ensure_layer(doc: &mut CadDocument, name: &str, colour: Color, visible: bool)
     if doc.layers.contains(name) {
         return;
     }
-    let mut layer = acadrust::tables::Layer::new(name);
+    let mut layer = codec::tables::Layer::new(name);
     layer.handle = doc.allocate_handle();
     layer.color = colour;
     layer.flags.off = !visible;

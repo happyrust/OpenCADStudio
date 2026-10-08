@@ -41,9 +41,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use acadrust::objects::{XRecordEntry, XRecordValue};
-use acadrust::xdata::XDataValue;
-use acadrust::{CadDocument, EntityType, Handle};
+use codec::objects::{XRecordEntry, XRecordValue};
+use codec::xdata::XDataValue;
+use codec::{CadDocument, EntityType, Handle};
 
 use super::pid::LAYER_HIDDEN;
 use super::PID_SEMANTICS_XDATA_APP;
@@ -427,7 +427,7 @@ fn remove_xrecord(doc: &mut CadDocument, owner: Handle) {
     let Some(dictionary_handle) = doc.extension_dictionary_handle(owner) else {
         return;
     };
-    let Some(acadrust::objects::ObjectType::Dictionary(dictionary)) =
+    let Some(codec::objects::ObjectType::Dictionary(dictionary)) =
         doc.objects.get_mut(&dictionary_handle)
     else {
         return;
@@ -446,9 +446,9 @@ fn remove_xrecord(doc: &mut CadDocument, owner: Handle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acadrust::entities::Line;
-    use acadrust::types::Vector3;
-    use acadrust::xdata::ExtendedDataRecord;
+    use codec::entities::Line;
+    use codec::types::Vector3;
+    use codec::xdata::ExtendedDataRecord;
 
     #[test]
     fn hidden_sheet_layer_names_are_trimmed_case_folded_and_space_insensitive() {
@@ -657,7 +657,7 @@ mod tests {
             line_with(&["sheet_layer=HiddenObjects", "role=geometry"]),
             line_with(&["role=frame"]),
         ]);
-        let mut hidden = acadrust::tables::layer::Layer::new(LAYER_HIDDEN);
+        let mut hidden = codec::tables::layer::Layer::new(LAYER_HIDDEN);
         hidden.flags.off = true;
         doc.layers
             .add(hidden)

@@ -7,7 +7,7 @@ use super::{
     OpenCADStudio,
 };
 use crate::scene::ObjectIsolationState;
-use acadrust::{EntityType, Handle};
+use codec::{EntityType, Handle};
 use rustc_hash::{FxHashMap, FxHashSet as HashSet};
 use std::sync::Arc;
 
@@ -73,7 +73,7 @@ pub(super) struct PendingDelta {
     current_layout: String,
     selected_before: Vec<Handle>,
     dirty_before: bool,
-    structure_before: Option<acadrust::CadDocument>,
+    structure_before: Option<codec::CadDocument>,
 }
 
 pub(super) struct PendingLayerDelta {
@@ -81,7 +81,7 @@ pub(super) struct PendingLayerDelta {
     current_layout: String,
     selected_before: Vec<Handle>,
     dirty_before: bool,
-    before: Vec<(String, Option<acadrust::tables::Layer>)>,
+    before: Vec<(String, Option<codec::tables::Layer>)>,
 }
 
 pub(super) struct PendingTextStyleDelta {
@@ -89,7 +89,7 @@ pub(super) struct PendingTextStyleDelta {
     current_layout: String,
     selected_before: Vec<Handle>,
     dirty_before: bool,
-    before: Vec<(String, Option<acadrust::tables::TextStyle>)>,
+    before: Vec<(String, Option<codec::tables::TextStyle>)>,
 }
 
 pub(super) struct PendingDimStyleDelta {
@@ -97,7 +97,7 @@ pub(super) struct PendingDimStyleDelta {
     current_layout: String,
     selected_before: Vec<Handle>,
     dirty_before: bool,
-    before: Vec<(String, Option<acadrust::tables::DimStyle>)>,
+    before: Vec<(String, Option<codec::tables::DimStyle>)>,
 }
 
 pub(super) struct PendingObjectDelta {
@@ -105,7 +105,7 @@ pub(super) struct PendingObjectDelta {
     current_layout: String,
     selected_before: Vec<Handle>,
     dirty_before: bool,
-    before: FxHashMap<Handle, acadrust::objects::ObjectType>,
+    before: FxHashMap<Handle, codec::objects::ObjectType>,
 }
 
 impl OpenCADStudio {
@@ -189,7 +189,7 @@ impl OpenCADStudio {
         i: usize,
         label: impl Into<String>,
         before: Vec<(Handle, Arc<EntityType>)>,
-        object_before: Vec<(Handle, acadrust::objects::ObjectType)>,
+        object_before: Vec<(Handle, codec::objects::ObjectType)>,
         dirty_before: bool,
     ) {
         self.finish_pending_history(i);
@@ -292,7 +292,7 @@ impl OpenCADStudio {
                     .then_some(*handle)
             })
             .collect();
-        acadrust::CadDocument::align_added_entity_structure(
+        codec::CadDocument::align_added_entity_structure(
             &mut pending.structure_before,
             &structure_after,
             &added_handles,
@@ -347,6 +347,9 @@ impl OpenCADStudio {
     }
 
     pub(super) fn push_undo_snapshot(&mut self, i: usize, label: impl Into<String>) {
+        if self.graph_undo_open {
+            return;
+        }
         self.finish_pending_history(i);
         let label = label.into();
         let current_layout = self.tabs[i].scene.current_layout.clone();
@@ -563,8 +566,8 @@ impl OpenCADStudio {
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
     }
 
-    fn group_object_state(&self, i: usize) -> FxHashMap<Handle, acadrust::objects::ObjectType> {
-        use acadrust::objects::ObjectType;
+    fn group_object_state(&self, i: usize) -> FxHashMap<Handle, codec::objects::ObjectType> {
+        use codec::objects::ObjectType;
         let document = &self.tabs[i].scene.document;
         let dictionary = document.header.acad_group_dict_handle;
         document
@@ -686,8 +689,8 @@ impl OpenCADStudio {
             entity,
             EntityType::Block(_)
                 | EntityType::BlockEnd(_)
-                | EntityType::Extended(acadrust::entities::ExtendedEntity {
-                    data: acadrust::entities::ExtendedEntityData::SectionObject(_),
+                | EntityType::Extended(codec::entities::ExtendedEntity {
+                    data: codec::entities::ExtendedEntityData::SectionObject(_),
                     ..
                 })
         ) {
@@ -797,7 +800,7 @@ impl OpenCADStudio {
                         (before.is_none() && after.is_some()).then_some(*handle)
                     })
                     .collect();
-                acadrust::CadDocument::align_added_entity_structure(
+                codec::CadDocument::align_added_entity_structure(
                     before_structure,
                     &after_structure,
                     &added_handles,
@@ -848,9 +851,11 @@ impl OpenCADStudio {
                     let inverse = self.tabs[i]
                         .scene
                         .document
-                        .swap_structure(std::mem::replace(stored, acadrust::CadDocument::new()));
+                        .swap_structure(std::mem::replace(stored, codec::CadDocument::new()));
                     *stored = inverse;
                     self.tabs[i].scene.invalidate_dependency_index();
+                    self.tabs[i].scene.bump_layout_epoch();
+                    self.tabs[i].scene.bump_scale_epoch();
                 }
                 StructureSnapshot::Layers(entries) => {
                     let names: Vec<String> =
@@ -918,7 +923,7 @@ impl OpenCADStudio {
                             .iter()
                             .chain(&entry.after)
                             .filter_map(|object| match object {
-                                acadrust::objects::ObjectType::Group(group) => {
+                                codec::objects::ObjectType::Group(group) => {
                                     Some(group.entities.as_slice())
                                 }
                                 _ => None,
@@ -926,12 +931,31 @@ impl OpenCADStudio {
                             .flatten()
                             .copied()
                     }));
+                    let mut layout_touched = false;
+                    let mut scale_touched = false;
                     for entry in entries {
                         let value = if undo {
                             entry.before.clone()
                         } else {
                             entry.after.clone()
                         };
+                        // Either direction can add/remove a layout: undoing
+                        // an insert removes it (`before` is `None`), redoing
+                        // re-inserts it — so both sides must be inspected.
+                        layout_touched |= matches!(
+                            entry.before,
+                            Some(codec::objects::ObjectType::Layout(_))
+                        ) || matches!(
+                            entry.after,
+                            Some(codec::objects::ObjectType::Layout(_))
+                        );
+                        scale_touched |= matches!(
+                            entry.before,
+                            Some(codec::objects::ObjectType::Scale(_))
+                        ) || matches!(
+                            entry.after,
+                            Some(codec::objects::ObjectType::Scale(_))
+                        );
                         if let Some(object) = value {
                             self.tabs[i]
                                 .scene
@@ -941,6 +965,12 @@ impl OpenCADStudio {
                         } else {
                             self.tabs[i].scene.document.objects.remove(&entry.handle);
                         }
+                    }
+                    if layout_touched {
+                        self.tabs[i].scene.bump_layout_epoch();
+                    }
+                    if scale_touched {
+                        self.tabs[i].scene.bump_scale_epoch();
                     }
                 }
                 StructureSnapshot::Styles {
@@ -974,6 +1004,9 @@ impl OpenCADStudio {
         changes.sort_by_key(|(handle, _)| handle.value());
         changes.dedup_by_key(|(handle, _)| *handle);
         let scene = &mut self.tabs[i].scene;
+        if !d.parametric_constraints.is_empty() {
+            scene.bump_constraints_epoch();
+        }
         for entry in &d.parametric_constraints {
             let value = if undo { &entry.before } else { &entry.after };
             *scene.parametric_constraint_set_mut(entry.scope) = value.clone();

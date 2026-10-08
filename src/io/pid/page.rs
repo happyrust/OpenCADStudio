@@ -156,7 +156,7 @@ pub(super) fn frame_drawing(doc: &mut CadDocument, bounds: &Bounds, page_mm: Opt
     let width = max_x - min_x;
     let height = max_y - min_y;
 
-    let mut vport = acadrust::tables::VPort::new("*Active");
+    let mut vport = codec::tables::VPort::new("*Active");
     vport.lower_left = Vector2::new(0.0, 0.0);
     vport.upper_right = Vector2::new(1.0, 1.0);
     vport.view_direction = Vector3::new(0.0, 0.0, 1.0);

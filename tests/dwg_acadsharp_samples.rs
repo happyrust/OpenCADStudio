@@ -1,4 +1,4 @@
-use acadrust::CadDocument;
+use codec::CadDocument;
 use std::path::PathBuf;
 use OpenCADStudio::io::{load_file, save_as_version};
 

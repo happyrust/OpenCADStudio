@@ -2,8 +2,8 @@
 //! units it is drawn in, where a block's stem ends, how a bubble's inner
 //! text composes into a tag.
 
-use acadrust::entities::Insert;
-use acadrust::{CadDocument, EntityType};
+use codec::entities::Insert;
+use codec::{CadDocument, EntityType};
 
 use super::*;
 
@@ -386,8 +386,8 @@ mod tests {
     /// lettering.
     #[test]
     fn an_entity_reads_as_lettering_or_not() {
-        use acadrust::entities::{Line, MText, Text};
-        use acadrust::types::Vector3;
+        use codec::entities::{Line, MText, Text};
+        use codec::types::Vector3;
         let plain = EntityType::Text(Text::with_value(" BUV-3101 ", Vector3::new(1.0, 2.0, 0.0)));
         let read = lettering_value(&plain).expect("text is lettering");
         assert_eq!((read.value.as_str(), read.at), ("BUV-3101", (1.0, 2.0)));

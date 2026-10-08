@@ -46,6 +46,10 @@ struct SysFonts {
     families: Vec<String>,
     /// Faces fontdb merged into a wider family, reachable again by name.
     recovered: Vec<Recovered>,
+    /// Installed face file name (lower-case) → the family that face holds.
+    /// A drawing references a TrueType style by *file* name, so this is what
+    /// makes such a style resolve — see [`family_for_reference`].
+    by_file: HashMap<String, String>,
 }
 
 static FONTS: OnceLock<SysFonts> = OnceLock::new();
@@ -123,11 +127,26 @@ fn fonts() -> &'static SysFonts {
 
         let recovered = recover_hidden_faces(&db);
 
-        let mut families: Vec<String> = db
-            .faces()
-            .filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
-            .chain(recovered.iter().map(|entry| entry.name.clone()))
-            .collect();
+        let mut families: Vec<String> = Vec::new();
+        let mut by_file: HashMap<String, String> = HashMap::new();
+        for face in db.faces() {
+            let Some((family, _)) = face.families.first() else {
+                continue;
+            };
+            families.push(family.clone());
+            // Remember every face file: a DWG style names the file, and the
+            // family inside it is usually a different string.
+            if let fontdb::Source::File(path) = &face.source {
+                if let Some(name) = path.file_name() {
+                    by_file
+                        .entry(name.to_string_lossy().to_ascii_lowercase())
+                        .or_insert_with(|| family.clone());
+                }
+            }
+        }
+        // The width variants fontdb merged into a wider family, by the name a
+        // user types for them.
+        families.extend(recovered.iter().map(|entry| entry.name.clone()));
         families.sort_by_key(|n| n.to_lowercase());
         families.dedup();
 
@@ -135,6 +154,7 @@ fn fonts() -> &'static SysFonts {
             db,
             families,
             recovered,
+            by_file,
         }
     })
 }
@@ -271,6 +291,34 @@ pub fn face_attributes(name: &str) -> Option<FaceRequest> {
 pub fn with_face_data<T>(family: &str, f: impl FnOnce(&[u8], u32) -> T) -> Option<T> {
     let id = face_id(family)?;
     fonts().db.with_face_data(id, f)
+}
+
+/// The family of the installed face whose file is named `name` — a bare file
+/// name or any path to one, matched case-insensitively.
+fn family_for_file(name: &str) -> Option<String> {
+    let file = name.rsplit(['/', '\\']).next()?.trim();
+    if file.is_empty() {
+        return None;
+    }
+    fonts().by_file.get(&file.to_ascii_lowercase()).cloned()
+}
+
+/// The installed family a drawing's font reference names, or `None` when
+/// nothing installed answers to it.
+///
+/// A DWG text style stores the TrueType font *file* (`GOST2304_TypeA_italic.ttf`,
+/// sometimes with a directory), which is what AutoCAD resolves; the family name
+/// lives inside the file and is usually not the same string. Inline `\f` codes
+/// carry either form, so both are tried.
+pub fn family_for_reference(reference: &str) -> Option<String> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return None;
+    }
+    // The file name is exact; the family lookup ends in a prefix/subset match
+    // that a longer file name loses to (`ISOCPEUI.TTF` would take `ISOCP`), so
+    // an installed face file answers first.
+    family_for_file(reference).or_else(|| canonical_family_name(reference))
 }
 
 /// Whether `family` matches an installed system font (case-insensitive via
@@ -428,6 +476,37 @@ mod tests {
         assert_eq!(fold_name("Arial Narrow"), fold_name("arialnarrow"));
         assert_eq!(fold_name("Arial-Narrow"), fold_name("ARIAL NARROW"));
         assert_ne!(fold_name("Arial Narrow"), fold_name("Arial"));
+    }
+
+    /// A DWG stores a style's TrueType font as a file name, so every installed
+    /// face has to be reachable by the name of its file — case-insensitively,
+    /// and whether it comes as a bare name or as a path.
+    #[test]
+    fn face_files_resolve_to_their_family() {
+        let found = fonts().db.faces().find_map(|face| match &face.source {
+            fontdb::Source::File(path) => {
+                let file = path.file_name()?.to_string_lossy().into_owned();
+                let family = face.families.first().map(|(name, _)| name.clone())?;
+                Some((file, family))
+            }
+            _ => None,
+        });
+        let Some((file, family)) = found else {
+            eprintln!("no installed face files on this host; skipping");
+            return;
+        };
+
+        assert_eq!(family_for_file(&file).as_deref(), Some(family.as_str()));
+        assert_eq!(
+            family_for_file(&file.to_ascii_uppercase()).as_deref(),
+            Some(family.as_str())
+        );
+        assert_eq!(
+            family_for_reference(&format!("/somewhere/else/{file}")).as_deref(),
+            Some(family.as_str())
+        );
+        assert_eq!(family_for_file("no-such-face-9f3.ttf"), None);
+        assert_eq!(family_for_reference("   "), None);
     }
 }
 

@@ -314,7 +314,12 @@ pub(super) fn legacy_page_ops(
             // Near-white and near-yellow (viewport active border) → dark grey for print
             // (only when no CTB override was applied).
             if !color_overridden {
-                let is_light = r > 0.80 && g > 0.80 && b > 0.80;
+                // Upstream 2026-09-29, with the shared emitter: an authored
+                // white (not colour 7) plots as drawn, like on screen.
+                let is_light = r > 0.80
+                    && g > 0.80
+                    && b > 0.80
+                    && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
                 let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
                 let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
                 if is_light || is_yellow {
@@ -684,7 +689,7 @@ fn emit_wire_fills(
                     boundary_exterior: None,
                     boundary_sources: None,
                     boundary_paths: None,
-                    style: acadrust::entities::HatchStyleType::Normal,
+                    style: codec::entities::HatchStyleType::Normal,
                     pattern: pattern.clone(),
                     name: "PLOTSTYLE".to_string(),
                     color: wire.color,
@@ -860,13 +865,22 @@ fn emit_hatch(
         r = 1.0;
         g = 1.0;
         b = 1.0;
-    } else if !color_overridden {
+    } else if !color_overridden
+        // The third deliberate change (upstream 2026-09-28/29, merged
+        // 2026-09-29 with the shared emitter): `aci == 0` is an explicit true
+        // colour and plots as drawn (#1417), and an authored white (not
+        // colour 7) plots as drawn too.
+        && hatch.aci != 0
+    {
         // The second deliberate change since the freeze (2026-09-10): an
         // ACI-7 solid fill is no longer exempt from the light-to-black
         // adaptation -- colour 7 plots black on paper, as in AutoCAD. The
         // original excluded `hatch.aci == 7 && Solid` here (upstream #618).
         // Changed in the same commit as the shared emitter, per the header.
-        let is_light = r > 0.80 && g > 0.80 && b > 0.80;
+        let is_light = r > 0.80
+            && g > 0.80
+            && b > 0.80
+            && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
         let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
         let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
         if is_light || is_yellow {
@@ -1045,7 +1059,12 @@ fn glyph_world_xy(v: &crate::scene::pipeline::text_gpu::TextVertex) -> [f64; 2] 
 /// Adapt a text colour to the white sheet, mirroring the wire/hatch passes:
 /// near-white / near-yellow (colour-7-on-white) → black, near-cyan → dark blue.
 fn adapt_text_color([r, g, b]: [f32; 3]) -> [f32; 3] {
-    let is_light = r > 0.80 && g > 0.80 && b > 0.80;
+    // Upstream 2026-09-29, with the shared emitter: an authored white (not
+    // colour 7) plots as drawn, like on screen.
+    let is_light = r > 0.80
+        && g > 0.80
+        && b > 0.80
+        && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
     let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
     let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
     if is_light || is_yellow {

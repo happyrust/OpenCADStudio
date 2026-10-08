@@ -329,6 +329,15 @@ pub fn format_snap_angle(deg: f32) -> String {
 /// GRIPOBJLIMIT default: past this many selected objects, no grips are drawn.
 pub const DEFAULT_GRIP_OBJECT_LIMIT: i32 = 100;
 
+/// GRIPVERTLIMIT default: cap on TOTAL selection grips across all selected
+/// objects. `grip_object_limit` gates object count, but one dense polyline
+/// can emit ~2 grips/vertex past it — this caps the vertex blowup. Mid-segment
+/// grips are dropped first; vertex grips are kept.
+///
+/// `pub` so the `cargo bench` harness (external crate) measures the real
+/// constant alongside [`crate::app::apply_grip_budget`] as `ui_grip_budget`.
+pub const MAX_SELECTED_GRIPS: usize = 4096;
+
 /// The "settings" section of the consolidated config ([`crate::app::config`]).
 /// Field defaults mirror the app's in-code defaults so a missing key restores
 /// the value the app boots with.
@@ -357,6 +366,9 @@ pub struct UserSettings {
     /// GRIPOBJLIMIT: past this many selected objects, no grips are drawn at
     /// all. 0 means no limit. The drawing header carries no slot for it.
     pub grip_object_limit: i32,
+    /// IMAGEFRAME of the profile: used by new drawings and by drawings that
+    /// carry no image variables of their own.
+    pub image_frame: i16,
     /// Nested-copy symbol handling: false inserts, true binds.
     pub ncopy_bind: bool,
     /// Last Options page; unknown saved names fall back without rejecting the config.
@@ -476,6 +488,10 @@ pub struct UserSettings {
     /// Minutes between autosaves to a `.sv$` recovery file (SAVETIME command).
     /// 0 disables autosave.
     pub savetime_min: i32,
+    /// SCRIPTCOMMANDS: whether a script (the Python plugin) may run OCS commands
+    /// through the host. On by default; a user turns it off with the
+    /// `SCRIPTCOMMANDS 0` command, and a script cannot change it.
+    pub script_commands: bool,
     /// File type and version used when a new/unsaved drawing is first saved.
     /// Existing drawings keep their own type and version.
     pub default_save_format: String,
@@ -640,6 +656,7 @@ impl Default for UserSettings {
             right_click_mode: RightClickMode::ShortcutMenu,
             right_click_hold_ms: 250,
             grip_object_limit: DEFAULT_GRIP_OBJECT_LIMIT,
+            image_frame: 1,
             ncopy_bind: false,
             cursor_type: CursorType::Crosshair,
             crosshair_color: None,
@@ -676,6 +693,7 @@ impl Default for UserSettings {
             constraint_bar_display: 3,
             constraint_bar_mode: 4095,
             savetime_min: 10,
+            script_commands: true,
             default_save_format: crate::io::DEFAULT_SAVE_FORMAT.to_string(),
             pick_add: true,
             pick_drag_rect: false,
@@ -787,6 +805,19 @@ mod tests {
         );
         assert!(!cfg.settings.pick_add, "the rest of the file must survive");
         assert_eq!(cfg.settings.savetime_min, 42);
+    }
+
+    #[test]
+    fn script_commands_default_on_and_survive_a_round_trip() {
+        let missing: crate::app::config::AppConfig =
+            serde_json::from_str(r#"{"settings": {"pick_add": false}}"#).unwrap();
+        assert!(missing.settings.script_commands, "an old config keeps scripts allowed");
+        let off: crate::app::config::AppConfig =
+            serde_json::from_str(r#"{"settings": {"script_commands": false}}"#).unwrap();
+        assert!(!off.settings.script_commands);
+        let text = serde_json::to_string(&off).unwrap();
+        let back: crate::app::config::AppConfig = serde_json::from_str(&text).unwrap();
+        assert!(!back.settings.script_commands);
     }
 
     #[test]

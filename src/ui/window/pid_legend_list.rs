@@ -898,7 +898,7 @@ mod tests {
     #[test]
     fn exception_counts_match_the_five_report_categories_and_locations() {
         use crate::io::pid_legend::{ExceptionLocation, RangeAnnotation, UnknownShape};
-        use acadrust::Handle;
+        use codec::Handle;
 
         let location = |value: &str, handle: u64| ExceptionLocation {
             value: value.to_string(),

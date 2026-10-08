@@ -2,6 +2,27 @@ use super::OpenCADStudio;
 use crate::ui;
 
 impl OpenCADStudio {
+    /// Apply the current layer to the document header and all per-tab/UI
+    /// creation state. Both built-in commands and plugin settings use this.
+    pub(super) fn set_current_layer_name(&mut self, tab: usize, layer: &str) -> Result<(), String> {
+        let handle = self.tabs[tab]
+            .scene
+            .document
+            .layers
+            .get(layer)
+            .map(|entry| entry.handle)
+            .ok_or_else(|| format!("layer {layer:?} does not exist"))?;
+        self.tabs[tab].scene.document.header.current_layer_name = layer.to_owned();
+        self.tabs[tab].scene.document.header.current_layer_handle = handle;
+        self.tabs[tab].active_layer = layer.to_owned();
+        self.tabs[tab].layers.current_layer = layer.to_owned();
+        self.tabs[tab].dirty = true;
+        if tab == self.active_tab {
+            self.ribbon.active_layer = layer.to_owned();
+            self.refresh_layer_panel();
+        }
+        Ok(())
+    }
     pub(super) fn load_layer_state_editor(&mut self, selected: Option<String>) {
         let i = self.active_tab;
         if let Some(name) = selected {
@@ -102,6 +123,8 @@ impl OpenCADStudio {
             .layers
             .layers
             .iter()
+            // The reference's hidden system layers (`*ADSK_CONSTRAINTS`) stay out.
+            .filter(|l| !l.name.starts_with('*'))
             .map(|l| crate::ui::ribbon::LayerInfo {
                 name: l.name.clone(),
                 color: crate::ui::window::layers::iced_color_from_acad(&l.color),
@@ -176,7 +199,7 @@ impl OpenCADStudio {
             .objects
             .values()
             .filter_map(|o| {
-                if let acadrust::objects::ObjectType::MultiLeaderStyle(mls) = o {
+                if let codec::objects::ObjectType::MultiLeaderStyle(mls) = o {
                     Some(mls.name.clone())
                 } else {
                     None
@@ -204,7 +227,7 @@ impl OpenCADStudio {
             .objects
             .values()
             .filter_map(|o| {
-                if let acadrust::objects::ObjectType::TableStyle(ts) = o {
+                if let codec::objects::ObjectType::TableStyle(ts) = o {
                     Some(ts.name.clone())
                 } else {
                     None

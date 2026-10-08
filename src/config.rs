@@ -16,6 +16,10 @@ use std::path::PathBuf;
 /// same all-defaults config whatever the machine holds.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn config_dir() -> Option<PathBuf> {
+    // Tests must never read or write the person's real settings: a test run
+    // once raced dozens of tests through an alias-table migration and left the
+    // user's alias file holding a single line. Every store routes through here,
+    // so one per-process scratch folder isolates them all.
     #[cfg(test)]
     {
         Some(test_config_dir().clone())

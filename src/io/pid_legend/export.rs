@@ -303,7 +303,7 @@ mod tests {
     use super::*;
     use crate::io::pid_legend::{RangeAnnotation, UnknownShape};
     use crate::io::pid_pipes::Run;
-    use acadrust::Handle;
+    use codec::Handle;
     use std::collections::BTreeMap;
 
     fn symbol(index: u64, tag: &str, at: (f64, f64)) -> Recognized {

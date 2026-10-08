@@ -6,8 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use acadrust::xdata::{ExtendedDataRecord, XDataValue};
-use acadrust::{CadDocument, Handle};
+use codec::xdata::{ExtendedDataRecord, XDataValue};
+use codec::{CadDocument, Handle};
 
 use super::{Recognition, Recognized};
 use crate::io::PID_SEMANTICS_XDATA_APP;
@@ -134,7 +134,7 @@ fn desired_records(recognition: &Recognition) -> BTreeMap<Handle, ExtendedDataRe
 
 fn ensure_app_id(document: &mut CadDocument) -> u64 {
     if !document.app_ids.contains(PID_SEMANTICS_XDATA_APP) {
-        let mut app = acadrust::tables::AppId::new(PID_SEMANTICS_XDATA_APP);
+        let mut app = codec::tables::AppId::new(PID_SEMANTICS_XDATA_APP);
         app.handle = document.allocate_handle();
         let _ = document.app_ids.add(app);
     }
@@ -250,9 +250,9 @@ mod tests {
     use crate::io::pid_legend::{GroupOrigin, GroupTag, TagSource};
     use crate::io::pid_pipes::{End, Pipes, Run};
     use crate::scene::Scene;
-    use acadrust::entities::{EntityType, Line};
-    use acadrust::objects::ObjectType;
-    use acadrust::types::Vector3;
+    use codec::entities::{EntityType, Line};
+    use codec::objects::ObjectType;
+    use codec::types::Vector3;
 
     fn line(y: f64) -> EntityType {
         EntityType::Line(Line::from_points(

@@ -253,7 +253,7 @@ pub(super) fn register_text_styles(
             name = format!("{base}-{suffix}");
             suffix += 1;
         }
-        let mut style = acadrust::tables::TextStyle::new(&name);
+        let mut style = codec::tables::TextStyle::new(&name);
         style.true_type_font = font.to_string();
         match crate::scene::text::sysfont::face_file_name(font) {
             Some(file) => style.font_file = file,

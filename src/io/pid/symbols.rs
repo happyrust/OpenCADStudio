@@ -245,7 +245,7 @@ pub(super) fn shape_primitive(
             } else {
                 (at.rotation + end_angle, at.rotation + start_angle)
             };
-            let mut arc = acadrust::entities::Arc::new();
+            let mut arc = codec::entities::Arc::new();
             arc.center = at.apply(center.0, center.1);
             arc.radius = radius;
             // Radians on both sides -- see the angle-unit note by the layer

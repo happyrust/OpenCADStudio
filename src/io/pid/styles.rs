@@ -165,7 +165,7 @@ pub(super) fn resolve_styles(
     // session and silently vanish on save (see `set_entity_xdata`). Every
     // drawn entity states its `role=`, so the registration is unconditional.
     if !doc.app_ids.contains(PID_SEMANTICS_XDATA_APP) {
-        let mut app = acadrust::tables::AppId::new(PID_SEMANTICS_XDATA_APP);
+        let mut app = codec::tables::AppId::new(PID_SEMANTICS_XDATA_APP);
         app.handle = doc.allocate_handle();
         let _ = doc.app_ids.add(app);
     }

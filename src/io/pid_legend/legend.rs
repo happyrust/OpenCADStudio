@@ -4,9 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use acadrust::entities::{Circle, LwPolyline, Text};
-use acadrust::types::{Color, Vector2, Vector3};
-use acadrust::{CadDocument, EntityType, Handle};
+use codec::entities::{Circle, LwPolyline, Text};
+use codec::types::{Color, Vector2, Vector3};
+use codec::{CadDocument, EntityType, Handle};
 
 use super::exploded::fnv1a;
 use super::pid_pipes::{self, End};
@@ -173,7 +173,7 @@ fn ensure_layer(doc: &mut CadDocument, name: &str, color: [u8; 3]) {
         layer.color = rgb;
         return;
     }
-    let mut layer = acadrust::tables::Layer::new(name);
+    let mut layer = codec::tables::Layer::new(name);
     layer.handle = doc.allocate_handle();
     layer.color = rgb;
     let _ = doc.layers.add(layer);

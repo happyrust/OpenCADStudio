@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use acadrust::EntityType;
+use codec::EntityType;
 use OpenCADStudio::io;
 
 /// The `role=` the importer wrote into the entity's `PID_SEMANTICS` record.
@@ -18,7 +18,7 @@ fn pid_role(entity: &EntityType) -> Option<String> {
         .values
         .iter()
         .find_map(|value| match value {
-            acadrust::xdata::XDataValue::String(text) => {
+            codec::xdata::XDataValue::String(text) => {
                 text.strip_prefix("role=").map(str::to_string)
             }
             _ => None,

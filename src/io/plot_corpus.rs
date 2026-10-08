@@ -131,7 +131,7 @@ pub fn hatch(
         boundary_exterior: None,
         boundary_sources: None,
         boundary_paths: None,
-        style: acadrust::entities::HatchStyleType::Normal,
+        style: codec::entities::HatchStyleType::Normal,
         pattern,
         name: name.into(),
         color,

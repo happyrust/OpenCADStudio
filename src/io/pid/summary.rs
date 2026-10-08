@@ -10,7 +10,7 @@ use super::*;
 /// Returned by [`load_pid`] beside the document ([`PidImport`]), and carried
 /// across the format-agnostic open pipeline inside the document itself
 /// ([`ImportSummary::store`] / [`ImportSummary::take`]), since the pipeline's
-/// `acadrust::ReadOutcome` has no room for it. Until plan
+/// `codec::ReadOutcome` has no room for it. Until plan
 /// 2026-09-21-load-pid-returns-its-summary it travelled through a
 /// process-wide mailbox keyed by path instead.
 #[derive(Debug, Clone, PartialEq)]

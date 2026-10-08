@@ -20,8 +20,8 @@
 //! APPID. Only these two keys are ours; other text in the description is
 //! left as it was.
 
-use acadrust::objects::Group;
-use acadrust::CadDocument;
+use codec::objects::Group;
+use codec::CadDocument;
 
 use super::blocks::{compose_tag, lettering_value};
 use super::*;
@@ -306,7 +306,7 @@ pub fn derive_group_tag(doc: &CadDocument, group: &Group, rules: &Rules) -> Opti
 /// default name shown by the GROUP prompt.
 pub fn derive_handles_tag(
     doc: &CadDocument,
-    handles: &[acadrust::Handle],
+    handles: &[codec::Handle],
     rules: &Rules,
 ) -> Option<TagRead> {
     let mut lettering: Vec<Lettering> = handles
@@ -363,10 +363,10 @@ pub(super) fn derive_tag_from_texts(texts: &[&str], rules: &Rules) -> Option<Tag
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acadrust::entities::{Line, Text};
-    use acadrust::objects::ObjectType;
-    use acadrust::types::Vector3;
-    use acadrust::{EntityType, Handle};
+    use codec::entities::{Line, Text};
+    use codec::objects::ObjectType;
+    use codec::types::Vector3;
+    use codec::{EntityType, Handle};
 
     fn read(texts: &[&str], shapes: &[&str]) -> Option<(String, TagHow)> {
         tag_from_lettering(texts, shapes).map(|r| (r.value, r.how))

@@ -6,8 +6,8 @@
 
 use std::collections::HashSet;
 
-use acadrust::objects::{Group, ObjectType};
-use acadrust::{CadDocument, EntityType, Handle};
+use codec::objects::{Group, ObjectType};
+use codec::{CadDocument, EntityType, Handle};
 
 use super::blocks::{grow, lettering_value, placed_block, skip_for_box};
 use super::tags::derive_tag_from_texts;

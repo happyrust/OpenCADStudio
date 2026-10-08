@@ -74,7 +74,7 @@
 use super::*;
 use crate::app::history::PendingObjectDelta;
 use crate::io::pid_legend::{self, GroupTag, Rules, TagSource};
-use acadrust::types::Color;
+use codec::types::Color;
 use std::collections::BTreeSet;
 
 fn export_path_argument(cmd: &str, option: &str) -> Option<std::path::PathBuf> {
@@ -422,7 +422,7 @@ impl OpenCADStudio {
     /// of its own; callers run it inside their own step.
     pub(in crate::app) fn refresh_auto_group_tags(&mut self, i: usize, rules: &Rules) -> usize {
         let scene = &self.tabs[i].scene;
-        let refreshed: Vec<(acadrust::Handle, GroupTag)> = scene
+        let refreshed: Vec<(codec::Handle, GroupTag)> = scene
             .tagged_groups()
             .filter(|(_, tag)| tag.source == TagSource::Auto)
             .filter_map(|(group, tag)| {
@@ -475,9 +475,9 @@ impl OpenCADStudio {
         i: usize,
         label: &str,
         name: String,
-        mut handles: Vec<acadrust::Handle>,
+        mut handles: Vec<codec::Handle>,
         tag: Option<&str>,
-    ) -> Option<(acadrust::Handle, String)> {
+    ) -> Option<(codec::Handle, String)> {
         handles.retain(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
         if handles.is_empty() {
             return None;
@@ -499,7 +499,7 @@ impl OpenCADStudio {
 
     /// Read a new group's tag from its lettering and write it in; the tail of
     /// the GROUP receipt says what was read, or why nothing was.
-    fn read_pid_group_tag(&mut self, i: usize, group: acadrust::Handle, rules: &Rules) -> String {
+    fn read_pid_group_tag(&mut self, i: usize, group: codec::Handle, rules: &Rules) -> String {
         match self.tabs[i].scene.derive_group_tag(group, rules) {
             Some(read) => {
                 let class = pid_legend::class_for_tag(&read.value, rules);
@@ -523,8 +523,8 @@ impl OpenCADStudio {
 
     /// How many pieces of lettering (TEXT / MTEXT) a group has among its
     /// members -- for the receipt that says why no tag was read.
-    fn group_lettering_count(&self, i: usize, group: acadrust::Handle) -> usize {
-        use acadrust::objects::ObjectType;
+    fn group_lettering_count(&self, i: usize, group: codec::Handle) -> usize {
+        use codec::objects::ObjectType;
         let doc = &self.tabs[i].scene.document;
         match doc.objects.get(&group) {
             Some(ObjectType::Group(g)) => g
@@ -534,7 +534,7 @@ impl OpenCADStudio {
                 .filter(|e| {
                     matches!(
                         e,
-                        acadrust::EntityType::Text(_) | acadrust::EntityType::MText(_)
+                        codec::EntityType::Text(_) | codec::EntityType::MText(_)
                     )
                 })
                 .count(),
@@ -549,7 +549,7 @@ impl OpenCADStudio {
     fn set_pid_group_tag(
         &mut self,
         i: usize,
-        group: acadrust::Handle,
+        group: codec::Handle,
         value: Option<&str>,
         rules: &Rules,
     ) -> String {
@@ -565,7 +565,7 @@ impl OpenCADStudio {
     fn pid_group_tag_for_value(
         &self,
         i: usize,
-        group: acadrust::Handle,
+        group: codec::Handle,
         value: Option<&str>,
         rules: &Rules,
     ) -> GroupTag {
@@ -587,9 +587,9 @@ impl OpenCADStudio {
         &mut self,
         i: usize,
         label: &str,
-        handles: &[acadrust::Handle],
+        handles: &[codec::Handle],
     ) -> usize {
-        let handles: Vec<acadrust::Handle> = handles
+        let handles: Vec<codec::Handle> = handles
             .iter()
             .copied()
             .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
@@ -652,7 +652,7 @@ impl OpenCADStudio {
             self.tabs[i].active_cmd = Some(Box::new(c));
             return Some(self.finish_dispatch(cmd));
         };
-        let selected: Vec<acadrust::Handle> = self.tabs[i].scene.selected_handles_in_order();
+        let selected: Vec<codec::Handle> = self.tabs[i].scene.selected_handles_in_order();
         match verb.as_str() {
             "GROUP" => {
                 if selected.is_empty() {
@@ -739,8 +739,8 @@ impl OpenCADStudio {
     }
 
     /// The groups containing any of `handles`, each once, in first-seen order.
-    fn groups_of(&self, i: usize, handles: &[acadrust::Handle]) -> Vec<acadrust::Handle> {
-        let mut groups: Vec<acadrust::Handle> = Vec::new();
+    fn groups_of(&self, i: usize, handles: &[codec::Handle]) -> Vec<codec::Handle> {
+        let mut groups: Vec<codec::Handle> = Vec::new();
         for handle in handles {
             for group in self.tabs[i].scene.groups_containing(*handle) {
                 if !groups.contains(&group) {
@@ -759,7 +759,7 @@ impl OpenCADStudio {
     pub(in crate::app) fn suggested_pid_group_name(
         &self,
         i: usize,
-        handles: &[acadrust::Handle],
+        handles: &[codec::Handle],
     ) -> String {
         let fallback = crate::app::helpers::next_group_auto_name(&self.tabs[i].scene);
         if self.tabs[i].pid_legend_is_stale() {
@@ -798,7 +798,7 @@ impl OpenCADStudio {
             .objects
             .get(&document.header.acad_group_dict_handle)
             .and_then(|object| match object {
-                acadrust::objects::ObjectType::Dictionary(dictionary) => Some(dictionary),
+                codec::objects::ObjectType::Dictionary(dictionary) => Some(dictionary),
                 _ => None,
             })
             .is_some_and(|dictionary| {
@@ -820,7 +820,7 @@ impl OpenCADStudio {
     pub(in crate::app) fn set_pid_group_tag_property(
         &mut self,
         i: usize,
-        handles: &[acadrust::Handle],
+        handles: &[codec::Handle],
         value: &str,
     ) -> usize {
         if value == crate::app::VARIES_LABEL {
@@ -854,14 +854,14 @@ impl OpenCADStudio {
     /// PIDGROUP TAG / AUTO on existing groups: set (`Some`) or hand back
     /// (`None`) the tag of each, redraw the legend when drawn, one undo step,
     /// one receipt line per group.
-    fn retag_pid_groups(&mut self, i: usize, groups: &[acadrust::Handle], value: Option<&str>) {
+    fn retag_pid_groups(&mut self, i: usize, groups: &[codec::Handle], value: Option<&str>) {
         let rules = Rules::load();
         let published = !pid_legend::attached_handles(&self.tabs[i].scene.document).is_empty();
         let pending = self.open_group_undo(i, "PIDGROUP");
         let mut receipts = Vec::new();
         for group in groups {
             let name = match self.tabs[i].scene.document.objects.get(group) {
-                Some(acadrust::objects::ObjectType::Group(g)) => g.name.clone(),
+                Some(codec::objects::ObjectType::Group(g)) => g.name.clone(),
                 _ => continue,
             };
             let tail = self.set_pid_group_tag(i, *group, value, &rules);
@@ -1051,7 +1051,7 @@ impl OpenCADStudio {
             if picked.is_empty() {
                 return None;
             }
-            let mut handles: rustc_hash::FxHashSet<acadrust::Handle> =
+            let mut handles: rustc_hash::FxHashSet<codec::Handle> =
                 rustc_hash::FxHashSet::default();
             let mut bbox: Option<(f64, f64, f64, f64)> = None;
             let mut length_mm = 0.0;
@@ -1178,10 +1178,10 @@ impl OpenCADStudio {
         self.refresh_pid_legend(i);
         let (groups, names, upm) = {
             let rec = self.tabs[i].pid_legend()?;
-            let mut groups: Vec<Vec<acadrust::Handle>> = Vec::new();
+            let mut groups: Vec<Vec<codec::Handle>> = Vec::new();
             let mut names: Vec<String> = Vec::new();
             for symbol in rec.symbols.iter().filter(|s| pick(s)) {
-                let handles: Vec<acadrust::Handle> = symbol
+                let handles: Vec<codec::Handle> = symbol
                     .handles
                     .iter()
                     .chain(&symbol.tag_handles)
@@ -1202,7 +1202,7 @@ impl OpenCADStudio {
         if groups.is_empty() {
             return None;
         }
-        let selected: rustc_hash::FxHashSet<acadrust::Handle> =
+        let selected: rustc_hash::FxHashSet<codec::Handle> =
             groups.iter().flatten().copied().collect();
         let count = selected.len();
         self.tabs[i].scene.replace_selection(selected);
@@ -1296,9 +1296,9 @@ mod tests {
     /// page.
     fn valve_with_tag(
         app: &mut OpenCADStudio,
-    ) -> (acadrust::Handle, acadrust::Handle, acadrust::Handle) {
-        use acadrust::entities::{EntityType, Line, Text};
-        use acadrust::types::{Transform, Vector3};
+    ) -> (codec::Handle, codec::Handle, codec::Handle) {
+        use codec::entities::{EntityType, Line, Text};
+        use codec::types::{Transform, Vector3};
 
         app.automation_op(r#"{"op":"new"}"#);
         let i = app.active_tab;
@@ -1308,7 +1308,7 @@ mod tests {
             line.end = Vector3::new(b.0, b.1, 0.0);
             EntityType::Line(line)
         };
-        let body: Vec<acadrust::Handle> = [
+        let body: Vec<codec::Handle> = [
             ((0.0, 0.0), (0.0, 3.0)),
             ((0.0, 3.0), (6.0, 0.0)),
             ((6.0, 0.0), (6.0, 3.0)),
@@ -1339,13 +1339,13 @@ mod tests {
         (insert, tag, pipe)
     }
 
-    fn selected(app: &OpenCADStudio) -> Vec<acadrust::Handle> {
+    fn selected(app: &OpenCADStudio) -> Vec<codec::Handle> {
         let mut handles = app.tabs[app.active_tab].scene.selected_handles_in_order();
         handles.sort_by_key(|h| h.value());
         handles
     }
 
-    fn pid_xdata_strings(app: &OpenCADStudio, handle: acadrust::Handle) -> Vec<String> {
+    fn pid_xdata_strings(app: &OpenCADStudio, handle: codec::Handle) -> Vec<String> {
         app.tabs[app.active_tab]
             .scene
             .document
@@ -1361,7 +1361,7 @@ mod tests {
                     .values
                     .iter()
                     .filter_map(|value| match value {
-                        acadrust::xdata::XDataValue::String(value) => Some(value.clone()),
+                        codec::xdata::XDataValue::String(value) => Some(value.clone()),
                         _ => None,
                     })
                     .collect()
@@ -1375,11 +1375,11 @@ mod tests {
         app: &mut OpenCADStudio,
         x: f64,
         tag: Option<&str>,
-    ) -> (Vec<acadrust::Handle>, Option<acadrust::Handle>) {
-        use acadrust::entities::{EntityType, Line, Text};
-        use acadrust::types::Vector3;
+    ) -> (Vec<codec::Handle>, Option<codec::Handle>) {
+        use codec::entities::{EntityType, Line, Text};
+        use codec::types::Vector3;
         let i = app.active_tab;
-        let strokes: Vec<acadrust::Handle> = [
+        let strokes: Vec<codec::Handle> = [
             ((0.0, 0.0), (0.0, 3.0)),
             ((0.0, 3.0), (6.0, 0.0)),
             ((6.0, 0.0), (6.0, 3.0)),
@@ -1401,7 +1401,7 @@ mod tests {
         (strokes, tag)
     }
 
-    fn select_all_of(app: &mut OpenCADStudio, handles: &[acadrust::Handle]) {
+    fn select_all_of(app: &mut OpenCADStudio, handles: &[codec::Handle]) {
         let i = app.active_tab;
         app.tabs[i]
             .scene
@@ -1409,8 +1409,8 @@ mod tests {
     }
 
     /// The groups of the active drawing, by handle, in handle order.
-    fn groups(app: &OpenCADStudio) -> Vec<acadrust::Handle> {
-        let mut out: Vec<acadrust::Handle> = app.tabs[app.active_tab]
+    fn groups(app: &OpenCADStudio) -> Vec<codec::Handle> {
+        let mut out: Vec<codec::Handle> = app.tabs[app.active_tab]
             .scene
             .groups()
             .map(|g| g.handle)
@@ -1419,7 +1419,7 @@ mod tests {
         out
     }
 
-    fn description_of(app: &OpenCADStudio, group: acadrust::Handle) -> String {
+    fn description_of(app: &OpenCADStudio, group: codec::Handle) -> String {
         app.tabs[app.active_tab]
             .scene
             .groups()
@@ -1848,11 +1848,11 @@ mod tests {
             .find(|h| {
                 matches!(
                     app.tabs[i].scene.document.get_entity(**h),
-                    Some(acadrust::EntityType::Text(_))
+                    Some(codec::EntityType::Text(_))
                 )
             })
             .expect("the copied tag");
-        if let Some(acadrust::EntityType::Text(text)) =
+        if let Some(codec::EntityType::Text(text)) =
             app.tabs[i].scene.document.get_entity_mut(copied_tag)
         {
             text.value = "BUV-3102".to_string();
@@ -2127,8 +2127,8 @@ mod tests {
 
     #[test]
     fn a_pid_exception_row_selects_and_zooms_to_its_source() {
-        use acadrust::entities::{EntityType, Text};
-        use acadrust::types::Vector3;
+        use codec::entities::{EntityType, Text};
+        use codec::types::Vector3;
 
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -2154,8 +2154,8 @@ mod tests {
 
     #[test]
     fn pidlegend_on_publishes_xdata_off_keeps_it_and_purge_removes_everything() {
-        use acadrust::entities::{EntityType, Text};
-        use acadrust::types::Vector3;
+        use codec::entities::{EntityType, Text};
+        use codec::types::Vector3;
 
         let mut app = OpenCADStudio::new_for_test();
         let (insert, tag, pipe) = valve_with_tag(&mut app);
@@ -2288,7 +2288,7 @@ mod tests {
         assert!(legend_count(&app) > 0);
         assert!(!pid_xdata_strings(&app, insert).is_empty());
 
-        let acadrust::EntityType::Insert(block) =
+        let codec::EntityType::Insert(block) =
             app.tabs[i].scene.document.get_entity_mut(insert).unwrap()
         else {
             panic!("valve helper returned a block reference");
@@ -2628,8 +2628,8 @@ mod tests {
     /// test is the epoch, not the recognition.
     #[test]
     fn a_changed_sheet_dates_the_index_and_it_is_read_again_before_use() {
-        use acadrust::entities::{EntityType, Line};
-        use acadrust::types::Vector3;
+        use codec::entities::{EntityType, Line};
+        use codec::types::Vector3;
         let add_line = |app: &mut OpenCADStudio, i: usize, x: f64| {
             let mut line = Line::new();
             line.start = Vector3::new(x, 0.0, 0.0);

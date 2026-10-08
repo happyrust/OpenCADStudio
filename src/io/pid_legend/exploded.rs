@@ -5,8 +5,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use acadrust::types::Vector3;
-use acadrust::{CadDocument, EntityType, Handle};
+use codec::types::Vector3;
+use codec::{CadDocument, EntityType, Handle};
 
 use super::blocks::{grow, sane};
 use super::pairing::match_pairs;

@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use acadrust::{CadDocument, EntityType};
+use codec::{CadDocument, EntityType};
 use OpenCADStudio::io::pid::{load_pid, ImportSummary, ImportUnit, SUMMARY_PROPERTY_PREFIX};
 use OpenCADStudio::io::pid_view_filter::{
     switch_role, switch_sheet_layer, PidViewFilter, PidViewSummary,
@@ -163,7 +163,7 @@ fn line_work_carries_the_width_and_colour_the_drawing_states() {
     for entity in drawing {
         let common = entity.common();
         match (common.color, common.line_weight) {
-            (acadrust::types::Color::Rgb { r, g, b }, acadrust::types::LineWeight::Value(w)) => {
+            (codec::types::Color::Rgb { r, g, b }, codec::types::LineWeight::Value(w)) => {
                 *palette
                     .entry(format!("{w:>3} #{r:02X}{g:02X}{b:02X}"))
                     .or_default() += 1;
@@ -233,7 +233,7 @@ fn the_widths_the_drawing_states_are_switched_on_for_display() {
 /// must hold for any document aimed at any `.pid` path.
 #[test]
 fn saving_refuses_a_pid_destination() {
-    let doc = acadrust::CadDocument::new();
+    let doc = codec::CadDocument::new();
     for case in ["pid", "PID"] {
         let target =
             std::env::temp_dir().join(format!("ocs-save-gate-{}.{case}", std::process::id()));
@@ -469,8 +469,8 @@ fn a_cached_strokes_dash_is_its_own_storages_not_its_placements() {
             );
             match (common.color, common.line_weight) {
                 (
-                    acadrust::types::Color::Rgb { r, g, b },
-                    acadrust::types::LineWeight::Value(w),
+                    codec::types::Color::Rgb { r, g, b },
+                    codec::types::LineWeight::Value(w),
                 ) => {
                     palette.insert(format!("{w:>3} #{r:02X}{g:02X}{b:02X}"));
                 }
@@ -581,7 +581,7 @@ fn a_label_letters_in_its_own_run_and_a_mixed_one_in_its_widest() {
     let Some((doc, summary)) = import_with_summary("DWG-0201GP06-01.pid") else {
         return;
     };
-    let lia: Vec<&acadrust::entities::Text> = on_sheet_text(&doc)
+    let lia: Vec<&codec::entities::Text> = on_sheet_text(&doc)
         .filter_map(|entity| match entity {
             EntityType::Text(text) if text.value == "LIA" => Some(text),
             _ => None,
@@ -699,7 +699,7 @@ fn a_multi_line_label_stacks_at_the_spacing_its_paragraph_states() {
         return;
     };
 
-    let line_of = |value: &str| -> &acadrust::entities::Text {
+    let line_of = |value: &str| -> &codec::entities::Text {
         on_sheet_text(&doc)
             .find_map(|entity| match entity {
                 EntityType::Text(text) if text.value == value => Some(text),
@@ -710,7 +710,7 @@ fn a_multi_line_label_stacks_at_the_spacing_its_paragraph_states() {
             })
     };
 
-    let lines: Vec<&acadrust::entities::Text> = TITLE.iter().map(|value| line_of(value)).collect();
+    let lines: Vec<&codec::entities::Text> = TITLE.iter().map(|value| line_of(value)).collect();
     let height = lines[0].height;
     assert!(height > 0.0, "the title block letters at a real height");
     let expected = height * STATED_SPACING;
@@ -786,7 +786,7 @@ fn lettering_carries_the_colour_the_drawing_states() {
     let mut palette: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for entity in on_sheet_text(&doc) {
         let key = match entity.common().color {
-            acadrust::types::Color::Rgb { r, g, b } => format!("#{r:02X}{g:02X}{b:02X}"),
+            codec::types::Color::Rgb { r, g, b } => format!("#{r:02X}{g:02X}{b:02X}"),
             _ => "ByLayer".to_string(),
         };
         *palette.entry(key).or_default() += 1;
@@ -821,7 +821,7 @@ fn lettering_carries_the_colour_the_drawing_states() {
 /// left ones do not (a stray point there would be equally wrong).
 #[test]
 fn lettering_starts_from_the_side_the_drawing_states() {
-    use acadrust::entities::TextHorizontalAlignment as HA;
+    use codec::entities::TextHorizontalAlignment as HA;
 
     let Some(doc) = import("DWG-0201GP06-01.pid") else {
         return;
@@ -830,7 +830,7 @@ fn lettering_starts_from_the_side_the_drawing_states() {
     let mut sides: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut misplaced = Vec::new();
     for entity in on_sheet_text(&doc) {
-        let acadrust::EntityType::Text(text) = entity else {
+        let codec::EntityType::Text(text) = entity else {
             continue;
         };
         let key = match text.horizontal_alignment {
@@ -1187,7 +1187,7 @@ fn filled_areas_come_in_as_solid_hatches() {
             // hatch rather than leaving it the layer's white default.
             assert_eq!(
                 hatch.common.color,
-                acadrust::types::Color::Rgb { r: 0, g: 0, b: 255 },
+                codec::types::Color::Rgb { r: 0, g: 0, b: 255 },
                 "{name}: the decoded fill colour is the blue the drawing states"
             );
         }
@@ -1346,7 +1346,7 @@ fn published_semantics_land_on_entities_when_the_xml_sits_beside() {
         };
         tagged += 1;
         for value in &record.values {
-            let acadrust::xdata::XDataValue::String(text) = value else {
+            let codec::xdata::XDataValue::String(text) = value else {
                 continue;
             };
             if let Some(class) = text.strip_prefix("class=") {
@@ -1408,7 +1408,7 @@ fn a_drawing_without_published_xml_still_carries_authored_sheet_layers() {
             .filter_map(|entity| entity.common().extended_data.get_record("PID_SEMANTICS"))
             .filter(|record| {
                 record.values.iter().any(|value| {
-                    matches!(value, acadrust::xdata::XDataValue::String(text) if text.starts_with("sheet_layer"))
+                    matches!(value, codec::xdata::XDataValue::String(text) if text.starts_with("sheet_layer"))
                 })
             })
             .collect();
@@ -1417,10 +1417,10 @@ fn a_drawing_without_published_xml_still_carries_authored_sheet_layers() {
             "{name}: no authored layer XDATA reached the drawing"
         );
         assert!(records.iter().all(|record| record.values.iter().any(|value| {
-            matches!(value, acadrust::xdata::XDataValue::String(text) if text.starts_with("sheet_layer_oid="))
+            matches!(value, codec::xdata::XDataValue::String(text) if text.starts_with("sheet_layer_oid="))
         })), "{name}: an authored-layer XDATA record lost its oid");
         assert!(records.iter().any(|record| record.values.iter().any(|value| {
-            matches!(value, acadrust::xdata::XDataValue::String(text) if text.starts_with("sheet_layer="))
+            matches!(value, codec::xdata::XDataValue::String(text) if text.starts_with("sheet_layer="))
         })), "{name}: no authored layer name resolved");
     }
 }
@@ -1452,7 +1452,7 @@ fn hidden_authored_layers_open_off_under_their_own_name_and_metadata_survives_dw
             .get_record("PID_SEMANTICS")
             .expect("hidden source entity keeps PID metadata");
         assert!(record.values.iter().any(|value| {
-            matches!(value, acadrust::xdata::XDataValue::String(text) if text == "sheet_layer=HiddenObjects")
+            matches!(value, codec::xdata::XDataValue::String(text) if text == "sheet_layer=HiddenObjects")
         }));
         assert!(
             entity.common().invisible,
@@ -1472,7 +1472,7 @@ fn hidden_authored_layers_open_off_under_their_own_name_and_metadata_survives_dw
                 .extended_data
                 .get_record("PID_SEMANTICS")
                 .is_some_and(|record| record.values.iter().any(|value| {
-                    matches!(value, acadrust::xdata::XDataValue::String(text) if text == "sheet_layer=HiddenObjects")
+                    matches!(value, codec::xdata::XDataValue::String(text) if text == "sheet_layer=HiddenObjects")
                 }))
         }), "authored sheet-layer XDATA was lost across {ext} round-trip");
         assert_eq!(
@@ -1980,7 +1980,7 @@ fn pid_pairs(entity: &EntityType) -> Vec<(String, String)> {
                 .values
                 .iter()
                 .filter_map(|value| match value {
-                    acadrust::xdata::XDataValue::String(text) => text
+                    codec::xdata::XDataValue::String(text) => text
                         .split_once('=')
                         .map(|(key, val)| (key.to_string(), val.to_string())),
                     _ => None,
@@ -2655,7 +2655,7 @@ fn a_symbol_body_draws_in_the_style_its_placement_names() {
     for entity in of_role(&doc, "symbol") {
         let common = entity.common();
         match (common.color, common.line_weight) {
-            (acadrust::types::Color::Rgb { r, g, b }, acadrust::types::LineWeight::Value(w)) => {
+            (codec::types::Color::Rgb { r, g, b }, codec::types::LineWeight::Value(w)) => {
                 *palette
                     .entry(format!("{w:>3} #{r:02X}{g:02X}{b:02X}"))
                     .or_default() += 1;
@@ -2726,12 +2726,12 @@ fn the_vessel_draws_in_its_placements_maroon_not_its_syms_black() {
         shell += 1;
         assert_eq!(
             line.common.color,
-            acadrust::types::Color::Rgb { r: 128, g: 0, b: 0 },
+            codec::types::Color::Rgb { r: 128, g: 0, b: 0 },
             "a vessel shell stroke should draw #800000: {line:?}"
         );
         assert_eq!(
             line.common.line_weight,
-            acadrust::types::LineWeight::Value(35),
+            codec::types::LineWeight::Value(35),
             "a vessel shell stroke should weigh 0.35mm: {line:?}"
         );
     }
@@ -2817,7 +2817,7 @@ fn a_point_draws_the_symbol_its_terminator_names() {
         assert!(near, "a stroke belongs to a marked point, got {line:?}");
         assert_eq!(
             line.common.color,
-            acadrust::types::Color::Rgb { r: 0, g: 0, b: 255 },
+            codec::types::Color::Rgb { r: 0, g: 0, b: 255 },
             "DWG-0201's marked points are trace-blue: {line:?}"
         );
     }
@@ -3472,7 +3472,7 @@ fn a_placement_states_its_extent_and_a_parametric_one_its_library_defaults() {
 /// library, 31 hidden strokes left out on DWG-0201.
 #[test]
 fn a_placement_draws_the_body_the_drawing_carries_and_skips_its_hidden_layers() {
-    let arc_midpoint = |arc: &acadrust::entities::Arc| {
+    let arc_midpoint = |arc: &codec::entities::Arc| {
         let sweep = (arc.end_angle - arc.start_angle).rem_euclid(std::f64::consts::TAU);
         let angle = arc.start_angle + sweep / 2.0;
         (
@@ -3544,14 +3544,14 @@ fn a_placement_draws_the_body_the_drawing_carries_and_skips_its_hidden_layers() 
         let strokes: Vec<&EntityType> = of_role(&doc, "symbol")
             .filter(|entity| pid_value(entity, "driving").as_deref() == Some(MANIFOLD))
             .collect();
-        let lines: Vec<&acadrust::entities::Line> = strokes
+        let lines: Vec<&codec::entities::Line> = strokes
             .iter()
             .filter_map(|entity| match entity {
                 EntityType::Line(line) => Some(line),
                 _ => None,
             })
             .collect();
-        let arcs: Vec<&acadrust::entities::Arc> = strokes
+        let arcs: Vec<&codec::entities::Arc> = strokes
             .iter()
             .filter_map(|entity| match entity {
                 EntityType::Arc(arc) => Some(arc),

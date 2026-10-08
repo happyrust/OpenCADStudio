@@ -1,6 +1,6 @@
 [package]
 name = "OpenCADStudio"
-version = "2026.38.0"
+version = "2026.39.0"
 edition = "2021"
 build = "build.rs"
 default-run = "OpenCADStudio"
@@ -46,14 +46,20 @@ log = "0.4"
 # Line-number patterns of the P&ID rules (io::pid_pipes); already in the tree
 # via env_logger's env_filter.
 regex = "1"
-acadrust = { git = "https://github.com/HakanSeven12/cadcodec.git", rev = "5b682ed", features = ["serde"] }
-cadkernel = { git = "https://github.com/HakanSeven12/cadkernel.git", rev = "6f046af", features = ["acis", "offset"] }
-cadkernel-constraints = { git = "https://github.com/HakanSeven12/cadkernel.git", rev = "6f046af" }
+codec = { package = "opencadcodec", git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "cdf2277", features = ["serde"] }
+kernel = { package = "opencadkernel", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "52a9ebe", features = ["acis", "offset"] }
+kernel-constraints = { package = "opencadkernel-constraints", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "52a9ebe" }
+graph = { package = "opencadgraph", git = "https://github.com/HakanSeven12/opencadgraph.git", rev = "597c8b8" }
 acadifc = { git = "https://github.com/OpenAEC-Foundation/acadifc.git", rev = "47b5603", optional = true }
 dwg-thumbnailer = { path = "crates/dwg-thumbnailer" }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "tiff"] }
 hayro = "0.7.1"
+kurbo = "0.13"
+# DWF/DWFx packages, their XPS pages and DWF/DGN underlay rasters.
+zip = { version = "8", default-features = false, features = ["deflate"] }
+roxmltree = "0.20"
+tiny-skia = "0.11"
 # Rasterises assets/logo.svg into the window icon at startup, so the taskbar
 # icon comes from the same file every other build target does. Already in the
 # tree behind iced's svg feature; named here only to use it directly.
@@ -66,6 +72,9 @@ rustc-hash = "2"
 sha2 = "0.10"
 fontdb = "0.23"
 ttf-parser = "0.25"
+# TrueType interpreter for hint-reliant ("tricky") fonts such as DFKai-SB and
+# MingLiU, whose raw outlines are missing strokes. Already in the tree (hayro).
+skrifa = "0.42.1"
 cosmic-text = "0.15"
 unicode-bidi = "0.3"
 lyon_tessellation = "1.0.20"
@@ -92,7 +101,10 @@ ashpd = { version = "0.13.13", default-features = false, features = ["async-io",
 # here to the same versions Cargo already resolves for it.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
-objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
+# The `NSEvent`/`block2` features are for the trackpad pinch monitor in
+# `src/input/trackpad.rs` — see that file for why the gesture is read there.
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSResponder", "NSRunningApplication", "NSEvent", "block2"] }
+block2 = "0.5"
 objc2-foundation = { version = "0.2", features = ["NSArray", "NSURL", "NSString", "NSObject", "NSNotification", "NSThread", "NSEnumerator"] }
 
 [patch.crates-io]
@@ -129,7 +141,7 @@ ocs_plugin_api = { path = "crates/ocs_plugin_api" }
 i18n-embed = { version = "0.16", features = ["web-sys-requester"] }
 rust-embed = { version = "8", features = ["debug-embed"] }
 console_error_panic_hook = "0.1"
-# ahash (via acadrust) pulls getrandom 0.3, which needs the `wasm_js` backend
+# ahash (via opencadcodec) pulls getrandom 0.3, which needs the `wasm_js` backend
 # enabled to support wasm32-unknown-unknown (plus the matching rustflag in
 # .cargo/config.toml).
 getrandom = { version = "0.3", features = ["wasm_js"] }
@@ -185,11 +197,15 @@ strip = true
 [profile.dev.package.pid-parse]
 opt-level = 2
 
-# acadrust unoptimized reads a 5 MB DWG in ~240 ms and writes it back as DXF
-# in ~570 ms; at opt-level 2 in ~90 / ~450 ms.
-[profile.dev.package.acadrust]
+# The codec (opencadcodec, formerly acadrust) unoptimized reads a 5 MB DWG in
+# ~240 ms and writes it back as DXF in ~570 ms; at opt-level 2 in ~90 / ~450 ms.
+[profile.dev.package.opencadcodec]
 opt-level = 2
 
 [[bench]]
 name = "performance_benchmarks"
+harness = false
+
+[[bench]]
+name = "command_benchmarks"
 harness = false

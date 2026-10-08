@@ -947,6 +947,7 @@ impl PlotSink for SvgSink {
                 height,
                 matrix,
                 alpha,
+                use_alpha,
             } => {
                 use base64::Engine as _;
                 use image::ImageEncoder as _;
@@ -962,9 +963,20 @@ impl PlotSink for SvgSink {
                         pixels.len()
                     )));
                 }
+                // Transparency off: every pixel opaque in its colour, as the
+                // PDF backend writes it.
+                let opaque;
+                let samples: &[u8] = if use_alpha {
+                    &pixels
+                } else {
+                    let mut copy = pixels.as_ref().clone();
+                    copy.chunks_exact_mut(4).for_each(|px| px[3] = 255);
+                    opaque = copy;
+                    &opaque
+                };
                 let mut png = Vec::new();
                 image::codecs::png::PngEncoder::new(&mut png)
-                    .write_image(&pixels, width, height, image::ExtendedColorType::Rgba8)
+                    .write_image(samples, width, height, image::ExtendedColorType::Rgba8)
                     .map_err(|error| {
                         SvgError::Invalid(format!("cannot encode a bitmap as PNG: {error}"))
                     })?;

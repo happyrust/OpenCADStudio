@@ -1,4 +1,4 @@
-# getrandom 0.3 (pulled by ahash via acadrust) needs this cfg to select its
+# getrandom 0.3 (pulled by ahash via opencadcodec) needs this cfg to select its
 # browser backend on wasm32-unknown-unknown, alongside its `wasm_js` feature
 # (enabled in Cargo.toml for the wasm target). Without it the web build fails
 # with "wasm32-unknown-unknown targets are not supported by default".
@@ -29,3 +29,13 @@ rustflags = [
 # upstream default of 16 MiB overflows on the deepest sheets).
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "link-arg=/STACK:67108864"]
+
+# Thread stacks for everything cargo runs. Upstream sets 8 MiB so the test
+# harness's per-test threads stop overflowing the 2 MiB default. rustc reads
+# the same variable for its own compiler thread, and on the nightly this fork
+# builds with, 8 MiB is less than the lib needs: `cargo check` stops with
+# "thread 'rustc' has overflowed its stack" in the passes after type checking,
+# while 32 MiB or rustc's own default compiles it. 64 MiB covers both, and is
+# what the msvc binaries' main thread gets above. (Windows only reserves it.)
+[env]
+RUST_MIN_STACK = "67108864"

@@ -1,5 +1,5 @@
 use crate::t;
-use acadrust::{EntityType, Handle, Transparency};
+use codec::{EntityType, Handle, Transparency};
 
 use crate::scene::model::object::{PropSection, PropValue, Property};
 
@@ -117,7 +117,7 @@ pub fn pid_semantics_section(entity: &EntityType) -> Option<PropSection> {
     let mut sheet_layer = None;
     let mut sheet_layer_oid = None;
     for value in &record.values {
-        let acadrust::xdata::XDataValue::String(text) = value else {
+        let codec::xdata::XDataValue::String(text) = value else {
             continue;
         };
         let Some((key, val)) = text.split_once('=') else {
@@ -312,6 +312,8 @@ pub fn visualization_section(entity: &EntityType) -> Option<PropSection> {
             | EntityType::Seqend(_)
             | EntityType::Leader(_)
             | EntityType::Wipeout(_)
+            // The reference lists no 3D group for an underlay.
+            | EntityType::Underlay(_)
             | EntityType::Unknown(_)
             // Non-plotting drawing-view border: never rendered, no properties.
             | EntityType::ViewBorder(_)
@@ -362,8 +364,8 @@ pub fn fallback_properties(_handle: Handle, entity: &EntityType) -> PropSection 
 #[cfg(test)]
 mod pid_semantics_tests {
     use super::*;
-    use acadrust::entities::Line;
-    use acadrust::xdata::{ExtendedDataRecord, XDataValue};
+    use codec::entities::Line;
+    use codec::xdata::{ExtendedDataRecord, XDataValue};
 
     fn entity(values: &[&str]) -> EntityType {
         let mut entity = EntityType::Line(Line::new());

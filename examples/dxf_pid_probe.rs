@@ -30,8 +30,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use acadrust::types::Vector3;
-use acadrust::{CadDocument, EntityType};
+use codec::types::Vector3;
+use codec::{CadDocument, EntityType};
 use OpenCADStudio::io;
 
 /// Lettering closer than this to an insertion point is reported as the

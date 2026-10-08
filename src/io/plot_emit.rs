@@ -177,13 +177,16 @@ pub enum PlotOp {
     /// points; `alpha` is a constant opacity to draw it with, `None` for
     /// opaque. Whatever clip the image needs (its own boundary, the block or
     /// viewport it is seen through) has been emitted as `Clip` ops before it,
-    /// inside the `Save` / `Restore` that brackets the image.
+    /// inside the `Save` / `Restore` that brackets the image. `use_alpha`
+    /// false is a raster whose transparency is off: every pixel draws opaque
+    /// in its stored colour, whatever its alpha sample says.
     Image {
         pixels: std::sync::Arc<Vec<u8>>,
         width: u32,
         height: u32,
         matrix: [f32; 6],
         alpha: Option<f32>,
+        use_alpha: bool,
     },
 }
 
@@ -753,7 +756,11 @@ pub fn emit_plot_content<S: PlotSink>(
             // Near-white and near-yellow (viewport active border) → dark grey for print
             // (only when no CTB override was applied).
             if !color_overridden {
-                let is_light = r > 0.80 && g > 0.80 && b > 0.80;
+                // An authored white (not colour 7) plots as drawn, like on screen.
+                let is_light = r > 0.80
+                    && g > 0.80
+                    && b > 0.80
+                    && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
                 let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
                 let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
                 if is_light || is_yellow {
@@ -1349,7 +1356,7 @@ fn emit_wire_fills<S: PlotSink>(
                     boundary_exterior: None,
                     boundary_sources: None,
                     boundary_paths: None,
-                    style: acadrust::entities::HatchStyleType::Normal,
+                    style: codec::entities::HatchStyleType::Normal,
                     pattern: pattern.clone(),
                     name: "PLOTSTYLE".to_string(),
                     color: wire.color,
@@ -1522,6 +1529,7 @@ fn emit_image<S: PlotSink>(
             height: image.height,
             matrix,
             alpha,
+            use_alpha: image.use_alpha,
         })
     };
     let u = [corners[1].x - corners[0].x, corners[1].y - corners[0].y];
@@ -1702,8 +1710,16 @@ fn emit_hatch<S: PlotSink>(
         r = 1.0;
         g = 1.0;
         b = 1.0;
-    } else if !color_overridden {
-        let is_light = r > 0.80 && g > 0.80 && b > 0.80;
+    } else if !color_overridden
+        // `aci == 0` is an explicit true colour: it plots as drawn, only
+        // indexed colours meant for the dark screen are adapted. (#1417)
+        && hatch.aci != 0
+    {
+        // An authored white (not colour 7) plots as drawn, like on screen.
+        let is_light = r > 0.80
+            && g > 0.80
+            && b > 0.80
+            && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
         let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
         let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
         if is_light || is_yellow {
@@ -1854,7 +1870,11 @@ fn glyph_world_xy(v: &crate::scene::pipeline::text_gpu::TextVertex) -> [f64; 2] 
 /// Adapt a text colour to the white sheet, mirroring the wire/hatch passes:
 /// near-white / near-yellow (colour-7-on-white) → black, near-cyan → dark blue.
 fn adapt_text_color([r, g, b]: [f32; 3]) -> [f32; 3] {
-    let is_light = r > 0.80 && g > 0.80 && b > 0.80;
+    // An authored white (not colour 7) plots as drawn, like on screen.
+    let is_light = r > 0.80
+        && g > 0.80
+        && b > 0.80
+        && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
     let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
     let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
     if is_light || is_yellow {

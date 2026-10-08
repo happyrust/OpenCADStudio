@@ -1,5 +1,5 @@
 #![allow(non_snake_case)]
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 pub mod app;
 #[cfg(not(target_arch = "wasm32"))]
@@ -22,6 +22,8 @@ pub mod par;
 pub mod patreon;
 pub mod perf;
 pub mod plugin;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod rest;
 pub mod scene;
 pub mod snap;
 pub mod sys;

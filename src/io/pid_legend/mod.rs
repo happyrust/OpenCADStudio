@@ -94,7 +94,7 @@ pub use xdata::{attach, attached_handles, purge};
 
 use std::collections::{BTreeMap, HashSet};
 
-use acadrust::{CadDocument, EntityType, Handle};
+use codec::{CadDocument, EntityType, Handle};
 
 use super::pid_pipes::{self, End, Pipes, Port};
 use blocks::{lettering_of, placed_block};
