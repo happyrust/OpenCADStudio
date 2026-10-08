@@ -165,6 +165,11 @@ pub struct ViewportData {
     /// Wipeout fills — rendered in a separate pass AFTER wires.
     pub(in crate::scene) wipeout_hatches: Arc<Vec<HatchModel>>,
     pub(in crate::scene) images: Arc<Vec<ImageModel>>,
+    /// Point cloud sprites; empty on the paper sheet and in 2D wireframe.
+    pub(in crate::scene) point_clouds: Arc<crate::scene::model::point_cloud::PointCloudSet>,
+    /// Point cloud lighting and density for this view: `[mode, source,
+    /// drawn fraction, _, light direction x, y, z, _]`.
+    pub(in crate::scene) point_cloud_light: [f32; 12],
     pub(in crate::scene) meshes: Arc<Vec<MeshLodSet>>,
     pub(in crate::scene) background_image:
         Option<crate::scene::model::image_model::DecodedImage>,
@@ -379,6 +384,11 @@ impl shader::Primitive for Primitive {
         viewport: &Viewport,
     ) {
         let nav_prepare_started = iced::time::Instant::now();
+        if let Some(gap_ms) = crate::perf::take_view_to_prepare_ms() {
+            if gap_ms >= 1.0 {
+                crate::perf_record!("[perf] layout-draw {:>7.1}ms", gap_ms);
+            }
+        }
         let errors_at_entry = crate::scene::pipeline::gpu_errors_seen();
         let recovering = pipeline.gpu_error_epoch != errors_at_entry;
         if recovering {
@@ -595,6 +605,15 @@ impl shader::Primitive for Primitive {
                 inner.upload_images(device, queue, &vp.images[..]);
                 inner.cached_image_source = Some(Arc::clone(&vp.images));
             }
+            if inner
+                .cached_point_cloud_source
+                .as_ref()
+                .map_or(true, |source| !Arc::ptr_eq(source, &vp.point_clouds))
+            {
+                inner.upload_point_clouds(device, queue, &vp.point_clouds);
+                inner.cached_point_cloud_source = Some(Arc::clone(&vp.point_clouds));
+            }
+            inner.set_point_cloud_view(queue, vp.point_cloud_light);
             if inner
                 .cached_text_source
                 .as_ref()
@@ -1259,6 +1278,7 @@ retained_contributors={}",
             if inner.wire_arena_id == vp.wire_content_id
                 && inner.wire_cull_key != cull_key
             {
+                let t_cull = iced::time::Instant::now();
                 let mut visible = if inner.wire_arena_fallback_kind == Some(false) {
                     inner.wire_arena_fallback.as_ref().clone()
                 } else {
@@ -1284,6 +1304,10 @@ retained_contributors={}",
                         clip_size.width,
                         clip_size.height,
                     ));
+                }
+                let cull_ms = t_cull.elapsed().as_secs_f64() * 1000.0;
+                if crate::perf::enabled() {
+                    crate::perf_record!("[perf] wire-cull {:>7.2}ms items={}", cull_ms, visible.len());
                 }
                 inner.gpu_wires = std::sync::Arc::new(visible);
                 inner.wire_cull_key = cull_key;
@@ -1321,9 +1345,9 @@ retained_contributors={}",
                 sample.started.elapsed().as_secs_f64() * 1000.0,
                 self.viewports.len(),
             ));
-        } else if crate::perf::enabled() && prepare_ms >= 5.0 {
+        } else if crate::perf::enabled() {
             crate::perf_record!(
-                "[perf] frame-prepare {:>7.1}ms viewports={}",
+                "[perf] frame-prepare {:>7.2}ms viewports={}",
                 prepare_ms,
                 self.viewports.len(),
             );
@@ -1397,6 +1421,7 @@ retained_contributors={}",
             }
         }
         let render_ms = nav_render_started.elapsed().as_secs_f64() * 1000.0;
+        crate::perf::note_frame_render(render_ms);
         if let Some(sample) = self.nav_perf {
             crate::perf::record(format_args!(
                 "[perf] nav-render op={} space={} mode={} encode={:.2}ms elapsed={:.2}ms viewports={}",
@@ -1452,6 +1477,13 @@ fn render_signature(vp: &ViewportData, placement: &PhysicalViewport) -> u64 {
         std::sync::Arc::as_ptr(&vp.meshes) as usize
     }
     .hash(&mut h);
+    if vp.point_clouds.clouds.is_empty() {
+        std::ptr::null()
+    } else {
+        std::sync::Arc::as_ptr(&vp.point_clouds)
+    }
+    .hash(&mut h);
+    vp.point_cloud_light.map(f32::to_bits).hash(&mut h);
     vp.geometry_epoch.hash(&mut h);
     vp.selection_generation.hash(&mut h);
     vp.selected_sig.hash(&mut h);
@@ -3424,7 +3456,7 @@ pub(in crate::scene) fn linetype_name_for<'a>(document: &'a CadDocument, e: &'a 
     linetype_name_for_viewport(document, e, None)
 }
 
-pub(in crate::scene) fn linetype_name_for_common_viewport<'a>(
+pub(crate) fn linetype_name_for_common_viewport<'a>(
     document: &'a CadDocument,
     common: &'a codec::entities::EntityCommon,
     viewport: Option<Handle>,
@@ -4233,7 +4265,7 @@ impl Scene {
         // `CursorMoved` handler — the cube overlay sits above the shader
         // and would otherwise mask the move event from `Program::update`.
         let hover_region = show_interaction.then(|| self.viewcube_hover.get()).flatten();
-        self.selection.borrow_mut().vp_size = (bounds.width, bounds.height);
+        self.selection.borrow_mut().view.vp_size = (bounds.width, bounds.height);
         if bounds.height > 0.0 {
             self.set_render_aspect(bounds.width / bounds.height);
             self.set_render_pixel_scale(bounds.width, bounds.height);
@@ -4554,11 +4586,20 @@ impl Scene {
         // The P&ID tag-group highlight rides with the command preview: the
         // same overlay upload, the same place in the frame signature.
         let pid_group = self.pid_group_highlight_wires();
+        // 2D wireframe draws no cloud points; the clouds show their extents
+        // and a message there instead (drawn with the live overlays).
+        let wireframe_2d = inst.render_mode == codec::entities::ViewportRenderMode::Wireframe2D;
+        let cloud_2d_wires = if wireframe_2d && show_live_overlay && !inst.paper_sheet {
+            self.point_cloud_2d_wires()
+        } else {
+            Vec::new()
+        };
         let preview_wires = if !show_live_overlay
             || (self.interim_wire.is_none()
                 && self.preview_wires.is_empty()
                 && self.constraint_hover_wires.is_empty()
-                && pid_group.is_empty())
+                && pid_group.is_empty()
+                && cloud_2d_wires.is_empty())
         {
             Arc::new(Vec::new())
         } else {
@@ -4566,6 +4607,7 @@ impl Scene {
                 self.preview_wires.len()
                     + self.constraint_hover_wires.len()
                     + pid_group.len()
+                    + cloud_2d_wires.len()
                     + 1,
             );
             if let Some(iw) = &self.interim_wire {
@@ -4574,6 +4616,7 @@ impl Scene {
             v.extend(self.preview_wires.iter().cloned());
             v.extend(self.constraint_hover_wires.iter().cloned());
             v.extend(pid_group.iter().cloned());
+            v.extend(cloud_2d_wires);
             Arc::new(v)
         };
         let preview_hatches = if show_live_overlay {
@@ -4769,6 +4812,7 @@ impl Scene {
         } else {
             self.meshes_for_viewport(inst.handle, &vp_frozen)
         };
+        let point_clouds = self.point_clouds_for_viewport(&vp_frozen, inst.paper_sheet || wireframe_2d);
 
         // SDF text quads (behind OCS_TEXT_SDF). The glyph quads ride on each
         // entity's own wire (produced by the tessellator, transformed for
@@ -4873,6 +4917,28 @@ impl Scene {
         } else {
             None
         };
+        let point_cloud_light = {
+            use crate::scene::model::point_cloud::{setting, setting_value};
+            let value = |name| setting(name).map_or(0, |s| setting_value(&self.document, s)) as f32;
+            // Lit only in the shaded styles, as the reference.
+            let lighting = if flags.mesh_fill && !flags.hidden_line { value("POINTCLOUDLIGHTING") } else { 0.0 };
+            let source = value("POINTCLOUDLIGHTSOURCE");
+            // The lights follow the view (measured from the reference in
+            // view coordinates: right, up, toward the viewer): the default
+            // lighting is a key light from the upper left and a fill light
+            // from the lower right, the other source one light from above.
+            let view = |x: f32, y: f32, z: f32| {
+                (inst.camera.rotation * glam::Vec3::new(x, y, z)).normalize_or(glam::Vec3::Z)
+            };
+            let (first, second) = if source > 0.5 {
+                (view(-0.034, 0.987, 0.158), glam::Vec3::ZERO)
+            } else {
+                (view(-0.512, 0.500, 0.698), view(0.834, -0.451, 0.318))
+            };
+            // While the view moves, POINTCLOUDRTDENSITY per cent of the points.
+            let fraction = if navigating { value("POINTCLOUDRTDENSITY") / 100.0 } else { 1.0 };
+            [lighting, source, fraction, 0.0, first.x, first.y, first.z, 0.0, second.x, second.y, second.z, 0.0]
+        };
         Some(ViewportData {
             instance_id,
             force_rasterize,
@@ -4889,6 +4955,8 @@ impl Scene {
             hatches,
             wipeout_hatches,
             images,
+            point_clouds,
+            point_cloud_light,
             meshes,
             background_image: display.background.image.clone(),
             environment_image: display.background.environment.clone(),

@@ -52,6 +52,7 @@ pub mod svg_export;
 pub mod xref;
 pub mod xref_model;
 pub mod linetypes;
+pub mod line_read;
 pub mod patterns;
 pub mod update_check;
 pub mod paper_catalog;
@@ -205,9 +206,10 @@ impl From<&str> for OpenLoadError {
 pub async fn pick_open_path() -> Option<(PathBuf, u64)> {
     let handle = crate::sys::file_dialog()
         .set_title(crate::t!("Open CAD file").as_ref())
-        .add_filter(crate::t!("CAD Files").as_ref(), &["dwg", "dxf", "pid", "bak", "sv$", "DWG", "DXF", "PID", "BAK"])
+        .add_filter(crate::t!("CAD Files").as_ref(), &["dwg", "dxf", "dwt", "pid", "bak", "sv$", "DWG", "DXF", "DWT", "PID", "BAK"])
         .add_filter(crate::t!("DWG Files").as_ref(), &["dwg", "DWG"])
         .add_filter(crate::t!("DXF Files").as_ref(), &["dxf", "DXF"])
+        .add_filter(crate::t!("Drawing Template (*.dwt)").as_ref(), &["dwt", "DWT"])
         .add_filter(crate::t!("Smart P&ID Files").as_ref(), &["pid", "PID"])
         .add_filter(crate::t!("Backup / Autosave").as_ref(), &["bak", "sv$", "BAK"])
         .add_filter(crate::t!("All Files").as_ref(), &["*"])
@@ -392,6 +394,10 @@ async fn open_path_with_phase_attempt(
                         recoverable: true,
                     });
                 }
+                // Before the geometry is prepared below: completing the
+                // drawing's catalog linetypes (and repairing stripped ones)
+                // after it would leave the first view drawn without them.
+                crate::io::linetypes::populate_document(&mut doc);
                 progress2.set(crate::app::OPEN_PHASE_XREF, 6000, 0, 1);
                 let t_xref = Instant::now();
                 let (xref_infos, xref_dropped) = if let Some(base_dir) = path2.parent() {
@@ -565,7 +571,8 @@ pub async fn pick_and_load_web(
 ) -> WebOpenOutcome {
     let Some(handle) = crate::sys::file_dialog()
         .set_title(crate::t!("Open CAD file").as_ref())
-        .add_filter(crate::t!("CAD Files").as_ref(), &["dwg", "dxf", "DWG", "DXF"])
+        .add_filter(crate::t!("CAD Files").as_ref(), &["dwg", "dxf", "dwt", "DWG", "DXF", "DWT"])
+        .add_filter(crate::t!("Drawing Template (*.dwt)").as_ref(), &["dwt", "DWT"])
         .add_filter(crate::t!("All Files").as_ref(), &["*"])
         .pick_file()
         .await
@@ -759,6 +766,7 @@ async fn load_web_bytes(
     }
     fix_viewport_status_flags(&mut doc);
     fix_current_style_names(&mut doc);
+    crate::entities::field::local_header_dates(&mut doc);
     progress.set(crate::app::OPEN_PHASE_CACHING, 7000, 0, 1);
     let dropped = purge_corrupt_entities(&mut doc);
     if !recovery_mode && dropped > 0 {
@@ -794,12 +802,14 @@ pub fn load_bytes(name: &str, bytes: Vec<u8>) -> Result<CadDocument, String> {
         ext.as_str()
     };
     match format {
-        "dwg" => {
+        // Templates (.dwt) and standards (.dws) are drawings in the DWG format.
+        "dwg" | "dwt" | "dws" => {
             let mut doc = DwgReader::from_stream(Cursor::new(bytes))
                 .read()
                 .map_err(|e| e.to_string())?;
             fix_viewport_status_flags(&mut doc);
             fix_current_style_names(&mut doc);
+            crate::entities::field::local_header_dates(&mut doc);
             Ok(doc)
         }
         "dxf" => {
@@ -815,6 +825,7 @@ pub fn load_bytes(name: &str, bytes: Vec<u8>) -> Result<CadDocument, String> {
             dxf_style_typeface::apply_style_typefaces(&mut doc, &style_typefaces);
             fix_viewport_status_flags(&mut doc);
             fix_current_style_names(&mut doc);
+            crate::entities::field::local_header_dates(&mut doc);
             Ok(doc)
         }
         _ => Err(format!("Unsupported file format: .{ext}")),
@@ -831,6 +842,8 @@ pub fn load_bytes_finalized(path: &Path, bytes: Vec<u8>) -> Result<(CadDocument,
     normalize_block_origins(&mut doc);
     resolve_raster_image_paths(&mut doc, path.parent());
     doc.source_path = Some(path.to_string_lossy().into_owned());
+    // Opening is a field evaluation event (FIELDEVAL bit 1).
+    crate::entities::field::update_fields(&mut doc, 1, None);
     let dropped = purge_corrupt_entities(&mut doc);
     Ok((doc, dropped))
 }
@@ -1069,7 +1082,7 @@ fn read_file_attempt(
     };
 
     match effective.as_str() {
-        "dwg" => read_dwg_path(path, progress, failsafe),
+        "dwg" | "dwt" | "dws" => read_dwg_path(path, progress, failsafe),
         "dxf" => read_dxf_path(path, failsafe),
         #[cfg(not(target_arch = "wasm32"))]
         "pid" => read_pid_path(path),
@@ -1085,6 +1098,7 @@ fn finalize_loaded_outcome(
 ) -> Result<codec::ReadOutcome, String> {
     let doc = &mut outcome.document;
     normalize_block_origins(doc);
+    materialize_missing_block_markers(doc);
     normalize_knotless_splines(doc);
     if outcome.stats.source_format == Some(codec::SourceFormat::Dxf) {
         fix_dxf_dimension_rotations(doc);
@@ -1097,8 +1111,11 @@ fn finalize_loaded_outcome(
     }
     fix_viewport_status_flags(doc);
     fix_current_style_names(doc);
+    crate::entities::field::local_header_dates(doc);
     resolve_raster_image_paths(doc, path.parent());
     doc.source_path = Some(path.to_string_lossy().into_owned());
+    // Opening is a field evaluation event (FIELDEVAL bit 1).
+    crate::entities::field::update_fields(doc, 1, None);
     Ok(outcome)
 }
 
@@ -1335,6 +1352,84 @@ fn normalize_block_origins(doc: &mut CadDocument) {
     }
 }
 
+/// The DXF section reader keeps BLOCK/ENDBLK marker identities on the block
+/// record but never materializes the sentinel entities, so
+/// `block_entity_handle`/`block_end_handle` dangle after every DXF load
+/// (reopened baked `*D` dimension blocks hit this every time). Re-create any
+/// missing sentinel so each record points at a real Block/BlockEnd again.
+/// Idempotent: records whose markers already resolve (DWG loads, live docs)
+/// are untouched. File handles are reused when still free so a repair +
+/// resave stays handle-stable; otherwise a fresh handle is minted and the
+/// record is pointed at it.
+fn materialize_missing_block_markers(doc: &mut CadDocument) {
+    use codec::entities::{Block, BlockEnd};
+    use codec::{EntityType, Handle};
+
+    struct Work {
+        name: String,
+        record_handle: Handle,
+        base_point: codec::types::Vector3,
+        block_handle: Handle,
+        end_handle: Handle,
+        need_block: bool,
+        need_end: bool,
+    }
+    let work: Vec<Work> = doc
+        .block_records
+        .iter()
+        .map(|record| Work {
+            name: record.name.clone(),
+            record_handle: record.handle,
+            base_point: record.base_point,
+            block_handle: record.block_entity_handle,
+            end_handle: record.block_end_handle,
+            need_block: !matches!(
+                doc.get_entity(record.block_entity_handle),
+                Some(EntityType::Block(_))
+            ),
+            need_end: !matches!(
+                doc.get_entity(record.block_end_handle),
+                Some(EntityType::BlockEnd(_))
+            ),
+        })
+        .filter(|w| w.need_block || w.need_end)
+        .collect();
+
+    for w in work {
+        if w.need_block {
+            let mut marker = Block::new(&w.name, w.base_point);
+            // Reuse the file handle only if nothing else claims it; an
+            // explicit handle is respected by add_entity (bumping the counter
+            // past it), otherwise a NULL handle mints a fresh one below.
+            if !w.block_handle.is_null() && doc.get_entity(w.block_handle).is_none() {
+                marker.common.handle = w.block_handle;
+            }
+            marker.common.owner_handle = w.record_handle;
+            if let Ok(handle) = doc.add_entity(EntityType::Block(marker)) {
+                if handle != w.block_handle {
+                    if let Some(record) = doc.block_records.get_mut(&w.name) {
+                        record.block_entity_handle = handle;
+                    }
+                }
+            }
+        }
+        if w.need_end {
+            let mut marker = BlockEnd::new();
+            if !w.end_handle.is_null() && doc.get_entity(w.end_handle).is_none() {
+                marker.common.handle = w.end_handle;
+            }
+            marker.common.owner_handle = w.record_handle;
+            if let Ok(handle) = doc.add_entity(EntityType::BlockEnd(marker)) {
+                if handle != w.end_handle {
+                    if let Some(record) = doc.block_records.get_mut(&w.name) {
+                        record.block_end_handle = handle;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A RasterImage entity stores its file path on the linked ImageDefinition,
 /// often as the original author's absolute path (e.g. a Windows / VMware share)
 /// that doesn't exist on this machine. Resolve each image to a usable path:
@@ -1416,7 +1511,7 @@ pub const DEFAULT_SAVE_FORMAT: &str = "DWG 2018";
 
 pub const SAVE_FORMAT_OPTIONS: &[&str] = &[
     "DWG 2018", "DWG 2013", "DWG 2010", "DWG 2007", "DWG 2004", "DWG 2000", "DWG R14", "DXF 2018",
-    "DXF 2013", "DXF 2010", "DXF 2007", "DXF 2004", "DXF 2000", "DXF R14",
+    "DXF 2013", "DXF 2010", "DXF 2007", "DXF 2004", "DXF 2000", "DXF R14", "DWT 2018",
 ];
 
 pub fn canonical_save_format(format: &str) -> &'static str {
@@ -1446,7 +1541,14 @@ pub fn parse_save_format(format: &str) -> (&'static str, codec::DxfVersion) {
     use codec::DxfVersion;
     let f = format.to_ascii_uppercase();
     let is_dxf = f.starts_with("DXF");
-    let ext = if is_dxf { "dxf" } else { "dwg" };
+    // A drawing template (.dwt) is a DWG under another extension (#1635).
+    let ext = if is_dxf {
+        "dxf"
+    } else if f.starts_with("DWT") {
+        "dwt"
+    } else {
+        "dwg"
+    };
     let version = if f.contains("2013") {
         DxfVersion::AC1027
     } else if f.contains("2010") {
@@ -1625,14 +1727,14 @@ impl std::fmt::Display for SaveFailure {
 
 impl std::error::Error for SaveFailure {}
 
-const SUPPORTED_SAVE_FORMATS: &str = ".dwg, .dxf";
+const SUPPORTED_SAVE_FORMATS: &str = ".dwg, .dxf, .dwt";
 
 fn validate_save_extension(path: &Path) -> Result<(), SaveFailure> {
     let extension = path
         .extension()
         .map(|value| value.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if matches!(extension.as_str(), "dwg" | "dxf" | "sv$") {
+    if matches!(extension.as_str(), "dwg" | "dxf" | "dwt" | "sv$") {
         return Ok(());
     }
 
@@ -1698,7 +1800,7 @@ mod save_failure_tests {
 
         assert_eq!(
             error,
-            "unsupported output format .pdf; supported formats: .dwg, .dxf"
+            "unsupported output format .pdf; supported formats: .dwg, .dxf, .dwt"
         );
         assert!(!path.exists(), "unsupported export created an output file");
     }
@@ -1776,6 +1878,16 @@ mod save_failure_tests {
 /// picked from outside the plot styles folder is copied into it (unless a
 /// file of that name is already there), so the dialog lists it from now on
 /// and page setups naming it resolve after a restart.
+/// Pick a `.lin` linetype definition file and return its text (#1588).
+pub async fn pick_linetype_file() -> Option<String> {
+    let handle = crate::sys::file_dialog()
+        .set_title(crate::t!("Load Linetypes").as_ref())
+        .add_filter(crate::t!("Linetype Files").as_ref(), &["lin", "LIN"])
+        .pick_file()
+        .await?;
+    Some(String::from_utf8_lossy(&handle.read().await).into_owned())
+}
+
 pub async fn pick_plot_style() -> Result<Option<plot_style::PlotStyleTable>, String> {
     let dialog = crate::sys::file_dialog()
         .set_title(crate::t!("Load Plot Style Table").as_ref())

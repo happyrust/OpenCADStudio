@@ -47,6 +47,12 @@ pub enum PanelId {
     Browser,
     /// Node library of the node graph overlay.
     NodeGraph,
+    /// Regions and scans of the drawing's point clouds.
+    PointCloudManager,
+    /// Block counts (COUNTLIST).
+    Count,
+    /// The open sheet sets: subsets and sheets.
+    SheetSetManager,
 }
 
 impl PanelId {
@@ -59,6 +65,9 @@ impl PanelId {
             PanelId::ExternalReferences => "External References",
             PanelId::Browser => "Browser",
             PanelId::NodeGraph => "Node Graph",
+            PanelId::PointCloudManager => "Point Cloud Manager",
+            PanelId::Count => "Count",
+            PanelId::SheetSetManager => "Sheet Set Manager",
         }
     }
 
@@ -71,6 +80,9 @@ impl PanelId {
             PanelId::ExternalReferences => 460.0,
             PanelId::Browser => 230.0,
             PanelId::NodeGraph => 220.0,
+            PanelId::PointCloudManager => 280.0,
+            PanelId::Count => 280.0,
+            PanelId::SheetSetManager => 280.0,
         }
     }
 
@@ -161,6 +173,9 @@ impl DockState {
             PanelId::ExternalReferences,
             PanelId::Browser,
             PanelId::NodeGraph,
+            PanelId::PointCloudManager,
+            PanelId::Count,
+            PanelId::SheetSetManager,
         ] {
             self.panels.entry(id).or_insert_with(|| DockPanel::for_id(id));
         }

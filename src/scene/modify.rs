@@ -107,6 +107,18 @@ fn mirror_true_text_flags(e: &mut EntityType) {
     }
 }
 
+/// Transform one entity of a dimension's `*D` block. Its text reads the
+/// right way after a mirror, whatever MIRRTEXT says.
+fn transform_dimension_part(entity: &mut EntityType, t: &EntityTransform) {
+    let orient = matches!(t, EntityTransform::Mirror { .. })
+        .then(|| capture_text_orient(entity))
+        .flatten();
+    view::dispatch::apply_transform(entity, t);
+    if let Some(orient) = orient {
+        restore_text_orient(entity, &orient);
+    }
+}
+
 impl Scene {
     pub(crate) fn sync_displayed_annotation_context(&mut self, handle: Handle) -> bool {
         let scale = self.displayed_annotation_scale_handle();
@@ -357,7 +369,7 @@ impl Scene {
                 self.record_undo_before(*h, before);
             }
             if let Some(entity) = self.document.get_entity_mut(*h) {
-                view::dispatch::apply_transform(entity, t);
+                transform_dimension_part(entity, t);
             }
         }
         // The moved `*D` contents are a block definition the block cache holds;
@@ -639,7 +651,7 @@ impl Scene {
             .ok()?;
         for sub in subs {
             let mut sub = sub.clone();
-            view::dispatch::apply_transform(&mut sub, t);
+            transform_dimension_part(&mut sub, t);
             Self::reset_clone_subhandles(&mut self.document, &mut sub);
             sub.common_mut().handle = Handle::NULL;
             sub.common_mut().owner_handle = br_handle;
@@ -811,6 +823,7 @@ impl Scene {
 
             let _ = self.sync_displayed_annotation_context(leader_handle);
         }
+        remap_copied_reactors(&mut self.document, &handle_map);
         // Complete group copies record their new Group objects and dictionary
         // entry as targeted object deltas inside copy_complete_groups.
         self.copy_complete_groups(&handle_map);
@@ -841,6 +854,7 @@ impl Scene {
         };
         std::iter::once(graph.root)
             .chain(graph.nodes)
+            .chain(graph.evaluation_graph)
             .filter_map(|object_handle| {
                 self.document
                     .objects
@@ -869,7 +883,7 @@ impl Scene {
             return false;
         };
         self.record_undo_object_before(graph.root, None);
-        for node in graph.nodes {
+        for node in graph.nodes.into_iter().chain(graph.evaluation_graph) {
             self.record_undo_object_before(node, None);
         }
         self.sync_solid_reference_point(handle);
@@ -881,21 +895,103 @@ impl Scene {
         handle: Handle,
         operation: codec::objects::SolidHistoryOperation,
     ) -> bool {
-        let previous = self
+        let previous: Vec<Handle> = self
             .document
             .solid_history_graph(handle)
-            .map(|graph| graph.nodes)
+            .map(|graph| graph.nodes.into_iter().chain(graph.evaluation_graph).collect())
             .unwrap_or_default();
         self.record_solid_history_before(handle);
         let Some(graph) = self.document.append_solid_history(handle, operation) else {
             return false;
         };
-        for node in graph.nodes {
+        // A history saved without an evaluation graph gets one on append.
+        for node in graph.nodes.into_iter().chain(graph.evaluation_graph) {
             if !previous.contains(&node) {
                 self.record_undo_object_before(node, None);
             }
         }
         self.sync_solid_reference_point(handle);
+        true
+    }
+
+    /// Make `target`'s history the boolean steps that built it: starting from
+    /// `first`'s history, each of `steps` joins a solid's history into the
+    /// result so far. When `first` is `target` its own history is kept; a
+    /// solid with no history starts from its body in `bodies`.
+    ///
+    /// False, with `target` left without a history, when one of the solids
+    /// cannot carry one.
+    pub fn join_boolean_histories(
+        &mut self,
+        target: Handle,
+        first: Handle,
+        steps: &[(Handle, u8)],
+        bodies: &std::collections::HashMap<Handle, kernel::brep::Body>,
+    ) -> bool {
+        let solids = std::iter::once(target)
+            .chain(std::iter::once(first))
+            .chain(steps.iter().map(|(handle, _)| *handle))
+            .collect::<Vec<_>>();
+        let solid = |handle: &Handle| {
+            matches!(self.document.get_entity(*handle), Some(EntityType::Solid3D(_)))
+        };
+        if !solids.iter().all(solid) {
+            return false;
+        }
+        for handle in solids.iter().skip(1) {
+            if self.document.solid_history_graph(*handle).is_some() {
+                continue;
+            }
+            let Some(body) = bodies.get(handle) else {
+                return false;
+            };
+            if !self.create_solid_history(
+                *handle,
+                crate::scene::model::solid_history::brep_op(body),
+            ) {
+                return false;
+            }
+        }
+        if first != target {
+            self.delete_solid_history(target);
+            if self.is_recording_undo() {
+                let before = self.document.get_entity_arc(target);
+                self.record_undo_before(target, before);
+            }
+            if !self.copy_solid_history(first, target) {
+                return false;
+            }
+        }
+        for &(tool, operation) in steps {
+            if !self.merge_solid_history_boolean(target, tool, operation) {
+                self.delete_solid_history(target);
+                return false;
+            }
+        }
+        true
+    }
+
+    fn merge_solid_history_boolean(&mut self, target: Handle, tool: Handle, operation: u8) -> bool {
+        let previous: Vec<Handle> = [target, tool]
+            .iter()
+            .filter_map(|handle| self.document.solid_history_graph(*handle))
+            .flat_map(|graph| graph.nodes.into_iter().chain(graph.evaluation_graph))
+            .collect();
+        self.record_solid_history_before(target);
+        self.record_solid_history_before(tool);
+        if self.is_recording_undo() {
+            // The tool loses its history link; undo must give it back.
+            let before = self.document.get_entity_arc(tool);
+            self.record_undo_before(tool, before);
+        }
+        let Some(graph) = self.document.merge_solid_history_boolean(target, tool, operation) else {
+            return false;
+        };
+        for node in graph.nodes.into_iter().chain(graph.evaluation_graph) {
+            if !previous.contains(&node) {
+                self.record_undo_object_before(node, None);
+            }
+        }
         true
     }
 
@@ -957,26 +1053,9 @@ impl Scene {
                 kernel::acis::rebuild_body(operation).ok()
             }
             (EntityType::Solid3D(_), _) => {
-                let mut operations = self.document.solid_history_operations(handle)?;
-                let replacement_id = operation.base().map(|base| {
-                    if base.eval.node_id > 0 {
-                        base.eval.node_id
-                    } else {
-                        base.step_id
-                    }
-                })?;
-                let target = operations.iter_mut().find(|candidate| {
-                    candidate.base().is_some_and(|base| {
-                        let node_id = if base.eval.node_id > 0 {
-                            base.eval.node_id
-                        } else {
-                            base.step_id
-                        };
-                        node_id == replacement_id
-                    })
-                })?;
-                *target = operation.clone();
-                kernel::acis::rebuild_history(&operations).ok()
+                let mut tree = self.document.solid_history_tree(handle)?;
+                tree.find_mut(operation.base()?.node_id())?.operation = operation.clone();
+                kernel::acis::rebuild_history_tree(&tree).ok()
             }
             _ => None,
         }
@@ -1003,6 +1082,89 @@ impl Scene {
             }
             (EntityType::Solid3D(_), _) => Some(None),
             _ => None,
+        }
+    }
+
+    /// Swept surfaces linked to scale/twist expressions follow the named
+    /// parameters: re-evaluated and rebuilt when a value changes, as the
+    /// reference keeps them associative. Returns the surfaces rebuilt.
+    pub fn refresh_expression_sweeps(&mut self) -> Vec<Handle> {
+        use crate::scene::model::sweep_model;
+        let linked = self.document.entities()
+            .filter_map(|entity| Some((entity.common().handle, sweep_model::sweep_expressions(entity)?)))
+            .collect::<Vec<_>>();
+        let mut rebuilt = Vec::new();
+        for (handle, [scale, twist]) in linked {
+            let Some(entity) = self.document.get_entity(handle) else { continue };
+            let Some(mut record) = sweep_model::surface_sweep_record(entity) else { continue };
+            let evaluate = |expression: &str| {
+                let mut table = self.named_parameters().clone();
+                table.set("sweepExpression", expression).ok()?;
+                table.resolve("sweepExpression").ok().filter(|value| value.is_finite())
+            };
+            let mut changed = false;
+            if let Some(value) = scale.as_deref().and_then(evaluate) {
+                changed |= (record.scale_factor - value).abs() > 1e-12;
+                record.scale_factor = value;
+            }
+            if let Some(value) = twist.as_deref().and_then(evaluate).map(f64::to_radians) {
+                changed |= (record.twist_angle - value).abs() > 1e-12;
+                record.twist_angle = value;
+            }
+            if !changed { continue; }
+            let Ok(body) = kernel::acis::rebuild_sweep_with_mode(&record, true) else { continue };
+            let Some(document) = crate::scene::convert::acis_export::solid_to_sat(&body) else { continue };
+            let Some(display) = self.prepare_solid_model_display(handle, &body) else { continue };
+            let before = self.document.get_entity(handle).cloned().map(std::sync::Arc::new);
+            self.record_undo_before(handle, before);
+            if let Some(EntityType::Surface(surface)) = self.document.get_entity_mut(handle) {
+                surface.acis_data = codec::entities::AcisData::from_sat(&document.to_sat_string());
+                if let codec::entities::SurfaceData::Swept { options, .. } = &mut surface.surface_data {
+                    options.scale_factor = record.scale_factor;
+                    options.twist_angle = record.twist_angle;
+                }
+            }
+            self.register_prepared_solid_model(handle, body, display);
+            rebuilt.push(handle);
+        }
+        rebuilt
+    }
+
+    /// Swept surfaces the reference keeps associative to a scale or twist
+    /// expression (an associative swept surface action whose value parameter
+    /// depends on an expression variable) are linked the same way here.
+    pub(crate) fn import_sweep_expression_links(&mut self) {
+        use codec::objects::{AssocSurfaceActionKind, AssociativeData, ObjectType};
+        let object = |handle: Handle| match self.document.objects.get(&handle) {
+            Some(ObjectType::Associative(object)) => Some(&object.data),
+            _ => None,
+        };
+        let mut links = Vec::new();
+        for item in self.document.objects.values() {
+            let ObjectType::Associative(action) = item else { continue };
+            let AssociativeData::Action(action) = &action.data else { continue };
+            let Some(AssociativeData::SurfaceActionBody(body)) = object(action.action_body) else { continue };
+            if body.kind != AssocSurfaceActionKind::Swept { continue; }
+            let Some(AssociativeData::Dependency(written)) = object(body.surface_body.dependency) else { continue };
+            let mut expressions: [Option<String>; 2] = [None, None];
+            for value in &action.values {
+                let slot = match value.name.as_str() { "ScaleFactor" => 0, "TwistAngle" => 1, _ => continue };
+                for variable in &value.variables {
+                    let Some(AssociativeData::ValueDependency(dependency)) = object(variable.handle) else { continue };
+                    let Some(AssociativeData::Variable(source)) = object(dependency.dependency.dependent_on) else { continue };
+                    if !source.expression.trim().is_empty() && source.expression.trim().parse::<f64>().is_err() {
+                        expressions[slot] = Some(source.expression.trim().to_string());
+                    }
+                }
+            }
+            if expressions.iter().any(Option::is_some) {
+                links.push((written.dependent_on, expressions));
+            }
+        }
+        for (handle, expressions) in links {
+            let Some(entity) = self.document.get_entity(handle) else { continue };
+            if crate::scene::model::sweep_model::sweep_expressions(entity).is_some() { continue; }
+            crate::scene::model::sweep_model::link_sweep_expressions(&mut self.document, handle, &expressions);
         }
     }
 
@@ -1112,11 +1274,18 @@ impl Scene {
         if self.history_surface_data(handle, &operation).is_none() {
             return false;
         }
-        if self
+        // An operand inside a composite is a step below the active one.
+        let active = self
             .document
-            .update_solid_history(handle, operation)
-            .is_none()
-        {
+            .solid_history_operation(handle)
+            .and_then(|active| active.base())
+            .map(|base| base.node_id());
+        let updated = if operation.base().map(|base| base.node_id()) == active {
+            self.document.update_solid_history(handle, operation).is_some()
+        } else {
+            self.document.update_solid_history_step(handle, operation).is_some()
+        };
+        if !updated {
             return false;
         }
         let (isoline_counts, planar_isolines) = match self.document.get_entity(handle) {
@@ -1256,7 +1425,10 @@ impl Scene {
         grip_id: usize,
         apply: GripApply,
     ) -> bool {
-        let Some(mut operation) = self.document.solid_history_operation(handle).cloned() else {
+        let Some(mut operation) =
+            crate::scene::model::solid_history::edit_operand(&self.document, handle)
+                .or_else(|| self.document.solid_history_operation(handle).cloned())
+        else {
             return false;
         };
         if grip_id == crate::scene::model::solid_history::GRIP_FILLET_RADIUS {
@@ -1331,6 +1503,11 @@ impl Scene {
         {
             return false;
         }
+        let Some(operation) =
+            crate::scene::model::solid_history::operand_to_history(&self.document, handle, operation)
+        else {
+            return false;
+        };
         self.preview_solid_history(handle, operation)
     }
 
@@ -1353,7 +1530,25 @@ impl Scene {
         ) {
             return false;
         }
+        let Some(operation) =
+            crate::scene::model::solid_history::operand_to_history(&self.document, handle, operation)
+        else {
+            return false;
+        };
         self.rebuild_solid_history(handle, operation)
+    }
+
+    /// The modeler error code the reference reports when it refuses a sweep
+    /// property edit (twist or scale along a path with a corner).
+    pub fn solid_history_property_refusal(&self, handle: Handle, field: &str, value: &str) -> Option<u32> {
+        let mut operation = crate::scene::model::solid_history::primitive_property_operation(&self.document, handle)?;
+        if !crate::scene::model::solid_history::apply_primitive_property(&mut operation, field, value) {
+            return None;
+        }
+        let codec::objects::SolidHistoryOperation::Sweep(record) = &operation else {
+            return None;
+        };
+        kernel::acis::sweep_history_refusal(record).map(crate::scene::model::sweep_model::sweep_refusal_code)
     }
 
     pub fn apply_solid_position_property(
@@ -1607,5 +1802,22 @@ impl Scene {
         if !hatch_changes.is_empty() {
             self.bump_entities(&hatch_changes);
         }
+    }
+}
+
+/// A copy reacts only to what was copied with it: each reactor of the source
+/// that maps to a copy follows it there, and the rest (the source's dimension
+/// association, group, associative hatch) are dropped. The association and
+/// group copies add their own reactors afterwards.
+pub(crate) fn remap_copied_reactors(
+    document: &mut codec::CadDocument,
+    handle_map: &rustc_hash::FxHashMap<Handle, Handle>,
+) {
+    for &copy in handle_map.values() {
+        let Some(entity) = document.get_entity_mut(copy) else {
+            continue;
+        };
+        let reactors = &mut entity.common_mut().reactors;
+        *reactors = reactors.iter().filter_map(|reactor| handle_map.get(reactor).copied()).collect();
     }
 }

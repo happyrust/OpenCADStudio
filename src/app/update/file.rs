@@ -34,7 +34,13 @@ fn write_export(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     }
 }
 
-pub(super) fn background_task<T, F, M>(work: F, map: M) -> Task<Message>
+/// Run `work` on a worker thread and map its result into a `Message`.
+///
+/// `context` names the operation for error reporting. A worker panic never
+/// reaches the UI thread: it is caught on the worker and re-surfaced as
+/// [`Message::BackgroundTaskFailed`] so a crashing export or import reports
+/// on the command line instead of killing the application.
+pub(in crate::app) fn background_task<T, F, M>(context: impl Into<String>, work: F, map: M) -> Task<Message>
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
@@ -42,18 +48,46 @@ where
 {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let context = context.into();
         let (tx, rx) = iced::futures::channel::oneshot::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(work());
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+            let _ = tx.send(result);
         });
         Task::perform(
-            async move { rx.await.expect("background export worker dropped") },
-            map,
+            async move {
+                match rx.await {
+                    Ok(Ok(value)) => map(value),
+                    Ok(Err(payload)) => Message::BackgroundTaskFailed {
+                        context,
+                        detail: panic_detail(payload),
+                    },
+                    Err(_) => Message::BackgroundTaskFailed {
+                        context,
+                        detail: "worker stopped without reporting a result".to_string(),
+                    },
+                }
+            },
+            |message| message,
         )
     }
     #[cfg(target_arch = "wasm32")]
     {
+        let _ = context;
         Task::perform(async move { work() }, map)
+    }
+}
+
+/// Render a panic payload the way `std` reports it: `&'static str` messages,
+/// `String` messages, or a fallback for foreign payloads.
+#[cfg(not(target_arch = "wasm32"))]
+fn panic_detail(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<&'static str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "worker panicked".to_string()
     }
 }
 
@@ -601,11 +635,14 @@ fn plot_scene_content(
 }
 
 impl OpenCADStudio {
-    /// Persist exact ACIS bodies and kernel-derived edge caches before saving.
+    /// Persist exact ACIS bodies, and an edge cache with them, for solids that
+    /// have no ACIS data before saving. A solid that has ACIS data keeps its
+    /// own wireframe cache: display edges are not written into a solid OCS
+    /// did not create or edit (those get their wires when they are built).
     fn sync_solid_models_for_save(&mut self, i: usize) {
         use codec::EntityType;
         let scene = &mut self.tabs[i].scene;
-        let targets: Vec<(codec::Handle, bool, bool)> = scene
+        let targets: Vec<(codec::Handle, bool)> = scene
             .document
             .entities()
             .filter_map(|entity| {
@@ -613,16 +650,12 @@ impl OpenCADStudio {
                     return None;
                 };
                 let h = solid.common.handle;
-                let needs_acis = !solid.acis_data.has_data();
-                let needs_wires = solid.wires.is_empty();
-                (needs_acis || needs_wires).then_some((h, needs_acis, needs_wires))
+                (!solid.acis_data.has_data()).then_some((h, solid.wires.is_empty()))
             })
             .collect();
-        for (h, needs_acis, needs_wires) in targets {
+        for (h, needs_wires) in targets {
             let body = scene.solid_models.get(&h);
-            let sat = needs_acis
-                .then(|| body.and_then(crate::scene::convert::acis_export::solid_to_sat))
-                .flatten();
+            let sat = body.and_then(crate::scene::convert::acis_export::solid_to_sat);
             let wires = needs_wires.then(|| {
                 if let Some(body) = body {
                     return crate::scene::model::solid_model::edge_wires(body);
@@ -706,9 +739,11 @@ impl OpenCADStudio {
         crate::app::settings::UserSettings {
             spacemouse: self.spacemouse_preferences,
             dyn_input: self.dyn_input,
+            dyn_mode: self.dyn_mode,
             polar: self.polar_mode,
             polar_increment_deg: self.polar_increment_deg,
             zoom_wheel_reversed: self.zoom_wheel_reversed,
+            touchpad_pan: self.touchpad_pan,
             zoom_factor: self.zoom_factor,
             cursor_size: self.cursor_size,
             pick_box: self.pick_box,
@@ -723,9 +758,13 @@ impl OpenCADStudio {
             right_click_hold_ms: self.right_click_hold_ms,
             grip_object_limit: self.grip_object_limit,
             image_frame: crate::scene::frame::profile_image_mode(),
+            attdef_on_screen: crate::modules::draw::draw::attdef::session().on_screen,
+            field_display: crate::entities::field::display(),
             ncopy_bind: self.ncopy_bind,
             cursor_type: self.cursor_type,
             crosshair_color: self.crosshair_color,
+            snap_marker_color: self.snap_marker_color,
+            command_text_color: self.command_text_color,
             lineweight_display_scale: self.lineweight_display_scale,
             isometric_drafting: self.isometric_drafting,
             iso_plane: self.iso_plane,
@@ -734,6 +773,7 @@ impl OpenCADStudio {
             default_assoc_prompted: self.default_assoc_prompted,
             check_missing_fonts: self.check_missing_fonts,
             font_source_url: self.font_source_url.clone(),
+            qnew_template: self.qnew_template.clone(),
             donation_prompt_version: self.donation_prompt_version.clone(),
             gpu_warning_silenced: self.gpu_warning_silenced.clone(),
             disabled_plugins: {
@@ -781,16 +821,36 @@ impl OpenCADStudio {
             grid_beyond_limits: self.grid_beyond_limits,
             block_mru: self.block_mru.clone(),
             block_freq: self.block_freq.clone(),
+            block_recent: self.block_palette.recent.clone(),
+            block_favorites: self.block_palette.favorites.clone(),
+            block_libraries: self.block_palette.libraries.clone(),
+            block_palette_view: self.block_palette.view as u8,
+            block_insert: self.block_palette.options.clone(),
+            block_mru_list: self.block_mru_list,
+            block_redefine_mode: self.block_redefine_mode,
+            block_navigate: self.block_navigate.clone(),
+            count_color: self.count_palette.color,
+            count_error_color: self.count_palette.error_color,
+            count_service: self.count_palette.service,
+            count_invalid_area: self.count_palette.invalid_choice,
+            sheet_set: self.sheet_set.settings,
         }
     }
 
     /// Apply restored preferences to live state.
     pub(in crate::app) fn apply_settings(&mut self, s: &crate::app::settings::UserSettings) {
-        self.dyn_input = s.dyn_input;
+        self.dyn_mode = s.dyn_mode;
+        self.set_dyn_input(s.dyn_input);
         self.polar_mode = s.polar;
         self.polar_increment_deg = s.polar_increment_deg;
         self.zoom_wheel_reversed = s.zoom_wheel_reversed;
-        self.zoom_factor = s.zoom_factor.clamp(3, 100);
+        self.touchpad_pan = s.touchpad_pan;
+        self.zoom_factor = crate::app::settings::clamp_zoom_factor(s.zoom_factor);
+        // Like the drafting-rotation field below, the Options field edits a
+        // buffer rather than the value, so it is reseeded whenever the value
+        // is restored from behind it — a start-up, or the Options window's
+        // own Close putting a change back.
+        self.zoom_factor_input = self.zoom_factor.to_string();
         self.cursor_size = s.cursor_size.clamp(1, 100);
         self.pick_box = s.pick_box.clamp(0, 50);
         self.options_tab = s.options_tab;
@@ -808,6 +868,8 @@ impl OpenCADStudio {
         self.right_click_hold_ms = super::super::settings::clamp_right_click_hold_ms(s.right_click_hold_ms);
         self.grip_object_limit = s.grip_object_limit.clamp(0, 32767);
         crate::scene::frame::set_profile_image_mode(s.image_frame);
+        crate::modules::draw::draw::attdef::session().on_screen = s.attdef_on_screen;
+        crate::entities::field::set_display(s.field_display);
         self.ncopy_bind = s.ncopy_bind;
         self.cursor_type = s.cursor_type;
         self.crosshair_color = s.crosshair_color;
@@ -815,6 +877,17 @@ impl OpenCADStudio {
             .crosshair_color
             .map(crate::app::config::rgb_to_hex)
             .unwrap_or_default();
+        self.snap_marker_color = s.snap_marker_color;
+        self.snap_marker_color_input = s
+            .snap_marker_color
+            .map(crate::app::config::rgb_to_hex)
+            .unwrap_or_default();
+        self.command_text_color = s.command_text_color;
+        self.command_text_color_input = s
+            .command_text_color
+            .map(crate::app::config::rgb_to_hex)
+            .unwrap_or_default();
+        crate::ui::command_line::set_text_color(s.command_text_color);
         self.lineweight_display_scale = s.lineweight_display_scale.clamp(25, 200);
         self.isometric_drafting = s.isometric_drafting;
         self.iso_plane = s.iso_plane;
@@ -832,6 +905,7 @@ impl OpenCADStudio {
         self.default_assoc_prompted = s.default_assoc_prompted;
         self.check_missing_fonts = s.check_missing_fonts;
         self.font_source_url = s.font_source_url.clone();
+        self.qnew_template = s.qnew_template.clone();
         self.font_source_input = s.font_source_url.clone();
         self.donation_prompt_version = s.donation_prompt_version.clone();
         self.gpu_warning_silenced = s.gpu_warning_silenced.clone();
@@ -901,6 +975,20 @@ impl OpenCADStudio {
             .take(200)
             .map(|(k, v)| (k.clone(), *v))
             .collect();
+        self.block_mru_list = s.block_mru_list.min(100);
+        self.block_redefine_mode = s.block_redefine_mode.min(2);
+        self.block_navigate = s.block_navigate.clone();
+        self.count_palette.color = s.count_color;
+        self.count_palette.error_color = s.count_error_color;
+        self.count_palette.service = s.count_service;
+        self.count_palette.invalid_choice = s.count_invalid_area.min(2);
+        self.sheet_set.settings = s.sheet_set;
+        self.block_palette.recent = s.block_recent.clone();
+        self.block_palette.favorites = s.block_favorites.clone();
+        self.block_palette.libraries = s.block_libraries.clone();
+        self.block_palette.view = crate::ui::window::block_palette::ViewMode::from_u8(s.block_palette_view);
+        self.block_palette.set_options(s.block_insert.clone());
+        self.trim_recent_blocks();
         // Push restored display defaults onto every drawing tab that exists now.
         // Tabs created later pick them up at their construction site.
         for idx in 0..self.tabs.len() {
@@ -910,6 +998,8 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn record_block_insert(&mut self, name: &str) {
+        self.insname = name.to_string();
+        self.note_recent_block(name);
         let key = name.to_ascii_uppercase();
         *self.block_freq.entry(key).or_insert(0) += 1;
         self.block_mru.retain(|n| !n.eq_ignore_ascii_case(name));
@@ -1462,7 +1552,7 @@ impl OpenCADStudio {
         Task::batch(
             lines
                 .into_iter()
-                .map(|line| Task::done(Message::Command(line))),
+                .map(|line| Task::done(Message::ScriptLine(line))),
         )
     }
 
@@ -1891,6 +1981,7 @@ impl OpenCADStudio {
         self.tabs[i].scene.document = doc;
         self.tabs[i].scene.bump_layout_epoch();
         self.tabs[i].scene.bump_scale_epoch();
+        self.tabs[i].scene.bump_ucs_epoch();
         // Load parameters first so imported dimensional constraints
         // can resolve their named driving values.
         self.tabs[i].scene.load_named_parameters_from_document();
@@ -1966,6 +2057,11 @@ impl OpenCADStudio {
         // A file saved without the built-in Standard styles (foreign
         // or damaged) gets them re-seeded so nothing dangles (#366).
         crate::app::style_ops::ensure_standard_styles(&mut self.tabs[i].scene.document);
+        // Copies made by earlier releases kept their source's dimension
+        // association; such a file is reported as damaged elsewhere.
+        crate::scene::dimension_assoc::drop_stray_dimension_reactors(
+            &mut self.tabs[i].scene.document,
+        );
         // Follow the file's saved current UCS from the moment it opens.
         self.tabs[i].adopt_active_ucs_from_header();
         // Adopt the drawing's own Ortho ($ORTHOMODE) and running OSNAP
@@ -2111,7 +2207,7 @@ impl OpenCADStudio {
         #[cfg(not(target_arch = "wasm32"))]
         let interaction_task = {
             let wires = self.tabs[i].scene.hit_test_wires();
-            let screen_height = self.tabs[i].scene.selection.borrow().vp_size.1;
+            let screen_height = self.tabs[i].scene.selection.borrow().view.vp_size.1;
             self.prepare_interaction_index_task(i, wires, screen_height)
                 .unwrap_or_else(Task::none)
         };
@@ -2155,7 +2251,8 @@ impl OpenCADStudio {
             }
             self.drain_pending_open()
         };
-        Task::batch([thumbs_task, pending_open_task, interaction_task])
+        let sheet_set_task = self.sheet_set_after_open(i);
+        Task::batch([thumbs_task, pending_open_task, interaction_task, sheet_set_task])
     }
 
     pub(super) fn on_wblock_save_result_some(
@@ -2169,6 +2266,7 @@ impl OpenCADStudio {
         let worker_name = block_name.clone();
         let worker_path = path.clone();
         background_task(
+            crate::t!("WBLOCK save"),
             move || {
                 let document = if worker_name == "*" {
                     crate::modules::insert::wblock::extract_entities_to_doc(&document, &handles)
@@ -2196,6 +2294,7 @@ impl OpenCADStudio {
             .collect();
         let worker_path = path.clone();
         background_task(
+            crate::t!("STL export"),
             move || {
                 let mesh_refs: Vec<_> = meshes.iter().collect();
                 let bytes = crate::io::stl::build_stl(&mesh_refs)
@@ -2217,6 +2316,7 @@ impl OpenCADStudio {
             .collect();
         let worker_path = path.clone();
         background_task(
+            crate::t!("STEP export"),
             move || {
                 let mesh_refs: Vec<_> = meshes.iter().collect();
                 let text = crate::io::step::build_step(&mesh_refs)
@@ -2231,6 +2331,7 @@ impl OpenCADStudio {
         let tab_id = self.tabs[self.active_tab].id;
         let worker_path = path.clone();
         background_task(
+            crate::t!("OBJ import"),
             move || {
                 let src = std::fs::read_to_string(&worker_path).map_err(|e| e.to_string())?;
                 crate::io::obj::parse_obj(&src, [0.7, 0.7, 0.85, 1.0])
@@ -2250,12 +2351,22 @@ impl OpenCADStudio {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::app) fn prepare_native_save(&mut self, i: usize) {
+        // A save is a field evaluation event (FIELDEVAL bit 2).
+        self.tabs[i].scene.update_fields(2, None);
+        self.prepare_snapshot_save(i);
+    }
+
+    /// Bring the drawing state the file stores up to date, without the save
+    /// event an autosave does not raise.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::app) fn prepare_snapshot_save(&mut self, i: usize) {
         self.sync_view_state_for_save(i);
         sync_annotation_scale_header(&mut self.tabs[i].scene);
         self.stamp_header_sysvars(i);
         self.tabs[i].scene.document.header.user_real1 = self.tabs[i].scene.annotation_scale as f64;
         self.sync_solid_models_for_save(i);
         self.tabs[i].scene.sync_native_parametric_graph();
+        self.stamp_sheet_set_data(i);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2405,8 +2516,8 @@ impl OpenCADStudio {
         };
         if self.save_dialog_for_unsaved {
             if saved {
-                if let Some(crate::app::PendingClose::Tab(index)) = self.pending_close.take() {
-                    let continuation = self.update(Message::TabClose(index));
+                if let Some(crate::app::PendingClose::Tab(tab_id)) = self.pending_close.take() {
+                    let continuation = self.update(Message::TabClose(tab_id));
                     let rest = self.continue_tab_close_queue();
                     return Task::batch([recent_task, continuation, rest]);
                 }
@@ -2828,7 +2939,8 @@ impl OpenCADStudio {
                 });
                 match outcome.continuation {
                     crate::app::SaveContinuation::CloseTab => {
-                        self.pending_close = Some(crate::app::PendingClose::Tab(i));
+                        self.pending_close =
+                            Some(crate::app::PendingClose::Tab(self.tabs[i].id));
                     }
                     crate::app::SaveContinuation::Quit => {
                         self.pending_close = Some(crate::app::PendingClose::Quit);
@@ -2842,7 +2954,7 @@ impl OpenCADStudio {
                 .push_error(crate::tf!("Save failed: {error}").as_ref());
             return match outcome.continuation {
                 crate::app::SaveContinuation::CloseTab => {
-                    self.pending_close = Some(crate::app::PendingClose::Tab(i));
+                    self.pending_close = Some(crate::app::PendingClose::Tab(self.tabs[i].id));
                     self.open_unsaved_dialog_window()
                 }
                 crate::app::SaveContinuation::Quit => {
@@ -2933,7 +3045,7 @@ impl OpenCADStudio {
             crate::app::SaveContinuation::CloseTab if snapshot_is_current => {
                 self.pending_close = None;
                 tasks.push(self.close_unsaved_dialog_window());
-                tasks.push(self.update(Message::TabClose(i)));
+                tasks.push(self.update(Message::TabClose(self.tabs[i].id)));
                 tasks.push(self.continue_tab_close_queue());
             }
             crate::app::SaveContinuation::Quit if snapshot_is_current => {
@@ -2947,7 +3059,7 @@ impl OpenCADStudio {
                 }
             }
             crate::app::SaveContinuation::CloseTab => {
-                self.pending_close = Some(crate::app::PendingClose::Tab(i));
+                self.pending_close = Some(crate::app::PendingClose::Tab(self.tabs[i].id));
                 tasks.push(self.open_unsaved_dialog_window());
             }
             crate::app::SaveContinuation::Quit => {
@@ -2966,7 +3078,10 @@ impl OpenCADStudio {
     ) {
         self.pending_close = match continuation {
             crate::app::SaveContinuation::None => None,
-            crate::app::SaveContinuation::CloseTab => Some(crate::app::PendingClose::Tab(tab_idx)),
+            crate::app::SaveContinuation::CloseTab => self
+                .tabs
+                .get(tab_idx)
+                .map(|tab| crate::app::PendingClose::Tab(tab.id)),
             crate::app::SaveContinuation::Quit => Some(crate::app::PendingClose::Quit),
         };
     }
@@ -3244,6 +3359,8 @@ impl OpenCADStudio {
             let default_name = filename;
             let (filter_label, filter_ext): (&str, &str) = if ext.eq_ignore_ascii_case("dxf") {
                 ("DXF Files", "dxf")
+            } else if ext.eq_ignore_ascii_case("dwt") {
+                ("Drawing Template (*.dwt)", "dwt")
             } else {
                 ("DWG Files", "dwg")
             };
@@ -3408,7 +3525,7 @@ impl OpenCADStudio {
             if !self.tabs[i].dirty || self.active_save_jobs.contains_key(&self.tabs[i].id) {
                 continue;
             }
-            self.prepare_native_save(i);
+            self.prepare_snapshot_save(i);
             let version = self.tabs[i].scene.document.version;
             let target = self.autosave_target(i);
             tasks.push(self.queue_native_save(
@@ -3435,6 +3552,10 @@ impl OpenCADStudio {
         #[cfg(not(target_arch = "wasm32"))]
         for i in 0..self.tabs.len() {
             let _ = std::fs::remove_file(self.autosave_target(i));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        for path in &self.sheet_set.locks {
+            crate::app::commands::sheet_set::release_lock(path);
         }
     }
 
@@ -3720,10 +3841,13 @@ impl OpenCADStudio {
     pub(super) fn apply_plot_page_settings(&mut self) {
         let i = self.active_tab;
         let layout_name = self.tabs[i].scene.current_layout.clone();
+        let ps = self.plot_settings_from_dialog(self.dialog_base_settings());
         if layout_name == "Model" {
+            // Model keeps its page setup too (#1620); it has no sheet limits.
+            self.tabs[i].scene.set_layout_plot_settings(&layout_name, &ps);
+            self.tabs[i].dirty = true;
             return;
         }
-        let ps = self.plot_settings_from_dialog(self.dialog_base_settings());
         let (w, h) = plot_dialog_sheet_mm(&self.plot_dialog);
         let plot_area = self.plot_dialog.area.clone();
         let center = ps.flags.plot_centered;
@@ -3898,7 +4022,19 @@ impl OpenCADStudio {
         task
     }
 
+    /// A plot gives its fields (PlotDate) the plot time, as the reference
+    /// stores it; the hosts are redrawn before the plot reads the scene.
+    pub(in crate::app) fn stamp_plot_fields(&mut self) {
+        let i = self.active_tab;
+        let hosts = crate::entities::field::stamp_plot_fields(&mut self.tabs[i].scene.document);
+        if !hosts.is_empty() {
+            self.tabs[i].scene.bump_text_hosts(&hosts);
+            self.tabs[i].dirty = true;
+        }
+    }
+
     fn print_all_pages(&mut self) -> Result<Vec<crate::io::pdf_export::PdfPageInput>, String> {
+        self.stamp_plot_fields();
         let available = self.tabs[self.active_tab].scene.layout_names();
         let selected: Vec<String> = self
             .print_all_layouts
@@ -4455,7 +4591,7 @@ impl OpenCADStudio {
         F: FnOnce() -> Result<String, String> + Send + 'static,
     {
         if background {
-            background_task(work, Message::PrintAllFinished)
+            background_task(crate::t!("Print all"), work, Message::PrintAllFinished)
         } else {
             Task::done(Message::PrintAllFinished(work()))
         }
@@ -4466,7 +4602,7 @@ impl OpenCADStudio {
         F: FnOnce() -> Result<String, String> + Send + 'static,
     {
         if background {
-            background_task(work, move |result| {
+            background_task(crate::t!("Plot"), work, move |result| {
                 Message::BackgroundIoFinished(result, reopen_plot)
             })
         } else {
@@ -4676,6 +4812,7 @@ impl OpenCADStudio {
         self.command_line
             .push_info(crate::t!("Sending to system printer…").as_ref());
         background_task(
+            crate::t!("Print to printer"),
             move || {
                 iced::futures::executor::block_on(
                     crate::io::print_to_printer::print_wires_with(page, options),
@@ -4931,6 +5068,7 @@ impl OpenCADStudio {
         d.printer_media = None;
         let name = printer.clone();
         background_task(
+            crate::t!("Printer capabilities"),
             move || crate::io::plot_device::printer_capabilities(&printer),
             move |caps| Message::PlotDlg(crate::ui::window::plot::PlotDlgMsg::PrinterMedia(name, caps)),
         )
@@ -5056,6 +5194,7 @@ impl OpenCADStudio {
             });
             let name = printer.clone();
             background_task(
+                crate::t!("Printer options"),
                 move || crate::io::print_to_printer::printer_options(&printer),
                 move |result| {
                     Message::PlotDlg(crate::ui::window::plot::PlotDlgMsg::PrinterOptionsLoaded(
@@ -5835,13 +5974,16 @@ impl OpenCADStudio {
         // into it when "Save changes to layout" is on, so the page setup
         // remembers the last plot the way other applications expect. The
         // runtime paper/scale choices drive this one plot operation either way.
-        if !preview && d.save_to_layout && d.paper_space {
+        if !preview && d.save_to_layout {
             self.apply_dialog_to_layout();
         } else {
             self.sync_dialog_plot_runtime();
         }
         self.active_modal = None;
         self.reset_modal_geometry();
+        if !preview {
+            self.stamp_plot_fields();
+        }
 
         // SVG is the one destination with a single path from every entry
         // point (D5); the dialog only chooses it. EXPORTSVG at the command
@@ -6008,12 +6150,9 @@ impl OpenCADStudio {
         let half_w = view.width.abs() * 0.5;
         let half_h = view.height.abs() * 0.5;
         (half_w > 1e-9 && half_h > 1e-9).then_some(())?;
-        self.area_plot_job((
-            view.center.x - half_w,
-            view.center.y - half_h,
-            view.center.x + half_w,
-            view.center.y + half_h,
-        ))
+        let center = crate::scene::named_view_center(view);
+        let (cx, cy) = (center.x, center.y);
+        self.area_plot_job((cx - half_w, cy - half_h, cx + half_w, cy + half_h))
     }
 
     pub(in crate::app) fn extents_plot_job(&self) -> Option<PdfPageInput> {
@@ -6036,7 +6175,7 @@ impl OpenCADStudio {
     /// canvas outside the sheet, matching Model-space plotting.
     fn display_plot_window(&self) -> Option<(f64, f64, f64, f64)> {
         let scene = &self.tabs[self.active_tab].scene;
-        let (canvas_w, canvas_h) = scene.selection.borrow().vp_size;
+        let (canvas_w, canvas_h) = scene.selection.borrow().view.vp_size;
         let viewport = if scene.current_layout == "Model" {
             scene.active_model_tile_bounds(canvas_w, canvas_h)
         } else {
@@ -7720,5 +7859,55 @@ mod print_all_svg_tests {
             .unwrap()
             .starts_with("<?xml"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+#[cfg(test)]
+mod background_task_tests {
+    use super::background_task;
+    use crate::app::{Message, OpenCADStudio};
+    use iced::futures::StreamExt;
+    use iced::Task;
+
+    /// Pull the single message a finished background task produces, the same
+    /// way the headless automation driver consumes task streams.
+    fn next_message(task: Task<Message>) -> Message {
+        let mut stream =
+            iced_runtime::task::into_stream(task).expect("background_task yields a stream");
+        match iced::futures::executor::block_on(stream.next()) {
+            Some(iced_runtime::Action::Output(message)) => message,
+            other => panic!("expected task output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_panic_becomes_a_failure_message() {
+        let task =
+            background_task("STL export", || panic!("worker exploded"), |()| Message::Noop);
+        match next_message(task) {
+            Message::BackgroundTaskFailed { context, detail } => {
+                assert_eq!(context, "STL export");
+                assert!(
+                    detail.contains("worker exploded"),
+                    "detail should carry the panic message, got: {detail}"
+                );
+            }
+            other => panic!("expected BackgroundTaskFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_panic_is_reported_on_the_command_line() {
+        let mut app = OpenCADStudio::new_for_test();
+        let task =
+            background_task("STL export", || panic!("worker exploded"), |()| Message::Noop);
+        app.drive_headless_task(task)
+            .expect("failed worker task drives headlessly");
+        let error = app
+            .command_line
+            .last_error
+            .as_deref()
+            .expect("worker panic reported as an error");
+        assert!(error.contains("STL export"), "error = {error}");
+        assert!(error.contains("worker exploded"), "error = {error}");
     }
 }

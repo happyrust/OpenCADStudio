@@ -347,6 +347,29 @@ impl Scene {
                     out.pattern_stations.clear();
                 }
                 out.text_verts = projected_text;
+                // Searchable runs ride the same projection through the shared
+                // helper (origin map + height/advance scale), then cull by
+                // run-rect overlap — a run straddling the viewport edge is
+                // kept, where origin-only culling would drop visible text.
+                out.searchable_text = wire.searchable_text.clone();
+                out.map_searchable_runs(
+                    &|p| {
+                        let q = proj_abs(p[0], p[1], p[2]);
+                        [q[0] as f64, q[1] as f64, q[2] as f64]
+                    },
+                    scale as f64,
+                    0.0,
+                );
+                out.searchable_text.retain(|run| {
+                    run.origin.iter().all(|v| v.is_finite())
+                        && crate::scene::model::wire_model::run_rect_overlap(
+                            [run.origin[0], run.origin[1]],
+                            run.rotation,
+                            run.adv_width as f64,
+                            run.height as f64,
+                            [vp_x0 as f64, vp_y0 as f64, vp_x1 as f64, vp_y1 as f64],
+                        )
+                });
                 // Paper coordinates are small sheet units — no relative-to-eye
                 // residual is needed, and keeping the model wire's points_low
                 // here would add a model-scale offset to the paper points.
@@ -484,7 +507,7 @@ impl Scene {
                 [xmin as f64, ymin as f64], [xmax as f64, ymin as f64],
                 [xmax as f64, ymax as f64], [xmin as f64, ymax as f64],
             ]];
-            if !self.images.is_empty() && !viewport.clip_boundary_handle.is_null() {
+            if !self.images.is_empty() && crate::entities::viewport::is_clipped(viewport) {
                 let boundary = self.clip_boundary_polygon(
                     viewport.clip_boundary_handle, viewport.center.z as f32);
                 if boundary.len() >= 3 {
@@ -640,7 +663,7 @@ impl Scene {
         if hw.abs() < 1e-6 || hh.abs() < 1e-6 {
             return vec![];
         }
-        let poly = if vp.clip_boundary_handle.is_null() {
+        let poly = if !crate::entities::viewport::is_clipped(vp) {
             // Rectangular viewport → its own four corners (paper coords). These
             // map to full-rect NDC [-1, 1], a no-op mask over a render target
             // that already clips to the rectangle, but it keeps rect and

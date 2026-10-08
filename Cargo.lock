@@ -4,9 +4,10 @@ version = 4
 
 [[package]]
 name = "OpenCADStudio"
-version = "2026.39.0"
+version = "2026.40.1"
 dependencies = [
  "acadifc",
+ "allsorts",
  "ashpd",
  "base64",
  "bevy",
@@ -152,7 +153,6 @@ dependencies = [
  "cfg-if",
  "getrandom 0.3.4",
  "once_cell",
- "serde",
  "version_check",
  "zerocopy",
 ]
@@ -5551,15 +5551,15 @@ dependencies = [
 
 [[package]]
 name = "opencadcodec"
-version = "0.5.5"
-source = "git+https://github.com/HakanSeven12/opencadcodec.git?rev=cdf2277#cdf227782acab8b0b7035d99ed02530a90ae6773"
+version = "0.6.0"
+source = "git+https://github.com/HakanSeven12/opencadcodec.git?rev=ab2eecd#ab2eecdbffc31120b5ad6d899f6fc67cf21ede39"
 dependencies = [
- "ahash 0.8.12",
  "anyhow",
  "bitflags 2.13.1",
  "byteorder",
  "encoding_rs",
  "flate2",
+ "foldhash 0.2.0",
  "indexmap",
  "itoa",
  "memmap2",
@@ -5568,14 +5568,14 @@ dependencies = [
  "rayon",
  "ryu",
  "serde",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "web-time",
 ]
 
 [[package]]
 name = "opencadgraph"
 version = "0.1.0"
-source = "git+https://github.com/HakanSeven12/opencadgraph.git?rev=597c8b8#597c8b817703491dd41bbbdb06e8c69d524ff2f8"
+source = "git+https://github.com/HakanSeven12/opencadgraph.git?rev=194e619#194e6192c9eca5c916371e7434b9fde18911aa6a"
 dependencies = [
  "opencadkernel",
  "serde_json",
@@ -5584,7 +5584,7 @@ dependencies = [
 [[package]]
 name = "opencadkernel"
 version = "0.1.0"
-source = "git+https://github.com/HakanSeven12/opencadkernel.git?rev=52a9ebe#52a9ebeb9e7cd7815154ed261437908a88271753"
+source = "git+https://github.com/HakanSeven12/opencadkernel.git?rev=bf44e68#bf44e6856f2582eb5df5038650b6a6910eb9dac5"
 dependencies = [
  "cavalier_contours",
  "opencadcodec",
@@ -5595,7 +5595,7 @@ dependencies = [
 [[package]]
 name = "opencadkernel-constraints"
 version = "0.1.0"
-source = "git+https://github.com/HakanSeven12/opencadkernel.git?rev=52a9ebe#52a9ebeb9e7cd7815154ed261437908a88271753"
+source = "git+https://github.com/HakanSeven12/opencadkernel.git?rev=bf44e68#bf44e6856f2582eb5df5038650b6a6910eb9dac5"
 dependencies = [
  "nalgebra",
 ]

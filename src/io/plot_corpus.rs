@@ -172,7 +172,7 @@ pub fn text_wire_with_snapshot(text: &str, origin: [f64; 3]) -> (PlotWire, Glyph
     use crate::scene::text::{glyph_quads::layout_glyph_quads, sdf_atlas};
     let (quads, snapshot) = {
         let mut atlas = sdf_atlas::text_atlas().lock().unwrap();
-        let quads = layout_glyph_quads(&mut atlas, 10.0, 0.0, 1.0, 0.0, 1.0, "txt", false, text);
+        let (quads, _) = layout_glyph_quads(&mut atlas, 10.0, 0.0, 1.0, 0.0, 1.0, "txt", false, text);
         (quads, GlyphSnapshot::of(&atlas))
     };
     assert!(!quads.is_empty(), "stroke glyphs laid out for {text:?}");

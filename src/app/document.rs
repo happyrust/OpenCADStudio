@@ -221,6 +221,8 @@ pub(super) struct DocumentTab {
     pub(super) paper_bg_color: Option<[f32; 4]>,
     /// Active REFEDIT session, if any.
     pub(super) refedit_session: Option<RefEditSession>,
+    /// COUNT mode, while it is on.
+    pub(crate) count: Option<crate::ui::window::count_palette::CountMode>,
     /// Open BEDIT block tabs. Definitions are edited live; each tab owns its
     /// entry snapshot and camera so nested blocks can remain open independently.
     pub(super) block_edits: Vec<BlockEditSession>,
@@ -273,6 +275,9 @@ pub(super) struct DocumentTab {
     /// an undo) it is out of date — the panel says so and PIDLINE reads the
     /// sheet again before it selects (`pid_legend_is_stale`).
     pub(super) pid_legend: Option<PidLegendIndex>,
+    /// Model-space corners of the last crossing window drawn with no command
+    /// running: STRETCH on that selection stretches through it (#1068).
+    pub(super) last_crossing_window: Option<([f64; 2], [f64; 2])>,
 }
 
 /// A sheet's P&ID recognition and the `scene.geometry_epoch` it was read at.
@@ -704,6 +709,7 @@ impl DocumentTab {
             bg_color: None,
             paper_bg_color: None,
             refedit_session: None,
+            count: None,
             block_edits: Vec::new(),
             active_block_edit: None,
             active_mleader_style: "Standard".to_string(),
@@ -720,6 +726,7 @@ impl DocumentTab {
             suspended_cmd: None,
             transparent_resume: false,
             pid_legend: None,
+            last_crossing_window: None,
         }
     }
 
@@ -948,4 +955,6 @@ pub(super) struct PendingHistorySnapshot {
     pub(super) dirty_before: bool,
     pub(super) structure_before: CadDocument,
     pub(super) recorder: Arc<codec::document::EntityChangeRecorder>,
+    /// Kept as an undo step even when nothing changed.
+    pub(super) keep_empty: bool,
 }
