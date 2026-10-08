@@ -2157,7 +2157,7 @@ impl Pipeline {
             vertex: wgpu::VertexState {
                 module: &point_cloud_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[point_cloud_gpu::instance_layout()],
+                buffers: &[Some(point_cloud_gpu::instance_layout())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             primitive: wgpu::PrimitiveState {

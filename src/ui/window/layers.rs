@@ -748,7 +748,7 @@ fn switch_row<'a>(
         ICON_SZ,
     ))
     .on_press(on_press)
-    .style(move |theme: &Theme, status| layer_cell_button_style(theme, status, false, index))
+    .style(cell_button_style(false, index))
     .padding(Padding {
         top: COMBO_PAD_V,
         bottom: COMBO_PAD_V,
