@@ -228,3 +228,30 @@ harness = false
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+# The fork's own suites stay separate binaries (`cargo test --test pid_import`).
+# With autotests off, a new file under tests/ only builds once it is listed
+# here or pulled into integration.rs.
+[[test]]
+name = "bevy_composite_shader"
+path = "tests/bevy_composite_shader.rs"
+
+[[test]]
+name = "dwg_acadsharp_samples"
+path = "tests/dwg_acadsharp_samples.rs"
+
+[[test]]
+name = "pid_import"
+path = "tests/pid_import.rs"
+
+[[test]]
+name = "pid_legend"
+path = "tests/pid_legend.rs"
+
+[[test]]
+name = "pid_panel_localization"
+path = "tests/pid_panel_localization.rs"
+
+[[test]]
+name = "text_width_variants"
+path = "tests/text_width_variants.rs"

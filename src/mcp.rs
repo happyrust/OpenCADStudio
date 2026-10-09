@@ -29,7 +29,7 @@ const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
 /// changes, so schema drift (new params, renamed tools) is always a conscious,
 /// reviewed edit — and clients can detect a stale bridge by comparing digests.
 #[cfg(test)]
-const TOOL_SCHEMA_DIGEST: &str = "8dc370c3e4bde86a3c2f6be8488dd1ed318850303326b00e2c28e8c033006472";
+const TOOL_SCHEMA_DIGEST: &str = "a964b708fc7dfa1ad6bf2588c85d2d499d1f10053fc72a508b27821e11057a0c";
 const MAX_REQUEST: usize = 1_048_576;
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 const CACHE_TTL_MS: u64 = 3_600_000;
@@ -3613,6 +3613,8 @@ mod tests {
             json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ocs_read","arguments":{"ocs_session_id":"missing","op":"pid_legend","parameters":{"what":"export"}}}}),
             &mut clients,
             &mut TaskStore::default(),
+            &mut ResourceStore::default(),
+            &mut detached_pump(),
         )
         .unwrap();
         assert_eq!(called["result"]["isError"], true);
