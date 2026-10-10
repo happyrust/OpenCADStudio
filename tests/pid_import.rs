@@ -182,12 +182,20 @@ fn line_work_carries_the_width_and_colour_the_drawing_states() {
     // The 33 blue entities are the eleven marked points three times over:
     // the point record itself plus the two strokes of the glyph its
     // terminator names -- see `a_point_draws_the_symbol_its_terminator_names`.
+    //
+    // 43 black at 0.35 and 3 pink `#FE0060` until pid-parse applied an
+    // override's own fields (plan 2026-10-10): the equipment table's
+    // fourteen rules reach `Dashed 0.35` through overrides stating 0.13 mm
+    // (eleven) and 0.18 mm (three), seven `Normal` lines through one
+    // stating 0.13, and the three slope marks through one stating black --
+    // which is how SmartPlant's screen draws them.
     let expected: std::collections::BTreeMap<String, usize> = [
         (" 10 #000000", 53),
         (" 10 #0000FF", 33),
+        (" 13 #000000", 21),
+        (" 18 #000000", 3),
         (" 18 #008000", 4),
-        (" 35 #000000", 43),
-        (" 35 #FE0060", 3),
+        (" 35 #000000", 22),
         (" 70 #808000", 24),
     ]
     .iter()
@@ -348,14 +356,23 @@ fn the_import_leaves_a_summary_the_app_can_show() {
     }
 }
 
-/// Dashed line work comes in as a named linetype the renderer can dash.
+/// Dashed line work comes in as a named linetype the renderer can dash --
+/// and only the line work the drawing actually dashes.
 ///
 /// `style.dll` stores a line's dash as a `JStyleSimpleDashType` reference, and
-/// until `pid-parse` decoded `0x002F` every line drew solid. The import now
-/// pools each distinct decoded pattern into a `PID-DASH-<n>` document linetype
-/// and names the line to it, so the ordinary dash shader draws it. A
-/// regression shows up as line work back on `Continuous`, which is invisible
-/// in an entity count.
+/// until `pid-parse` decoded `0x002F` every line drew solid. The import pools
+/// each distinct decoded pattern into a `PID-DASH-<n>` document linetype and
+/// names the line to it, so the ordinary dash shader draws it. A regression
+/// shows up as line work back on `Continuous`, which is invisible in an
+/// entity count.
+///
+/// Until pid-parse applied an override's own fields (plan 2026-10-10) this
+/// drawing also dashed its equipment table: the fourteen rules reach the
+/// `Dashed` style through overrides whose mask says "no dash", which
+/// SmartPlant honours and drew the rules solid. So the one dashed line of the
+/// sheet is the LIA-LIT electric signal, at the imperial 0.075" / 0.05"
+/// pattern; pid-parse's `style_link_ratchet` pins the fourteen rules solid by
+/// oid, and this pins what reaches the drawing: one dashed line, not fifteen.
 #[test]
 fn dashed_line_work_carries_a_linetype_matching_the_decoded_pattern() {
     let Some(doc) = import("DWG-0201GP06-01.pid") else {
@@ -381,10 +398,16 @@ fn dashed_line_work_carries_a_linetype_matching_the_decoded_pattern() {
         !used.is_empty(),
         "0x002F is decoded, so some of DWG-0201's line work must draw dashed"
     );
+    assert_eq!(
+        used.values().sum::<usize>(),
+        1,
+        "one line of the sheet draws dashed, the LIA-LIT signal -- the equipment table's \
+         fourteen rules reach `Dashed` through overrides stating no dash; got {used:?}"
+    );
 
-    // The two patterns DWG-0201 uses, as segment magnitudes in micrometres: a
-    // 3.5 / 1.75mm metric dash and a 0.075" / 0.05" imperial one.
-    let metric = vec![3500_i64, 1750];
+    // The pattern that remains, as segment magnitudes in micrometres: the
+    // 0.075" / 0.05" imperial dash of the signal line. (The 3.5 / 1.75 mm
+    // metric one the table rules used to carry no longer reaches the sheet.)
     let imperial = vec![1905_i64, 1270];
     let mut seen: std::collections::BTreeSet<Vec<i64>> = std::collections::BTreeSet::new();
 
@@ -411,13 +434,10 @@ fn dashed_line_work_carries_a_linetype_matching_the_decoded_pattern() {
         seen.insert(magnitudes);
     }
 
-    assert!(
-        seen.contains(&metric),
-        "the 3.5/1.75mm dash is DWG-0201's commonest pattern; got {seen:?}"
-    );
-    assert!(
-        seen.iter().all(|m| *m == metric || *m == imperial),
-        "an unexpected dash pattern reached the drawing: {seen:?}"
+    let only_imperial: std::collections::BTreeSet<Vec<i64>> = std::iter::once(imperial).collect();
+    assert_eq!(
+        seen, only_imperial,
+        "the signal line's 1.905 / 1.27 mm dash is the one pattern on DWG-0201's sheet"
     );
 }
 
@@ -436,14 +456,23 @@ fn dashed_line_work_carries_a_linetype_matching_the_decoded_pattern() {
 /// the B-spline lip) and Wastewater Pit (4). D06 and DWG-0201 dash only on
 /// the heat tracing the file switches off, so nothing dashed reaches their
 /// symbol layer. Before this every one of the 57 drew solid.
+///
+/// Re-measured on 2026-10-10, when pid-parse began applying an override's own
+/// fields: every one of those 57 reached the storage's `Dashed` style through
+/// an override whose mask says "no dash", so `style.dll` -- and now the
+/// import -- draws them solid. What the file does dash on the symbol layer is
+/// four strokes: three lines of the Wastewater Pit that name `Dashed`
+/// outright, and one 0.01 mm hairline of a DWG-0201 body whose override
+/// states a dash type over a solid base. The pattern is still the one
+/// 3.5 / 1.75 mm, and the paint is still the placement's.
 #[test]
 fn a_cached_strokes_dash_is_its_own_storages_not_its_placements() {
     let metric = vec![3500_i64, 1750];
     for (name, expected, placement_palette) in [
-        ("工艺管道及仪表流程-1.pid", 45usize, Some(" 35 #808000")),
-        ("DWG-0202GP06-01.pid", 12, None),
+        ("工艺管道及仪表流程-1.pid", 0usize, None),
+        ("DWG-0202GP06-01.pid", 3, Some(" 35 #800000")),
         ("D06.pid", 0, None),
-        ("DWG-0201GP06-01.pid", 0, None),
+        ("DWG-0201GP06-01.pid", 1, None),
     ] {
         let Some(doc) = import(name) else {
             continue;
@@ -496,7 +525,7 @@ fn a_cached_strokes_dash_is_its_own_storages_not_its_placements() {
             assert_eq!(
                 palette, one_paint,
                 "{name}: the dashed strokes are painted in their placements' style, \
-                 not the `#00FEA0` 0.50 their own storage authors them in"
+                 not the black 0.35 their own storage authors them in"
             );
         }
     }
