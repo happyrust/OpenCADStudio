@@ -63,6 +63,14 @@ pub struct ImportSummary {
     /// symbol-internal layer they sit on off (P-D2), summed over the
     /// placements whose cache was consulted.
     pub hidden_strokes_skipped: usize,
+    /// Label placements whose cached body is nothing but the hairline cross
+    /// the label is anchored by, drawn as nothing -- no body, no library
+    /// stand-in, no marker -- the way SmartPlant's screen draws them (plan
+    /// 2026-10-10-a-label-placement-keeps-its-anchor-cross-off-the-sheet).
+    /// Not among `cache_bodies`; with `cache_bodies` and `library_bodies`
+    /// and the marker dots, it accounts for every placement. Logged, not
+    /// shown.
+    pub label_anchors_undrawn: usize,
     /// Text records whose own character-style runs disagree -- a line number
     /// alternating two styles between its segments and its separators -- so
     /// the one TEXT entity each becomes letters in the run covering most of
@@ -278,7 +286,7 @@ impl ImportSummary {
     }
 
     /// The counted fields, by the keys they are stored under.
-    pub(super) fn counts(&self) -> [(&'static str, usize); 15] {
+    pub(super) fn counts(&self) -> [(&'static str, usize); 16] {
         [
             ("drawn", self.drawn),
             ("decoded", self.decoded),
@@ -294,6 +302,7 @@ impl ImportSummary {
             ("cache_bodies", self.cache_bodies),
             ("library_bodies", self.library_bodies),
             ("hidden_strokes_skipped", self.hidden_strokes_skipped),
+            ("label_anchors_undrawn", self.label_anchors_undrawn),
             ("lettering_flattened", self.lettering_flattened),
         ]
     }
@@ -315,6 +324,7 @@ impl ImportSummary {
             "cache_bodies" => &mut self.cache_bodies,
             "library_bodies" => &mut self.library_bodies,
             "hidden_strokes_skipped" => &mut self.hidden_strokes_skipped,
+            "label_anchors_undrawn" => &mut self.label_anchors_undrawn,
             "lettering_flattened" => &mut self.lettering_flattened,
             _ => return None,
         })
@@ -339,6 +349,7 @@ impl ImportSummary {
             cache_bodies: 0,
             library_bodies: 0,
             hidden_strokes_skipped: 0,
+            label_anchors_undrawn: 0,
             lettering_flattened: 0,
             symbol_library: Vec::new(),
             unit: ImportUnit::AssumedMetre,
@@ -375,6 +386,16 @@ pub(super) fn report_import(
             symbol_bodies.cache,
             symbol_bodies.library,
             symbol_bodies.hidden_strokes_skipped
+        );
+    }
+    // The label placements whose body is only the cross they are anchored
+    // by: drawn as nothing, which is what SmartPlant's screen draws for them
+    // (plan 2026-10-10-a-label-placement-keeps-its-anchor-cross-off-the-sheet).
+    if symbol_bodies.label_anchors > 0 {
+        log::info!(
+            "{}: {} label placement(s) cache nothing but their anchor cross; left undrawn, their lettering being the sheet's own text",
+            path.display(),
+            symbol_bodies.label_anchors
         );
     }
     for warning in &geometry.warnings {

@@ -2277,8 +2277,22 @@ const LABEL_REACH_MM: f64 = 20.0;
 /// reaches exactly as far right as the old formula assumed.
 ///
 /// Measured in `docs/analysis/2026-08-24-two-texts-outside-the-frame.md`.
+///
+/// A label placement draws no body at all since plan 2026-10-10 (its cached
+/// body is the hairline cross it is anchored by, which SmartPlant's screen
+/// leaves out), so its name has no drawn stroke to be near; it is lettered
+/// beside where the cross would have been, which
+/// `a_label_placement_keeps_its_anchor_cross_off_the_sheet` pins to the
+/// hundredth. Those names are left out of the reach measured here.
 #[test]
 fn a_symbol_name_is_lettered_beside_the_symbol_it_names() {
+    const LABELS_LEFT_UNDRAWN: [&str; 5] = [
+        "Drawing Description",
+        "Item Note & Label",
+        "Item Note & Label line1.5",
+        "Xa Item Note & Label",
+        "Remarks",
+    ];
     for name in [
         "DWG-0201GP06-01.pid",
         "DWG-0202GP06-01.pid",
@@ -2290,7 +2304,11 @@ fn a_symbol_name_is_lettered_beside_the_symbol_it_names() {
         };
         let bodies: Vec<(f64, f64, f64, f64)> =
             of_role(&doc, "symbol").filter_map(drawn_box).collect();
-        let labels: Vec<&EntityType> = of_role(&doc, "symbol-label").collect();
+        let labels: Vec<&EntityType> = of_role(&doc, "symbol-label")
+            .filter(|entity| {
+                !matches!(entity, EntityType::Text(text) if LABELS_LEFT_UNDRAWN.contains(&text.value.as_str()))
+            })
+            .collect();
         assert!(
             !labels.is_empty() && !bodies.is_empty(),
             "{name}: every placement is named and drawn, got {} names over {} bodies",
@@ -2668,11 +2686,13 @@ fn a_symbol_authored_away_from_its_origin_lands_on_the_line_work_it_marks() {
 /// style does not resolve (none on this corpus).
 ///
 /// The counts are the strokes of the drawing's own cached bodies on the
-/// layers the file displays (plan 2026-09-19): 81 over the twenty
-/// placements, where the library bodies drew 132 -- the library merges every
-/// sheet of a `.sym` and draws the heat tracing and template lettering the
-/// file switches off. No lettering is left on the symbol layer: every text a
-/// cached body carries is on a switched-off layer.
+/// layers the file displays (plan 2026-09-19): 73 over the twenty
+/// placements -- 81 until the four label placements' anchor crosses were
+/// left undrawn (plan 2026-10-10) -- where the library bodies drew 132: the
+/// library merges every sheet of a `.sym` and draws the heat tracing and
+/// template lettering the file switches off. No lettering is left on the
+/// symbol layer: every text a cached body carries is on a switched-off
+/// layer.
 #[test]
 fn a_symbol_body_draws_in_the_style_its_placement_names() {
     let Some(doc) = import("DWG-0201GP06-01.pid") else {
@@ -2702,8 +2722,10 @@ fn a_symbol_body_draws_in_the_style_its_placement_names() {
         // 3 instrument placements: LG / LT gauges and the DCS access box.
         (" 18 #008000", 9),
         // 5 annotation placements: Drawing Description, Item Note & Label
-        // x3, Line2.
-        (" 35 #000000", 9),
+        // x3, Line2 -- of which only Line2's hairline is drawn, the four
+        // labels' anchor crosses (two strokes each) being left undrawn as
+        // SmartPlant's screen leaves them (plan 2026-10-10, label anchors).
+        (" 35 #000000", 1),
         // 7 equipment placements: the vessel, three Flanged Nozzles, one
         // with blind, Manway-Large, Gauge Hatch.
         (" 35 #800000", 25),
@@ -3526,11 +3548,19 @@ fn a_placement_draws_the_body_the_drawing_carries_and_skips_its_hidden_layers() 
     // its placement records carry the type word's 0x8000 bit -- earlier
     // copies of 13 live placements at the same insertion, which the native
     // reader skips -- and drew every body a second to fourth time over.
-    for (name, strokes, placements, hidden_strokes) in [
-        ("DWG-0201GP06-01.pid", 81, 20, 31),
-        ("DWG-0202GP06-01.pid", 120, 23, 26),
-        ("D06.pid", 32, 6, 8),
-        ("工艺管道及仪表流程-1.pid", 157, 31, 24),
+    // Until plan 2026-10-10 (label anchors) the label placements drew their
+    // cached body too -- the hairline cross each is anchored by, which
+    // SmartPlant's screen does not draw: 81 / 120 / 157 strokes over
+    // 20 / 23 / 31 cached bodies, 31 / 26 / 24 hidden strokes. The crosses
+    // are two lines each (three on gongyi's eleven `Remarks`), and the
+    // `NULL` lettering on their switched-off `Label` layer no longer counts
+    // as a hidden stroke of a drawn body. See
+    // `a_label_placement_keeps_its_anchor_cross_off_the_sheet`.
+    for (name, strokes, placements, label_anchors, hidden_strokes) in [
+        ("DWG-0201GP06-01.pid", 73, 20, 4, 26),
+        ("DWG-0202GP06-01.pid", 110, 23, 5, 20),
+        ("D06.pid", 32, 6, 0, 8),
+        ("工艺管道及仪表流程-1.pid", 122, 31, 12, 12),
     ] {
         let Some((doc, summary)) = import_with_summary(name) else {
             continue;
@@ -3560,10 +3590,11 @@ fn a_placement_draws_the_body_the_drawing_carries_and_skips_its_hidden_layers() 
             (
                 summary.cache_bodies,
                 summary.library_bodies,
+                summary.label_anchors_undrawn,
                 summary.hidden_strokes_skipped
             ),
-            (placements, 0, hidden_strokes),
-            "{name}: bodies from the cache / from the library / hidden strokes left out"
+            (placements - label_anchors, 0, label_anchors, hidden_strokes),
+            "{name}: bodies from the cache / from the library / label anchors left undrawn / hidden strokes left out"
         );
     }
 
@@ -3730,6 +3761,120 @@ fn a_placement_draws_the_body_the_drawing_carries_and_skips_its_hidden_layers() 
             20,
             "the other nine of DWG-0201's twenty measure the same either way"
         );
+    }
+}
+
+/// A label placement's cached body is the hairline cross it is anchored
+/// by, and the import leaves it off the sheet the way SmartPlant's screen
+/// does (plan 2026-10-10-a-label-placement-keeps-its-anchor-cross-off-the-
+/// sheet).
+///
+/// DWG-0201 places four labels -- `Drawing Description`, `Item Note &
+/// Label` twice, `Item Note & Label line1.5` -- and the drawing caches for
+/// each a body whose displayed strokes are two 0.01 mm lines 2.54 mm across
+/// (the template lettering sits on the switched-off `Label` layer). The
+/// file displays them; the SmartPlant screenshot of this sheet, at 2.12
+/// px/mm, has not one dark pixel where the four crosses would be -- while
+/// it does draw the one other hairline body of the sheet, ` Line2.sym`'s
+/// 25.4 mm dashed line. So the rule reads two words of the file together:
+/// the library path that files the symbol under `Labels` (or as this
+/// plant's `Design\Drawing Description.sym`) and the width that makes the
+/// body a construction mark. Such a placement draws no body, no library
+/// stand-in (whose `.sym` sheet is a boxed `XXX` catalogue preview) and no
+/// marker dot; its name is still lettered beside where the cross would
+/// have been, and its lettering was the sheet's own text all along.
+#[test]
+fn a_label_placement_keeps_its_anchor_cross_off_the_sheet() {
+    // Where the four crosses land on the sheet, in millimetres: the
+    // symbol-local cross centred on (0.10668, 0.13970) m placed at each
+    // label's insertion point. Arms 1.27 mm, so each stroke is 2.54 long.
+    const CROSSES: [(&str, f64, f64); 4] = [
+        ("Drawing Description", 474.68, 304.32),
+        ("Item Note & Label", 479.88, 246.32),
+        ("Item Note & Label", 394.45, 244.00),
+        ("Item Note & Label line1.5", 340.79, 245.55),
+    ];
+    let Some((doc, summary)) = import_with_summary("DWG-0201GP06-01.pid") else {
+        return;
+    };
+
+    let cross_strokes_at = |cx: f64, cy: f64| {
+        of_role(&doc, "symbol")
+            .filter(|entity| match entity {
+                EntityType::Line(line) => {
+                    let (sx, sy) = (line.start.x, line.start.y);
+                    let (ex, ey) = (line.end.x, line.end.y);
+                    let length = ((ex - sx).powi(2) + (ey - sy).powi(2)).sqrt();
+                    (length - 2.54).abs() < 0.05
+                        && ((sx + ex) / 2.0 - cx).abs() < 0.05
+                        && ((sy + ey) / 2.0 - cy).abs() < 0.05
+                }
+                _ => false,
+            })
+            .count()
+    };
+    for (name, cx, cy) in CROSSES {
+        assert_eq!(
+            cross_strokes_at(cx, cy),
+            0,
+            "{name}: no stroke of the anchor cross at ({cx}, {cy}) reaches the sheet"
+        );
+        // The name is lettered beside where the cross would have been:
+        // 0.8 mm right of its east arm, half a 2 mm line below its centre.
+        let named = of_role(&doc, "symbol-label").any(|entity| match entity {
+            EntityType::Text(text) => {
+                text.value == name
+                    && (text.insertion_point.x - (cx + 1.27 + 0.8)).abs() < 0.05
+                    && (text.insertion_point.y - (cy - 1.0)).abs() < 0.05
+            }
+            _ => false,
+        });
+        assert!(
+            named,
+            "{name}: still named beside the cross at ({cx}, {cy})"
+        );
+    }
+    assert!(
+        of_role(&doc, "symbol").all(|entity| !matches!(
+            entity,
+            EntityType::Circle(circle) if (circle.radius - 1.5).abs() < 1e-9
+        )),
+        "no label placement fell back to the 1.5mm marker"
+    );
+    assert_eq!(
+        summary.label_anchors_undrawn, 4,
+        "the four label placements are tallied as anchors left undrawn"
+    );
+
+    // The one other hairline body of the sheet still draws: ` Line2.sym`'s
+    // 25.4 mm line, which an override of its own dashes, and which the
+    // SmartPlant screenshot shows as a dashed line at the same x.
+    let line2 = of_role(&doc, "symbol")
+        .filter(|entity| match entity {
+            EntityType::Line(line) => {
+                (line.start.y - 209.61).abs() < 0.05
+                    && (line.end.y - 209.61).abs() < 0.05
+                    && (line.start.x.min(line.end.x) - 135.64).abs() < 0.05
+                    && (line.start.x.max(line.end.x) - 161.04).abs() < 0.05
+            }
+            _ => false,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(line2.len(), 1, "` Line2`'s hairline is drawn once");
+    assert!(
+        line2[0].common().linetype.starts_with("PID-DASH-"),
+        "and dashed, by its own override: got {:?}",
+        line2[0].common().linetype
+    );
+
+    // 工艺's twelve -- eleven `Remarks` and one `Xa Item Note & Label` --
+    // are tallied the same way and keep their names.
+    if let Some((doc, summary)) = import_with_summary("工艺管道及仪表流程-1.pid") {
+        assert_eq!(summary.label_anchors_undrawn, 12);
+        let names = of_role(&doc, "symbol-label")
+            .filter(|entity| matches!(entity, EntityType::Text(text) if text.value == "Remarks" || text.value == "Xa Item Note & Label"))
+            .count();
+        assert_eq!(names, 12, "every label placement is still named");
     }
 }
 

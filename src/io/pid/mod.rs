@@ -573,6 +573,7 @@ fn finish(
         cache_bodies: symbol_bodies.cache,
         library_bodies: symbol_bodies.library,
         hidden_strokes_skipped: symbol_bodies.hidden_strokes_skipped,
+        label_anchors_undrawn: symbol_bodies.label_anchors,
         lettering_flattened: styles.lettering_flattened,
         symbol_library: library
             .map(|library| library.roots().to_vec())

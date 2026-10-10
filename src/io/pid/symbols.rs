@@ -13,8 +13,106 @@ pub(super) struct SymbolBodies {
     pub(super) library: usize,
     /// Placements neither body reached, drawn as the marker dot.
     pub(super) markers: usize,
-    /// Cached strokes left out for sitting on a switched-off symbol layer.
+    /// Cached strokes left out for sitting on a switched-off symbol layer,
+    /// over the placements whose body was drawn.
     pub(super) hidden_strokes_skipped: usize,
+    /// Label placements whose cached body is nothing but the hairline cross
+    /// the label is anchored by, left undrawn as SmartPlant's screen leaves
+    /// them -- see [`is_label_symbol`] and [`is_anchor_cross_only`]. Not
+    /// among [`Self::cache`], and their switched-off lettering not among
+    /// [`Self::hidden_strokes_skipped`]: the body was not consulted to draw.
+    pub(super) label_anchors: usize,
+}
+
+/// Narrower than any pen ISO 128 names -- the thinnest is 0.13 mm -- so a
+/// width under it is a hairline: a construction mark, not drafting.
+///
+/// The corpus states exactly one such width, 0.01 mm, and only in symbol
+/// bodies: the anchor crosses of the label symbols (every one of them) and
+/// the line and tick of ` Line2.sym`, whose line SmartPlant's screen does
+/// draw. The threshold therefore says nothing on its own; it is one of the
+/// two words [`is_anchor_cross_only`] and [`is_label_symbol`] read together.
+pub(super) const UNDER_ISO_WIDTH_MM: f64 = 0.1;
+
+/// Label symbols filed outside a `Labels` folder.
+///
+/// SmartPlant's reference data keeps its labels under `Labels` folders --
+/// `Design\Annotation\Labels\`, `Piping\Labels - Piping Segments\`,
+/// `Equipment\Labels - Equipment\` -- and that folder is what
+/// [`is_label_symbol`] reads. The one exception on this plant is its
+/// drawing-description label, filed as `Design\Drawing Description.sym`
+/// beside the sheet templates: its `.sym` and its cached bodies are cut from
+/// the same template as `Item Note & Label.sym` (the hairline cross on the
+/// displayed `Default` layer, the lettering and an underline on the
+/// switched-off `Label` layer), so it is named here rather than drawn as a
+/// cross. Matched on the file name, case-insensitively.
+pub(super) const LABEL_SYMBOLS_FILED_ELSEWHERE: [&str; 1] = ["Drawing Description.sym"];
+
+/// Whether a placement's library path names a label symbol.
+///
+/// A directory segment of the path called `Labels`, or starting `Labels - `
+/// (`Labels - Piping Segments`, `Labels - Equipment`, `Labels - General
+/// Instrument`), is SmartPlant's own filing of label symbols; a file on
+/// [`LABEL_SYMBOLS_FILED_ELSEWHERE`] is one filed outside them. Directory
+/// segments only: a symbol whose file name happens to carry the word is not
+/// a label. The path is the one word the file has on the matter -- the
+/// placement record's sub-type and the `JSite`'s properties say nothing a
+/// label placement does not share with a valve's.
+///
+/// What a label placement draws on SmartPlant's screen is its lettering,
+/// and that lettering is the sheet's own text records (DWG-0201's 「说 明」
+/// is a `/Sheet6` text on the `Labels` layer); the symbol body the drawing
+/// caches for it is the cross the label is placed by, which the screen
+/// leaves out -- see [`is_anchor_cross_only`].
+pub(super) fn is_label_symbol(path: &str) -> bool {
+    let segments: Vec<&str> = path
+        .split(['\\', '/'])
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let Some((file, directories)) = segments.split_last() else {
+        return false;
+    };
+    directories
+        .iter()
+        .any(|directory| *directory == "Labels" || directory.starts_with("Labels - "))
+        || LABEL_SYMBOLS_FILED_ELSEWHERE
+            .iter()
+            .any(|name| file.eq_ignore_ascii_case(name))
+}
+
+/// Whether a cached body's displayed strokes are nothing but hairline lines
+/// -- the cross a label is anchored by, and no drafting.
+///
+/// Every label placement of the corpus caches such a body (plan
+/// 2026-10-10-a-label-placement-keeps-its-anchor-cross-off-the-sheet, §1):
+/// two 0.01 mm lines 2.54 mm across centred on the symbol's origin
+/// (`Item Note & Label`, `Drawing Description`), or three making a 1.27 mm
+/// cross with a tick (`Remarks`), on the body's displayed `Default` layer,
+/// with the template lettering (`NULL`, 「说 明」) and any underline on the
+/// `Label` layer the file switches off. The strokes name the one style of
+/// their cache that states a hairline width and the by-layer colour
+/// `0x80000000` -- the only by-layer colour among the corpus's 69 overrides
+/// -- and SmartPlant's screenshot of DWG-0201 shows none of the four at
+/// 2.12 px/mm, where a 2.54 mm cross would be five pixels across. The
+/// drawing's `.sym` keeps the cross in the first layer manager's `Default`
+/// and its catalogue preview (a boxed `XXX`, two leader strokes) on a second
+/// manager's sheet the drawing never caches, so the library body is no
+/// stand-in either: a label placement whose body is only its cross draws
+/// nothing -- no body, no library fallback, no marker dot.
+///
+/// A body with no displayed stroke is not a cross (it is a placement with
+/// nothing to draw, which the marker exists for), and a stroke with no style
+/// of its own cannot be called a hairline. The width is read alone because
+/// the colour is not visible here: pid-parse resolves the by-layer word to
+/// the base's colour, so a stroke's `rgb` cannot say which it was.
+pub(super) fn is_anchor_cross_only(body: &PidSymbolDefinition) -> bool {
+    let mut strokes = body.visible_strokes().peekable();
+    strokes.peek().is_some()
+        && strokes.all(|(primitive, style)| {
+            matches!(primitive, SymbolPrimitive::Line { .. })
+                && style.is_some_and(|style| style.width_mm < UNDER_ISO_WIDTH_MM)
+        })
 }
 
 /// Where a symbol placement's body can come from: the body the drawing

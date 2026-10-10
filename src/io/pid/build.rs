@@ -365,40 +365,80 @@ pub(super) fn build_entities(
             // 2026-09-07-placement-tail-names-the-cached-definition.md`.
             let symbol_path = symbol_path.as_deref();
             let BodySources { cached, library } = bodies;
-            let body = cached_body_entities(cached, &placement, symbol_bodies, dash_linetypes)
-                .or_else(|| {
-                    library_body_entities(
-                        library,
-                        symbol_path,
-                        &placement,
-                        symbol_bodies,
-                        dash_linetypes,
-                    )
-                });
+            let insertion_mm = (projection.mm(insertion.x), projection.mm(insertion.y));
 
-            // Only fall back to the marker when the body is genuinely
-            // unavailable. A symbol that resolved to real geometry should not
-            // also carry a dot -- that reads as a second object.
-            let mut built = match body {
-                Some(entities) => entities,
-                None => {
-                    symbol_bodies.markers += 1;
-                    let mut marker = Circle::new();
-                    marker.center = projection.point(insertion);
-                    marker.radius = SYMBOL_MARKER_RADIUS_MM;
-                    marker.common.layer = LAYER_SYMBOL.to_string();
-                    vec![EntityType::Circle(marker)]
+            // A label placement whose cached body is nothing but the cross
+            // it is anchored by draws nothing at all: not the cross, not the
+            // library's catalogue preview in its place, not the marker dot
+            // (plan 2026-10-10-a-label-placement-keeps-its-anchor-cross-off-
+            // the-sheet). The file displays the cross; SmartPlant's screen
+            // does not, while it does draw the one other hairline body of
+            // the corpus (` Line2.sym`), so both words are read: the path
+            // that files the symbol as a label and the width that makes the
+            // body a construction mark. See `is_label_symbol` and
+            // `is_anchor_cross_only` for the evidence. The two half-matches
+            // are drawn as the file states and said so in the log, since a
+            // later corpus may show which of the two words SmartPlant goes
+            // by.
+            let is_label = symbol_path.is_some_and(is_label_symbol);
+            let anchor_only = cached.is_some_and(is_anchor_cross_only);
+            let (mut built, name_anchor) = if is_label && anchor_only {
+                symbol_bodies.label_anchors += 1;
+                // The name is still lettered beside where the cross would
+                // have been -- next to the label's own lettering -- rather
+                // than at the insertion point a hundred millimetres away.
+                let cross: Vec<EntityType> = cached
+                    .into_iter()
+                    .flat_map(PidSymbolDefinition::visible_primitives)
+                    .filter_map(|primitive| shape_primitive(primitive, &placement))
+                    .collect();
+                (Vec::new(), symbol_label_anchor(&cross, insertion_mm))
+            } else {
+                if is_label && cached.is_some() {
+                    log::info!(
+                        "label placement {:?} caches a body of more than its anchor cross; drawn as the file states",
+                        symbol_path.unwrap_or_default()
+                    );
+                } else if anchor_only {
+                    log::info!(
+                        "placement {:?} outside the label folders caches only hairline lines; drawn as the file states",
+                        symbol_path.unwrap_or_default()
+                    );
                 }
+                let body = cached_body_entities(cached, &placement, symbol_bodies, dash_linetypes)
+                    .or_else(|| {
+                        library_body_entities(
+                            library,
+                            symbol_path,
+                            &placement,
+                            symbol_bodies,
+                            dash_linetypes,
+                        )
+                    });
+
+                // Only fall back to the marker when the body is genuinely
+                // unavailable. A symbol that resolved to real geometry should
+                // not also carry a dot -- that reads as a second object.
+                let built = match body {
+                    Some(entities) => entities,
+                    None => {
+                        symbol_bodies.markers += 1;
+                        let mut marker = Circle::new();
+                        marker.center = projection.point(insertion);
+                        marker.radius = SYMBOL_MARKER_RADIUS_MM;
+                        marker.common.layer = LAYER_SYMBOL.to_string();
+                        vec![EntityType::Circle(marker)]
+                    }
+                };
+                let name_anchor = symbol_label_anchor(&built, insertion_mm);
+                (built, name_anchor)
             };
 
             if let Some(name) = symbol_path.and_then(symbol_name) {
                 let mut label = Text::new();
                 label.value = name;
                 label.height = SYMBOL_LABEL_HEIGHT_MM;
-                label.insertion_point = symbol_label_anchor(
-                    &built,
-                    (projection.mm(insertion.x), projection.mm(insertion.y)),
-                );
+                label.insertion_point = name_anchor;
                 label.common.layer = LAYER_SYMBOL_LABEL.to_string();
                 built.push(EntityType::Text(label));
             }

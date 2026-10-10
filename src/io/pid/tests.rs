@@ -24,6 +24,7 @@ fn the_summary_round_trips_through_its_properties_and_take_removes_them() {
     summary.cache_bodies = 20;
     summary.library_bodies = 3;
     summary.hidden_strokes_skipped = 31;
+    summary.label_anchors_undrawn = 4;
     summary.lettering_flattened = 10;
     summary.symbol_library = vec![
         PathBuf::from(r"\\server\Plant\Ref\Symbols"),
@@ -384,6 +385,151 @@ fn a_cached_body_draws_only_the_strokes_on_its_displayed_layers() {
         (tally.cache, tally.hidden_strokes_skipped),
         (1, 2),
         "one body drawn, its two Construction strokes counted as skipped"
+    );
+}
+
+/// A label symbol is one SmartPlant files under a `Labels` folder -- plain
+/// or `Labels - <class>` -- or the one this plant files beside its sheet
+/// templates, matched by file name; the folder is read off the directory
+/// segments, so a file whose name carries the word is not one, nor a
+/// folder that only starts with it, and a bare `Labels` with no file is
+/// nothing at all (plan 2026-10-10, label anchors).
+#[test]
+fn a_label_symbol_is_one_filed_under_a_labels_folder_or_named_as_filed_elsewhere() {
+    for path in [
+        r"\\WIN-SPID\qsmcqtaz13\Plant\Ref\Symbols\Design\Annotation\Labels\Item Note & Label.sym",
+        r"\\SPID\XaLNG\P&ID Reference Data\Symbols\Piping\Labels - Piping Segments\Remarks.sym",
+        r"\\WIN-SPID\x\Plant\Ref\Symbols\Equipment\Labels - Equipment\Descriptions\Vessel Description.sym",
+        r"\\WIN-SPID\qsmcqtaz13\Plant\Ref\Symbols\Design\Drawing Description.sym",
+        "Design/Annotation/Labels/Item Note & Label line1.5.sym",
+        r"Design\DRAWING DESCRIPTION.SYM",
+        "Drawing Description.sym",
+    ] {
+        assert!(is_label_symbol(path), "{path} is a label symbol");
+    }
+    for path in [
+        r"\\WIN-SPID\qsmcqtaz13\Plant\Ref\Symbols\Piping\Piping OPC's\Off-Drawing.sym",
+        r"\\WIN-SPID\qsmcqtaz13\Plant\Ref\Symbols\Equipment\Other Equipment\Parametric Manifold.sym",
+        r"\\WIN-SPID\x\Plant\Ref\Symbols\Piping\Valves\Labels Valve.sym",
+        r"\\WIN-SPID\x\Plant\Ref\Symbols\Piping\Labelsmith\Valve.sym",
+        r"\\WIN-SPID\x\Plant\Ref\Symbols\Design\ Line2.sym",
+        "Labels",
+        "",
+    ] {
+        assert!(!is_label_symbol(path), "{path:?} is not a label symbol");
+    }
+}
+
+/// A body is nothing but its anchor cross when every stroke the file
+/// displays is a line narrower than any ISO pen: the two 0.01 mm lines of
+/// an `Item Note & Label` body are, the same cross at 0.13 mm is not, a
+/// cross with a hidden `NULL` beside it still is (the lettering is on a
+/// switched-off layer), a stroke with no style of its own is not a
+/// hairline, and a body with nothing displayed is not a cross (plan
+/// 2026-10-10, label anchors).
+#[test]
+fn a_body_is_an_anchor_cross_when_its_displayed_strokes_are_all_hairline_lines() {
+    use pid_parse::{PidSymbolDefinitionRef, PidSymbolSheetLayer};
+    let hairline = |width_mm: f64| {
+        Some(PrimitiveStyle {
+            rgb: [0, 0, 0],
+            width_mm,
+            dash_mm: Vec::new(),
+        })
+    };
+    let cross = vec![
+        SymbolPrimitive::Line {
+            start: (0.10541, 0.13970),
+            end: (0.10795, 0.13970),
+        },
+        SymbolPrimitive::Line {
+            start: (0.10668, 0.14097),
+            end: (0.10668, 0.13843),
+        },
+    ];
+    let body = |primitives: Vec<SymbolPrimitive>,
+                layers: Vec<u32>,
+                styles: Vec<Option<PrimitiveStyle>>| PidSymbolDefinition {
+        reference: PidSymbolDefinitionRef {
+            site: 329,
+            sheet: 327,
+        },
+        layers: vec![334, 332],
+        sheet_layers: vec![
+            PidSymbolSheetLayer {
+                oid: 334,
+                name: Some("Default".to_string()),
+                displayed: Some(true),
+            },
+            PidSymbolSheetLayer {
+                oid: 332,
+                name: Some("Label".to_string()),
+                displayed: Some(false),
+            },
+        ],
+        primitives,
+        primitive_layers: layers,
+        primitive_styles: styles,
+        dimensions: Vec::new(),
+        variables: Vec::new(),
+        template: None,
+    };
+
+    assert!(
+        is_anchor_cross_only(&body(
+            cross.clone(),
+            vec![334, 334],
+            vec![hairline(0.01), hairline(0.01)]
+        )),
+        "two 0.01 mm lines on the displayed layer"
+    );
+    let mut with_lettering = cross.clone();
+    with_lettering.push(SymbolPrimitive::Text {
+        text: "NULL".to_string(),
+        at: (0.10668, 0.13970),
+    });
+    assert!(
+        is_anchor_cross_only(&body(
+            with_lettering,
+            vec![334, 334, 332],
+            vec![hairline(0.01), hairline(0.01), None]
+        )),
+        "the template lettering sits on the switched-off Label layer"
+    );
+    assert!(
+        !is_anchor_cross_only(&body(
+            cross.clone(),
+            vec![334, 334],
+            vec![hairline(0.01), hairline(0.13)]
+        )),
+        "a 0.13 mm line is drafting"
+    );
+    assert!(
+        !is_anchor_cross_only(&body(
+            cross.clone(),
+            vec![334, 334],
+            vec![hairline(0.01), None]
+        )),
+        "a stroke with no style of its own cannot be called a hairline"
+    );
+    assert!(
+        !is_anchor_cross_only(&body(
+            cross.clone(),
+            vec![332, 332],
+            vec![hairline(0.01), hairline(0.01)]
+        )),
+        "a body with nothing displayed is not a cross"
+    );
+    assert!(
+        !is_anchor_cross_only(&body(
+            vec![SymbolPrimitive::Circle {
+                center: (0.0, 0.0),
+                radius: 0.001,
+            }],
+            vec![334],
+            vec![hairline(0.01)]
+        )),
+        "a hairline circle is not the cross"
     );
 }
 
