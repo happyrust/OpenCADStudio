@@ -239,6 +239,14 @@ unconsumed, and the command closed rather than left armed for a second line. Geo
 
 `ocs_capture` defaults to the drawing viewport and a longest edge of 1600 pixels. Set `scope` to `window` for the full interface or change `max_dimension` between 256 and 4096.
 
+With `diff: true`, an unchanged comparison returns metadata only, including
+`diff.changed: false`, the hash and resource URI; it does not resend image or
+resource content blocks, regardless of `delivery`. The initial baseline (also
+after `reset_diff_baseline: true`) still uses the requested image delivery.
+Changed captures retain the requested diff mode, including cropped patches.
+Use `diff: false` or read the returned resource URI to retrieve the full image
+when an unchanged comparison omitted it.
+
 Clients using MCP 2026-07-28 can advertise `io.modelcontextprotocol/tasks`. OCS then returns a standard task handle when an operation is still running and accepts `tasks/get`, `tasks/update`, and `tasks/cancel`. Other clients continue to receive the existing operation status and can read it with `ocs_read`.
 
 The source-tree protocol smoke test treats the executable as a black box and uses only the Python standard library. It checks both supported protocol styles, the published schemas, structured errors, and the four-tool surface:
@@ -638,10 +646,11 @@ undo step; missing `layer`s are created and reported in `layers_created`.
 | `Line` | `start`, `end`, optional `thickness` |
 | `Circle` | `center`, `radius` (≥ 0) |
 | `Arc` | `center`, `radius` (> 0), `start_angle_deg`, `end_angle_deg` |
+| `Spline` | `control_points` (more than `degree`) or `fit_points` (≥ 2), optional `degree` (1–10, default 3), `knots` (control points + degree + 1, non-decreasing), `weights` (one positive value per control point), `closed`, `periodic`, `rational`, `planar`, `linear` |
 | `LwPolyline` | `vertices` (≥ 2), `closed`, optional `constant_width` |
 | `Point` | `location` |
 | `Text` | `value`, `position`, optional `height` (default 2.5), `rotation_deg`, `style` |
-| `MText` | `value`, `position`, optional `height`, `width`, `rotation_deg` |
+| `MText` | `value`, `position`, optional `height`, `width`, `rotation_deg`, `style` |
 | `Insert` | `block` (must exist), `position`, optional `scale` (number or `[x,y,z]`, nonzero), `rotation_deg` |
 | `Solid` | `corners` (3 or 4 `[x,y,z]`) |
 | `Hatch` | `boundary` (≥ 3 points, closed), `solid`, or `pattern` (catalog name, default `ANSI31`), `pattern_scale`, `pattern_angle_deg` |

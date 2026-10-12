@@ -103,7 +103,7 @@ fn family_from_stored_line(
 
 /// Preserve the selected hue while moving its HSL lightness towards the
 /// persisted one-colour tint/shade target (0 = black, 1 = white).
-fn gradient_tint_color(base: [f32; 4], target: f32) -> [f32; 4] {
+pub(crate) fn gradient_tint_color(base: [f32; 4], target: f32) -> [f32; 4] {
     let max = base[0].max(base[1]).max(base[2]);
     let min = base[0].min(base[1]).min(base[2]);
     let lightness = (max + min) * 0.5;
@@ -322,7 +322,8 @@ impl Scene {
         let facet_res = self.document.header.facet_resolution;
         let chordal_deflection =
             crate::entities::solid3d::display_deflection(&self.document.header, facet_res);
-        let isolines = crate::entities::solid3d::clamp_header_isolines(self.document.header.isolines);
+        let isolines =
+            crate::entities::solid3d::clamp_header_isolines(self.document.header.isolines);
         let mesh_seed = if matches!(
             &entity,
             EntityType::Solid3D(_)
@@ -606,7 +607,8 @@ impl Scene {
         let facet_res = self.document.header.facet_resolution;
         let chordal_deflection =
             crate::entities::solid3d::display_deflection(&self.document.header, facet_res);
-        let isolines = crate::entities::solid3d::clamp_header_isolines(self.document.header.isolines);
+        let isolines =
+            crate::entities::solid3d::clamp_header_isolines(self.document.header.isolines);
         let mesh_seed = if matches!(
             &entity,
             EntityType::Solid3D(_)
@@ -843,7 +845,8 @@ impl Scene {
         let facet_res = self.document.header.facet_resolution;
         let chordal_deflection =
             crate::entities::solid3d::display_deflection(&self.document.header, facet_res);
-        let isolines = crate::entities::solid3d::clamp_header_isolines(self.document.header.isolines);
+        let isolines =
+            crate::entities::solid3d::clamp_header_isolines(self.document.header.isolines);
         use crate::par::prelude::*;
         let built: Vec<(Handle, MeshLodSet, bool)> = entries
             .into_par_iter()
@@ -1391,10 +1394,12 @@ impl Scene {
                     style.0 = crate::scene::view::render::adapt_to_bg(style.0, hatch_bg);
                     m.aci = style.4;
                     m.line_weight_px = style.3;
-                    // A gradient's colour is its first stop (already baked into
-                    // the cached model); only solid / pattern fills take the
-                    // entity's resolved colour.
-                    if !matches!(m.pattern, model::hatch_model::HatchPattern::Gradient { .. }) {
+                    // Gradient RGB comes from its own colour stops, while
+                    // transparency remains an entity property shared by both
+                    // stops. Solid/pattern fills take the complete style.
+                    if matches!(m.pattern, model::hatch_model::HatchPattern::Gradient { .. }) {
+                        m.set_alpha(style.0[3]);
+                    } else {
                         m.color = style.0;
                     }
                     if let EntityType::Hatch(dxf) = e {
@@ -1967,9 +1972,7 @@ impl Scene {
     /// Compute the 2D (XY) boundary polygon for a Wipeout entity.
     /// Wipeout fill boundary as small f32 offsets from the returned world_origin
     /// (the insertion point, kept in f64).
-    pub(super) fn wipeout_boundary_2d(
-        wo: &codec::entities::Wipeout,
-    ) -> ([f64; 2], Vec<[f32; 2]>) {
+    pub(super) fn wipeout_boundary_2d(wo: &codec::entities::Wipeout) -> ([f64; 2], Vec<[f32; 2]>) {
         let origin = [wo.insertion_point.x, wo.insertion_point.y];
         let plane = kernel::space::Plane::from_axes(
             [
@@ -2159,9 +2162,11 @@ impl Scene {
             let range = boundary.len()..boundary.len() + ring.len();
             boundary.extend(ring);
             local_boundary.extend(local_ring.iter().map(|&[x, y]| [x as f32, y as f32]));
-            if path.edges.iter().any(|edge| {
-                matches!(edge, codec::entities::BoundaryEdge::Spline(_))
-            }) {
+            if path
+                .edges
+                .iter()
+                .any(|edge| matches!(edge, codec::entities::BoundaryEdge::Spline(_)))
+            {
                 spline_paths.push((path, local_ring, range));
             }
             boundary_exterior.push(depth == 0);
@@ -2210,7 +2215,7 @@ impl Scene {
                     .colors
                     .get(i)
                     .and_then(|e| e.color.rgb())
-                    .map(|(r, g, b)| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0])
+                    .map(|(r, g, b)| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, color[3]])
             };
             gradient_color1 = stop(0);
             let color1 = gradient_color1.unwrap_or(color);
@@ -2367,21 +2372,30 @@ impl Scene {
         }
         let project = |point: [f64; 2]| {
             let [x, y] = to_xy(point[0], point[1]);
-            [(x - world_origin[0]) as f32 as f64, (y - world_origin[1]) as f32 as f64]
+            [
+                (x - world_origin[0]) as f32 as f64,
+                (y - world_origin[1]) as f32 as f64,
+            ]
         };
         for (path, ring, range) in spline_paths.into_iter().rev() {
             if range.end > boundary.len() {
                 continue;
             }
-            let curves = || path.edges.iter().filter_map(crate::entities::hatch::edge_curve).collect();
-            if let Some(refined) =
-                kernel::geom2d::refine_spline_boundary(&ring, curves, &project)
-            {
+            let curves = || {
+                path.edges
+                    .iter()
+                    .filter_map(crate::entities::hatch::edge_curve)
+                    .collect()
+            };
+            if let Some(refined) = kernel::geom2d::refine_spline_boundary(&ring, curves, &project) {
                 if boundary.len() - range.len() + refined.len() > MAX_HATCH_MODEL_VERTS {
                     continue;
                 }
                 boundary.splice(range.clone(), refined.iter().map(|p| to_xy(p[0], p[1])));
-                local_boundary.splice(range, refined.into_iter().map(|[x, y]| [x as f32, y as f32]));
+                local_boundary.splice(
+                    range,
+                    refined.into_iter().map(|[x, y]| [x as f32, y as f32]),
+                );
             }
         }
 
@@ -2548,7 +2562,8 @@ impl Scene {
                 Some(codec::objects::ObjectType::UnderlayDefinition(def)) => {
                     // A paper-space underlay adjusts to the sheet, not the canvas.
                     let owner = u.common.owner_handle;
-                    let background = if owner.is_null() || owner == self.model_space_block_handle() {
+                    let background = if owner.is_null() || owner == self.model_space_block_handle()
+                    {
                         self.bg_color
                     } else {
                         self.paper_bg_color
@@ -2638,7 +2653,8 @@ impl Scene {
         let facet_res = self.document.header.facet_resolution;
         let chordal_deflection =
             crate::entities::solid3d::display_deflection(&self.document.header, facet_res);
-        let isolines = crate::entities::solid3d::clamp_header_isolines(self.document.header.isolines);
+        let isolines =
+            crate::entities::solid3d::clamp_header_isolines(self.document.header.isolines);
         // Top-level solids: offset into the render frame, drawn flat.
         // Block-definition solids: keep block-local coords for per-INSERT
         // instancing (no offset applied here).
@@ -3026,6 +3042,8 @@ impl Scene {
     /// standard linetypes and a compatible page setup on every paper layout.
     pub fn populate_new_drawing_defaults(&mut self) {
         crate::io::linetypes::populate_document(&mut self.document);
+        // The visual styles of the reference's new drawing.
+        crate::io::visual_styles::populate_document(&mut self.document);
         // A new drawing is metric, as the reference's new drawing: metre
         // insertion units, metric measurement, and the ISO-25 dimension style
         // current. Standard stays available for imperial work.

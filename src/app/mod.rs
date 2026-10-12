@@ -15,21 +15,20 @@ pub(crate) use command_driver::{copy_to_clipboard_kernel, paste_entities_kernel,
 pub(crate) mod commands;
 pub(crate) mod dim_viewport;
 #[cfg(test)]
-mod viewport_dimension_tests;
-#[cfg(test)]
 mod dimension_preview_tests;
+mod dock;
 mod document;
 mod drafting_settings;
 pub(crate) mod expr_eval;
-mod options_session;
 mod find_replace;
 pub(crate) mod helpers;
 mod history;
 mod layers;
 mod model_ops;
+mod mtext_editor;
 mod navigation;
 mod node_graph;
-mod mtext_editor;
+mod options_session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugin_host;
 mod presspull_ops;
@@ -44,6 +43,8 @@ mod text_inline;
 mod tolerance_dialog;
 mod update;
 mod view;
+#[cfg(test)]
+mod viewport_dimension_tests;
 mod visibility;
 
 pub use style_ops::StyleKind;
@@ -421,10 +422,6 @@ pub(super) struct OpenCADStudio {
     discussions: Vec<crate::discussions::DiscussionEntry>,
     /// True while the boot-time Discussions refresh is still in flight.
     discussions_loading: bool,
-    /// Block references whose properties panel shows per-axis Scale X/Y/Z even
-    /// though the three factors are currently equal — the user unchecked the
-    /// "Uniform scale" box for them (#427). Keyed by entity handle.
-    props_asym_scale: std::collections::HashSet<u64>,
     /// Collapsed Properties-panel section titles. This belongs to the app,
     /// rather than an individual document tab, so the same view preference is
     /// used by every currently open drawing/project.
@@ -820,6 +817,11 @@ pub(super) struct OpenCADStudio {
     render_mode_preview: Option<codec::entities::ViewportRenderMode>,
     /// Whether the Properties panel is shown on the left (PROPERTIES).
     show_properties: bool,
+    /// The Layer Manager pallet (LAYERS) is open.
+    pub(crate) show_layers: bool,
+    /// Whether the Graphic Attributes palette is shown (GRAPHICATTRIBUTES).
+    show_graphic_attributes: bool,
+    graphic_attributes: crate::ui::window::graphic_attributes::GraphicAttributesState,
     /// Docked Insert Block panel visibility.
     pub(crate) show_block_palette: bool,
     /// Docked P&ID legend list visibility (PIDLEGEND LIST).
@@ -855,17 +857,33 @@ pub(super) struct OpenCADStudio {
     pub(crate) bg_picker: Option<BgTarget>,
     /// General edge-stack dock layout for the side panels.
     pub(crate) dock: crate::ui::dock::DockState,
-    /// Which panel is currently floated at full height (hovered, or a pinned
-    /// panel on top).
-    pub(crate) dock_expanded: Option<crate::ui::dock::PanelId>,
-    /// Panel currently being dragged between sides / reordered.
-    pub(crate) dock_dragging: Option<crate::ui::dock::PanelId>,
-    /// Panel currently being width-resized.
-    pub(crate) dock_resizing: Option<crate::ui::dock::PanelId>,
-    /// Last pointer position during a drag / resize.
+    /// Pallet revealed although it auto-hides (its edge's group, or its
+    /// floating frame): hovered, being dragged, or just opened. Cleared when
+    /// the pointer leaves.
+    pub(crate) dock_peek: Option<crate::ui::dock::PanelId>,
+    /// Reveal or hide waiting out the hover delay, with the generation its
+    /// timer carries; any newer hover supersedes it.
+    pub(crate) dock_hover_pending: Option<crate::ui::dock::HoverPending>,
+    pub(crate) dock_hover_gen: u64,
+    /// What the pointer is dragging in the dock (pallet, group, width,
+    /// splitter, floating size, Layer Manager column).
+    pub(crate) dock_drag: Option<crate::ui::dock::DockDrag>,
+    /// Pallet whose strip icon (or floating frame) the pointer is over.
+    pub(crate) dock_icon_hover: Option<crate::ui::dock::PanelId>,
+    /// Last pointer position during a dock drag.
     pub(crate) dock_drag_last: Option<iced::Point>,
-    /// Live drag target (side + index), shown as a highlight while dragging.
-    pub(crate) dock_drag_target: Option<(crate::app::config::DockSide, usize)>,
+    /// Docked panel whose title bar the pointer is over (shows pin / close).
+    pub(crate) dock_title_hover: Option<crate::ui::dock::PanelId>,
+    /// Edge whose icon-strip pallet menu (+) is open.
+    pub(crate) dock_edge_menu: Option<crate::app::config::DockSide>,
+    /// Floating pallet whose title-bar right-click menu is open.
+    pub(crate) dock_float_menu: Option<crate::ui::dock::PanelId>,
+    /// Pointer position over a floating title bar (bar-local), and where
+    /// its open menu was asked for.
+    pub(crate) dock_float_pointer: iced::Point,
+    pub(crate) dock_float_menu_at: iced::Point,
+    /// Group whose edge band (group grip) the pointer is over.
+    pub(crate) dock_grip_hover: Option<(crate::app::config::DockSide, usize)>,
     /// Reference-table column currently being width-resized (column index),
     /// with the last pointer position. Mirrors the Layers Name-column drag.
     pub(crate) xref_col_drag: Option<usize>,
@@ -954,9 +972,6 @@ pub(super) struct OpenCADStudio {
     modal_drag_last: Option<Point>,
     /// True while the modal title bar is held (a drag is in progress).
     modal_dragging: bool,
-    /// Layer Manager: dragging the Name-column divider (width follows the
-    /// shared ModalDragMove flow).
-    layer_col_dragging: bool,
     /// Layer Manager Name column width in px, adjusted by the divider drag.
     layer_name_col_w: f32,
     /// How far the user has dragged the modal's corner resize grip from the
@@ -1641,6 +1656,9 @@ pub enum ColorPickerTab {
 /// Where a colour chosen in the standalone palette window should be applied.
 #[derive(Debug, Clone)]
 pub enum ColorPickTarget {
+    Gradient(u8),
+    GraphicAttributesLine,
+    GraphicAttributesSolid,
     DimStyle(DsField),
     MLeader(&'static str),
     Table(u8, &'static str),
@@ -1781,8 +1799,7 @@ impl ClipboardDeps {
                 if !objects.is_empty() {
                     let mut annotation_scales = Vec::new();
                     for (_, object) in &objects {
-                        let codec::objects::ObjectType::ObjectContextData(context) = object
-                        else {
+                        let codec::objects::ObjectType::ObjectContextData(context) = object else {
                             continue;
                         };
                         if annotation_scales
@@ -1913,10 +1930,7 @@ impl ClipboardDeps {
     /// Snapshot every block definition the `entities` reference through an
     /// INSERT, walking nested INSERTs transitively. Model/paper space and
     /// xref blocks are skipped — those aren't portable definitions.
-    fn capture_blocks(
-        doc: &codec::CadDocument,
-        entities: &[codec::EntityType],
-    ) -> Vec<BlockDef> {
+    fn capture_blocks(doc: &codec::CadDocument, entities: &[codec::EntityType]) -> Vec<BlockDef> {
         use codec::EntityType;
         use rustc_hash::FxHashSet;
         let mut seen: FxHashSet<String> = FxHashSet::default();
@@ -1996,7 +2010,6 @@ pub enum ModalKind {
     PluginManager,
     UpdateNotice,
     DonationPrompt,
-    Layers,
     LayerStateManager,
     LayerTranslator,
     DrawingUnits,
@@ -2188,6 +2201,7 @@ pub enum PasteFocus {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    GraphicAttributes(crate::ui::window::graphic_attributes::GraphicAttributesMsg),
     SpaceMouseWake,
     SpaceMouseFrame(iced::time::Instant),
     SpaceMouseFocus(iced::window::Id, bool),
@@ -2206,6 +2220,10 @@ pub enum Message {
     ControlStep(String, Box<Message>),
     ControlTaskDone(String),
     ControlScreenshot(String, Option<iced::window::Screenshot>),
+    /// A frame has been drawn (or the anti-hang timer expired) for a parked
+    /// `capture` request: take the screenshot now, so it shows the latest
+    /// state instead of the previous frame (C11).
+    ControlCaptureFrame { redrew: bool },
     ControlToggle,
     /// Node graph overlay interaction.
     Graph(crate::ui::node_graph::GraphMsg),
@@ -2640,8 +2658,11 @@ pub enum Message {
     /// Pop the trailing character off the command-line input — backspace
     /// counterpart to `CommandAppendChar`.
     CommandBackspace,
-    /// TAB pressed: move focus to the next dynamic-input field (wraps).
+    /// TAB pressed: move focus to the next dynamic-input field or
+    /// autocomplete suggestion.
     DynTabNext,
+    /// Shift+TAB: move to the previous contextual autocomplete suggestion.
+    DynTabPrev,
     /// Split the active Model viewport in two. `true` → horizontal divider
     /// (top / bottom); `false` → vertical divider (left / right).
     SplitModelViewport(bool),
@@ -2659,6 +2680,12 @@ pub enum Message {
         shortcut: String,
         extend_selection: bool,
     },
+    /// A text field captured SPACE while it is rebound away from
+    /// COMMANDSPACE; run the binding only if the command input has focus.
+    CommandLineSpaceProbe,
+    /// The command input has focus: drop the space it just typed and run the
+    /// SPACE binding.
+    CommandLineSpaceResolved,
     /// A widget captured Up/Down; resolve it only if the command input owns
     /// keyboard focus.
     CommandLineArrowProbe {
@@ -2712,11 +2739,11 @@ pub enum Message {
     ToggleXrefManager,
     /// Rescan the active drawing's references into the palette.
     XrefManagerRefresh,
-    /// Toggle one palette row (entry index) in the multi-selection set.
-    XrefManagerSelect(usize),
+    /// Toggle one palette row (stable row id) in the multi-selection set.
+    XrefManagerSelect(crate::ui::window::xref_manager::XrefRowId),
     /// Right-click on a palette row: single-select it when outside the
     /// selection (the context menu then acts on the selection).
-    XrefRowRightClick(usize),
+    XrefRowRightClick(crate::ui::window::xref_manager::XrefRowId),
     /// Flip the palette's list/tree presentation.
     XrefManagerToggleTree,
     /// Start a reference-table column divider drag (column index).
@@ -2753,16 +2780,19 @@ pub enum Message {
     XrefManagerToggleExpand(u64),
     /// Selection-scoped palette operation (detach/unload/reload/overlay/pathtype).
     XrefManagerOp(crate::ui::window::xref_manager::XrefPaletteOp),
-    /// Row-scoped palette operation: selects row `index`, then applies the
-    /// operation to it.
-    XrefRowOp(usize, crate::ui::window::xref_manager::XrefPaletteOp),
+    /// Row-scoped palette operation: selects the row by stable id, then
+    /// applies the operation to it.
+    XrefRowOp(
+        crate::ui::window::xref_manager::XrefRowId,
+        crate::ui::window::xref_manager::XrefPaletteOp,
+    ),
     /// Prefill the command line for Find & Replace across references
     /// (`XREF Path Find <old> <new>`); the CLI parses and runs it.
     XrefFindReplacePrompt,
-    /// Pick a new path for a specific row index.
-    XrefRowPathPick(usize),
-    /// Prefill the command line for Find & Replace for a specific row index.
-    XrefRowFindReplacePrompt(usize),
+    /// Pick a new path for a specific row (stable id).
+    XrefRowPathPick(crate::ui::window::xref_manager::XrefRowId),
+    /// Prefill the command line for Find & Replace for a specific row id.
+    XrefRowFindReplacePrompt(crate::ui::window::xref_manager::XrefRowId),
     XrefRowChangePathEnter,
     XrefRowChangePathLeave,
     LayerToggleVisible(String),
@@ -2916,6 +2946,8 @@ pub enum Message {
     ToggleViewCube,
     /// Toggle the Properties panel visibility (PROPERTIES).
     ToggleProperties,
+    /// Toggle the Graphic Attributes panel visibility (GRAPHICATTRIBUTES).
+    ToggleGraphicAttributes,
     /// Toggle the document file tabs at the top (FILETAB).
     ToggleFileTabs,
     /// Toggle the layout tabs at the bottom (LAYOUTTAB).
@@ -4197,7 +4229,6 @@ impl OpenCADStudio {
             videos_loading: false,
             discussions: Vec::new(),
             discussions_loading: false,
-            props_asym_scale: std::collections::HashSet::new(),
             collapsed_property_sections: rustc_hash::FxHashSet::default(),
             start_section: StartSection::default(),
             start_action_w: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -4376,6 +4407,9 @@ impl OpenCADStudio {
             render_mode_menu_open: false,
             render_mode_preview: None,
             show_properties: true,
+            show_layers: false,
+            show_graphic_attributes: false,
+            graphic_attributes: Default::default(),
             show_block_palette: false,
             show_pid_legend_list: false,
             pid_legend_filter: Default::default(),
@@ -4394,11 +4428,18 @@ impl OpenCADStudio {
             block_palette: Default::default(),
             xref_manager: Default::default(),
             dock: Default::default(),
-            dock_expanded: None,
-            dock_dragging: None,
-            dock_resizing: None,
+            dock_peek: None,
+            dock_hover_pending: None,
+            dock_hover_gen: 0,
+            dock_float_menu: None,
+            dock_float_pointer: iced::Point::ORIGIN,
+            dock_float_menu_at: iced::Point::ORIGIN,
+            dock_drag: None,
             dock_drag_last: None,
-            dock_drag_target: None,
+            dock_title_hover: None,
+            dock_edge_menu: None,
+            dock_grip_hover: None,
+            dock_icon_hover: None,
             xref_col_drag: None,
             xref_col_last: None,
             xref_split_drag: false,
@@ -4435,7 +4476,6 @@ impl OpenCADStudio {
             modal_offset: iced::Vector::ZERO,
             modal_drag_last: None,
             modal_dragging: false,
-            layer_col_dragging: false,
             layer_name_col_w: 130.0,
             modal_resize: iced::Vector::ZERO,
             modal_content_size: None,

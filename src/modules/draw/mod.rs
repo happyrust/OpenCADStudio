@@ -6,7 +6,6 @@ pub mod defaults;
 mod donate;
 pub mod draw;
 pub mod fence;
-pub mod units;
 pub mod groups;
 pub mod inquiry;
 pub mod layers;
@@ -15,6 +14,7 @@ mod pid;
 pub mod properties;
 mod report;
 pub mod select;
+pub mod units;
 
 use crate::modules::{CadModule, RibbonGroup, RibbonItem};
 
@@ -36,6 +36,7 @@ impl CadModule for DrawModule {
         use clipboard::{copy_clip, cut, paste};
         use draw::{arc, circle, ellipse, hatch, line, polyline, shapes};
         use groups::{group, ungroup};
+        use inquiry::{area, dist};
         use layers::{
             layfrz, layiso, laylck, layoff, layon, laythw, layulk, layuniso, make_current,
             match_layer, panel,
@@ -44,7 +45,6 @@ impl CadModule for DrawModule {
             array, copy, delete, explode, fillet, mirror, offset, rotate, scale, stretch,
             translate, trim,
         };
-        use inquiry::{area, dist};
         use pid::{group_tool, legend_tool, tag_tool, ungroup_tool};
         use properties::match_prop;
 
@@ -249,18 +249,16 @@ impl CadModule for DrawModule {
                 },
                 RibbonGroup {
                     title: "Measure",
-                    tools: vec![
-                        RibbonItem::LargeDropdown {
-                            id: "MEASURE_MENU",
-                            label: "Measure",
-                            icon: dist::ICON,
-                            items: vec![
-                                ("DIST", "Distance", dist::ICON),
-                                ("AREA", "Area", area::ICON),
-                            ],
-                            default: "DIST",
-                        },
-                    ],
+                    tools: vec![RibbonItem::LargeDropdown {
+                        id: "MEASURE_MENU",
+                        label: "Measure",
+                        icon: dist::ICON,
+                        items: vec![
+                            ("DIST", "Distance", dist::ICON),
+                            ("AREA", "Area", area::ICON),
+                        ],
+                        default: "DIST",
+                    }],
                 },
                 // Support group lives on the Start tab now (see view.rs:
                 // start_page_view). Removed from the Draw ribbon to declutter.

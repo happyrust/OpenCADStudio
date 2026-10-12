@@ -1,6 +1,6 @@
 [package]
 name = "OpenCADStudio"
-version = "2026.40.1"
+version = "2026.41.0"
 edition = "2021"
 build = "build.rs"
 default-run = "OpenCADStudio"
@@ -48,9 +48,9 @@ log = "0.4"
 # via env_logger's env_filter.
 regex = "1"
 codec = { package = "opencadcodec", git = "https://github.com/HakanSeven12/opencadcodec.git", rev = "8189f83", features = ["serde"] }
-kernel = { package = "opencadkernel", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "0764f79", features = ["acis", "offset"] }
-kernel-constraints = { package = "opencadkernel-constraints", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "0764f79" }
-graph = { package = "opencadgraph", git = "https://github.com/HakanSeven12/opencadgraph.git", rev = "75c30c2" }
+kernel = { package = "opencadkernel", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "f051138", features = ["acis", "offset"] }
+kernel-constraints = { package = "opencadkernel-constraints", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "f051138" }
+graph = { package = "opencadgraph", git = "https://github.com/HakanSeven12/opencadgraph.git", rev = "fbee68b" }
 acadifc = { git = "https://github.com/OpenAEC-Foundation/acadifc.git", rev = "47b5603", optional = true }
 dwg-thumbnailer = { path = "crates/dwg-thumbnailer" }
 flate2 = "1"

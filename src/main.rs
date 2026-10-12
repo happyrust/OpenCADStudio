@@ -72,7 +72,9 @@ fn main() -> iced::Result {
             if synced {
                 println!("Successfully synchronized OpenCADStudio MCP schemas to ~/.gemini/antigravity/mcp/opencadstudio/");
             } else {
-                eprintln!("Antigravity MCP directory ~/.gemini/antigravity/mcp/ not found; skipped sync.");
+                eprintln!(
+                    "Antigravity MCP directory ~/.gemini/antigravity/mcp/ not found; skipped sync."
+                );
             }
             return Ok(());
         }
