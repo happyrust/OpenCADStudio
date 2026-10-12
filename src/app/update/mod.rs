@@ -102,9 +102,9 @@ fn reorder_insertion_index(from: usize, to: usize, after: bool, len: usize) -> O
     (insertion != from).then_some(insertion)
 }
 
+mod blocks_palette;
 mod command;
 mod context_menu;
-mod blocks_palette;
 mod dialog;
 mod dynamic;
 pub(in crate::app) mod file;
@@ -368,7 +368,8 @@ impl OpenCADStudio {
             2 => "ATTMODE2",
             _ => "ATTMODE1",
         };
-        self.ribbon.set_dropdown_current("ATTMODE_DROPDOWN", attmode);
+        self.ribbon
+            .set_dropdown_current("ATTMODE_DROPDOWN", attmode);
     }
 
     fn update_message(&mut self, msg: Message) -> Task<Message> {
@@ -398,8 +399,7 @@ impl OpenCADStudio {
             {
                 // Esc backs out of a pending ALIASEDIT draft first, mirroring
                 // the shortcut editor's capture cancel; the next Esc closes.
-                if self.active_modal == Some(super::ModalKind::Aliases) && self.alias_pending_add
-                {
+                if self.active_modal == Some(super::ModalKind::Aliases) && self.alias_pending_add {
                     return self.update(Message::AliasEditorDraftCancel);
                 }
                 if self.active_modal == Some(super::ModalKind::BlockDefinition) {
@@ -461,9 +461,12 @@ impl OpenCADStudio {
         // a mouse move included — without allocating.
         #[cfg(not(target_arch = "wasm32"))]
         let active_command = |app: &Self| -> Option<(u64, Option<&'static str>)> {
-            app.tabs
-                .get(app.active_tab)
-                .map(|tab| (tab.id, tab.active_cmd.as_ref().map(|command| command.name())))
+            app.tabs.get(app.active_tab).map(|tab| {
+                (
+                    tab.id,
+                    tab.active_cmd.as_ref().map(|command| command.name()),
+                )
+            })
         };
         #[cfg(not(target_arch = "wasm32"))]
         let command_before = active_command(self);
@@ -580,9 +583,8 @@ impl OpenCADStudio {
             Message::SpaceMouseWake => self.on_spacemouse_wake(),
             Message::TrackpadPinch(magnification) => self.on_pinch_zoom(magnification),
             Message::SpaceMouseFrame(time) => {
-                self.spacemouse.frame(
-                    time.saturating_duration_since(self.start).as_secs_f64() * 1000.,
-                );
+                self.spacemouse
+                    .frame(time.saturating_duration_since(self.start).as_secs_f64() * 1000.);
                 Task::none()
             }
             Message::SpaceMouseFocus(id, focused) => {
@@ -634,9 +636,8 @@ impl OpenCADStudio {
                     if response["ok"] == false {
                         let code = response["code"].as_str().unwrap_or("failed");
                         let detail = response["error"].as_str().unwrap_or("");
-                        self.command_line.push_error(&format!(
-                            "automation {op}: {code} — {detail}"
-                        ));
+                        self.command_line
+                            .push_error(&format!("automation {op}: {code} — {detail}"));
                     } else if matches!(
                         response["status"].as_str(),
                         Some("completed" | "cancelled" | "waiting_input")
@@ -984,7 +985,8 @@ impl OpenCADStudio {
                     .scene
                     .selection
                     .borrow_mut()
-                    .menu.open_at = None;
+                    .menu
+                    .open_at = None;
                 // Same guard as typed MTP/M2P: point step, not entity pick.
                 let i = self.active_tab;
                 let allowed = self.tabs[i].active_cmd.as_ref().is_some_and(|c| {
@@ -1081,8 +1083,14 @@ impl OpenCADStudio {
                 let model_bg = self
                     .default_bg_color
                     .unwrap_or_else(|| self.model_space.resolve_model_bg(&self.active_theme));
+                let pid_paper_style_scale = self.pid_paper_style_scale;
                 Task::perform(
-                    crate::io::open_path_with_phase(path, progress, model_bg),
+                    crate::io::open_path_with_phase(
+                        path,
+                        progress,
+                        model_bg,
+                        pid_paper_style_scale,
+                    ),
                     move |result| Message::FileOpened(open_id, result),
                 )
             }
@@ -1244,19 +1252,23 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-            Message::ImageEmbedPick => {
-                Task::perform(crate::io::pick_embedded_image_file(), Message::ImageEmbedPickResult)
-            }
+            Message::ImageEmbedPick => Task::perform(
+                crate::io::pick_embedded_image_file(),
+                Message::ImageEmbedPickResult,
+            ),
 
             Message::ImageEmbedPickResult(Ok(image)) => {
                 use crate::command::CadCommand;
                 use crate::modules::draw::draw::raster_image::ImageCommand;
-                self.command_line.push_output(crate::tf!(
-                    "IMAGEEMBED  \"{name}\": {w}×{h} px (embedded)",
-                    name = image.name.as_str(),
-                    w = image.pixel_width,
-                    h = image.pixel_height,
-                ).as_ref());
+                self.command_line.push_output(
+                    crate::tf!(
+                        "IMAGEEMBED  \"{name}\": {w}×{h} px (embedded)",
+                        name = image.name.as_str(),
+                        w = image.pixel_width,
+                        h = image.pixel_height,
+                    )
+                    .as_ref(),
+                );
                 let cmd = ImageCommand::new_embedded(image);
                 let i = self.active_tab;
                 self.command_line.push_info(&cmd.prompt());
@@ -1343,10 +1355,13 @@ impl OpenCADStudio {
                                 .insert(crate::io::font_repo::font_key(name));
                         }
                         for (name, path) in &pairs {
-                            self.command_line.push_output(crate::tf!(
-                                "FONT  Downloaded {name} → {path}",
-                                path = path.display()
-                            ).as_ref());
+                            self.command_line.push_output(
+                                crate::tf!(
+                                    "FONT  Downloaded {name} → {path}",
+                                    path = path.display()
+                                )
+                                .as_ref(),
+                            );
                         }
                         if !unavailable.is_empty() {
                             self.command_line.push_info(crate::tf!(
@@ -1362,14 +1377,16 @@ impl OpenCADStudio {
                         if let Some(path) = path {
                             return Task::done(Message::OpenExternal(path));
                         }
-                        self.command_line.push_info(crate::t!(
-                            "Save and reopen the drawing to apply the new fonts."
-                        ).as_ref());
+                        self.command_line.push_info(
+                            crate::t!("Save and reopen the drawing to apply the new fonts.")
+                                .as_ref(),
+                        );
                     }
                     Err(e) => {
                         // Keep the prompt open: the user can correct a custom
                         // source or retry a transient network failure.
-                        self.command_line.push_error(crate::tf!("Font download failed: {e}").as_ref());
+                        self.command_line
+                            .push_error(crate::tf!("Font download failed: {e}").as_ref());
                     }
                 }
                 Task::none()
@@ -1908,9 +1925,9 @@ impl OpenCADStudio {
                             self.refresh_layer_panel();
                             self.sync_ribbon_styles();
                         }
-                        Err(error) => self.command_line.push_error(
-                            error["error"].as_str().unwrap_or("template"),
-                        ),
+                        Err(error) => self
+                            .command_line
+                            .push_error(error["error"].as_str().unwrap_or("template")),
                     }
                 }
                 Task::none()
@@ -2595,7 +2612,8 @@ impl OpenCADStudio {
                     use crate::app::config::DockSide;
                     use crate::ui::dock::PanelId;
                     if self.dock.location(PanelId::ExternalReferences).is_none() {
-                        self.dock.dock(PanelId::ExternalReferences, DockSide::Right, usize::MAX);
+                        self.dock
+                            .dock(PanelId::ExternalReferences, DockSide::Right, usize::MAX);
                     }
                     self.dock_expanded = Some(PanelId::ExternalReferences);
                     self.refresh_xref_manager();
@@ -2733,16 +2751,13 @@ impl OpenCADStudio {
                 };
                 let new_raw = path.to_string_lossy().into_owned();
                 self.push_undo_snapshot(i, "XREF-PATH");
-                match crate::io::xref::set_ref_path(
-                    &mut self.tabs[i].scene.document,
-                    key,
-                    &new_raw,
-                ) {
+                match crate::io::xref::set_ref_path(&mut self.tabs[i].scene.document, key, &new_raw)
+                {
                     Ok(name) => {
-                        self.command_line.push_output(crate::tf!(
-                            "XREF: Path set for \"{}\" — Reload to apply.",
-                            name
-                        ).as_ref());
+                        self.command_line.push_output(
+                            crate::tf!("XREF: Path set for \"{}\" — Reload to apply.", name)
+                                .as_ref(),
+                        );
                         self.post_ref_op(i);
                     }
                     Err(msg) => self.command_line.push_error(msg.as_str()),
@@ -2752,7 +2767,8 @@ impl OpenCADStudio {
             }
             Message::XrefPathPickResult(Err(e)) => {
                 if e != "Cancelled" {
-                    self.command_line.push_error(crate::tf!("XREF: {e}").as_ref());
+                    self.command_line
+                        .push_error(crate::tf!("XREF: {e}").as_ref());
                 }
                 Task::none()
             }
@@ -2777,9 +2793,11 @@ impl OpenCADStudio {
                         if let Some(found) = entry.found_at.clone() {
                             let is_dwg = found.to_ascii_lowercase().ends_with(".dwg")
                                 || found.to_ascii_lowercase().ends_with(".dxf");
-                            self.command_line.push_output(crate::tf!("XOPEN: opening \"{}\".", found).as_ref());
+                            self.command_line
+                                .push_output(crate::tf!("XOPEN: opening \"{}\".", found).as_ref());
                             if is_dwg {
-                                return self.update(Message::OpenRecent(std::path::PathBuf::from(found)));
+                                return self
+                                    .update(Message::OpenRecent(std::path::PathBuf::from(found)));
                             } else {
                                 #[cfg(not(target_arch = "wasm32"))]
                                 let _ = open::that_detached(&found);
@@ -2815,7 +2833,10 @@ impl OpenCADStudio {
                 self.xref_manager.row_change_path_open = false;
                 let prefill = if let Some(entry) = self.xref_manager.entries.get(index) {
                     let saved = &entry.saved_path;
-                    if let Some(parent) = std::path::Path::new(saved).parent().and_then(|p| p.to_str()) {
+                    if let Some(parent) = std::path::Path::new(saved)
+                        .parent()
+                        .and_then(|p| p.to_str())
+                    {
                         if !parent.is_empty() {
                             format!("XREF Path Find \"{}\" ", parent)
                         } else {
@@ -3157,20 +3178,15 @@ impl OpenCADStudio {
                     super::LayerStateProperty::Frozen => codec::LayerStateMask::FROZEN,
                     super::LayerStateProperty::Locked => codec::LayerStateMask::LOCKED,
                     super::LayerStateProperty::Plot => codec::LayerStateMask::PLOT,
-                    super::LayerStateProperty::NewViewport => {
-                        codec::LayerStateMask::NEW_VIEWPORT
-                    }
+                    super::LayerStateProperty::NewViewport => codec::LayerStateMask::NEW_VIEWPORT,
                     super::LayerStateProperty::Color => codec::LayerStateMask::COLOR,
                     super::LayerStateProperty::LineType => codec::LayerStateMask::LINE_TYPE,
                     super::LayerStateProperty::LineWeight => codec::LayerStateMask::LINE_WEIGHT,
                     super::LayerStateProperty::PlotStyle => codec::LayerStateMask::PLOT_STYLE,
-                    super::LayerStateProperty::Transparency => {
-                        codec::LayerStateMask::TRANSPARENCY
-                    }
+                    super::LayerStateProperty::Transparency => codec::LayerStateMask::TRANSPARENCY,
                 };
                 if let Some(state) = self.layer_state_edit_draft.as_mut() {
-                    state.mask =
-                        codec::LayerStateMask::from_bits(state.mask.bits() ^ flag.bits());
+                    state.mask = codec::LayerStateMask::from_bits(state.mask.bits() ^ flag.bits());
                 }
                 Task::none()
             }
@@ -3440,7 +3456,11 @@ impl OpenCADStudio {
                     crate::tf!(
                         "Sheet layer {} turned {} ({} entities)",
                         row.name,
-                        if on { crate::t!("On") } else { crate::t!("Off") },
+                        if on {
+                            crate::t!("On")
+                        } else {
+                            crate::t!("Off")
+                        },
                         entities
                     )
                     .as_ref(),
@@ -3466,7 +3486,11 @@ impl OpenCADStudio {
                     crate::tf!(
                         "Role {} turned {} ({} entities)",
                         row.name,
-                        if on { crate::t!("On") } else { crate::t!("Off") },
+                        if on {
+                            crate::t!("On")
+                        } else {
+                            crate::t!("Off")
+                        },
                         entities
                     )
                     .as_ref(),
@@ -3852,7 +3876,8 @@ impl OpenCADStudio {
                         .scene
                         .selection
                         .borrow_mut()
-                        .input.last_move_pos = Some(p);
+                        .input
+                        .last_move_pos = Some(p);
                     return Task::none();
                 }
                 self.focus_model_pane(idx);
@@ -3949,7 +3974,8 @@ impl OpenCADStudio {
                 let was_click = !sel.input.right_dragging;
                 // How long the button was held, for the time-sensitive mode.
                 let held_ms = sel
-                    .input.right_press_time
+                    .input
+                    .right_press_time
                     .map_or(0, |t| t.elapsed().as_millis() as i32);
                 sel.input.right_down = false;
                 sel.input.right_press_pos = None;
@@ -4143,7 +4169,8 @@ impl OpenCADStudio {
                     .scene
                     .selection
                     .borrow()
-                    .input.last_move_pos
+                    .input
+                    .last_move_pos
                     .unwrap_or(self.cursor_pos);
                 self.update_grip_hover(i, p);
                 Task::none()
@@ -4538,7 +4565,9 @@ impl OpenCADStudio {
                         continue;
                     };
                     let current = (
-                        crate::scene::pe_url_of(entity).unwrap_or_default().to_owned(),
+                        crate::scene::pe_url_of(entity)
+                            .unwrap_or_default()
+                            .to_owned(),
                         crate::scene::pe_url_description_of(entity)
                             .unwrap_or_default()
                             .to_owned(),
@@ -4990,7 +5019,9 @@ impl OpenCADStudio {
                 self.tabs[i].scene.bump_geometry();
                 self.refresh_properties();
                 crate::entities::common::set_unit_context(
-                    crate::entities::common::UnitContext::from_header(&self.tabs[i].scene.document.header),
+                    crate::entities::common::UnitContext::from_header(
+                        &self.tabs[i].scene.document.header,
+                    ),
                 );
                 Task::none()
             }
@@ -5149,12 +5180,14 @@ impl OpenCADStudio {
                 };
                 let name = state.name.trim().to_string();
                 if name.is_empty() {
-                    state.error_message = Some(crate::t!("Block name cannot be empty.").into_owned());
+                    state.error_message =
+                        Some(crate::t!("Block name cannot be empty.").into_owned());
                     return Task::none();
                 }
                 if let Some(_ch) = state.invalid_name_char() {
                     state.error_message = Some(
-                        crate::t!("Block name cannot contain: \\ / : * ? \" < > | = `").into_owned(),
+                        crate::t!("Block name cannot contain: \\ / : * ? \" < > | = `")
+                            .into_owned(),
                     );
                     return Task::none();
                 }
@@ -5165,13 +5198,21 @@ impl OpenCADStudio {
                 }
                 if !state.objects_specify_onscreen && state.selected_handles.is_empty() {
                     state.error_message = Some(
-                        crate::t!("No objects selected. You must select objects to define a block.")
-                            .into_owned(),
+                        crate::t!(
+                            "No objects selected. You must select objects to define a block."
+                        )
+                        .into_owned(),
                     );
                     return Task::none();
                 }
                 let i = self.active_tab;
-                if self.tabs[i].scene.document.block_records.get(&name).is_some() {
+                if self.tabs[i]
+                    .scene
+                    .document
+                    .block_records
+                    .get(&name)
+                    .is_some()
+                {
                     state.confirm_redefine = Some(name);
                     return Task::none();
                 }
@@ -5197,12 +5238,16 @@ impl OpenCADStudio {
                         let current_path = std::path::Path::new(&state.file_path);
                         let file_stem = current_path.file_stem().and_then(|s| s.to_str());
                         let is_default_or_block = file_stem == Some("new_block")
-                            || state.existing_blocks.iter().any(|b| Some(b.as_str()) == file_stem);
+                            || state
+                                .existing_blocks
+                                .iter()
+                                .any(|b| Some(b.as_str()) == file_stem);
                         if is_default_or_block {
                             let new_file_name = format!("{}.dwg", trimmed);
                             if let Some(parent) = current_path.parent() {
                                 if !parent.as_os_str().is_empty() {
-                                    state.file_path = parent.join(new_file_name).to_string_lossy().to_string();
+                                    state.file_path =
+                                        parent.join(new_file_name).to_string_lossy().to_string();
                                 } else {
                                     state.file_path = new_file_name;
                                 }
@@ -5323,12 +5368,19 @@ impl OpenCADStudio {
                     WblockSourceMode::Block => {
                         let name = state.block_name.trim();
                         if name.is_empty() {
-                            state.error_message =
-                                Some(crate::t!("Please select or enter a block name.").into_owned());
+                            state.error_message = Some(
+                                crate::t!("Please select or enter a block name.").into_owned(),
+                            );
                             return Task::none();
                         }
                         let i = self.active_tab;
-                        if self.tabs[i].scene.document.block_records.get(name).is_none() {
+                        if self.tabs[i]
+                            .scene
+                            .document
+                            .block_records
+                            .get(name)
+                            .is_none()
+                        {
                             state.error_message = Some(
                                 crate::tf!("Block \"{}\" does not exist in drawing.", name)
                                     .into_owned(),
@@ -5453,10 +5505,7 @@ impl OpenCADStudio {
                             }
                             WblockSourceMode::Objects => {
                                 crate::modules::insert::wblock::extract_entities_to_doc_with_base(
-                                    &document,
-                                    &handles,
-                                    base_point,
-                                    unit,
+                                    &document, &handles, base_point, unit,
                                 )
                                 .map_err(|e| e.to_string())?
                             }
@@ -5515,7 +5564,9 @@ impl OpenCADStudio {
                 self.tabs[i].scene.bump_geometry();
                 self.refresh_properties();
                 crate::entities::common::set_unit_context(
-                    crate::entities::common::UnitContext::from_header(&self.tabs[i].scene.document.header),
+                    crate::entities::common::UnitContext::from_header(
+                        &self.tabs[i].scene.document.header,
+                    ),
                 );
                 let label = crate::modules::draw::units::linear_format_label(code);
                 self.command_line
@@ -5845,8 +5896,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::AutoConstrainReset => {
-                self.auto_constrain_settings =
-                    super::settings::AutoConstrainSettings::default();
+                self.auto_constrain_settings = super::settings::AutoConstrainSettings::default();
                 self.auto_constrain_selected_row = 0;
                 self.auto_constrain_distance_input =
                     format!("{}", self.auto_constrain_settings.distance_tolerance);
@@ -5885,8 +5935,7 @@ impl OpenCADStudio {
                         self.auto_constrain_settings.distance_tolerance = distance;
                         self.auto_constrain_settings.angle_tolerance_deg = angle;
                         self.auto_constrain_settings.sanitize();
-                        self.auto_constrain_saved =
-                            Some(self.auto_constrain_settings.clone());
+                        self.auto_constrain_saved = Some(self.auto_constrain_settings.clone());
                         self.persist_settings_if_changed();
                         if matches!(action, Message::AutoConstrainOk) {
                             self.close_active_modal();
@@ -8103,6 +8152,15 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::PidPaperStyleScaleChanged(hundredths) => {
+                // Stored for the next `.pid` open. Drawings already on screen
+                // keep the multiple they were imported with.
+                self.pid_paper_style_scale =
+                    super::settings::clamp_pid_paper_style_scale(f64::from(hundredths) / 100.0);
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+
             Message::CrosshairColorChanged(value) => {
                 self.crosshair_color_input = value.clone();
                 if value.trim().is_empty() {
@@ -8765,7 +8823,9 @@ impl OpenCADStudio {
             Message::CloseModal => {
                 // The Invalid Area dialog's ✕ undoes the boundary change, as its Cancel does.
                 if self.active_modal == Some(super::ModalKind::CountInvalidArea) {
-                    return self.update(Message::Count(crate::ui::window::count_palette::CountMsg::InvalidUndo));
+                    return self.update(Message::Count(
+                        crate::ui::window::count_palette::CountMsg::InvalidUndo,
+                    ));
                 }
                 if self.active_modal == Some(super::ModalKind::SheetSet) {
                     self.close_sheet_set_dialog();
@@ -8782,7 +8842,11 @@ impl OpenCADStudio {
                     self.attdef_dialog = None;
                     let editing = self.attdef_edit.take().is_some();
                     self.close_active_modal();
-                    return if editing { self.post_editor_closed(false) } else { Task::none() };
+                    return if editing {
+                        self.post_editor_closed(false)
+                    } else {
+                        Task::none()
+                    };
                 }
                 // Cancelling the section settings drops the waiting extraction.
                 if self.active_modal == Some(super::ModalKind::PcSection) {
@@ -8874,7 +8938,12 @@ impl OpenCADStudio {
                             .unwrap_or(0);
                         self.close_active_modal();
                         return Task::perform(
-                            crate::io::open_path_with_phase(path, progress, model_bg),
+                            crate::io::open_path_with_phase(
+                                path,
+                                progress,
+                                model_bg,
+                                self.pid_paper_style_scale,
+                            ),
                             move |result| Message::FileOpened(open_id, result),
                         );
                     }
@@ -8906,6 +8975,7 @@ impl OpenCADStudio {
                             model_bg,
                             initial_error,
                             initial_stats,
+                            self.pid_paper_style_scale,
                         ),
                         move |result| Message::FileOpened(open_id, result),
                     )
@@ -11329,7 +11399,10 @@ mod tests {
         let w = app
             .dock
             .width(crate::ui::dock::PanelId::Properties, app.win_size.0);
-        assert!(w >= crate::ui::dock::DOCK_MIN_W, "dock width collapsed to {w}");
+        assert!(
+            w >= crate::ui::dock::DOCK_MIN_W,
+            "dock width collapsed to {w}"
+        );
     }
 }
 
@@ -11520,7 +11593,9 @@ mod free_text_entry_tests {
         app.clipboard = vec![codec::EntityType::Line(codec::entities::Line::default())];
 
         // A dialog field pasted natively: no command-line text, no PASTECLIP.
-        let _ = app.update(Message::PasteShortcutResolved(crate::app::PasteFocus::Field));
+        let _ = app.update(Message::PasteShortcutResolved(
+            crate::app::PasteFocus::Field,
+        ));
         assert_eq!(app.command_line.input, "EXISTING");
         assert!(app.tabs[0].active_cmd.is_none());
     }
@@ -11539,7 +11614,10 @@ mod free_text_entry_tests {
         // Copied objects paste even though the command line holds focus.
         app.clipboard = vec![codec::EntityType::Line(codec::entities::Line::default())];
         let _ = app.update(Message::PasteShortcutResolved(PasteFocus::CommandLine));
-        assert!(app.tabs[0].active_cmd.as_ref().is_some_and(|cmd| cmd.name() == "PASTECLIP"));
+        assert!(app.tabs[0]
+            .active_cmd
+            .as_ref()
+            .is_some_and(|cmd| cmd.name() == "PASTECLIP"));
     }
 }
 

@@ -84,12 +84,7 @@ impl Default for AutoConstrainSettings {
 impl AutoConstrainSettings {
     pub fn sanitize(&mut self) {
         let mut priority = Vec::with_capacity(AutoConstraintKind::ALL.len());
-        for kind in self
-            .priority
-            .iter()
-            .copied()
-            .chain(AutoConstraintKind::ALL)
-        {
+        for kind in self.priority.iter().copied().chain(AutoConstraintKind::ALL) {
             if !priority.contains(&kind) {
                 priority.push(kind);
             }
@@ -448,6 +443,16 @@ pub struct UserSettings {
     pub command_text_color: Option<[u8; 3]>,
     /// Model-space lineweight preview scale as a percentage.
     pub lineweight_display_scale: i32,
+    /// Screen multiple on style-declared P&ID sizes (dash segments, line
+    /// weights, point-marker strokes) the next time a `.pid` opens. `1.0`
+    /// leaves those sizes as the file states them. Text height is not
+    /// multiplied. A missing key in an older settings file is `1.0`; a
+    /// present value outside `0.25..=4.0`, or a non-finite one, is clamped.
+    #[serde(
+        default = "default_pid_paper_style_scale",
+        deserialize_with = "deserialize_pid_paper_style_scale"
+    )]
+    pub pid_paper_style_scale: f64,
     /// Isometric drafting changes the grid and crosshair to the active axis
     /// pair. Session-only: a persisted On turned every drawing's crosshair
     /// into the isoplane pair (one vertical, one diagonal line) on every
@@ -571,7 +576,10 @@ pub struct UserSettings {
     pub language: crate::i18n::Language,
     /// CLIPROMPTLINES: how many temporary prompt lines for a single command
     /// are displayed above the command window (0–50, Registry, default 3).
-    #[serde(default = "default_clipromptlines", deserialize_with = "deserialize_clipromptlines")]
+    #[serde(
+        default = "default_clipromptlines",
+        deserialize_with = "deserialize_clipromptlines"
+    )]
     pub cliprompt_lines: i32,
     /// COMMANDLINEFADETIME: how long command-line overlay history lines stay
     /// visible, in milliseconds (0–60000, default 3000). 0 skips transient lines.
@@ -810,6 +818,34 @@ pub fn clamp_clipromptlines(v: i32) -> i32 {
     v.clamp(0, 50)
 }
 
+/// Lowest screen multiple Options will keep for style-declared P&ID sizes.
+pub const PID_PAPER_STYLE_SCALE_MIN: f64 = 0.25;
+/// Highest screen multiple Options will keep for style-declared P&ID sizes.
+pub const PID_PAPER_STYLE_SCALE_MAX: f64 = 4.0;
+
+fn default_pid_paper_style_scale() -> f64 {
+    1.0
+}
+
+/// A usable multiple, clamped into the Options range. Non-finite input is
+/// the same as leaving the sizes as the file states them.
+pub fn clamp_pid_paper_style_scale(scale: f64) -> f64 {
+    if scale.is_finite() {
+        scale.clamp(PID_PAPER_STYLE_SCALE_MIN, PID_PAPER_STYLE_SCALE_MAX)
+    } else {
+        default_pid_paper_style_scale()
+    }
+}
+
+fn deserialize_pid_paper_style_scale<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(clamp_pid_paper_style_scale(
+        f64::deserialize(deserializer).unwrap_or_else(|_| default_pid_paper_style_scale()),
+    ))
+}
+
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
@@ -844,6 +880,7 @@ impl Default for UserSettings {
             snap_marker_color: None,
             command_text_color: None,
             lineweight_display_scale: 100,
+            pid_paper_style_scale: default_pid_paper_style_scale(),
             isometric_drafting: false,
             iso_plane: IsoPlane::Left,
             snap_angle_deg: 0.0,
@@ -967,7 +1004,10 @@ mod tests {
             SnapType::Center,
             SnapType::Intersection,
         ] {
-            assert!(modes.contains(&expected), "{expected:?} is not in the default set");
+            assert!(
+                modes.contains(&expected),
+                "{expected:?} is not in the default set"
+            );
         }
 
         // The Snapper and the persisted default have to agree, or the running
@@ -978,12 +1018,19 @@ mod tests {
     #[test]
     fn osmode_encodes_bits_and_suppress() {
         // Endpoint(1) + Midpoint(2) + Intersection(32) = 35, master on.
-        let on = [SnapType::Endpoint, SnapType::Midpoint, SnapType::Intersection];
+        let on = [
+            SnapType::Endpoint,
+            SnapType::Midpoint,
+            SnapType::Intersection,
+        ];
         assert_eq!(osmode_from_snaps(on.iter(), true), 35);
         // Master off sets the suppress bit (16384).
         assert_eq!(osmode_from_snaps(on.iter(), false), 35 | 16384);
         // OCS-only snaps carry no bit and are dropped.
-        assert_eq!(osmode_from_snaps([SnapType::Grid, SnapType::ObjectPick].iter(), true), 0);
+        assert_eq!(
+            osmode_from_snaps([SnapType::Grid, SnapType::ObjectPick].iter(), true),
+            0
+        );
     }
 
     #[test]
@@ -1035,7 +1082,10 @@ mod tests {
     fn script_commands_default_on_and_survive_a_round_trip() {
         let missing: crate::app::config::AppConfig =
             serde_json::from_str(r#"{"settings": {"pick_add": false}}"#).unwrap();
-        assert!(missing.settings.script_commands, "an old config keeps scripts allowed");
+        assert!(
+            missing.settings.script_commands,
+            "an old config keeps scripts allowed"
+        );
         let off: crate::app::config::AppConfig =
             serde_json::from_str(r#"{"settings": {"script_commands": false}}"#).unwrap();
         assert!(!off.settings.script_commands);
@@ -1065,5 +1115,26 @@ mod tests {
             !loaded.isometric_drafting,
             "a persisted On must not turn isometric drafting back on"
         );
+    }
+
+    #[test]
+    fn pid_paper_style_scale_defaults_to_one_and_clamps() {
+        let missing: UserSettings =
+            serde_json::from_str(r#"{ "lineweight_display_scale": 100 }"#).expect("old file");
+        assert_eq!(
+            missing.pid_paper_style_scale, 1.0,
+            "a settings file from before this field keeps the unscaled import"
+        );
+        let low: UserSettings =
+            serde_json::from_str(r#"{ "pid_paper_style_scale": 0.1 }"#).expect("low");
+        assert_eq!(low.pid_paper_style_scale, PID_PAPER_STYLE_SCALE_MIN);
+        let high: UserSettings =
+            serde_json::from_str(r#"{ "pid_paper_style_scale": 9.0 }"#).expect("high");
+        assert_eq!(high.pid_paper_style_scale, PID_PAPER_STYLE_SCALE_MAX);
+        let kept: UserSettings =
+            serde_json::from_str(r#"{ "pid_paper_style_scale": 1.5 }"#).expect("kept");
+        assert_eq!(kept.pid_paper_style_scale, 1.5);
+        assert_eq!(clamp_pid_paper_style_scale(f64::NAN), 1.0);
+        assert_eq!(UserSettings::default().pid_paper_style_scale, 1.0);
     }
 }

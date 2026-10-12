@@ -15,21 +15,19 @@ pub(crate) use command_driver::{copy_to_clipboard_kernel, paste_entities_kernel,
 pub(crate) mod commands;
 pub(crate) mod dim_viewport;
 #[cfg(test)]
-mod viewport_dimension_tests;
-#[cfg(test)]
 mod dimension_preview_tests;
 mod document;
 mod drafting_settings;
 pub(crate) mod expr_eval;
-mod options_session;
 mod find_replace;
 pub(crate) mod helpers;
 mod history;
 mod layers;
 mod model_ops;
+mod mtext_editor;
 mod navigation;
 mod node_graph;
-mod mtext_editor;
+mod options_session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugin_host;
 mod presspull_ops;
@@ -44,6 +42,8 @@ mod text_inline;
 mod tolerance_dialog;
 mod update;
 mod view;
+#[cfg(test)]
+mod viewport_dimension_tests;
 mod visibility;
 
 pub use style_ops::StyleKind;
@@ -611,6 +611,8 @@ pub(super) struct OpenCADStudio {
     snap_angle_input: String,
     /// Model-space lineweight preview scale, in percent (25..=200).
     lineweight_display_scale: i32,
+    /// Screen multiple applied the next time a `.pid` is opened.
+    pid_paper_style_scale: f64,
     /// Isometric drafting state and active axis pair.
     isometric_drafting: bool,
     iso_plane: settings::IsoPlane,
@@ -1781,8 +1783,7 @@ impl ClipboardDeps {
                 if !objects.is_empty() {
                     let mut annotation_scales = Vec::new();
                     for (_, object) in &objects {
-                        let codec::objects::ObjectType::ObjectContextData(context) = object
-                        else {
+                        let codec::objects::ObjectType::ObjectContextData(context) = object else {
                             continue;
                         };
                         if annotation_scales
@@ -1913,10 +1914,7 @@ impl ClipboardDeps {
     /// Snapshot every block definition the `entities` reference through an
     /// INSERT, walking nested INSERTs transitively. Model/paper space and
     /// xref blocks are skipped — those aren't portable definitions.
-    fn capture_blocks(
-        doc: &codec::CadDocument,
-        entities: &[codec::EntityType],
-    ) -> Vec<BlockDef> {
+    fn capture_blocks(doc: &codec::CadDocument, entities: &[codec::EntityType]) -> Vec<BlockDef> {
         use codec::EntityType;
         use rustc_hash::FxHashSet;
         let mut seen: FxHashSet<String> = FxHashSet::default();
@@ -2349,6 +2347,9 @@ pub enum Message {
     CursorTypeChanged(settings::CursorType),
     /// Set the model-space lineweight preview scale from Options.
     LineweightDisplayScaleChanged(i32),
+    /// Set the P&ID paper-style screen multiple from Options, in hundredths
+    /// (167 is 1.67). Takes effect the next time a `.pid` opens.
+    PidPaperStyleScaleChanged(i32),
     /// Edit the optional crosshair RGB value; blank restores automatic contrast.
     CrosshairColorChanged(String),
     SnapMarkerColorChanged(String),
@@ -3743,7 +3744,10 @@ pub enum Message {
     BlockPalette(crate::ui::window::block_palette::BlockPaletteMsg),
     /// A line-row click in the P&ID legend list: zoom the model camera to the
     /// world-space rectangle (already padded by the panel).
-    PidLegendJump { min: (f64, f64), max: (f64, f64) },
+    PidLegendJump {
+        min: (f64, f64),
+        max: (f64, f64),
+    },
     /// A symbol-row click in the P&ID legend list: select the symbol's
     /// entities and its tag lettering (the group the SVG export writes as
     /// `<g tagName>`), frame them in red and zoom to them, as PIDTAG does.
@@ -4284,6 +4288,7 @@ impl OpenCADStudio {
             isolines_awaiting_regen: false,
             snap_angle_input: "0".to_string(),
             lineweight_display_scale: 100,
+            pid_paper_style_scale: 1.0,
             isometric_drafting: false,
             iso_plane: settings::IsoPlane::Left,
             snap_angle_deg: 0.0,
