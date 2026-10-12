@@ -377,6 +377,7 @@ impl OpenCADStudio {
                         self.command_text_color,
                         &self.command_text_color_input,
                         self.lineweight_display_scale,
+                        self.pid_paper_style_scale,
                         &self.model_space,
                         &self.model_bg_input,
                         &self.paper_bg_input,

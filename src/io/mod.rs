@@ -273,8 +273,16 @@ pub async fn open_path_with_phase(
     path: PathBuf,
     progress: Arc<OpenProgressState>,
     model_bg: [f32; 4],
+    pid_paper_style_scale: f64,
 ) -> Result<(String, PathBuf, CadDocument, DerivedCaches), OpenLoadError> {
-    open_path_with_phase_attempt(path, progress, model_bg, OpenAttempt::Strict).await
+    open_path_with_phase_attempt(
+        path,
+        progress,
+        model_bg,
+        OpenAttempt::Strict,
+        pid_paper_style_scale,
+    )
+    .await
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -282,6 +290,7 @@ pub async fn open_path_with_phase(
     _path: PathBuf,
     _progress: Arc<OpenProgressState>,
     _model_bg: [f32; 4],
+    _pid_paper_style_scale: f64,
 ) -> Result<(String, PathBuf, CadDocument, DerivedCaches), OpenLoadError> {
     Err(OpenLoadError::from(
         "filesystem path opening is unavailable on this target",
@@ -295,12 +304,14 @@ pub async fn recover_path_with_phase(
     model_bg: [f32; 4],
     initial_error: String,
     initial_stats: Option<codec::ReadStats>,
+    pid_paper_style_scale: f64,
 ) -> Result<(String, PathBuf, CadDocument, DerivedCaches), OpenLoadError> {
     open_path_with_phase_attempt(
         path,
         progress,
         model_bg,
         OpenAttempt::Recovery(initial_error, initial_stats),
+        pid_paper_style_scale,
     )
     .await
 }
@@ -336,6 +347,7 @@ async fn open_path_with_phase_attempt(
     progress: Arc<OpenProgressState>,
     model_bg: [f32; 4],
     attempt: OpenAttempt,
+    pid_paper_style_scale: f64,
 ) -> Result<(String, PathBuf, CadDocument, DerivedCaches), OpenLoadError> {
     let name = path
         .file_name()
@@ -386,7 +398,12 @@ async fn open_path_with_phase_attempt(
                             recoverable: false,
                         }
                     })?;
-                    let outcome = load_file_for_open(&path2, Some(parser_progress), &attempt)?;
+                    let outcome = load_file_for_open(
+                        &path2,
+                        Some(parser_progress),
+                        &attempt,
+                        pid_paper_style_scale,
+                    )?;
                     let read_stats = outcome.stats;
                     let mut doc = outcome.document;
                     let parse_ms = t_parse.elapsed().as_millis() as u32;
@@ -878,7 +895,8 @@ pub(crate) fn load_file_with_progress(
     path: &Path,
     _progress: Option<Arc<dyn Fn(u16) + Send + Sync>>,
 ) -> Result<codec::ReadOutcome, String> {
-    let outcome = read_file_attempt(path, _progress, false).map_err(|failure| failure.message)?;
+    let outcome =
+        read_file_attempt(path, _progress, false, 1.0).map_err(|failure| failure.message)?;
     if !outcome.stats.has_usable_drawing_data() {
         return Err("initial read returned no source drawing records".to_string());
     }
@@ -890,15 +908,17 @@ fn load_file_for_open(
     path: &Path,
     progress: Option<Arc<dyn Fn(u16) + Send + Sync>>,
     attempt: &OpenAttempt,
+    pid_paper_style_scale: f64,
 ) -> Result<codec::ReadOutcome, OpenAttemptFailure> {
     let outcome = match attempt {
         OpenAttempt::Strict => {
-            let outcome =
-                read_file_attempt(path, progress, false).map_err(|failure| OpenAttemptFailure {
+            let outcome = read_file_attempt(path, progress, false, pid_paper_style_scale).map_err(
+                |failure| OpenAttemptFailure {
                     message: failure.message,
                     read_stats: None,
                     recoverable: failure.recoverable,
-                })?;
+                },
+            )?;
             if !outcome.stats.has_usable_drawing_data() {
                 return Err(OpenAttemptFailure {
                     message: "initial read returned no source drawing records".to_string(),
@@ -927,8 +947,8 @@ fn load_file_for_open(
             outcome
         }
         OpenAttempt::Recovery(initial_error, initial_stats) => {
-            let mut outcome =
-                read_file_attempt(path, progress, true).map_err(|failure| OpenAttemptFailure {
+            let mut outcome = read_file_attempt(path, progress, true, pid_paper_style_scale)
+                .map_err(|failure| OpenAttemptFailure {
                     message: format!(
                         "initial read failed: {initial_error}; recovery read failed: {}",
                         failure.message
@@ -1040,6 +1060,7 @@ fn read_file_attempt(
     path: &Path,
     progress: Option<Arc<dyn Fn(u16) + Send + Sync>>,
     failsafe: bool,
+    pid_paper_style_scale: f64,
 ) -> Result<codec::ReadOutcome, ReaderFailure> {
     let ext = path
         .extension()
@@ -1058,7 +1079,7 @@ fn read_file_attempt(
         "dwg" | "dwt" | "dws" => read_dwg_path(path, progress, failsafe),
         "dxf" => read_dxf_path(path, failsafe),
         #[cfg(not(target_arch = "wasm32"))]
-        "pid" => read_pid_path(path),
+        "pid" => read_pid_path(path, pid_paper_style_scale),
         _ => Err(ReaderFailure::terminal(format!(
             "Unsupported file format: .{ext}"
         ))),
@@ -1238,11 +1259,12 @@ fn read_dxf_path(path: &Path, failsafe: bool) -> Result<codec::ReadOutcome, Read
 /// A failure is terminal: re-reading a `.pid` in DWG failsafe mode has nothing
 /// to offer, so there is no second attempt worth prompting for.
 #[cfg(not(target_arch = "wasm32"))]
-fn read_pid_path(path: &Path) -> Result<codec::ReadOutcome, ReaderFailure> {
+fn read_pid_path(path: &Path, paper_style_scale: f64) -> Result<codec::ReadOutcome, ReaderFailure> {
     let pid::PidImport {
         mut document,
         summary,
-    } = pid::load_pid(path).map_err(ReaderFailure::terminal)?;
+    } = pid::load_pid_with(path, &pid::PidImportOptions { paper_style_scale })
+        .map_err(ReaderFailure::terminal)?;
     // `ReadOutcome` is the format-agnostic shape every reader returns and
     // has no room for the summary, so it rides inside the document -- as
     // custom document properties, which cost it nothing -- until the

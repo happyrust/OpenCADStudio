@@ -1,0 +1,364 @@
+{
+  "ok": true,
+  "status": "completed",
+  "request_id": "rest-2",
+  "error": null,
+  "result": {
+    "path": "D:\\work\\plant-code\\cad\\OpenCADStudio\\docs\\evidence\\2026-10-12-dash-pitch-option-check\\k53-line2.png",
+    "scope": "viewport",
+    "width": 2178,
+    "height": 1055,
+    "scale_factor": 1.5,
+    "document_id": 2,
+    "revision": 0,
+    "camera_revision": 3,
+    "_spatial": {
+      "crs": "CAD_WCS",
+      "unit": "Unitless",
+      "pixel_resolution": [
+        2178,
+        1055
+      ],
+      "world_bounds": {
+        "min": [
+          122.64999918146056,
+          197.4756600327848
+        ],
+        "max": [
+          174.35000081853943,
+          222.5243399672152
+        ]
+      },
+      "pixel_to_world_matrix": [
+        0.02373737448901693,
+        0.0,
+        0.0,
+        -0.023742824582398507,
+        122.64999918146056,
+        222.5243399672152
+      ],
+      "world_to_pixel_matrix": [
+        42.12765824049712,
+        0.0,
+        0.0,
+        -42.11798796430226,
+        -5166.957248713822,
+        9372.277472503474
+      ],
+      "camera": {
+        "eye": [
+          148.5,
+          210.0,
+          52.184749603271484
+        ],
+        "target": [
+          148.5,
+          210.0,
+          0.0
+        ],
+        "distance": 52.184749603271484,
+        "ortho_size": 12.52433967590332,
+        "projection": "Orthographic",
+        "fov_y": 0.4710899591445923
+      },
+      "target_plane": {
+        "normal": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "origin": [
+          148.5,
+          210.0,
+          0.0
+        ]
+      },
+      "annotations": [
+        {
+          "tag": 1,
+          "handle": "EF",
+          "type": "Text",
+          "layer": "PID-SYMBOL-LABEL",
+          "screen_pixel": [
+            1777,
+            544
+          ],
+          "screen_bounds": [
+            1651,
+            502,
+            1904,
+            586
+          ],
+          "world_center": [
+            164.83534600067102,
+            209.611358595994,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 2,
+          "handle": "EE",
+          "type": "Line",
+          "layer": "Default",
+          "screen_pixel": [
+            1082,
+            544
+          ],
+          "screen_bounds": [
+            547,
+            544,
+            1617,
+            544
+          ],
+          "world_center": [
+            148.335346000671,
+            209.611358595994,
+            0.0
+          ],
+          "selected": false
+        }
+      ]
+    },
+    "pixel_to_world_matrix": [
+      0.02373737448901693,
+      0.0,
+      0.0,
+      -0.023742824582398507,
+      122.64999918146056,
+      222.5243399672152
+    ],
+    "world_to_pixel_matrix": [
+      42.12765824049712,
+      0.0,
+      0.0,
+      -42.11798796430226,
+      -5166.957248713822,
+      9372.277472503474
+    ],
+    "viewport_world_bounds": {
+      "min": [
+        122.64999918146056,
+        197.4756600327848
+      ],
+      "max": [
+        174.35000081853943,
+        222.5243399672152
+      ]
+    },
+    "camera": {
+      "eye": [
+        148.5,
+        210.0,
+        52.184749603271484
+      ],
+      "target": [
+        148.5,
+        210.0,
+        0.0
+      ],
+      "distance": 52.184749603271484,
+      "ortho_size": 12.52433967590332,
+      "projection": "Orthographic",
+      "fov_y": 0.4710899591445923
+    },
+    "annotated": false,
+    "annotations": [
+      {
+        "tag": 1,
+        "handle": "EF",
+        "type": "Text",
+        "layer": "PID-SYMBOL-LABEL",
+        "screen_pixel": [
+          1777,
+          544
+        ],
+        "screen_bounds": [
+          1651,
+          502,
+          1904,
+          586
+        ],
+        "world_center": [
+          164.83534600067102,
+          209.611358595994,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 2,
+        "handle": "EE",
+        "type": "Line",
+        "layer": "Default",
+        "screen_pixel": [
+          1082,
+          544
+        ],
+        "screen_bounds": [
+          547,
+          544,
+          1617,
+          544
+        ],
+        "world_center": [
+          148.335346000671,
+          209.611358595994,
+          0.0
+        ],
+        "selected": false
+      }
+    ],
+    "visible_entities": [
+      {
+        "tag": 1,
+        "handle": "EF",
+        "type": "Text",
+        "layer": "PID-SYMBOL-LABEL",
+        "screen_pixel": [
+          1777,
+          544
+        ],
+        "screen_bounds": [
+          1651,
+          502,
+          1904,
+          586
+        ],
+        "world_center": [
+          164.83534600067102,
+          209.611358595994,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 2,
+        "handle": "EE",
+        "type": "Line",
+        "layer": "Default",
+        "screen_pixel": [
+          1082,
+          544
+        ],
+        "screen_bounds": [
+          547,
+          544,
+          1617,
+          544
+        ],
+        "world_center": [
+          148.335346000671,
+          209.611358595994,
+          0.0
+        ],
+        "selected": false
+      }
+    ]
+  },
+  "changes": [],
+  "state": {
+    "ok": true,
+    "protocol": 1,
+    "session_id": "c8f4df09affff74b66ec70cb43e041ae",
+    "version": "2026.40.1",
+    "mode": "gui",
+    "enabled": true,
+    "read_only": false,
+    "missing_fonts": [],
+    "document_id": 2,
+    "revision": 0,
+    "geometry_revision": 13,
+    "camera_revision": 3,
+    "hand_seed": "1C6",
+    "plugins": [],
+    "documents": [
+      {
+        "id": 1,
+        "title": "Start",
+        "path": null,
+        "dirty": false,
+        "revision": 0,
+        "start": true
+      },
+      {
+        "id": 2,
+        "title": "Drawing1",
+        "path": "D:\\work\\plant-code\\cad\\pid-parse\\test-file\\DWG-0201GP06-01.pid",
+        "dirty": true,
+        "revision": 0,
+        "start": false
+      }
+    ],
+    "selection": [],
+    "command": null,
+    "modal": null,
+    "layout": "Model",
+    "ucs": null,
+    "cursor": {
+      "world": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "screen": [
+        0.0,
+        0.0
+      ]
+    },
+    "viewport_size": [
+      1451.6666259765625,
+      703.3333129882812
+    ],
+    "camera": {
+      "target": [
+        148.5,
+        210.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "distance": 52.184749603271484,
+      "fov_y": 0.4710899591445923,
+      "projection": "Orthographic",
+      "yaw": 0.0,
+      "pitch": 1.5707963705062866
+    },
+    "mtext_editor": null,
+    "text_editor": false,
+    "event_cursor": 2,
+    "operation": null,
+    "capabilities": [
+      "commands",
+      "command_manifest",
+      "step_input",
+      "batch",
+      "compact_results",
+      "entity_pick",
+      "structure_pick",
+      "selection",
+      "user_select",
+      "properties",
+      "records",
+      "record_schemas",
+      "record_filters",
+      "atomic_record_updates",
+      "layers",
+      "history",
+      "documents",
+      "events",
+      "capture",
+      "viewport_capture",
+      "measure",
+      "spatial_query",
+      "pid_legend",
+      "audit",
+      "verified_save",
+      "explicit_save_version"
+    ]
+  }
+}

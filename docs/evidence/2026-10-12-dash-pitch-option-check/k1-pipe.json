@@ -1,0 +1,892 @@
+{
+  "ok": true,
+  "status": "completed",
+  "request_id": "rest-8",
+  "error": null,
+  "result": {
+    "path": "D:\\work\\plant-code\\cad\\OpenCADStudio\\docs\\evidence\\2026-10-12-dash-pitch-option-check\\k1-pipe.png",
+    "scope": "viewport",
+    "width": 2178,
+    "height": 1055,
+    "scale_factor": 1.5,
+    "document_id": 2,
+    "revision": 0,
+    "camera_revision": 9,
+    "_spatial": {
+      "crs": "CAD_WCS",
+      "unit": "Unitless",
+      "pixel_resolution": [
+        2178,
+        1055
+      ],
+      "world_bounds": {
+        "min": [
+          50.29999971438199,
+          215.43983929856887
+        ],
+        "max": [
+          87.70000028561802,
+          233.56016070143113
+        ]
+      },
+      "pixel_to_world_matrix": [
+        0.017171717433992668,
+        0.0,
+        0.0,
+        -0.01717566009749977,
+        50.29999971438199,
+        233.56016070143113
+      ],
+      "world_to_pixel_matrix": [
+        58.23529322817921,
+        0.0,
+        0.0,
+        -58.221925348043435,
+        -2929.2352327443655,
+        13598.32224063575
+      ],
+      "camera": {
+        "eye": [
+          69.0,
+          224.5,
+          37.75067138671875
+        ],
+        "target": [
+          69.0,
+          224.5,
+          0.0
+        ],
+        "distance": 37.75067138671875,
+        "ortho_size": 9.060160636901855,
+        "projection": "Orthographic",
+        "fov_y": 0.4710899591445923
+      },
+      "target_plane": {
+        "normal": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "origin": [
+          69.0,
+          224.5,
+          0.0
+        ]
+      },
+      "annotations": [
+        {
+          "tag": 1,
+          "handle": "1A2",
+          "type": "Polyline",
+          "layer": "Labels",
+          "screen_pixel": [
+            1892,
+            407
+          ],
+          "screen_bounds": [
+            1836,
+            289,
+            1947,
+            524
+          ],
+          "world_center": [
+            82.7803920561014,
+            226.576459088923,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 2,
+          "handle": "C4",
+          "type": "Text",
+          "layer": "PID-SYMBOL-LABEL",
+          "screen_pixel": [
+            198,
+            524
+          ],
+          "screen_bounds": [
+            93,
+            466,
+            303,
+            582
+          ],
+          "world_center": [
+            53.70178458305193,
+            224.56084753986266,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 3,
+          "handle": "1B2",
+          "type": "Line",
+          "layer": "Labels",
+          "screen_pixel": [
+            2035,
+            348
+          ],
+          "screen_bounds": [
+            1947,
+            289,
+            2124,
+            408
+          ],
+          "world_center": [
+            85.25249894698612,
+            227.57607853286802,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 4,
+          "handle": "1B4",
+          "type": "Line",
+          "layer": "Labels",
+          "screen_pixel": [
+            2035,
+            230
+          ],
+          "screen_bounds": [
+            1947,
+            171,
+            2124,
+            289
+          ],
+          "world_center": [
+            85.25249894698611,
+            229.60807853286803,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 5,
+          "handle": "122",
+          "type": "Point",
+          "layer": "Default",
+          "screen_pixel": [
+            1836,
+            524
+          ],
+          "screen_bounds": [
+            1836,
+            524,
+            1836,
+            524
+          ],
+          "world_center": [
+            81.8322851652167,
+            224.560839644978,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 6,
+          "handle": "132",
+          "type": "Point",
+          "layer": "ConsistencyChecks",
+          "screen_pixel": [
+            1836,
+            524
+          ],
+          "screen_bounds": [
+            1836,
+            524,
+            1836,
+            524
+          ],
+          "world_center": [
+            81.8322851652167,
+            224.560839644978,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 7,
+          "handle": "135",
+          "type": "Point",
+          "layer": "ConsistencyChecks",
+          "screen_pixel": [
+            1836,
+            524
+          ],
+          "screen_bounds": [
+            1836,
+            524,
+            1836,
+            524
+          ],
+          "world_center": [
+            81.8322851652167,
+            224.560839644978,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 8,
+          "handle": "136",
+          "type": "Point",
+          "layer": "ConsistencyChecks",
+          "screen_pixel": [
+            1836,
+            524
+          ],
+          "screen_bounds": [
+            1836,
+            524,
+            1836,
+            524
+          ],
+          "world_center": [
+            81.8322851652167,
+            224.560839644978,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 9,
+          "handle": "183",
+          "type": "Polyline",
+          "layer": "Default",
+          "screen_pixel": [
+            886,
+            524
+          ],
+          "screen_bounds": [
+            -65,
+            524,
+            1836,
+            524
+          ],
+          "world_center": [
+            65.51068329024388,
+            224.560839644978,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 10,
+          "handle": "1B3",
+          "type": "Line",
+          "layer": "Labels",
+          "screen_pixel": [
+            2124,
+            289
+          ],
+          "screen_bounds": [
+            2124,
+            171,
+            2124,
+            408
+          ],
+          "world_center": [
+            86.77649894698612,
+            228.59207853286802,
+            0.0
+          ],
+          "selected": false
+        }
+      ]
+    },
+    "pixel_to_world_matrix": [
+      0.017171717433992668,
+      0.0,
+      0.0,
+      -0.01717566009749977,
+      50.29999971438199,
+      233.56016070143113
+    ],
+    "world_to_pixel_matrix": [
+      58.23529322817921,
+      0.0,
+      0.0,
+      -58.221925348043435,
+      -2929.2352327443655,
+      13598.32224063575
+    ],
+    "viewport_world_bounds": {
+      "min": [
+        50.29999971438199,
+        215.43983929856887
+      ],
+      "max": [
+        87.70000028561802,
+        233.56016070143113
+      ]
+    },
+    "camera": {
+      "eye": [
+        69.0,
+        224.5,
+        37.75067138671875
+      ],
+      "target": [
+        69.0,
+        224.5,
+        0.0
+      ],
+      "distance": 37.75067138671875,
+      "ortho_size": 9.060160636901855,
+      "projection": "Orthographic",
+      "fov_y": 0.4710899591445923
+    },
+    "annotated": false,
+    "annotations": [
+      {
+        "tag": 1,
+        "handle": "1A2",
+        "type": "Polyline",
+        "layer": "Labels",
+        "screen_pixel": [
+          1892,
+          407
+        ],
+        "screen_bounds": [
+          1836,
+          289,
+          1947,
+          524
+        ],
+        "world_center": [
+          82.7803920561014,
+          226.576459088923,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 2,
+        "handle": "C4",
+        "type": "Text",
+        "layer": "PID-SYMBOL-LABEL",
+        "screen_pixel": [
+          198,
+          524
+        ],
+        "screen_bounds": [
+          93,
+          466,
+          303,
+          582
+        ],
+        "world_center": [
+          53.70178458305193,
+          224.56084753986266,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 3,
+        "handle": "1B2",
+        "type": "Line",
+        "layer": "Labels",
+        "screen_pixel": [
+          2035,
+          348
+        ],
+        "screen_bounds": [
+          1947,
+          289,
+          2124,
+          408
+        ],
+        "world_center": [
+          85.25249894698612,
+          227.57607853286802,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 4,
+        "handle": "1B4",
+        "type": "Line",
+        "layer": "Labels",
+        "screen_pixel": [
+          2035,
+          230
+        ],
+        "screen_bounds": [
+          1947,
+          171,
+          2124,
+          289
+        ],
+        "world_center": [
+          85.25249894698611,
+          229.60807853286803,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 5,
+        "handle": "122",
+        "type": "Point",
+        "layer": "Default",
+        "screen_pixel": [
+          1836,
+          524
+        ],
+        "screen_bounds": [
+          1836,
+          524,
+          1836,
+          524
+        ],
+        "world_center": [
+          81.8322851652167,
+          224.560839644978,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 6,
+        "handle": "132",
+        "type": "Point",
+        "layer": "ConsistencyChecks",
+        "screen_pixel": [
+          1836,
+          524
+        ],
+        "screen_bounds": [
+          1836,
+          524,
+          1836,
+          524
+        ],
+        "world_center": [
+          81.8322851652167,
+          224.560839644978,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 7,
+        "handle": "135",
+        "type": "Point",
+        "layer": "ConsistencyChecks",
+        "screen_pixel": [
+          1836,
+          524
+        ],
+        "screen_bounds": [
+          1836,
+          524,
+          1836,
+          524
+        ],
+        "world_center": [
+          81.8322851652167,
+          224.560839644978,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 8,
+        "handle": "136",
+        "type": "Point",
+        "layer": "ConsistencyChecks",
+        "screen_pixel": [
+          1836,
+          524
+        ],
+        "screen_bounds": [
+          1836,
+          524,
+          1836,
+          524
+        ],
+        "world_center": [
+          81.8322851652167,
+          224.560839644978,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 9,
+        "handle": "183",
+        "type": "Polyline",
+        "layer": "Default",
+        "screen_pixel": [
+          886,
+          524
+        ],
+        "screen_bounds": [
+          -65,
+          524,
+          1836,
+          524
+        ],
+        "world_center": [
+          65.51068329024388,
+          224.560839644978,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 10,
+        "handle": "1B3",
+        "type": "Line",
+        "layer": "Labels",
+        "screen_pixel": [
+          2124,
+          289
+        ],
+        "screen_bounds": [
+          2124,
+          171,
+          2124,
+          408
+        ],
+        "world_center": [
+          86.77649894698612,
+          228.59207853286802,
+          0.0
+        ],
+        "selected": false
+      }
+    ],
+    "visible_entities": [
+      {
+        "tag": 1,
+        "handle": "1A2",
+        "type": "Polyline",
+        "layer": "Labels",
+        "screen_pixel": [
+          1892,
+          407
+        ],
+        "screen_bounds": [
+          1836,
+          289,
+          1947,
+          524
+        ],
+        "world_center": [
+          82.7803920561014,
+          226.576459088923,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 2,
+        "handle": "C4",
+        "type": "Text",
+        "layer": "PID-SYMBOL-LABEL",
+        "screen_pixel": [
+          198,
+          524
+        ],
+        "screen_bounds": [
+          93,
+          466,
+          303,
+          582
+        ],
+        "world_center": [
+          53.70178458305193,
+          224.56084753986266,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 3,
+        "handle": "1B2",
+        "type": "Line",
+        "layer": "Labels",
+        "screen_pixel": [
+          2035,
+          348
+        ],
+        "screen_bounds": [
+          1947,
+          289,
+          2124,
+          408
+        ],
+        "world_center": [
+          85.25249894698612,
+          227.57607853286802,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 4,
+        "handle": "1B4",
+        "type": "Line",
+        "layer": "Labels",
+        "screen_pixel": [
+          2035,
+          230
+        ],
+        "screen_bounds": [
+          1947,
+          171,
+          2124,
+          289
+        ],
+        "world_center": [
+          85.25249894698611,
+          229.60807853286803,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 5,
+        "handle": "122",
+        "type": "Point",
+        "layer": "Default",
+        "screen_pixel": [
+          1836,
+          524
+        ],
+        "screen_bounds": [
+          1836,
+          524,
+          1836,
+          524
+        ],
+        "world_center": [
+          81.8322851652167,
+          224.560839644978,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 6,
+        "handle": "132",
+        "type": "Point",
+        "layer": "ConsistencyChecks",
+        "screen_pixel": [
+          1836,
+          524
+        ],
+        "screen_bounds": [
+          1836,
+          524,
+          1836,
+          524
+        ],
+        "world_center": [
+          81.8322851652167,
+          224.560839644978,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 7,
+        "handle": "135",
+        "type": "Point",
+        "layer": "ConsistencyChecks",
+        "screen_pixel": [
+          1836,
+          524
+        ],
+        "screen_bounds": [
+          1836,
+          524,
+          1836,
+          524
+        ],
+        "world_center": [
+          81.8322851652167,
+          224.560839644978,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 8,
+        "handle": "136",
+        "type": "Point",
+        "layer": "ConsistencyChecks",
+        "screen_pixel": [
+          1836,
+          524
+        ],
+        "screen_bounds": [
+          1836,
+          524,
+          1836,
+          524
+        ],
+        "world_center": [
+          81.8322851652167,
+          224.560839644978,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 9,
+        "handle": "183",
+        "type": "Polyline",
+        "layer": "Default",
+        "screen_pixel": [
+          886,
+          524
+        ],
+        "screen_bounds": [
+          -65,
+          524,
+          1836,
+          524
+        ],
+        "world_center": [
+          65.51068329024388,
+          224.560839644978,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 10,
+        "handle": "1B3",
+        "type": "Line",
+        "layer": "Labels",
+        "screen_pixel": [
+          2124,
+          289
+        ],
+        "screen_bounds": [
+          2124,
+          171,
+          2124,
+          408
+        ],
+        "world_center": [
+          86.77649894698612,
+          228.59207853286802,
+          0.0
+        ],
+        "selected": false
+      }
+    ]
+  },
+  "changes": [],
+  "state": {
+    "ok": true,
+    "protocol": 1,
+    "session_id": "527c1629d0013db212ef8e245d1d01a1",
+    "version": "2026.40.1",
+    "mode": "gui",
+    "enabled": true,
+    "read_only": false,
+    "missing_fonts": [],
+    "document_id": 2,
+    "revision": 0,
+    "geometry_revision": 13,
+    "camera_revision": 9,
+    "hand_seed": "1C6",
+    "plugins": [],
+    "documents": [
+      {
+        "id": 1,
+        "title": "Start",
+        "path": null,
+        "dirty": false,
+        "revision": 0,
+        "start": true
+      },
+      {
+        "id": 2,
+        "title": "Drawing1",
+        "path": "D:\\work\\plant-code\\cad\\pid-parse\\test-file\\DWG-0201GP06-01.pid",
+        "dirty": true,
+        "revision": 0,
+        "start": false
+      }
+    ],
+    "selection": [],
+    "command": null,
+    "modal": null,
+    "layout": "Model",
+    "ucs": null,
+    "cursor": {
+      "world": [
+        144.90333099891149,
+        209.7878291567636,
+        0.0
+      ],
+      "screen": [
+        0.0,
+        0.0
+      ]
+    },
+    "viewport_size": [
+      1451.6666259765625,
+      703.3333129882812
+    ],
+    "camera": {
+      "target": [
+        69.0,
+        224.5,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "distance": 37.75067138671875,
+      "fov_y": 0.4710899591445923,
+      "projection": "Orthographic",
+      "yaw": 0.0,
+      "pitch": 1.5707963705062866
+    },
+    "mtext_editor": null,
+    "text_editor": false,
+    "event_cursor": 8,
+    "operation": null,
+    "capabilities": [
+      "commands",
+      "command_manifest",
+      "step_input",
+      "batch",
+      "compact_results",
+      "entity_pick",
+      "structure_pick",
+      "selection",
+      "user_select",
+      "properties",
+      "records",
+      "record_schemas",
+      "record_filters",
+      "atomic_record_updates",
+      "layers",
+      "history",
+      "documents",
+      "events",
+      "capture",
+      "viewport_capture",
+      "measure",
+      "spatial_query",
+      "pid_legend",
+      "audit",
+      "verified_save",
+      "explicit_save_version"
+    ]
+  }
+}

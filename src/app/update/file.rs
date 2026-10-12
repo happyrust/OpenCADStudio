@@ -883,6 +883,7 @@ impl OpenCADStudio {
             snap_marker_color: self.snap_marker_color,
             command_text_color: self.command_text_color,
             lineweight_display_scale: self.lineweight_display_scale,
+            pid_paper_style_scale: self.pid_paper_style_scale,
             isometric_drafting: self.isometric_drafting,
             iso_plane: self.iso_plane,
             snap_angle_deg: self.snap_angle_deg,
@@ -1011,6 +1012,8 @@ impl OpenCADStudio {
             .unwrap_or_default();
         crate::ui::command_line::set_text_color(s.command_text_color);
         self.lineweight_display_scale = s.lineweight_display_scale.clamp(25, 200);
+        self.pid_paper_style_scale =
+            super::super::settings::clamp_pid_paper_style_scale(s.pid_paper_style_scale);
         self.isometric_drafting = s.isometric_drafting;
         self.iso_plane = s.iso_plane;
         self.snap_angle_deg = if s.snap_angle_deg.is_finite() {
@@ -2165,9 +2168,10 @@ impl OpenCADStudio {
             // layers by the names the reader will see there, and how
             // many the drawing starts with switched off.
             let (names, off) = (summary.sheet_layer_names, summary.sheet_layers_off);
-            self.command_line.push_info(crate::tf!(
-                "P&ID sheet layers: {names}, of which {off} start switched off"
-            ).as_ref());
+            self.command_line.push_info(
+                crate::tf!("P&ID sheet layers: {names}, of which {off} start switched off")
+                    .as_ref(),
+            );
             // The parametric symbols in one line (plan 2026-09-18,
             // K3): how many named driving dimensions the drawing's
             // cached library templates carry, on how many templates,
@@ -2185,9 +2189,10 @@ impl OpenCADStudio {
                 ).as_ref());
             }
             if summary.style_tables_failed {
-                self.command_line.push_error(crate::t!(
-                    "P&ID style table did not read; line work keeps the layer defaults."
-                ).as_ref());
+                self.command_line.push_error(
+                    crate::t!("P&ID style table did not read; line work keeps the layer defaults.")
+                        .as_ref(),
+                );
             }
             // Said only when it happened: a drawing that states its unit
             // gets no line, one that did not is scaled by an assumption
@@ -4443,9 +4448,10 @@ impl OpenCADStudio {
             PaperSpec::Standard(size) => size.label().to_string(),
             PaperSpec::Custom { .. } => paper.trim().to_string(),
         };
-        self.plot_dialog.paper = crate::io::paper_catalog::from_drawing(&label, width_mm, height_mm)
-            .canonical
-            .to_string();
+        self.plot_dialog.paper =
+            crate::io::paper_catalog::from_drawing(&label, width_mm, height_mm)
+                .canonical
+                .to_string();
         self.plot_dialog.paper_width_mm = width_mm;
         self.plot_dialog.paper_height_mm = height_mm;
         self.plot_dialog.orientation = if landscape { "Landscape" } else { "Portrait" }.into();

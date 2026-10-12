@@ -1093,8 +1093,14 @@ impl OpenCADStudio {
                 let model_bg = self
                     .default_bg_color
                     .unwrap_or_else(|| self.model_space.resolve_model_bg(&self.active_theme));
+                let pid_paper_style_scale = self.pid_paper_style_scale;
                 Task::perform(
-                    crate::io::open_path_with_phase(path, progress, model_bg),
+                    crate::io::open_path_with_phase(
+                        path,
+                        progress,
+                        model_bg,
+                        pid_paper_style_scale,
+                    ),
                     move |result| Message::FileOpened(open_id, result),
                 )
             }
@@ -3508,7 +3514,11 @@ impl OpenCADStudio {
                     crate::tf!(
                         "Sheet layer {} turned {} ({} entities)",
                         row.name,
-                        if on { crate::t!("On") } else { crate::t!("Off") },
+                        if on {
+                            crate::t!("On")
+                        } else {
+                            crate::t!("Off")
+                        },
                         entities
                     )
                     .as_ref(),
@@ -3534,7 +3544,11 @@ impl OpenCADStudio {
                     crate::tf!(
                         "Role {} turned {} ({} entities)",
                         row.name,
-                        if on { crate::t!("On") } else { crate::t!("Off") },
+                        if on {
+                            crate::t!("On")
+                        } else {
+                            crate::t!("Off")
+                        },
                         entities
                     )
                     .as_ref(),
@@ -8214,6 +8228,15 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::PidPaperStyleScaleChanged(hundredths) => {
+                // Stored for the next `.pid` open. Drawings already on screen
+                // keep the multiple they were imported with.
+                self.pid_paper_style_scale =
+                    super::settings::clamp_pid_paper_style_scale(f64::from(hundredths) / 100.0);
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+
             Message::CrosshairColorChanged(value) => {
                 self.crosshair_color_input = value.clone();
                 if value.trim().is_empty() {
@@ -8991,7 +9014,12 @@ impl OpenCADStudio {
                             .unwrap_or(0);
                         self.close_active_modal();
                         return Task::perform(
-                            crate::io::open_path_with_phase(path, progress, model_bg),
+                            crate::io::open_path_with_phase(
+                                path,
+                                progress,
+                                model_bg,
+                                self.pid_paper_style_scale,
+                            ),
                             move |result| Message::FileOpened(open_id, result),
                         );
                     }
@@ -9023,6 +9051,7 @@ impl OpenCADStudio {
                             model_bg,
                             initial_error,
                             initial_stats,
+                            self.pid_paper_style_scale,
                         ),
                         move |result| Message::FileOpened(open_id, result),
                     )
@@ -11452,7 +11481,10 @@ mod tests {
         let w = app
             .dock
             .width(crate::ui::dock::PanelId::Properties, app.win_size.0);
-        assert!(w >= crate::ui::dock::DOCK_MIN_W, "dock width collapsed to {w}");
+        assert!(
+            w >= crate::ui::dock::DOCK_MIN_W,
+            "dock width collapsed to {w}"
+        );
     }
 }
 

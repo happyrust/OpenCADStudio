@@ -1354,7 +1354,12 @@ mod tests {
     #[test]
     fn width_floor_outranks_the_window_fraction() {
         let mut state = DockState::default();
-        state.set_width(PanelId::Properties, 500.0);
+        state.ensure_settings();
+        state
+            .panels
+            .get_mut(&PanelId::Properties)
+            .unwrap()
+            .width = 500.0;
         // 0.45 of 300px is 135px, under the floor.
         assert_eq!(state.width(PanelId::Properties, 300.0), DOCK_MIN_W);
     }

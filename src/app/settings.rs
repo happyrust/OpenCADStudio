@@ -447,6 +447,16 @@ pub struct UserSettings {
     pub command_text_color: Option<[u8; 3]>,
     /// Model-space lineweight preview scale as a percentage.
     pub lineweight_display_scale: i32,
+    /// Screen multiple on style-declared P&ID sizes (dash segments, line
+    /// weights, point-marker strokes) the next time a `.pid` opens. `1.0`
+    /// leaves those sizes as the file states them. Text height is not
+    /// multiplied. A missing key in an older settings file is `1.0`; a
+    /// present value outside `0.25..=4.0`, or a non-finite one, is clamped.
+    #[serde(
+        default = "default_pid_paper_style_scale",
+        deserialize_with = "deserialize_pid_paper_style_scale"
+    )]
+    pub pid_paper_style_scale: f64,
     /// Isometric drafting changes the grid and crosshair to the active axis
     /// pair. Session-only: a persisted On turned every drawing's crosshair
     /// into the isoplane pair (one vertical, one diagonal line) on every
@@ -812,6 +822,34 @@ pub fn clamp_clipromptlines(v: i32) -> i32 {
     v.clamp(0, 50)
 }
 
+/// Lowest screen multiple Options will keep for style-declared P&ID sizes.
+pub const PID_PAPER_STYLE_SCALE_MIN: f64 = 0.25;
+/// Highest screen multiple Options will keep for style-declared P&ID sizes.
+pub const PID_PAPER_STYLE_SCALE_MAX: f64 = 4.0;
+
+fn default_pid_paper_style_scale() -> f64 {
+    1.0
+}
+
+/// A usable multiple, clamped into the Options range. Non-finite input is
+/// the same as leaving the sizes as the file states them.
+pub fn clamp_pid_paper_style_scale(scale: f64) -> f64 {
+    if scale.is_finite() {
+        scale.clamp(PID_PAPER_STYLE_SCALE_MIN, PID_PAPER_STYLE_SCALE_MAX)
+    } else {
+        default_pid_paper_style_scale()
+    }
+}
+
+fn deserialize_pid_paper_style_scale<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(clamp_pid_paper_style_scale(
+        f64::deserialize(deserializer).unwrap_or_else(|_| default_pid_paper_style_scale()),
+    ))
+}
+
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
@@ -848,6 +886,7 @@ impl Default for UserSettings {
             snap_marker_color: None,
             command_text_color: None,
             lineweight_display_scale: 100,
+            pid_paper_style_scale: default_pid_paper_style_scale(),
             isometric_drafting: false,
             iso_plane: IsoPlane::Left,
             snap_angle_deg: 0.0,
@@ -1082,5 +1121,26 @@ mod tests {
             !loaded.isometric_drafting,
             "a persisted On must not turn isometric drafting back on"
         );
+    }
+
+    #[test]
+    fn pid_paper_style_scale_defaults_to_one_and_clamps() {
+        let missing: UserSettings =
+            serde_json::from_str(r#"{ "lineweight_display_scale": 100 }"#).expect("old file");
+        assert_eq!(
+            missing.pid_paper_style_scale, 1.0,
+            "a settings file from before this field keeps the unscaled import"
+        );
+        let low: UserSettings =
+            serde_json::from_str(r#"{ "pid_paper_style_scale": 0.1 }"#).expect("low");
+        assert_eq!(low.pid_paper_style_scale, PID_PAPER_STYLE_SCALE_MIN);
+        let high: UserSettings =
+            serde_json::from_str(r#"{ "pid_paper_style_scale": 9.0 }"#).expect("high");
+        assert_eq!(high.pid_paper_style_scale, PID_PAPER_STYLE_SCALE_MAX);
+        let kept: UserSettings =
+            serde_json::from_str(r#"{ "pid_paper_style_scale": 1.5 }"#).expect("kept");
+        assert_eq!(kept.pid_paper_style_scale, 1.5);
+        assert_eq!(clamp_pid_paper_style_scale(f64::NAN), 1.0);
+        assert_eq!(UserSettings::default().pid_paper_style_scale, 1.0);
     }
 }

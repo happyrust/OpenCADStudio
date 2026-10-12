@@ -223,6 +223,7 @@ pub fn view_window<'a>(
     command_text_color: Option<[u8; 3]>,
     command_text_color_input: &'a str,
     lineweight_display_scale: i32,
+    pid_paper_style_scale: f64,
     model_space: &'a crate::app::config::ModelSpaceThemeConfig,
     model_bg_input: &'a str,
     paper_bg_input: &'a str,
@@ -899,6 +900,32 @@ pub fn view_window<'a>(
             ]
             .spacing(10)
             .align_y(iced::Center),
+        )
+        .push(Space::new().height(10))
+        .push(
+            row![
+                text(crate::t!("P&ID paper style scale")).size(12).width(140),
+                slider(
+                    25..=400,
+                    ((pid_paper_style_scale * 100.0).round() as i32).clamp(25, 400),
+                    Message::PidPaperStyleScaleChanged,
+                )
+                .step(1)
+                .width(Fill),
+                text(format!("{:.2}", pid_paper_style_scale))
+                    .size(11)
+                    .width(44),
+            ]
+            .spacing(10)
+            .align_y(iced::Center),
+        )
+        .push(Space::new().height(6))
+        .push(
+            text(crate::t!(
+                "Multiplies dash lengths, lineweights, and point markers the next time a .pid opens. Text height is unchanged."
+            ))
+            .size(11)
+            .width(sizing.width),
         )
         .push(Space::new().height(6))
         .push(

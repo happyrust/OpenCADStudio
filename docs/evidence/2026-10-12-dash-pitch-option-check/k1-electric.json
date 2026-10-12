@@ -1,0 +1,760 @@
+{
+  "ok": true,
+  "status": "completed",
+  "request_id": "rest-4",
+  "error": null,
+  "result": {
+    "path": "D:\\work\\plant-code\\cad\\OpenCADStudio\\docs\\evidence\\2026-10-12-dash-pitch-option-check\\k1-electric.png",
+    "scope": "viewport",
+    "width": 2178,
+    "height": 1055,
+    "scale_factor": 1.5,
+    "document_id": 2,
+    "revision": 0,
+    "camera_revision": 5,
+    "_spatial": {
+      "crs": "CAD_WCS",
+      "unit": "Unitless",
+      "pixel_resolution": [
+        2178,
+        1055
+      ],
+      "world_bounds": {
+        "min": [
+          340.29620721663656,
+          259.00000032782555
+        ],
+        "max": [
+          385.70379278336344,
+          280.99999967217445
+        ]
+      },
+      "pixel_to_world_matrix": [
+        0.020848294566908575,
+        0.0,
+        0.0,
+        -0.02085307994725015,
+        340.29620721663656,
+        280.99999967217445
+      ],
+      "world_to_pixel_matrix": [
+        47.96555405482655,
+        0.0,
+        0.0,
+        -47.954546883702314,
+        -16322.496121902037,
+        13475.227658599624
+      ],
+      "camera": {
+        "eye": [
+          363.0,
+          270.0,
+          45.833335876464844
+        ],
+        "target": [
+          363.0,
+          270.0,
+          0.0
+        ],
+        "distance": 45.833335876464844,
+        "ortho_size": 11.0,
+        "projection": "Orthographic",
+        "fov_y": 0.4710899591445923
+      },
+      "target_plane": {
+        "normal": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "origin": [
+          363.0,
+          270.0,
+          0.0
+        ]
+      },
+      "annotations": [
+        {
+          "tag": 1,
+          "handle": "B2",
+          "type": "Arc",
+          "layer": "Default",
+          "screen_pixel": [
+            1059,
+            142
+          ],
+          "screen_bounds": [
+            754,
+            -10,
+            1363,
+            295
+          ],
+          "world_center": [
+            362.366581946305,
+            278.0327232636256,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 2,
+          "handle": "F5",
+          "type": "Text",
+          "layer": "Labels",
+          "screen_pixel": [
+            1307,
+            58
+          ],
+          "screen_bounds": [
+            1059,
+            -1,
+            1556,
+            117
+          ],
+          "world_center": [
+            367.55241854630503,
+            279.7869904608102,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 3,
+          "handle": "F7",
+          "type": "Text",
+          "layer": "Labels",
+          "screen_pixel": [
+            1165,
+            895
+          ],
+          "screen_bounds": [
+            1059,
+            836,
+            1272,
+            954
+          ],
+          "world_center": [
+            364.589083346306,
+            262.3414389246409,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 4,
+          "handle": "F3",
+          "type": "Text",
+          "layer": "Labels",
+          "screen_pixel": [
+            2028,
+            895
+          ],
+          "screen_bounds": [
+            1957,
+            836,
+            2099,
+            954
+          ],
+          "world_center": [
+            382.58067650674104,
+            262.34171748415076,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 5,
+          "handle": "B5",
+          "type": "Line",
+          "layer": "Default",
+          "screen_pixel": [
+            1059,
+            295
+          ],
+          "screen_bounds": [
+            754,
+            295,
+            1363,
+            295
+          ],
+          "world_center": [
+            362.366581946305,
+            274.857723278992,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 6,
+          "handle": "152",
+          "type": "Point",
+          "layer": "ConsistencyChecks",
+          "screen_pixel": [
+            1059,
+            295
+          ],
+          "screen_bounds": [
+            1059,
+            295,
+            1059,
+            295
+          ],
+          "world_center": [
+            362.366581946305,
+            274.857723278992,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 7,
+          "handle": "156",
+          "type": "Point",
+          "layer": "ConsistencyChecks",
+          "screen_pixel": [
+            1059,
+            777
+          ],
+          "screen_bounds": [
+            1059,
+            777,
+            1059,
+            777
+          ],
+          "world_center": [
+            362.366581946306,
+            264.8012620110595,
+            0.0
+          ],
+          "selected": false
+        },
+        {
+          "tag": 8,
+          "handle": "19B",
+          "type": "Polyline",
+          "layer": "Default",
+          "screen_pixel": [
+            1059,
+            536
+          ],
+          "screen_bounds": [
+            1059,
+            295,
+            1059,
+            777
+          ],
+          "world_center": [
+            362.3665819463055,
+            269.82949264502577,
+            0.0
+          ],
+          "selected": false
+        }
+      ]
+    },
+    "pixel_to_world_matrix": [
+      0.020848294566908575,
+      0.0,
+      0.0,
+      -0.02085307994725015,
+      340.29620721663656,
+      280.99999967217445
+    ],
+    "world_to_pixel_matrix": [
+      47.96555405482655,
+      0.0,
+      0.0,
+      -47.954546883702314,
+      -16322.496121902037,
+      13475.227658599624
+    ],
+    "viewport_world_bounds": {
+      "min": [
+        340.29620721663656,
+        259.00000032782555
+      ],
+      "max": [
+        385.70379278336344,
+        280.99999967217445
+      ]
+    },
+    "camera": {
+      "eye": [
+        363.0,
+        270.0,
+        45.833335876464844
+      ],
+      "target": [
+        363.0,
+        270.0,
+        0.0
+      ],
+      "distance": 45.833335876464844,
+      "ortho_size": 11.0,
+      "projection": "Orthographic",
+      "fov_y": 0.4710899591445923
+    },
+    "annotated": false,
+    "annotations": [
+      {
+        "tag": 1,
+        "handle": "B2",
+        "type": "Arc",
+        "layer": "Default",
+        "screen_pixel": [
+          1059,
+          142
+        ],
+        "screen_bounds": [
+          754,
+          -10,
+          1363,
+          295
+        ],
+        "world_center": [
+          362.366581946305,
+          278.0327232636256,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 2,
+        "handle": "F5",
+        "type": "Text",
+        "layer": "Labels",
+        "screen_pixel": [
+          1307,
+          58
+        ],
+        "screen_bounds": [
+          1059,
+          -1,
+          1556,
+          117
+        ],
+        "world_center": [
+          367.55241854630503,
+          279.7869904608102,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 3,
+        "handle": "F7",
+        "type": "Text",
+        "layer": "Labels",
+        "screen_pixel": [
+          1165,
+          895
+        ],
+        "screen_bounds": [
+          1059,
+          836,
+          1272,
+          954
+        ],
+        "world_center": [
+          364.589083346306,
+          262.3414389246409,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 4,
+        "handle": "F3",
+        "type": "Text",
+        "layer": "Labels",
+        "screen_pixel": [
+          2028,
+          895
+        ],
+        "screen_bounds": [
+          1957,
+          836,
+          2099,
+          954
+        ],
+        "world_center": [
+          382.58067650674104,
+          262.34171748415076,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 5,
+        "handle": "B5",
+        "type": "Line",
+        "layer": "Default",
+        "screen_pixel": [
+          1059,
+          295
+        ],
+        "screen_bounds": [
+          754,
+          295,
+          1363,
+          295
+        ],
+        "world_center": [
+          362.366581946305,
+          274.857723278992,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 6,
+        "handle": "152",
+        "type": "Point",
+        "layer": "ConsistencyChecks",
+        "screen_pixel": [
+          1059,
+          295
+        ],
+        "screen_bounds": [
+          1059,
+          295,
+          1059,
+          295
+        ],
+        "world_center": [
+          362.366581946305,
+          274.857723278992,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 7,
+        "handle": "156",
+        "type": "Point",
+        "layer": "ConsistencyChecks",
+        "screen_pixel": [
+          1059,
+          777
+        ],
+        "screen_bounds": [
+          1059,
+          777,
+          1059,
+          777
+        ],
+        "world_center": [
+          362.366581946306,
+          264.8012620110595,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 8,
+        "handle": "19B",
+        "type": "Polyline",
+        "layer": "Default",
+        "screen_pixel": [
+          1059,
+          536
+        ],
+        "screen_bounds": [
+          1059,
+          295,
+          1059,
+          777
+        ],
+        "world_center": [
+          362.3665819463055,
+          269.82949264502577,
+          0.0
+        ],
+        "selected": false
+      }
+    ],
+    "visible_entities": [
+      {
+        "tag": 1,
+        "handle": "B2",
+        "type": "Arc",
+        "layer": "Default",
+        "screen_pixel": [
+          1059,
+          142
+        ],
+        "screen_bounds": [
+          754,
+          -10,
+          1363,
+          295
+        ],
+        "world_center": [
+          362.366581946305,
+          278.0327232636256,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 2,
+        "handle": "F5",
+        "type": "Text",
+        "layer": "Labels",
+        "screen_pixel": [
+          1307,
+          58
+        ],
+        "screen_bounds": [
+          1059,
+          -1,
+          1556,
+          117
+        ],
+        "world_center": [
+          367.55241854630503,
+          279.7869904608102,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 3,
+        "handle": "F7",
+        "type": "Text",
+        "layer": "Labels",
+        "screen_pixel": [
+          1165,
+          895
+        ],
+        "screen_bounds": [
+          1059,
+          836,
+          1272,
+          954
+        ],
+        "world_center": [
+          364.589083346306,
+          262.3414389246409,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 4,
+        "handle": "F3",
+        "type": "Text",
+        "layer": "Labels",
+        "screen_pixel": [
+          2028,
+          895
+        ],
+        "screen_bounds": [
+          1957,
+          836,
+          2099,
+          954
+        ],
+        "world_center": [
+          382.58067650674104,
+          262.34171748415076,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 5,
+        "handle": "B5",
+        "type": "Line",
+        "layer": "Default",
+        "screen_pixel": [
+          1059,
+          295
+        ],
+        "screen_bounds": [
+          754,
+          295,
+          1363,
+          295
+        ],
+        "world_center": [
+          362.366581946305,
+          274.857723278992,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 6,
+        "handle": "152",
+        "type": "Point",
+        "layer": "ConsistencyChecks",
+        "screen_pixel": [
+          1059,
+          295
+        ],
+        "screen_bounds": [
+          1059,
+          295,
+          1059,
+          295
+        ],
+        "world_center": [
+          362.366581946305,
+          274.857723278992,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 7,
+        "handle": "156",
+        "type": "Point",
+        "layer": "ConsistencyChecks",
+        "screen_pixel": [
+          1059,
+          777
+        ],
+        "screen_bounds": [
+          1059,
+          777,
+          1059,
+          777
+        ],
+        "world_center": [
+          362.366581946306,
+          264.8012620110595,
+          0.0
+        ],
+        "selected": false
+      },
+      {
+        "tag": 8,
+        "handle": "19B",
+        "type": "Polyline",
+        "layer": "Default",
+        "screen_pixel": [
+          1059,
+          536
+        ],
+        "screen_bounds": [
+          1059,
+          295,
+          1059,
+          777
+        ],
+        "world_center": [
+          362.3665819463055,
+          269.82949264502577,
+          0.0
+        ],
+        "selected": false
+      }
+    ]
+  },
+  "changes": [],
+  "state": {
+    "ok": true,
+    "protocol": 1,
+    "session_id": "527c1629d0013db212ef8e245d1d01a1",
+    "version": "2026.40.1",
+    "mode": "gui",
+    "enabled": true,
+    "read_only": false,
+    "missing_fonts": [],
+    "document_id": 2,
+    "revision": 0,
+    "geometry_revision": 13,
+    "camera_revision": 5,
+    "hand_seed": "1C6",
+    "plugins": [],
+    "documents": [
+      {
+        "id": 1,
+        "title": "Start",
+        "path": null,
+        "dirty": false,
+        "revision": 0,
+        "start": true
+      },
+      {
+        "id": 2,
+        "title": "Drawing1",
+        "path": "D:\\work\\plant-code\\cad\\pid-parse\\test-file\\DWG-0201GP06-01.pid",
+        "dirty": true,
+        "revision": 0,
+        "start": false
+      }
+    ],
+    "selection": [],
+    "command": null,
+    "modal": null,
+    "layout": "Model",
+    "ucs": null,
+    "cursor": {
+      "world": [
+        144.90333099891149,
+        209.7878291567636,
+        0.0
+      ],
+      "screen": [
+        0.0,
+        0.0
+      ]
+    },
+    "viewport_size": [
+      1451.6666259765625,
+      703.3333129882812
+    ],
+    "camera": {
+      "target": [
+        363.0,
+        270.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "distance": 45.833335876464844,
+      "fov_y": 0.4710899591445923,
+      "projection": "Orthographic",
+      "yaw": 0.0,
+      "pitch": 1.5707963705062866
+    },
+    "mtext_editor": null,
+    "text_editor": false,
+    "event_cursor": 4,
+    "operation": null,
+    "capabilities": [
+      "commands",
+      "command_manifest",
+      "step_input",
+      "batch",
+      "compact_results",
+      "entity_pick",
+      "structure_pick",
+      "selection",
+      "user_select",
+      "properties",
+      "records",
+      "record_schemas",
+      "record_filters",
+      "atomic_record_updates",
+      "layers",
+      "history",
+      "documents",
+      "events",
+      "capture",
+      "viewport_capture",
+      "measure",
+      "spatial_query",
+      "pid_legend",
+      "audit",
+      "verified_save",
+      "explicit_save_version"
+    ]
+  }
+}

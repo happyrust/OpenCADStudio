@@ -5120,6 +5120,8 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "Manual" => Some(("common", "manual")),
         "Manual group" => Some(("common", "manual-group")),
         "Legend recognition" => Some(("common", "legend-recognition")),
+        "P&ID paper style scale" => Some(("common", "pid-paper-style-scale")),
+        "Multiplies dash lengths, lineweights, and point markers the next time a .pid opens. Text height is unchanged." => Some(("common", "pid-paper-style-scale-hint")),
         "P&ID" => Some(("common", "p-id")),
         "P&ID Group" => Some(("common", "p-id-group")),
         "P&ID Legend" => Some(("common", "p-id-legend")),
