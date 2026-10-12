@@ -39,6 +39,7 @@ pub(super) fn resolve_styles(
     geometry: &NormalizedPidGeometry,
     path: &Path,
     doc: &mut CadDocument,
+    paper_style_scale: f64,
 ) -> Styles {
     // Line width and colour are the drawing's own, read from its style table:
     // each geometry record names a style id, and that record carries a width
@@ -149,7 +150,12 @@ pub(super) fn resolve_styles(
     // The bodies the drawing caches state a dash of their own per stroke
     // (plan 2026-09-20, P-E8), pooled into the same table so a symbol's
     // internal dash draws through the same path.
-    let dash_linetypes = register_dash_linetypes(doc, &styles, &geometry.symbol_definitions);
+    let dash_linetypes = register_dash_linetypes(
+        doc,
+        &styles,
+        &geometry.symbol_definitions,
+        paper_style_scale,
+    );
     // Same pooling for the typefaces the character styles name, so a label can
     // reference a document text style the way any other text entity does.
     let font_styles = register_text_styles(doc, &text_heights, path);
@@ -349,6 +355,7 @@ pub(super) fn apply_symbology(
     entity: &mut EntityType,
     style: &ResolvedLineStyle,
     dash_linetypes: &HashMap<Vec<i64>, String>,
+    paper_style_scale: f64,
 ) {
     // A placed symbol's lettering follows the placement's colour the same
     // way its line work does. This is measured, not assumed: LG and LT
@@ -380,7 +387,12 @@ pub(super) fn apply_symbology(
     // are mostly on the ISO 128 ladder; the 0.10mm point ticks are not, and
     // are carried across as measured rather than snapped, because snapping
     // would report a width the drawing does not ask for.
-    let hundredths = (style.symbology.width_mm() * 100.0).round();
+    // `paper_style_scale` is the caller's screen multiple on style-declared
+    // sizes. The text arm above returns before this, so lettering is not
+    // widened. The dash is looked up by the unscaled pattern, which is how
+    // [`register_dash_linetypes`] keyed the pool; the linetype itself already
+    // carries the scaled segment lengths.
+    let hundredths = (style.symbology.width_mm() * paper_style_scale * 100.0).round();
     if (0.0..=211.0).contains(&hundredths) {
         common.line_weight = LineWeight::Value(hundredths as i16);
     }
@@ -429,6 +441,7 @@ pub(super) fn register_dash_linetypes(
     doc: &mut CadDocument,
     styles: &LineStyleIndex,
     cached_bodies: &[PidSymbolDefinition],
+    paper_style_scale: f64,
 ) -> HashMap<Vec<i64>, String> {
     let mut names: HashMap<Vec<i64>, String> = HashMap::new();
     let drawing = styles
@@ -441,13 +454,15 @@ pub(super) fn register_dash_linetypes(
         .filter(|style| !style.dash_mm.is_empty())
         .map(|style| style.dash_mm.clone());
     for segments_mm in drawing.chain(cached) {
+        // The key is the pattern the file stated, not the scaled one, so a
+        // multiple other than 1 does not split or rename the pool.
         let key = dash_key(&segments_mm);
         if key.is_empty() || names.contains_key(&key) {
             continue;
         }
         let name = format!("PID-DASH-{}", names.len() + 1);
         if !doc.line_types.contains(&name) {
-            let mut lt = build_dash_linetype(&name, &segments_mm);
+            let mut lt = build_dash_linetype(&name, &segments_mm, paper_style_scale);
             lt.set_handle(doc.allocate_handle());
             let _ = doc.line_types.add(lt);
         }
@@ -460,9 +475,10 @@ pub(super) fn register_dash_linetypes(
 /// segment lengths in millimetres.
 ///
 /// The segment lengths are the drawing's own, in millimetres — the unit the
-/// geometry is projected into — so a 3.5 mm dash is 3.5 mm on the sheet. The
-/// elements are laid out the way every AutoCAD "A"-type linetype is: drawn and
-/// gap alternate, the first is drawn, and a zero-length element is a dot.
+/// geometry is projected into — times `paper_style_scale`, so a 3.5 mm dash
+/// is 3.5 mm on the sheet at scale 1. The elements are laid out the way every
+/// AutoCAD "A"-type linetype is: drawn and gap alternate, the first is drawn,
+/// and a zero-length element is a dot.
 ///
 /// **The format's own sign is not the dash/gap flag.** It does not read
 /// consistently as one across the corpus (see pid-parse's
@@ -470,12 +486,16 @@ pub(super) fn register_dash_linetypes(
 /// only the magnitudes carry over and the alternation is the linetype
 /// convention rather than the file's. That is the one interpretive step
 /// between the decode and the screen.
-pub(super) fn build_dash_linetype(name: &str, segments_mm: &[f64]) -> LineType {
+pub(super) fn build_dash_linetype(
+    name: &str,
+    segments_mm: &[f64],
+    paper_style_scale: f64,
+) -> LineType {
     let mut lt = LineType::new(name);
     lt.description = format!("P&ID dash pattern ({} segments)", segments_mm.len());
     let mut pattern_length = 0.0;
     for (i, mm) in segments_mm.iter().enumerate() {
-        let len = mm.abs();
+        let len = mm.abs() * paper_style_scale;
         pattern_length += len;
         let element = if len < 1e-9 {
             LineTypeElement::dot()

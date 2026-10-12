@@ -378,7 +378,7 @@ fn a_cached_body_draws_only_the_strokes_on_its_displayed_layers() {
         },
     };
     let mut tally = SymbolBodies::default();
-    let entities = cached_body_entities(Some(&body), &at, &mut tally, &HashMap::new())
+    let entities = cached_body_entities(Some(&body), &at, &mut tally, &HashMap::new(), 1.0)
         .expect("three strokes draw");
     assert_eq!(entities.len(), 3);
     assert_eq!(
@@ -598,7 +598,7 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
     let mut styles = LineStyleIndex::new();
     styles.insert(("/".to_string(), 1), placement_style(sheet_dash()));
     let mut doc = CadDocument::new();
-    let pool = register_dash_linetypes(&mut doc, &styles, std::slice::from_ref(&body));
+    let pool = register_dash_linetypes(&mut doc, &styles, std::slice::from_ref(&body), 1.0);
     assert_eq!(
         pool.get(&vec![1000, 1000]).map(String::as_str),
         Some("PID-DASH-1"),
@@ -623,7 +623,7 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
     };
     let mut tally = SymbolBodies::default();
     let mut drawn =
-        cached_body_entities(Some(&body), &at, &mut tally, &pool).expect("three strokes draw");
+        cached_body_entities(Some(&body), &at, &mut tally, &pool, 1.0).expect("three strokes draw");
     assert_eq!(drawn.len(), 3);
     let coat = |entity: &EntityType| {
         let common = entity.common();
@@ -653,7 +653,7 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
     );
 
     for entity in &mut drawn {
-        apply_symbology(entity, &placement_style(None), &pool);
+        apply_symbology(entity, &placement_style(None), &pool, 1.0);
     }
     assert_eq!(
         coat(&drawn[0]),
@@ -667,7 +667,7 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
     assert_eq!(coat(&drawn[2]), (olive, LineWeight::Value(35), as_built));
 
     for entity in &mut drawn {
-        apply_symbology(entity, &placement_style(sheet_dash()), &pool);
+        apply_symbology(entity, &placement_style(sheet_dash()), &pool, 1.0);
     }
     assert!(
         drawn
@@ -715,7 +715,7 @@ fn a_symbols_lettering_takes_its_placements_colour_and_nothing_else() {
     let no_dashes = HashMap::new();
 
     let mut on_symbol = letters(LAYER_SYMBOL);
-    apply_symbology(&mut on_symbol, &green, &no_dashes);
+    apply_symbology(&mut on_symbol, &green, &no_dashes, 1.0);
     assert_eq!(on_symbol.common().color, Color::from_rgb(0x00, 0x80, 0x00));
     assert_eq!(
         on_symbol.common().line_weight,
@@ -728,7 +728,7 @@ fn a_symbols_lettering_takes_its_placements_colour_and_nothing_else() {
     assert_eq!((text.value.as_str(), text.height), ("LGM", 2.5));
 
     let mut on_sheet = letters(LAYER_TEXT);
-    apply_symbology(&mut on_sheet, &green, &no_dashes);
+    apply_symbology(&mut on_sheet, &green, &no_dashes, 1.0);
     assert_eq!(
         on_sheet.common().color,
         Color::from_rgb(0xFF, 0x00, 0x00),
@@ -818,4 +818,162 @@ fn symbol_polyline_closure_reaches_the_cad_entity() {
         panic!("symbol polyline did not build");
     };
     assert!(polyline.is_closed);
+}
+
+/// `paper_style_scale` multiplies style-declared dash lengths, line weights,
+/// and point-marker stroke offsets, and leaves lettering at the height the
+/// file states. Scale 1 is the unscaled reading; 5/3 is the screen multiple
+/// measured on the reference sheet.
+#[test]
+fn paper_style_scale_multiplies_declared_sizes_and_leaves_lettering() {
+    use pid_parse::style_link::{LineSymbology, StyleHop};
+
+    let scale = 5.0 / 3.0;
+    assert_eq!(effective_paper_style_scale(scale), scale);
+    assert_eq!(effective_paper_style_scale(1.0), 1.0);
+    assert_eq!(effective_paper_style_scale(0.0), 1.0);
+    assert_eq!(effective_paper_style_scale(-1.0), 1.0);
+    assert_eq!(effective_paper_style_scale(f64::NAN), 1.0);
+    assert_eq!(effective_paper_style_scale(f64::INFINITY), 1.0);
+
+    let style = |width_mm: f64| ResolvedLineStyle {
+        style_id: 1,
+        symbology: LineSymbology {
+            width_m: width_mm / 1000.0,
+            colour: 0,
+        },
+        dash: None,
+        marker: None,
+        hop: StyleHop::Direct,
+    };
+    let weight = |width_mm: f64, k: f64| {
+        let mut line = Line::from_points(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0));
+        line.common.layer = LAYER_GEOMETRY.to_string();
+        let mut entity = EntityType::Line(line);
+        apply_symbology(&mut entity, &style(width_mm), &HashMap::new(), k);
+        entity.common().line_weight
+    };
+    for (mm, at_one, at_scale) in [
+        (0.35, 35_i16, 58),
+        (0.13, 13, 22),
+        (0.18, 18, 30),
+        (0.70, 70, 117),
+    ] {
+        assert_eq!(
+            weight(mm, 1.0),
+            LineWeight::Value(at_one),
+            "{mm} mm at scale 1"
+        );
+        assert_eq!(
+            weight(mm, scale),
+            LineWeight::Value(at_scale),
+            "{mm} mm at 5/3"
+        );
+    }
+
+    let magnitudes = |segments: &[f64], k: f64| {
+        build_dash_linetype("PID-DASH", segments, k)
+            .elements
+            .iter()
+            .map(|element| (element.length.abs() * 1000.0).round() as i64)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(magnitudes(&[3.5, 1.75], 1.0), vec![3500, 1750]);
+    assert_eq!(magnitudes(&[3.5, 1.75], scale), vec![5833, 2917]);
+    assert_eq!(magnitudes(&[1.905, 1.27], 1.0), vec![1905, 1270]);
+    assert_eq!(magnitudes(&[1.905, 1.27], scale), vec![3175, 2117]);
+
+    // The pool is keyed by the unscaled pattern, so the name does not move
+    // when the stored segment lengths do.
+    let dashed = |id: u32, segments_m: &[f64]| ResolvedLineStyle {
+        style_id: id,
+        symbology: LineSymbology {
+            width_m: 0.000_35,
+            colour: 0,
+        },
+        dash: DashPattern::from_segments_m(segments_m),
+        marker: None,
+        hop: StyleHop::Direct,
+    };
+    let mut styles = LineStyleIndex::new();
+    styles.insert(("/".to_string(), 1), dashed(1, &[0.0035, 0.00175]));
+    styles.insert(("/".to_string(), 2), dashed(2, &[0.001_905, 0.001_27]));
+    let mut doc = CadDocument::new();
+    let pool = register_dash_linetypes(&mut doc, &styles, &[], scale);
+    assert_eq!(
+        pool.get(&vec![3500, 1750]).map(String::as_str),
+        Some("PID-DASH-1"),
+        "the 3.5/1.75 key is the unscaled pattern"
+    );
+    assert_eq!(
+        pool.get(&vec![1905, 1270]).map(String::as_str),
+        Some("PID-DASH-2"),
+        "the 1.905/1.27 key is the unscaled pattern"
+    );
+    let stored = |name: &str| {
+        doc.line_types
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} missing"))
+            .elements
+            .iter()
+            .map(|element| (element.length.abs() * 1000.0).round() as i64)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(stored("PID-DASH-1"), vec![5833, 2917]);
+    assert_eq!(stored("PID-DASH-2"), vec![3175, 2117]);
+
+    let mut stroke = Line::from_points(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0));
+    stroke.common.layer = LAYER_SYMBOL.to_string();
+    let mut entity = EntityType::Line(stroke);
+    paint_symbol_stroke(
+        &mut entity,
+        Some(&PrimitiveStyle {
+            rgb: [0, 0, 0],
+            width_mm: 0.35,
+            dash_mm: vec![3.5, 1.75],
+        }),
+        &pool,
+        scale,
+    );
+    assert_eq!(entity.common().line_weight, LineWeight::Value(58));
+    assert_eq!(entity.common().linetype, "PID-DASH-1");
+
+    let mut text = Text::new();
+    text.value = "LIA".to_string();
+    text.height = 2.5;
+    text.common.layer = LAYER_SYMBOL.to_string();
+    let mut lettering = EntityType::Text(text);
+    apply_symbology(&mut lettering, &style(0.18), &HashMap::new(), scale);
+    let EntityType::Text(text) = &lettering else {
+        panic!("lettering is still text");
+    };
+    assert_eq!(text.height, 2.5, "text height is not multiplied");
+    assert_eq!(
+        lettering.common().line_weight,
+        Text::new().common.line_weight,
+        "lettering takes no line weight"
+    );
+
+    let projection = Projection {
+        mm_per_unit: 1000.0,
+        band: SheetBand::for_page(None),
+    };
+    let origin = Vector3::new(10.0, 20.0, 0.0);
+    let length = |k: f64, end: (f64, f64)| {
+        let at = point_marker_offset(origin, end, projection, k);
+        (at.x - origin.x).hypot(at.y - origin.y)
+    };
+    // (0, 0) -> (3, 6) mm, the long stroke of the warning slash.
+    let long = length(1.0, (0.003, 0.006));
+    assert!((long - 6.708_203_932_499_369).abs() < 1e-9, "{long}");
+    assert!((length(scale, (0.003, 0.006)) - long * scale).abs() < 1e-9);
+    // (-1, -2) -> (-0.7, -1) mm, the stub.
+    let stub_at = |k: f64, xy: (f64, f64)| point_marker_offset(origin, xy, projection, k);
+    let stub = stub_at(1.0, (-0.0007, -0.001));
+    let stub_from = stub_at(1.0, (-0.001, -0.002));
+    let stub_len = (stub.x - stub_from.x).hypot(stub.y - stub_from.y);
+    let stub_k = stub_at(scale, (-0.0007, -0.001));
+    let stub_from_k = stub_at(scale, (-0.001, -0.002));
+    let stub_len_k = (stub_k.x - stub_from_k.x).hypot(stub_k.y - stub_from_k.y);
+    assert!((stub_len_k - stub_len * scale).abs() < 1e-9);
 }

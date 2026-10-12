@@ -140,6 +140,7 @@ pub(super) fn cached_body_entities(
     at: &Placement<'_>,
     symbol_bodies: &mut SymbolBodies,
     dash_linetypes: &HashMap<Vec<i64>, String>,
+    paper_style_scale: f64,
 ) -> Option<Vec<EntityType>> {
     let body = body?;
     let strokes: Vec<(&SymbolPrimitive, Option<&PrimitiveStyle>)> =
@@ -147,7 +148,9 @@ pub(super) fn cached_body_entities(
     symbol_bodies.hidden_strokes_skipped += body.primitives.len() - strokes.len();
     let entities: Vec<EntityType> = strokes
         .into_iter()
-        .filter_map(|(primitive, style)| place_primitive(primitive, style, at, dash_linetypes))
+        .filter_map(|(primitive, style)| {
+            place_primitive(primitive, style, at, dash_linetypes, paper_style_scale)
+        })
         .collect();
     if entities.is_empty() {
         return None;
@@ -166,6 +169,7 @@ pub(super) fn library_body_entities(
     at: &Placement<'_>,
     symbol_bodies: &mut SymbolBodies,
     dash_linetypes: &HashMap<Vec<i64>, String>,
+    paper_style_scale: f64,
 ) -> Option<Vec<EntityType>> {
     let body = library
         .zip(symbol_path)
@@ -174,7 +178,13 @@ pub(super) fn library_body_entities(
         .primitives
         .iter()
         .filter_map(|styled| {
-            place_primitive(&styled.primitive, styled.style.as_ref(), at, dash_linetypes)
+            place_primitive(
+                &styled.primitive,
+                styled.style.as_ref(),
+                at,
+                dash_linetypes,
+                paper_style_scale,
+            )
         })
         .collect();
     if entities.is_empty() {
@@ -238,9 +248,10 @@ pub(super) fn place_primitive(
     style: Option<&PrimitiveStyle>,
     at: &Placement<'_>,
     dash_linetypes: &HashMap<Vec<i64>, String>,
+    paper_style_scale: f64,
 ) -> Option<EntityType> {
     let mut entity = shape_primitive(primitive, at)?;
-    paint_symbol_stroke(&mut entity, style, dash_linetypes);
+    paint_symbol_stroke(&mut entity, style, dash_linetypes, paper_style_scale);
     Some(entity)
 }
 
@@ -269,6 +280,7 @@ pub(super) fn paint_symbol_stroke(
     entity: &mut EntityType,
     style: Option<&PrimitiveStyle>,
     dash_linetypes: &HashMap<Vec<i64>, String>,
+    paper_style_scale: f64,
 ) {
     let Some(style) = style else {
         return;
@@ -280,7 +292,7 @@ pub(super) fn paint_symbol_stroke(
     // stores hundredths of a millimetre, and a width outside the range the
     // format can state is left at the layer default rather than clamped into
     // a width the symbol did not ask for.
-    let hundredths = (style.width_mm * 100.0).round();
+    let hundredths = (style.width_mm * paper_style_scale * 100.0).round();
     if (0.0..=211.0).contains(&hundredths) {
         common.line_weight = LineWeight::Value(hundredths as i16);
     }

@@ -35,6 +35,7 @@ pub(super) fn build_document_entities(
     library: &mut Option<SymbolLibrary>,
     unit: &ImportUnit,
     doc: &mut CadDocument,
+    paper_style_scale: f64,
 ) -> Built {
     let Styles {
         styles,
@@ -101,6 +102,7 @@ pub(super) fn build_document_entities(
                     line_work,
                     &mut symbol_bodies,
                     dash_linetypes,
+                    paper_style_scale,
                 ),
             },
             PidGeometryConfidence::Inferred => build_inferred(&entity.kind, projection),
@@ -163,7 +165,7 @@ pub(super) fn build_document_entities(
         }
         for mut one in built {
             if let Some(style) = symbology {
-                apply_symbology(&mut one, style, dash_linetypes);
+                apply_symbology(&mut one, style, dash_linetypes, paper_style_scale);
             }
             if let Some(mm) = height_mm {
                 apply_text_height(&mut one, mm);
@@ -259,6 +261,7 @@ pub(super) fn build_document_entities(
 ///
 /// `dash_linetypes` is the pool [`register_dash_linetypes`] filled, for the
 /// dash a symbol body's own stroke style names (see [`paint_symbol_stroke`]).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_entities(
     kind: &PidGraphicKind,
     bodies: BodySources<'_>,
@@ -267,6 +270,7 @@ pub(super) fn build_entities(
     line_work: &str,
     symbol_bodies: &mut SymbolBodies,
     dash_linetypes: &HashMap<Vec<i64>, String>,
+    paper_style_scale: f64,
 ) -> Vec<EntityType> {
     match kind {
         PidGraphicKind::Line { start, end } => {
@@ -405,16 +409,23 @@ pub(super) fn build_entities(
                         symbol_path.unwrap_or_default()
                     );
                 }
-                let body = cached_body_entities(cached, &placement, symbol_bodies, dash_linetypes)
-                    .or_else(|| {
-                        library_body_entities(
-                            library,
-                            symbol_path,
-                            &placement,
-                            symbol_bodies,
-                            dash_linetypes,
-                        )
-                    });
+                let body = cached_body_entities(
+                    cached,
+                    &placement,
+                    symbol_bodies,
+                    dash_linetypes,
+                    paper_style_scale,
+                )
+                .or_else(|| {
+                    library_body_entities(
+                        library,
+                        symbol_path,
+                        &placement,
+                        symbol_bodies,
+                        dash_linetypes,
+                        paper_style_scale,
+                    )
+                });
 
                 // Only fall back to the marker when the body is genuinely
                 // unavailable. A symbol that resolved to real geometry should
@@ -457,10 +468,11 @@ pub(super) fn build_entities(
             // `psOk` -- an item that passed has nothing to draw -- and 53 of
             // DWG-0201's 75 points are exactly that.
             //
-            // Drawn at the size the group states. SmartPlant's own screen
-            // draws it larger, but so are that screen's line weights, so the
-            // factor is a view-wide scale on style-declared sizes rather than
-            // anything the file says about this glyph. See pid-parse
+            // Drawn at the size the group states, times `paper_style_scale`
+            // (1 unless the caller asked otherwise). SmartPlant's own screen
+            // draws the glyph larger by a view-wide scale on style-declared
+            // sizes; that scale is not in the file, so the default import
+            // leaves the glyph at the stated size. See pid-parse
             // `docs/analysis/
             // 2026-08-25-a-point-draws-the-symbol-its-terminator-names.md`.
             let marker = symbology
@@ -477,11 +489,7 @@ pub(super) fn build_entities(
             };
             let origin = projection.point(position);
             let offset = |(x, y): (f64, f64)| {
-                Vector3::new(
-                    origin.x + projection.mm(x),
-                    origin.y + projection.mm(y),
-                    0.0,
-                )
+                point_marker_offset(origin, (x, y), projection, paper_style_scale)
             };
             for stroke in marker.iter().flat_map(PointMarker::strokes) {
                 if stroke.is_degenerate() {
@@ -495,6 +503,24 @@ pub(super) fn build_entities(
         }
         PidGraphicKind::Annotation { .. } | PidGraphicKind::Unknown { .. } => Vec::new(),
     }
+}
+
+/// One end of a point-marker stroke, in sheet millimetres.
+///
+/// The glyph's coordinates are metres relative to the point. `paper_style_scale`
+/// multiplies that offset and nothing else: the point's own location stays
+/// where the file put it.
+pub(super) fn point_marker_offset(
+    origin: Vector3,
+    xy: (f64, f64),
+    projection: Projection,
+    paper_style_scale: f64,
+) -> Vector3 {
+    Vector3::new(
+        origin.x + projection.mm(xy.0 * paper_style_scale),
+        origin.y + projection.mm(xy.1 * paper_style_scale),
+        0.0,
+    )
 }
 
 /// Draw the inferred kinds that have a usable position.

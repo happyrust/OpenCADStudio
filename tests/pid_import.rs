@@ -11,7 +11,9 @@
 use std::path::PathBuf;
 
 use codec::{CadDocument, EntityType};
-use OpenCADStudio::io::pid::{load_pid, ImportSummary, ImportUnit, SUMMARY_PROPERTY_PREFIX};
+use OpenCADStudio::io::pid::{
+    load_pid, load_pid_with, ImportSummary, ImportUnit, PidImportOptions, SUMMARY_PROPERTY_PREFIX,
+};
 use OpenCADStudio::io::pid_view_filter::{
     switch_role, switch_sheet_layer, PidViewFilter, PidViewSummary,
 };
@@ -497,10 +499,7 @@ fn a_cached_strokes_dash_is_its_own_storages_not_its_placements() {
                     .collect(),
             );
             match (common.color, common.line_weight) {
-                (
-                    codec::types::Color::Rgb { r, g, b },
-                    codec::types::LineWeight::Value(w),
-                ) => {
+                (codec::types::Color::Rgb { r, g, b }, codec::types::LineWeight::Value(w)) => {
                     palette.insert(format!("{w:>3} #{r:02X}{g:02X}{b:02X}"));
                 }
                 other => panic!("{name}: a dashed symbol stroke is not painted: {other:?}"),
@@ -4009,4 +4008,147 @@ fn authored_layer_names_survive_dwg_and_dxf() {
             );
         }
     }
+}
+
+/// Style-declared dash lengths and line weights take the caller's screen
+/// multiple; lettering does not.
+///
+/// On DWG-0201 at 5/3, ` Line2`'s 3.5/1.75 mm dash becomes 5.833/2.917 and
+/// `Electric`'s 1.905/1.27 becomes 3.175/2.117. The equipment table's
+/// fourteen rules (eleven at 0.13 mm, three at 0.18) and the 0.70 mm process
+/// headers move with the same multiple. Sheet-text heights stay the census
+/// [`lettering_carries_the_height_the_drawing_states`] pins at scale 1.
+#[test]
+fn paper_style_scale_scales_dash_patterns_and_the_stated_line_weights() {
+    let Some(path) = fixture("DWG-0201GP06-01.pid") else {
+        return;
+    };
+    let import = load_pid_with(
+        &path,
+        &PidImportOptions {
+            paper_style_scale: 5.0 / 3.0,
+        },
+    )
+    .unwrap_or_else(|error| panic!("load {}: {error}", path.display()));
+    let doc = &import.document;
+
+    let magnitudes = |name: &str| -> Vec<i64> {
+        let linetype = doc
+            .line_types
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} is named but absent from the table"));
+        linetype
+            .elements
+            .iter()
+            .map(|element| (element.length.abs() * 1000.0).round() as i64)
+            .collect()
+    };
+
+    let electric: Vec<_> = on_line_work(doc)
+        .filter(|entity| pid_value(entity, "style").as_deref() == Some("Electric"))
+        .collect();
+    assert_eq!(electric.len(), 1, "one Electric signal line");
+    let electric_lt = electric[0].common().linetype.as_str();
+    assert!(
+        electric_lt.starts_with("PID-DASH-"),
+        "Electric draws dashed, got {electric_lt}"
+    );
+    assert_eq!(
+        magnitudes(electric_lt),
+        vec![3175, 2117],
+        "Electric 1.905/1.27 mm × 5/3"
+    );
+
+    let line2: Vec<_> = of_role(doc, "symbol")
+        .filter(|entity| match entity {
+            EntityType::Line(line) => {
+                (line.start.y - 209.61).abs() < 0.05
+                    && (line.end.y - 209.61).abs() < 0.05
+                    && (line.start.x.min(line.end.x) - 135.64).abs() < 0.05
+                    && (line.start.x.max(line.end.x) - 161.04).abs() < 0.05
+            }
+            _ => false,
+        })
+        .collect();
+    assert_eq!(line2.len(), 1, "` Line2`'s hairline is drawn once");
+    let line2_lt = line2[0].common().linetype.as_str();
+    assert!(
+        line2_lt.starts_with("PID-DASH-"),
+        "` Line2` draws dashed, got {line2_lt}"
+    );
+    assert_ne!(
+        line2_lt, electric_lt,
+        "the two patterns stay distinct linetypes"
+    );
+    assert_eq!(
+        magnitudes(line2_lt),
+        vec![5833, 2917],
+        "` Line2` 3.5/1.75 mm × 5/3"
+    );
+
+    let mut grid: std::collections::BTreeMap<i16, usize> = std::collections::BTreeMap::new();
+    for entity in on_line_work(doc) {
+        if pid_value(entity, "style").as_deref() != Some("Dashed") {
+            continue;
+        }
+        match entity.common().line_weight {
+            codec::types::LineWeight::Value(weight) => *grid.entry(weight).or_default() += 1,
+            other => panic!("a grid line has no value weight: {other:?}"),
+        }
+    }
+    assert_eq!(
+        grid.values().sum::<usize>(),
+        14,
+        "fourteen equipment-table rules, got {grid:?}"
+    );
+    assert_eq!(
+        grid.get(&22).copied(),
+        Some(11),
+        "0.13 mm × 5/3 rounds to 22 hundredths; got {grid:?}"
+    );
+    assert_eq!(
+        grid.get(&30).copied(),
+        Some(3),
+        "0.18 mm × 5/3 is 30 hundredths; got {grid:?}"
+    );
+
+    let mut pipes = 0usize;
+    for entity in on_line_work(doc) {
+        if pid_value(entity, "style").as_deref() != Some("Primary Piping - New") {
+            continue;
+        }
+        pipes += 1;
+        assert_eq!(
+            entity.common().line_weight,
+            codec::types::LineWeight::Value(117),
+            "0.70 mm × 5/3 rounds to 117 hundredths"
+        );
+    }
+    assert_eq!(pipes, 24, "the 0.70 mm process headers");
+
+    let mut heights: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for entity in on_sheet_text(doc) {
+        if let EntityType::Text(text) = entity {
+            *heights.entry(format!("{:.3}", text.height)).or_default() += 1;
+        }
+    }
+    let expected: std::collections::BTreeMap<String, usize> = [
+        ("1.500", 1),
+        ("1.524", 1),
+        ("1.588", 1),
+        ("2.293", 1),
+        ("2.464", 3),
+        ("2.469", 15),
+        ("2.500", 2),
+        ("3.175", 21),
+        ("3.528", 2),
+        ("6.350", 1),
+    ]
+    .iter()
+    .map(|(key, count)| ((*key).to_string(), *count))
+    .collect();
+    assert_eq!(
+        heights, expected,
+        "text height is not multiplied by the paper-style scale"
+    );
 }

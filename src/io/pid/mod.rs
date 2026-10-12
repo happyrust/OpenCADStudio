@@ -403,8 +403,51 @@ pub struct PidImport {
 /// entity, and [`finish`] reports, frames and summarises. The order of what
 /// each does to the document -- every layer, linetype, entity and record it
 /// adds -- is the order handles are issued in, and so the order a saved
-/// drawing comes out in.
+/// drawing comes out in. Style-declared sizes stay as the file states them;
+/// [`load_pid_with`] takes a screen multiple for those.
 pub fn load_pid(path: &Path) -> Result<PidImport, String> {
+    load_pid_with(path, &PidImportOptions::default())
+}
+
+/// How [`load_pid_with`] turns style-declared paper sizes into drawing sizes.
+///
+/// [`Default`] is a multiple of `1.0`: dash segments, line weights, and point
+/// marker strokes come in at the size the file states.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PidImportOptions {
+    /// Screen multiple on style-declared paper sizes: dash segment lengths,
+    /// line weights, and point-marker stroke offsets.
+    ///
+    /// Text height, the fallback symbol marker, annotation ticks, symbol
+    /// labels, and label-anchor crosses are not multiplied. A non-finite or
+    /// non-positive value is read as `1.0`.
+    pub paper_style_scale: f64,
+}
+
+impl Default for PidImportOptions {
+    fn default() -> Self {
+        Self {
+            paper_style_scale: 1.0,
+        }
+    }
+}
+
+/// `scale` when it is a usable multiple, and `1.0` when it is not.
+pub(super) fn effective_paper_style_scale(scale: f64) -> f64 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+/// [`load_pid`] with a chosen screen multiple on style-declared paper sizes.
+///
+/// `options.paper_style_scale` multiplies dash segment lengths, line weights,
+/// and point-marker stroke offsets on the way into the drawing. Text height
+/// stays the height the file states. See [`PidImportOptions`].
+pub fn load_pid_with(path: &Path, options: &PidImportOptions) -> Result<PidImport, String> {
+    let paper_style_scale = effective_paper_style_scale(options.paper_style_scale);
     // The Geometry profile: every pass whose output reaches this document
     // -- the record families, the cached symbol bodies and their stroke
     // styles, the sheet layers and their display state, the style tables,
@@ -420,9 +463,16 @@ pub fn load_pid(path: &Path) -> Result<PidImport, String> {
 
     let mut doc = prepare_document(&parsed);
     let mut library = discover_symbol_library(path);
-    let styles = resolve_styles(&parsed, &geometry, path, &mut doc);
+    let styles = resolve_styles(&parsed, &geometry, path, &mut doc, paper_style_scale);
     let unit = ImportUnit::read(&geometry, path);
-    let built = build_document_entities(&geometry, &styles, &mut library, &unit, &mut doc);
+    let built = build_document_entities(
+        &geometry,
+        &styles,
+        &mut library,
+        &unit,
+        &mut doc,
+        paper_style_scale,
+    );
     if built.decoded == 0 {
         return Err(format!(
             "No decoded geometry in {}: pid-parse produced {} evidence item(s), none of them source-backed",
