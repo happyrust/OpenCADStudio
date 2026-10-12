@@ -1,7 +1,7 @@
 # 虚线节距、线宽在 SmartPlant 屏幕上被放大：比例从哪里来（P&ID 遗留 #4 view-scale）
 
 > 日期：2026-10-11
-> 对应：GitHub issue 待开（`happyrust/pid-cad`，文案见 §8；由用户开）
+> 对应：GitHub issue [happyrust/pid-cad#4](https://github.com/happyrust/pid-cad/issues/4)（2026-10-12 用户要求指挥官代开。默认仍按字面画，选项设成 5/3 才对齐参考图）
 > 范围：**先确认后修**——本计划只覆盖只读调查（像素测量 + IDA 批处理 + 文件字段普查），产出一句可实现的判据和实作方案建议；实作另开第二批。
 > 承接：
 > - `OpenCADStudio/docs/plans/2026-10-10-the-line2-hairline-draws-half-an-inch-low.md` §3 L-D3、§7 S2（`style.dll` 虚线消费点乘一个默认为 1 的比例；线宽笔画不乘）
@@ -113,8 +113,13 @@
 - 2026-10-11 U4'（t-522）填了 §3、本节和 §8。实作仍属第二批，本单不建任务。SmartPlant 实机与 cargo **NOT RUN**（U4' 只改本计划）。
 - 2026-10-12 第二批开单：V1 t-1452 / V2 t-1453，指挥官 fable-5-1-12，三处拍板：导入时乘、§3 1.26→1.17、只做 settings+Options。
 - 2026-10-12 V2（t-1615，接已删的 t-1453）落地选项面。settings 键 `pid_paper_style_scale`，默认 1.0，读入夹到 0.25..=4.0；Options 在「线宽 / 模型显示比例」旁加一格，改了不重载已开的图。打开与恢复重读把倍数传进 `load_pid_with`，`load_file` 仍是 1.0。Vulkan 实证 `docs/evidence/2026-10-12-dash-pitch-option-check/`：k=1 的 ` Line2` 中间周期 5.253 mm（与 10-11 新鲜截图的字面节距同观感）；k=5/3 的中间周期 8.759 mm（期望 8.75，差 +0.009）。关掉再开，同一窗口仍是 8.759。§3 的 1.26→1.17 不再改。
+- 2026-10-12 用户要求指挥官代开 bug。[happyrust/pid-cad#4](https://github.com/happyrust/pid-cad/issues/4) OPEN。默认仍是 1；选项设成 5/3 再重开 `.pid` 才对齐参考图。不把 5/3 写进默认值。
 
-## 8. GitHub issue 文案（草拟，用户开）
+## 8. GitHub issue
+
+已开：[happyrust/pid-cad#4](https://github.com/happyrust/pid-cad/issues/4)（OPEN）。标题：「0201 纸单位虚线节距和线宽默认按文件字面画，选项设成 5/3 才对齐参考图」。GitHub 正文按 bug 写。下面是调查草稿，留在计划里。
+
+## 8.1 调查草稿
 
 标题：`P&ID: SmartPlant scales paper-unit dash pitch and line width by the view paper factor; text is not scaled the same way`
 
