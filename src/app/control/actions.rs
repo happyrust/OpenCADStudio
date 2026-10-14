@@ -104,6 +104,8 @@ pub(super) const NAMES: &[&str] = &[
     "external_change_cancel",
     "pdf_dialog_ok",
     "view_background",
+    "image_adjust",
+    "refedit_dialog",
     "pdf_layer_toggle",
     "pc_manager_toggle",
     "pc_manager",
@@ -114,6 +116,7 @@ pub(super) const NAMES: &[&str] = &[
     "pc_section",
     "ribbon_tab",
     "ribbon_dropdown",
+    "keytips",
     "dialog_ok",
     "attdef_dialog",
     "field_dialog",
@@ -1896,6 +1899,58 @@ impl OpenCADStudio {
                 })
             }
             "ribbon_dropdown" => Message::ToggleRibbonDropdown(string(req, "value")?.into()),
+            // The Edit Reference dialog, one field per call: "level=<n>" (0 =
+            // the picked reference), "nested=0|1" (pick the working set in the
+            // drawing), "attributes=0|1", "lock=0|1", "unique=0|1", "ok" or
+            // "cancel".
+            "refedit_dialog" => {
+                use crate::ui::window::refedit_dialog::RefEditDialogMsg as R;
+                if self.active_modal != Some(crate::app::ModalKind::RefEdit) {
+                    return Err(failure("no_dialog", "The Reference Edit dialog is not open"));
+                }
+                let spec = string(req, "value")?;
+                let (key, value) = spec.split_once('=').unwrap_or((spec, ""));
+                let flag = || match value {
+                    "1" => Ok(true),
+                    "0" => Ok(false),
+                    _ => Err(failure("invalid_value", spec)),
+                };
+                if key == "cancel" {
+                    Message::CloseModal
+                } else {
+                Message::RefEditDialog(match key {
+                    "ok" => R::Ok,
+                    "level" => R::Level(value.parse().map_err(|_| failure("invalid_value", spec))?),
+                    "nested" => R::Nested(flag()?),
+                    "attributes" => R::Attributes(flag()?),
+                    "lock" => R::Lock(flag()?),
+                    "unique" => R::Unique(flag()?),
+                    _ => return Err(failure("invalid_value", "Unknown Reference Edit field")),
+                })
+                }
+            }
+            // Ribbon key tips: `show`, `alt` (a lone Alt), `type:<codes>`, `enter`,
+            // `esc` or `hide`. Read them back with the `keytips` read operation.
+            "keytips" => {
+                use crate::ui::ribbon::KeyTipInput as K;
+                let value = string(req, "value")?;
+                let inputs: Vec<K> = match value {
+                    "show" => vec![K::Open { refocus: false }],
+                    "alt" => vec![K::AltTap],
+                    "esc" => vec![K::Escape],
+                    "hide" => vec![K::Hide],
+                    "enter" => vec![K::Enter],
+                    _ => match value.strip_prefix("type:") {
+                        Some(codes) if !codes.is_empty() => codes
+                            .chars()
+                            .map(|ch| K::Char(ch.to_uppercase().collect()))
+                            .collect(),
+                        _ => return Err(failure("invalid_value", "Use show, alt, type:<codes>, enter, esc or hide")),
+                    },
+                };
+                let tasks: Vec<_> = inputs.into_iter().map(|input| self.on_keytip(input)).collect();
+                return Ok(Task::batch(tasks));
+            }
             // The -VIEW Background dialog, one field per call: "type=gradient",
             // "color|top|middle|bottom=r,g,b", "three=1", "rotation=30",
             // "image=<path>", "position=center|stretch|tile", "aspect=1", "offset=x,y" (pixels), "scale=x,y",
@@ -1967,6 +2022,43 @@ impl OpenCADStudio {
                         Message::PdfDialog(P::BgStep(field, dir))
                     }
                     "reset" => Message::PdfDialog(P::BgReset),
+                    _ => return Err(bad()),
+                }
+            }
+            // The Image Adjust dialog, one field per call: "brightness=70",
+            // "contrast=40", "fade=20" (the bar), "type=fade,abc" (typed into
+            // the box), "step=brightness,+1|-1", "reset", "apply" or "cancel".
+            "image_adjust" => {
+                use crate::ui::window::pdf_dialogs::PdfDialogMsg as P;
+                if self.active_modal != Some(crate::app::ModalKind::ImageAdjust) {
+                    return Err(failure("no_dialog", "The Image Adjust dialog is not open"));
+                }
+                let spec = string(req, "value")?;
+                let (key, value) = spec.split_once('=').unwrap_or((spec, ""));
+                let bad = || failure("invalid_value", spec);
+                let row = |name: &str| match name.trim() {
+                    "brightness" => Ok(0u8),
+                    "contrast" => Ok(1),
+                    "fade" => Ok(2),
+                    _ => Err(bad()),
+                };
+                match key {
+                    "cancel" => Message::CloseModal,
+                    "apply" => Message::PdfDialog(P::IaApply),
+                    "reset" => Message::PdfDialog(P::IaReset),
+                    "brightness" | "contrast" | "fade" => {
+                        let v: u8 = value.trim().parse().ok().filter(|v| *v <= 100).ok_or_else(bad)?;
+                        Message::PdfDialog(P::IaValue(row(key)?, v))
+                    }
+                    "type" => {
+                        let (name, typed) = value.split_once(',').ok_or_else(bad)?;
+                        Message::PdfDialog(P::IaText(row(name)?, typed.to_string()))
+                    }
+                    "step" => {
+                        let (name, dir) = value.split_once(',').ok_or_else(bad)?;
+                        let dir: i8 = dir.trim().parse().map_err(|_| bad())?;
+                        Message::PdfDialog(P::IaStep(row(name)?, dir))
+                    }
                     _ => return Err(bad()),
                 }
             }

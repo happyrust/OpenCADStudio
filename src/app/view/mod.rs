@@ -958,7 +958,13 @@ bg={bg_ms:.1}ms n={view_count}"
                             || c.is_selection_gathering()
                     }),
                     snap_color: self.snap_marker_color,
+                    snap_size: self.model_space.snap_marker_size as f32,
                 },
+                // MATCHPROP paints properties onto destinations; it gets the
+                // paintbrush cursor instead of the crosshair.
+                tab.active_cmd
+                    .as_ref()
+                    .is_some_and(|c| c.name() == "MATCHPROP"),
                 crate::ui::overlay::SelectionVisualOptions {
                     area: self.model_space.selection_area,
                     opacity: self.model_space.selection_opacity,
@@ -1682,9 +1688,18 @@ bg={bg_ms:.1}ms n={view_count}"
 
             // In-place block edit (REFEDIT): right-edge toolbar with Save / Discard
             // so the edit can be finished by clicking. (#136)
-            if tab.refedit_session.is_some() && !tab.is_start {
-                if let Some(tb) = crate::ui::side_toolbar::view(
-                    &crate::modules::draw::modify::refedit::refedit_tools(),
+            if let (Some(session), false) = (tab.refedit_session.as_ref(), tab.is_start) {
+                use crate::modules::draw::modify::refedit::{refedit_set_tools, refedit_tools};
+                let set_tools = refedit_set_tools();
+                let close_tools = refedit_tools();
+                let header = crate::ui::side_toolbar::refedit_header(
+                    &session.block_name,
+                    refedit_working_set_count(session, &tab.scene),
+                );
+                if let Some(tb) = crate::ui::side_toolbar::view_sections(
+                    Some(header),
+                    &[&set_tools, &close_tools],
+                    &|_| false,
                 ) {
                     viewport_stack = viewport_stack.push(tb);
                 }
@@ -2247,12 +2262,23 @@ bg={bg_ms:.1}ms n={view_count}"
             iced::widget::Space::new().width(0).height(0).into()
         };
 
+        // Key tips: the hint bar under the dropdowns, the codes above all.
+        let (keytip_bar, keytip_layer): (Element<'_, Message>, Element<'_, Message>) =
+            self.ribbon.keytip_layers().unwrap_or_else(|| {
+                (
+                    iced::widget::Space::new().width(0).height(0).into(),
+                    iced::widget::Space::new().width(0).height(0).into(),
+                )
+            });
+
         let composed = stack![
             main_ui,
+            keytip_bar,
             dropdown_layer,
             qselect_layer,
             snap_override_layer,
             open_progress_layer,
+            keytip_layer,
         ];
 
         // If the Plot Style editor was launched from PLOT, keep the Plot dialog
@@ -2487,8 +2513,10 @@ impl OpenCADStudio {
         let web_fonts = Subscription::none();
         // Periodic autosave (SAVETIME): a `.sv$` recovery copy beside the file
         // on native, an OPFS snapshot on web. SAVETIME is the interval in
-        // minutes; 0 disables it.
-        let autosave = if self.savetime_min > 0 {
+        // minutes; 0 disables it. The web build checks the deadline from the
+        // `PollWebFonts` tick instead: a long `time::every` there stalls every
+        // other timer for its whole period (#1775).
+        let autosave = if self.savetime_min > 0 && cfg!(not(target_arch = "wasm32")) {
             iced::time::every(std::time::Duration::from_secs(
                 self.savetime_min as u64 * 60,
             ))
@@ -2542,9 +2570,18 @@ impl OpenCADStudio {
             event::listen_with(|ev, status, win_id| {
                 use iced::event::Status;
                 match ev {
+                    iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
+                        if crate::ui::ribbon::keytips_active() =>
+                    {
+                        crate::ui::ribbon::keytip_pointer_pressed();
+                        Some(Message::KeyTip(crate::ui::ribbon::KeyTipInput::Hide))
+                    }
                     iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
                         iced::mouse::Button::Left,
-                    )) => Some(Message::PropPointerPressed),
+                    )) => {
+                        crate::ui::ribbon::keytip_pointer_pressed();
+                        Some(Message::PropPointerPressed)
+                    }
                     iced::Event::Window(window::Event::CloseRequested) => {
                         Some(Message::WindowCloseRequested(win_id))
                     }
@@ -2556,6 +2593,9 @@ impl OpenCADStudio {
                     }
                     iced::Event::Window(window::Event::FileDropped(path)) => {
                         Some(Message::FileDropped(path))
+                    }
+                    iced::Event::Keyboard(keyboard::Event::KeyReleased { key, .. }) => {
+                        crate::ui::ribbon::keytip_key_released(&key)
                     }
                     iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
                         // `command()` is Cmd on macOS, Ctrl elsewhere — the
@@ -2570,8 +2610,14 @@ impl OpenCADStudio {
                         physical_key,
                         modifiers,
                         text,
+                        repeat,
                         ..
                     }) => {
+                        if let Some(keytip) =
+                            crate::ui::ribbon::keytip_key_pressed(&key, modifiers, repeat)
+                        {
+                            return keytip;
+                        }
                         #[cfg(target_arch = "wasm32")]
                         let accel = modifiers.command();
                         // AltGr reaches Windows apps as Ctrl+Alt, and a macOS
@@ -4177,4 +4223,23 @@ mod tests {
             super::super::StartSection::default(),
         );
     }
+}
+
+/// The objects in a REFEDIT session's working set: the checked-out copies and
+/// objects added with REFSET still in it, and everything created in the
+/// space since.
+// ponytail: walks the document per frame while a session is open; keep a
+// running count on the session if large drawings feel it.
+fn refedit_working_set_count(
+    session: &crate::modules::draw::modify::refedit::RefEditSession,
+    scene: &crate::scene::Scene,
+) -> usize {
+    let space = scene.current_layout_block_handle_pub();
+    scene
+        .document
+        .entities()
+        .filter(|entity| {
+            entity.common().owner_handle == space && session.in_working_set(entity.common().handle)
+        })
+        .count()
 }

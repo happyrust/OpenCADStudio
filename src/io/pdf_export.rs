@@ -180,6 +180,17 @@ fn append_pdf_page(
     image_resources: &mut ImageResources,
     page: &PlotPage<'_>,
 ) -> Result<(), String> {
+    // Paper dimensions are validated like the content coordinates below: a
+    // NaN/inf/zero sheet (`width < MIN` compares false for NaN) would be
+    // serialized verbatim into a MediaBox no conforming viewer can display,
+    // and printpdf's own parser would still accept it.
+    if !page.paper_w.is_finite()
+        || !page.paper_h.is_finite()
+        || page.paper_w <= 0.0
+        || page.paper_h <= 0.0
+    {
+        return Err("plot sheet size is not valid".into());
+    }
     let ops = page_ops(doc, image_resources, page, &PlotAssets::default())?;
     doc.pages
         .push(PdfPage::new(Mm(page.paper_w), Mm(page.paper_h), ops));

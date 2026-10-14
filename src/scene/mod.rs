@@ -7,6 +7,7 @@
 //   cache   — block-definition and property caches
 pub mod annotative;
 pub mod assoc_array;
+pub mod block_visibility;
 pub mod compare;
 pub mod section_cull;
 pub mod sub_select;
@@ -2148,6 +2149,9 @@ pub struct Scene {
     /// frozen-layer signature. Invalidated only when a light entity changes;
     /// ordinary geometry edits never rescan the drawing's lights.
     lighting_cache: RefCell<HashMap<(Handle, u64), Vec<SceneLight>>>,
+    /// The visibility state each dynamic block shows in the Block Editor,
+    /// by block record.
+    pub visibility_states: HashMap<Handle, usize>,
     /// Currently selected entity handles.
     pub selected: HashSet<Handle>,
     /// Polylines only part of which is selected (Ctrl+click): the picked
@@ -2172,6 +2176,8 @@ pub struct Scene {
     /// edited geometry stands out while the surrounding drawing stays visible
     /// for context. `None` = not editing. (#136)
     pub refedit_keep: Option<HashSet<Handle>>,
+    /// REFEDIT locks the objects outside the working set (`refedit_keep`).
+    pub refedit_lock: bool,
     /// COUNT mode colours: counted references in COUNTCOLOR, overlapping
     /// duplicates in COUNTERRORCOLOR, everything else faded. `None` outside
     /// count mode.
@@ -2467,6 +2473,9 @@ pub struct Scene {
     /// Layouts created in this session and not opened yet: the first time
     /// one opens it gets the LAYOUTCREATEVIEWPORT viewport.
     pub(crate) unopened_layouts: std::collections::HashSet<String>,
+    /// The plot style table a layout's page setup takes when it is
+    /// initialized on first opening.
+    pub(crate) new_layout_plot_style: String,
     layout_names_cache: RefCell<Option<(u64, std::sync::Arc<Vec<String>>)>>,
     /// Bump on any annotation-scale list mutation.
     scale_epoch: u64,
@@ -2802,6 +2811,7 @@ impl Scene {
             last_created_dimension: None,
             object_data_cache: crate::entities::object_data::ObjectDataCache::default(),
             lighting_cache: RefCell::new(HashMap::default()),
+            visibility_states: HashMap::default(),
             selected: HashSet::default(),
             sub_segments: HashMap::default(),
             selected_order: Vec::new(),
@@ -2810,6 +2820,7 @@ impl Scene {
             preview_hidden: HashSet::default(),
             command_preview_hidden: HashSet::default(),
             refedit_keep: None,
+            refedit_lock: false,
             count_display: None,
             hover_highlight: None,
             constraint_hover_highlights: HashSet::default(),
@@ -2890,6 +2901,7 @@ impl Scene {
             layout_type_names_cache: RefCell::new(None),
             layout_epoch: 0,
             unopened_layouts: Default::default(),
+            new_layout_plot_style: String::new(),
             layout_names_cache: RefCell::new(None),
             scale_epoch: 0,
             scale_picker_cache: RefCell::new(None),
@@ -4376,7 +4388,7 @@ impl Scene {
                         );
                     if let Some(keep) = &self.refedit_keep {
                         if !keep.contains(&h) {
-                            material.diffuse = crate::scene::cache::block_cache::fade_toward_bg(
+                            material.diffuse = crate::scene::cache::block_cache::refedit_fade(
                                 material.diffuse,
                                 bg,
                             );
@@ -4432,7 +4444,7 @@ impl Scene {
                         .is_some_and(|keep| !keep.contains(&handle))
                     {
                         material.diffuse =
-                            crate::scene::cache::block_cache::fade_toward_bg(material.diffuse, bg);
+                            crate::scene::cache::block_cache::refedit_fade(material.diffuse, bg);
                     }
                     if self.meshes.contains_key(&handle) {
                         material.diffuse = self.count_color(handle, material.diffuse, bg);
@@ -4577,7 +4589,7 @@ impl Scene {
             let keep_bright =
                 Self::handle_from_wire_name(&w.name).is_some_and(|h| keep.contains(&h));
             if !keep_bright {
-                w.color = crate::scene::cache::block_cache::fade_toward_bg(w.color, bg);
+                w.color = crate::scene::cache::block_cache::refedit_fade(w.color, bg);
             }
         }
     }
@@ -4686,6 +4698,46 @@ impl Scene {
     pub fn sync_active_space_to_document(&mut self) {
         self.document.header.show_model_space = self.current_layout == "Model";
         crate::io::set_saved_active_layout(&mut self.document, &self.current_layout);
+    }
+
+    /// Record the entered viewport (or the sheet, in paper space) as the
+    /// current layout's last active viewport, which reopens it (#1670).
+    pub fn sync_active_viewport_to_document(&mut self) {
+        let Some(handle) = self.current_layout_object_handle() else {
+            return;
+        };
+        let sheet = match self.document.objects.get(&handle) {
+            Some(ObjectType::Layout(layout)) => {
+                Self::layout_sheet_viewport_handle(&self.document, layout)
+            }
+            _ => return,
+        };
+        let active = self.active_viewport.unwrap_or(sheet);
+        if let Some(ObjectType::Layout(layout)) = self.document.objects.get_mut(&handle) {
+            layout.viewport = active;
+        }
+    }
+
+    /// The model viewport the current layout was saved with entered: its
+    /// last active viewport when that is an on viewport other than the sheet.
+    pub fn saved_entered_viewport(&self) -> Option<Handle> {
+        let handle = self.current_layout_object_handle()?;
+        let Some(ObjectType::Layout(layout)) = self.document.objects.get(&handle) else {
+            return None;
+        };
+        let viewport = layout.viewport;
+        let sheet = Self::layout_sheet_viewport_handle(&self.document, layout);
+        if viewport.is_null() || viewport == sheet {
+            return None;
+        }
+        match self.document.get_entity(viewport) {
+            Some(EntityType::Viewport(vp))
+                if vp.common.owner_handle == layout.block_record && !vp.status.is_off =>
+            {
+                Some(viewport)
+            }
+            _ => None,
+        }
     }
 
     pub(crate) fn layout_sheet_viewport_handle(
@@ -4835,27 +4887,10 @@ impl Scene {
         }
 
         // Create the full-screen overall viewport covering the paper limits.
-        let pw = (max_lim.0 - min_lim.0).abs().max(1.0);
-        let ph = (max_lim.1 - min_lim.1).abs().max(1.0);
         let mut vp = codec::entities::Viewport::new();
         vp.id = 1;
         vp.status = codec::entities::ViewportStatusFlags::default_on();
-        // Paper-space center is an (x, y) point with z = 0.
-        vp.center = codec::types::Vector3::new(
-            (min_lim.0 + max_lim.0) / 2.0,
-            (min_lim.1 + max_lim.1) / 2.0,
-            0.0,
-        );
-        vp.width = pw;
-        vp.height = ph;
-        // Frame the full sheet with a small margin.
-        vp.view_target = codec::types::Vector3::new(
-            (min_lim.0 + max_lim.0) / 2.0,
-            (min_lim.1 + max_lim.1) / 2.0,
-            0.0,
-        );
-        vp.view_center = codec::types::Vector3::ZERO;
-        vp.view_height = ph * 1.1;
+        fit_sheet_viewport(&mut vp, min_lim, max_lim);
         if let Ok(handle) = self
             .document
             .add_entity_to_layout(EntityType::Viewport(vp), layout_name)
@@ -4866,6 +4901,45 @@ impl Scene {
             }
         }
         true
+    }
+
+    /// Fit a layout's sheet viewport to its page. (Taking the sheet out
+    /// instead would leave a viewport onto the model looking like the sheet.)
+    pub fn fit_layout_sheet(&mut self, layout_name: &str) {
+        let layout = self.document.objects.values().find_map(|object| match object {
+            ObjectType::Layout(layout) if layout.name == layout_name => Some(layout.clone()),
+            _ => None,
+        });
+        let Some(layout) = layout else {
+            return;
+        };
+        let sheet = Self::layout_sheet_viewport_handle(&self.document, &layout);
+        if let Some(EntityType::Viewport(vp)) = self.document.get_entity_mut(sheet) {
+            fit_sheet_viewport(vp, layout.min_limits, layout.max_limits);
+        }
+    }
+
+    /// Gives a layout whose page setup was never initialized (no paper size
+    /// and no media name, as the reference leaves a layout until it is first
+    /// opened) the default page setup; true when it did.
+    pub fn initialize_layout_page_setup(&mut self, layout_name: &str) -> bool {
+        let plot_style = self.new_layout_plot_style.clone();
+        for object in self.document.objects.values_mut() {
+            if let ObjectType::Layout(layout) = object {
+                if layout.name == layout_name {
+                    if !page_setup_uninitialized(layout) {
+                        return false;
+                    }
+                    crate::scene::apply_default_page_setup(layout, &plot_style);
+                    // A sheet written for a layout never set up is not the
+                    // page's; it is fitted to the page.
+                    self.fit_layout_sheet(layout_name);
+                    self.bump_layout_epoch();
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// The viewport a layout gets when it first opens (LAYOUTCREATEVIEWPORT),
@@ -9428,6 +9502,13 @@ impl Scene {
                 .layers
                 .get(&entity.common().layer)
                 .is_some_and(|l| l.is_locked())
+            // REFEDIT with "Lock objects not in working set": only the
+            // working set can be edited.
+            || (self.refedit_lock
+                && self
+                    .refedit_keep
+                    .as_ref()
+                    .is_some_and(|keep| !keep.contains(&handle)))
     }
 
     /// The name of the locked layer `handle` sits on, if any (for messages).
@@ -9721,7 +9802,7 @@ impl Scene {
         };
         if let Some(keep) = &self.refedit_keep {
             if !keep.contains(&h) {
-                c = crate::scene::cache::block_cache::fade_toward_bg(c, self.current_bg());
+                c = crate::scene::cache::block_cache::refedit_fade(c, self.current_bg());
             }
         }
         Some(c)
@@ -13079,6 +13160,101 @@ vis_index={:.1} visible_probe={:.1}",
 
         vp.custom_scale = fit_scale;
         vp.view_height = vp.height / fit_scale;
+    }
+}
+
+/// A page setup never initialized: no paper size and no media name (the
+/// reference writes a layout so until it is first opened).
+pub fn page_setup_uninitialized(layout: &codec::objects::Layout) -> bool {
+    layout.paper_size.trim().is_empty() && layout.paper_width <= 0.0 && layout.paper_height <= 0.0
+}
+
+/// A layout written as never opened: the page setup fields back to the
+/// uninitialized state and no viewports, as the reference stores a layout
+/// it has not opened yet. A layout already holding a viewport onto the model
+/// (one added by automation) is plainly set up and is written as it is.
+pub(crate) fn write_layout_unopened(document: &mut codec::CadDocument, layout_name: &str) {
+    let block = document.objects.values().find_map(|object| match object {
+        ObjectType::Layout(layout) if layout.name == layout_name => Some(layout.block_record),
+        _ => None,
+    });
+    let has_model_view = document.entities().any(|entity| {
+        matches!(entity, EntityType::Viewport(viewport)
+            if Some(viewport.common.owner_handle) == block
+                && !Scene::is_sheet_viewport(document, viewport))
+    });
+    if has_model_view {
+        return;
+    }
+    let fresh = codec::objects::Layout::new(layout_name);
+    let mut block = Handle::NULL;
+    for object in document.objects.values_mut() {
+        if let ObjectType::Layout(layout) = object {
+            if layout.name == layout_name {
+                block = layout.block_record;
+                layout.paper_size = fresh.paper_size.clone();
+                layout.paper_width = fresh.paper_width;
+                layout.paper_height = fresh.paper_height;
+                layout.plot_rotation = fresh.plot_rotation;
+                layout.plot_paper_units = fresh.plot_paper_units;
+                layout.min_limits = fresh.min_limits;
+                layout.max_limits = fresh.max_limits;
+                layout.min_extents = fresh.min_extents;
+                layout.max_extents = fresh.max_extents;
+            }
+        }
+    }
+    drop_layout_viewports(document, block);
+}
+
+/// Size a sheet (overall paper) viewport to the paper limits `min`..`max`,
+/// framing the whole sheet with a small margin.
+fn fit_sheet_viewport(vp: &mut codec::entities::Viewport, min: (f64, f64), max: (f64, f64)) {
+    let height = (max.1 - min.1).abs().max(1.0);
+    // Paper-space center is an (x, y) point with z = 0.
+    let center = codec::types::Vector3::new((min.0 + max.0) / 2.0, (min.1 + max.1) / 2.0, 0.0);
+    vp.center = center;
+    vp.width = (max.0 - min.0).abs().max(1.0);
+    vp.height = height;
+    vp.view_target = center;
+    vp.view_center = codec::types::Vector3::ZERO;
+    vp.view_height = height * 1.1;
+}
+
+/// Takes a layout's sheet (overall paper) viewport out of its block (entity
+/// and membership). Viewports onto the model are the user's drawing and stay:
+/// a file may carry them on a layout whose page setup was never filled in.
+pub(crate) fn drop_layout_viewports(document: &mut codec::CadDocument, block: Handle) {
+    if block.is_null() {
+        return;
+    }
+    let viewports: Vec<Handle> = document
+        .entities()
+        .filter_map(|entity| match entity {
+            EntityType::Viewport(viewport)
+                if viewport.common.owner_handle == block
+                    && Scene::is_sheet_viewport(document, viewport) =>
+            {
+                Some(viewport.common.handle)
+            }
+            _ => None,
+        })
+        .collect();
+    for handle in &viewports {
+        document.remove_entity(*handle);
+    }
+    if let Some(record) = document.block_records.iter_mut().find(|record| record.handle == block) {
+        record.entity_handles.retain(|handle| !viewports.contains(handle));
+    }
+    for object in document.objects.values_mut() {
+        if let ObjectType::Layout(layout) = object {
+            if layout.block_record == block {
+                layout.viewports.retain(|handle| !viewports.contains(handle));
+                if viewports.contains(&layout.viewport) {
+                    layout.viewport = Handle::NULL;
+                }
+            }
+        }
     }
 }
 

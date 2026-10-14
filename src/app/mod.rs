@@ -11,6 +11,7 @@ pub use automation::{export_headless, serve};
 pub use automation::{list_layouts_headless, plot_svg_headless, PlotSvgRequest};
 mod annotation_data;
 mod block_editor;
+mod block_save_as;
 #[cfg(test)]
 mod block_editor_tests;
 mod command_driver;
@@ -572,6 +573,7 @@ pub(super) struct OpenCADStudio {
     drawing_units: Option<crate::ui::window::drawing_units::State>,
     /// Working copy of the Block Definition dialog; `None` while it is closed.
     block_definition: Option<crate::ui::window::block_definition::BlockDefinitionState>,
+    block_save_as: Option<crate::ui::window::block_save_as::State>,
     /// PDF dialogs' working copies; `None` while closed.
     pdf_attach: Option<crate::ui::window::pdf_dialogs::PdfAttachState>,
     point_cloud_attach: Option<crate::ui::window::pdf_dialogs::PointCloudAttachState>,
@@ -584,6 +586,10 @@ pub(super) struct OpenCADStudio {
     pc_section: Option<crate::ui::window::pdf_dialogs::PcSectionState>,
     /// -VIEW sEttings Background dialog.
     view_background: Option<crate::ui::window::pdf_dialogs::ViewBackgroundState>,
+    /// IMAGEADJUST dialog.
+    image_adjust: Option<crate::ui::window::pdf_dialogs::ImageAdjustState>,
+    /// The Edit Reference dialog (REFEDIT).
+    refedit_dialog: Option<crate::ui::window::refedit_dialog::RefEditDialogState>,
     underlay_layers: Option<crate::ui::window::pdf_dialogs::UnderlayLayersState>,
     pdf_import_settings: Option<crate::modules::insert::pdf_import::PdfImportSettings>,
     pdf_import_file: Option<crate::ui::window::pdf_dialogs::PdfImportFileState>,
@@ -794,6 +800,8 @@ pub(super) struct OpenCADStudio {
     block_freq: std::collections::HashMap<String, u32>,
     /// BLOCKMRULIST: how many recent blocks the palette keeps (0–100).
     pub(crate) block_mru_list: u8,
+    /// The Edit Reference dialog's remembered settings.
+    pub(crate) refedit_options: crate::app::settings::RefEditOptions,
     /// BLOCKREDEFINEMODE (0–2).
     pub(crate) block_redefine_mode: u8,
     /// BLOCKNAVIGATE: the Libraries tab's start folder ("." for none).
@@ -2193,6 +2201,8 @@ pub enum ModalKind {
     PointCloudColorMap,
     PcSection,
     ViewBackground,
+    ImageAdjust,
+    RefEdit,
     UnderlayLayers,
     PdfImportSettings,
     PdfImportFile,
@@ -2217,6 +2227,7 @@ pub enum ModalKind {
     DimStyle,
     Unsaved,
     BlockEditChanges,
+    BlockSaveAs,
     SaveDialog,
     Recovery,
     /// Fonts referenced by the drawing are missing on this machine.
@@ -2644,6 +2655,8 @@ pub enum Message {
     SelectionHighlightColorChanged(u8),
     /// Change Grip size in pixels (1–25, GRIPSIZE).
     GripSizeChanged(u8),
+    /// Change the object-snap marker size in pixels (1–20, SNAPMARKERSIZE).
+    SnapMarkerSizeChanged(u8),
     /// Change Unselected Grip color ACI index (0 = Theme Primary, 1..=255 = ACI, GRIPCOLOR).
     GripColorChanged(u8),
     /// Change Selected/Hot Grip color ACI index (0 = Theme Danger, 1..=255 = ACI, GRIPHOT).
@@ -2800,6 +2813,8 @@ pub enum Message {
     SetProjection(bool),
     /// Select a ribbon module tab by index.
     RibbonSelectTab(usize),
+    /// Ribbon key tips: Alt, typed codes and Esc.
+    KeyTip(crate::ui::ribbon::KeyTipInput),
     /// Change the ribbon tool-panel density (persisted).
     SetRibbonCollapseMode(crate::ui::ribbon::CollapseMode),
     /// A ribbon tool button was clicked — highlights the tool and dispatches its event.
@@ -2853,6 +2868,8 @@ pub enum Message {
     BlockEditChangesSave,
     BlockEditChangesDiscard,
     BlockEditChangesCancel,
+    BlockSaveAsName(String),
+    BlockSaveAsApply,
     // ── AEC / unsupported-object drop warning (lossy Save-As) ──────────────
     /// Save as the source DWG version so the unsupported objects survive.
     AecDropSameVersion,
@@ -3088,6 +3105,8 @@ pub enum Message {
     /// User clicked a command-line option button — feed its keyword to the
     /// active command as if typed (empty keyword = Enter). (#304)
     CommandOptionPick(String),
+    /// The pointer entered (true) or left the command line's overlay history.
+    CommandHistoryHover(bool),
     ToggleLayers,
     /// Open/focus (or close) the Reference Manager palette.
     ToggleXrefManager,
@@ -3661,6 +3680,8 @@ pub enum Message {
     PropPointerPressed,
     /// Toggle the inline color picker dropdown open/closed.
     PropColorPickerToggle,
+    /// A Properties dropdown toggle and whether Quick Properties sent it.
+    PropPickerSurface(bool, Box<Message>),
     /// Toggle the MTEXT background-colour picker dropdown open/closed.
     PropBgColorPickerToggle,
     /// User picked an MTEXT background fill colour — sets `background_color`
@@ -4447,6 +4468,8 @@ pub enum Message {
     PdfDialog(crate::ui::window::pdf_dialogs::PdfDialogMsg),
     AttdefDialog(crate::ui::window::attdef_dialog::AttdefDialogMsg),
     FieldDialog(crate::ui::window::field_dialog::FieldDialogMsg),
+    /// An edit in the Edit Reference dialog.
+    RefEditDialog(crate::ui::window::refedit_dialog::RefEditDialogMsg),
     /// A click or search in the Point Cloud Manager.
     PcManager(crate::ui::window::pc_manager::PcManagerMsg),
     Count(crate::ui::window::count_palette::CountMsg),
@@ -4650,6 +4673,7 @@ impl OpenCADStudio {
             layer_translator: None,
             drawing_units: None,
             block_definition: None,
+            block_save_as: None,
             pdf_attach: None,
             point_cloud_attach: None,
             attdef_dialog: None,
@@ -4658,6 +4682,8 @@ impl OpenCADStudio {
             point_cloud_color_map: None,
             pc_section: None,
             view_background: None,
+            image_adjust: None,
+            refedit_dialog: None,
             underlay_layers: None,
             pdf_import_settings: None,
             pdf_import_file: None,
@@ -4758,6 +4784,7 @@ impl OpenCADStudio {
             block_mru: Vec::new(),
             block_freq: std::collections::HashMap::new(),
             block_mru_list: 50,
+            refedit_options: Default::default(),
             block_redefine_mode: 1,
             block_navigate: ".".to_string(),
             insname: String::new(),

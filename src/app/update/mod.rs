@@ -114,6 +114,7 @@ mod dialog;
 mod dynamic;
 pub(in crate::app) mod file;
 mod graphic_attributes;
+mod keytips;
 pub(in crate::app) use file::background_task;
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::app) use file::native_paths_match;
@@ -246,6 +247,7 @@ impl OpenCADStudio {
             }
             Some(GeometricTolerance) => self.geometric_tolerance = None,
             Some(BlockDefinition) => self.block_definition = None,
+            Some(BlockSaveAs) => self.block_save_as = None,
             Some(PdfAttach) => self.pdf_attach = None,
             Some(UnderlayLayers) => self.underlay_layers = None,
             Some(PdfImportSettings) => self.pdf_import_settings = None,
@@ -379,6 +381,12 @@ impl OpenCADStudio {
             _ => "FRAMES3",
         };
         self.ribbon.set_dropdown_current("FRAMES_DROPDOWN", current);
+        let uosnap = match crate::scene::model::pdf_vector::uosnap() {
+            0 => "UOSNAP0",
+            1 => "UOSNAP1",
+            _ => "UOSNAP2",
+        };
+        self.ribbon.set_dropdown_current("UOSNAP_DROPDOWN", uosnap);
         let attmode = match tab.scene.document.header.attribute_visibility {
             0 => "ATTMODE0",
             2 => "ATTMODE2",
@@ -453,6 +461,12 @@ impl OpenCADStudio {
                         }
                     }
                 }
+            }
+            if self.active_modal == Some(super::ModalKind::BlockSaveAs)
+                && (matches!(msg, Message::CommandFinalize)
+                    || matches!(&msg, Message::ShortcutPressed(key) if key.rsplit('+').next() == Some("ENTER") || key.rsplit('+').next() == Some("RETURN")))
+            {
+                return self.apply_block_save_as_dialog();
             }
             if self.active_modal == Some(super::ModalKind::WriteBlock) {
                 if matches!(msg, Message::CommandFinalize)
@@ -631,6 +645,14 @@ impl OpenCADStudio {
             Message::SpaceMouseFocus(id, focused) => {
                 if Some(id) == self.main_window {
                     self.spacemouse_focused = focused;
+                }
+                // Key tips close when the window loses the focus, and an Alt
+                // held while it left (Alt+Tab) no longer counts as a lone tap.
+                if !focused {
+                    crate::ui::ribbon::keytip_pointer_pressed();
+                }
+                if !focused && self.ribbon.keytips_active() {
+                    return self.hide_keytips();
                 }
                 Task::none()
             }
@@ -845,15 +867,23 @@ impl OpenCADStudio {
             // Web: fetch every script queued by startup language selection or
             // drawing text discovery. Each script has one shared store entry.
             Message::PollWebFonts => {
+                #[cfg(target_arch = "wasm32")]
+                let autosave = if web_autosave_due(self.savetime_min) {
+                    self.on_autosave()
+                } else {
+                    Task::none()
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                let autosave = Task::none();
                 let pending = crate::scene::text::web_font::take_pending();
                 if pending.is_empty() {
-                    return Task::none();
+                    return autosave;
                 }
-                Task::batch(pending.into_iter().map(|script| {
+                Task::batch(std::iter::once(autosave).chain(pending.into_iter().map(|script| {
                     Task::perform(crate::scene::text::web_font::fetch(script), move |res| {
                         Message::WebFontLoaded(script, res)
                     })
-                }))
+                })))
             }
 
             // Web: a per-script font arrived. The same bytes feed drawing text,
@@ -2294,9 +2324,11 @@ impl OpenCADStudio {
             Message::PdfDialog(message) => self.update_pdf_dialog(message),
             Message::AttdefDialog(message) => self.on_attdef_dialog(message),
             Message::FieldDialog(message) => self.on_field_dialog(message),
+            Message::RefEditDialog(message) => self.update_refedit_dialog(message),
             Message::PcManager(message) => self.update_pc_manager(message),
             Message::Count(message) => self.on_count(message),
             Message::SheetSet(message) => self.on_sheet_set(message),
+            Message::KeyTip(input) => self.on_keytip(input),
             Message::RibbonSelectTab(idx) => {
                 self.ribbon.select(idx);
                 Task::none()
@@ -2849,6 +2881,11 @@ impl OpenCADStudio {
                 self.command_line.literal_spaces = !self.command_line.literal_spaces;
                 self.save_config();
                 self.focus_cmd_input()
+            }
+
+            Message::CommandHistoryHover(hovered) => {
+                self.command_line.set_history_hover(hovered);
+                Task::none()
             }
 
             Message::CommandHistoryToggle => {
@@ -6632,7 +6669,13 @@ impl OpenCADStudio {
                     self.ribbon.close_dropdown();
                     return Task::none();
                 }
-                self.ribbon.select_dropdown_item(dropdown_id, cmd);
+                // Save As is a secondary operation; the save face keeps BSAVE.
+                let face = if dropdown_id == "BLOCK_SAVE" {
+                    "BSAVE"
+                } else {
+                    cmd
+                };
+                self.ribbon.select_dropdown_item(dropdown_id, face);
                 self.ribbon.activate_tool(cmd);
                 self.dispatch_command(cmd)
             }
@@ -7917,6 +7960,13 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::PropPickerSurface(quick, message) => {
+                let task = self.update(*message);
+                let i = self.active_tab;
+                self.tabs[i].properties.picker_in_quick = quick;
+                task
+            }
+
             Message::PropColorPickerToggle => {
                 let i = self.active_tab;
                 self.tabs[i].properties.color_picker_open =
@@ -9122,6 +9172,12 @@ impl OpenCADStudio {
                 Task::none()
             }
 
+            Message::SnapMarkerSizeChanged(size) => {
+                self.model_space.snap_marker_size = size.clamp(1, 20);
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+
             Message::GripColorChanged(color) => {
                 self.model_space.grip_color = color;
                 self.sync_model_space_theme(false);
@@ -9572,6 +9628,9 @@ impl OpenCADStudio {
                     let i = self.active_tab;
                     return self.run_dash_view("SETTINGS", i);
                 }
+                if self.active_modal == Some(super::ModalKind::ImageAdjust) {
+                    self.image_adjust = None;
+                }
                 if self.active_modal == Some(super::ModalKind::Field) {
                     self.close_field_dialog();
                     return Task::none();
@@ -9588,6 +9647,9 @@ impl OpenCADStudio {
                     } else {
                         Task::none()
                     };
+                }
+                if self.active_modal == Some(super::ModalKind::RefEdit) {
+                    self.refedit_dialog = None;
                 }
                 // Cancelling the section settings drops the waiting extraction.
                 if self.active_modal == Some(super::ModalKind::PcSection) {
@@ -10550,6 +10612,16 @@ impl OpenCADStudio {
 
             Message::UnsavedDialogSave => self.on_unsaved_dialog_save(),
             Message::BlockEditChangesSave => self.resolve_block_edit_close(true),
+            Message::BlockSaveAsName(name) => {
+                let i = self.active_tab;
+                let error = self.validate_block_save_as_name(i, &name).err();
+                if let Some(state) = self.block_save_as.as_mut() {
+                    state.name = name;
+                    state.error = error;
+                }
+                Task::none()
+            }
+            Message::BlockSaveAsApply => self.apply_block_save_as_dialog(),
             Message::BlockEditChangesDiscard => self.resolve_block_edit_close(false),
             Message::BlockEditChangesCancel => {
                 self.cancel_block_edit_close();
@@ -12591,4 +12663,25 @@ fn set_preview_bit(current: u8, bit: u8, enabled: bool) -> u8 {
     } else {
         current & !bit
     }
+}
+
+/// Web autosave deadline (SAVETIME minutes), polled from a short tick: the
+/// first call arms it, a later one past it re-arms it and answers true.
+#[cfg(target_arch = "wasm32")]
+fn web_autosave_due(savetime_min: i32) -> bool {
+    use std::cell::Cell;
+    thread_local!(static DUE_MS: Cell<f64> = const { Cell::new(0.0) });
+    let now = js_sys::Date::now();
+    let period = savetime_min.max(0) as f64 * 60_000.0;
+    DUE_MS.with(|due| {
+        if period == 0.0 || due.get() == 0.0 {
+            due.set(if period == 0.0 { 0.0 } else { now + period });
+            return false;
+        }
+        let fire = now >= due.get();
+        if fire {
+            due.set(now + period);
+        }
+        fire
+    })
 }

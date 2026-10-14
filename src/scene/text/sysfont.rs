@@ -55,8 +55,9 @@ struct SysFonts {
     recovered: Vec<Recovered>,
     /// Installed face file name (lower-case) → the family that face holds.
     /// A drawing references a TrueType style by *file* name, so this is what
-    /// makes such a style resolve — see [`family_for_reference`].
-    by_file: HashMap<String, String>,
+    /// makes such a style resolve — see [`family_for_reference`]. Files a host
+    /// registers at run time join it ([`register_font_file`]).
+    by_file: Mutex<HashMap<String, String>>,
 }
 
 static FONTS: OnceLock<SysFonts> = OnceLock::new();
@@ -161,7 +162,7 @@ fn fonts() -> &'static SysFonts {
             db: Mutex::new(db),
             families: Mutex::new(families),
             recovered,
-            by_file,
+            by_file: Mutex::new(by_file),
         }
     })
 }
@@ -444,12 +445,17 @@ pub fn with_face_data_weighted<T>(
 
 /// The family of the installed face whose file is named `name` — a bare file
 /// name or any path to one, matched case-insensitively.
-fn family_for_file(name: &str) -> Option<String> {
+pub(crate) fn family_for_file(name: &str) -> Option<String> {
     let file = name.rsplit(['/', '\\']).next()?.trim();
     if file.is_empty() {
         return None;
     }
-    fonts().by_file.get(&file.to_ascii_lowercase()).cloned()
+    fonts()
+        .by_file
+        .lock()
+        .unwrap()
+        .get(&file.to_ascii_lowercase())
+        .cloned()
 }
 
 /// The installed family a drawing's font reference names, or `None` when
@@ -542,6 +548,40 @@ pub fn register_web_font(bytes: &[u8]) {
     };
     *sys.families.lock().unwrap() = names;
     canonical_cache().lock().unwrap().clear();
+}
+
+/// Add a font file a host supplies at run time (the `font_register` control
+/// op): its faces join the database and `file_name` resolves to the family of
+/// the first face, so a text style naming that file finds it. Returns that
+/// family and the number of faces the file added, or `None` when the bytes
+/// hold no face fontdb can read. Like [`register_web_font`], the family list
+/// is rebuilt and the canonical-name memo cleared; callers invalidate the glyph
+/// caches and re-layout text.
+pub fn register_font_file(file_name: &str, bytes: &[u8]) -> Option<(String, usize)> {
+    let file = file_name.rsplit(['/', '\\']).next()?.trim();
+    if file.is_empty() {
+        return None;
+    }
+    let sys = fonts();
+    let (family, faces, names) = {
+        let mut db = sys.db.lock().unwrap();
+        let before: std::collections::HashSet<fontdb::ID> = db.faces().map(|f| f.id).collect();
+        db.load_font_data(bytes.to_vec());
+        let added: Vec<String> = db
+            .faces()
+            .filter(|face| !before.contains(&face.id))
+            .filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
+            .collect();
+        let family = added.first()?.clone();
+        (family, added.len(), family_names(&db))
+    };
+    sys.by_file
+        .lock()
+        .unwrap()
+        .insert(file.to_ascii_lowercase(), family.clone());
+    *sys.families.lock().unwrap() = names;
+    canonical_cache().lock().unwrap().clear();
+    Some((family, faces))
 }
 
 #[cfg(test)]
@@ -639,6 +679,32 @@ mod tests {
         assert_eq!(fold_name("Arial Narrow"), fold_name("arialnarrow"));
         assert_eq!(fold_name("Arial-Narrow"), fold_name("ARIAL NARROW"));
         assert_ne!(fold_name("Arial Narrow"), fold_name("Arial"));
+    }
+
+    /// A host-registered file resolves by its file name — any case, bare or
+    /// with a path — to the family inside it; bytes without a face are refused
+    /// and leave nothing behind.
+    #[test]
+    fn registered_font_file_resolves_by_file_name() {
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/web/fonts/greek.ttf"))
+            .expect("bundled web font");
+        let (family, faces) =
+            register_font_file("C:\\Fonts\\HostRegistered-Test.ttf", &bytes).expect("a face");
+        assert!(faces >= 1);
+        assert!(!family.is_empty());
+        assert_eq!(
+            family_for_reference("hostregistered-test.TTF").as_deref(),
+            Some(family.as_str())
+        );
+        assert_eq!(
+            family_for_reference("fonts/HostRegistered-Test.ttf").as_deref(),
+            Some(family.as_str())
+        );
+        assert!(has_family(&family));
+
+        assert_eq!(register_font_file("Broken-Test.ttf", b"not a font"), None);
+        assert_eq!(family_for_reference("Broken-Test.ttf"), None);
+        assert_eq!(register_font_file("", &bytes), None);
     }
 
     /// A DWG stores a style's TrueType font as a file name, so every installed

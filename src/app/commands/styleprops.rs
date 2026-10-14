@@ -1213,6 +1213,7 @@ impl OpenCADStudio {
                     | "DGNOSNAP"
                     | "UOSNAP"
                     | "FIELDDISPLAY"
+                    | "FILEDIA"
                     | "SURFACEASSOCIATIVITY"
                     | "UCSORTHO"
                     | "UCSVIEW"
@@ -1350,9 +1351,15 @@ impl OpenCADStudio {
                         if let Some(value) = &value {
                             match value.parse::<i32>().ok().filter(|v| (-90..=90).contains(v)) {
                                 Some(fade) => self.set_xref_fade(fade),
-                                None => self
-                                    .command_line
-                                    .push_error("Requires an integer between -90 and 90."),
+                                // Refused: say why and ask again.
+                                None => {
+                                    self.command_line
+                                        .push_error("Requires an integer between -90 and 90.");
+                                    self.command_line.push_output(&format!(
+                                        "Enter new value for XDWGFADECTL <{current}>:"
+                                    ));
+                                    self.pending_setvar = Some(name.clone());
+                                }
                             }
                         } else {
                             self.command_line.push_output(&format!(
@@ -1590,6 +1597,35 @@ impl OpenCADStudio {
                             None => {
                                 self.command_line.push_output(&format!(
                                     "Enter new value for FIELDDISPLAY <{current}>:"
+                                ));
+                                self.pending_setvar = Some(name.clone());
+                            }
+                        }
+                        return Some(self.finish_dispatch(cmd));
+                    }
+                    if name == "FILEDIA" {
+                        let current = i16::from(crate::sys::file_dia());
+                        match value
+                            .as_deref()
+                            .map(|v| v.trim().parse::<i16>().ok().filter(|v| (0..=1).contains(v)))
+                        {
+                            Some(Some(mode)) => {
+                                if current != mode {
+                                    crate::sys::set_file_dia(mode == 1);
+                                    self.save_config();
+                                }
+                            }
+                            Some(None) => {
+                                self.command_line
+                                    .push_error(crate::t!("Requires 0 or 1 only.").as_ref());
+                                self.command_line.push_output(&format!(
+                                    "Enter new value for FILEDIA <{current}>:"
+                                ));
+                                self.pending_setvar = Some(name.clone());
+                            }
+                            None => {
+                                self.command_line.push_output(&format!(
+                                    "Enter new value for FILEDIA <{current}>:"
                                 ));
                                 self.pending_setvar = Some(name.clone());
                             }
@@ -4521,11 +4557,12 @@ mod scale_validation_tests {
 }
 
 impl OpenCADStudio {
-    /// XDWGFADECTL: store it, show it on the ribbon and redraw every tab's
-    /// referenced drawings.
+    /// XDWGFADECTL: store it in the profile, show it on the ribbon and redraw
+    /// every tab's referenced drawings.
     pub(in crate::app) fn set_xref_fade(&mut self, fade: i32) {
         crate::scene::cache::block_cache::set_xref_fade_ctl(fade);
         self.ribbon.xref_fade = crate::scene::cache::block_cache::xref_fade_ctl();
+        self.save_config();
         for tab in &mut self.tabs {
             if !tab.is_start {
                 tab.scene.recolor_meshes();

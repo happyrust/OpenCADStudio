@@ -80,7 +80,7 @@ use crate::command::{CmdResult, SelectionEntity, StepInput};
 use codec::Handle;
 use iced::Task;
 
-mod clipboard;
+pub(super) mod clipboard;
 mod constraint;
 mod dim_edit;
 mod entity_commit;
@@ -95,7 +95,8 @@ mod utilities;
 mod viewport;
 
 pub(crate) use clipboard::{
-    copy_to_clipboard_kernel, paste_entities_kernel, remap_ext_subtree_reference, PasteSpace,
+    copy_to_clipboard_kernel, paste_entities_kernel, remap_ext_subtree_reference, remap_object,
+    PasteSpace,
 };
 
 impl OpenCADStudio {
@@ -1310,7 +1311,9 @@ impl OpenCADStudio {
         self.tabs[i].snap_result = None;
         self.tabs[i].scene.clear_preview_wire();
         self.restore_pre_cmd_tangent();
-        self.command_line.push_output(&msg);
+        if !msg.is_empty() {
+            self.command_line.push_output(&msg);
+        }
     }
 
     fn handle_report_measurement(&mut self, msg: String) {

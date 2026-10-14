@@ -423,6 +423,12 @@ pub struct UserSettings {
     pub attdef_on_screen: bool,
     /// FIELDDISPLAY: fields show on a gray background.
     pub field_display: bool,
+    /// XDWGFADECTL: how much referenced drawings fade (-90..=90; negative is off).
+    pub xref_fade: i32,
+    /// FILEDIA: file dialogs of commands that have a command-line form.
+    pub file_dia: bool,
+    /// The file type ATTACH's picker was last left on (1-based).
+    pub attach_filter: u32,
     /// SURFACEASSOCIATIVITY: new surfaces stay associative to their sources.
     pub surface_associativity: bool,
     /// UCSORTHO: an orthographic view preset also sets its orthographic UCS.
@@ -656,6 +662,12 @@ pub struct UserSettings {
     /// BLOCKNAVIGATE (default ".").
     #[serde(default = "default_block_navigate")]
     pub block_navigate: String,
+    /// The Edit Reference dialog's settings.
+    #[serde(default)]
+    pub refedit: RefEditOptions,
+    /// XFADECTL: how far objects outside the REFEDIT working set fade (0–90, default 70).
+    #[serde(default = "default_xfadectl")]
+    pub xfadectl: u8,
     /// COUNTCOLOR (default 3).
     #[serde(default = "default_count_color")]
     pub count_color: i16,
@@ -686,6 +698,30 @@ pub struct PaletteBlockRef {
     pub time: u64,
     #[serde(default)]
     pub drawing: bool,
+}
+
+/// The Edit Reference dialog's settings, remembered between sessions: give
+/// an external reference's clashing named objects unique names, check out
+/// attribute definitions, lock what is outside the working set, pick the
+/// working set's objects in the drawing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RefEditOptions {
+    pub unique_names: bool,
+    pub attributes: bool,
+    pub lock: bool,
+    pub nested: bool,
+}
+
+impl Default for RefEditOptions {
+    fn default() -> Self {
+        Self {
+            unique_names: true,
+            attributes: false,
+            lock: true,
+            nested: false,
+        }
+    }
 }
 
 /// The Blocks palette's insertion options.
@@ -724,6 +760,10 @@ impl Default for BlockInsertOptions {
 
 fn default_block_view() -> u8 {
     1
+}
+
+fn default_xfadectl() -> u8 {
+    70
 }
 
 fn default_block_mru_list() -> u8 {
@@ -891,6 +931,9 @@ impl Default for UserSettings {
             image_frame: 1,
             attdef_on_screen: true,
             field_display: true,
+            xref_fade: 50,
+            file_dia: true,
+            attach_filter: 7,
             surface_associativity: true,
             ucs_ortho: true,
             ucs_view: true,
@@ -961,6 +1004,8 @@ impl Default for UserSettings {
             block_mru_list: 50,
             block_redefine_mode: 1,
             block_navigate: ".".to_string(),
+            refedit: RefEditOptions::default(),
+            xfadectl: 70,
             count_color: 3,
             count_error_color: 1,
             count_service: true,

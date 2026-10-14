@@ -877,6 +877,9 @@ impl OpenCADStudio {
             image_frame: crate::scene::frame::profile_image_mode(),
             attdef_on_screen: crate::modules::draw::draw::attdef::session().on_screen,
             field_display: crate::entities::field::display(),
+            xref_fade: crate::scene::cache::block_cache::xref_fade_ctl(),
+            file_dia: crate::sys::file_dia(),
+            attach_filter: crate::sys::attach_filter(),
             surface_associativity: crate::scene::model::sweep_model::surface_associativity(),
             ucs_ortho: crate::modules::view::view_cmd::ucs_ortho(),
             ucs_view: crate::modules::view::view_cmd::ucs_view(),
@@ -952,6 +955,8 @@ impl OpenCADStudio {
             block_mru_list: self.block_mru_list,
             block_redefine_mode: self.block_redefine_mode,
             block_navigate: self.block_navigate.clone(),
+            refedit: self.refedit_options.clone(),
+            xfadectl: crate::scene::cache::block_cache::refedit_fade_ctl() as u8,
             count_color: self.count_palette.color,
             count_error_color: self.count_palette.error_color,
             count_service: self.count_palette.service,
@@ -998,6 +1003,10 @@ impl OpenCADStudio {
         crate::scene::frame::set_profile_image_mode(s.image_frame);
         crate::modules::draw::draw::attdef::session().on_screen = s.attdef_on_screen;
         crate::entities::field::set_display(s.field_display);
+        crate::scene::cache::block_cache::set_xref_fade_ctl(s.xref_fade);
+        self.ribbon.xref_fade = crate::scene::cache::block_cache::xref_fade_ctl();
+        crate::sys::set_file_dia(s.file_dia);
+        crate::sys::set_attach_filter(s.attach_filter);
         crate::scene::model::sweep_model::set_surface_associativity(s.surface_associativity);
         crate::modules::view::view_cmd::set_ucs_ortho(s.ucs_ortho);
         crate::modules::view::view_cmd::set_ucs_view(s.ucs_view);
@@ -1111,6 +1120,8 @@ impl OpenCADStudio {
         self.block_mru_list = s.block_mru_list.min(100);
         self.block_redefine_mode = s.block_redefine_mode.min(2);
         self.block_navigate = s.block_navigate.clone();
+        crate::scene::cache::block_cache::set_refedit_fade_ctl(i32::from(s.xfadectl.min(90)));
+        self.refedit_options = s.refedit.clone();
         self.count_palette.color = s.count_color;
         self.count_palette.error_color = s.count_error_color;
         self.count_palette.service = s.count_service;
@@ -2366,6 +2377,12 @@ impl OpenCADStudio {
             self.tabs[i].scene.load_current_layout_state();
             self.tabs[i].refresh_active_ucs();
         }
+        // A layout saved with a model viewport entered reopens inside it,
+        // with that viewport's UCS (#1670).
+        let enter_viewport_task = self.tabs[i]
+            .scene
+            .saved_entered_viewport()
+            .map_or_else(Task::none, |handle| Task::done(Message::EnterViewport(handle)));
 
         // The tab may have been reused for the newly opened file. Any Plot
         // dialog cache belongs to the previous/startup drawing and must not
@@ -2479,6 +2496,7 @@ impl OpenCADStudio {
             pending_open_task,
             interaction_task,
             sheet_set_task,
+            enter_viewport_task,
         ])
     }
 
@@ -2802,6 +2820,7 @@ impl OpenCADStudio {
         if self.tabs[i].active_block_edit.is_none() {
             self.tabs[i].scene.sync_camera_to_document();
             self.tabs[i].last_synced_camera_gen = self.tabs[i].scene.camera_generation;
+            self.tabs[i].scene.sync_active_viewport_to_document();
         }
     }
 

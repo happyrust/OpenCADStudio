@@ -1965,7 +1965,8 @@ pub enum CmdResult {
         handles: Vec<Handle>,
         factor: f64,
     },
-    /// Print a measurement result to the command line and end the command.
+    /// Print a measurement result to the command line and end the command
+    /// (an empty one ends it silently).
     Measurement(String),
     /// Print a measurement result and keep the command active.
     ReportMeasurement(String),
@@ -2980,6 +2981,12 @@ pub trait CadCommand: Send {
     /// hands the command what is left.
     fn selection_keeps_associative_dimensions(&self) -> bool {
         false
+    }
+
+    /// The kinds of object the command takes (ADJUST): the host drops the
+    /// rest of each completed selection without a word.
+    fn selection_entity_filter(&self) -> Option<fn(&EntityType) -> bool> {
+        None
     }
 
     /// The command takes block references only (XCLIP): the host drops the

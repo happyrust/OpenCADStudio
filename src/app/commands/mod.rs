@@ -7,6 +7,7 @@ use std::path::PathBuf;
 mod attdef;
 mod blocks;
 mod blockvars;
+mod bvisibility;
 mod count;
 mod dim;
 pub(crate) mod display;
@@ -22,6 +23,7 @@ mod pdf_dialogs;
 pub(crate) mod pdf_import;
 mod pdf_underlay;
 mod pidlegend;
+mod refedit;
 mod plotvars;
 mod point_cloud;
 pub(crate) mod sheet_set;
@@ -302,6 +304,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_xref_attach(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_bvisibility(cmd, i) {
+            return Some(t);
+        }
         if let Some(t) = self.dispatch_blocks(cmd, i) {
             return Some(t);
         }
@@ -330,6 +335,9 @@ impl OpenCADStudio {
             return Some(t);
         }
         if let Some(t) = self.dispatch_dim(cmd, i) {
+            return Some(t);
+        }
+        if let Some(t) = self.dispatch_refedit(cmd, i) {
             return Some(t);
         }
         if let Some(t) = self.dispatch_inquiry(cmd, i) {
@@ -727,6 +735,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "PDFOSNAP",
         "UOSNAP",
         "FIELDDISPLAY",
+        "FILEDIA",
         "SURFACEASSOCIATIVITY",
         "LAYOUTCREATEVIEWPORT",
         "FIELDEVAL",
@@ -838,6 +847,8 @@ inventory::submit!(crate::command::CommandRegistration {
         "EXPORTSTEP",
         "EXPORTSTL",
         "EXTERNALREFERENCES",
+        "EXTERNALREFERENCESCLOSE",
+        "ERSTATE",
         "POINTCLOUDMANAGER",
         "POINTCLOUDMANAGERCLOSE",
         "EXTRIM",
@@ -971,6 +982,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "XR",
         "XREF",
         "-XREF",
+        "-ATTACH",
         "XRELOAD",
         "ZOOM",
         "ZS",
