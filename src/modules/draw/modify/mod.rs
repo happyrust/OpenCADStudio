@@ -1,5 +1,6 @@
 pub mod align;
 pub mod array;
+pub mod arrayedit;
 pub mod attedit;
 pub mod blend;
 pub mod block_edit;
@@ -30,3 +31,4 @@ pub mod stretch;
 pub mod torient;
 pub mod translate;
 pub mod trim;
+pub mod txtexp;

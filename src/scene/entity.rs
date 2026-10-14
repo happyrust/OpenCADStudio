@@ -947,6 +947,14 @@ impl Scene {
         &mut self,
         options: CreateBlockOptions,
     ) -> Result<Handle, String> {
+        // Base-point contract: the contents are stored *relative to the picked
+        // base* because `world_to_block` already subtracts it, so the
+        // definition's own `Block.base_point` stays ZERO and the picked base
+        // becomes the block origin (inserting at a point puts that point where
+        // the base was). Callers must not also store the picked base in the
+        // definition — that would subtract it twice. Imported definitions,
+        // whose geometry arrives relative to their own base point, keep that
+        // base point and are never rewritten here.
         let name = options.name.trim();
         if name.is_empty() {
             return Err("Block name cannot be empty.".into());
@@ -988,6 +996,11 @@ impl Scene {
             // Update existing Block entity fields
             if let Some(EntityType::Block(b)) = self.document.get_entity_mut(existing_blk_h) {
                 b.description = options.description.clone();
+                // The new contents are baked relative to the picked base (see
+                // the contract above), so the definition's base point has to
+                // go back to ZERO. Leaving an imported definition's non-zero
+                // base point here would subtract the picked base twice.
+                b.base_point = codec::types::Vector3::ZERO;
             }
             if options.annotative {
                 let annotative_vals = vec![codec::xdata::XDataValue::Integer16(1)];
@@ -1250,19 +1263,35 @@ impl Scene {
 
     /// Replace the contents and base point of block `name`, defining it when
     /// absent. References keep pointing at it and show the new contents.
+    /// Refuses and returns Err if the new contents lead back to `name` directly or transitively.
     pub fn redefine_block_raw(
         &mut self,
         name: &str,
         base_point: codec::types::Vector3,
         entities: Vec<EntityType>,
-    ) {
+    ) -> Result<(), String> {
+        for entity in &entities {
+            if let EntityType::Insert(ins) = entity {
+                if crate::scene::block_service::would_create_cycle(
+                    &self.document,
+                    name,
+                    &ins.block_name,
+                ) {
+                    return Err(crate::scene::block_service::circular_dependency_error(
+                        name,
+                        &ins.block_name,
+                    ));
+                }
+            }
+        }
         let Some((br_handle, block_handle)) = self
             .document
             .block_records
             .get(name)
             .map(|br| (br.handle, br.block_entity_handle))
         else {
-            return self.define_block_raw(name, base_point, entities);
+            self.define_block_raw(name, base_point, entities);
+            return Ok(());
         };
         let owned: Vec<Handle> = self
             .document
@@ -1286,6 +1315,7 @@ impl Scene {
             let _ = self.document.add_entity(entity);
         }
         self.bump_geometry();
+        Ok(())
     }
 
     pub(super) fn synced_hatch_models(
@@ -2215,7 +2245,14 @@ impl Scene {
                     .colors
                     .get(i)
                     .and_then(|e| e.color.rgb())
-                    .map(|(r, g, b)| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, color[3]])
+                    .map(|(r, g, b)| {
+                        [
+                            r as f32 / 255.0,
+                            g as f32 / 255.0,
+                            b as f32 / 255.0,
+                            color[3],
+                        ]
+                    })
             };
             gradient_color1 = stop(0);
             let color1 = gradient_color1.unwrap_or(color);
@@ -2453,6 +2490,29 @@ impl Scene {
     pub fn populate_images_from_document(&mut self) {
         self.populate_images_from_document_unbumped();
         self.bump_geometry();
+    }
+
+    /// Web drop flow: `names` are raster files whose bytes were just
+    /// registered (name-keyed). When this drawing references one of them by
+    /// name but carries no model for it — the reference pointed at the
+    /// author's machine and was unresolvable at open time — rebuild the image
+    /// models so the entity finally renders. Returns whether a rebuild ran.
+    pub fn resolve_registered_image_names(&mut self, names: &[String]) -> bool {
+        let matches_name = |img: &codec::entities::RasterImage| {
+            names
+                .iter()
+                .any(|name| crate::scene::model::image_model::same_file_name(&img.file_path, name))
+        };
+        let unresolved = self.document.entities().any(|entity| match entity {
+            EntityType::RasterImage(img) => {
+                matches_name(img) && !self.images.contains_key(&img.common.handle)
+            }
+            _ => false,
+        });
+        if unresolved {
+            self.populate_images_from_document();
+        }
+        unresolved
     }
 
     fn populate_images_from_document_unbumped(&mut self) {
@@ -3054,6 +3114,10 @@ impl Scene {
         // The name alone leaves the header pointing at the previous style, and
         // a DWG writes the current style by handle only.
         self.document.header.current_dimstyle_handle = iso;
+        // The annotation multiplier depends on those units; Scene::new()
+        // left it at the unitless 1, which drew annotative objects 1000x too
+        // large until the first CANNOSCALE change shrank them. (#1674)
+        self.sync_annotation_scale_from_header();
         for obj in self.document.objects.values_mut() {
             if let codec::objects::ObjectType::Layout(l) = obj {
                 if l.name != "Model" {

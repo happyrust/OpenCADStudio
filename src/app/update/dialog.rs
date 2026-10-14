@@ -13,6 +13,7 @@ use crate::scene::pick::grip::{find_hit_grip, find_hit_grip_paper, find_hit_grip
 use crate::scene::{
     self, hover_id, CubeRegion, Scene, VIEWCUBE_DRAW_PX, VIEWCUBE_PAD, VIEWCUBE_PX,
 };
+use crate::ui::window::block_palette::BlockPaletteMsg;
 use crate::ui::PropertiesPanel;
 use codec::types::Color as AcadColor;
 use codec::{EntityType as AcadEntityType, Handle};
@@ -21,6 +22,15 @@ use iced::{mouse, Point, Task};
 
 impl OpenCADStudio {
     pub(in crate::app) fn open_save_dialog_window(&mut self, tab_idx: usize) -> Task<Message> {
+        // Every entry here is Save-As semantics (the SAVEAS command, the
+        // recovery save-as, the native failure redirects): the user is
+        // choosing a destination, so on the web the FS Access picker must
+        // open even when the tab already holds a handle (plain Save sets
+        // the flag back in save_with_default_format).
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.save_plain_reuse_fs_handle = false;
+        }
         // Default the format dropdown to the loaded file's own format — its
         // DWG-vs-DXF kind (from the extension) and its version (from the parsed
         // document) — so Save-As round-trips the format instead of silently
@@ -205,9 +215,33 @@ impl OpenCADStudio {
                 let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
                     return Task::batch([close_win, self.continue_tab_close_queue()]);
                 };
+                // …and, on the web, its retained in-place save handle — the
+                // same hook on_tab_close runs: the user declined the save,
+                // so the picked file must never receive a later write, and
+                // the next tab to reuse this id must start with a fresh
+                // pick instead of silently writing over the discarded
+                // drawing's file.
+                #[cfg(target_arch = "wasm32")]
+                crate::io::fs_access::drop_handle(tab_id);
                 // Discarded — drop this tab's autosave recovery copy.
                 #[cfg(not(target_arch = "wasm32"))]
                 let _ = std::fs::remove_file(self.autosave_target(idx));
+                // Web counterpart: the OPFS snapshot must go too, or the
+                // drawing the user just declined to save is offered back at
+                // the next boot. A snapshot round still writing this tab's key
+                // would resurrect it after the remove, so defer to the round's
+                // end (the same guard the save flow uses).
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let key = Self::web_autosave_key(&self.tabs[idx]);
+                    if self.web_autosave_in_flight {
+                        self.web_autosave_clear_after.push(key);
+                    } else {
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let _ = crate::io::web_autosave::remove(&key).await;
+                        });
+                    }
+                }
                 if self.tabs.len() == 1 {
                     self.tab_counter += 1;
                     self.tabs[0] = crate::app::document::DocumentTab::new_drawing(self.tab_counter);
@@ -225,6 +259,10 @@ impl OpenCADStudio {
                 // last selection. #21.
                 self.sync_ribbon_layers();
                 self.sync_ribbon_from_selection();
+                // The tab list just shrank: refresh the remembered
+                // session list (web session memory).
+                #[cfg(target_arch = "wasm32")]
+                self.persist_web_session();
                 return Task::batch([close_win, self.continue_tab_close_queue()]);
             }
             Some(crate::app::PendingClose::Quit) => {
@@ -306,6 +344,21 @@ impl OpenCADStudio {
 
         #[cfg(target_arch = "wasm32")]
         {
+            // Same guard the native half runs against active_save_jobs
+            // above: while a web save is between capture and completion,
+            // refuse a second one (the window is seconds — refuse, don't
+            // queue) instead of letting two serializer rounds race for the
+            // same tab's bookkeeping.
+            if let Some(busy_tab) = crate::io::fs_access::web_save_in_flight() {
+                if self.tabs.iter().any(|tab| tab.id == busy_tab) {
+                    self.command_line
+                        .push_info(crate::t!("Save already running for this drawing.").as_ref());
+                    return Task::none();
+                }
+                // Stale marker (its tab closed before settling): clear it
+                // rather than block this save forever.
+                crate::io::fs_access::end_web_save(busy_tab);
+            }
             match self.pending_close.take() {
                 Some(crate::app::PendingClose::Tab(tab_id)) => {
                     let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
@@ -407,7 +460,7 @@ impl OpenCADStudio {
         self.import_document_block(doc, stem, false)
     }
 
-    fn import_document_block(
+    pub(super) fn import_document_block(
         &mut self,
         doc: codec::CadDocument,
         stem: String,
@@ -555,11 +608,14 @@ impl OpenCADStudio {
                 .define_block_raw(&def.name, def.base_point, def.entities);
         }
         if redefine {
-            self.tabs[i].scene.redefine_block_raw(
+            if let Err(err) = self.tabs[i].scene.redefine_block_raw(
                 &name,
                 codec::types::Vector3::new(base.x, base.y, base.z),
                 entities,
-            );
+            ) {
+                self.command_line.push_error(&err);
+                return Err(err);
+            }
         } else {
             self.tabs[i]
                 .scene

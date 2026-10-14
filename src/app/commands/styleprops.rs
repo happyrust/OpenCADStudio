@@ -358,62 +358,6 @@ impl OpenCADStudio {
                         .map(|s| s.to_uppercase())
                         .collect();
 
-                    // Live blocks are reachable from layouts and style roots
-                    // through the shared graph. Dangling layouts do not count.
-                    let live_blocks: rustc_hash::FxHashSet<String> = {
-                        let doc = &self.tabs[i].scene.document;
-                        let is_real_layout = |br: &codec::BlockRecord| -> bool {
-                            let up = br.name.to_ascii_uppercase();
-                            up.starts_with("*MODEL_SPACE")
-                                || up.starts_with("*PAPER_SPACE")
-                                || matches!(
-                                    doc.objects.get(&br.layout),
-                                    Some(codec::objects::ObjectType::Layout(_))
-                                )
-                        };
-                        let children = |name: &str| -> Vec<String> {
-                            let mut out = Vec::new();
-                            let Some(br) = doc.block_records.get(name) else {
-                                return out;
-                            };
-                            for &h in &br.entity_handles {
-                                let Some(entity) = doc.get_entity(h) else {
-                                    continue;
-                                };
-                                out.extend(
-                                    crate::scene::render_graph::entity_block_uses(doc, entity, 1.0)
-                                        .into_iter()
-                                        .filter(|block_use| !block_use.block.is_null())
-                                        .map(|block_use| block_use.insert.block_name),
-                                );
-                            }
-                            out
-                        };
-                        let mut live = rustc_hash::FxHashSet::default();
-                        let mut stack: Vec<String> = doc
-                            .block_records
-                            .iter()
-                            .filter(|&br| is_real_layout(br))
-                            .map(|br| br.name.clone())
-                            .collect();
-                        stack.extend(
-                            crate::scene::render_graph::document_block_uses(doc)
-                                .into_iter()
-                                .map(|block_use| block_use.insert.block_name),
-                        );
-                        while let Some(n) = stack.pop() {
-                            if !live.insert(n.clone()) {
-                                continue;
-                            }
-                            for c in children(&n) {
-                                if !live.contains(&c) {
-                                    stack.push(c);
-                                }
-                            }
-                        }
-                        live
-                    };
-
                     // Build removal lists (still immutable)
                     let layer_remove: Vec<String> = if do_layers {
                         self.tabs[i]
@@ -466,26 +410,21 @@ impl OpenCADStudio {
                         vec![]
                     };
 
-                    // Remove unreachable blocks but retain live xrefs and space containers.
+                    // Remove blocks nothing references any more. The shared
+                    // service decides what qualifies — layout/xref/dynamic
+                    // records and open BEDIT sessions are protected, and so is
+                    // every reference kind — so a purge and a delete give the
+                    // same answer.
                     let block_remove: Vec<String> = if do_blocks {
-                        self.tabs[i]
-                            .scene
-                            .document
-                            .block_records
+                        let open_edits: Vec<codec::Handle> = self.tabs[i]
+                            .block_edits
                             .iter()
-                            .filter(|br| {
-                                let up = br.name.to_ascii_uppercase();
-                                // Never PURGE an xref *definition* — that is a
-                                // detach, not a purge. Orphaned dependencies from
-                                // a past detach still use the reachability test.
-                                !br.flags.is_xref
-                                    && !br.flags.is_xref_overlay
-                                    && !up.starts_with("*MODEL_SPACE")
-                                    && !up.starts_with("*PAPER_SPACE")
-                                    && !live_blocks.contains(&br.name)
-                            })
-                            .map(|br| br.name.clone())
-                            .collect()
+                            .map(|session| session.br_handle)
+                            .collect();
+                        crate::scene::block_service::purge_candidates(
+                            &self.tabs[i].scene.document,
+                            &open_edits,
+                        )
                     } else {
                         vec![]
                     };
@@ -501,7 +440,7 @@ impl OpenCADStudio {
                     // Snapshot the pre-purge document once, before the first
                     // removal, so a single UNDO restores everything.
                     if !snapshot_pushed {
-                        self.push_undo_snapshot(i, "PURGE");
+                        self.push_undo_snapshot(i, "Purge");
                         snapshot_pushed = true;
                     }
 
@@ -523,26 +462,11 @@ impl OpenCADStudio {
                         .count();
                     let mut blocks_gone = 0usize;
                     for name in &block_remove {
-                        // Drop the block definition's member entities (and the
-                        // BLOCK/ENDBLK delimiters) before the record so no orphaned
-                        // geometry survives in the document entity list.
-                        let handles: Vec<_> =
-                            if let Some(br) = self.tabs[i].scene.document.block_records.get(name) {
-                                let mut h = br.entity_handles.clone();
-                                h.push(br.block_entity_handle);
-                                h.push(br.block_end_handle);
-                                h
-                            } else {
-                                Vec::new()
-                            };
-                        for h in handles {
-                            self.tabs[i].scene.document.remove_entity(h);
-                        }
-                        if self.tabs[i]
-                            .scene
-                            .document
-                            .block_records
-                            .remove(name)
+                        // The service erases the definition, its member
+                        // entities, both BLOCK/ENDBLK delimiters and any stale
+                        // draw-order table, so a purge and a delete leave the
+                        // same document behind.
+                        if crate::scene::block_service::erase(&mut self.tabs[i].scene, name)
                             .is_some()
                         {
                             blocks_gone += 1;
@@ -586,7 +510,7 @@ impl OpenCADStudio {
                         // re-assignment needed (a block purge already snapshotted;
                         // a snapshot here only matters when nothing else changed).
                         if !snapshot_pushed {
-                            self.push_undo_snapshot(i, "PURGE");
+                            self.push_undo_snapshot(i, "Purge");
                         }
                         for h in &orphans {
                             self.tabs[i].scene.document.objects.remove(h);
@@ -1224,6 +1148,9 @@ impl OpenCADStudio {
                     | "SHORTCUTMENUDURATION"
                     | "CURSORSIZE"
                     | "PICKBOX"
+                    | "HPASSOC"
+                    | "COMMANDLINEOPACITY"
+                    | "MENUBAR"
                     | "CURSORTYPE"
                     | "SNAPANG"
                     | "TEXTFILL"
@@ -1289,6 +1216,7 @@ impl OpenCADStudio {
                     | "SURFACEASSOCIATIVITY"
                     | "UCSORTHO"
                     | "UCSVIEW"
+                    | "LAYOUTCREATEVIEWPORT"
                     | "PDFIMPORTMODE"
                     | "PDFIMPORTFILTER"
                     | "PDFIMPORTLAYERS"
@@ -1522,6 +1450,39 @@ impl OpenCADStudio {
                                     "Enter new value for PDFIMPORTIMAGEPATH, or . for none <\"{}\">:",
                                     image_path()
                                 ));
+                                self.pending_setvar = Some(name.clone());
+                            }
+                        }
+                        return Some(self.finish_dispatch(cmd));
+                    }
+                    if name == "LAYOUTCREATEVIEWPORT" {
+                        // A profile switch shown and taken as ON / OFF or 1 / 0.
+                        let current = if crate::scene::layout_create_viewport() { "ON" } else { "OFF" };
+                        let parsed = value.as_deref().map(|v| {
+                            match v.trim().trim_start_matches('_').to_ascii_uppercase().as_str() {
+                                "1" | "ON" => Some(true),
+                                "0" | "OFF" => Some(false),
+                                _ => None,
+                            }
+                        });
+                        match parsed {
+                            Some(Some(on)) => {
+                                if crate::scene::layout_create_viewport() != on {
+                                    crate::scene::set_layout_create_viewport(on);
+                                    self.save_config();
+                                }
+                            }
+                            Some(None) => {
+                                self.command_line.push_error(
+                                    crate::t!("Requires 0 or 1 only, or option keyword.").as_ref(),
+                                );
+                                self.command_line
+                                    .push_output(&format!("Enter new value for {name} <{current}>:"));
+                                self.pending_setvar = Some(name.clone());
+                            }
+                            None => {
+                                self.command_line
+                                    .push_output(&format!("Enter new value for {name} <{current}>:"));
                                 self.pending_setvar = Some(name.clone());
                             }
                         }
@@ -1833,6 +1794,18 @@ impl OpenCADStudio {
                             _ => unreachable!(),
                         };
                         if let Some(value) = &value {
+                            // Web CENTERLTYPEFILE: no path to read — pick the
+                            // .lin/.dnl file through the browser, read its
+                            // bytes at pick time and populate the document
+                            // from the text (native reads the typed path
+                            // inside `set_centerline_setting`).
+                            #[cfg(target_arch = "wasm32")]
+                            if name == "CENTERLTYPEFILE" && !value.trim().is_empty() {
+                                return Some(Task::perform(
+                                    crate::io::pick_linetype_file_web(),
+                                    Message::CenterlineLinetypeFilePicked,
+                                ));
+                            }
                             match self.tabs[i].scene.set_centerline_setting(&name, value) {
                                 Ok(message) => {
                                     self.tabs[i].dirty = true;
@@ -2218,6 +2191,28 @@ impl OpenCADStudio {
                                 },
                                 None => Ok((format!("PICKBOX = {}", self.pick_box), false)),
                             },
+                            "MENUBAR" => match value.as_deref() {
+                                Some(v @ ("0" | "1")) => {
+                                    self.show_menu_bar = v == "1";
+                                    Ok((format!("MENUBAR = {v}"), true))
+                                }
+                                Some(_) => Err("SETVAR: 0 or 1 required.".into()),
+                                None => Ok((
+                                    format!("MENUBAR = {}", u8::from(self.show_menu_bar)),
+                                    false,
+                                )),
+                            },
+                            "HPASSOC" => match value.as_deref() {
+                                Some(v @ ("0" | "1")) => {
+                                    self.hatch_associative = v == "1";
+                                    Ok((format!("HPASSOC = {v}"), true))
+                                }
+                                Some(_) => Err("SETVAR: 0 or 1 required.".into()),
+                                None => Ok((
+                                    format!("HPASSOC = {}", u8::from(self.hatch_associative)),
+                                    false,
+                                )),
+                            },
                             "CURSORTYPE" => match &value {
                                 Some(v) => match v.as_str() {
                                     "0" => {
@@ -2552,6 +2547,22 @@ impl OpenCADStudio {
                                 },
                                 None => Ok((
                                     format!("CLIPROMPTLINES = {}", self.cliprompt_lines),
+                                    false,
+                                )),
+                            },
+                            "COMMANDLINEOPACITY" => match &value {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(n) if (20..=100).contains(&n) => {
+                                        self.command_line.set_opacity_percent(n);
+                                        Ok((format!("COMMANDLINEOPACITY = {n}"), true))
+                                    }
+                                    _ => Err("SETVAR: integer from 20 to 100 required.".into()),
+                                },
+                                None => Ok((
+                                    format!(
+                                        "COMMANDLINEOPACITY = {}",
+                                        self.command_line.opacity_percent()
+                                    ),
                                     false,
                                 )),
                             },
@@ -3152,6 +3163,10 @@ impl OpenCADStudio {
                                 self.delete_objects = value;
                             }
                             if changed {
+                                if name == "INSUNITS" {
+                                    self.tabs[i].scene.sync_annotation_scale_from_header();
+                                    self.tabs[i].scene.invalidate_annotation_dependencies();
+                                }
                                 if matches!(
                                     name.as_str(),
                                     "ZOOMWHEEL"
@@ -3160,6 +3175,9 @@ impl OpenCADStudio {
                                         | "SHORTCUTMENUDURATION"
                                         | "CURSORSIZE"
                                         | "PICKBOX"
+                                        | "HPASSOC"
+                                        | "COMMANDLINEOPACITY"
+                                        | "MENUBAR"
                                         | "CURSORTYPE"
                                         | "SNAPANG"
                                         | "CLIPROMPTLINES"
@@ -3317,6 +3335,42 @@ impl OpenCADStudio {
             // Read-only scan: flags entities on undefined layers and block
             // references to undefined block definitions. Reports only; it does
             // not auto-repair (so it can never make the drawing worse).
+            // COMPARE — overlay what differs from another drawing. Bare picks
+            // the drawing; with a path it compares at once.
+            "COMPARE" => {
+                return Some(Task::perform(
+                    async {
+                        crate::sys::file_dialog()
+                            .set_title(crate::t!("Compare with drawing").as_ref())
+                            .add_filter(crate::t!("Drawing").as_ref(), &["dwg", "dxf"])
+                            .pick_file()
+                            .await
+                            .map(|handle| crate::sys::handle_path(&handle))
+                    },
+                    |path| match path {
+                        Some(path) => Message::Command(format!("COMPARE {}", path.display())),
+                        None => Message::Noop,
+                    },
+                ));
+            }
+            cmd if cmd.starts_with("COMPARE ") => {
+                let path = std::path::PathBuf::from(cmd.trim_start_matches("COMPARE").trim());
+                match crate::io::load_file(&path) {
+                    Ok(other) => {
+                        let comparison =
+                            crate::scene::compare::compare(&self.tabs[i].scene, other);
+                        // The overlay shows at once, before the cursor moves.
+                        self.tabs[i].scene.set_preview_wires(comparison.overlay.clone());
+                        let command =
+                            crate::modules::manage::compare::CompareCommand::new(comparison);
+                        self.command_line.push_info(&command.prompt());
+                        self.tabs[i].active_cmd = Some(Box::new(command));
+                    }
+                    Err(error) => self
+                        .command_line
+                        .push_error(crate::tf!("COMPARE: {error}").as_ref()),
+                }
+            }
             "AUDIT" => {
                 use std::collections::BTreeSet;
                 let mut undefined_layers: BTreeSet<String> = BTreeSet::new();
@@ -3392,7 +3446,13 @@ impl OpenCADStudio {
                 } else {
                     // Snapshot BEFORE mutating (undo must restore the old
                     // name); dropped again if nothing was renamed.
-                    self.push_undo_snapshot(i, "RENAME");
+                    let block = type_str == "BLOCK";
+                    let label = if block {
+                        format!("Rename block {old_name} to {new_name}")
+                    } else {
+                        "RENAME".to_string()
+                    };
+                    self.push_undo_snapshot(i, label);
                     let known = matches!(
                         type_str.as_str(),
                         "LAYER"
@@ -3405,11 +3465,31 @@ impl OpenCADStudio {
                             | "UCS"
                             | "VIEW"
                     );
-                    let ok = if type_str == "BLOCK" {
+                    // The block path's refusal text comes from the shared
+                    // service, so the command line, the palette, the plugin
+                    // API and the control op all word it the same way.
+                    let mut block_error: Option<String> = None;
+                    let ok = if block {
+                        let open_edits: Vec<codec::Handle> = self.tabs[i]
+                            .block_edits
+                            .iter()
+                            .map(|session| session.br_handle)
+                            .collect();
                         // Re-keys the record, syncs the Block marker and every
-                        // INSERT reference; refuses anonymous/xref sources and
-                        // invalid/taken names.
-                        self.tabs[i].scene.rename_block(&old_name, &new_name)
+                        // INSERT reference; refuses anonymous/xref sources,
+                        // protected records and invalid/taken names.
+                        match crate::scene::block_service::rename(
+                            &mut self.tabs[i].scene,
+                            &old_name,
+                            &new_name,
+                            &open_edits,
+                        ) {
+                            Ok(_) => true,
+                            Err(error) => {
+                                block_error = Some(error.to_string());
+                                false
+                            }
+                        }
                     } else if type_str == "LAYER" {
                         self.tabs[i].rename_layer(&old_name, &new_name)
                     } else if known {
@@ -3444,13 +3524,10 @@ impl OpenCADStudio {
                         );
                     } else {
                         self.discard_last_undo_entry(i);
-                        if !known {
+                        if let Some(message) = block_error {
+                            self.command_line.push_error(&message);
+                        } else if !known {
                             self.command_line.push_error(crate::tf!("RENAME: unknown type '{}'. Use LAYER BLOCK STYLE DIMSTYLE LINETYPE UCS VIEW", type_str).as_ref());
-                        } else if type_str == "BLOCK" {
-                            self.command_line.push_error(crate::tf!(
-                                "RENAME: could not rename block '{}' — missing/anonymous/xref, or '{}' is invalid or taken.",
-                                old_name, new_name
-                            ).as_ref());
                         } else {
                             self.command_line.push_error(crate::tf!(
                                 "RENAME: could not rename '{}' in {} — not found or protected, or '{}' is invalid or taken.",

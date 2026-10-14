@@ -15,7 +15,7 @@ use crate::t;
 use codec::entities::{AttributeDefinition, AttributeEntity, Entity, Insert};
 use codec::types::Vector3;
 use codec::EntityType;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 use crate::app::settings::BlockInsertOptions;
 use crate::command::{CadCommand, CmdResult, DynField, InputKind, WorkingPlane};
@@ -126,6 +126,14 @@ pub struct InsertBlockCommand {
     rotation: f64,
     pending_insert: Option<Insert>,
     plane: WorkingPlane,
+    /// The referenced block's insertion base point. Attributes are placed
+    /// through the same base-point convention the render path uses, so the
+    /// host injects it when it resolves the block's ATTDEFs.
+    block_base: Vector3,
+    /// Where the preview wires' block origin sits: zero for wires taken from
+    /// the definition, the clipboard base for paste-as-block, whose preview
+    /// is the clipboard in world coordinates.
+    preview_origin: DVec3,
 }
 
 impl InsertBlockCommand {
@@ -152,6 +160,8 @@ impl InsertBlockCommand {
             rotation: 0.0,
             pending_insert: None,
             plane: WorkingPlane::default(),
+            block_base: Vector3::ZERO,
+            preview_origin: DVec3::ZERO,
         }
     }
 
@@ -214,12 +224,13 @@ impl InsertBlockCommand {
         command
     }
 
-    /// Paste-as-block: the block is placed at the picked point.
-    pub fn new_for_block(name: String, preview_wires: Vec<WireModel>, base: Vec3) -> Self {
+    /// Paste-as-block: the block is placed at the picked point. The block
+    /// was defined around `base`, so its origin is the clipboard base.
+    pub fn new_for_block(name: String, preview_wires: Vec<WireModel>, base: DVec3) -> Self {
         let mut command = Self::base_state(Mode::Paste, Self::single_picker(&name));
         command.name = name;
         command.preview = preview_wires;
-        command.base = base.as_dvec3();
+        command.preview_origin = base;
         command.preset_scale = [Some(1.0); 3];
         command.preset_rotation = Some(0.0);
         command.step = Step::Point;
@@ -817,7 +828,7 @@ impl CadCommand for InsertBlockCommand {
             self.preset_scale[2].unwrap_or(1.0),
         ];
         let (sin, cos) = self.preset_rotation.unwrap_or(0.0).sin_cos();
-        let base = self.base;
+        let base = self.preview_origin + self.base;
         let origin = self.plane.to_local(pt);
         let plane = self.plane;
         self.preview
@@ -852,9 +863,18 @@ impl CadCommand for InsertBlockCommand {
     fn attreq_take_insert(&mut self) -> Option<codec::EntityType> {
         self.pending_insert.take().map(EntityType::Insert)
     }
+
+    fn attreq_set_block_base(&mut self, base: Vector3) {
+        self.set_block_base(base);
+    }
 }
 
 impl InsertBlockCommand {
+    /// The referenced block's insertion base point, for attribute placement.
+    pub fn set_block_base(&mut self, base: Vector3) {
+        self.block_base = base;
+    }
+
     fn answer(&mut self, ask: Ask, text: Option<&str>) -> CmdResult {
         let default = !matches!(ask, Ask::RepeatScale | Ask::RepeatRotate);
         let Some(yes) = Self::yes_no(text.unwrap_or(""), default) else {
@@ -955,7 +975,8 @@ impl InsertBlockCommand {
             _ => return None,
         };
         let mut insert = self.pending_insert.take()?;
-        let transform = insert.get_transform();
+        let transform =
+            crate::scene::render_graph::insert_transform_with_base(&insert, self.block_base);
         for (attdef_idx, value) in values {
             let Some(attdef) = attdefs.get(attdef_idx) else {
                 continue;

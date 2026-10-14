@@ -398,6 +398,12 @@ pub struct UserSettings {
     pub cursor_size: i32,
     /// PICKBOX: normalized visible-box and click-aperture size.
     pub pick_box: i32,
+    /// HPASSOC: new hatches follow their boundary objects.
+    pub hatch_associative: bool,
+    /// MENUBAR: the classic pull-down menus show above the ribbon.
+    pub show_menu_bar: bool,
+    /// RIBBONCLOSE hid the ribbon; RIBBON brings it back.
+    pub ribbon_closed: bool,
     /// When true, double-clicking a block reference starts REFEDIT instead of BEDIT.
     pub double_click_block_refedit: bool,
     /// When true, double-clicking a block with attributes opens ATTEDIT.
@@ -423,6 +429,9 @@ pub struct UserSettings {
     pub ucs_ortho: bool,
     /// UCSVIEW: a saved named view keeps the current UCS.
     pub ucs_view: bool,
+    /// LAYOUTCREATEVIEWPORT: a layout opened for the first time gets a
+    /// viewport.
+    pub layout_create_viewport: bool,
     /// Nested-copy symbol handling: false inserts, true binds.
     pub ncopy_bind: bool,
     /// Last Options page; unknown saved names fall back without rejecting the config.
@@ -592,6 +601,8 @@ pub struct UserSettings {
         deserialize_with = "deserialize_commandline_fade_ms"
     )]
     pub commandline_fade_ms: i32,
+    /// COMMANDLINEOPACITY: command-line panel opacity in percent (20–100).
+    pub command_line_opacity: u8,
     /// SNAPUNIT X/Y spacing used by grid snap. 10 matches the Drafting
     /// Settings dialog defaults; older configs without these keys fall
     /// back via `default_snap_spacing`.
@@ -864,6 +875,9 @@ impl Default for UserSettings {
             zoom_factor: 60,
             cursor_size: 5,
             pick_box: 3,
+            hatch_associative: true,
+            show_menu_bar: false,
+            ribbon_closed: false,
             options_tab: crate::ui::window::options::OptionsTab::General,
             show_viewcube: true,
             show_ucs_icon: true,
@@ -880,6 +894,7 @@ impl Default for UserSettings {
             surface_associativity: true,
             ucs_ortho: true,
             ucs_view: true,
+            layout_create_viewport: true,
             ncopy_bind: false,
             cursor_type: CursorType::Crosshair,
             crosshair_color: None,
@@ -928,6 +943,7 @@ impl Default for UserSettings {
             language: crate::i18n::Language::default(),
             cliprompt_lines: 3,
             commandline_fade_ms: 3000,
+            command_line_opacity: 80,
             snap_spacing_x: 10.0,
             snap_spacing_y: 10.0,
             grid_spacing_x: 10.0,

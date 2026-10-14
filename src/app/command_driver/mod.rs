@@ -169,6 +169,7 @@ impl OpenCADStudio {
             &result,
             CmdResult::Relaunch(..)
                 | CmdResult::Dispatch(..)
+                | CmdResult::QSelectSample { .. }
                 | CmdResult::SolidEdgeBlend { .. }
                 | CmdResult::SolidSubtract { .. }
                 | CmdResult::SliceEntities { .. }
@@ -436,6 +437,13 @@ impl OpenCADStudio {
         // runtime or messages such as a chosen render mode are dropped.
         let mut dispatched = Task::none();
         match result {
+            CmdResult::QSelectSample {
+                state,
+                tab_id,
+                handle,
+            } => {
+                self.finish_qselect_sample(*state, tab_id, handle);
+            }
             CmdResult::OpenAutoConstrainSettings => {
                 self.handle_open_auto_constrain_settings();
             }
@@ -597,6 +605,9 @@ impl OpenCADStudio {
                 if let Some(task) = self.handle_batch_copy(handles, transforms) {
                     return task;
                 }
+            }
+            CmdResult::AssocArray { handles, spec } => {
+                self.handle_assoc_array(handles, spec);
             }
             CmdResult::ReplaceMany(replacements, additions) => {
                 if let Some(task) = self.handle_replace_many(replacements, additions) {
@@ -873,6 +884,21 @@ impl OpenCADStudio {
 
             CmdResult::ZoomToWindow { p1, p2 } => {
                 self.handle_zoom_to_window(p1, p2);
+            }
+            CmdResult::Show { p1, p2 } => {
+                let i = self.active_tab;
+                self.tabs[i].scene.remember_current_view();
+                self.tabs[i].scene.zoom_to_window(p1.as_vec3(), p2.as_vec3());
+            }
+            CmdResult::CommitAndZoom { entity, p1, p2 } => {
+                self.handle_commit_entities_and_exit(vec![entity], false, false);
+                self.handle_zoom_to_window(p1, p2);
+            }
+            CmdResult::ScaleViewports { handles, factor } => {
+                self.handle_scale_viewports(handles, factor);
+            }
+            CmdResult::TwistView(twist) => {
+                self.handle_twist_view(twist);
             }
             CmdResult::Measurement(msg) => {
                 self.handle_measurement(msg);

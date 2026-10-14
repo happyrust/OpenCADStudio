@@ -688,7 +688,14 @@ pub(crate) fn clear_dim_picture_placement(entity: &mut EntityType) {
 }
 
 pub fn insert_transform(document: &CadDocument, insert: &Insert) -> Transform {
-    let base = block_base_point(document, &insert.block_name);
+    insert_transform_with_base(insert, block_base_point(document, &insert.block_name))
+}
+
+/// [`insert_transform`] for a caller that already resolved the block's base
+/// point (the `-INSERT` command builds the INSERT before the drawing is in
+/// scope), so the base-point convention lives in exactly one place:
+/// world = insert_point + Rot(rotation) * Scale * (P - base).
+pub fn insert_transform_with_base(insert: &Insert, base: Vector3) -> Transform {
     Transform::from_translation(Vector3::new(-base.x, -base.y, -base.z))
         .then(&insert.get_transform())
 }
@@ -1016,44 +1023,6 @@ pub fn entity_block_uses(
             }
         }
         _ => {}
-    }
-    uses
-}
-
-/// Blocks referenced by document-level styles rather than a concrete entity.
-pub fn document_block_uses(document: &CadDocument) -> Vec<BlockUse> {
-    let mut uses = Vec::new();
-    for style in document.dim_styles.iter() {
-        for handle in [style.dimblk, style.dimblk1, style.dimblk2, style.dimldrblk] {
-            push_dependency_use(&mut uses, document, handle, BlockRole::ArrowHead);
-        }
-        for name in [&style.dimblk_name, &style.dimblk1_name, &style.dimblk2_name] {
-            if let Some(record) = block_record_by_name(document, name) {
-                push_dependency_use(&mut uses, document, record.handle, BlockRole::ArrowHead);
-            }
-        }
-    }
-    for object in document.objects.values() {
-        let codec::objects::ObjectType::MultiLeaderStyle(style) = object else {
-            continue;
-        };
-        if let Some(handle) = style.arrowhead_handle {
-            push_dependency_use(&mut uses, document, handle, BlockRole::ArrowHead);
-        }
-        if let Some(handle) = style.block_content_handle {
-            push_dependency_use(&mut uses, document, handle, BlockRole::MultiLeaderContent);
-        }
-    }
-    for line_type in document.line_types.iter() {
-        for symbol in crate::scene::convert::dgn_linestyle::symbol_blocks(document, &line_type.name)
-        {
-            push_dependency_use(
-                &mut uses,
-                document,
-                symbol.block,
-                BlockRole::LineStyleSymbol,
-            );
-        }
     }
     uses
 }

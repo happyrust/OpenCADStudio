@@ -390,6 +390,7 @@ impl shader::Primitive for Primitive {
             pipeline.gpu_error_epoch = errors_at_entry;
         }
         let scale = viewport.scale_factor() as f32;
+        DEVICE_SCALE.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
         let instance_ids: Vec<u64> = self.viewports.iter().map(|vp| vp.instance_id).collect();
         let slots = pipeline.resolve_slots(device, queue, &instance_ids);
         for (i, vp) in self.viewports.iter().enumerate() {
@@ -463,7 +464,14 @@ impl shader::Primitive for Primitive {
                 vp.background_image.as_ref(),
                 vp.environment_image.as_ref(),
             );
-            inner.upload_uniforms(device, queue, &vp.uniforms);
+            // The scene works in logical pixels; an image background keeps
+            // its size in device pixels.
+            let mut uniforms = vp.uniforms;
+            // The image's size and offset are in device pixels.
+            for value in &mut uniforms.background_image_transform {
+                *value /= scale.max(1e-3);
+            }
+            inner.upload_uniforms(device, queue, &uniforms);
 
             // ── Scene-render cache ────────────────────────────────────────
             // A pure cursor move — or any frame where the view, geometry,
@@ -2075,6 +2083,11 @@ text_atlas={:.1} wire_arena={:.1} block_geometry={:.1}",
 }
 
 impl Scene {
+    /// The model-space viewport record of the active tile.
+    pub(crate) fn active_tile_vport_handle(&self) -> Option<Handle> {
+        self.model_tile_vport(self.active_model_tile.get()).map(|value| value.handle)
+    }
+
     fn model_tile_vport(&self, index: usize) -> Option<&codec::tables::VPort> {
         let rect = self.model_tiles.borrow().get(index)?.rect;
         let lower_left = [rect.x as f64, (1.0 - rect.y - rect.height) as f64];
@@ -2588,30 +2601,32 @@ impl Scene {
         if viewport.paper_sheet {
             let handle = self.current_layout_sheet_viewport_handle();
             if let Some(EntityType::Viewport(value)) = self.document.get_entity(handle) {
-                return build(
-                    value.visual_style_handle,
-                    value.brightness,
-                    value.contrast,
-                    value.background_handle,
-                );
+                // The sheet keeps its page and desk: a paper-space view's
+                // background is kept with the layout but not drawn.
+                return build(value.visual_style_handle, value.brightness, value.contrast, Handle::NULL);
             }
         } else if viewport.handle.is_valid() {
             if let Some(EntityType::Viewport(value)) = self.document.get_entity(viewport.handle) {
+                let flat = value.render_mode == codec::entities::ViewportRenderMode::Wireframe2D;
                 return build(
                     value.visual_style_handle,
                     value.brightness,
                     value.contrast,
-                    value.background_handle,
+                    if flat { Handle::NULL } else { value.background_handle },
                 );
             }
         } else if self.current_layout == "Model" {
             let index = viewport.tile_idx.unwrap_or(0);
             if let Some(value) = self.model_tile_vport(index) {
+                // A 2D wireframe view shows no background, as in the reference.
+                let flat = self.model_tiles.borrow().get(index).is_some_and(|tile| {
+                    tile.render_mode == codec::entities::ViewportRenderMode::Wireframe2D
+                });
                 return build(
                     value.visual_style_handle,
                     value.brightness,
                     value.contrast,
-                    value.background_handle,
+                    if flat { Handle::NULL } else { value.background_handle },
                 );
             }
         }
@@ -3014,7 +3029,8 @@ impl Scene {
                     2.0,
                     background.horizon as f32,
                     background.height as f32,
-                    background.rotation as f32,
+                    // Stored in degrees.
+                    (background.rotation as f32).to_radians(),
                 ];
                 result
             }
@@ -3040,11 +3056,13 @@ impl Scene {
                         background.use_tiling as u8 as f32,
                         image.width as f32 / image.height.max(1) as f32,
                     ];
+                    // Offset, then the image's size in pixels at its scale:
+                    // an image not fitted to the screen keeps its pixel size.
                     result.image_transform = [
                         background.offset.x as f32,
                         background.offset.y as f32,
-                        background.scale.x as f32,
-                        background.scale.y as f32,
+                        background.scale.x as f32 * image.width as f32,
+                        background.scale.y as f32 * image.height as f32,
                     ];
                     result.params[0] = 4.0;
                     result.image = Some(image);
@@ -4079,6 +4097,18 @@ impl Scene {
             } else {
                 WireModel::HOVER
             };
+            if let Some(points) = selected
+                .then(|| self.picked_segment_points(handle))
+                .flatten()
+            {
+                wires.push(WireModel::solid_f64(
+                    handle.value().to_string(),
+                    points,
+                    tint,
+                    true,
+                ));
+                continue;
+            }
             for set in interaction_meshes
                 .iter()
                 .filter(|set| set.entity_handle() == Some(handle))
@@ -4958,13 +4988,23 @@ impl Scene {
             // (hatched) frame once it settles. Only applied to the on-screen
             // Model / paper content — the paper *sheet* keeps its fills.
             skip_hatch: self.hatch_lod_enabled() && navigating,
-            skip_background: !inst.paper_sheet && self.current_layout != "Model",
+            // A floating viewport shows the page behind it unless it has a
+            // background of its own.
+            skip_background: !inst.paper_sheet
+                && self.current_layout != "Model"
+                && display.background.params[0] < 0.5,
             geometry_epoch: self.geometry_epoch,
             camera_generation: self.camera_generation,
             wire_content_id,
             wire_patch,
             selected_handles: Arc::new(if show_interaction {
-                self.selected.iter().copied().collect()
+                // A partly picked polyline lights only its picked segments,
+                // drawn with the highlight wires.
+                self.selected
+                    .iter()
+                    .copied()
+                    .filter(|handle| self.picked_segments(*handle).is_none())
+                    .collect()
             } else {
                 rustc_hash::FxHashSet::default()
             }),
@@ -5488,4 +5528,12 @@ mod layer0_inherit_tests {
         // Cache must be populated
         assert!(scene.document_render_env_cache.borrow().is_some());
     }
+}
+
+/// The display's device pixels per logical pixel, as the viewport last drew.
+static DEVICE_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// Device pixels per logical pixel of the drawing viewport.
+pub fn device_scale() -> f32 {
+    f32::from_bits(DEVICE_SCALE.load(std::sync::atomic::Ordering::Relaxed))
 }

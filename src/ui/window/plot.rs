@@ -3,6 +3,8 @@
 //! quality and output options into one dialog; on commit it either sends the
 //! current layout to a system printer (with the chosen options) or writes a
 //! PDF. Styled to match the other OCS dialogs (dark pills + fields).
+//! The web build has no system printers, so PDF is the only output it
+//! offers — and its default.
 
 use crate::app::Message;
 use crate::io::paper_catalog::{self, CustomPaper, Margins, PaperSize, PaperUnits};
@@ -590,7 +592,8 @@ impl Default for PlotDialogState {
             import_draft: None,
             page_setup_on_new_layout: false,
             printer: None,
-            to_file: false,
+            // Web defaults to PDF output: it has no system printers.
+            to_file: cfg!(target_arch = "wasm32"),
             file_format: PlotFileFormat::Pdf,
             paper: paper_catalog::default_paper().canonical.to_string(),
             paper_width_mm: 297.0,
@@ -1147,6 +1150,25 @@ fn custom_paper_editor<'a>(draft: &'a CustomPaperDraft, width: Length) -> Elemen
     .into()
 }
 
+/// Entries for the output dropdown. The web build has no system printers, so
+/// PDF is the only output it offers; native lists the system default, every
+/// discovered printer, then PDF.
+fn output_choices(printers: &[String]) -> Vec<PlotChoice> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = printers;
+        vec![PlotChoice::localized(OUT_PDF)]
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut out = vec![PlotChoice::localized(OUT_DEFAULT)];
+        out.extend(printers.iter().cloned().map(PlotChoice::raw));
+        out.push(PlotChoice::localized(OUT_PDF));
+        out.push(PlotChoice::localized(OUT_SVG));
+        out
+    }
+}
+
 pub fn view_window(
     s: &PlotDialogState,
     print_all_options: bool,
@@ -1154,6 +1176,12 @@ pub fn view_window(
 ) -> Element<'_, Message> {
     let width = sizing.width;
     let height = sizing.height;
+    // The web build always outputs PDF, whatever a stored dialog state says;
+    // native follows the stored choice.
+    #[cfg(target_arch = "wasm32")]
+    let to_file = true;
+    #[cfg(not(target_arch = "wasm32"))]
+    let to_file = s.to_file;
     let action = if print_all_options {
         t!("Apply")
     } else {
@@ -1296,10 +1324,13 @@ pub fn view_window(
         },
         None => PlotChoice::localized(OUT_DEFAULT),
     };
-    let mut printer_opts = vec![default_entry.clone()];
-    printer_opts.extend(s.printers.iter().cloned().map(PlotChoice::raw));
-    printer_opts.push(PlotChoice::localized(OUT_PDF));
-    printer_opts.push(PlotChoice::localized(OUT_SVG));
+    let mut printer_opts = output_choices(&s.printers);
+    if let Some(first) = printer_opts
+        .first_mut()
+        .filter(|first| first.raw == OUT_DEFAULT)
+    {
+        *first = default_entry.clone();
+    }
     let printer_sel = Some(match s.destination() {
         PlotDestination::Svg => PlotChoice::localized(OUT_SVG),
         PlotDestination::Pdf => PlotChoice::localized(OUT_PDF),
@@ -1366,7 +1397,7 @@ pub fn view_window(
     .spacing(8)
     .align_y(iced::Center)
     .width(Length::Fill);
-    let printer_controls: Element<'_, Message> = if s.to_file {
+    let printer_controls: Element<'_, Message> = if to_file {
         Space::new().height(0).into()
     } else {
         row![

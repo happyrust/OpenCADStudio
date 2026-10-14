@@ -441,6 +441,7 @@ pub fn start_allowed(cmd: &str) -> bool {
         || matches!(
             cmd,
             "NEW"
+            | "QNEW"
             | "OPEN"
             | "EXIT"
             | "QUIT"
@@ -503,6 +504,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "EXPORTSVG",
         "SVGOUT",
         "PRINTALL",
+        "PUBLISH",
         "DDIM",
         // Inquiry: list the whole drawing database.
         "DBLIST",
@@ -633,6 +635,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "SL",
         "INTERFERE",
         "INF",
+        "SECTIONCULL",
         "PRESSPULL",
         "THICKEN",
         "3DROTATE",
@@ -725,6 +728,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "UOSNAP",
         "FIELDDISPLAY",
         "SURFACEASSOCIATIVITY",
+        "LAYOUTCREATEVIEWPORT",
         "FIELDEVAL",
         "PDFIMPORTMODE",
         "PDFIMPORTFILTER",
@@ -765,6 +769,10 @@ inventory::submit!(crate::command::CommandRegistration {
         "SKTOLERANCE",
         "CLIPROMPTLINES",
         "COMMANDLINEFADETIME",
+        "COMMANDLINEOPACITY",
+        "MENUBAR",
+        "RIBBON",
+        "RIBBONCLOSE",
         "COLORTHEME",
         "SELECTIONAREA",
         "SELECTIONAREAOPACITY",
@@ -932,6 +940,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "SHORTCUTS",
         "SSM",
         "STEPOUT",
+        "FBXEXPORT",
         "STLOUT",
         "STPOUT",
         "STYLE",

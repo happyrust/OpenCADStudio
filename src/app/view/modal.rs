@@ -35,6 +35,11 @@ impl OpenCADStudio {
             Some(K::PointCloudAttach) => crate::t!("Attach Point Cloud").into_owned(),
             Some(K::PointCloudColorMap) => crate::t!("Point Cloud Color Map").into_owned(),
             Some(K::PcSection) => crate::t!("Extract Section Lines from Point Cloud").into_owned(),
+            Some(K::ViewBackground) => format!(
+                "{} — {}",
+                crate::tr!("view-background", "title"),
+                self.view_background.as_ref().map_or("", |s| s.view.as_str())
+            ),
             Some(K::UnderlayLayers) => crate::t!("Underlay Layers").into_owned(),
             Some(K::PdfImportSettings) => crate::t!("PDF Import Settings").into_owned(),
             Some(K::PdfImportFile) => crate::t!("Import PDF").into_owned(),
@@ -73,12 +78,15 @@ impl OpenCADStudio {
             Some(K::SvgOverwrite) => t!("Replace existing files?").into_owned(),
             Some(K::LayerDeleteWarning) => crate::tr!("modal", "delete-layer"),
             Some(K::Unsaved) => crate::tr!("modal", "unsaved-changes"),
+            Some(K::BlockEditChanges) => crate::t!("Block Editor").into_owned(),
             Some(K::PointStyle) => crate::tr!("modal", "point-style"),
             Some(K::AttributeEditor) => crate::tr!("modal", "attribute-editor"),
             Some(K::SaveDialog) => crate::tr!("modal", "save-drawing-as"),
             Some(K::Recovery) => crate::tr!("modal", "recovery-report"),
             Some(K::MissingFonts) => crate::t!("Missing fonts").into_owned(),
             Some(K::RecoveryPrompt) => crate::tr!("modal", "recovery-prompt"),
+            #[cfg(target_arch = "wasm32")]
+            Some(K::AutosaveRestore) => crate::t!("Recover Drawing").into_owned(),
             Some(K::GpuWarning) => crate::tr!("gpu", "title"),
             Some(K::XrefHelp) => crate::t!("Reference Manager Help").into_owned(),
             Some(K::SheetSet) => self
@@ -294,6 +302,10 @@ impl OpenCADStudio {
                             textfill: crate::scene::text::sdf_atlas::textfill(),
                             cliprompt_lines: self.cliprompt_lines,
                             commandline_fade_ms: self.commandline_fade_ms,
+                            command_line_opacity: self.command_line.opacity_percent(),
+                            show_menu_bar: self.show_menu_bar,
+                            show_ribbon: !self.ribbon_closed,
+                            hatch_associative: self.hatch_associative,
                             zoom_wheel_reversed: self.zoom_wheel_reversed,
                             touchpad_pan: self.touchpad_pan,
                             ui_scale_percent: self.ui_scale_percent,
@@ -511,6 +523,12 @@ impl OpenCADStudio {
                 let state = self.pc_section.as_ref()?;
                 sized_flow(ex, 760, 470, |flow| {
                     crate::ui::window::pdf_dialogs::view_pc_section(state, flow)
+                })
+            }
+            super::super::ModalKind::ViewBackground => {
+                let state = self.view_background.as_ref()?;
+                sized_flow(ex, 420, 560, |flow| {
+                    crate::ui::window::pdf_dialogs::view_background(state, flow)
                 })
             }
             super::super::ModalKind::UnderlayLayers => {
@@ -1737,7 +1755,19 @@ impl OpenCADStudio {
                         .unwrap_or_default(),
                     None => String::new(),
                 };
-                automatic_flow(ex, |flow| unsaved_changes_dialog_window(&tab_name, flow))
+                automatic_flow(ex, |flow| {
+                    unsaved_changes_dialog_window(&tab_name, flow, false)
+                })
+            }
+            super::super::ModalKind::BlockEditChanges => {
+                let name = self
+                    .pending_block_close
+                    .as_ref()
+                    .and_then(|(id, _)| self.tabs.iter().find(|tab| tab.id == *id))
+                    .and_then(|tab| tab.active_block_edit_session())
+                    .map(|session| session.block_name.clone())
+                    .unwrap_or_default();
+                automatic_flow(ex, |flow| unsaved_changes_dialog_window(&name, flow, true))
             }
             super::super::ModalKind::PointStyle => sized_flow(ex, 360, 470, |flow| {
                 crate::ui::style::point_style::view_window(
@@ -1818,6 +1848,24 @@ impl OpenCADStudio {
                 let error = opening.recovery_error.as_deref()?;
                 automatic_flow(ex, |flow| {
                     crate::ui::window::recovery::view_prompt(&opening.name, error, flow)
+                })
+            }
+            #[cfg(target_arch = "wasm32")]
+            super::super::ModalKind::AutosaveRestore => {
+                let name = self
+                    .web_autosave_pending
+                    .first()
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_default();
+                let pending = self.web_autosave_pending.len();
+                // What the crashed session had open, when it remembered.
+                let session_drawings = self
+                    .web_session
+                    .as_ref()
+                    .map(|session| session.tabs.len())
+                    .filter(|count| *count > 0);
+                automatic_flow(ex, |flow| {
+                    autosave_restore_dialog_window(&name, pending, session_drawings, flow)
                 })
             }
         })
@@ -2037,23 +2085,53 @@ fn save_as_dialog_window<'a>(
 fn unsaved_changes_dialog_window(
     name: &str,
     sizing: crate::ui::modal::ModalSizing,
+    block_edit: bool,
 ) -> Element<'static, Message> {
     container(
         column![
-            text(name.to_owned()).size(14),
+            text(if block_edit {
+                crate::tf!("Save changes to {}?", name).into_owned()
+            } else {
+                name.to_owned()
+            })
+            .size(14),
             iced::widget::Space::new().height(4),
-            text(crate::tr!("modal", "unsaved-save-prompt"))
-                .size(12)
-                .style(dialog_muted_text_style),
+            text(if block_edit {
+                String::new()
+            } else {
+                crate::tr!("modal", "unsaved-save-prompt")
+            })
+            .size(12)
+            .style(dialog_muted_text_style),
             iced::widget::Space::new().height(20),
             row![
-                dialog_button(t!("Save"), Message::UnsavedDialogSave, button::primary),
+                dialog_button(
+                    t!("Save"),
+                    if block_edit {
+                        Message::BlockEditChangesSave
+                    } else {
+                        Message::UnsavedDialogSave
+                    },
+                    button::primary
+                ),
                 iced::widget::Space::new().width(8),
-                dialog_button(t!("Discard"), Message::UnsavedDialogDiscard, button::danger),
+                dialog_button(
+                    t!("Discard"),
+                    if block_edit {
+                        Message::BlockEditChangesDiscard
+                    } else {
+                        Message::UnsavedDialogDiscard
+                    },
+                    button::danger
+                ),
                 iced::widget::Space::new().width(8),
                 dialog_button(
                     t!("Cancel"),
-                    Message::UnsavedDialogCancel,
+                    if block_edit {
+                        Message::BlockEditChangesCancel
+                    } else {
+                        Message::UnsavedDialogCancel
+                    },
                     button::secondary
                 ),
             ],
@@ -2065,6 +2143,72 @@ fn unsaved_changes_dialog_window(
     .center_y(sizing.height)
     .padding([24, 28])
     .into()
+}
+
+/// Web crash-recovery prompt: an autosave snapshot of `name` is newer than
+/// the drawing's last save. Restore opens it as a recovered tab; Discard
+/// deletes the snapshot. With more than one snapshot still pending, "Restore
+/// all" puts the whole remaining list through the same guarded open queue.
+/// When the crashed session left a tab list behind, a muted line says how
+/// much it had open. Mirrors the unsaved-changes dialog's layout.
+#[cfg(target_arch = "wasm32")]
+fn autosave_restore_dialog_window(
+    name: &str,
+    pending: usize,
+    session_drawings: Option<usize>,
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'static, Message> {
+    let mut body = column![text(crate::tf!(
+        "\"{name}\" has an autosave copy newer than the last save."
+    ))
+    .size(14)]
+    .spacing(0);
+    if let Some(count) = session_drawings {
+        body = body
+            .push(iced::widget::Space::new().height(4))
+            .push(
+                text(crate::tf!("Session had {count} open drawing(s).", count = count))
+                    .size(12)
+                    .style(dialog_muted_text_style),
+            );
+    }
+    body = body
+        .push(iced::widget::Space::new().height(4))
+        .push(
+            text(t!("Restore it as a recovered tab, or discard the copy."))
+                .size(12)
+                .style(dialog_muted_text_style),
+        )
+        .push(iced::widget::Space::new().height(20));
+    let mut buttons = row![dialog_button(
+        t!("Restore"),
+        Message::WebAutosaveRestore,
+        button::primary
+    )];
+    // Only worth its width once there is a batch to take in one click.
+    if pending > 1 {
+        buttons = buttons
+            .push(iced::widget::Space::new().width(8))
+            .push(dialog_button(
+                t!("Restore all"),
+                Message::WebAutosaveRestoreAll,
+                button::secondary,
+            ));
+    }
+    buttons = buttons
+        .push(iced::widget::Space::new().width(8))
+        .push(dialog_button(
+            t!("Discard"),
+            Message::WebAutosaveDiscard,
+            button::danger,
+        ));
+    body = body.push(buttons);
+    container(body)
+        .style(dialog_body_style)
+        .center_x(sizing.width)
+        .center_y(sizing.height)
+        .padding([24, 28])
+        .into()
 }
 
 #[cfg(not(target_arch = "wasm32"))]

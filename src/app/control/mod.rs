@@ -106,6 +106,10 @@ pub(super) struct State {
     completed: VecDeque<(String, Value, Value)>,
     owner: Option<(u64, String)>,
     pub enabled: bool,
+    /// Set by the first control request of the session (or by a web host's
+    /// boot-time opt-in): while control is enabled, startup prompts that
+    /// would block automation — the donation prompt — are suppressed (#1349).
+    pub automation_seen: bool,
     serial: u64,
     events: VecDeque<Value>,
     /// Monotonic counter bumped on every real selection change, so clients
@@ -127,6 +131,12 @@ pub(super) struct State {
     /// Whether the parked capture actually waited for a redraw (vs. the
     /// anti-hang timer). Reported in the capture result as `waited_for_frame`.
     pub(super) capture_after_redraw: bool,
+    /// Web: when a parked capture gives up. Only a presented frame can be
+    /// read back on wasm, and a hidden or idle tab may never present one, so
+    /// the timer tick fails the capture past this instant instead of letting
+    /// it hold the control slot forever.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) capture_deadline: Option<iced::time::Instant>,
 }
 
 /// The pending half of an interactive `user_select` operation (`interactive`
@@ -267,6 +277,7 @@ fn command_category(name: &str) -> &'static str {
         "BREAK",
         "JOIN",
         "EXPLODE",
+        "TXTEXP",
         "STRETCH",
         "ARRAY",
         "PEDIT",
@@ -339,6 +350,7 @@ fn command_selection_policy(name: &str) -> &'static str {
         "CUTCLIP",
         "ERASE",
         "EXPLODE",
+        "TXTEXP",
         "GROUP",
         "LAYFRZ",
         "LAYLCK",
@@ -489,6 +501,18 @@ impl OpenCADStudio {
     }
 
     pub(super) fn control_request(&mut self, req: Value) -> (Value, Task<Message>) {
+        // First control contact marks the session automated (#1349): a
+        // DonationPrompt that is still queued (not yet shown) is dropped so
+        // automation never waits behind it, and `queue_startup_prompts`
+        // stops queueing one. A prompt already on screen stays — a human
+        // may be reading it; clients close it with `close_modal`.
+        if !self.control.automation_seen && self.control.enabled {
+            self.control.automation_seen = true;
+            if self.active_modal != Some(super::ModalKind::DonationPrompt) {
+                self.pending_startup_modals
+                    .retain(|kind| kind != &super::ModalKind::DonationPrompt);
+            }
+        }
         let op = req["op"].as_str().unwrap_or("");
         let query = matches!(
             op,
@@ -1049,6 +1073,7 @@ impl OpenCADStudio {
             "property" => self.control_set_property(req)?,
             "grip_drag" => self.control_grip_drag(req)?,
             "click" => self.control_click(req)?,
+            "pointer" => self.control_pointer(req)?,
             "set_properties" => self.control_set_record_properties(req)?,
             "action" => self.control_ui_action(req)?,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1126,6 +1151,49 @@ impl OpenCADStudio {
                     )
                 }
             }
+            // Web: no filesystem path; the drawing comes back in the reply.
+            #[cfg(target_arch = "wasm32")]
+            "save" => {
+                use base64::Engine as _;
+                let default_is_dxf = crate::io::source_is_dxf(None, &self.tabs[i].scene.document);
+                let (version, is_dxf) = super::automation::requested_save_target(
+                    req,
+                    self.tabs[i].scene.document.version,
+                    default_is_dxf,
+                    None,
+                )
+                .map_err(|error| failure("invalid_target", error))?;
+                let dropped =
+                    crate::io::dropped_on_save_count(&self.tabs[i].scene.document, version, is_dxf);
+                if dropped > 0 && req["allow_lossy"].as_bool() != Some(true) {
+                    return Err(failure(
+                        "lossy_conversion_not_acknowledged",
+                        format!(
+                            "Conversion would drop {dropped} unsupported record(s); set allow_lossy=true to acknowledge"
+                        ),
+                    ));
+                }
+                let ext = if is_dxf { "dxf" } else { "dwg" };
+                self.sync_view_state_for_save(i);
+                super::update::util::sync_annotation_scale_header(&mut self.tabs[i].scene);
+                self.stamp_header_sysvars(i);
+                self.sync_solid_models_for_save(i);
+                self.tabs[i].scene.sync_native_parametric_graph();
+                let bytes = crate::io::save_to_bytes(&self.tabs[i].scene.document, ext, version)
+                    .map_err(|error| failure("save_failed", error))?;
+                self.tabs[i].dirty = false;
+                let name = req["name"].as_str().filter(|name| !name.is_empty());
+                let name = name.map_or_else(|| format!("drawing.{ext}"), str::to_string);
+                self.set_control_result(json!({
+                    "name": name,
+                    "target_format": ext,
+                    "target_version": format!("{version:?}"),
+                    "dropped_on_save": dropped,
+                    "bytes": bytes.len(),
+                    "data_base64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                }));
+                Task::none()
+            }
             #[cfg(not(target_arch = "wasm32"))]
             "save_verified" => {
                 let result = self.save_verified_request(req)?;
@@ -1197,6 +1265,11 @@ impl OpenCADStudio {
                 // rendered frame (or the timer fallback) so geometry changes are
                 // visible rather than returning a stale frame.
                 self.control.capture_frame_pending = true;
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.control.capture_deadline =
+                        Some(iced::time::Instant::now() + std::time::Duration::from_secs(5));
+                }
                 Task::none()
             }
             "stop" => {
@@ -1526,9 +1599,27 @@ impl OpenCADStudio {
                 }
             }
 
+            #[cfg(not(target_arch = "wasm32"))]
             image
                 .save_with_format(&path, image::ImageFormat::Png)
                 .map_err(|e| e.to_string())?;
+            // No filesystem behind a web "path": encode the PNG in memory and
+            // hand it to the browser as a download named after the request's
+            // file name — the delivery every other web output uses.
+            #[cfg(target_arch = "wasm32")]
+            {
+                let mut png = Vec::new();
+                image
+                    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                    .map_err(|e| e.to_string())?;
+                let download = path
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("capture.png")
+                    .to_string();
+                crate::sys::download_bytes(&download, &png);
+            }
 
             let doc_unit = crate::app::properties::insunits_name(
                 self.tabs[self.active_tab]
@@ -1609,30 +1700,57 @@ impl OpenCADStudio {
             self.control.capture_frame_pending = false;
             return Task::none();
         };
-        self.control.capture_frame_pending = false;
-        self.control.capture_after_redraw = redrew;
-        let Some(window) = self.main_window else {
-            return Task::done(Message::ControlScreenshot(path, None));
-        };
-        // A minimized window has a 0x0 surface and the renderer panics reading
-        // it back, so report instead of capturing.
-        iced::window::size(window).then(move |size| {
-            let path = path.clone();
-            if size.width <= 0.0 || size.height <= 0.0 {
-                Task::done(Message::ControlScreenshot(path, None))
-            } else {
-                iced::window::screenshot(window).map(move |screenshot| {
-                    Message::ControlScreenshot(path.clone(), Some(screenshot))
-                })
+        // Web: iced's window screenshot needs a synchronous GPU map wasm
+        // cannot provide; the canvas readback (the save-thumbnail technique)
+        // only sees the drawing right after a presented frame, before the
+        // browser clears the WebGL buffer — so wait for a real frame.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let expired = self
+                .control
+                .capture_deadline
+                .is_some_and(|deadline| iced::time::Instant::now() >= deadline);
+            if !redrew && !expired && crate::sys::page_visible() {
+                return Task::none();
             }
-        })
+            self.control.capture_frame_pending = false;
+            self.control.capture_deadline = None;
+            self.control.capture_after_redraw = redrew;
+            // No frame to read (hidden tab or nothing redrawing): report the
+            // capture as failed rather than hand back a blank canvas.
+            let screenshot = if redrew {
+                crate::sys::capture_canvas()
+            } else {
+                None
+            };
+            Task::done(Message::ControlScreenshot(path, screenshot))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.control.capture_frame_pending = false;
+            self.control.capture_after_redraw = redrew;
+            let Some(window) = self.main_window else {
+                return Task::done(Message::ControlScreenshot(path, None));
+            };
+            // A minimized window has a 0x0 surface and the renderer panics
+            // reading it back, so report instead of capturing.
+            iced::window::size(window).then(move |size| {
+                let path = path.clone();
+                if size.width <= 0.0 || size.height <= 0.0 {
+                    Task::done(Message::ControlScreenshot(path, None))
+                } else {
+                    iced::window::screenshot(window).map(move |screenshot| {
+                        Message::ControlScreenshot(path.clone(), Some(screenshot))
+                    })
+                }
+            })
+        }
     }
 }
 mod actions;
 pub(crate) mod vision;
 pub(crate) use actions::property_json;
 mod entities;
-pub(crate) use entities::erase_block_definition;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod http_bridge;
 mod interactive;

@@ -95,6 +95,23 @@ impl OpenCADStudio {
         }
     }
 
+    /// PASTESPEC with the formats on hand: the copied objects, and `text`
+    /// from the system clipboard once it has been read.
+    pub(in crate::app) fn paste_special_command(
+        &self,
+        i: usize,
+        text: Option<&str>,
+    ) -> Box<dyn CadCommand> {
+        let document = &self.tabs[i].scene.document;
+        let defaults = crate::scene::creation_style::current_text_defaults(document);
+        Box::new(crate::modules::draw::clipboard::pastespec::PasteSpecCommand::new(
+            !self.clipboard.is_empty(),
+            text,
+            defaults.style_name,
+            defaults.height,
+        ))
+    }
+
     pub(super) fn dispatch_blocks(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {
         match cmd {
             // ── BASE — drawing insertion base point ───────────────────────
@@ -284,6 +301,58 @@ impl OpenCADStudio {
                 }
             }
 
+            // ARRAYEDIT — edit an associative array; a preselected one skips
+            // the pick.
+            "ARRAYEDIT" => {
+                use crate::modules::draw::modify::arrayedit::ArrayEditCommand;
+                let selected = self.tabs[i].scene.selected_handles_in_order();
+                let array = match selected.as_slice() {
+                    [handle] => Some(*handle),
+                    _ => None,
+                };
+                self.tabs[i].scene.deselect_all();
+                let command = ArrayEditCommand::new(array);
+                self.command_line.push_info(&command.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(command));
+            }
+
+            // ARRAYEDIT Source: edit the objects the array repeats in the
+            // Block Editor; every item follows when it is saved.
+            cmd if cmd.starts_with("ARRAYEDIT_SOURCE:") => {
+                let handle = codec::Handle::new(
+                    cmd["ARRAYEDIT_SOURCE:".len()..].parse().unwrap_or(0),
+                );
+                let document = &self.tabs[i].scene.document;
+                let source = crate::scene::assoc_array::array_of_insert(document, handle)
+                    .and_then(|array| {
+                        document
+                            .block_records
+                            .iter()
+                            .find(|record| record.handle == array.source_block)
+                            .map(|record| record.name.clone())
+                    });
+                match source {
+                    Some(name) => return Some(self.dispatch_command(&format!("BEDIT_OPEN:{name}"))),
+                    None => self.command_line.push_error(
+                        crate::t!("ARRAYEDIT: the selected object is not an associative array.")
+                            .as_ref(),
+                    ),
+                }
+            }
+
+            // PASTESPEC — offer the copied objects now; the system clipboard's
+            // text joins the formats once read (Message::PasteSpecial).
+            "PASTESPEC" => {
+                let command = self.paste_special_command(i, None);
+                let started = self.start_count_command(i, command);
+                #[cfg(target_arch = "wasm32")]
+                let read = Task::perform(crate::sys::read_clipboard_text(), Message::PasteSpecial);
+                #[cfg(not(target_arch = "wasm32"))]
+                let read = iced::clipboard::read_text()
+                    .map(|result| Message::PasteSpecial(result.ok().map(|text| (*text).clone())));
+                return Some(Task::batch([started, read]));
+            }
+
             // PASTEORIG — paste at the entities' original coordinates (no pick).
             "PASTEORIG" => {
                 if self.clipboard.is_empty() {
@@ -371,7 +440,7 @@ impl OpenCADStudio {
                             let wires = self.tabs[i].scene.wires_for_entities(&self.clipboard);
                             use crate::modules::insert::insert_block::InsertBlockCommand;
                             let cmd =
-                                InsertBlockCommand::new_for_block(name, wires, base.as_vec3());
+                                InsertBlockCommand::new_for_block(name, wires, base);
                             self.command_line.push_info(&cmd.prompt());
                             self.tabs[i].active_cmd = Some(Box::new(cmd));
                         }
@@ -1612,9 +1681,20 @@ impl OpenCADStudio {
             "XRELOAD" => {
                 // Reload all xrefs for the current drawing. Every direct key
                 // leaves the session-unloaded set (reloaded content is live
-                // again) with fresh stat baselines on the next refresh.
-                if let Some(path) = &self.tabs[i].current_path.clone() {
-                    if let Some(base_dir) = path.parent() {
+                // again) with fresh stat baselines on the next refresh. Web:
+                // xrefs re-read from the in-session bytes registry, so an
+                // unsaved drawing reloads too; native needs the drawing's own
+                // folder for relative xref paths.
+                #[cfg(target_arch = "wasm32")]
+                let base_dir: Option<std::path::PathBuf> = Some(std::path::PathBuf::new());
+                #[cfg(not(target_arch = "wasm32"))]
+                let base_dir: Option<std::path::PathBuf> = self.tabs[i]
+                    .current_path
+                    .as_ref()
+                    .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
+                if let Some(base_dir) = base_dir {
+                    {
+                        let base_dir: &std::path::Path = &base_dir;
                         let reload_keys: Vec<u64> = crate::io::xref::collect_entries_with_prev(
                             &self.tabs[i].scene.document,
                             base_dir,
@@ -1631,7 +1711,7 @@ impl OpenCADStudio {
                         }
                         let (infos, _dropped) = crate::io::xref::resolve_xrefs(
                             &mut self.tabs[i].scene.document,
-                            base_dir,
+                            &base_dir,
                         );
                         // `resolve_xrefs` re-merges ALL references — refresh stat
                         // baselines for every currently-Loaded entry so no row
@@ -1652,8 +1732,17 @@ impl OpenCADStudio {
                             }
                         }
                         for info in &infos {
+                            // Web: unresolved references surface once below,
+                            // with the drop hint, instead of a filesystem path
+                            // no browser can open.
+                            #[cfg(target_arch = "wasm32")]
+                            if info.status == crate::io::xref::XrefStatus::NotFound {
+                                continue;
+                            }
                             self.report_xref_status(info);
                         }
+                        #[cfg(target_arch = "wasm32")]
+                        self.warn_unresolved_xrefs(&infos);
                         self.post_ref_op(i);
                     }
                 } else {

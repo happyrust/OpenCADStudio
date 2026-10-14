@@ -8,6 +8,7 @@
 // `io/print_to_printer.rs` do not have to change); `pdf_export` re-exports
 // them.
 
+use crate::io::plot::PlotQuality;
 use crate::io::plot_emit::PlotPage;
 use crate::io::plot_style::PlotStyleTable;
 use crate::scene::model::hatch_model::HatchModel;
@@ -45,6 +46,7 @@ pub struct PdfPlotOptions {
     pub transparency: bool,
     pub stamp: bool,
     pub merge_lines: bool,
+    pub quality: PlotQuality,
 }
 
 /// End indexes of the first paper/model render group in each flat input list.
@@ -118,6 +120,7 @@ impl Default for PdfPlotOptions {
             transparency: false,
             stamp: false,
             merge_lines: false,
+            quality: PlotQuality::Normal,
         }
     }
 }
