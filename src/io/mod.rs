@@ -28,6 +28,7 @@ pub mod pid;
 pub mod pid_legend;
 pub mod pid_pipes;
 pub mod pid_view_filter;
+pub mod e3d;
 
 /// XDATA application name under which a `.pid` import and P&ID legend
 /// recognition publish an entity's identity (`class=…`, `label=…`, … string
@@ -37,15 +38,21 @@ pub mod pid_view_filter;
 /// `scene::cache::properties::pid_semantics_section`).
 pub(crate) const PID_SEMANTICS_XDATA_APP: &str = "PID_SEMANTICS";
 
+/// XDATA application name under which an E3D / RVM 3D model batch publishes
+/// each **Geometry Item**'s identity (`geometry_id=…`, `refno=…`, `noun=…`,
+/// `name=…`, `owner=…`; see `docs/adr/0002-e3d-geometry-proxy-and-bevy-mirror.md`).
+pub(crate) const E3D_SEMANTICS_XDATA_APP: &str = "E3D_SEMANTICS";
+
 /// Whether `path` names a read-only source format: one this application opens
-/// as a drawing but must never write. `.pid` is the only member — the writers
-/// here speak DWG and DXF, so honouring a `.pid` destination would replace a
-/// SmartPlant drawing with DWG bytes. Every save entry point either redirects
-/// to Save As over this test or is refused by the gate in
-/// `save_owned_as_version_inner`.
+/// as a drawing but must never write. `.pid` and `.rvm` are read-only sources —
+/// the writers here speak DWG and DXF, so honouring a `.pid` or `.rvm`
+/// destination would replace the source model with DWG bytes. Every save entry
+/// point either redirects to Save As over this test or is refused by the gate
+/// in `save_owned_as_version_inner`.
 pub fn is_read_only_source_path(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("pid"))
+    path.extension().is_some_and(|ext| {
+        ext.eq_ignore_ascii_case("pid") || ext.eq_ignore_ascii_case("rvm")
+    })
 }
 pub mod plot;
 pub mod plot_device;

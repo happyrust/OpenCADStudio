@@ -45,7 +45,9 @@ use codec::objects::{XRecordEntry, XRecordValue};
 use codec::xdata::XDataValue;
 use codec::{CadDocument, EntityType, Handle};
 
-use super::pid::LAYER_HIDDEN;
+/// Synthetic CAD layer holding entities from hidden Smart P&ID sheet layers.
+/// Shared across native `.pid` import and the cross-platform `pid_view_filter`.
+pub(crate) const LAYER_HIDDEN: &str = "PID-HIDDEN";
 use super::PID_SEMANTICS_XDATA_APP;
 
 /// The XRecord key the filter is stored under, in the model-space block

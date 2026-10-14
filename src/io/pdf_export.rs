@@ -517,6 +517,7 @@ mod legacy_reference;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
+    use super::render_pdf_bytes as build_pdf_pages;
     use super::*;
     use crate::io::plot_corpus::{corpus, text_wire, Case};
     use crate::io::plot_emit::{geometry_pt, GEOMETRY_MM_TO_PT};

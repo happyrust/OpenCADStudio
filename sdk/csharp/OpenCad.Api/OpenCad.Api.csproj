@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>OpenCad.Api</RootNamespace>
+    <AssemblyName>OpenCad.Api</AssemblyName>
+    <Description>Developer-facing C# contract for OpenCADStudio. The host does not load this assembly yet.</Description>
+    <Version>0.1.0</Version>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+</Project>

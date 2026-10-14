@@ -2686,6 +2686,9 @@ pub struct Scene {
     /// to build a cheap history delta instead of a full document clone. See
     /// [`UndoRecording`].
     undo_recording: Option<UndoRecording>,
+    /// Geometry-item and centreline handles from the last full E3D batch
+    /// (`io::e3d::ingest_batch`). The next full batch erases these first.
+    pub e3d_index: crate::io::e3d::E3dIngestIndex,
 }
 
 fn section_frame(
@@ -2938,6 +2941,7 @@ impl Scene {
             resident_patch_hits: std::cell::Cell::new(0),
             model_wire_gpu_patch: RefCell::new(None),
             undo_recording: None,
+            e3d_index: crate::io::e3d::E3dIngestIndex::default(),
         }
     }
 

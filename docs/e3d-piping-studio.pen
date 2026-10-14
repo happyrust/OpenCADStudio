@@ -1,0 +1,4875 @@
+{
+  "version": "2.21",
+  "children": [
+    {
+      "type": "frame",
+      "id": "bi8Au",
+      "x": 0,
+      "y": 0,
+      "name": "OpenCADStudio — E3D Piping Modelling Workbench",
+      "theme": {
+        "mode": "dark"
+      },
+      "clip": true,
+      "width": 1920,
+      "height": 1080,
+      "fill": "$bg-chrome",
+      "layout": "vertical",
+      "children": [
+        {
+          "type": "frame",
+          "id": "ypdU7",
+          "name": "Top Menu Bar",
+          "width": "fill_container",
+          "height": 28,
+          "fill": "#121418",
+          "stroke": "$border-subtle",
+          "strokeWidth": {
+            "bottom": 1
+          },
+          "padding": [
+            0,
+            12
+          ],
+          "justifyContent": "space_between",
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "GBXKI",
+              "name": "Menu Left",
+              "gap": 14,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "kaukt",
+                  "name": "Brand Badge",
+                  "fill": "$accent-soft",
+                  "cornerRadius": 4,
+                  "stroke": "$accent",
+                  "strokeWidth": 1,
+                  "gap": 6,
+                  "padding": [
+                    3,
+                    8
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "K8OEmS",
+                      "name": "App Icon",
+                      "width": 13,
+                      "height": 13,
+                      "icon": "boxes",
+                      "library": "lucide",
+                      "fill": "$accent"
+                    },
+                    {
+                      "type": "text",
+                      "id": "G7ZHR5",
+                      "name": "App Title",
+                      "fill": "$text-primary",
+                      "content": "OpenCADStudio · E3D Piping",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "M6g5b2",
+                  "name": "Menu File",
+                  "fill": "$text-secondary",
+                  "content": "File",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "toKNL",
+                  "name": "Menu Edit",
+                  "fill": "$text-secondary",
+                  "content": "Edit",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "mNURP",
+                  "name": "Menu View",
+                  "fill": "$text-secondary",
+                  "content": "View",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "T6ukP8",
+                  "name": "Menu Insert",
+                  "fill": "$text-secondary",
+                  "content": "Insert",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "JkoOY",
+                  "name": "Menu Piping",
+                  "fill": "$accent",
+                  "content": "Piping",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "700"
+                },
+                {
+                  "type": "text",
+                  "id": "BrA9k",
+                  "name": "Menu Modify",
+                  "fill": "$text-secondary",
+                  "content": "Modify",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "MN3NT",
+                  "name": "Menu Tools",
+                  "fill": "$text-secondary",
+                  "content": "Tools",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "o1hjjG",
+                  "name": "Menu Fabrication",
+                  "fill": "$text-secondary",
+                  "content": "Fabrication",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "pHJkE",
+                  "name": "Menu Isometrics",
+                  "fill": "$text-secondary",
+                  "content": "Isometrics",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "O8eNQ",
+                  "name": "Menu Window",
+                  "fill": "$text-secondary",
+                  "content": "Window",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "text",
+                  "id": "rM9wN",
+                  "name": "Menu Help",
+                  "fill": "$text-secondary",
+                  "content": "Help",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "SKySI",
+              "name": "Menu Right Info",
+              "gap": 12,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "PN36S",
+                  "name": "MDB Info",
+                  "fill": "$text-secondary",
+                  "content": "MDB: /APS-ALL  |  Project: APS  |  Discipline: PIPING (DES.EXE Bridge)",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                },
+                {
+                  "type": "frame",
+                  "id": "n15qGM",
+                  "name": "Command Search Pill",
+                  "fill": "$bg-elevated",
+                  "cornerRadius": 4,
+                  "stroke": "$border-subtle",
+                  "strokeWidth": 1,
+                  "gap": 6,
+                  "padding": [
+                    3,
+                    10
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "Eskxs",
+                      "name": "Search Icon",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "search",
+                      "library": "lucide",
+                      "fill": "$text-muted"
+                    },
+                    {
+                      "type": "text",
+                      "id": "J465Of",
+                      "name": "Search Label",
+                      "fill": "$text-muted",
+                      "content": "Search E3D Noun / RefNo / Command (Ctrl+F)...",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "yb7yW",
+          "name": "Ribbon Tab Strip",
+          "width": "fill_container",
+          "height": 28,
+          "fill": "#171A20",
+          "stroke": "$border-subtle",
+          "strokeWidth": {
+            "bottom": 1
+          },
+          "padding": [
+            0,
+            12
+          ],
+          "justifyContent": "space_between",
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "HXv25",
+              "name": "Ribbon Tabs Left",
+              "height": "fill_container",
+              "gap": 2,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "k4dmVV",
+                  "name": "Tab Home",
+                  "height": "fill_container",
+                  "fill": "#171A20",
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Xlx8w",
+                      "name": "Label Home",
+                      "fill": "$text-secondary",
+                      "content": "Home",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "n3ylGH",
+                  "name": "Tab Insert",
+                  "height": "fill_container",
+                  "fill": "#171A20",
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "Onen4",
+                      "name": "Label Insert",
+                      "fill": "$text-secondary",
+                      "content": "Insert",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "E8xMaa",
+                  "name": "Tab Annotate",
+                  "height": "fill_container",
+                  "fill": "#171A20",
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "RbdnJ",
+                      "name": "Label Annotate",
+                      "fill": "$text-secondary",
+                      "content": "Annotate",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "qf3CT",
+                  "name": "Tab Parametric",
+                  "height": "fill_container",
+                  "fill": "#171A20",
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "T4rIhN",
+                      "name": "Label Parametric",
+                      "fill": "$text-secondary",
+                      "content": "Parametric",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "OYmRc",
+                  "name": "Tab View",
+                  "height": "fill_container",
+                  "fill": "#171A20",
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "KNfxG",
+                      "name": "Label View",
+                      "fill": "$text-secondary",
+                      "content": "View",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "Z5GYSj",
+                  "name": "Tab Piping (E3D)",
+                  "height": "fill_container",
+                  "fill": "$bg-panel",
+                  "stroke": "$accent",
+                  "strokeWidth": {
+                    "top": 2,
+                    "right": 1,
+                    "left": 1
+                  },
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "qGoYJ",
+                      "name": "Piping Tab Icon",
+                      "width": 12,
+                      "height": 12,
+                      "icon": "git-branch",
+                      "library": "lucide",
+                      "fill": "$accent"
+                    },
+                    {
+                      "type": "text",
+                      "id": "EUGlO",
+                      "name": "Label Piping (E3D)",
+                      "fill": "$text-primary",
+                      "content": "Piping (E3D)",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "vdMyc",
+                  "name": "Tab Supports (MDS)",
+                  "height": "fill_container",
+                  "fill": "#171A20",
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "wrA7Y",
+                      "name": "Label Supports (MDS)",
+                      "fill": "$text-secondary",
+                      "content": "Supports (MDS)",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "GwlN5",
+                  "name": "Tab Isometrics (ADP)",
+                  "height": "fill_container",
+                  "fill": "#171A20",
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "jURjz",
+                      "name": "Label Isometrics (ADP)",
+                      "fill": "$text-secondary",
+                      "content": "Isometrics (ADP)",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "o3hNjV",
+                  "name": "Tab Laser & PointCloud",
+                  "height": "fill_container",
+                  "fill": "#171A20",
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "BROsQ",
+                      "name": "Label Laser & PointCloud",
+                      "fill": "$text-secondary",
+                      "content": "Laser & PointCloud",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "500"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "LbYS5",
+                  "name": "Tab Manage",
+                  "height": "fill_container",
+                  "fill": "#171A20",
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "MppJB",
+                      "name": "Label Manage",
+                      "fill": "$text-secondary",
+                      "content": "Manage",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 11,
+                      "fontWeight": "500"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "x6eaz",
+              "name": "Active Spec Context Bar",
+              "gap": 8,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "f5cd8r",
+                  "name": "Spec Pill Pipe Spec",
+                  "fill": "$bg-elevated",
+                  "cornerRadius": 3,
+                  "stroke": "$border-subtle",
+                  "strokeWidth": 1,
+                  "gap": 5,
+                  "padding": [
+                    2,
+                    8
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "kwBFw",
+                      "name": "Pipe Spec Key",
+                      "fill": "$text-muted",
+                      "content": "Pipe Spec:",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "SfpQl",
+                      "name": "Pipe Spec Val",
+                      "fill": "#0696D7",
+                      "content": "/A1A (CS-150#)",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "o7GDrK",
+                  "name": "Spec Pill Nominal Bore",
+                  "fill": "$bg-elevated",
+                  "cornerRadius": 3,
+                  "stroke": "$border-subtle",
+                  "strokeWidth": 1,
+                  "gap": 5,
+                  "padding": [
+                    2,
+                    8
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "snDsc",
+                      "name": "Nominal Bore Key",
+                      "fill": "$text-muted",
+                      "content": "Nominal Bore:",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "hZutp",
+                      "name": "Nominal Bore Val",
+                      "fill": "#4CAF50",
+                      "content": "DN100 (4\")",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "FAfLj",
+                  "name": "Spec Pill Insul Spec",
+                  "fill": "$bg-elevated",
+                  "cornerRadius": 3,
+                  "stroke": "$border-subtle",
+                  "strokeWidth": 1,
+                  "gap": 5,
+                  "padding": [
+                    2,
+                    8
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "ID29A",
+                      "name": "Insul Spec Key",
+                      "fill": "$text-muted",
+                      "content": "Insul Spec:",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "t1Lhg",
+                      "name": "Insul Spec Val",
+                      "fill": "#A0A8B8",
+                      "content": "/W-50mm",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "qXIX4",
+                  "name": "Spec Pill Tracing",
+                  "fill": "$bg-elevated",
+                  "cornerRadius": 3,
+                  "stroke": "$border-subtle",
+                  "strokeWidth": 1,
+                  "gap": 5,
+                  "padding": [
+                    2,
+                    8
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "r4kzP6",
+                      "name": "Tracing Key",
+                      "fill": "$text-muted",
+                      "content": "Tracing:",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "z5mBp",
+                      "name": "Tracing Val",
+                      "fill": "#687080",
+                      "content": "Off",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "700"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "Nvw2z",
+                  "name": "Spec Pill Slope",
+                  "fill": "$bg-elevated",
+                  "cornerRadius": 3,
+                  "stroke": "$border-subtle",
+                  "strokeWidth": 1,
+                  "gap": 5,
+                  "padding": [
+                    2,
+                    8
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "text",
+                      "id": "VrIvR",
+                      "name": "Slope Key",
+                      "fill": "$text-muted",
+                      "content": "Slope:",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "text",
+                      "id": "Y8r194",
+                      "name": "Slope Val",
+                      "fill": "#FFB300",
+                      "content": "1:100 DOWN",
+                      "fontFamily": "$font-mono",
+                      "fontSize": 10,
+                      "fontWeight": "700"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "HWMSJ",
+          "name": "Piping Ribbon Toolbar",
+          "width": "fill_container",
+          "height": 94,
+          "fill": "$bg-panel",
+          "stroke": "$border-subtle",
+          "strokeWidth": {
+            "bottom": 1
+          },
+          "gap": 8,
+          "padding": [
+            6,
+            10
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "MwDed",
+              "name": "Ribbon Group Create",
+              "height": "fill_container",
+              "stroke": "$border-subtle",
+              "strokeWidth": {
+                "right": 1
+              },
+              "layout": "vertical",
+              "padding": [
+                2,
+                8,
+                2,
+                2
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "GPwXo",
+                  "name": "Create Tools Row",
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "MZVyY",
+                      "name": "LargeBtn Create Pipe",
+                      "width": 62,
+                      "height": 64,
+                      "fill": "$bg-elevated",
+                      "cornerRadius": 4,
+                      "stroke": "$border-subtle",
+                      "strokeWidth": 1,
+                      "layout": "vertical",
+                      "gap": 4,
+                      "padding": 4,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "q6cmq",
+                          "name": "Create Pipe Icon",
+                          "width": 20,
+                          "height": 20,
+                          "icon": "git-fork",
+                          "library": "lucide",
+                          "fill": "$text-primary"
+                        },
+                        {
+                          "type": "text",
+                          "id": "zLk8I",
+                          "name": "Create Pipe Text",
+                          "fill": "$text-secondary",
+                          "content": "Create Pipe",
+                          "textAlign": "center",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 9.5,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "zEOS0",
+                      "name": "LargeBtn Component",
+                      "width": 62,
+                      "height": 64,
+                      "fill": "$accent-soft",
+                      "cornerRadius": 4,
+                      "stroke": "$accent",
+                      "strokeWidth": 1,
+                      "layout": "vertical",
+                      "gap": 4,
+                      "padding": 4,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "Egeek",
+                          "name": "Component Icon",
+                          "width": 20,
+                          "height": 20,
+                          "icon": "cpu",
+                          "library": "lucide",
+                          "fill": "$accent"
+                        },
+                        {
+                          "type": "text",
+                          "id": "hWYbR",
+                          "name": "Component Text",
+                          "fill": "$text-primary",
+                          "content": "Component",
+                          "textAlign": "center",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 9.5,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "FqdWU",
+                      "name": "Create Small Stack",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "VCRYP",
+                          "name": "SmallBtn New Branch",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "gTRLY",
+                              "name": "New Branch Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "git-branch",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "kiyF3",
+                              "name": "New Branch Text",
+                              "fill": "$text-secondary",
+                              "content": "New Branch",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "Js2st",
+                          "name": "SmallBtn Pipe Assembly",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "Wbyz7",
+                              "name": "Pipe Assembly Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "package",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "tLT2r",
+                              "name": "Pipe Assembly Text",
+                              "fill": "$text-secondary",
+                              "content": "Pipe Assembly",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "AmXQB",
+                          "name": "SmallBtn Insert Weld",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "yr3Uq",
+                              "name": "Insert Weld Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "flame",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "VxJJ9",
+                              "name": "Insert Weld Text",
+                              "fill": "$text-secondary",
+                              "content": "Insert Weld",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "v1xMM",
+                  "name": "Create Caption",
+                  "fill": "$text-muted",
+                  "content": "CREATE",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 8.5,
+                  "fontWeight": "600"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "eH4vK",
+              "name": "Ribbon Group Modify & Delete",
+              "height": "fill_container",
+              "stroke": "$border-subtle",
+              "strokeWidth": {
+                "right": 1
+              },
+              "layout": "vertical",
+              "padding": [
+                2,
+                8,
+                2,
+                2
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "XiggT",
+                  "name": "Modify & Delete Tools Row",
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "LuU0l",
+                      "name": "LargeBtn Modify Pipe",
+                      "width": 62,
+                      "height": 64,
+                      "fill": "$bg-elevated",
+                      "cornerRadius": 4,
+                      "stroke": "$border-subtle",
+                      "strokeWidth": 1,
+                      "layout": "vertical",
+                      "gap": 4,
+                      "padding": 4,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "F73RoQ",
+                          "name": "Modify Pipe Icon",
+                          "width": 20,
+                          "height": 20,
+                          "icon": "sliders-horizontal",
+                          "library": "lucide",
+                          "fill": "$text-primary"
+                        },
+                        {
+                          "type": "text",
+                          "id": "gNgiQ",
+                          "name": "Modify Pipe Text",
+                          "fill": "$text-secondary",
+                          "content": "Modify Pipe",
+                          "textAlign": "center",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 9.5,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "Z1rxd",
+                      "name": "Modify & Delete Small Stack",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "t3se0",
+                          "name": "SmallBtn Modify Comp",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "yH3YJ",
+                              "name": "Modify Comp Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "wrench",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "hGBre",
+                              "name": "Modify Comp Text",
+                              "fill": "$text-secondary",
+                              "content": "Modify Comp",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "KO7qu",
+                          "name": "SmallBtn Spec / Bore",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "ZYXpq",
+                              "name": "Spec / Bore Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "layers",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "IBMne",
+                              "name": "Spec / Bore Text",
+                              "fill": "$text-secondary",
+                              "content": "Spec / Bore",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "xnhjP",
+                          "name": "SmallBtn Delete Comp",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "Q1o4e",
+                              "name": "Delete Comp Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "trash-2",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "n9dX68",
+                              "name": "Delete Comp Text",
+                              "fill": "$text-secondary",
+                              "content": "Delete Comp",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "q6Dmg",
+                  "name": "Modify & Delete Caption",
+                  "fill": "$text-muted",
+                  "content": "MODIFY & DELETE",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 8.5,
+                  "fontWeight": "600"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "yDBzp",
+              "name": "Ribbon Group Connections",
+              "height": "fill_container",
+              "stroke": "$border-subtle",
+              "strokeWidth": {
+                "right": 1
+              },
+              "layout": "vertical",
+              "padding": [
+                2,
+                8,
+                2,
+                2
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "d4tenc",
+                  "name": "Connections Tools Row",
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "ZJlQM",
+                      "name": "Connections Small Stack",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "sBWxX",
+                          "name": "SmallBtn Reconnect Head/Tail",
+                          "height": 19,
+                          "fill": "$accent-soft",
+                          "cornerRadius": 3,
+                          "stroke": "$accent",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "f5n4SC",
+                              "name": "Reconnect Head/Tail Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "link",
+                              "library": "lucide",
+                              "fill": "$accent"
+                            },
+                            {
+                              "type": "text",
+                              "id": "VfF0v",
+                              "name": "Reconnect Head/Tail Text",
+                              "fill": "$text-primary",
+                              "content": "Reconnect Head/Tail",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "T8RQ6",
+                          "name": "SmallBtn Disconnect End",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "OmZdD",
+                              "name": "Disconnect End Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "unlink",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "O0a31i",
+                              "name": "Disconnect End Text",
+                              "fill": "$text-secondary",
+                              "content": "Disconnect End",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "l6N0li",
+                          "name": "SmallBtn Dynamic Conn: ON",
+                          "height": 19,
+                          "fill": "$accent-soft",
+                          "cornerRadius": 3,
+                          "stroke": "$accent",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "R21W1",
+                              "name": "Dynamic Conn: ON Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "zap",
+                              "library": "lucide",
+                              "fill": "$accent"
+                            },
+                            {
+                              "type": "text",
+                              "id": "rntzR",
+                              "name": "Dynamic Conn: ON Text",
+                              "fill": "$text-primary",
+                              "content": "Dynamic Conn: ON",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "V81aq",
+                  "name": "Connections Caption",
+                  "fill": "$text-muted",
+                  "content": "CONNECTIONS",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 8.5,
+                  "fontWeight": "600"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "ck3hA",
+              "name": "Ribbon Group Tools & Routing",
+              "height": "fill_container",
+              "stroke": "$border-subtle",
+              "strokeWidth": {
+                "right": 1
+              },
+              "layout": "vertical",
+              "padding": [
+                2,
+                8,
+                2,
+                2
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "PRh4c",
+                  "name": "Tools & Routing Tools Row",
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "xywLR",
+                      "name": "LargeBtn Pipe Router",
+                      "width": 62,
+                      "height": 64,
+                      "fill": "$bg-elevated",
+                      "cornerRadius": 4,
+                      "stroke": "$border-subtle",
+                      "strokeWidth": 1,
+                      "layout": "vertical",
+                      "gap": 4,
+                      "padding": 4,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "UBJnC",
+                          "name": "Pipe Router Icon",
+                          "width": 20,
+                          "height": 20,
+                          "icon": "route",
+                          "library": "lucide",
+                          "fill": "$text-primary"
+                        },
+                        {
+                          "type": "text",
+                          "id": "fIzGm",
+                          "name": "Pipe Router Text",
+                          "fill": "$text-secondary",
+                          "content": "Pipe Router",
+                          "textAlign": "center",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 9.5,
+                          "fontWeight": "500"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "iXLFS",
+                      "name": "Tools & Routing Small Stack",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "ylXDf",
+                          "name": "SmallBtn Slope Pipe",
+                          "height": 19,
+                          "fill": "$accent-soft",
+                          "cornerRadius": 3,
+                          "stroke": "$accent",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "MfSc4",
+                              "name": "Slope Pipe Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "trending-down",
+                              "library": "lucide",
+                              "fill": "$accent"
+                            },
+                            {
+                              "type": "text",
+                              "id": "uJCI9",
+                              "name": "Slope Pipe Text",
+                              "fill": "$text-primary",
+                              "content": "Slope Pipe",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "Xj4xL",
+                          "name": "SmallBtn Pipe Splitting",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "JMSr1",
+                              "name": "Pipe Splitting Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "scissors",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "WTIRD",
+                              "name": "Pipe Splitting Text",
+                              "fill": "$text-secondary",
+                              "content": "Pipe Splitting",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "f1pmRY",
+                          "name": "SmallBtn NSBC Tappings",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "AV8jM",
+                              "name": "NSBC Tappings Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "git-pull-request",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Hntzs",
+                              "name": "NSBC Tappings Text",
+                              "fill": "$text-secondary",
+                              "content": "NSBC Tappings",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "HMhlM",
+                      "name": "Tools & Routing Small Stack",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "oIGJq",
+                          "name": "SmallBtn Data Consistency",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "DyEZd",
+                              "name": "Data Consistency Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "shield-check",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "v0gKMA",
+                              "name": "Data Consistency Text",
+                              "fill": "$text-secondary",
+                              "content": "Data Consistency",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "fD2mi",
+                          "name": "SmallBtn P&ID Integrator",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "G7rsA",
+                              "name": "P&ID Integrator Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "file-check",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "UZN6N",
+                              "name": "P&ID Integrator Text",
+                              "fill": "$text-secondary",
+                              "content": "P&ID Integrator",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "u377Lo",
+                          "name": "SmallBtn Laser Centre Fit",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "jjjbm",
+                              "name": "Laser Centre Fit Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "scan-line",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "PMON5",
+                              "name": "Laser Centre Fit Text",
+                              "fill": "$text-secondary",
+                              "content": "Laser Centre Fit",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "V7rEpw",
+                  "name": "Tools & Routing Caption",
+                  "fill": "$text-muted",
+                  "content": "TOOLS & ROUTING",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 8.5,
+                  "fontWeight": "600"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "JnlcY",
+              "name": "Ribbon Group Penetrate & MDS",
+              "height": "fill_container",
+              "stroke": "$border-subtle",
+              "strokeWidth": {
+                "right": 1
+              },
+              "layout": "vertical",
+              "padding": [
+                2,
+                8,
+                2,
+                2
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "YwWG0",
+                  "name": "Penetrate & MDS Tools Row",
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "ziyOs",
+                      "name": "Penetrate & MDS Small Stack",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "wnkDf",
+                          "name": "SmallBtn Pipe Penetration",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "rM0Xz",
+                              "name": "Pipe Penetration Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "circle-dot",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "F3lWmt",
+                              "name": "Pipe Penetration Text",
+                              "fill": "$text-secondary",
+                              "content": "Pipe Penetration",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "dfWoN",
+                          "name": "SmallBtn Hole Mgmt",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "pElqW",
+                              "name": "Hole Mgmt Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "target",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "lZAte",
+                              "name": "Hole Mgmt Text",
+                              "fill": "$text-secondary",
+                              "content": "Hole Mgmt",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "mHFe9",
+                          "name": "SmallBtn Supports (MDS)",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "D6KZBV",
+                              "name": "Supports (MDS) Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "anchor",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "a1ojP",
+                              "name": "Supports (MDS) Text",
+                              "fill": "$text-secondary",
+                              "content": "Supports (MDS)",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "kgZ2I",
+                  "name": "Penetrate & MDS Caption",
+                  "fill": "$text-muted",
+                  "content": "PENETRATE & MDS",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 8.5,
+                  "fontWeight": "600"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "VEcyo",
+              "name": "Ribbon Group Pipe Fabrication",
+              "height": "fill_container",
+              "stroke": "$border-subtle",
+              "strokeWidth": {
+                "right": 1
+              },
+              "layout": "vertical",
+              "padding": [
+                2,
+                8,
+                2,
+                2
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "kJ4d8",
+                  "name": "Pipe Fabrication Tools Row",
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "uvg4f",
+                      "name": "LargeBtn Pipe Check",
+                      "width": 62,
+                      "height": 64,
+                      "fill": "$accent-soft",
+                      "cornerRadius": 4,
+                      "stroke": "$accent",
+                      "strokeWidth": 1,
+                      "layout": "vertical",
+                      "gap": 4,
+                      "padding": 4,
+                      "justifyContent": "center",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "icon",
+                          "id": "KoWJU",
+                          "name": "Pipe Check Icon",
+                          "width": 20,
+                          "height": 20,
+                          "icon": "circle-check",
+                          "library": "lucide",
+                          "fill": "$accent"
+                        },
+                        {
+                          "type": "text",
+                          "id": "bt1XJ",
+                          "name": "Pipe Check Text",
+                          "fill": "$text-primary",
+                          "content": "Pipe Check",
+                          "textAlign": "center",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 9.5,
+                          "fontWeight": "700"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "KErZY",
+                      "name": "Pipe Fabrication Small Stack",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Ex0rj",
+                          "name": "SmallBtn Gen Spools",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "CI8xf",
+                              "name": "Gen Spools Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "boxes",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "QlElH",
+                              "name": "Gen Spools Text",
+                              "fill": "$text-secondary",
+                              "content": "Gen Spools",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "e17eBH",
+                          "name": "SmallBtn Weld Handling",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "G89D1",
+                              "name": "Weld Handling Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "flame",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "h6NK0",
+                              "name": "Weld Handling Text",
+                              "fill": "$text-secondary",
+                              "content": "Weld Handling",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "g0M9qI",
+                          "name": "SmallBtn Bend Machine",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "hFkzW",
+                              "name": "Bend Machine Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "cog",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "I9DSZo",
+                              "name": "Bend Machine Text",
+                              "fill": "$text-secondary",
+                              "content": "Bend Machine",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "CgIzN",
+                      "name": "Pipe Fabrication Small Stack",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "y6reu0",
+                          "name": "SmallBtn Spool Drawing",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "CVrKG",
+                              "name": "Spool Drawing Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "file-text",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "yv9LL",
+                              "name": "Spool Drawing Text",
+                              "fill": "$text-secondary",
+                              "content": "Spool Drawing",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "Rgo9Z",
+                          "name": "SmallBtn Iso ADP Out",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "SYuRZ",
+                              "name": "Iso ADP Out Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "compass",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "r4R7jy",
+                              "name": "Iso ADP Out Text",
+                              "fill": "$text-secondary",
+                              "content": "Iso ADP Out",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "wGlWc",
+                          "name": "SmallBtn NC XML Export",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "NJ4Ez",
+                              "name": "NC XML Export Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "file-code",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "i8bUf",
+                              "name": "NC XML Export Text",
+                              "fill": "$text-secondary",
+                              "content": "NC XML Export",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "UTEMs",
+                  "name": "Pipe Fabrication Caption",
+                  "fill": "$text-muted",
+                  "content": "PIPE FABRICATION",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 8.5,
+                  "fontWeight": "600"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "YXEll",
+              "name": "Ribbon Group CAD & Layer",
+              "height": "fill_container",
+              "stroke": "$border-subtle",
+              "strokeWidth": {
+                "right": 1
+              },
+              "layout": "vertical",
+              "padding": [
+                2,
+                8,
+                2,
+                2
+              ],
+              "justifyContent": "space_between",
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "CG4MR",
+                  "name": "CAD & Layer Tools Row",
+                  "gap": 5,
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "UR5nP",
+                      "name": "CAD & Layer Small Stack",
+                      "layout": "vertical",
+                      "gap": 3,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "VFfT3",
+                          "name": "SmallBtn Layer: E3D-PIPE-A1A",
+                          "height": 19,
+                          "fill": "$accent-soft",
+                          "cornerRadius": 3,
+                          "stroke": "$accent",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "kTmjd",
+                              "name": "Layer: E3D-PIPE-A1A Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "layers",
+                              "library": "lucide",
+                              "fill": "$accent"
+                            },
+                            {
+                              "type": "text",
+                              "id": "xBNz0",
+                              "name": "Layer: E3D-PIPE-A1A Text",
+                              "fill": "$text-primary",
+                              "content": "Layer: E3D-PIPE-A1A",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "W1yTWK",
+                          "name": "SmallBtn Visual: Shaded+CL",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "MiCP6",
+                              "name": "Visual: Shaded+CL Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "eye",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "F9ExY",
+                              "name": "Visual: Shaded+CL Text",
+                              "fill": "$text-secondary",
+                              "content": "Visual: Shaded+CL",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "QiNCA",
+                          "name": "SmallBtn Piping Defaults",
+                          "height": 19,
+                          "fill": "$bg-elevated",
+                          "cornerRadius": 3,
+                          "stroke": "$border-subtle",
+                          "strokeWidth": 1,
+                          "gap": 5,
+                          "padding": [
+                            0,
+                            7
+                          ],
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "u8ZSi",
+                              "name": "Piping Defaults Icon",
+                              "width": 11,
+                              "height": 11,
+                              "icon": "settings",
+                              "library": "lucide",
+                              "fill": "$text-secondary"
+                            },
+                            {
+                              "type": "text",
+                              "id": "EXgWc",
+                              "name": "Piping Defaults Text",
+                              "fill": "$text-secondary",
+                              "content": "Piping Defaults",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "e6hd1",
+                  "name": "CAD & Layer Caption",
+                  "fill": "$text-muted",
+                  "content": "CAD & LAYER",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 8.5,
+                  "fontWeight": "600"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "O03xO",
+          "name": "Document Tab Bar",
+          "width": "fill_container",
+          "height": 28,
+          "fill": "#14171D",
+          "stroke": "$border-subtle",
+          "strokeWidth": {
+            "bottom": 1
+          },
+          "padding": [
+            0,
+            10
+          ],
+          "justifyContent": "space_between",
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "kPXoR",
+              "name": "Document Tabs Left",
+              "height": "fill_container",
+              "gap": 4,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "y6T2sJ",
+                  "name": "DocTab Start",
+                  "height": "fill_container",
+                  "fill": "#1A1D24",
+                  "stroke": "$border-subtle",
+                  "strokeWidth": {
+                    "right": 1
+                  },
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "cVlJd",
+                      "name": "Start Icon",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "file",
+                      "library": "lucide",
+                      "fill": "$text-muted"
+                    },
+                    {
+                      "type": "text",
+                      "id": "lgknC",
+                      "name": "Start Text",
+                      "fill": "$text-secondary",
+                      "content": "Start",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10.5,
+                      "fontWeight": "normal"
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "k9mB7",
+                  "name": "DocTab APS-SITE-PIPING.e3d *",
+                  "height": "fill_container",
+                  "fill": "$bg-viewport",
+                  "stroke": "$accent",
+                  "strokeWidth": {
+                    "top": 2,
+                    "right": 1,
+                    "left": 1
+                  },
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "n10wR",
+                      "name": "APS-SITE-PIPING.e3d * Icon",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "box",
+                      "library": "lucide",
+                      "fill": "$accent"
+                    },
+                    {
+                      "type": "text",
+                      "id": "T0XF5",
+                      "name": "APS-SITE-PIPING.e3d * Text",
+                      "fill": "$text-primary",
+                      "content": "APS-SITE-PIPING.e3d *",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10.5,
+                      "fontWeight": "700"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "l0HPod",
+                      "name": "APS-SITE-PIPING.e3d * Badge",
+                      "fill": "$accent-soft",
+                      "cornerRadius": 3,
+                      "padding": [
+                        1,
+                        5
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "rvTFC",
+                          "name": "APS-SITE-PIPING.e3d * Badge Text",
+                          "fill": "$accent",
+                          "content": "WORL: /APS-PROC-AREA",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 9,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "AWHlg",
+                  "name": "DocTab 100-B-12-SPOOL-01.dxf",
+                  "height": "fill_container",
+                  "fill": "#1A1D24",
+                  "stroke": "$border-subtle",
+                  "strokeWidth": {
+                    "right": 1
+                  },
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "i62l0",
+                      "name": "100-B-12-SPOOL-01.dxf Icon",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "file",
+                      "library": "lucide",
+                      "fill": "$text-muted"
+                    },
+                    {
+                      "type": "text",
+                      "id": "QUKYX",
+                      "name": "100-B-12-SPOOL-01.dxf Text",
+                      "fill": "$text-secondary",
+                      "content": "100-B-12-SPOOL-01.dxf",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10.5,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "QLl8M",
+                      "name": "100-B-12-SPOOL-01.dxf Badge",
+                      "fill": "$bg-elevated",
+                      "cornerRadius": 3,
+                      "padding": [
+                        1,
+                        5
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "Et1sl",
+                          "name": "100-B-12-SPOOL-01.dxf Badge Text",
+                          "fill": "$text-muted",
+                          "content": "Spool Sheet",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 9,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "x20StC",
+                  "name": "DocTab PID-101-COOLING.dwg",
+                  "height": "fill_container",
+                  "fill": "#1A1D24",
+                  "stroke": "$border-subtle",
+                  "strokeWidth": {
+                    "right": 1
+                  },
+                  "gap": 6,
+                  "padding": [
+                    0,
+                    12
+                  ],
+                  "alignItems": "center",
+                  "children": [
+                    {
+                      "type": "icon",
+                      "id": "Y2gRNQ",
+                      "name": "PID-101-COOLING.dwg Icon",
+                      "width": 11,
+                      "height": 11,
+                      "icon": "file",
+                      "library": "lucide",
+                      "fill": "$text-muted"
+                    },
+                    {
+                      "type": "text",
+                      "id": "R2wOAK",
+                      "name": "PID-101-COOLING.dwg Text",
+                      "fill": "$text-secondary",
+                      "content": "PID-101-COOLING.dwg",
+                      "fontFamily": "$font-ui",
+                      "fontSize": 10.5,
+                      "fontWeight": "normal"
+                    },
+                    {
+                      "type": "frame",
+                      "id": "QLGpZ",
+                      "name": "PID-101-COOLING.dwg Badge",
+                      "fill": "$bg-elevated",
+                      "cornerRadius": 3,
+                      "padding": [
+                        1,
+                        5
+                      ],
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "qXD4h",
+                          "name": "PID-101-COOLING.dwg Badge Text",
+                          "fill": "$text-muted",
+                          "content": "Integrator",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 9,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "ECUFr",
+              "name": "Document Tabs Right",
+              "gap": 8,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "text",
+                  "id": "Yn4TN",
+                  "name": "Active CE Readout",
+                  "fill": "$accent",
+                  "content": "CE: =16384/2049  /100-B-12/B1/ELBO-1  (Noun: ELBO, Spec: /A1A, Bore: 100mm)",
+                  "fontFamily": "$font-mono",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "FrLdk",
+          "name": "Central Workspace Row",
+          "clip": true,
+          "width": "fill_container",
+          "height": 874,
+          "fill": "$bg-chrome",
+          "children": [
+            {
+              "type": "frame",
+              "id": "tLuGa",
+              "name": "Left Dock — Explorer & Properties",
+              "width": 316,
+              "height": "fill_container",
+              "fill": "$bg-panel",
+              "stroke": "$border-subtle",
+              "strokeWidth": {
+                "right": 1
+              },
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "sTb1X",
+                  "name": "E3D Model Hierarchy Explorer",
+                  "width": "fill_container",
+                  "height": 446,
+                  "stroke": "$border-subtle",
+                  "strokeWidth": {
+                    "bottom": 1
+                  },
+                  "layout": "vertical",
+                  "gap": 6,
+                  "padding": 8,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "CSDoZ",
+                      "name": "Explorer Header",
+                      "width": "fill_container",
+                      "padding": [
+                        2,
+                        4
+                      ],
+                      "justifyContent": "space_between",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "apTz7",
+                          "name": "Exp Title Left",
+                          "gap": 6,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "M3kb6",
+                              "name": "Tree Icon",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "folder-tree",
+                              "library": "lucide",
+                              "fill": "$accent"
+                            },
+                            {
+                              "type": "text",
+                              "id": "vVy9d",
+                              "name": "Exp Title",
+                              "fill": "$text-primary",
+                              "content": "MODEL EXPLORER (WORL)",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 10.5,
+                              "fontWeight": "700"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "lnIh1",
+                          "name": "Exp Count",
+                          "fill": "$text-muted",
+                          "content": "3,120 Primitives",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 9.5,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "uDHsO",
+                      "name": "Explorer Search Bar",
+                      "width": "fill_container",
+                      "height": 24,
+                      "fill": "$bg-elevated",
+                      "cornerRadius": 4,
+                      "stroke": "$border-subtle",
+                      "strokeWidth": 1,
+                      "padding": [
+                        0,
+                        8
+                      ],
+                      "justifyContent": "space_between",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "dLwWo",
+                          "name": "Filter Text",
+                          "fill": "$text-secondary",
+                          "content": "Filter: /100-B-12  |  Noun: PIPE, BRAN, ELBO...",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 9.5,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "icon",
+                          "id": "KNmJu",
+                          "name": "Filter Icon",
+                          "width": 11,
+                          "height": 11,
+                          "icon": "filter",
+                          "library": "lucide",
+                          "fill": "$accent"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "D8NH8O",
+                      "name": "Hierarchy Tree List",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "#16191F",
+                      "cornerRadius": 4,
+                      "stroke": "$border-subtle",
+                      "strokeWidth": 1,
+                      "layout": "vertical",
+                      "gap": 2,
+                      "padding": [
+                        4,
+                        2
+                      ],
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Vs6pw",
+                          "name": "TreeRow WORL /* (APS Master DB)",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "R0antI",
+                              "name": "RowLeft /* (APS Master DB)",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "IbOXj",
+                                  "name": "Icon /* (APS Master DB)",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "globe",
+                                  "library": "lucide",
+                                  "fill": "#A0A8B8"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "VsvMW",
+                                  "name": "NounBadge /* (APS Master DB)",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "D8Lam",
+                                      "name": "NounText /* (APS Master DB)",
+                                      "fill": "#A0A8B8",
+                                      "content": "WORL",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "XulqL",
+                                  "name": "LabelText /* (APS Master DB)",
+                                  "fill": "#A0A8B8",
+                                  "content": "/* (APS Master DB)",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "c5N4Z",
+                          "name": "TreeRow SITE /APS-PROC-AREA",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            17
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "oAWpy",
+                              "name": "RowLeft /APS-PROC-AREA",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "PRslX",
+                                  "name": "Icon /APS-PROC-AREA",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "building-2",
+                                  "library": "lucide",
+                                  "fill": "#A0A8B8"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "Gj4u6",
+                                  "name": "NounBadge /APS-PROC-AREA",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "I3oIY",
+                                      "name": "NounText /APS-PROC-AREA",
+                                      "fill": "#A0A8B8",
+                                      "content": "SITE",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "UF2Z1",
+                                  "name": "LabelText /APS-PROC-AREA",
+                                  "fill": "#A0A8B8",
+                                  "content": "/APS-PROC-AREA",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "OJMCQ",
+                              "name": "MetaText /APS-PROC-AREA",
+                              "fill": "$text-muted",
+                              "content": "Site",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "NQlcs",
+                          "name": "TreeRow ZONE /PIPING-Z01",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            28
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "G1ffz2",
+                              "name": "RowLeft /PIPING-Z01",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "u6IYfN",
+                                  "name": "Icon /PIPING-Z01",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "layers",
+                                  "library": "lucide",
+                                  "fill": "#A0A8B8"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "Bmo8j",
+                                  "name": "NounBadge /PIPING-Z01",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "vLhu3",
+                                      "name": "NounText /PIPING-Z01",
+                                      "fill": "#A0A8B8",
+                                      "content": "ZONE",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "GMXz7",
+                                  "name": "LabelText /PIPING-Z01",
+                                  "fill": "#A0A8B8",
+                                  "content": "/PIPING-Z01",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "c8Kxkf",
+                              "name": "MetaText /PIPING-Z01",
+                              "fill": "$text-muted",
+                              "content": "Zone",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "MfrFm",
+                          "name": "TreeRow PIPE /100-B-12",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            39
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "tAluz",
+                              "name": "RowLeft /100-B-12",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "ppc14",
+                                  "name": "Icon /100-B-12",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "git-fork",
+                                  "library": "lucide",
+                                  "fill": "#0696D7"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "uCQC4",
+                                  "name": "NounBadge /100-B-12",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "uC4rR",
+                                      "name": "NounText /100-B-12",
+                                      "fill": "#0696D7",
+                                      "content": "PIPE",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "svGmq",
+                                  "name": "LabelText /100-B-12",
+                                  "fill": "#0696D7",
+                                  "content": "/100-B-12",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "oLpm5",
+                              "name": "MetaText /100-B-12",
+                              "fill": "$text-muted",
+                              "content": "Spec: /A1A · DN100",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "ykRcX",
+                          "name": "TreeRow BRAN /100-B-12/B1",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            50
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "QrU1u",
+                              "name": "RowLeft /100-B-12/B1",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "XSIVg",
+                                  "name": "Icon /100-B-12/B1",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "git-branch",
+                                  "library": "lucide",
+                                  "fill": "#4CAF50"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "S5DC9",
+                                  "name": "NounBadge /100-B-12/B1",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "Naxb1",
+                                      "name": "NounText /100-B-12/B1",
+                                      "fill": "#4CAF50",
+                                      "content": "BRAN",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "luOGp",
+                                  "name": "LabelText /100-B-12/B1",
+                                  "fill": "#4CAF50",
+                                  "content": "/100-B-12/B1",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "bNFbn",
+                              "name": "MetaText /100-B-12/B1",
+                              "fill": "$text-muted",
+                              "content": "H:/E-101A/N1 -> T:/T-202/N3",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "y5mQAa",
+                          "name": "TreeRow GASK GASK 1",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            61
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "A4Zr4",
+                              "name": "RowLeft GASK 1",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "Nfb4G",
+                                  "name": "Icon GASK 1",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "disc",
+                                  "library": "lucide",
+                                  "fill": "#A0A8B8"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "JqXcM",
+                                  "name": "NounBadge GASK 1",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "mo0Np",
+                                      "name": "NounText GASK 1",
+                                      "fill": "#A0A8B8",
+                                      "content": "GASK",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "RNaZr",
+                                  "name": "LabelText GASK 1",
+                                  "fill": "#A0A8B8",
+                                  "content": "GASK 1",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "VN9TN",
+                              "name": "MetaText GASK 1",
+                              "fill": "$text-muted",
+                              "content": "RF 150# · 3mm",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "BpJN2",
+                          "name": "TreeRow FLAN FLAN 1",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            61
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "Uv4Oj",
+                              "name": "RowLeft FLAN 1",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "FcPxe",
+                                  "name": "Icon FLAN 1",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "circle-dot",
+                                  "library": "lucide",
+                                  "fill": "#A0A8B8"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "FUrzY",
+                                  "name": "NounBadge FLAN 1",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "seSAZ",
+                                      "name": "NounText FLAN 1",
+                                      "fill": "#A0A8B8",
+                                      "content": "FLAN",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "A76JC",
+                                  "name": "LabelText FLAN 1",
+                                  "fill": "#A0A8B8",
+                                  "content": "FLAN 1",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "wQNd5",
+                              "name": "MetaText FLAN 1",
+                              "fill": "$text-muted",
+                              "content": "WN DN100 · BW",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "MlrCt",
+                          "name": "TreeRow TUBI ImpliedTube #1",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            61
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "miahe",
+                              "name": "RowLeft ImpliedTube #1",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "oTcLd",
+                                  "name": "Icon ImpliedTube #1",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "minus",
+                                  "library": "lucide",
+                                  "fill": "#687080"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "t47yhb",
+                                  "name": "NounBadge ImpliedTube #1",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "m07Ubh",
+                                      "name": "NounText ImpliedTube #1",
+                                      "fill": "#687080",
+                                      "content": "TUBI",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "Xpspl",
+                                  "name": "LabelText ImpliedTube #1",
+                                  "fill": "#687080",
+                                  "content": "ImpliedTube #1",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "i3hqr",
+                              "name": "MetaText ImpliedTube #1",
+                              "fill": "$text-muted",
+                              "content": "L = 1,240.0 mm [Derived]",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "iwoOI",
+                          "name": "TreeRow ELBO ELBO 1  [CE]",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "$accent-soft",
+                          "cornerRadius": 3,
+                          "stroke": "$accent",
+                          "strokeWidth": 1,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            61
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "H3toz",
+                              "name": "RowLeft ELBO 1  [CE]",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "sm0zj",
+                                  "name": "Icon ELBO 1  [CE]",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "corner-down-right",
+                                  "library": "lucide",
+                                  "fill": "$accent"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "a33EF",
+                                  "name": "NounBadge ELBO 1  [CE]",
+                                  "fill": "$accent",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "w1x9An",
+                                      "name": "NounText ELBO 1  [CE]",
+                                      "fill": "#FFFFFF",
+                                      "content": "ELBO",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "P8Feae",
+                                  "name": "LabelText ELBO 1  [CE]",
+                                  "fill": "#FFFFFF",
+                                  "content": "ELBO 1  [CE]",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "700"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "fiAQn",
+                              "name": "MetaText ELBO 1  [CE]",
+                              "fill": "$accent",
+                              "content": "90° LR · =16384/2049",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "WT7b1",
+                          "name": "TreeRow TUBI ImpliedTube #2",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            61
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "FQ4mI",
+                              "name": "RowLeft ImpliedTube #2",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "kV8Yk",
+                                  "name": "Icon ImpliedTube #2",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "minus",
+                                  "library": "lucide",
+                                  "fill": "#687080"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "bSsep",
+                                  "name": "NounBadge ImpliedTube #2",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "M5QzLN",
+                                      "name": "NounText ImpliedTube #2",
+                                      "fill": "#687080",
+                                      "content": "TUBI",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "NOqZ7",
+                                  "name": "LabelText ImpliedTube #2",
+                                  "fill": "#687080",
+                                  "content": "ImpliedTube #2",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "q5Q34w",
+                              "name": "MetaText ImpliedTube #2",
+                              "fill": "$text-muted",
+                              "content": "L = 850.0 mm [Derived]",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "dtDf8",
+                          "name": "TreeRow VALV VALV 1",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            61
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "TiWJk",
+                              "name": "RowLeft VALV 1",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "DuHFt",
+                                  "name": "Icon VALV 1",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "gauge",
+                                  "library": "lucide",
+                                  "fill": "#A0A8B8"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "fOFfa",
+                                  "name": "NounBadge VALV 1",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "W5Xkv",
+                                      "name": "NounText VALV 1",
+                                      "fill": "#A0A8B8",
+                                      "content": "VALV",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "VVoHf",
+                                  "name": "LabelText VALV 1",
+                                  "fill": "#A0A8B8",
+                                  "content": "VALV 1",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "QNprR",
+                              "name": "MetaText VALV 1",
+                              "fill": "$text-muted",
+                              "content": "GATE DN100 · Handwheel",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "d6ThNO",
+                          "name": "TreeRow !TUBI InvalidTubi #3",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#2E2412",
+                          "cornerRadius": 3,
+                          "stroke": "$warning",
+                          "strokeWidth": 1,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            61
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "QTCBR",
+                              "name": "RowLeft InvalidTubi #3",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "c5nVg",
+                                  "name": "Icon InvalidTubi #3",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "triangle-alert",
+                                  "library": "lucide",
+                                  "fill": "#FFB300"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "P7Bnej",
+                                  "name": "NounBadge InvalidTubi #3",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "ngLRj",
+                                      "name": "NounText InvalidTubi #3",
+                                      "fill": "#FFB300",
+                                      "content": "!TUBI",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "auFZm",
+                                  "name": "LabelText InvalidTubi #3",
+                                  "fill": "#FFB300",
+                                  "content": "InvalidTubi #3",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "R7YTyt",
+                              "name": "MetaText InvalidTubi #3",
+                              "fill": "$warning",
+                              "content": "Gap 38.0mm · Check Conn!",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "juc9v",
+                          "name": "TreeRow TEE TEE 1",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            61
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "rYQs8",
+                              "name": "RowLeft TEE 1",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "MlxUK",
+                                  "name": "Icon TEE 1",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "git-merge",
+                                  "library": "lucide",
+                                  "fill": "#A0A8B8"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "ii2KL",
+                                  "name": "NounBadge TEE 1",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "JSK1z",
+                                      "name": "NounText TEE 1",
+                                      "fill": "#A0A8B8",
+                                      "content": "TEE",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "JaT8j",
+                                  "name": "LabelText TEE 1",
+                                  "fill": "#A0A8B8",
+                                  "content": "TEE 1",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "DticQ",
+                              "name": "MetaText TEE 1",
+                              "fill": "$text-muted",
+                              "content": "Reducing 100x100x80",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "K2jNiS",
+                          "name": "TreeRow BRAN /100-B-12/B2",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            50
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "cCRmb",
+                              "name": "RowLeft /100-B-12/B2",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "SUCHf",
+                                  "name": "Icon /100-B-12/B2",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "git-branch",
+                                  "library": "lucide",
+                                  "fill": "#4CAF50"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "BmoSo",
+                                  "name": "NounBadge /100-B-12/B2",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "GK2zZ",
+                                      "name": "NounText /100-B-12/B2",
+                                      "fill": "#4CAF50",
+                                      "content": "BRAN",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "E4JInI",
+                                  "name": "LabelText /100-B-12/B2",
+                                  "fill": "#4CAF50",
+                                  "content": "/100-B-12/B2",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "G8nSh",
+                              "name": "MetaText /100-B-12/B2",
+                              "fill": "$text-muted",
+                              "content": "Off TEE 1 -> /V-301/N2",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "KVFpJ",
+                          "name": "TreeRow PIPE /100-B-14",
+                          "width": "fill_container",
+                          "height": 22,
+                          "fill": "#16191F",
+                          "cornerRadius": 3,
+                          "padding": [
+                            0,
+                            6,
+                            0,
+                            39
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "RQKVi",
+                              "name": "RowLeft /100-B-14",
+                              "gap": 5,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "SQ7TL",
+                                  "name": "Icon /100-B-14",
+                                  "width": 11,
+                                  "height": 11,
+                                  "icon": "git-fork",
+                                  "library": "lucide",
+                                  "fill": "#0696D7"
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "hfiqJ",
+                                  "name": "NounBadge /100-B-14",
+                                  "fill": "$bg-elevated",
+                                  "cornerRadius": 2,
+                                  "padding": [
+                                    1,
+                                    4
+                                  ],
+                                  "children": [
+                                    {
+                                      "type": "text",
+                                      "id": "D34Xbn",
+                                      "name": "NounText /100-B-14",
+                                      "fill": "#0696D7",
+                                      "content": "PIPE",
+                                      "fontFamily": "$font-mono",
+                                      "fontSize": 8.5,
+                                      "fontWeight": "700"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "ntwKP",
+                                  "name": "LabelText /100-B-14",
+                                  "fill": "#0696D7",
+                                  "content": "/100-B-14",
+                                  "fontFamily": "$font-mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "f68YXP",
+                              "name": "MetaText /100-B-14",
+                              "fill": "$text-muted",
+                              "content": "Spec: /A1A · DN80 · 3 Spools",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 8.5,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "wvGDI",
+                  "name": "Properties Panel — CAD + E3D_SEMANTICS",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "layout": "vertical",
+                  "gap": 6,
+                  "padding": 8,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "Rb8PN",
+                      "name": "Properties Header",
+                      "width": "fill_container",
+                      "padding": [
+                        2,
+                        4
+                      ],
+                      "justifyContent": "space_between",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "UEe5u",
+                          "name": "Prop Title Left",
+                          "gap": 6,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "WTbfy",
+                              "name": "Prop Icon",
+                              "width": 13,
+                              "height": 13,
+                              "icon": "sliders-horizontal",
+                              "library": "lucide",
+                              "fill": "$accent"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Oa1E4",
+                              "name": "Prop Title",
+                              "fill": "$text-primary",
+                              "content": "PROPERTIES · E3D_SEMANTICS",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 10.5,
+                              "fontWeight": "700"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "text",
+                          "id": "ZZrZ6",
+                          "name": "Prop Tag",
+                          "fill": "$accent",
+                          "content": "XDATA + DB",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 9,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "pbQz4",
+                      "name": "Selected Entity Selector",
+                      "width": "fill_container",
+                      "height": 24,
+                      "fill": "$accent-soft",
+                      "cornerRadius": 4,
+                      "stroke": "$accent",
+                      "strokeWidth": 1,
+                      "padding": [
+                        0,
+                        8
+                      ],
+                      "justifyContent": "space_between",
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "yCpNJ",
+                          "name": "Selected Entity Label",
+                          "fill": "$text-primary",
+                          "content": "ELBO 1 (/100-B-12/B1) · 90° LR Elbow",
+                          "fontFamily": "$font-mono",
+                          "fontSize": 9.5,
+                          "fontWeight": "700"
+                        },
+                        {
+                          "type": "icon",
+                          "id": "a5YMxU",
+                          "name": "Chevron Icon",
+                          "width": 11,
+                          "height": 11,
+                          "icon": "chevron-down",
+                          "library": "lucide",
+                          "fill": "$accent"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "yPzOB",
+                      "name": "Properties Key-Value Grid",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "#16191F",
+                      "cornerRadius": 4,
+                      "stroke": "$border-subtle",
+                      "strokeWidth": 1,
+                      "layout": "vertical",
+                      "gap": 2,
+                      "padding": 4,
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "eWujp",
+                          "name": "PropRow E3D RefNo",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "qmcZz",
+                              "name": "Key E3D RefNo",
+                              "fill": "$text-secondary",
+                              "content": "E3D RefNo",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "I9MRlA",
+                              "name": "Val E3D RefNo",
+                              "fill": "#0696D7",
+                              "content": "=16384/2049",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "rSDCP",
+                          "name": "PropRow Noun / SType",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "tKf1n",
+                              "name": "Key Noun / SType",
+                              "fill": "$text-secondary",
+                              "content": "Noun / SType",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "SZbUq",
+                              "name": "Val Noun / SType",
+                              "fill": "#F2F4F8",
+                              "content": "ELBO / ELBO-90-LR-BW",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "luEgg",
+                          "name": "PropRow Owner Branch",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "RwAM1",
+                              "name": "Key Owner Branch",
+                              "fill": "$text-secondary",
+                              "content": "Owner Branch",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Gn3nN",
+                              "name": "Val Owner Branch",
+                              "fill": "#4CAF50",
+                              "content": "/100-B-12/B1",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "KPrO8",
+                          "name": "PropRow Spec Ref (SPRE)",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "WaIES",
+                              "name": "Key Spec Ref (SPRE)",
+                              "fill": "$text-secondary",
+                              "content": "Spec Ref (SPRE)",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "iJOzy",
+                              "name": "Val Spec Ref (SPRE)",
+                              "fill": "#F2F4F8",
+                              "content": "/A1A/ELBO:100-90LR",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "a6qZi0",
+                          "name": "PropRow Cat Ref (CATR)",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "eChzz",
+                              "name": "Key Cat Ref (CATR)",
+                              "fill": "$text-secondary",
+                              "content": "Cat Ref (CATR)",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Avf9t",
+                              "name": "Val Cat Ref (CATR)",
+                              "fill": "#A0A8B8",
+                              "content": "/CAT-CS-EL90-100",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "NaLlb",
+                          "name": "PropRow Arrive / Leave Bore",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "QnNmE",
+                              "name": "Key Arrive / Leave Bore",
+                              "fill": "$text-secondary",
+                              "content": "Arrive / Leave Bore",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "D56ke",
+                              "name": "Val Arrive / Leave Bore",
+                              "fill": "#F2F4F8",
+                              "content": "DN100 (114.3) / DN100",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "JtQdL",
+                          "name": "PropRow Conn (ACON / LCON)",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "JnawS",
+                              "name": "Key Conn (ACON / LCON)",
+                              "fill": "$text-secondary",
+                              "content": "Conn (ACON / LCON)",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "eBBJp",
+                              "name": "Val Conn (ACON / LCON)",
+                              "fill": "#F2F4F8",
+                              "content": "BW (Butt Weld) / BW",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "w9SWZD",
+                          "name": "PropRow Bend Angle / Radius",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "w3HPjw",
+                              "name": "Key Bend Angle / Radius",
+                              "fill": "$text-secondary",
+                              "content": "Bend Angle / Radius",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "zy1aj",
+                              "name": "Val Bend Angle / Radius",
+                              "fill": "#FFB300",
+                              "content": "90.00°  /  R = 152.4 mm (1.5D)",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "gVwmR",
+                          "name": "PropRow Chunk Origin (mm)",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "ko9g2",
+                              "name": "Key Chunk Origin (mm)",
+                              "fill": "$text-secondary",
+                              "content": "Chunk Origin (mm)",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "LBP6N",
+                              "name": "Val Chunk Origin (mm)",
+                              "fill": "#A0A8B8",
+                              "content": "[12000.0, 4000.0, 3000.0]",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "elehz",
+                          "name": "PropRow Local Pos (P0 mm)",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "mdYkE",
+                              "name": "Key Local Pos (P0 mm)",
+                              "fill": "$text-secondary",
+                              "content": "Local Pos (P0 mm)",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "eukG0",
+                              "name": "Val Local Pos (P0 mm)",
+                              "fill": "#F2F4F8",
+                              "content": "(+450.0, +500.0, +200.0)",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "IIWUR",
+                          "name": "PropRow Arrive / Leave Dir",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "nF2Ou",
+                              "name": "Key Arrive / Leave Dir",
+                              "fill": "$text-secondary",
+                              "content": "Arrive / Leave Dir",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "siwN3",
+                              "name": "Val Arrive / Leave Dir",
+                              "fill": "#4CAF50",
+                              "content": "P1: -E (West)  ->  P2: +U (Up)",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "bBPhv",
+                          "name": "PropRow Geometry Fidelity",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "mxGt6",
+                              "name": "Key Geometry Fidelity",
+                              "fill": "$text-secondary",
+                              "content": "Geometry Fidelity",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Gsl3D",
+                              "name": "Val Geometry Fidelity",
+                              "fill": "#0696D7",
+                              "content": "Canonical (SweepArc + 2×Cyl)",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "FnaPw",
+                          "name": "PropRow Insulation Spec",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "Q5M3b",
+                              "name": "Key Insulation Spec",
+                              "fill": "$text-secondary",
+                              "content": "Insulation Spec",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "hCjNZ",
+                              "name": "Val Insulation Spec",
+                              "fill": "#A0A8B8",
+                              "content": "/W-50mm (Thk: 50.0 mm)",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "RZuVV",
+                          "name": "PropRow CAD Layer / Color",
+                          "width": "fill_container",
+                          "height": 21,
+                          "fill": "#1B1F27",
+                          "cornerRadius": 2,
+                          "padding": [
+                            0,
+                            6
+                          ],
+                          "justifyContent": "space_between",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "Slnqp",
+                              "name": "Key CAD Layer / Color",
+                              "fill": "$text-secondary",
+                              "content": "CAD Layer / Color",
+                              "fontFamily": "$font-ui",
+                              "fontSize": 9.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "YIZ1C",
+                              "name": "Val CAD Layer / Color",
+                              "fill": "#0696D7",
+                              "content": "E3D-PIPE-A1A  |  #0696D7",
+                              "fontFamily": "$font-mono",
+                              "fontSize": 9.5,
+                              "fontWeight": "600"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "themes": {
+    "mode": [
+      "dark",
+      "light"
+    ]
+  },
+  "variables": {
+    "bg-chrome": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#16181D",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#F3F5F8",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "bg-panel": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#1E2128",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#FFFFFF",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "bg-elevated": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#272B35",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#E6EEF6",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "bg-viewport": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#0F141C",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#D7E3EF",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "border-subtle": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#2D323E",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#D5DEE8",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "border-strong": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#3E4656",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#B7C4D4",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "text-primary": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#F2F4F8",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#1B2430",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "text-secondary": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#A0A8B8",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#3E4C5E",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "text-muted": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#687080",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#6A7788",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "accent": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#0696D7",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#0678B0",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "accent-soft": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#0D3146",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#E3F3FB",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "success": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#4CAF50",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#2E7D32",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "warning": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#FFB300",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#B8860B",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "danger": {
+      "type": "color",
+      "value": [
+        {
+          "value": "#E53935",
+          "theme": {
+            "mode": "dark"
+          }
+        },
+        {
+          "value": "#C62828",
+          "theme": {
+            "mode": "light"
+          }
+        }
+      ]
+    },
+    "font-ui": {
+      "type": "string",
+      "value": "Inter"
+    },
+    "font-mono": {
+      "type": "string",
+      "value": "JetBrains Mono"
+    }
+  },
+  "fileToken": "919f53f3-d3d7-4fd7-8873-0452c2ed222f"
+}

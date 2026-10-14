@@ -143,6 +143,13 @@ ureq = { version = "3", default-features = false, features = ["rustls", "platfor
 # backups through a bundled sqlite3 and the vendored `oxidized-mdf`, neither
 # of which builds for wasm.
 pid-parse = { path = "../pid-parse" }
+# AVEVA E3D / PDMS Dabacon reader and Core3D-compatible 3D model generator
+# (ADR-0001). Native-only: `e3d-model` links C++ `manifold-csg` and `e3d-io`
+# reads local multi-file Dabacon project directories. The web build consumes
+# the pure-Rust `io::e3d::contract::E3dSceneBatch` from the server instead.
+e3d-model = { path = "../e3d-model" }
+e3d-io = { path = "../e3d-io" }
+e3d-attlib = { path = "../e3d-attlib" }
 # Embedded 3D renderer (M1 POC): local bevy main checkout, windowless, on
 # iced's shared wgpu device. Feature-sliced to PBR + assets — no winit, no
 # audio, no UI. `tonemapping_luts`+`zstd_rust` feed the default tonemapper.

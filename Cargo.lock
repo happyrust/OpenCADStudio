@@ -19,12 +19,15 @@ dependencies = [
  "console_error_panic_hook",
  "cosmic-text 0.15.0",
  "dwg-thumbnailer",
+ "e3d-attlib",
+ "e3d-io",
+ "e3d-model",
  "env_logger",
  "flate2",
  "fluent-syntax",
  "fontdb",
  "getrandom 0.3.4",
- "glam",
+ "glam 0.33.2",
  "hayro",
  "i18n-embed",
  "i18n-embed-fl",
@@ -1214,7 +1217,7 @@ dependencies = [
  "arrayvec",
  "bevy_reflect",
  "derive_more",
- "glam",
+ "glam 0.33.2",
  "itertools 0.14.0",
  "libm",
  "rand 0.10.3",
@@ -1242,7 +1245,7 @@ dependencies = [
  "bytemuck",
  "derive_more",
  "encase",
- "glam",
+ "glam 0.33.2",
  "half",
  "hexasphere",
  "thiserror 2.0.18",
@@ -1335,7 +1338,7 @@ dependencies = [
  "downcast-rs 2.0.2",
  "erased-serde",
  "foldhash 0.2.0",
- "glam",
+ "glam 0.33.2",
  "indexmap",
  "inventory",
  "serde",
@@ -1392,7 +1395,7 @@ dependencies = [
  "derive_more",
  "downcast-rs 2.0.2",
  "encase",
- "glam",
+ "glam 0.33.2",
  "image",
  "indexmap",
  "itertools 0.14.0",
@@ -2016,6 +2019,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "codepage"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2587,6 +2599,51 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "e3d-attlib"
+version = "0.1.0"
+dependencies = [
+ "nom 8.0.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "e3d-io"
+version = "0.4.0"
+dependencies = [
+ "e3d-attlib",
+ "encoding_rs",
+ "nom 8.0.0",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "e3d-model"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "e3d-attlib",
+ "e3d-io",
+ "earcutr",
+ "glam 0.29.3",
+ "manifold-csg",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "earcutr"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79127ed59a85d7687c409e9978547cffb7dc79675355ed22da6b66fd5f6ead01"
+dependencies = [
+ "itertools 0.11.0",
+ "num-traits",
+]
 
 [[package]]
 name = "ecb"
@@ -3295,6 +3352,12 @@ dependencies = [
 
 [[package]]
 name = "glam"
+version = "0.29.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8babf46d4c1c9d92deac9f7be466f76dfc4482b6452fc5024b5e8daf6ffeb3ee"
+
+[[package]]
+name = "glam"
 version = "0.33.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f22fb22f065b308be0d8724e3706c7fa3fc2a6c7d6899df4cad7860e7a75436"
@@ -3614,7 +3677,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "163385eff5a0cf606ebe2c10b3a44ab02f4306e83fbd068a64f5e1d72a3049ac"
 dependencies = [
  "constgebra",
- "glam",
+ "glam 0.33.2",
  "tinyvec",
 ]
 
@@ -3767,7 +3830,7 @@ version = "0.15.0-dev"
 dependencies = [
  "bitflags 2.13.1",
  "bytes",
- "glam",
+ "glam 0.33.2",
  "lilt",
  "log",
  "num-traits",
@@ -4204,6 +4267,15 @@ name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
 dependencies = [
  "either",
 ]
@@ -4825,6 +4897,24 @@ dependencies = [
  "float_next_after",
  "lyon_path",
  "num-traits",
+]
+
+[[package]]
+name = "manifold-csg"
+version = "0.4.0"
+source = "git+https://github.com/zmerlynn/manifold-csg?rev=2233c5a1162eba981e3f43efcd39a6bc25581335#2233c5a1162eba981e3f43efcd39a6bc25581335"
+dependencies = [
+ "log",
+ "manifold-csg-sys",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "manifold-csg-sys"
+version = "3.5.104"
+source = "git+https://github.com/zmerlynn/manifold-csg?rev=2233c5a1162eba981e3f43efcd39a6bc25581335#2233c5a1162eba981e3f43efcd39a6bc25581335"
+dependencies = [
+ "cmake",
 ]
 
 [[package]]

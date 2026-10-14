@@ -443,7 +443,21 @@ impl OpenCADStudio {
     /// Path-based file loading does not exist in the web build (the browser
     /// has no file paths); the picker flow never produces a `PathBuf` there.
     #[cfg(target_arch = "wasm32")]
-    fn import_file_as_block(&mut self, _path: std::path::PathBuf) -> Result<String, String> {
+    pub(in crate::app) fn import_file_as_block(
+        &mut self,
+        _path: std::path::PathBuf,
+    ) -> Result<String, String> {
+        Err(String::from(
+            "importing a file as a block is not available in the web build",
+        ))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn import_drawing_block(
+        &mut self,
+        _path: std::path::PathBuf,
+        _redefine: bool,
+    ) -> Result<String, String> {
         Err(String::from(
             "importing a file as a block is not available in the web build",
         ))
