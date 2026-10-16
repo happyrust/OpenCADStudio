@@ -390,6 +390,21 @@ pub(super) fn foreground_color(r: u8, g: u8, b: u8) -> Color {
     }
 }
 
+/// The pen a width lands on: the reference plots carry exactly three stroke
+/// widths — 0.48pt, 0.96pt, 1.92pt — so the file's declared width snaps to
+/// the nearest pen. 0.30mm and 0.55mm are the measured tier boundaries: the
+/// title block's 0.25mm rules print at the thin pen in the reference, and
+/// the 0.70mm pipe mains print at the heavy one.
+pub(super) fn plot_pen_mm(width_mm: f64) -> f64 {
+    if width_mm <= 0.30 {
+        0.169
+    } else if width_mm <= 0.55 {
+        0.339
+    } else {
+        0.678
+    }
+}
+
 /// Give an entity the width and colour its source record asks for.
 ///
 /// The drawing's own line work is painted: `PID-GEOMETRY` and the
@@ -438,16 +453,19 @@ pub(super) fn apply_symbology(
     }
     let [r, g, b] = style.symbology.rgb();
     common.color = foreground_color(r, g, b);
-    // DXF stores line weight in hundredths of a millimetre. The source values
-    // are mostly on the ISO 128 ladder; the 0.10mm point ticks are not, and
-    // are carried across as measured rather than snapped, because snapping
-    // would report a width the drawing does not ask for.
+    // DXF stores line weight in hundredths of a millimetre. The declared
+    // widths pass through the plotter's pen table: the reference plots carry
+    // exactly three stroke widths — 0.48pt, 0.96pt, 1.92pt (0.169/0.339/
+    // 0.678mm) — so the file's finer ladder is mapped onto the three pens,
+    // thin up to ~0.30mm, medium up to ~0.55mm, heavy beyond. The title
+    // block's 0.25mm rules print thin in the reference, which is what pins
+    // the lower boundary there.
     // `paper_style_scale` is the caller's screen multiple on style-declared
     // sizes. The text arm above returns before this, so lettering is not
     // widened. The dash is looked up by the unscaled pattern, which is how
     // [`register_dash_linetypes`] keyed the pool; the linetype itself already
     // carries the scaled segment lengths.
-    let hundredths = (style.symbology.width_mm() * paper_style_scale * 100.0).round();
+    let hundredths = (plot_pen_mm(style.symbology.width_mm() * paper_style_scale) * 100.0).round();
     if (0.0..=211.0).contains(&hundredths) {
         common.line_weight = LineWeight::Value(hundredths as i16);
     }

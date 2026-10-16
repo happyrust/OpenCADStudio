@@ -387,8 +387,9 @@ pub(super) fn paint_symbol_stroke(
     // Same ladder and the same guard as the drawing's own line work: DXF
     // stores hundredths of a millimetre, and a width outside the range the
     // format can state is left at the layer default rather than clamped into
-    // a width the symbol did not ask for.
-    let hundredths = (style.width_mm * paper_style_scale * 100.0).round();
+    // a width the symbol did not ask for. The declared width runs through
+    // the same three-pen table [`plot_pen_mm`] as the sheet line work.
+    let hundredths = (plot_pen_mm(style.width_mm * paper_style_scale) * 100.0).round();
     if (0.0..=211.0).contains(&hundredths) {
         common.line_weight = LineWeight::Value(hundredths as i16);
     }

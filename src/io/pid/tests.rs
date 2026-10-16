@@ -647,7 +647,7 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
         coat(&drawn[0]),
         (
             Color::from_rgb(0x00, 0xFE, 0xA0),
-            LineWeight::Value(50),
+            LineWeight::Value(34),
             "PID-DASH-2".to_string()
         ),
         "the undercoat is the body's own colour, width and dash"
@@ -668,14 +668,14 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
     }
     assert_eq!(
         coat(&drawn[0]),
-        (olive, LineWeight::Value(35), "PID-DASH-2".to_string()),
+        (olive, LineWeight::Value(34), "PID-DASH-2".to_string()),
         "a solid placement style repaints colour and width and leaves the dash"
     );
     assert_eq!(
         coat(&drawn[1]),
-        (olive, LineWeight::Value(35), as_built.clone())
+        (olive, LineWeight::Value(34), as_built.clone())
     );
-    assert_eq!(coat(&drawn[2]), (olive, LineWeight::Value(35), as_built));
+    assert_eq!(coat(&drawn[2]), (olive, LineWeight::Value(34), as_built));
 
     for entity in &mut drawn {
         apply_symbology(entity, &placement_style(sheet_dash()), &pool, 1.0);
@@ -1155,11 +1155,15 @@ fn paper_style_scale_multiplies_declared_sizes_and_leaves_lettering() {
         apply_symbology(&mut entity, &style(width_mm), &HashMap::new(), k);
         entity.common().line_weight
     };
+    // Declared widths land on the plotter's three pens — 0.169/0.339/0.678mm
+    // (17/34/68 hundredths), thin to 0.30mm and medium to 0.55mm — so 0.35mm
+    // is the medium pen at 1:1 and heavy once the scale carries it past
+    // 0.55mm.
     for (mm, at_one, at_scale) in [
-        (0.35, 35_i16, 58),
-        (0.13, 13, 22),
-        (0.18, 18, 30),
-        (0.70, 70, 117),
+        (0.35, 34_i16, 68),
+        (0.13, 17, 17),
+        (0.18, 17, 17),
+        (0.70, 68, 68),
     ] {
         assert_eq!(
             weight(mm, 1.0),
@@ -1238,7 +1242,7 @@ fn paper_style_scale_multiplies_declared_sizes_and_leaves_lettering() {
         &pool,
         scale,
     );
-    assert_eq!(entity.common().line_weight, LineWeight::Value(58));
+    assert_eq!(entity.common().line_weight, LineWeight::Value(68));
     assert_eq!(entity.common().linetype, "PID-DASH-1");
 
     let mut text = Text::new();
