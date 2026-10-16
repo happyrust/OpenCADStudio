@@ -154,10 +154,7 @@ fn fonts() -> &'static SysFonts {
             }
         }
         let recovered = recover_hidden_faces(&db);
-        let mut families = family_names(&db);
-        families.extend(recovered.iter().map(|entry| entry.name.clone()));
-        families.sort_by_key(|n| n.to_lowercase());
-        families.dedup();
+        let families = picker_names(&db, &recovered);
         SysFonts {
             db: Mutex::new(db),
             families: Mutex::new(families),
@@ -167,13 +164,24 @@ fn fonts() -> &'static SysFonts {
     })
 }
 
-
 /// Sorted, de-duplicated family names of every face currently in `db`.
 fn family_names(db: &fontdb::Database) -> Vec<String> {
     let mut families: Vec<String> = db
         .faces()
         .filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
         .collect();
+    families.sort_by_key(|n| n.to_lowercase());
+    families.dedup();
+    families
+}
+
+/// The picker's family list: every family name fontdb knows plus the recovered
+/// width-variant names — `family_names` alone files "Arial Narrow" under
+/// "Arial", so rebuilding the list without these drops the recovered names the
+/// next time a font registers.
+fn picker_names(db: &fontdb::Database, recovered: &[Recovered]) -> Vec<String> {
+    let mut families = family_names(db);
+    families.extend(recovered.iter().map(|entry| entry.name.clone()));
     families.sort_by_key(|n| n.to_lowercase());
     families.dedup();
     families
@@ -542,7 +550,7 @@ pub fn register_web_font(bytes: &[u8]) {
     let names = {
         let mut db = sys.db.lock().unwrap();
         db.load_font_data(bytes.to_vec());
-        family_names(&db)
+        picker_names(&db, &sys.recovered)
         // db lock released before the families lock is taken — the resolution
         // path takes them in the opposite order.
     };
@@ -573,7 +581,7 @@ pub fn register_font_file(file_name: &str, bytes: &[u8]) -> Option<(String, usiz
             .filter_map(|face| face.families.first().map(|(name, _)| name.clone()))
             .collect();
         let family = added.first()?.clone();
-        (family, added.len(), family_names(&db))
+        (family, added.len(), picker_names(&db, &sys.recovered))
     };
     sys.by_file
         .lock()
@@ -712,14 +720,19 @@ mod tests {
     /// and whether it comes as a bare name or as a path.
     #[test]
     fn face_files_resolve_to_their_family() {
-        let found = fonts().db.lock().unwrap().faces().find_map(|face| match &face.source {
-            fontdb::Source::File(path) => {
-                let file = path.file_name()?.to_string_lossy().into_owned();
-                let family = face.families.first().map(|(name, _)| name.clone())?;
-                Some((file, family))
-            }
-            _ => None,
-        });
+        let found = fonts()
+            .db
+            .lock()
+            .unwrap()
+            .faces()
+            .find_map(|face| match &face.source {
+                fontdb::Source::File(path) => {
+                    let file = path.file_name()?.to_string_lossy().into_owned();
+                    let family = face.families.first().map(|(name, _)| name.clone())?;
+                    Some((file, family))
+                }
+                _ => None,
+            });
         let Some((file, family)) = found else {
             eprintln!("no installed face files on this host; skipping");
             return;

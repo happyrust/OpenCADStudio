@@ -36,8 +36,7 @@ const DASH_MM: f64 = 8.0;
 const GAP_MM: f64 = 4.0;
 
 /// Phase 4 owns session-window deltas. Calling it now changes nothing.
-pub const INCREMENTAL_DEFERRED: &str =
-    "incremental E3D batch ingest is deferred to Phase 4";
+pub const INCREMENTAL_DEFERRED: &str = "incremental E3D batch ingest is deferred to Phase 4";
 
 /// Handles created by the last full ingest. Stored on [`Scene`] so the next
 /// full batch can erase that source before pouring again.
@@ -75,9 +74,7 @@ pub fn apply_incremental_batch(
     batch: &E3dSceneBatch,
 ) -> Result<E3dIngestStats, String> {
     if !batch.manifest.is_incremental {
-        return Err(
-            "apply_incremental_batch expects manifest.is_incremental = true".to_string(),
-        );
+        return Err("apply_incremental_batch expects manifest.is_incremental = true".to_string());
     }
     let _ = batch;
     Err(INCREMENTAL_DEFERRED.to_string())
@@ -106,7 +103,9 @@ pub fn ingest_batch(scene: &mut Scene, batch: &E3dSceneBatch) -> Result<E3dInges
         }
         let proxy = add_proxy(scene, instance);
         index.handles.push(proxy);
-        index.by_geometry.insert(instance.geometry_id.clone(), proxy);
+        index
+            .by_geometry
+            .insert(instance.geometry_id.clone(), proxy);
 
         let Some(mesh) = batch.meshes.get(&instance.mesh_key) else {
             missing_meshes += 1;
@@ -121,7 +120,9 @@ pub fn ingest_batch(scene: &mut Scene, batch: &E3dSceneBatch) -> Result<E3dInges
         if handles.is_empty() {
             continue;
         }
-        index.centrelines.insert(record.geometry_id.clone(), handles[0]);
+        index
+            .centrelines
+            .insert(record.geometry_id.clone(), handles[0]);
         index.handles.extend(handles);
     }
 
@@ -171,16 +172,13 @@ fn add_proxy(scene: &mut Scene, instance: &E3dInstanceRecord) -> HandleKey {
     let mut point = Point::at(location);
     point.common.invisible = true;
     point.common.layer = discipline_layer(&instance.noun).to_string();
-    point
-        .common
-        .extended_data
-        .add_record(semantics_record(
-            &instance.geometry_id,
-            &instance.refno,
-            &instance.noun,
-            instance.name.as_deref(),
-            instance.owner_refno.as_deref(),
-        ));
+    point.common.extended_data.add_record(semantics_record(
+        &instance.geometry_id,
+        &instance.refno,
+        &instance.noun,
+        instance.name.as_deref(),
+        instance.owner_refno.as_deref(),
+    ));
     scene.add_entity(EntityType::Point(point))
 }
 
@@ -226,7 +224,10 @@ fn place_instance(
         .get(&pool)
         .map(|lod| lod.metrics)
         .unwrap_or_default();
-    let color = scene.block_meshes.get(&pool).and_then(|lod| lod.display_color());
+    let color = scene
+        .block_meshes
+        .get(&pool)
+        .and_then(|lod| lod.display_color());
     let [[x0, y0, z0], [x1, y1, z1]] = instance.world_aabb_mm;
     let mut placed = MeshLodSet::from_lods(Vec::new());
     placed.complete = true;
@@ -250,7 +251,11 @@ fn add_centreline(
 ) -> Vec<HandleKey> {
     let dashed = centreline_is_dashed(record.kind);
     let layer = centreline_layer(record.kind);
-    let linetype = if dashed { E3D_DASH_LINETYPE } else { "Continuous" };
+    let linetype = if dashed {
+        E3D_DASH_LINETYPE
+    } else {
+        "Continuous"
+    };
     let color = if dashed {
         [0.95, 0.35, 0.15, 1.0]
     } else {
@@ -396,8 +401,8 @@ pub fn semantics_value(entity: &EntityType, key: &str) -> Option<String> {
 /// Discipline layer for a solid geometry item. Unknown nouns land on `E3D_OTHER`.
 pub fn discipline_layer(noun: &str) -> &'static str {
     match noun.trim().to_ascii_uppercase().as_str() {
-        "PIPE" | "TUBI" | "ELBO" | "VALV" | "FLAN" | "GASK" | "TEE" | "REDU" | "BEND"
-        | "ATTA" | "PCOM" | "WELD" | "FBLI" => "E3D_PIPE",
+        "PIPE" | "TUBI" | "ELBO" | "VALV" | "FLAN" | "GASK" | "TEE" | "REDU" | "BEND" | "ATTA"
+        | "PCOM" | "WELD" | "FBLI" => "E3D_PIPE",
         "EQUI" | "NOZZ" | "SUBE" => "E3D_EQUI",
         "SCTN" | "STRU" | "PANE" | "SNOD" | "FRMW" | "GENSEC" | "WALL" => "E3D_STRU",
         "HVAC" | "DUCT" => "E3D_HVAC",
@@ -472,7 +477,10 @@ mod tests {
         }
     }
 
-    fn batch(instances: Vec<E3dInstanceRecord>, centrelines: Vec<E3dCentrelineRecord>) -> E3dSceneBatch {
+    fn batch(
+        instances: Vec<E3dInstanceRecord>,
+        centrelines: Vec<E3dCentrelineRecord>,
+    ) -> E3dSceneBatch {
         let key = MeshKey::Canonical(CanonicalShapeKey::BoxV1);
         let mut meshes = BTreeMap::new();
         meshes.insert(key.clone(), triangle());
@@ -491,7 +499,10 @@ mod tests {
     }
 
     fn tessellated_pattern(scene: &Scene, handle: HandleKey) -> f32 {
-        let entity = scene.document.get_entity(handle).expect("centreline entity");
+        let entity = scene
+            .document
+            .get_entity(handle)
+            .expect("centreline entity");
         let wires = crate::scene::tessellate_entity(
             &scene.document,
             &rustc_hash::FxHashSet::default(),
@@ -512,7 +523,10 @@ mod tests {
     fn shared_canonical_mesh_and_dashed_invalid_tubi() {
         let mut scene = Scene::new();
         let full = batch(
-            vec![instance("24381/47065", 1000.0), instance("24381/47066", 2000.0)],
+            vec![
+                instance("24381/47065", 1000.0),
+                instance("24381/47066", 2000.0),
+            ],
             vec![
                 centreline(CentrelineKind::InvalidTubi, "bad-tube"),
                 centreline(CentrelineKind::ProfileCentreline, "sctn-line"),
@@ -534,8 +548,14 @@ mod tests {
         }];
         let left_mesh = scene.meshes.get(&left).expect("left instance");
         let right_mesh = scene.meshes.get(&right).expect("right instance");
-        assert!(left_mesh.lods.is_empty(), "instance must not copy triangles");
-        assert!(right_mesh.lods.is_empty(), "instance must not copy triangles");
+        assert!(
+            left_mesh.lods.is_empty(),
+            "instance must not copy triangles"
+        );
+        assert!(
+            right_mesh.lods.is_empty(),
+            "instance must not copy triangles"
+        );
         let left_source = left_mesh.instance_source.clone().expect("left source");
         let right_source = right_mesh.instance_source.clone().expect("right source");
         assert!(Arc::ptr_eq(&left_source, &right_source));
@@ -546,9 +566,18 @@ mod tests {
         assert!((left_tx.matrix.m[0][3] - 1000.0).abs() < 1e-9);
 
         let left_entity = scene.document.get_entity(left).expect("proxy");
-        assert_eq!(semantics_value(left_entity, "refno").as_deref(), Some("24381/47065"));
-        assert_eq!(semantics_value(left_entity, "noun").as_deref(), Some("VALV"));
-        assert_eq!(semantics_value(left_entity, "name").as_deref(), Some("/100-B-1"));
+        assert_eq!(
+            semantics_value(left_entity, "refno").as_deref(),
+            Some("24381/47065")
+        );
+        assert_eq!(
+            semantics_value(left_entity, "noun").as_deref(),
+            Some("VALV")
+        );
+        assert_eq!(
+            semantics_value(left_entity, "name").as_deref(),
+            Some("/100-B-1")
+        );
         assert_eq!(
             semantics_value(left_entity, "owner").as_deref(),
             Some("26229/1509")

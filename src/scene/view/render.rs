@@ -402,8 +402,12 @@ impl shader::Primitive for Primitive {
             #[cfg(all(feature = "bevy3d", not(target_arch = "wasm32")))]
             let bevy_frame = {
                 let clip_size = Size::new(
-                    (vp.screen_rect.width * bounds.width * scale).ceil().max(1.0) as u32,
-                    (vp.screen_rect.height * bounds.height * scale).ceil().max(1.0) as u32,
+                    (vp.screen_rect.width * bounds.width * scale)
+                        .ceil()
+                        .max(1.0) as u32,
+                    (vp.screen_rect.height * bounds.height * scale)
+                        .ceil()
+                        .max(1.0) as u32,
                 );
                 let slot_inner = &pipeline.inners[slots[i]];
                 let will_render = slot_inner.slot_id != vp.instance_id
@@ -411,13 +415,9 @@ impl shader::Primitive for Primitive {
                     || render_signature(vp, clip_size.width, clip_size.height)
                         != slot_inner.render_sig;
                 match (&vp.bevy_cam, will_render) {
-                    (Some(cam), true) => pipeline.bevy_sync_pump(
-                        device,
-                        queue,
-                        vp.instance_id,
-                        clip_size,
-                        cam,
-                    ),
+                    (Some(cam), true) => {
+                        pipeline.bevy_sync_pump(device, queue, vp.instance_id, clip_size, cam)
+                    }
                     _ => None,
                 }
             };
@@ -2085,7 +2085,8 @@ text_atlas={:.1} wire_arena={:.1} block_geometry={:.1}",
 impl Scene {
     /// The model-space viewport record of the active tile.
     pub(crate) fn active_tile_vport_handle(&self) -> Option<Handle> {
-        self.model_tile_vport(self.active_model_tile.get()).map(|value| value.handle)
+        self.model_tile_vport(self.active_model_tile.get())
+            .map(|value| value.handle)
     }
 
     fn model_tile_vport(&self, index: usize) -> Option<&codec::tables::VPort> {
@@ -2603,7 +2604,12 @@ impl Scene {
             if let Some(EntityType::Viewport(value)) = self.document.get_entity(handle) {
                 // The sheet keeps its page and desk: a paper-space view's
                 // background is kept with the layout but not drawn.
-                return build(value.visual_style_handle, value.brightness, value.contrast, Handle::NULL);
+                return build(
+                    value.visual_style_handle,
+                    value.brightness,
+                    value.contrast,
+                    Handle::NULL,
+                );
             }
         } else if viewport.handle.is_valid() {
             if let Some(EntityType::Viewport(value)) = self.document.get_entity(viewport.handle) {
@@ -2612,7 +2618,11 @@ impl Scene {
                     value.visual_style_handle,
                     value.brightness,
                     value.contrast,
-                    if flat { Handle::NULL } else { value.background_handle },
+                    if flat {
+                        Handle::NULL
+                    } else {
+                        value.background_handle
+                    },
                 );
             }
         } else if self.current_layout == "Model" {
@@ -2626,7 +2636,11 @@ impl Scene {
                     value.visual_style_handle,
                     value.brightness,
                     value.contrast,
-                    if flat { Handle::NULL } else { value.background_handle },
+                    if flat {
+                        Handle::NULL
+                    } else {
+                        value.background_handle
+                    },
                 );
             }
         }

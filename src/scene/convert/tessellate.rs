@@ -1670,13 +1670,15 @@ pub fn tessellate(
                                     }
                                     wires.push(WireModel {
                                         bg_adapt: paints_canvas.then(|| {
-                                            Box::new(crate::scene::model::wire_model::BgAdaptInputs {
-                                                raw_color: fill_color,
-                                                text_raw_colors: Vec::new(),
-                                                contrast_bg: None,
-                                                canvas_color: true,
-                                                preserve_color: true,
-                                            })
+                                            Box::new(
+                                                crate::scene::model::wire_model::BgAdaptInputs {
+                                                    raw_color: fill_color,
+                                                    text_raw_colors: Vec::new(),
+                                                    contrast_bg: None,
+                                                    canvas_color: true,
+                                                    preserve_color: true,
+                                                },
+                                            )
                                         }),
                                         point_marker: None,
                                         taper_widths: Vec::new(),
@@ -3238,10 +3240,9 @@ fn polyline_band_width(entity: &EntityType, fill_mode: bool) -> f32 {
 /// The widest start / end width of a 2-D polyline (0 for other entities).
 fn polyline_max_width(entity: &EntityType) -> f64 {
     match entity {
-        EntityType::LwPolyline(p) => p
-            .vertices
-            .iter()
-            .fold(p.constant_width, |w, v| w.max(v.start_width).max(v.end_width)),
+        EntityType::LwPolyline(p) => p.vertices.iter().fold(p.constant_width, |w, v| {
+            w.max(v.start_width).max(v.end_width)
+        }),
         EntityType::Polyline2D(p) => p
             .vertices
             .iter()

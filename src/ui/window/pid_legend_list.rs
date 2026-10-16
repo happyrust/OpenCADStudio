@@ -82,10 +82,7 @@ pub fn jump_rect(bbox: (f64, f64, f64, f64), units_per_mm: f64) -> ((f64, f64), 
     let (min_x, min_y, max_x, max_y) = bbox;
     let side = (max_x - min_x).max(max_y - min_y);
     let pad = (side * 1.2).max(4.0 * units_per_mm.max(f64::EPSILON));
-    (
-        (min_x - pad, min_y - pad),
-        (max_x + pad, max_y + pad),
-    )
+    ((min_x - pad, min_y - pad), (max_x + pad, max_y + pad))
 }
 
 /// Union of `rects`, or `None` when the iterator is empty.
@@ -178,16 +175,12 @@ fn click_row<'a>(
     indent: f32,
     message: Message,
 ) -> Element<'a, Message> {
-    mouse_area(
-        container(label)
-            .width(Fill)
-            .padding(iced::Padding {
-                top: 2.0,
-                right: 6.0,
-                bottom: 2.0,
-                left: indent,
-            }),
-    )
+    mouse_area(container(label).width(Fill).padding(iced::Padding {
+        top: 2.0,
+        right: 6.0,
+        bottom: 2.0,
+        left: indent,
+    }))
     .interaction(iced::mouse::Interaction::Pointer)
     .on_press(message)
     .into()
@@ -334,7 +327,9 @@ pub fn view(
         crate::ui::icons::themed_secondary(crate::ui::icons::PIN, 12.0)
     };
     let pin = button(pin_icon)
-        .on_press(Message::Dock(DockMsg::AutoCollapseToggle(PanelId::PidLegend)))
+        .on_press(Message::Dock(DockMsg::AutoCollapseToggle(
+            PanelId::PidLegend,
+        )))
         .style(move |theme: &Theme, status| {
             let mut style = button::subtle(theme, status);
             if auto_collapse {
@@ -349,26 +344,26 @@ pub fn view(
         .padding([3, 5]);
     let pin = tooltip(pin, text("Auto").size(10), tooltip::Position::Bottom).gap(4);
 
-    let close = button(crate::ui::icons::themed_secondary(crate::ui::icons::CLOSE, 12.0))
-        .on_press(Message::Dock(DockMsg::Close(PanelId::PidLegend)))
-        .style(button::subtle)
-        .padding([3, 5]);
+    let close = button(crate::ui::icons::themed_secondary(
+        crate::ui::icons::CLOSE,
+        12.0,
+    ))
+    .on_press(Message::Dock(DockMsg::Close(PanelId::PidLegend)))
+    .style(button::subtle)
+    .padding([3, 5]);
     let close = tooltip(close, text("Close").size(10), tooltip::Position::Bottom).gap(4);
 
-    let mut title = row![text("P&ID 图例").size(12)].spacing(6).align_y(iced::Center);
+    let mut title = row![text("P&ID 图例").size(12)]
+        .spacing(6)
+        .align_y(iced::Center);
     if stale && recognition.is_some() {
         title = title.push(text("已过期").size(10).style(muted));
     }
     let title_bar = mouse_area(
         container(
-            row![
-                title,
-                iced::widget::Space::new().width(Fill),
-                pin,
-                close,
-            ]
-            .spacing(3)
-            .align_y(iced::Center),
+            row![title, iced::widget::Space::new().width(Fill), pin, close,]
+                .spacing(3)
+                .align_y(iced::Center),
         )
         .style(|theme: &Theme| container::Style {
             background: Some(Background::Color(theme.palette().background.weak.color)),
@@ -382,7 +377,9 @@ pub fn view(
 
     let Some(rec) = recognition else {
         let hint = container(
-            text("先运行 PIDLEGEND ON（或 REPORT / LIST）").size(12).style(muted),
+            text("先运行 PIDLEGEND ON（或 REPORT / LIST）")
+                .size(12)
+                .style(muted),
         )
         .center_x(Fill)
         .center_y(Fill)
@@ -632,7 +629,9 @@ pub fn view(
                 let label: Element<'_, Message> = row![
                     text("（未编号）").size(11).style(muted),
                     iced::widget::Space::new().width(Fill),
-                    text(format!("{} 段", unnumbered.len())).size(10).style(muted),
+                    text(format!("{} 段", unnumbered.len()))
+                        .size(10)
+                        .style(muted),
                 ]
                 .spacing(6)
                 .into();

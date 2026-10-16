@@ -85,7 +85,11 @@ pub(crate) fn scan_style_typefaces(reader: impl BufRead) -> Vec<StyleTypeface> {
             // Close the open STYLE entry, whatever comes next.
             if let Some((handle, name, typeface)) = entry.take() {
                 if let Some(typeface) = typeface {
-                    found.push(StyleTypeface { handle, name, typeface });
+                    found.push(StyleTypeface {
+                        handle,
+                        name,
+                        typeface,
+                    });
                 }
             }
             xdata_app = None;
@@ -248,7 +252,8 @@ mod tests {
     fn apply_fills_only_empty_non_shx_styles() {
         let mut doc = CadDocument::new();
         doc.text_styles.add_or_replace(style(0x31B, "-宋体", ""));
-        doc.text_styles.add_or_replace(style(0x319, "黑体", "simhei.ttf"));
+        doc.text_styles
+            .add_or_replace(style(0x319, "黑体", "simhei.ttf"));
         let mut shx = style(0x31C, "_TCH_DIM_T3", "SIMPLEX");
         shx.big_font_file = "GBCBIG".into();
         doc.text_styles.add_or_replace(shx);
@@ -257,29 +262,69 @@ mod tests {
         doc.text_styles.add_or_replace(already);
 
         let found = vec![
-            StyleTypeface { handle: Handle::new(0x31B), name: "-宋体".into(), typeface: "SimSun".into() },
-            StyleTypeface { handle: Handle::new(0x319), name: "黑体".into(), typeface: "SimHei".into() },
+            StyleTypeface {
+                handle: Handle::new(0x31B),
+                name: "-宋体".into(),
+                typeface: "SimSun".into(),
+            },
+            StyleTypeface {
+                handle: Handle::new(0x319),
+                name: "黑体".into(),
+                typeface: "SimHei".into(),
+            },
             // An SHX style would never carry this in a real file; it must still be refused.
-            StyleTypeface { handle: Handle::new(0x31C), name: "_TCH_DIM_T3".into(), typeface: "SimSun".into() },
+            StyleTypeface {
+                handle: Handle::new(0x31C),
+                name: "_TCH_DIM_T3".into(),
+                typeface: "SimSun".into(),
+            },
             // Already resolved: left alone.
-            StyleTypeface { handle: Handle::new(0x320), name: "HT".into(), typeface: "SimSun".into() },
+            StyleTypeface {
+                handle: Handle::new(0x320),
+                name: "HT".into(),
+                typeface: "SimSun".into(),
+            },
             // Decoded through the wrong code page: skipped, not guessed.
-            StyleTypeface { handle: Handle::NULL, name: "ST".into(), typeface: "\u{FFFD}\u{FFFD}".into() },
+            StyleTypeface {
+                handle: Handle::NULL,
+                name: "ST".into(),
+                typeface: "\u{FFFD}\u{FFFD}".into(),
+            },
             // Unknown record: ignored.
-            StyleTypeface { handle: Handle::new(0x999), name: "nope".into(), typeface: "SimSun".into() },
+            StyleTypeface {
+                handle: Handle::new(0x999),
+                name: "nope".into(),
+                typeface: "SimSun".into(),
+            },
         ];
         assert_eq!(apply_style_typefaces(&mut doc, &found), 2);
-        assert_eq!(doc.text_styles.get("-宋体").unwrap().true_type_font, "SimSun");
-        assert_eq!(doc.text_styles.get("黑体").unwrap().true_type_font, "SimHei");
-        assert_eq!(doc.text_styles.get("_TCH_DIM_T3").unwrap().true_type_font, "");
-        assert_eq!(doc.text_styles.get("HT").unwrap().true_type_font, "FangSong");
+        assert_eq!(
+            doc.text_styles.get("-宋体").unwrap().true_type_font,
+            "SimSun"
+        );
+        assert_eq!(
+            doc.text_styles.get("黑体").unwrap().true_type_font,
+            "SimHei"
+        );
+        assert_eq!(
+            doc.text_styles.get("_TCH_DIM_T3").unwrap().true_type_font,
+            ""
+        );
+        assert_eq!(
+            doc.text_styles.get("HT").unwrap().true_type_font,
+            "FangSong"
+        );
     }
 
     #[test]
     fn apply_matches_by_name_when_the_record_had_no_handle() {
         let mut doc = CadDocument::new();
         doc.text_styles.add_or_replace(style(0, "st", ""));
-        let found = vec![StyleTypeface { handle: Handle::NULL, name: "ST".into(), typeface: "SimSun".into() }];
+        let found = vec![StyleTypeface {
+            handle: Handle::NULL,
+            name: "ST".into(),
+            typeface: "SimSun".into(),
+        }];
         assert_eq!(apply_style_typefaces(&mut doc, &found), 1);
         assert_eq!(doc.text_styles.get("st").unwrap().true_type_font, "SimSun");
     }
@@ -288,8 +333,15 @@ mod tests {
     fn end_to_end_on_the_sheet_tables() {
         let mut doc = CadDocument::new();
         doc.text_styles.add_or_replace(style(0x31B, "-宋体", ""));
-        doc.text_styles.add_or_replace(style(0x319, "黑体", "simhei.ttf"));
-        assert_eq!(fix_dxf_text_style_typefaces(&mut doc, Cursor::new(SHEET_TABLES.as_bytes())), 2);
-        assert_eq!(doc.text_styles.get("-宋体").unwrap().true_type_font, "SimSun");
+        doc.text_styles
+            .add_or_replace(style(0x319, "黑体", "simhei.ttf"));
+        assert_eq!(
+            fix_dxf_text_style_typefaces(&mut doc, Cursor::new(SHEET_TABLES.as_bytes())),
+            2
+        );
+        assert_eq!(
+            doc.text_styles.get("-宋体").unwrap().true_type_font,
+            "SimSun"
+        );
     }
 }

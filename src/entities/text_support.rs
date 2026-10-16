@@ -76,9 +76,7 @@ pub fn resolve_text_style(style_name: &str, document: &CadDocument) -> ResolvedT
                 .flatten();
             if let Some(p) = shx_path {
                 p
-            } else if let Some(family) =
-                truetype_family.or_else(|| resolve_font_reference(file))
-            {
+            } else if let Some(family) = truetype_family.or_else(|| resolve_font_reference(file)) {
                 // The file is installed, so its family is the face to draw with.
                 // Substituting a stroke font instead drops every letter that
                 // font does not have — for a Cyrillic drawing, all of them.

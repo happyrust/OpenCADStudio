@@ -18,19 +18,23 @@
 // `igPoint2d` is the only point family the format has, and all of it
 // decodes. `ProbeOnly` evidence has no position at all.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use codec::entities::hatch::{BoundaryEdge, BoundaryPath, BoundaryPathFlags, LineEdge};
-use codec::entities::{Circle, Hatch, Line, LwPolyline, Point, Text, TextHorizontalAlignment};
+use codec::entities::hatch::{
+    BoundaryEdge, BoundaryPath, BoundaryPathFlags, CircularArcEdge, LineEdge,
+};
+use codec::entities::{
+    Circle, Hatch, Line, LwPolyline, Point, Text, TextHorizontalAlignment, TextVerticalAlignment,
+};
 use codec::tables::linetype::{LineType, LineTypeElement};
 use codec::types::{Color, LineWeight, Vector2, Vector3};
 use codec::{CadDocument, EntityType, TableEntry};
 use pid_parse::style_link::{
-    DashPattern, LineStyleIndex, MarkerStatus, PointMarker, ResolvedFill, ResolvedLineStyle,
-    StyleNameIndex, TextAlignment,
+    ComplexDash, DashPattern, LineStyleIndex, MarkerStatus, PointMarker, ResolvedFill,
+    ResolvedLineStyle, StyleNameIndex, TextAlignment,
 };
-use pid_parse::symbol_library::{PrimitiveStyle, SymbolLibrary, SymbolPrimitive};
+use pid_parse::symbol_library::{PrimitiveStyle, SymbolLettering, SymbolLibrary, SymbolPrimitive};
 use pid_parse::{
     build_normalized_geometry, NormalizedPidGeometry, ParseOptions, PidDrawingUnits,
     PidGeometryConfidence, PidGraphicKind, PidParser, PidPoint, PidSemanticHit, PidSemanticIndex,
@@ -112,6 +116,7 @@ mod page;
 mod styles;
 mod summary;
 mod symbols;
+mod template;
 mod text;
 
 use self::build::*;
@@ -121,6 +126,7 @@ use self::styles::*;
 use self::summary::*;
 pub use self::summary::{ImportSummary, ImportUnit, SUMMARY_PROPERTY_PREFIX};
 use self::symbols::*;
+use self::template::*;
 use self::text::*;
 
 // Angles cross this module unchanged, because both sides already agree on
@@ -256,27 +262,32 @@ const LAYER_DISCIPLINE_PREFIX: &str = "PID-STYLE-";
 /// importer made itself, or one whose layer the file gave no name for --
 /// lands on it (see [`ensure_taxonomy_layer`]). Until plan 2026-09-21 the
 /// retired taxonomy layer mode declared every one up front.
-fn taxonomy_layers() -> [(&'static str, Color, bool); 13] {
+fn taxonomy_layers() -> [(&'static str, Color, bool, bool); 13] {
     // Colours separate the kinds at a glance: a P&ID is mostly line work, and
     // an all-white import makes lettering, symbol bodies and the decode's own
     // loose ends indistinguishable from the piping.
+    //
+    // The fourth flag is `is_plottable`: the point statuses are a review
+    // overlay — SmartPlant draws them on screen and omits them from its
+    // prints, and the reference PDFs show no mark at any junction. On-screen
+    // visibility stays on; only the plot leaves them out.
     [
-        (LAYER_GEOMETRY, Color::WHITE, true),
+        (LAYER_GEOMETRY, Color::WHITE, true, true),
         // The sheet's own border. It is part of the drawing rather than
         // evidence about it, so it opens visible and in the same colour as
         // the line work it encloses.
-        (LAYER_FRAME, Color::WHITE, true),
-        (LAYER_TEXT, Color::GREEN, true),
+        (LAYER_FRAME, Color::WHITE, true, true),
+        (LAYER_TEXT, Color::GREEN, true, true),
         // Filled areas. Each fill carries its own decoded colour, so the layer
         // colour is only the default for a fill that states none; white keeps
         // those consistent with the line work they belong to.
-        (LAYER_FILL, Color::WHITE, true),
-        (LAYER_SYMBOL, Color::CYAN, true),
+        (LAYER_FILL, Color::WHITE, true, true),
+        (LAYER_SYMBOL, Color::CYAN, true, true),
         // "Flanged Nozzle with blind" is wider than the equipment it names, so
         // on a sheet with 58 placements the labels bury the drawing. They ship
         // switched off: the answer is in the file, one layer toggle away.
-        (LAYER_SYMBOL_LABEL, Color::GRAY, false),
-        (LAYER_POINT, Color::MAGENTA, true),
+        (LAYER_SYMBOL_LABEL, Color::GRAY, false, true),
+        (LAYER_POINT, Color::MAGENTA, true, false),
         // The review statuses. Each mark keeps the colour its own style
         // states, so these layer colours only ever show on a mark that states
         // none — but they are the status colours the drawings themselves use,
@@ -286,9 +297,9 @@ fn taxonomy_layers() -> [(&'static str, Color, bool); 13] {
         // it, and a present empty layer says that where a missing one would
         // not. There is no `PID-POINT-OK` because a passing item's glyph is
         // blank by construction and there is nothing to put on it.
-        (LAYER_POINT_WARNING, Color::BLUE, true),
-        (LAYER_POINT_ERROR, Color::RED, true),
-        (LAYER_POINT_APPROVED, Color::GREEN, true),
+        (LAYER_POINT_WARNING, Color::BLUE, true, false),
+        (LAYER_POINT_ERROR, Color::RED, true, false),
+        (LAYER_POINT_APPROVED, Color::GREEN, true, false),
         // There is no `PID-UNRESOLVED`. It held the `GLine2d` unit lines,
         // which turned out not to be records at all: each was the top two
         // bytes of an `igSmartFrame2d`'s page ratio, matched by a decoder
@@ -302,11 +313,11 @@ fn taxonomy_layers() -> [(&'static str, Color, bool); 13] {
         // `build_inferred`. Still declared, and still hidden: the records are
         // in the file, and a layer that is present and empty says so where a
         // missing one would not.
-        (LAYER_ANNOTATION, Color::YELLOW, false),
-        (LAYER_CONNECTIVITY, Color::BLUE, false),
+        (LAYER_ANNOTATION, Color::YELLOW, false, true),
+        (LAYER_CONNECTIVITY, Color::BLUE, false, true),
         // Content authored on a hidden/invisible sheet layer remains present
         // and inspectable, but follows the source visibility on first open.
-        (LAYER_HIDDEN, Color::GRAY, false),
+        (LAYER_HIDDEN, Color::GRAY, false, true),
     ]
 }
 
@@ -319,9 +330,11 @@ fn ensure_taxonomy_layer(doc: &mut CadDocument, layer: &str) {
     if doc.layers.contains(layer) {
         return;
     }
-    if let Some((_, colour, visible)) = taxonomy_layers().iter().find(|(name, _, _)| *name == layer)
+    if let Some((_, colour, visible, plottable)) = taxonomy_layers()
+        .iter()
+        .find(|(name, _, _, _)| *name == layer)
     {
-        ensure_layer(doc, layer, *colour, *visible);
+        ensure_layer(doc, layer, *colour, *visible, *plottable);
     }
 }
 
@@ -480,6 +493,12 @@ pub fn load_pid_with(path: &Path, options: &PidImportOptions) -> Result<PidImpor
             geometry.entities.len()
         ));
     }
+    // The border is a drawing of its own, linked through the sheet's OLE
+    // frame rather than carried in its records: resolve the `.igr` and
+    // overlay what it decodes to -- title block, margin strips, the real
+    // frame -- before `finish` decides whether the synthetic page border is
+    // still needed.
+    let template = overlay_linked_template(&parsed, &geometry, path, &mut doc, paper_style_scale);
     let summary = finish(
         path,
         &geometry,
@@ -487,6 +506,7 @@ pub fn load_pid_with(path: &Path, options: &PidImportOptions) -> Result<PidImpor
         &styles,
         unit,
         built,
+        template.as_ref(),
         &mut doc,
     );
     doc.source_path = Some(path.to_string_lossy().into_owned());
@@ -530,7 +550,15 @@ fn prepare_document(parsed: &pid_parse::PidDocument) -> CadDocument {
             .or_insert(hidden);
     }
     for (name, hidden) in hidden_by_name {
-        ensure_layer(&mut doc, name, Color::WHITE, !hidden);
+        // `ConsistencyChecks` is the vendor's review-overlay layer:
+        // displayed on screen, never plotted.
+        ensure_layer(
+            &mut doc,
+            name,
+            Color::WHITE,
+            !hidden,
+            name != "ConsistencyChecks",
+        );
     }
     ensure_taxonomy_layer(&mut doc, LAYER_FRAME);
     doc
@@ -545,6 +573,7 @@ fn finish(
     styles: &Styles,
     unit: ImportUnit,
     built: Built,
+    template: Option<&TemplateOverlay>,
     doc: &mut CadDocument,
 ) -> ImportSummary {
     let Built {
@@ -567,7 +596,12 @@ fn finish(
         &sheet_layer_distribution,
     );
     let page_mm = geometry.page_dimensions_mm;
-    draw_page_border(doc, page_mm);
+    // The linked template draws the real frame when it overlays; the
+    // synthetic rectangle only stands in where it did not -- drawing both
+    // would double the border.
+    if !template.is_some_and(|overlay| overlay.page_frame_covered) {
+        draw_page_border(doc, page_mm);
+    }
     frame_drawing(doc, &bounds, page_mm);
     // The drawing's own view filter: the sheet layers the file switches off
     // start switched off here too, and the entities on them go dark by their
@@ -625,6 +659,15 @@ fn finish(
         hidden_strokes_skipped: symbol_bodies.hidden_strokes_skipped,
         label_anchors_undrawn: symbol_bodies.label_anchors,
         lettering_flattened: styles.lettering_flattened,
+        border_template: template.map(|overlay| {
+            overlay
+                .file
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| overlay.file.display().to_string())
+        }),
+        template_entities: template.map(|overlay| overlay.drawn).unwrap_or(0),
+        template_missing: template.map(|overlay| overlay.missing).unwrap_or(0),
         symbol_library: library
             .map(|library| library.roots().to_vec())
             .unwrap_or_default(),
@@ -632,7 +675,7 @@ fn finish(
     }
 }
 
-fn ensure_layer(doc: &mut CadDocument, name: &str, colour: Color, visible: bool) {
+fn ensure_layer(doc: &mut CadDocument, name: &str, colour: Color, visible: bool, plottable: bool) {
     if doc.layers.contains(name) {
         return;
     }
@@ -640,6 +683,7 @@ fn ensure_layer(doc: &mut CadDocument, name: &str, colour: Color, visible: bool)
     layer.handle = doc.allocate_handle();
     layer.color = colour;
     layer.flags.off = !visible;
+    layer.is_plottable = plottable;
     let _ = doc.layers.add(layer);
 }
 

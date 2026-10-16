@@ -350,6 +350,7 @@ fn a_cached_body_draws_only_the_strokes_on_its_displayed_layers() {
         primitives: vec![line(0.0), line(0.1), line(0.2), line(0.3), line(0.4)],
         primitive_layers: vec![8, 9, 10, 9],
         primitive_styles: Vec::new(),
+        primitive_letterings: Vec::new(),
         dimensions: Vec::new(),
         variables: Vec::new(),
         template: None,
@@ -378,8 +379,15 @@ fn a_cached_body_draws_only_the_strokes_on_its_displayed_layers() {
         },
     };
     let mut tally = SymbolBodies::default();
-    let entities = cached_body_entities(Some(&body), &at, &mut tally, &HashMap::new(), 1.0)
-        .expect("three strokes draw");
+    let entities = cached_body_entities(
+        Some(&body),
+        &at,
+        &mut tally,
+        &HashMap::new(),
+        1.0,
+        &HashMap::new(),
+    )
+    .expect("three strokes draw");
     assert_eq!(entities.len(), 3);
     assert_eq!(
         (tally.cache, tally.hidden_strokes_skipped),
@@ -470,6 +478,7 @@ fn a_body_is_an_anchor_cross_when_its_displayed_strokes_are_all_hairline_lines()
         primitives,
         primitive_layers: layers,
         primitive_styles: styles,
+        primitive_letterings: Vec::new(),
         dimensions: Vec::new(),
         variables: Vec::new(),
         template: None,
@@ -578,6 +587,7 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
         ],
         primitive_layers: vec![8, 8, 8],
         primitive_styles: vec![Some(own(vec![3.5, 1.75])), Some(own(Vec::new())), None],
+        primitive_letterings: Vec::new(),
         dimensions: Vec::new(),
         variables: Vec::new(),
         template: None,
@@ -591,6 +601,7 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
         },
         dash,
         marker: None,
+        complex_dash: None,
         hop: StyleHop::Direct,
     };
     let sheet_dash = || DashPattern::from_segments_m(&[0.001, 0.001]);
@@ -622,8 +633,8 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
         },
     };
     let mut tally = SymbolBodies::default();
-    let mut drawn =
-        cached_body_entities(Some(&body), &at, &mut tally, &pool, 1.0).expect("three strokes draw");
+    let mut drawn = cached_body_entities(Some(&body), &at, &mut tally, &pool, 1.0, &HashMap::new())
+        .expect("three strokes draw");
     assert_eq!(drawn.len(), 3);
     let coat = |entity: &EntityType| {
         let common = entity.common();
@@ -702,6 +713,7 @@ fn a_symbols_lettering_takes_its_placements_colour_and_nothing_else() {
         },
         dash: None,
         marker: None,
+        complex_dash: None,
         hop: StyleHop::Direct,
     };
     let letters = |layer: &str| {
@@ -770,7 +782,9 @@ fn a_bodys_arc_is_drawn_as_the_counter_clockwise_arc_over_the_same_points() {
         )
     };
 
-    let Some(EntityType::Arc(upright)) = shape_primitive(&left_cap, &placement(1.0)) else {
+    let Some(EntityType::Arc(upright)) =
+        shape_primitive(&left_cap, None, &placement(1.0), &HashMap::new())
+    else {
         panic!("the cap did not build");
     };
     assert!((upright.start_angle - FRAC_PI_2).abs() < 1e-12);
@@ -788,13 +802,54 @@ fn a_bodys_arc_is_drawn_as_the_counter_clockwise_arc_over_the_same_points() {
 
     // Mirrored about x: the same cap on a body flipped upside down still
     // bulges left, with its ends swapped top for bottom.
-    let Some(EntityType::Arc(mirrored)) = shape_primitive(&left_cap, &placement(-1.0)) else {
+    let Some(EntityType::Arc(mirrored)) =
+        shape_primitive(&left_cap, None, &placement(-1.0), &HashMap::new())
+    else {
         panic!("the mirrored cap did not build");
     };
     let (x, y) = midpoint(&mirrored);
     assert!(
         (x - (41.18 - 35.59)).abs() < 1e-6 && (y + 88.90).abs() < 1e-6,
         "the mirrored cap still bulges out of the shell: ({x}, {y})"
+    );
+}
+
+/// A half-turn cap whose file angles are one ulp past `f64::consts::PI`
+/// is still a half-turn: `Parametric V Drum`'s left head reads `π -> 0`
+/// with `π` stored as `3.141592653589794`, and a bare `sweep > PI`
+/// comparison flipped it into its complement (the head caved into the
+/// shell). With the epsilon, a placement rotated a quarter turn draws
+/// the cap bulging left.
+#[test]
+fn a_half_turn_cap_within_one_ulp_of_pi_keeps_its_clockwise_half() {
+    use std::f64::consts::PI;
+    let insertion = PidPoint { x: 0.0, y: 0.0 };
+    let placement = Placement {
+        insertion: &insertion,
+        rotation: 1.571,
+        scale: [1.0, 1.0],
+        projection: Projection {
+            mm_per_unit: 1000.0,
+            band: SheetBand::for_page(None),
+        },
+    };
+    let head = SymbolPrimitive::Arc {
+        center: (0.1016, 0.22959),
+        radius: 0.02691,
+        start_angle: 3.141592653589794,
+        end_angle: 0.0,
+    };
+    let Some(EntityType::Arc(arc)) = shape_primitive(&head, None, &placement, &HashMap::new())
+    else {
+        panic!("the head did not build");
+    };
+    let sweep = (arc.end_angle - arc.start_angle).rem_euclid(2.0 * PI);
+    let mid = arc.start_angle + sweep / 2.0;
+    let mid_x = arc.center.x + arc.radius * mid.cos();
+    assert!(
+        mid_x < arc.center.x - 1e-6,
+        "the rotated head must bulge left of its chord: mid_x {mid_x} vs chord x {}",
+        arc.center.x
     );
 }
 
@@ -814,10 +869,256 @@ fn symbol_polyline_closure_reaches_the_cad_entity() {
         vertices: vec![(0.0, 0.0), (0.01, 0.0), (0.01, 0.01)],
         is_closed: true,
     };
-    let Some(EntityType::LwPolyline(polyline)) = shape_primitive(&primitive, &placement) else {
+    let Some(EntityType::LwPolyline(polyline)) =
+        shape_primitive(&primitive, None, &placement, &HashMap::new())
+    else {
         panic!("symbol polyline did not build");
     };
     assert!(polyline.is_closed);
+}
+
+/// A `.sym`'s own lettering: the record's anchor byte picks the hot point,
+/// the style's height and typeface letter it, and the placement's rotation
+/// and scale carry through. `0x15` is centre-on-middle, `0x01` left-on-top —
+/// the two anchors the library's lettering is written at.
+#[test]
+fn symbol_text_letters_at_its_own_style_and_anchor() {
+    let insertion = PidPoint { x: 0.0, y: 0.0 };
+    let placement = Placement {
+        insertion: &insertion,
+        rotation: 0.0,
+        scale: [1.0, 1.0],
+        projection: Projection {
+            mm_per_unit: 1000.0,
+            band: SheetBand::for_page(None),
+        },
+    };
+    let primitive = SymbolPrimitive::Text {
+        text: "I".to_string(),
+        at: (0.001, 0.004),
+    };
+    let lettering = SymbolLettering {
+        anchor_code: 0x15,
+        rotation_rad: 0.0,
+        letter_height_m: 0.0,
+        height_m: Some(0.003_175),
+        rgb: Some([0, 0, 0]),
+        alignment: Some(TextAlignment::Left),
+        line_spacing: Some(1.0),
+        font_name: Some("Arial".to_string()),
+    };
+    let font_styles: HashMap<String, String> = [("Arial".to_string(), "PID-Arial".to_string())]
+        .into_iter()
+        .collect();
+    let Some(EntityType::Text(label)) =
+        shape_primitive(&primitive, Some(&lettering), &placement, &font_styles)
+    else {
+        panic!("symbol text did not build");
+    };
+    assert!(
+        (label.height - 3.175).abs() < 1e-9,
+        "the character style's 3.175 mm: {}",
+        label.height
+    );
+    assert_eq!(label.horizontal_alignment, TextHorizontalAlignment::Center);
+    assert_eq!(label.vertical_alignment, TextVerticalAlignment::Middle);
+    assert_eq!(
+        label.alignment_point,
+        Some(label.insertion_point),
+        "the anchor moved the origin to alignment_point"
+    );
+    assert_eq!(label.style, "PID-Arial");
+
+    let left_top = SymbolLettering {
+        anchor_code: 0x01,
+        ..lettering.clone()
+    };
+    let Some(EntityType::Text(label)) =
+        shape_primitive(&primitive, Some(&left_top), &placement, &font_styles)
+    else {
+        panic!("symbol text did not build");
+    };
+    assert_eq!(label.horizontal_alignment, TextHorizontalAlignment::Left);
+    assert_eq!(label.vertical_alignment, TextVerticalAlignment::Top);
+
+    // A record that scales its direction pair to the letter height states
+    // the size itself, and it beats the style's: `letter_height_m` is what
+    // the record letters at.
+    let self_sized = SymbolLettering {
+        letter_height_m: 0.002,
+        height_m: Some(0.003_175),
+        ..lettering.clone()
+    };
+    let Some(EntityType::Text(label)) =
+        shape_primitive(&primitive, Some(&self_sized), &placement, &font_styles)
+    else {
+        panic!("symbol text did not build");
+    };
+    assert!(
+        (label.height - 2.0).abs() < 1e-9,
+        "the direction pair's own 2 mm: {}",
+        label.height
+    );
+
+    // No lettering at all keeps the scaled ISO fallback the record used
+    // to draw with.
+    let Some(EntityType::Text(label)) =
+        shape_primitive(&primitive, None, &placement, &HashMap::new())
+    else {
+        panic!("symbol text did not build");
+    };
+    assert!(
+        (label.height - 2.5).abs() < 1e-9,
+        "the 2.5 mm fallback: {}",
+        label.height
+    );
+}
+
+/// A mirrored placement still prints readable lettering: SmartPlant
+/// normalizes the glyph rotation into `[-pi/2, pi/2)` and flips the anchor
+/// the way the dropped mirror would have flipped it. The ESD interlock sits
+/// at a pi-rotation mirror and its label reads upright in the reference; a
+/// quarter-turn mirror keeps right-reading vertical text.
+#[test]
+fn mirrored_placement_lettering_stays_readable() {
+    let insertion = PidPoint { x: 0.0, y: 0.0 };
+    let lettering = SymbolLettering {
+        anchor_code: 0x01,
+        rotation_rad: 0.0,
+        letter_height_m: 0.0,
+        height_m: Some(0.003_175),
+        rgb: Some([0, 0, 0]),
+        alignment: Some(TextAlignment::Left),
+        line_spacing: Some(1.0),
+        font_name: None,
+    };
+    let primitive = SymbolPrimitive::Text {
+        text: "ESD".to_string(),
+        at: (0.0, 0.0),
+    };
+
+    // A pi-rotation mirror (scale y negated): the label emits upright, and
+    // its left anchor flips right — the mirror the rotation absorbed.
+    let pi_mirror = Placement {
+        insertion: &insertion,
+        rotation: std::f64::consts::PI,
+        scale: [1.0, -1.0],
+        projection: Projection {
+            mm_per_unit: 1000.0,
+            band: SheetBand::for_page(None),
+        },
+    };
+    let Some(EntityType::Text(label)) =
+        shape_primitive(&primitive, Some(&lettering), &pi_mirror, &HashMap::new())
+    else {
+        panic!("mirrored symbol text did not build");
+    };
+    assert!(
+        label.rotation.abs() < 1e-9,
+        "the pi mirror emits upright lettering: {}",
+        label.rotation
+    );
+    assert_eq!(label.horizontal_alignment, TextHorizontalAlignment::Right);
+    assert_eq!(label.vertical_alignment, TextVerticalAlignment::Top);
+
+    // A quarter-turn mirror keeps the right-reading -pi/2 direction and
+    // flips the vertical anchor instead.
+    let quarter_mirror = Placement {
+        insertion: &insertion,
+        rotation: -std::f64::consts::FRAC_PI_2,
+        scale: [1.0, -1.0],
+        projection: Projection {
+            mm_per_unit: 1000.0,
+            band: SheetBand::for_page(None),
+        },
+    };
+    let Some(EntityType::Text(label)) = shape_primitive(
+        &primitive,
+        Some(&lettering),
+        &quarter_mirror,
+        &HashMap::new(),
+    ) else {
+        panic!("mirrored symbol text did not build");
+    };
+    assert!(
+        (label.rotation + std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+        "the quarter-turn mirror keeps -pi/2: {}",
+        label.rotation
+    );
+    assert_eq!(label.vertical_alignment, TextVerticalAlignment::Bottom);
+
+    // The same rotation without the mirror is left alone: a pi-rotated
+    // placement letters upside down the way the file placed it.
+    let unmirrored = Placement {
+        insertion: &insertion,
+        rotation: std::f64::consts::PI,
+        scale: [1.0, 1.0],
+        projection: Projection {
+            mm_per_unit: 1000.0,
+            band: SheetBand::for_page(None),
+        },
+    };
+    let Some(EntityType::Text(label)) =
+        shape_primitive(&primitive, Some(&lettering), &unmirrored, &HashMap::new())
+    else {
+        panic!("symbol text did not build");
+    };
+    assert!(
+        (label.rotation - std::f64::consts::PI).abs() < 1e-9,
+        "unmirrored lettering keeps the placement rotation: {}",
+        label.rotation
+    );
+    assert_eq!(label.horizontal_alignment, TextHorizontalAlignment::Left);
+    assert_eq!(label.vertical_alignment, TextVerticalAlignment::Top);
+}
+
+/// A plug valve's boundary holds concentric circle members, and SmartPlant
+/// prints every ring as its own solid disc — so the boundary builds one
+/// hatch per circle rather than one compound path the renderer would read
+/// as a ring with holes.
+#[test]
+fn concentric_boundary_circles_build_a_solid_hatch_each() {
+    let insertion = PidPoint { x: 0.0, y: 0.0 };
+    let placement = Placement {
+        insertion: &insertion,
+        rotation: 0.0,
+        scale: [1.0, 1.0],
+        projection: Projection {
+            mm_per_unit: 1000.0,
+            band: SheetBand::for_page(None),
+        },
+    };
+    let circle = |radius| SymbolPrimitive::Circle {
+        center: (0.0, 0.0),
+        radius,
+    };
+    let primitive = SymbolPrimitive::Boundary {
+        members: vec![circle(0.00034), circle(0.00065), circle(0.00095)],
+        fill: Some(pid_parse::symbol_library::PrimitiveFill {
+            rgb: Some([0, 0, 255]),
+            type_code: 0x002A,
+        }),
+    };
+    let entities = shape_primitives(&primitive, None, &placement, &HashMap::new());
+    assert_eq!(entities.len(), 3, "one hatch per circle member");
+    let mut radii: Vec<f64> = entities
+        .iter()
+        .map(|entity| {
+            let EntityType::Hatch(hatch) = entity else {
+                panic!("a circle member builds a hatch");
+            };
+            assert_eq!(hatch.paths.len(), 1, "the disc is a single path");
+            let Some(BoundaryEdge::CircularArc(arc)) = hatch.paths[0].edges.first() else {
+                panic!("the circle member's path is a circular arc");
+            };
+            arc.radius
+        })
+        .collect();
+    radii.sort_by(f64::total_cmp);
+    let expected = [0.34, 0.65, 0.95];
+    for (got, want) in radii.iter().zip(expected) {
+        assert!((got - want).abs() < 1e-6, "radius {want}: {got}");
+    }
 }
 
 /// `paper_style_scale` multiplies style-declared dash lengths, line weights,
@@ -844,6 +1145,7 @@ fn paper_style_scale_multiplies_declared_sizes_and_leaves_lettering() {
         },
         dash: None,
         marker: None,
+        complex_dash: None,
         hop: StyleHop::Direct,
     };
     let weight = |width_mm: f64, k: f64| {
@@ -893,6 +1195,7 @@ fn paper_style_scale_multiplies_declared_sizes_and_leaves_lettering() {
         },
         dash: DashPattern::from_segments_m(segments_m),
         marker: None,
+        complex_dash: None,
         hop: StyleHop::Direct,
     };
     let mut styles = LineStyleIndex::new();
@@ -976,4 +1279,266 @@ fn paper_style_scale_multiplies_declared_sizes_and_leaves_lettering() {
     let stub_from_k = stub_at(scale, (-0.001, -0.002));
     let stub_len_k = (stub_k.x - stub_from_k.x).hypot(stub_k.y - stub_from_k.y);
     assert!((stub_len_k - stub_len * scale).abs() < 1e-9);
+}
+
+/// Authored paper ink becomes the contrast colour: `RGB(0,0,0)` stored as
+/// ACI 7 reads white on the dark canvas (`adapt_to_bg`) and black on the
+/// plotted sheet, where the true colour it used to be stayed invisible in
+/// the former. `RGB(255,255,255)` is the same foreground pen -- SmartPlant
+/// prints the `.igr`'s white-stated frame drafting black. Every other
+/// stated colour is the true colour it is.
+#[test]
+fn authored_black_is_the_paper_foreground_colour() {
+    assert_eq!(foreground_color(0, 0, 0), Color::Index(7));
+    assert_eq!(
+        foreground_color(0xFF, 0x00, 0x00),
+        Color::from_rgb(0xFF, 0x00, 0x00)
+    );
+    assert_eq!(
+        foreground_color(0xFF, 0xFF, 0xFF),
+        Color::Index(7),
+        "stated white is the same foreground pen: the linked .igr letters its \
+         frame drafting white and SmartPlant's own PDFs print it black"
+    );
+
+    let mut text = Text::new();
+    text.value = "TITLE".to_string();
+    text.common.layer = LAYER_TEXT.to_string();
+    let mut lettering = EntityType::Text(text);
+    apply_text_colour(&mut lettering, [0, 0, 0]);
+    assert_eq!(
+        lettering.common().color,
+        Color::Index(7),
+        "the sheet's black lettering is the contrast colour"
+    );
+    let mut text = Text::new();
+    text.value = "LGM".to_string();
+    text.common.layer = LAYER_SYMBOL.to_string();
+    text.common.color = Color::from_rgb(0xFF, 0x00, 0x00);
+    let mut symbol_lettering = EntityType::Text(text);
+    apply_text_colour(&mut symbol_lettering, [0, 0, 0]);
+    assert_eq!(
+        symbol_lettering.common().color,
+        Color::from_rgb(0xFF, 0x00, 0x00),
+        "a symbol's internal lettering keeps what the .sym authored"
+    );
+}
+
+/// An OLE link names its target several ways -- the absolute path the
+/// linking machine saw, a relative tail, a bare name; all of them answer
+/// the file name the local copy is found by.
+#[test]
+fn a_template_link_is_named_by_its_basename() {
+    assert_eq!(
+        template_basename(r"C:\PID_SQProject\SQPlant\Ref\Template Files\CPE-SQ-A1.igr"),
+        "CPE-SQ-A1.igr"
+    );
+    assert_eq!(
+        template_basename(r"\\WIN-SPID\share\Ref\Template Files\CPECCHBA2.igr"),
+        "CPECCHBA2.igr"
+    );
+    assert_eq!(
+        template_basename("Ref\\Template Files\\XA-A1.igr"),
+        "XA-A1.igr"
+    );
+    assert_eq!(template_basename("CPE-SQ-A0.igr"), "CPE-SQ-A0.igr");
+    assert_eq!(template_basename("  XA-A1.igr  "), "XA-A1.igr");
+}
+
+/// `.igr` links come off every `JSite`'s OLE stream: whatever the site's
+/// symbol is for, its `\x01Ole` strings are scanned for template targets.
+#[test]
+fn linked_templates_are_the_igr_links_of_every_jsite() {
+    let mut parsed = pid_parse::PidDocument::default();
+    let site = |ole_links: Vec<String>| pid_parse::JSite {
+        name: "JSite1".to_string(),
+        ole_links,
+        ..Default::default()
+    };
+    assert!(linked_templates(&parsed).is_empty());
+    parsed.jsites.push(site(vec![
+        r"C:\Plant\Ref\Template Files\A1.igr".to_string(),
+        "A1.igr".to_string(),
+        "Sheet1".to_string(),
+    ]));
+    parsed.jsites.push(site(vec![
+        r"\\share\Ref\Template Files\A0.IGR".to_string(),
+        "not-a-template.xls".to_string(),
+    ]));
+    assert_eq!(
+        linked_templates(&parsed),
+        vec![
+            "A1.igr".to_string(),
+            r"C:\Plant\Ref\Template Files\A1.igr".to_string(),
+            r"\\share\Ref\Template Files\A0.IGR".to_string()
+        ],
+        "deduplicated, sorted, only .igr"
+    );
+}
+
+/// The stated path wins when it exists on this machine; the basename search
+/// under the roots is the fallback for a link authored elsewhere.
+#[test]
+fn a_link_resolves_directly_or_by_basename_under_a_root() {
+    let temp = std::env::temp_dir().join(format!(
+        "pid-template-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let nested = temp.join("Ref").join("Template Files");
+    std::fs::create_dir_all(&nested).expect("temp dirs");
+    let local = nested.join("Local-A1.igr");
+    std::fs::write(&local, b"stub").expect("write");
+
+    let roots = vec![temp.clone()];
+    assert_eq!(
+        resolve_template_path(&local.to_string_lossy(), &roots).as_deref(),
+        Some(local.as_path()),
+        "a path that exists resolves to itself"
+    );
+    assert_eq!(
+        resolve_template_path(r"C:\elsewhere\Ref\Template Files\Local-A1.igr", &roots).as_deref(),
+        Some(local.as_path()),
+        "a foreign absolute path resolves by basename"
+    );
+    assert_eq!(
+        resolve_template_path(r"C:\elsewhere\Ref\Template Files\Missing.igr", &roots),
+        None
+    );
+    assert!(
+        resolve_template_path("", &roots).is_none(),
+        "an empty link has no basename"
+    );
+    let _ = std::fs::remove_dir_all(&temp);
+}
+
+/// The overlay takes the template only when its page is the drawing's: a
+/// stated pair must agree within the tolerance; a side that states nothing
+/// cannot refuse the match. A template stating no page of its own is
+/// measured on the frame it drew.
+#[test]
+fn a_template_is_overlaid_only_on_the_page_it_is_for() {
+    let geometry = |page: Option<(f64, f64)>| NormalizedPidGeometry {
+        page_dimensions_mm: page,
+        ..Default::default()
+    };
+    let a1_frame: Vec<EntityType> = vec![line((0.0, 0.0), (841.0, 594.0))];
+    let a0_frame: Vec<EntityType> = vec![line((0.0, 0.0), (1189.0, 841.0))];
+    assert!(same_page(
+        &geometry(Some((841.0, 594.0))),
+        &[],
+        &geometry(Some((841.0, 594.0)))
+    ));
+    assert!(
+        same_page(
+            &geometry(Some((841.2, 594.1))),
+            &[],
+            &geometry(Some((841.0, 594.0))),
+        ),
+        "float noise between the two frame records is the same page"
+    );
+    assert!(
+        !same_page(
+            &geometry(Some((1189.0, 841.0))),
+            &[],
+            &geometry(Some((841.0, 594.0))),
+        ),
+        "an A0 template never lands on an A1 drawing"
+    );
+    assert!(same_page(
+        &geometry(None),
+        &[],
+        &geometry(Some((841.0, 594.0)))
+    ));
+    assert!(same_page(
+        &geometry(Some((841.0, 594.0))),
+        &[],
+        &geometry(None)
+    ));
+    // The igr states no page of its own, so its drawn frame is the claim:
+    // an A1-sized overlay passes on A1, an A0-sized one is refused.
+    assert!(
+        same_page(&geometry(None), &a1_frame, &geometry(Some((841.0, 594.0)))),
+        "a page-less template is measured by the frame it drew"
+    );
+    assert!(
+        !same_page(&geometry(None), &a0_frame, &geometry(Some((841.0, 594.0)))),
+        "the page-less A0 template may not land on the A1 drawing"
+    );
+}
+
+/// The linked `.igr` parses through the same pipeline as the drawing and
+/// overlays onto `PID-FRAME`: the fixture template draws its closed page
+/// frame (so the synthetic border stands down), its title-block and
+/// margin-strip lines, and reports the records it cannot draw beside the
+/// drawing's own `missing` rather than in it.
+#[test]
+fn a_linked_igr_overlays_its_drafting_on_pid_frame() {
+    let igr = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|dir| {
+            dir.join("pid-parse")
+                .join("test-file")
+                .join("Ref")
+                .join("Template Files")
+                .join("CPE-SQ-A1.igr")
+        })
+        .filter(|path| path.is_file());
+    let Some(igr) = igr else {
+        return; // fixture absent: soft-skip like the corpus tests do
+    };
+    let mut doc = CadDocument::new();
+    // The drawing's own normalized geometry is only consulted for its page:
+    // the template's must agree with it.
+    let drawing = NormalizedPidGeometry {
+        page_dimensions_mm: Some((841.0, 594.0)),
+        ..Default::default()
+    };
+    let overlay = overlay_from(&igr, &drawing, &mut doc, 1.0).expect("the fixture draws");
+    assert!(overlay.drawn > 50, "a title block is more than a few lines");
+    assert!(
+        overlay.page_frame_covered,
+        "the template draws the page frame the synthetic border doubles"
+    );
+    let frames: Vec<_> = doc
+        .entities()
+        .filter(|entity| entity.common().layer == LAYER_FRAME)
+        .collect();
+    assert_eq!(
+        frames.len(),
+        overlay.drawn,
+        "every template entity files on PID-FRAME"
+    );
+    // The page rectangle the synthetic border would have drawn is among the
+    // template's own drafting -- however the `.igr` files it: a closed
+    // polyline or the four lines of the frame.
+    let spans_page = frames
+        .iter()
+        .filter_map(|entity| page::drawn_extent(entity))
+        .any(|(min_x, min_y, max_x, max_y)| {
+            (max_x - min_x - 841.0).abs() < 2.0 && (max_y - min_y - 594.0).abs() < 2.0
+        });
+    assert!(spans_page, "the frame covers the A1 page");
+    // Provenance: every overlay entity says which template drew it.
+    let tagged = frames
+        .iter()
+        .filter(|entity| {
+            entity
+                .common()
+                .extended_data
+                .records()
+                .iter()
+                .flat_map(|record| record.values.iter())
+                .any(|value| {
+                    matches!(value, codec::xdata::XDataValue::String(s) if s == "template=CPE-SQ-A1.igr")
+                })
+        })
+        .count();
+    assert_eq!(
+        tagged, overlay.drawn,
+        "every template entity names the .igr it came from"
+    );
 }

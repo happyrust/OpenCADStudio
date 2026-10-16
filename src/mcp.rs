@@ -32,7 +32,7 @@ const MODERN_PROTOCOL_VERSION: &str = "2026-07-28";
 ///
 /// `block_delete` gained its optional `force` parameter.
 #[cfg(test)]
-const TOOL_SCHEMA_DIGEST: &str = "9a7aeb5e1fd76b94fabece3a7ba213f622f449076fac9c25c7e69592989094fd";
+const TOOL_SCHEMA_DIGEST: &str = "cbdde9516055f919918aa1605a24ac7de284a5926e0a7b02fa3dacf55e8cfcc7";
 const MAX_REQUEST: usize = 1_048_576;
 const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
 const CACHE_TTL_MS: u64 = 3_600_000;

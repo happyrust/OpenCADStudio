@@ -170,6 +170,11 @@ fn line_work_carries_the_width_and_colour_the_drawing_states() {
                     .entry(format!("{w:>3} #{r:02X}{g:02X}{b:02X}"))
                     .or_default() += 1;
             }
+            // Authored black arrives as the contrast colour, ACI 7: white
+            // on the dark canvas, black on the plotted sheet.
+            (codec::types::Color::Index(7), codec::types::LineWeight::Value(w)) => {
+                *palette.entry(format!("{w:>3} ACI-7")).or_default() += 1;
+            }
             _ => unstyled += 1,
         }
     }
@@ -190,14 +195,15 @@ fn line_work_carries_the_width_and_colour_the_drawing_states() {
     // fourteen rules reach `Dashed 0.35` through overrides stating 0.13 mm
     // (eleven) and 0.18 mm (three), seven `Normal` lines through one
     // stating 0.13, and the three slope marks through one stating black --
-    // which is how SmartPlant's screen draws them.
+    // which is how SmartPlant's screen draws them. Authored black is
+    // stored as ACI-7 so the dark canvas can flip it white.
     let expected: std::collections::BTreeMap<String, usize> = [
-        (" 10 #000000", 53),
         (" 10 #0000FF", 33),
-        (" 13 #000000", 21),
-        (" 18 #000000", 3),
+        (" 10 ACI-7", 53),
+        (" 13 ACI-7", 21),
         (" 18 #008000", 4),
-        (" 35 #000000", 22),
+        (" 18 ACI-7", 3),
+        (" 35 ACI-7", 22),
         (" 70 #808000", 24),
     ]
     .iter()
@@ -501,6 +507,9 @@ fn a_cached_strokes_dash_is_its_own_storages_not_its_placements() {
             match (common.color, common.line_weight) {
                 (codec::types::Color::Rgb { r, g, b }, codec::types::LineWeight::Value(w)) => {
                     palette.insert(format!("{w:>3} #{r:02X}{g:02X}{b:02X}"));
+                }
+                (codec::types::Color::Index(7), codec::types::LineWeight::Value(w)) => {
+                    palette.insert(format!("{w:>3} ACI-7"));
                 }
                 other => panic!("{name}: a dashed symbol stroke is not painted: {other:?}"),
             }
@@ -815,31 +824,39 @@ fn lettering_carries_the_colour_the_drawing_states() {
     for entity in on_sheet_text(&doc) {
         let key = match entity.common().color {
             codec::types::Color::Rgb { r, g, b } => format!("#{r:02X}{g:02X}{b:02X}"),
+            // Authored black arrives as the contrast colour: a character
+            // style stating black letters for a white sheet, which ACI 7
+            // is exactly -- white on the dark canvas, black on paper.
+            codec::types::Color::Index(7) => "ACI-7".to_string(),
             _ => "ByLayer".to_string(),
         };
         *palette.entry(key).or_default() += 1;
     }
 
     // 47 of this sheet's 48 labels reach a character style and letter in the
-    // black it states. The one left on `ByLayer` is the same record that
-    // keeps the 2.5mm height fallback -- its style states the unexplained
-    // 0.254mm that `style_link` refuses, so the whole resolution returns
-    // nothing and neither the height nor the colour is applied. Colour and
-    // height fall back together because they ride one join.
-    let expected: std::collections::BTreeMap<String, usize> = [("#000000", 47), ("ByLayer", 1)]
+    // black it states, stored as ACI-7. The one left on `ByLayer` is the
+    // same record that keeps the 2.5mm height fallback -- its style states
+    // the unexplained 0.254mm that `style_link` refuses, so the whole
+    // resolution returns nothing and neither the height nor the colour is
+    // applied. Colour and height fall back together because they ride one
+    // join.
+    let expected: std::collections::BTreeMap<String, usize> = [("ACI-7", 47), ("ByLayer", 1)]
         .iter()
         .map(|(key, count)| ((*key).to_string(), *count))
         .collect();
     assert_eq!(palette, expected);
 }
 
-/// Lettering starts from the side the drawing's paragraph style states, and
+/// Lettering starts from the side the record's own anchor byte states, and
 /// carries the alignment point that makes it mean anything.
 ///
 /// Every label used to render left-aligned because nothing read an alignment.
-/// `JStyleTextPara +35` states one, with Intergraph's own values, and across
-/// the corpus 49% of the styles text reaches are centred or right -- each of
-/// those runs sitting half a label from where the drawing puts it.
+/// `JStyleTextPara +35` states a *default*, with Intergraph's own values, but
+/// the authoritative anchor rides on each `igTextBox` record's placement
+/// trailer: its last byte decodes `(hi % 3, lo % 3)` into
+/// left/centre/right x bottom/top/middle, and it overrides the paragraph
+/// style -- `GLV 0112102A` letters centred though its style says left, and
+/// this sheet's two `Right` records anchor centre by their own bytes.
 ///
 /// The second assertion is the one that matters more. A TEXT entity's
 /// insertion point is the run origin *only* while the alignment is
@@ -871,21 +888,36 @@ fn lettering_starts_from_the_side_the_drawing_states() {
             }
         };
         *sides.entry(key.to_string()).or_default() += 1;
-        let needs_point = text.horizontal_alignment != HA::Left;
-        if needs_point != text.alignment_point.is_some() {
+        // The authored anchor is the run's line-box top, which the importer
+        // states as `Top` vertical alignment; every justification therefore
+        // anchors on `alignment_point`, seeded from the insertion point. A
+        // missing point drops a non-left label at the origin; a stray one
+        // that disagrees with the insertion moves the run off its anchor.
+        let Some(point) = text.alignment_point else {
             misplaced.push(format!(
-                "{:?} label {:?} has alignment_point {:?}",
-                text.horizontal_alignment, text.value, text.alignment_point
+                "{:?} label {:?} carries no alignment_point",
+                text.horizontal_alignment, text.value
+            ));
+            continue;
+        };
+        if (point.x - text.insertion_point.x).abs() > 1.0e-6
+            || (point.y - text.insertion_point.y).abs() > 1.0e-6
+        {
+            misplaced.push(format!(
+                "{:?} label {:?} anchors at {:?}, not its insertion {:?}",
+                text.horizontal_alignment, text.value, point, text.insertion_point
             ));
         }
     }
 
     assert!(
         misplaced.is_empty(),
-        "every non-left label needs an alignment point and no left one may carry one: {misplaced:?}"
+        "every label anchors on an alignment point seeded from its insertion: {misplaced:?}"
     );
     // This sheet letters 20 of its 48 labels from somewhere other than the
-    // left -- every one of which used to render half a label off.
+    // left -- every one of which used to render half a label off. The two
+    // records the paragraph style calls `Right` carry centre anchor bytes,
+    // so the per-record anchor lands them in `center`.
     //
     // `left` is the one bucket that cannot be read as a measurement: a label
     // whose style resolution fails states no alignment, keeps the entity
@@ -893,11 +925,10 @@ fn lettering_starts_from_the_side_the_drawing_states() {
     // sheet has exactly one such record -- the same one that keeps the height
     // and colour fallbacks, since all three ride one join -- so 28 means 27
     // stated plus 1 defaulted.
-    let expected: std::collections::BTreeMap<String, usize> =
-        [("center", 18), ("left", 28), ("right", 2)]
-            .iter()
-            .map(|(key, count)| ((*key).to_string(), *count))
-            .collect();
+    let expected: std::collections::BTreeMap<String, usize> = [("center", 20), ("left", 28)]
+        .iter()
+        .map(|(key, count)| ((*key).to_string(), *count))
+        .collect();
     assert_eq!(sides, expected);
 }
 
@@ -933,13 +964,18 @@ fn lettering_names_the_typeface_the_drawing_states() {
             (style.name.clone(), style.true_type_font.clone())
         })
         .collect();
-    // Five typefaces on this sheet. The style name is sanitised for the symbol
-    // table -- the space in "Arial Narrow" becomes a hyphen -- while the
-    // typeface itself travels verbatim in `true_type_font`, which is what the
-    // renderer matches against the installed fonts.
+    // Five typefaces on this sheet, plus the two SimSun styles the linked
+    // border template's labels letter in. The style name is sanitised for
+    // the symbol table -- the space in "Arial Narrow" becomes a hyphen, and
+    // the template's second SimSun entry takes the -2 suffix the style pool
+    // hands duplicates -- while the typeface itself travels verbatim in
+    // `true_type_font`, which is what the renderer matches against the
+    // installed fonts.
     let expected_styles: std::collections::BTreeMap<String, String> = [
         ("PID-Arial", "Arial"),
         ("PID-Arial-Narrow", "Arial Narrow"),
+        ("PID-SimSun", "SimSun"),
+        ("PID-SimSun-2", "SimSun"),
         ("PID-SimSun-ExtB", "SimSun-ExtB"),
         ("PID-仿宋", "仿宋"),
         ("PID-宋体", "宋体"),
@@ -2119,10 +2155,13 @@ fn every_imported_entity_states_its_role_and_exactly_one_is_the_page_border() {
                 "{name}: no entity took role={expected}; seen={seen:?}"
             );
         }
-        assert_eq!(
-            seen.get("frame"),
-            Some(&1),
-            "{name}: exactly one entity is the page border"
+        // A resolved linked `.igr` lands its whole frame sheet under
+        // role=frame (border, title block, margin rules), so the count is
+        // one synthetic border when no template resolves and the template's
+        // entity count when one does -- either way at least one frame.
+        assert!(
+            seen.get("frame").is_some_and(|count| *count >= 1),
+            "{name}: at least one entity is the page frame; seen={seen:?}"
         );
     }
 }
@@ -2708,6 +2747,10 @@ fn a_symbol_body_draws_in_the_style_its_placement_names() {
                     .entry(format!("{w:>3} #{r:02X}{g:02X}{b:02X}"))
                     .or_default() += 1;
             }
+            // Authored black arrives as ACI-7, the contrast colour.
+            (codec::types::Color::Index(7), codec::types::LineWeight::Value(w)) => {
+                *palette.entry(format!("{w:>3} ACI-7")).or_default() += 1;
+            }
             _ => lettering += 1,
         }
     }
@@ -2724,7 +2767,8 @@ fn a_symbol_body_draws_in_the_style_its_placement_names() {
         // x3, Line2 -- of which only Line2's hairline is drawn, the four
         // labels' anchor crosses (two strokes each) being left undrawn as
         // SmartPlant's screen leaves them (plan 2026-10-10, label anchors).
-        (" 35 #000000", 1),
+        // Annotation black is stored as the contrast colour, ACI-7.
+        (" 35 ACI-7", 1),
         // 7 equipment placements: the vessel, three Flanged Nozzles, one
         // with blind, Manway-Large, Gauge Hatch.
         (" 35 #800000", 25),

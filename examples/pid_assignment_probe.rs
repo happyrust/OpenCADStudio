@@ -17,7 +17,9 @@ fn main() {
         let PidGraphicKind::SymbolInstance { symbol_path, .. } = &entity.kind else {
             continue;
         };
-        let Some(path) = symbol_path.as_deref() else { continue };
+        let Some(path) = symbol_path.as_deref() else {
+            continue;
+        };
         let oid = entity.graphic_oid.unwrap_or(0);
         let hit = semantics.resolve(oid);
         let object = hit.as_ref().map(|hit| hit.object());

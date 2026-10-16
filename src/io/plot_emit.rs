@@ -159,6 +159,27 @@ pub enum PlotOp {
         color: [f32; 3],
         text: String,
     },
+    /// One filled TrueType glyph drawn by an embedded font subset as a real
+    /// text object, instead of its tessellated outline. The emitter sends it
+    /// only for faces the backend declared in [`PlotAssets::embedded_fonts`];
+    /// every other glyph keeps the `FillMesh` path, so a sink that never
+    /// declares a face never sees this variant.
+    FontGlyph {
+        /// `GlyphSource::font.id` — the face the glyph was outlined from.
+        /// The sink maps it to the subset font it registered.
+        font: (usize, u32, u32),
+        /// Glyph index in the *original* face; the sink remaps it into its
+        /// subset's numbering.
+        gid: u16,
+        /// The character, for the backend's ToUnicode / extraction layer.
+        ch: char,
+        /// Text matrix `[a b c d e f]` mapping *font units* onto the page in
+        /// points — set with font size equal to `units_per_em` so one text
+        /// unit is one font unit. Derived from the quad the SDF tile sat on,
+        /// so the embedded glyph lands exactly where its outline would have.
+        tm: [f32; 6],
+        color: [f32; 3],
+    },
     /// Everything up to the matching `EndGroup` is one thing on the sheet
     /// — a P&ID symbol and the tag lettered beside it ([`PlotGroup`]) — for
     /// a backend that can hang a name on a group of elements (SVG wraps them
@@ -291,6 +312,22 @@ impl GlyphSnapshot {
         self.table.len()
     }
 
+    /// The export geometry under a quad's atlas-tile key — the lookup
+    /// `emit_text` does per corner uv.
+    pub(crate) fn glyph_at_uv(
+        &self,
+        uv_min: [f32; 2],
+    ) -> Option<&crate::scene::text::sdf_atlas::GlyphExport> {
+        self.table
+            .get(&crate::scene::text::sdf_atlas::uv_key(uv_min))
+    }
+
+    /// The decoration-bar solid-texel key, for callers that filter it out the
+    /// way `emit_text` does.
+    pub(crate) fn solid_key(&self) -> u64 {
+        self.solid_key
+    }
+
     /// The visible glyph quads on `wires` this snapshot has no geometry for —
     /// exactly the quads `emit_text` would have to skip.
     ///
@@ -327,6 +364,11 @@ pub struct PlotAssets {
     /// ([`PlotOp::BeginGroup`]). Empty = no grouping, and the page is drawn
     /// in plain depth order.
     pub groups: Vec<PlotGroup>,
+    /// Faces the backend embeds and can draw text with (`GlyphSource::font.id`s).
+    /// A filled TrueType glyph whose face is listed emits [`PlotOp::FontGlyph`]
+    /// instead of its `FillMesh` outline; an absent/`None` set keeps every glyph
+    /// on the outline path (SVG export, previews).
+    pub embedded_fonts: Option<std::sync::Arc<std::collections::HashSet<(usize, u32, u32)>>>,
 }
 
 impl PlotAssets {
@@ -350,6 +392,7 @@ impl PlotAssets {
             stamp_label: None,
             glyphs: has_text.then(GlyphSnapshot::capture).flatten(),
             groups: Vec::new(),
+            embedded_fonts: None,
         }
     }
 
@@ -519,8 +562,7 @@ pub fn emit_plot_content<S: PlotSink>(
     }
 
     let (first_wires, second_wires) = wires.split_at(group_splits.wires.min(wires.len()));
-    let (first_hatches, second_hatches) =
-        hatches.split_at(group_splits.hatches.min(hatches.len()));
+    let (first_hatches, second_hatches) = hatches.split_at(group_splits.hatches.min(hatches.len()));
     let (first_wipeouts, second_wipeouts) =
         wipeouts.split_at(group_splits.wipeouts.min(wipeouts.len()));
     let (first_images, second_images) = images.split_at(group_splits.images.min(images.len()));
@@ -586,7 +628,12 @@ pub fn emit_plot_content<S: PlotSink>(
             sequence += 1;
         }
         for image in images {
-            draw_items.push((image.image.draw_depth, 1u8, sequence, DrawItem::Image(image)));
+            draw_items.push((
+                image.image.draw_depth,
+                1u8,
+                sequence,
+                DrawItem::Image(image),
+            ));
             sequence += 1;
         }
         draw_items.sort_by(|a, b| {
@@ -699,6 +746,7 @@ pub fn emit_plot_content<S: PlotSink>(
                         plot_style,
                         options,
                         &mut glyphs,
+                        assets.embedded_fonts.as_deref(),
                     )?;
                     last_color = None;
                     last_lw = None;
@@ -1339,6 +1387,14 @@ fn push_band_ring(out: &mut Vec<Vec<PlotPoint>>, corners: &[[f64; 2]]) {
 }
 
 fn plotted_color(rgb: [f32; 3], alpha: f32, screening: f32, options: PdfPlotOptions) -> [f32; 3] {
+    // Monochrome prints every colour as black — including true colour, which
+    // a CTB never reaches. Pure white is the page/mask colour (wipeouts are
+    // forced to [1; 3] upstream) and must stay white.
+    let rgb = if options.monochrome && rgb != [1.0; 3] {
+        [0.0; 3]
+    } else {
+        rgb
+    };
     let amount = screening.clamp(0.0, 1.0)
         * if options.transparency {
             alpha.clamp(0.0, 1.0)
@@ -1542,9 +1598,10 @@ fn emit_image<S: PlotSink>(
     let corners: [PlotPoint; 4] =
         std::array::from_fn(|i| to_page(image.corners[i], image.corners_low[i]));
     if !corners.iter().all(|p| finite(*p))
-        || !image.verts.iter().all(|v| {
-            finite(to_page(v.pos, v.pos_low)) && v.uv.iter().all(|c| c.is_finite())
-        })
+        || !image
+            .verts
+            .iter()
+            .all(|v| finite(to_page(v.pos, v.pos_low)) && v.uv.iter().all(|c| c.is_finite()))
         || !plot
             .clips
             .iter()
@@ -1554,8 +1611,8 @@ fn emit_image<S: PlotSink>(
         report.refuse_image("Cannot plot bitmap: invalid coordinates, clip boundary, or opacity.");
         return Ok(());
     }
-    let alpha = (options.transparency && image.opacity < 1.0)
-        .then(|| image.opacity.clamp(0.0, 1.0));
+    let alpha =
+        (options.transparency && image.opacity < 1.0).then(|| image.opacity.clamp(0.0, 1.0));
     sink.emit(PlotOp::Save)?;
     for clip in &plot.clips {
         sink.emit(PlotOp::Clip {
@@ -1958,6 +2015,7 @@ fn emit_text<S: PlotSink>(
     plot_style: Option<&PlotStyleTable>,
     options: PdfPlotOptions,
     glyphs: &mut GlyphState,
+    embedded_fonts: Option<&std::collections::HashSet<(usize, u32, u32)>>,
 ) -> Result<(), S::Error> {
     use crate::scene::text::sdf_atlas;
 
@@ -2057,6 +2115,43 @@ fn emit_text<S: PlotSink>(
                 };
 
                 if !ge.fill_tris.is_empty() {
+                    // A filled TrueType glyph the backend can typeset: draw it
+                    // with the embedded font subset so the page carries real,
+                    // extractable text. `tm` maps font units onto the page the
+                    // way the quad maps the glyph's tile, so the font-drawn
+                    // glyph lands exactly where its outline would have.
+                    if let Some(src) = ge
+                        .source
+                        .as_ref()
+                        .filter(|src| embedded_fonts.is_some_and(|set| set.contains(&src.font.id)))
+                    {
+                        let k = src.k as f64;
+                        let (span_x, span_y) = (sx as f64, sy as f64);
+                        let (ex, ey) = (br[0] - bl[0], br[1] - bl[1]);
+                        let (fx, fy) = (tl[0] - bl[0], tl[1] - bl[1]);
+                        let to_pt = GEOMETRY_MM_TO_PT as f64;
+                        // Glyph-space (0,0) — the glyph origin — through the
+                        // same affine `map` uses for the tile.
+                        let origin = point(
+                            bl[0] - (pmin[0] as f64 / span_x) * ex - (pmin[1] as f64 / span_y) * fx,
+                            bl[1] - (pmin[0] as f64 / span_x) * ey - (pmin[1] as f64 / span_y) * fy,
+                        );
+                        sink.emit(PlotOp::FontGlyph {
+                            font: src.font.id,
+                            gid: src.gid,
+                            ch: ge.ch,
+                            tm: [
+                                (k * ex / span_x * to_pt) as f32,
+                                (k * ey / span_x * to_pt) as f32,
+                                (k * fx / span_y * to_pt) as f32,
+                                (k * fy / span_y * to_pt) as f32,
+                                origin.x,
+                                origin.y,
+                            ],
+                            color: [r, g, b],
+                        })?;
+                        continue;
+                    }
                     // Filled TrueType glyph: the triangulation of one glyph is
                     // one shape (`FillMesh`), which the PDF sink expands back
                     // into a filled triangle per triple.
@@ -2189,7 +2284,11 @@ mod tests {
         assert_eq!(fill, [1.0, 1.0, 1.0]);
         // Nothing to switch out of without merge_lines: the colour is set and
         // the mesh follows, no blend switch between them.
-        assert!(matches!(ops[at - 1], PlotOp::FillColor(_)), "{:?}", ops[at - 1]);
+        assert!(
+            matches!(ops[at - 1], PlotOp::FillColor(_)),
+            "{:?}",
+            ops[at - 1]
+        );
     }
 
     /// A light canvas would otherwise go through the light-to-dark adaptation
@@ -2215,6 +2314,60 @@ mod tests {
         assert_eq!(ops[at - 2], PlotOp::Save);
         assert_eq!(ops[at - 1], PlotOp::Blend(PlotBlend::Normal));
         assert_eq!(ops[at + 1], PlotOp::Restore);
+    }
+
+    /// `monochrome` prints every colour black — true colour included, where a
+    /// CTB never reaches — while the page/mask white a wipeout forces stays
+    /// white, else the mask would paint a black box.
+    #[test]
+    fn monochrome_blacks_every_colour_but_the_mask_white() {
+        let authored_white = crate::scene::convert::tess_util::authored_rgb([1.0; 3]);
+        let mut case = Case::new("mono");
+        case.options.monochrome = true;
+        for (name, color, y) in [
+            ("olive-pipe", [0.55, 0.52, 0.06, 1.0], 0.0_f32),
+            ("blue-signal", [0.2, 0.4, 0.9, 1.0], 5.0),
+            (
+                "authored-white",
+                [authored_white[0], authored_white[1], authored_white[2], 1.0],
+                10.0,
+            ),
+        ] {
+            case.wires.push(crate::io::plot_corpus::wire(
+                name,
+                vec![[0.0, y, 0.0], [30.0, y, 0.0]],
+                color,
+                0.1,
+            ));
+        }
+        case.wipeouts.push(crate::io::plot_corpus::hatch(
+            "WIPEOUT_FILL",
+            crate::io::plot_corpus::square(40.0, 0.0, 5.0),
+            HatchPattern::Solid,
+            [0.1, 0.1, 0.1, 1.0],
+        ));
+        let ops = ops_for(&case);
+        // Every stroke is black; no colour survives monochrome.
+        assert!(
+            ops.iter()
+                .all(|op| !matches!(op, PlotOp::StrokeColor(c) if *c != [0.0; 3])),
+            "{ops:?}"
+        );
+        assert!(ops.iter().any(|op| matches!(op, PlotOp::StrokeColor(_))));
+        // The wipeout still masks with the paper's white.
+        let fill_at = ops
+            .iter()
+            .position(|op| matches!(op, PlotOp::Fill { .. }))
+            .expect("the wipeout's fill");
+        let fill = ops[..fill_at]
+            .iter()
+            .rev()
+            .find_map(|op| match op {
+                PlotOp::FillColor(c) => Some(*c),
+                _ => None,
+            })
+            .expect("a fill colour before the wipeout");
+        assert_eq!(fill, [1.0; 3]);
     }
 
     /// A wide polyline whose width varies, as the scene hands it to the plot:
@@ -2436,7 +2589,11 @@ mod tests {
         let ops = ops_for(&case);
         let (at, fill) = mesh_and_fill(&ops);
         assert_eq!(fill, [0.0, 0.0, 0.0]);
-        assert!(matches!(ops[at - 1], PlotOp::FillColor(_)), "{:?}", ops[at - 1]);
+        assert!(
+            matches!(ops[at - 1], PlotOp::FillColor(_)),
+            "{:?}",
+            ops[at - 1]
+        );
     }
 
     /// The fill colour in force at each solid `Fill` on the page, in order.

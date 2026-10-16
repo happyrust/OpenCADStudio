@@ -37,15 +37,14 @@ pub(super) fn apply_text_height(entity: &mut EntityType, height_mm: f64) {
 /// states no colour of its own, and the diagnostic layers' colours *are* the
 /// diagnosis -- the same reason [`apply_symbology`] refuses to paint them.
 ///
-/// Most of a P&ID letters in black, which on the editor's dark background the
-/// renderer flips to white (`scene::view::render::adapt_to_bg`) exactly as it
-/// already does for the drawing's black line work. So this is visible as
-/// colour where the drawing states one, and as no change at all where it
-/// states the black that most lettering uses.
+/// Most of a P&ID letters in black, which [`foreground_color`] stores as
+/// ACI 7 -- the contrast colour the renderer flips to white on the dark
+/// canvas and the plotter prints black on paper, so the letter is readable
+/// both ways. Any other stated colour lands as the true colour it is.
 pub(super) fn apply_text_colour(entity: &mut EntityType, [r, g, b]: [u8; 3]) {
     if let EntityType::Text(text) = entity {
         if text.common.layer == LAYER_TEXT {
-            text.common.color = Color::from_rgb(r, g, b);
+            text.common.color = foreground_color(r, g, b);
         }
     }
 }
@@ -81,6 +80,43 @@ pub(super) fn apply_text_alignment(entity: &mut EntityType, alignment: TextAlign
             TextAlignment::Left => TextHorizontalAlignment::Left,
             TextAlignment::Center => TextHorizontalAlignment::Center,
             TextAlignment::Right => TextHorizontalAlignment::Right,
+        };
+        sync_text_alignment_point(text);
+    }
+}
+
+/// Letter a text entity at the hot point its own record states.
+///
+/// Every `igTextBox` ends its placement tail with a 4-byte trailer whose last
+/// byte is the label's own justification: `(code >> 4) % 3` picks the
+/// horizontal point of the text box the insertion sits on — `0` left,
+/// `1` centre, `2` right — and `(code & 0x0F) % 3` the vertical one —
+/// `0` bottom, `1` top, `2` middle. It is the record's authored anchor and
+/// it overrides the paragraph style's declared alignment: `L=0.8MPa ` and
+/// `1/2"` share a `Center` paragraph yet letter left-on-top and centred
+/// respectively, and the `+3`-shifted high nibbles (`0x38`/`0x48`/`0x58`)
+/// mark labels attached to a parent symbol while folding into the same
+/// classes. Measured against the reference sheets: every one of the ~1,500
+/// records' insertion points lands on the glyph-box hot point its code
+/// names.
+///
+/// Scoped like [`apply_text_alignment`]: the sheet's own lettering only.
+pub(super) fn apply_text_anchor(entity: &mut EntityType, code: u8) {
+    use crate::entities::text::sync_text_alignment_point;
+
+    if let EntityType::Text(text) = entity {
+        if text.common.layer != LAYER_TEXT {
+            return;
+        }
+        text.horizontal_alignment = match (code >> 4) % 3 {
+            1 => TextHorizontalAlignment::Center,
+            2 => TextHorizontalAlignment::Right,
+            _ => TextHorizontalAlignment::Left,
+        };
+        text.vertical_alignment = match (code & 0x0F) % 3 {
+            0 => TextVerticalAlignment::Bottom,
+            1 => TextVerticalAlignment::Top,
+            _ => TextVerticalAlignment::Middle,
         };
         sync_text_alignment_point(text);
     }
@@ -204,8 +240,11 @@ pub(super) fn apply_text_style(entity: &mut EntityType, style_name: &str) {
 }
 
 /// Register one document text style per distinct typeface the drawing's
-/// character styles name, returning the map from typeface to the style name it
-/// was given.
+/// character styles name -- plus `symbol_fonts`, the faces the symbol bodies'
+/// own lettering names (the cached bodies' `primitive_letterings`; a library
+/// body resolves its lettering at placement, so a face only it uses still
+/// letters in the default style) -- returning the map from typeface to the
+/// style name it was given.
 ///
 /// Pooled the way [`register_dash_linetypes`] pools patterns, and for the same
 /// reason: a `.pid` names a handful of typefaces, and once each is a named
@@ -236,14 +275,16 @@ pub(super) fn apply_text_style(entity: &mut EntityType, style_name: &str) {
 pub(super) fn register_text_styles(
     doc: &mut CadDocument,
     text_heights: &pid_parse::style_link::TextHeightIndex,
+    symbol_fonts: impl Iterator<Item = String>,
     path: &Path,
 ) -> HashMap<String, String> {
-    let fonts: BTreeSet<&str> = text_heights
+    let fonts: BTreeSet<String> = text_heights
         .values()
-        .filter_map(|style| style.font_name.as_deref())
+        .filter_map(|style| style.font_name.clone())
+        .chain(symbol_fonts)
         .collect();
     let mut names = HashMap::new();
-    for font in fonts {
+    for font in &fonts {
         let base = text_style_name(font);
         let mut name = base.clone();
         let mut suffix = 2;
@@ -264,7 +305,7 @@ pub(super) fn register_text_styles(
         }
         style.set_handle(doc.allocate_handle());
         if doc.text_styles.add(style).is_ok() {
-            names.insert(font.to_string(), name);
+            names.insert(font.clone(), name);
         }
     }
     names

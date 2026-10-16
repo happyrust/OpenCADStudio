@@ -592,12 +592,14 @@ impl OpenCADStudio {
             ("lineweights", 1),
             ("merge_lines", 2),
             ("stamp", 3),
+            ("monochrome", 4),
         ] {
             if let Some(flag) = req[key].as_bool() {
                 match field {
                     0 => request.transparency = flag,
                     1 => request.lineweights = flag,
                     2 => request.merge_lines = flag,
+                    4 => request.monochrome = flag,
                     _ => request.stamp = flag,
                 }
             }
@@ -934,7 +936,10 @@ impl OpenCADStudio {
         let scene = &self.tabs[self.active_tab].scene;
         let (vw, vh) = scene.selection.borrow().view.vp_size;
         let (camera, bounds) = scene.viewport_edit_frame((vw, vh)).unwrap_or_else(|| {
-            (scene.camera.borrow().clone(), scene.active_model_tile_bounds(vw, vh))
+            (
+                scene.camera.borrow().clone(),
+                scene.active_model_tile_bounds(vw, vh),
+            )
         });
         let local = iced::Rectangle {
             width: bounds.width,
@@ -1013,7 +1018,10 @@ impl OpenCADStudio {
                     "right" => Message::ViewportRightRelease,
                     "middle" => Message::ViewportMiddleRelease,
                     _ => {
-                        outcome = Err(failure("invalid_request", "release is left, right or middle"));
+                        outcome = Err(failure(
+                            "invalid_request",
+                            "release is left, right or middle",
+                        ));
                         break;
                     }
                 }
@@ -1906,7 +1914,10 @@ impl OpenCADStudio {
             "refedit_dialog" => {
                 use crate::ui::window::refedit_dialog::RefEditDialogMsg as R;
                 if self.active_modal != Some(crate::app::ModalKind::RefEdit) {
-                    return Err(failure("no_dialog", "The Reference Edit dialog is not open"));
+                    return Err(failure(
+                        "no_dialog",
+                        "The Reference Edit dialog is not open",
+                    ));
                 }
                 let spec = string(req, "value")?;
                 let (key, value) = spec.split_once('=').unwrap_or((spec, ""));
@@ -1918,15 +1929,17 @@ impl OpenCADStudio {
                 if key == "cancel" {
                     Message::CloseModal
                 } else {
-                Message::RefEditDialog(match key {
-                    "ok" => R::Ok,
-                    "level" => R::Level(value.parse().map_err(|_| failure("invalid_value", spec))?),
-                    "nested" => R::Nested(flag()?),
-                    "attributes" => R::Attributes(flag()?),
-                    "lock" => R::Lock(flag()?),
-                    "unique" => R::Unique(flag()?),
-                    _ => return Err(failure("invalid_value", "Unknown Reference Edit field")),
-                })
+                    Message::RefEditDialog(match key {
+                        "ok" => R::Ok,
+                        "level" => {
+                            R::Level(value.parse().map_err(|_| failure("invalid_value", spec))?)
+                        }
+                        "nested" => R::Nested(flag()?),
+                        "attributes" => R::Attributes(flag()?),
+                        "lock" => R::Lock(flag()?),
+                        "unique" => R::Unique(flag()?),
+                        _ => return Err(failure("invalid_value", "Unknown Reference Edit field")),
+                    })
                 }
             }
             // Ribbon key tips: `show`, `alt` (a lone Alt), `type:<codes>`, `enter`,
@@ -1945,10 +1958,18 @@ impl OpenCADStudio {
                             .chars()
                             .map(|ch| K::Char(ch.to_uppercase().collect()))
                             .collect(),
-                        _ => return Err(failure("invalid_value", "Use show, alt, type:<codes>, enter, esc or hide")),
+                        _ => {
+                            return Err(failure(
+                                "invalid_value",
+                                "Use show, alt, type:<codes>, enter, esc or hide",
+                            ))
+                        }
                     },
                 };
-                let tasks: Vec<_> = inputs.into_iter().map(|input| self.on_keytip(input)).collect();
+                let tasks: Vec<_> = inputs
+                    .into_iter()
+                    .map(|input| self.on_keytip(input))
+                    .collect();
                 return Ok(Task::batch(tasks));
             }
             // The -VIEW Background dialog, one field per call: "type=gradient",
@@ -1997,9 +2018,15 @@ impl OpenCADStudio {
                     })),
                     "aspect" => Message::PdfDialog(P::BgAspect(value == "1")),
                     "offset" | "scale" => {
-                        let pair: Vec<String> = value.split(',').map(|part| part.trim().to_string()).collect();
+                        let pair: Vec<String> = value
+                            .split(',')
+                            .map(|part| part.trim().to_string())
+                            .collect();
                         let pair = <[String; 2]>::try_from(pair).map_err(|_| bad())?;
-                        if pair.iter().any(|v| v.parse::<f64>().map_or(true, |v| !v.is_finite())) {
+                        if pair
+                            .iter()
+                            .any(|v| v.parse::<f64>().map_or(true, |v| !v.is_finite()))
+                        {
                             return Err(bad());
                         }
                         if key == "offset" {
@@ -2047,7 +2074,12 @@ impl OpenCADStudio {
                     "apply" => Message::PdfDialog(P::IaApply),
                     "reset" => Message::PdfDialog(P::IaReset),
                     "brightness" | "contrast" | "fade" => {
-                        let v: u8 = value.trim().parse().ok().filter(|v| *v <= 100).ok_or_else(bad)?;
+                        let v: u8 = value
+                            .trim()
+                            .parse()
+                            .ok()
+                            .filter(|v| *v <= 100)
+                            .ok_or_else(bad)?;
                         Message::PdfDialog(P::IaValue(row(key)?, v))
                     }
                     "type" => {
@@ -2104,7 +2136,10 @@ impl OpenCADStudio {
             // Choose an entry of the open multi-functional grip menu by its
             // position (0 = first), as a click on it does.
             "grip_menu_pick" => {
-                let entries = self.grip_popup.as_ref().map_or(0, |popup| popup.items.len());
+                let entries = self
+                    .grip_popup
+                    .as_ref()
+                    .map_or(0, |popup| popup.items.len());
                 if entries == 0 {
                     return Err(failure("menu_closed", "No grip menu is open"));
                 }

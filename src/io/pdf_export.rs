@@ -28,9 +28,12 @@ use printpdf::{
     BlendMode, BuiltinFont, Color, CurTransMat, ExtendedGraphicsState, ExtendedGraphicsStateId,
     Line, LineCapStyle, LineDashPattern, LineJoinStyle, LinePoint, Mm, Op, PaintMode, PdfDocument,
     PdfFontHandle, PdfPage, PdfSaveOptions, Point, Polygon, PolygonRing, Pt, Rect, Rgb, TextItem,
-    WindingOrder, XObjectId,
+    TextMatrix, WindingOrder, XObjectId,
 };
 use std::path::Path;
+
+mod fonts;
+use fonts::FontPlans;
 
 /// The XObject each distinct bitmap was registered under, keyed by its pixel
 /// buffer's address and size. Shared by every page of one document so a
@@ -149,6 +152,19 @@ pub(crate) fn render_pdf_bytes(
     plot_style: Option<&PlotStyleTable>,
 ) -> Result<Vec<u8>, String> {
     let mut doc = PdfDocument::new("Open CAD Studio Export");
+    // One atlas snapshot for the whole document, and the subset fonts it
+    // implies: filled TrueType glyphs draw as real text objects — extractable,
+    // and far smaller than their tessellated outlines.
+    let snapshot = crate::io::plot_emit::GlyphSnapshot::capture();
+    let font_plans = snapshot
+        .as_ref()
+        .map(|snapshot| FontPlans::collect(&mut doc, pages, snapshot))
+        .unwrap_or_else(FontPlans::none);
+    let assets = PlotAssets {
+        glyphs: snapshot,
+        embedded_fonts: font_plans.faces(),
+        ..PlotAssets::default()
+    };
     // Borrowing all pages keeps their pixel Arcs alive until this cache is
     // dropped, so an allocation address cannot be reused by another bitmap
     // during this export.
@@ -157,7 +173,9 @@ pub(crate) fn render_pdf_bytes(
         append_pdf_page(
             &mut doc,
             &mut image_resources,
+            &font_plans,
             &page.as_plot_page(plot_style),
+            &assets,
         )
         .map_err(|error| format!("Page {}: {error}", index + 1))?;
     }
@@ -178,7 +196,9 @@ pub(crate) fn render_pdf_bytes(
 fn append_pdf_page(
     doc: &mut PdfDocument,
     image_resources: &mut ImageResources,
+    font_plans: &FontPlans,
     page: &PlotPage<'_>,
+    assets: &PlotAssets,
 ) -> Result<(), String> {
     // Paper dimensions are validated like the content coordinates below: a
     // NaN/inf/zero sheet (`width < MIN` compares false for NaN) would be
@@ -191,7 +211,7 @@ fn append_pdf_page(
     {
         return Err("plot sheet size is not valid".into());
     }
-    let ops = page_ops(doc, image_resources, page, &PlotAssets::default())?;
+    let ops = page_ops(doc, image_resources, font_plans, page, assets)?;
     doc.pages
         .push(PdfPage::new(Mm(page.paper_w), Mm(page.paper_h), ops));
     Ok(())
@@ -205,10 +225,11 @@ fn append_pdf_page(
 fn page_ops(
     doc: &mut PdfDocument,
     image_resources: &mut ImageResources,
+    font_plans: &FontPlans,
     page: &PlotPage<'_>,
     assets: &PlotAssets,
 ) -> Result<Vec<Op>, String> {
-    let mut sink = PdfSink::new(doc, image_resources);
+    let mut sink = PdfSink::new(doc, image_resources, font_plans);
     // The PDF backend has always published a page whose text the atlas could
     // not supply; the report says so, and turning that into a refusal is a
     // change to PDF behaviour, not to the SVG work that added the report.
@@ -237,15 +258,23 @@ pub struct PdfSink<'d> {
     doc: &'d mut PdfDocument,
     /// Bitmaps already registered on `doc`, shared across its pages.
     image_resources: &'d mut ImageResources,
+    /// The subset faces `FontGlyph` ops draw with — empty means the emitter
+    /// never sent one (it only sends for declared faces).
+    font_plans: &'d FontPlans,
     ops: Vec<Op>,
     blend_states: Option<(ExtendedGraphicsStateId, ExtendedGraphicsStateId)>,
 }
 
 impl<'d> PdfSink<'d> {
-    pub fn new(doc: &'d mut PdfDocument, image_resources: &'d mut ImageResources) -> Self {
+    pub(crate) fn new(
+        doc: &'d mut PdfDocument,
+        image_resources: &'d mut ImageResources,
+        font_plans: &'d FontPlans,
+    ) -> Self {
         Self {
             doc,
             image_resources,
+            font_plans,
             ops: Vec::new(),
             blend_states: None,
         }
@@ -448,6 +477,51 @@ impl PlotSink for PdfSink<'_> {
                 },
                 Op::EndTextSection,
             ]),
+            // A glyph the emitter marked for a registered face: one text
+            // object at font size = units-per-em, the quad's text matrix
+            // placing font-unit space exactly over the tile the outline
+            // would have filled.
+            PlotOp::FontGlyph {
+                font,
+                gid,
+                ch,
+                tm,
+                color,
+            } => {
+                let planned = self
+                    .font_plans
+                    .get(&font)
+                    .and_then(|plan| plan.subset_gid(gid).map(|gid| (plan, gid)));
+                match planned {
+                    Some((plan, subset_gid)) => {
+                        self.ops.extend([
+                            Op::StartTextSection,
+                            Op::SetFont {
+                                font: PdfFontHandle::External(plan.font.clone()),
+                                size: Pt(plan.upem),
+                            },
+                            Op::SetTextMatrix {
+                                matrix: TextMatrix::Raw(tm),
+                            },
+                            Op::SetFillColor { col: rgb(color) },
+                            Op::ShowText {
+                                items: vec![TextItem::GlyphIds(vec![
+                                    printpdf::Codepoint::with_cid(subset_gid, 0.0, ch.to_string()),
+                                ])],
+                            },
+                            Op::EndTextSection,
+                        ])
+                    }
+                    // The emitter only sends faces the plan declared, so a
+                    // miss means the usage scan and the emit disagreed — the
+                    // glyph is dropped rather than typeset with the wrong code.
+                    None => {
+                        log::warn!(
+                            "PDF export: no subset plan for font {font:?} gid {gid} ({ch:?})"
+                        )
+                    }
+                }
+            }
             // A named group is structure for a backend that has it (SVG);
             // a PDF content stream has nowhere to put the name.
             PlotOp::BeginGroup { .. } | PlotOp::EndGroup => {}
@@ -613,8 +687,7 @@ mod tests {
         let unstyled = pdf_stream_text(&build_pdf_pages(&[make_page()], None).unwrap());
         let monochrome =
             PlotStyleTable::builtin("monochrome.ctb").expect("shipped monochrome.ctb parses");
-        let styled =
-            pdf_stream_text(&build_pdf_pages(&[make_page()], Some(&monochrome)).unwrap());
+        let styled = pdf_stream_text(&build_pdf_pages(&[make_page()], Some(&monochrome)).unwrap());
 
         assert!(
             unstyled.contains("1 0 0 rg") || unstyled.contains("1 0 0 RG"),
@@ -675,7 +748,11 @@ mod tests {
             &build_pdf_pages(&[make_page(1.0), make_page(3.0)], None).unwrap(),
         ));
         let unstyled = distinct_widths(unstyled);
-        assert_eq!(unstyled.len(), 2, "two object weights, two pens: {unstyled:?}");
+        assert_eq!(
+            unstyled.len(),
+            2,
+            "two object weights, two pens: {unstyled:?}"
+        );
         assert!(
             (unstyled[1] / unstyled[0] - 3.0).abs() < 0.1,
             "pen widths follow the object weights 1px:3px: {unstyled:?}"
@@ -712,6 +789,57 @@ mod tests {
             "text did not add content: {} !> {}",
             with_text.len(),
             no_text.len()
+        );
+    }
+
+    /// A `text_wire`-style quads wire in a system TrueType face, or `None`
+    /// where no TTF resolves (the test then skips rather than guesses).
+    fn ttf_wire(text: &str, origin: [f64; 3]) -> Option<PlotWire> {
+        use crate::scene::pipeline::text_gpu::push_glyph_vertices;
+        use crate::scene::text::{glyph_quads::layout_glyph_quads, sdf_atlas};
+        if crate::scene::text::ttf_glyph::glyph_source("Arial", 'H').is_none() {
+            return None;
+        }
+        let mut atlas = sdf_atlas::text_atlas().lock().unwrap();
+        let (quads, _) =
+            layout_glyph_quads(&mut atlas, 10.0, 0.0, 1.0, 0.0, 1.0, "Arial", false, text);
+        assert!(!quads.is_empty(), "Arial laid out nothing for {text:?}");
+        let mut verts = Vec::new();
+        push_glyph_vertices(&mut verts, &quads, origin, 1.0, [1.0, 0.0, 0.0, 1.0], 0.0);
+        drop(atlas);
+        Some(PlotWire {
+            wire: WireModel {
+                text_verts: verts,
+                ..WireModel::solid("t".into(), Vec::new(), WireModel::WHITE, false)
+            },
+            draw_depth: 0.0,
+        })
+    }
+
+    // Filled TTF glyphs export as real text objects: an embedded subset font
+    // (FontFile2/3 + ToUnicode) and `Tf`/`Tm`/`TJ` operators instead of the
+    // tessellated outline's `re f` triangles. Skip only where no TTF resolves.
+    #[test]
+    fn filled_ttf_glyphs_export_as_real_text() {
+        let Some(wire) = ttf_wire("Hi", [20.0, 20.0, 0.0]) else {
+            return;
+        };
+        let bytes = build_pdf_pages(&[test_page(vec![wire])], None).unwrap();
+        let stream = pdf_stream_text(&bytes);
+        assert!(
+            stream.contains("/FontFile") || stream.contains("/FontFile2"),
+            "no embedded font program in {stream:?}"
+        );
+        assert!(
+            stream.contains("/ToUnicode"),
+            "no ToUnicode map in {stream:?}"
+        );
+        // A Type0 font draw: font select, text matrix, glyph codes.
+        assert!(stream.contains("Tf"), "no font selection in {stream:?}");
+        assert!(stream.contains(" Tm"), "no text matrix in {stream:?}");
+        assert!(
+            stream.contains("Tj") || stream.contains("TJ"),
+            "no text showing in {stream:?}"
         );
     }
 
@@ -803,7 +931,14 @@ mod tests {
     fn new_ops(case: &Case) -> Vec<Op> {
         let mut doc = PdfDocument::new("new");
         let mut resources = ImageResources::new();
-        page_ops(&mut doc, &mut resources, &case.page(), &PlotAssets::default()).unwrap()
+        page_ops(
+            &mut doc,
+            &mut resources,
+            &FontPlans::none(),
+            &case.page(),
+            &PlotAssets::default(),
+        )
+        .unwrap()
     }
 
     /// Bit-exact text of each op. printpdf's own `PartialEq` is no use for a
@@ -992,6 +1127,7 @@ mod tests {
         let ops = page_ops(
             &mut doc,
             &mut resources,
+            &FontPlans::none(),
             &case.page(),
             &PlotAssets {
                 stamp_label: Some("PINNED".into()),

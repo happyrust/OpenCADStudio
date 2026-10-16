@@ -76,6 +76,19 @@ pub struct ImportSummary {
     /// the one TEXT entity each becomes letters in the run covering most of
     /// its characters (plan 2026-09-24, N-D3). Logged, not shown.
     pub lettering_flattened: usize,
+    /// The `.igr` border template the sheet's OLE frame linked to and this
+    /// machine had a copy of, by file name. `None` when the drawing named
+    /// none, or none of its links resolved to a local file -- the synthetic
+    /// page border stands in either way.
+    pub border_template: Option<String>,
+    /// Entities the linked border template drew: the real frame, title
+    /// block and margin strips. Separate from `drawn`, which counts the
+    /// sheet's own entities.
+    pub template_entities: usize,
+    /// Template records the parser saw but could not draw (the static
+    /// lettering, arcs and boundary rings the template decoders do not yet
+    /// cover). Kept beside `missing`, never folded into it.
+    pub template_missing: usize,
     /// The symbol library roots the import found -- `PID_SYMBOL_LIBRARY` or
     /// the `.sym` tree above the drawing -- and drew its library bodies
     /// from. Empty when no library was found. Where a placement's body came
@@ -183,6 +196,9 @@ impl ImportSummary {
             push(key, value.to_string());
         }
         push("style_tables_failed", self.style_tables_failed.to_string());
+        if let Some(template) = &self.border_template {
+            push("border_template", template.clone());
+        }
         for root in &self.symbol_library {
             push("symbol_library", root.to_string_lossy().into_owned());
         }
@@ -208,6 +224,7 @@ impl ImportSummary {
             carried = true;
             match key {
                 "style_tables_failed" => summary.style_tables_failed = value == "true",
+                "border_template" => summary.border_template = Some(value.to_string()),
                 "symbol_library" => summary.symbol_library.push(PathBuf::from(value)),
                 "unit" => unit = Some(value.to_string()),
                 "mm_per_unit" => mm_per_unit = value.parse().ok(),
@@ -260,7 +277,7 @@ impl ImportSummary {
     /// headless export, a script -- gets instead of the editor's three lines.
     pub fn log(&self, path: &Path) {
         log::info!(
-            "{}: P&ID import: {} entities from {} decoded records; {} source records not drawn; {} entities on {} authored sheet layers ({} unresolved); {} sheet layer names, {} off; {} cached / {} library bodies{}{}",
+            "{}: P&ID import: {} entities from {} decoded records; {} source records not drawn; {} entities on {} authored sheet layers ({} unresolved); {} sheet layer names, {} off; {} cached / {} library bodies{}{}{}",
             path.display(),
             self.drawn,
             self.decoded,
@@ -277,6 +294,13 @@ impl ImportSummary {
             } else {
                 ""
             },
+            match &self.border_template {
+                Some(template) => format!(
+                    "; border template {template} drew {} entities",
+                    self.template_entities
+                ),
+                None => String::new(),
+            },
             if self.unit.is_assumed() {
                 "; no coordinate unit stated, the metre was assumed"
             } else {
@@ -286,7 +310,7 @@ impl ImportSummary {
     }
 
     /// The counted fields, by the keys they are stored under.
-    pub(super) fn counts(&self) -> [(&'static str, usize); 16] {
+    pub(super) fn counts(&self) -> [(&'static str, usize); 18] {
         [
             ("drawn", self.drawn),
             ("decoded", self.decoded),
@@ -304,6 +328,8 @@ impl ImportSummary {
             ("hidden_strokes_skipped", self.hidden_strokes_skipped),
             ("label_anchors_undrawn", self.label_anchors_undrawn),
             ("lettering_flattened", self.lettering_flattened),
+            ("template_entities", self.template_entities),
+            ("template_missing", self.template_missing),
         ]
     }
 
@@ -326,6 +352,8 @@ impl ImportSummary {
             "hidden_strokes_skipped" => &mut self.hidden_strokes_skipped,
             "label_anchors_undrawn" => &mut self.label_anchors_undrawn,
             "lettering_flattened" => &mut self.lettering_flattened,
+            "template_entities" => &mut self.template_entities,
+            "template_missing" => &mut self.template_missing,
             _ => return None,
         })
     }
@@ -351,6 +379,9 @@ impl ImportSummary {
             hidden_strokes_skipped: 0,
             label_anchors_undrawn: 0,
             lettering_flattened: 0,
+            border_template: None,
+            template_entities: 0,
+            template_missing: 0,
             symbol_library: Vec::new(),
             unit: ImportUnit::AssumedMetre,
         }

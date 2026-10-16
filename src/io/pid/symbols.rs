@@ -141,15 +141,27 @@ pub(super) fn cached_body_entities(
     symbol_bodies: &mut SymbolBodies,
     dash_linetypes: &HashMap<Vec<i64>, String>,
     paper_style_scale: f64,
+    font_styles: &HashMap<String, String>,
 ) -> Option<Vec<EntityType>> {
     let body = body?;
-    let strokes: Vec<(&SymbolPrimitive, Option<&PrimitiveStyle>)> =
-        body.visible_strokes().collect();
+    let strokes: Vec<(
+        &SymbolPrimitive,
+        Option<&PrimitiveStyle>,
+        Option<&SymbolLettering>,
+    )> = body.visible_styled().collect();
     symbol_bodies.hidden_strokes_skipped += body.primitives.len() - strokes.len();
     let entities: Vec<EntityType> = strokes
         .into_iter()
-        .filter_map(|(primitive, style)| {
-            place_primitive(primitive, style, at, dash_linetypes, paper_style_scale)
+        .flat_map(|(primitive, style, lettering)| {
+            place_primitive(
+                primitive,
+                style,
+                lettering,
+                at,
+                dash_linetypes,
+                paper_style_scale,
+                font_styles,
+            )
         })
         .collect();
     if entities.is_empty() {
@@ -170,20 +182,24 @@ pub(super) fn library_body_entities(
     symbol_bodies: &mut SymbolBodies,
     dash_linetypes: &HashMap<Vec<i64>, String>,
     paper_style_scale: f64,
+    font_styles: &HashMap<String, String>,
 ) -> Option<Vec<EntityType>> {
     let body = library
         .zip(symbol_path)
         .and_then(|(library, path)| library.resolve(path))?;
-    let entities: Vec<EntityType> = body
-        .primitives
-        .iter()
-        .filter_map(|styled| {
+    let strokes = body.displayed_primitives();
+    symbol_bodies.hidden_strokes_skipped += body.primitives.len() - strokes.len();
+    let entities: Vec<EntityType> = strokes
+        .into_iter()
+        .flat_map(|styled| {
             place_primitive(
                 &styled.primitive,
                 styled.style.as_ref(),
+                styled.lettering.as_ref(),
                 at,
                 dash_linetypes,
                 paper_style_scale,
+                font_styles,
             )
         })
         .collect();
@@ -246,13 +262,93 @@ impl Placement<'_> {
 pub(super) fn place_primitive(
     primitive: &SymbolPrimitive,
     style: Option<&PrimitiveStyle>,
+    lettering: Option<&SymbolLettering>,
     at: &Placement<'_>,
     dash_linetypes: &HashMap<Vec<i64>, String>,
     paper_style_scale: f64,
-) -> Option<EntityType> {
-    let mut entity = shape_primitive(primitive, at)?;
-    paint_symbol_stroke(&mut entity, style, dash_linetypes, paper_style_scale);
-    Some(entity)
+    font_styles: &HashMap<String, String>,
+) -> Vec<EntityType> {
+    let mut entities = shape_primitives(primitive, lettering, at, font_styles);
+    for entity in &mut entities {
+        paint_symbol_stroke(entity, style, dash_linetypes, paper_style_scale);
+    }
+    entities
+}
+
+/// The entities one primitive of a symbol body draws at its placement —
+/// usually one; a boundary draws a solid hatch per member shape (see
+/// [`shape_boundary`]).
+pub(super) fn shape_primitives(
+    primitive: &SymbolPrimitive,
+    lettering: Option<&SymbolLettering>,
+    at: &Placement<'_>,
+    font_styles: &HashMap<String, String>,
+) -> Vec<EntityType> {
+    if let SymbolPrimitive::Boundary { members, fill } = primitive {
+        return shape_boundary(members, *fill, at).unwrap_or_default();
+    }
+    shape_primitive(primitive, lettering, at, font_styles)
+        .into_iter()
+        .collect()
+}
+
+/// A boundary's member shapes as one solid hatch each — SmartPlant fills
+/// every disc of a plug valve's concentric circles rather than an even-odd
+/// compound of them, so each member becomes its own `EXTERNAL`-pathed
+/// hatch. Members that are not self-closing (lines) group into one ring's
+/// hatch, the same way the chain reads.
+fn shape_boundary(
+    members: &[SymbolPrimitive],
+    fill: Option<pid_parse::symbol_library::PrimitiveFill>,
+    at: &Placement<'_>,
+) -> Option<Vec<EntityType>> {
+    let mut hatches: Vec<EntityType> = Vec::new();
+    let mut lines = BoundaryPath::with_flags(BoundaryPathFlags::EXTERNAL);
+    for member in members {
+        match member {
+            SymbolPrimitive::Circle { center, radius } => {
+                let radius = at.scale_radius(*radius);
+                if !radius.is_finite() || radius <= 0.0 {
+                    continue;
+                }
+                let placed = at.apply(center.0, center.1);
+                let mut hatch = Hatch::new();
+                let mut path = BoundaryPath::with_flags(BoundaryPathFlags::EXTERNAL);
+                path.edges.push(BoundaryEdge::CircularArc(CircularArcEdge {
+                    center: Vector2::new(placed.x, placed.y),
+                    radius,
+                    start_angle: 0.0,
+                    end_angle: std::f64::consts::TAU,
+                    counter_clockwise: !at.mirrored(),
+                }));
+                hatch.paths.push(path);
+                hatch.common.layer = LAYER_FILL.to_string();
+                if let Some([r, g, b]) = fill.and_then(|fill| fill.rgb) {
+                    hatch.common.color = foreground_color(r, g, b);
+                }
+                hatches.push(EntityType::Hatch(hatch));
+            }
+            SymbolPrimitive::Line { start, end } => {
+                let a = at.apply(start.0, start.1);
+                let b = at.apply(end.0, end.1);
+                lines.edges.push(BoundaryEdge::Line(LineEdge {
+                    start: Vector2::new(a.x, a.y),
+                    end: Vector2::new(b.x, b.y),
+                }));
+            }
+            _ => {}
+        }
+    }
+    if !lines.edges.is_empty() {
+        let mut hatch = Hatch::new();
+        hatch.paths.push(lines);
+        hatch.common.layer = LAYER_FILL.to_string();
+        if let Some([r, g, b]) = fill.and_then(|fill| fill.rgb) {
+            hatch.common.color = foreground_color(r, g, b);
+        }
+        hatches.push(EntityType::Hatch(hatch));
+    }
+    (!hatches.is_empty()).then_some(hatches)
 }
 
 /// Give a symbol's stroke the colour, width and dash its own body states --
@@ -287,7 +383,7 @@ pub(super) fn paint_symbol_stroke(
     };
     let common = entity.common_mut();
     let [r, g, b] = style.rgb;
-    common.color = Color::from_rgb(r, g, b);
+    common.color = foreground_color(r, g, b);
     // Same ladder and the same guard as the drawing's own line work: DXF
     // stores hundredths of a millimetre, and a width outside the range the
     // format can state is left at the layer default rather than clamped into
@@ -308,10 +404,54 @@ pub(super) fn paint_symbol_stroke(
     }
 }
 
+/// Letter a symbol's own text the way its record states: the hot point its
+/// trailer's anchor byte decodes to, the colour its character style names,
+/// and the typeface its style resolved to when the drawing pooled it.
+///
+/// The anchor decode is the same nibble scheme [`apply_text_anchor`] reads
+/// off the sheet's records — `(code >> 4) % 3` horizontal, `(code & 0x0F) %
+/// 3` vertical — applied directly since the `apply_text_*` helpers are
+/// scoped to the sheet's own [`LAYER_TEXT`]. The colour is the undercoat
+/// only: where the placement names a style of its own, `apply_symbology`
+/// repaints it over this afterwards, which is measured behaviour -- LG and
+/// LT author their bubble letters `#FF0000` here and the placement letters
+/// them `#008000`.
+fn letter_label(
+    label: &mut Text,
+    lettering: &SymbolLettering,
+    font_styles: &HashMap<String, String>,
+) {
+    use crate::entities::text::sync_text_alignment_point;
+
+    label.horizontal_alignment = match (lettering.anchor_code >> 4) % 3 {
+        1 => TextHorizontalAlignment::Center,
+        2 => TextHorizontalAlignment::Right,
+        _ => TextHorizontalAlignment::Left,
+    };
+    label.vertical_alignment = match (lettering.anchor_code & 0x0F) % 3 {
+        0 => TextVerticalAlignment::Bottom,
+        1 => TextVerticalAlignment::Top,
+        _ => TextVerticalAlignment::Middle,
+    };
+    sync_text_alignment_point(label);
+    if let Some([r, g, b]) = lettering.rgb {
+        label.common.color = foreground_color(r, g, b);
+    }
+    if let Some(name) = lettering
+        .font_name
+        .as_deref()
+        .and_then(|font| font_styles.get(font))
+    {
+        label.style = name.clone();
+    }
+}
+
 /// Where one primitive of a symbol body lands at its placement.
 pub(super) fn shape_primitive(
     primitive: &SymbolPrimitive,
+    lettering: Option<&SymbolLettering>,
     at: &Placement<'_>,
+    font_styles: &HashMap<String, String>,
 ) -> Option<EntityType> {
     match primitive {
         SymbolPrimitive::Line { start, end } => {
@@ -364,6 +504,18 @@ pub(super) fn shape_primitive(
             // angles have to be radians for the addition to mean anything.
             arc.start_angle = start_angle;
             arc.end_angle = end_angle;
+            // Every measured `igArc2d` draws its minor arc: the CV valve's
+            // diaphragm reads start<end in the file yet the reference draws
+            // a 15deg cap, not the 345deg complement the clockwise reading
+            // builds. Only an exact half-turn needs the clockwise rule --
+            // the Manifold caps sit there, and it still wins on ties. The
+            // comparison needs epsilon room: `Parametric V Drum`'s caps read
+            // `pi -> 0` where the file's pi is one ulp above `f64::consts::PI`,
+            // and an exact `>` test flips that half-turn into its complement.
+            let sweep = (arc.end_angle - arc.start_angle).rem_euclid(std::f64::consts::TAU);
+            if sweep > std::f64::consts::PI + 1e-9 {
+                std::mem::swap(&mut arc.start_angle, &mut arc.end_angle);
+            }
             arc.common.layer = LAYER_SYMBOL.to_string();
             Some(EntityType::Arc(arc))
         }
@@ -415,6 +567,18 @@ pub(super) fn shape_primitive(
             curve.common.layer = LAYER_SYMBOL.to_string();
             Some(EntityType::LwPolyline(curve))
         }
+        SymbolPrimitive::Boundary { members, fill } => {
+            // One entity per caller that asks for it; the full one-hatch-
+            // per-member fan-out lives in `shape_boundary` and comes out
+            // through `shape_primitives`.
+            shape_boundary(members, *fill, at).and_then(|mut hatches| {
+                if hatches.is_empty() {
+                    None
+                } else {
+                    Some(hatches.remove(0))
+                }
+            })
+        }
         SymbolPrimitive::Text { text, at: origin } => {
             let value = text.trim();
             if !carries_a_label(value) {
@@ -423,13 +587,64 @@ pub(super) fn shape_primitive(
             let mut label = Text::new();
             label.value = value.to_string();
             label.insertion_point = at.apply(origin.0, origin.1);
-            // The record holds no height, so this is the same ISO 3098
-            // fallback the sheet's own text gets, scaled with the placement
-            // so a half-size symbol does not carry full-size lettering.
-            label.height = at.scale_radius(TEXT_HEIGHT_MM / at.projection.mm_per_unit);
-            // Radians on both sides -- see the angle-unit note by the layer constants.
-            label.rotation = at.rotation;
+            // The height the record states wins -- a `.sym` can scale its
+            // direction pair to the letter height the way the linked
+            // templates do -- then the character style's, then the same ISO
+            // 3098 fallback the sheet's own text gets, scaled with the
+            // placement so a half-size symbol does not carry full-size
+            // lettering.
+            label.height = lettering
+                .and_then(|lettering| {
+                    (lettering.letter_height_m > 0.0)
+                        .then_some(lettering.letter_height_m)
+                        .or(lettering.height_m)
+                })
+                .map(|height_m| at.scale_radius(height_m))
+                .unwrap_or_else(|| at.scale_radius(TEXT_HEIGHT_MM / at.projection.mm_per_unit));
+            // Radians on both sides -- see the angle-unit note by the layer
+            // constants. The record's own direction composes with the
+            // placement's rotation, and mirrors with it the way an arc's
+            // angles do. A mirrored placement turns lettering backwards,
+            // and SmartPlant keeps it readable: the emitted rotation is
+            // normalized into [-pi/2, pi/2) -- the ESD interlock's label
+            // sits at a pi-rotation mirror and reads upright in the
+            // reference -- and the anchor flips the way the dropped mirror
+            // would have flipped it.
+            let own_rotation = lettering.map_or(0.0, |lettering| lettering.rotation_rad);
+            let mut h_flip = false;
+            let mut v_flip = false;
+            label.rotation = if at.mirrored() {
+                let raw = at.rotation - own_rotation;
+                let emit = (raw + std::f64::consts::FRAC_PI_2).rem_euclid(std::f64::consts::PI)
+                    - std::f64::consts::FRAC_PI_2;
+                let delta = emit - at.rotation;
+                h_flip = delta.cos() < -0.5;
+                v_flip = delta.cos() > 0.5;
+                emit
+            } else {
+                at.rotation + own_rotation
+            };
             label.common.layer = LAYER_SYMBOL.to_string();
+            if let Some(lettering) = lettering {
+                letter_label(&mut label, lettering, font_styles);
+                if h_flip {
+                    label.horizontal_alignment = match label.horizontal_alignment {
+                        TextHorizontalAlignment::Left => TextHorizontalAlignment::Right,
+                        TextHorizontalAlignment::Right => TextHorizontalAlignment::Left,
+                        other => other,
+                    };
+                }
+                if v_flip {
+                    label.vertical_alignment = match label.vertical_alignment {
+                        TextVerticalAlignment::Top => TextVerticalAlignment::Bottom,
+                        TextVerticalAlignment::Bottom => TextVerticalAlignment::Top,
+                        other => other,
+                    };
+                }
+                if h_flip || v_flip {
+                    crate::entities::text::sync_text_alignment_point(&mut label);
+                }
+            }
             Some(EntityType::Text(label))
         }
     }

@@ -11,9 +11,9 @@ pub use automation::{export_headless, serve};
 pub use automation::{list_layouts_headless, plot_svg_headless, PlotSvgRequest};
 mod annotation_data;
 mod block_editor;
-mod block_save_as;
 #[cfg(test)]
 mod block_editor_tests;
+mod block_save_as;
 mod command_driver;
 pub(crate) use command_driver::{copy_to_clipboard_kernel, paste_entities_kernel, PasteSpace};
 pub(crate) mod commands;
@@ -1799,7 +1799,6 @@ pub struct WebSaveallEntry {
     camera_generation: u64,
     result: Result<Vec<u8>, String>,
 }
-
 
 #[derive(Debug, Clone)]
 #[cfg(not(target_arch = "wasm32"))]

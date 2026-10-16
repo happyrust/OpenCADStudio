@@ -165,7 +165,9 @@ impl PlacementMeasures {
         let extent = cached
             .and_then(|body| {
                 body.visible_primitives()
-                    .filter_map(|primitive| shape_primitive(primitive, &placement))
+                    .filter_map(|primitive| {
+                        shape_primitive(primitive, None, &placement, &HashMap::new())
+                    })
                     .filter_map(|entity| stroke_extent(&entity))
                     .reduce(union_extent)
             })

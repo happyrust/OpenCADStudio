@@ -915,6 +915,14 @@ impl PlotSink for SvgSink {
                     "the plot stamp: it is device text in a built-in font, not geometry",
                 ))
             }
+            // Emitted only for faces a backend declared embeddable; the SVG
+            // writer declares none, so this arm is unreachable in practice —
+            // but a glyph must never vanish quietly.
+            PlotOp::FontGlyph { .. } => {
+                return Err(SvgError::Unsupported(
+                    "an embedded-font glyph: the emitter sent one for a face this backend never declared",
+                ))
+            }
             // A tagged symbol: one group, named on a `tagName` attribute, so
             // a consumer can find the valve by its tag. Structural, like a
             // transform group — a paint run never straddles it, and one left

@@ -62,7 +62,9 @@ fn main() {
 
         let t_xref = Instant::now();
         let xref_count = match path.parent() {
-            Some(base_dir) => io::xref::resolve_xrefs_with_progress(&mut doc, base_dir, None).0.len(),
+            Some(base_dir) => io::xref::resolve_xrefs_with_progress(&mut doc, base_dir, None)
+                .0
+                .len(),
             None => 0,
         };
         let xref_ms = t_xref.elapsed().as_millis();

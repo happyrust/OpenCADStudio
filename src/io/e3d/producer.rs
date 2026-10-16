@@ -11,8 +11,8 @@ use e3d_io::db_element::DbElement;
 use e3d_model::catalogue::CatalogueMeshCache;
 use e3d_model::elmodl::{GeneratedElement, GeometryId};
 use e3d_model::mesh::TriMesh;
-use e3d_model::pipeline::{GenerationOutcome, Report, generate_subtree_with_cache};
-use e3d_model::primitive_instance::{PrimitiveMeshKey, canonical_primitive_mesh};
+use e3d_model::pipeline::{generate_subtree_with_cache, GenerationOutcome, Report};
+use e3d_model::primitive_instance::{canonical_primitive_mesh, PrimitiveMeshKey};
 use e3d_model::rvm_read::{Primitive as RvmPrimitive, RvmFile};
 use e3d_model::transform::dmat4_to_affine4x3;
 use glam::{DMat4, DVec3};
@@ -197,7 +197,10 @@ fn produce_from_rvm(source_label: &str, rvm: &RvmFile) -> Result<E3dSceneBatch, 
                             name: Some(member.name.clone()),
                             mesh_key,
                             mesh_to_world_mm: mesh_to_world.to_cols_array(),
-                            world_aabb_mm: [[aabb[0], aabb[1], aabb[2]], [aabb[3], aabb[4], aabb[5]]],
+                            world_aabb_mm: [
+                                [aabb[0], aabb[1], aabb[2]],
+                                [aabb[3], aabb[4], aabb[5]],
+                            ],
                         });
                     }
                 }
@@ -223,7 +226,10 @@ fn produce_from_rvm(source_label: &str, rvm: &RvmFile) -> Result<E3dSceneBatch, 
                             name: Some(member.name.clone()),
                             mesh_key,
                             mesh_to_world_mm: mesh_to_world.to_cols_array(),
-                            world_aabb_mm: [[aabb[0], aabb[1], aabb[2]], [aabb[3], aabb[4], aabb[5]]],
+                            world_aabb_mm: [
+                                [aabb[0], aabb[1], aabb[2]],
+                                [aabb[3], aabb[4], aabb[5]],
+                            ],
                         });
                     }
                 }
@@ -375,9 +381,7 @@ fn ensure_canonical_mesh(
     if !meshes.contains_key(&mesh_key) {
         let prim_key = match canon_key {
             CanonicalShapeKey::BoxV1 => PrimitiveMeshKey::BoxV1,
-            CanonicalShapeKey::CylinderV3 { segments } => {
-                PrimitiveMeshKey::CylinderV3 { segments }
-            }
+            CanonicalShapeKey::CylinderV3 { segments } => PrimitiveMeshKey::CylinderV3 { segments },
         };
         let manifold = canonical_primitive_mesh(prim_key)
             .map_err(|err| format!("canonical mesh {canon_key:?}: {err}"))?;

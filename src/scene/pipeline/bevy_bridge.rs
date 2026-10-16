@@ -20,16 +20,16 @@
 use std::sync::Arc;
 
 use bevy::app::{App, PluginGroup};
+use bevy::camera::{ManualTextureViewHandle, RenderTarget};
 use bevy::prelude::*;
 use bevy::render::renderer::{
     RenderAdapter, RenderAdapterInfo, RenderDevice, RenderInstance, RenderQueue, WgpuWrapper,
 };
 use bevy::render::settings::{RenderCreation, RenderResources};
+use bevy::render::sync_world::MainEntity;
 use bevy::render::texture::{ManualTextureView, ManualTextureViews};
 use bevy::render::view::ViewDepthStencilTexture;
-use bevy::render::sync_world::MainEntity;
 use bevy::render::{RenderApp, RenderPlugin};
-use bevy::camera::{ManualTextureViewHandle, RenderTarget};
 use bevy::window::ExitCondition;
 use iced::wgpu;
 use rustc_hash::FxHashMap;
@@ -225,8 +225,8 @@ impl BevyBridge {
             }
             let mut entity = world.entity_mut(camera_entity);
             if let Some(mut transform) = entity.get_mut::<Transform>() {
-                *transform = Transform::from_translation(cam.eye.as_vec3())
-                    .with_rotation(cam.rotation);
+                *transform =
+                    Transform::from_translation(cam.eye.as_vec3()).with_rotation(cam.rotation);
             }
             if let Some(mut projection) = entity.get_mut::<Projection>() {
                 *projection = Projection::custom(OcsProjection {
@@ -259,8 +259,7 @@ impl BevyBridge {
                 // Bevy wraps its resources; deref down to the raw wgpu
                 // texture so the view is bindable by the OCS pipelines.
                 let raw_texture: &wgpu::Texture = depth.texture();
-                depth_view =
-                    Some(raw_texture.create_view(&wgpu::TextureViewDescriptor::default()));
+                depth_view = Some(raw_texture.create_view(&wgpu::TextureViewDescriptor::default()));
                 break;
             }
         }
@@ -281,7 +280,9 @@ impl BevyBridge {
         let center = cam.target.as_vec3();
         let scale = (cam.distance * 0.25).max(1e-3);
         let world = self.sub_apps.main.world_mut();
-        let mesh = world.resource_mut::<Assets<Mesh>>().add(Cuboid::new(1.0, 1.0, 1.0));
+        let mesh = world
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(1.0, 1.0, 1.0));
         let material = world
             .resource_mut::<Assets<StandardMaterial>>()
             .add(StandardMaterial {
@@ -330,13 +331,15 @@ impl BevyBridge {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let color_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let existing = self.views.get(&slot_key).map(|view| (view.handle, view.camera));
+        let existing = self
+            .views
+            .get(&slot_key)
+            .map(|view| (view.handle, view.camera));
         let next_view_id = &mut self.next_view_id;
         let world = self.sub_apps.main.world_mut();
         let (handle, camera) = match existing {

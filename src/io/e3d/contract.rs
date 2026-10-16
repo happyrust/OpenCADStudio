@@ -170,11 +170,7 @@ impl CompactTriMesh {
         for p in &self.positions {
             for &coord in p {
                 // Canonicalize -0.0 to +0.0 before hashing.
-                let bits = if coord == 0.0 {
-                    0u32
-                } else {
-                    coord.to_bits()
-                };
+                let bits = if coord == 0.0 { 0u32 } else { coord.to_bits() };
                 hasher.update(bits.to_le_bytes());
             }
         }

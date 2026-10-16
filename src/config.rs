@@ -144,7 +144,9 @@ mod tests {
     /// one test saved out of the application the next test builds.
     #[test]
     fn a_test_that_saves_settings_writes_nothing() {
-        let path = config_dir().expect("the scratch dir always resolves").join("settings.json");
+        let path = config_dir()
+            .expect("the scratch dir always resolves")
+            .join("settings.json");
         let _ = std::fs::remove_file(&path);
         crate::app::config::AppConfig::default().save();
         assert!(!path.exists(), "{}", path.display());

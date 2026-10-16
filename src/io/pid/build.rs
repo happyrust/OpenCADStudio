@@ -60,11 +60,21 @@ pub(super) fn build_document_entities(
     // The sheet layers the drawing draws nothing of, by name: what the view
     // filter starts with switched off. Filled as the entities are filed.
     let mut sheet_layers_off: BTreeSet<String> = BTreeSet::new();
+    // Rings the file stores twice -- identical fill, identical vertices --
+    // draw once, the way the reference plots draw them.
+    let mut seen_fill_rings: HashSet<u64> = HashSet::new();
     for entity in &geometry.entities {
         // A boundary ring is the one kind whose style decides its shape rather
         // than its colour: filled, it is an area; unfilled, it is an outline
         // the member lines already drew. See `build_fill`.
         let fill = fill_for(fills, entity);
+        if let Some(fill) = fill {
+            if let Some(key) = fill_dedupe_key(&entity.kind, fill) {
+                if !seen_fill_rings.insert(key) {
+                    continue;
+                }
+            }
+        }
         // Resolved before building: a point's style decides whether it draws
         // the slash mark SmartPlant shows for a class-coloured point.
         let symbology = style_for(styles, entity);
@@ -103,6 +113,7 @@ pub(super) fn build_document_entities(
                     &mut symbol_bodies,
                     dash_linetypes,
                     paper_style_scale,
+                    font_styles,
                 ),
             },
             PidGeometryConfidence::Inferred => build_inferred(&entity.kind, projection),
@@ -126,6 +137,13 @@ pub(super) fn build_document_entities(
         // Alignment rides the same join but comes off the paragraph rather
         // than the character style, since it belongs to the run.
         let text_alignment = text_style.and_then(|style| style.alignment);
+        // ...and the record's own trailer byte beats both: it is the anchor
+        // the label was placed at, where the paragraph is only the default
+        // it overrides. See `apply_text_anchor`.
+        let anchor_code = match &entity.kind {
+            PidGraphicKind::Text { anchor_code, .. } => Some(*anchor_code),
+            _ => None,
+        };
         // And the typeface, which was registered as a document text style
         // above, so what lands on the entity is that style's name.
         let font_style = text_style
@@ -173,8 +191,13 @@ pub(super) fn build_document_entities(
             if let Some(rgb) = text_rgb {
                 apply_text_colour(&mut one, rgb);
             }
-            if let Some(alignment) = text_alignment {
-                apply_text_alignment(&mut one, alignment);
+            match anchor_code {
+                Some(code) => apply_text_anchor(&mut one, code),
+                None => {
+                    if let Some(alignment) = text_alignment {
+                        apply_text_alignment(&mut one, alignment);
+                    }
+                }
             }
             if let Some(name) = font_style {
                 apply_text_style(&mut one, name);
@@ -208,7 +231,16 @@ pub(super) fn build_document_entities(
                 // `sheet_layer=` still says which placement it belongs to.
                 Some(name) if role != Some("symbol-label") => {
                     one.common_mut().layer = name.to_string();
-                    ensure_layer(doc, name, Color::WHITE, !hidden);
+                    // `ConsistencyChecks` is the vendor's review-overlay
+                    // layer: displayed on screen, never plotted — the
+                    // reference prints show no mark at any junction.
+                    ensure_layer(
+                        doc,
+                        name,
+                        Color::WHITE,
+                        !hidden,
+                        name != "ConsistencyChecks",
+                    );
                 }
                 // The label of a placement on a hidden sheet layer is not
                 // moved either: its layer is already off, and the view filter
@@ -271,12 +303,28 @@ pub(super) fn build_entities(
     symbol_bodies: &mut SymbolBodies,
     dash_linetypes: &HashMap<Vec<i64>, String>,
     paper_style_scale: f64,
+    font_styles: &HashMap<String, String>,
 ) -> Vec<EntityType> {
     match kind {
         PidGraphicKind::Line { start, end } => {
             let mut line = Line::from_points(projection.point(start), projection.point(end));
             line.common.layer = line_work.to_string();
-            vec![EntityType::Line(line)]
+            let mut built = vec![EntityType::Line(line)];
+            if let Some(dash) = symbology.and_then(|style| style.complex_dash) {
+                stamp_complex_dash(
+                    &[
+                        Vector2::new(projection.mm(start.x), projection.mm(start.y)),
+                        Vector2::new(projection.mm(end.x), projection.mm(end.y)),
+                    ],
+                    false,
+                    &dash,
+                    projection,
+                    line_work,
+                    paper_style_scale,
+                    &mut built,
+                );
+            }
+            built
         }
         PidGraphicKind::Polyline { points, closed } => {
             if points.len() < 2 {
@@ -286,10 +334,22 @@ pub(super) fn build_entities(
                 .iter()
                 .map(|p| Vector2::new(projection.mm(p.x), projection.mm(p.y)))
                 .collect();
-            let mut polyline = LwPolyline::from_points(vertices);
+            let mut polyline = LwPolyline::from_points(vertices.clone());
             polyline.is_closed = *closed;
             polyline.common.layer = line_work.to_string();
-            vec![EntityType::LwPolyline(polyline)]
+            let mut built = vec![EntityType::LwPolyline(polyline)];
+            if let Some(dash) = symbology.and_then(|style| style.complex_dash) {
+                stamp_complex_dash(
+                    &vertices,
+                    *closed,
+                    &dash,
+                    projection,
+                    line_work,
+                    paper_style_scale,
+                    &mut built,
+                );
+            }
+            built
         }
         PidGraphicKind::Circle { center, radius } => {
             let mut circle = Circle::new();
@@ -308,13 +368,17 @@ pub(super) fn build_entities(
             arc.center = projection.point(center);
             arc.radius = projection.mm(*radius);
             // Radians on both sides -- see the angle-unit note by the layer
-            // constants. The file's arc runs clockwise from start to end and
-            // a DXF arc counter-clockwise, so the ends swap (see
-            // `shape_primitive`); no sheet of the corpus carries an arc of
-            // its own, so this arm follows the record's convention rather
-            // than a measured case.
-            arc.start_angle = *end_angle;
-            arc.end_angle = *start_angle;
+            // constants. The record draws its minor arc: the linked border
+            // templates letter their logo with ~20-130deg sweeps and the
+            // sheet's own valve details read the same way -- the other
+            // reading is always the complement, which is what the old
+            // clockwise swap produced as near-full rings.
+            arc.start_angle = *start_angle;
+            arc.end_angle = *end_angle;
+            let sweep = (arc.end_angle - arc.start_angle).rem_euclid(std::f64::consts::TAU);
+            if sweep > std::f64::consts::PI + 1e-9 {
+                std::mem::swap(&mut arc.start_angle, &mut arc.end_angle);
+            }
             arc.common.layer = line_work.to_string();
             vec![EntityType::Arc(arc)]
         }
@@ -323,6 +387,7 @@ pub(super) fn build_entities(
             value,
             height,
             rotation,
+            ..
         } => {
             if value.trim().is_empty() {
                 return Vec::new();
@@ -337,6 +402,18 @@ pub(super) fn build_entities(
             };
             // Radians on both sides -- see the angle-unit note by the layer constants.
             text.rotation = *rotation;
+            // The authored insertion is the top of the text's line box, not
+            // its baseline: measured over the corpus, the record's anchor
+            // sits within a millimetre of the reference glyphs' ascender
+            // line, so left-on-baseline lettering floated one line box
+            // (~2-5 mm) above where the drawing puts the run. Top anchors
+            // the ink top at the insertion instead, which lands the run
+            // where it was authored (still inside the line box, ~1 mm high).
+            // Like `apply_text_alignment`, the anchor moves to
+            // `alignment_point` whenever the pair is not left-on-baseline,
+            // so it is seeded from the insertion in the same breath.
+            text.vertical_alignment = TextVerticalAlignment::Top;
+            text.alignment_point = Some(text.insertion_point);
             text.common.layer = LAYER_TEXT.to_string();
             vec![EntityType::Text(text)]
         }
@@ -394,7 +471,9 @@ pub(super) fn build_entities(
                 let cross: Vec<EntityType> = cached
                     .into_iter()
                     .flat_map(PidSymbolDefinition::visible_primitives)
-                    .filter_map(|primitive| shape_primitive(primitive, &placement))
+                    .filter_map(|primitive| {
+                        shape_primitive(primitive, None, &placement, font_styles)
+                    })
                     .collect();
                 (Vec::new(), symbol_label_anchor(&cross, insertion_mm))
             } else {
@@ -415,6 +494,7 @@ pub(super) fn build_entities(
                     symbol_bodies,
                     dash_linetypes,
                     paper_style_scale,
+                    font_styles,
                 )
                 .or_else(|| {
                     library_body_entities(
@@ -424,6 +504,7 @@ pub(super) fn build_entities(
                         symbol_bodies,
                         dash_linetypes,
                         paper_style_scale,
+                        font_styles,
                     )
                 });
 
@@ -521,6 +602,99 @@ pub(super) fn point_marker_offset(
         origin.y + projection.mm(xy.1 * paper_style_scale),
         0.0,
     )
+}
+
+/// The tick marks a complex dash stamps along a line, drawn as separate
+/// short `Line` entities on the line's own layer.
+///
+/// The layout is the one the reference plots evidence on the W drawing's
+/// `Hydraulic` pipes (see [`pid_parse::style_link::ComplexDash`]): each
+/// straight segment is partitioned into an integral number of cells of the
+/// dash's declared advance — `round(len / period)` of them, so the cells
+/// stretch to fit — and the glyph stamps once at every cell midpoint, in the
+/// segment's local frame (+x along the segment, +y the left normal). A
+/// segment shorter than half a cell stamps nothing.
+///
+/// `paper_style_scale` multiplies the glyph and the period together, the
+/// same treatment it gives the declared segment lengths of a plain dash.
+fn stamp_complex_dash(
+    vertices_mm: &[Vector2],
+    closed: bool,
+    dash: &ComplexDash,
+    projection: Projection,
+    line_work: &str,
+    paper_style_scale: f64,
+    out: &mut Vec<EntityType>,
+) {
+    let period_mm = dash.period_mm() * paper_style_scale;
+    if !dash.draws() || period_mm <= 0.0 {
+        return;
+    }
+    // The glyph's coordinates are in the file's own units — the same
+    // conversion the line's vertices took — times the display multiple,
+    // the treatment `point_marker_offset` gives a point symbol's strokes.
+    let glyph_mm = |xy: (f64, f64)| {
+        (
+            projection.mm(xy.0 * paper_style_scale),
+            projection.mm(xy.1 * paper_style_scale),
+        )
+    };
+    let mut stamp_segment = |a: Vector2, b: Vector2| {
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let len = dx.hypot(dy);
+        let cells = (len / period_mm).round() as usize;
+        // The glyph's frame is the segment's undirected angle: on the W
+        // drawing's backward-running pipes the mark draws exactly as on the
+        // forward ones, so a direction pointing "left" is flipped before the
+        // frame is built. Stamp positions still walk a->b along the run.
+        let (t_x, t_y) = (dx / len, dy / len);
+        let (dir_x, dir_y) = if t_x < 0.0 || (t_x == 0.0 && t_y < 0.0) {
+            (-t_x, -t_y)
+        } else {
+            (t_x, t_y)
+        };
+        let (norm_x, norm_y) = (-dir_y, dir_x);
+        // A segment too short for two fitted cells still draws one mark —
+        // at its end vertex, measured on the W stubs (3.8-3.9mm stubs all
+        // stamp at the run's terminal vertex, not at a cell midpoint).
+        let count = cells.max(1);
+        let cell = len / count as f64;
+        for k in 0..count {
+            let t = if cells <= 1 {
+                len
+            } else {
+                (k as f64 + 0.5) * cell
+            };
+            let (cx, cy) = (a.x + t_x * t, a.y + t_y * t);
+            for stroke in dash.strokes() {
+                if stroke.is_degenerate() {
+                    continue;
+                }
+                let (sx, sy) = glyph_mm(stroke.start);
+                let (ex, ey) = glyph_mm(stroke.end);
+                let mut tick = Line::from_points(
+                    Vector3::new(
+                        cx + sx * dir_x + sy * norm_x,
+                        cy + sx * dir_y + sy * norm_y,
+                        0.0,
+                    ),
+                    Vector3::new(
+                        cx + ex * dir_x + ey * norm_x,
+                        cy + ex * dir_y + ey * norm_y,
+                        0.0,
+                    ),
+                );
+                tick.common.layer = line_work.to_string();
+                out.push(EntityType::Line(tick));
+            }
+        }
+    };
+    for pair in vertices_mm.windows(2) {
+        stamp_segment(pair[0], pair[1]);
+    }
+    if closed && vertices_mm.len() > 2 {
+        stamp_segment(*vertices_mm.last().unwrap(), vertices_mm[0]);
+    }
 }
 
 /// Draw the inferred kinds that have a usable position.

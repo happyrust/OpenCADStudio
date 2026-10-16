@@ -8,7 +8,10 @@ fn main() {
             .unwrap()
             .read()
             .unwrap();
-        println!("{path} -> {:.1}ms", started.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "{path} -> {:.1}ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
         for e in doc.entities() {
             if let codec::EntityType::Table(t) = e {
                 let cells: usize = t.rows.iter().map(|r| r.cells.len()).sum();

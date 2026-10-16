@@ -531,12 +531,7 @@ impl OpenCADStudio {
                 .entities
                 .iter()
                 .filter_map(|h| doc.get_entity(*h))
-                .filter(|e| {
-                    matches!(
-                        e,
-                        codec::EntityType::Text(_) | codec::EntityType::MText(_)
-                    )
-                })
+                .filter(|e| matches!(e, codec::EntityType::Text(_) | codec::EntityType::MText(_)))
                 .count(),
             _ => 0,
         }
@@ -905,7 +900,10 @@ impl OpenCADStudio {
     /// as the tab's index, as LIST would keep it; quietly, since a plot is
     /// not the place for the panel's "read again" line. A sheet with no
     /// tagged symbol leaves the job as it was.
-    pub(in crate::app) fn attach_pid_groups(&mut self, job: &mut crate::app::update::file::PlotJob) {
+    pub(in crate::app) fn attach_pid_groups(
+        &mut self,
+        job: &mut crate::app::update::file::PlotJob,
+    ) {
         let i = self.active_tab;
         if self.tabs[i].pid_legend.is_none() || self.tabs[i].pid_legend_is_stale() {
             let rules = Rules::load();
@@ -1072,7 +1070,10 @@ impl OpenCADStudio {
                 families.iter().cloned().collect::<Vec<_>>().join(" + ")
             };
             let spelt = if lines.len() > families.len() {
-                format!(" ({})", lines.iter().copied().collect::<Vec<_>>().join(", "))
+                format!(
+                    " ({})",
+                    lines.iter().copied().collect::<Vec<_>>().join(", ")
+                )
             } else {
                 String::new()
             };
@@ -1294,9 +1295,7 @@ mod tests {
     /// frame is also the sheet's extent -- lettering does not count towards
     /// it, and a plot fitted to the body alone would leave the tag off the
     /// page.
-    fn valve_with_tag(
-        app: &mut OpenCADStudio,
-    ) -> (codec::Handle, codec::Handle, codec::Handle) {
+    fn valve_with_tag(app: &mut OpenCADStudio) -> (codec::Handle, codec::Handle, codec::Handle) {
         use codec::entities::{EntityType, Line, Text};
         use codec::types::{Transform, Vector3};
 
@@ -2772,8 +2771,7 @@ mod tests {
 
         // An unknown code selects nothing and keeps the selection.
         let _ = app.run_command_line("PIDLINE 999-ZZ");
-        let selected_after: BTreeSet<_> =
-            app.tabs[i].scene.selected.iter().copied().collect();
+        let selected_after: BTreeSet<_> = app.tabs[i].scene.selected.iter().copied().collect();
         assert_eq!(selected_after, expected, "an unknown code changes nothing");
     }
 

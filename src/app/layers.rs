@@ -118,11 +118,7 @@ impl OpenCADStudio {
                 .sync_with_viewports(&doc_layers, vp_info);
             self.sync_ribbon_layers();
             self.command_line.push_output(
-                crate::tf!(
-                    "Layer {} turned on so the sheet layer can show",
-                    released
-                )
-                .as_ref(),
+                crate::tf!("Layer {} turned on so the sheet layer can show", released).as_ref(),
             );
         }
     }

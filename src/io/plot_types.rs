@@ -46,6 +46,11 @@ pub struct PdfPlotOptions {
     pub transparency: bool,
     pub stamp: bool,
     pub merge_lines: bool,
+    /// Plot everything in black ink regardless of the authored colour —
+    /// the truecolour-aware counterpart of `monochrome.ctb` (a CTB never
+    /// sees truecolour objects). Pure white stays white so wipeout masks
+    /// still hide what sits below them.
+    pub monochrome: bool,
     pub quality: PlotQuality,
 }
 
@@ -120,6 +125,7 @@ impl Default for PdfPlotOptions {
             transparency: false,
             stamp: false,
             merge_lines: false,
+            monochrome: false,
             quality: PlotQuality::Normal,
         }
     }

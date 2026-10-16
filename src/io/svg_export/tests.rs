@@ -266,6 +266,9 @@ fn expected_shapes(ops: &[PlotOp], paper_h: f32) -> Vec<Shape> {
                 shapes.push(fill_shape(&state, rings, true));
             }
             PlotOp::BuiltinText { .. } => unreachable!("the corpus stamp cases are excluded"),
+            PlotOp::FontGlyph { .. } => {
+                unreachable!("the corpus declares no embedded fonts")
+            }
             PlotOp::Image { .. } => unreachable!("the corpus carries no rasters"),
             // Structure, not ink: the shapes inside a group are compared like
             // any other.

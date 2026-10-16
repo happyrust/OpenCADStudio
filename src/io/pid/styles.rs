@@ -157,8 +157,17 @@ pub(super) fn resolve_styles(
         paper_style_scale,
     );
     // Same pooling for the typefaces the character styles name, so a label can
-    // reference a document text style the way any other text entity does.
-    let font_styles = register_text_styles(doc, &text_heights, path);
+    // reference a document text style the way any other text entity does. The
+    // cached symbol bodies' lettering names faces through the same map --
+    // Arial inside an I-P Converter, Arial Narrow inside a bubble -- and a
+    // face only they use still gets a style registered here.
+    let symbol_fonts = geometry.symbol_definitions.iter().flat_map(|body| {
+        body.primitive_letterings
+            .iter()
+            .flatten()
+            .filter_map(|lettering| lettering.font_name.clone())
+    });
+    let font_styles = register_text_styles(doc, &text_heights, symbol_fonts, path);
     // The published semantic model, when the drawing ships one: SmartPlant
     // publishes `<stem>_Data.xml` beside the `.pid`, and pid-parse joins its
     // GraphicOIDs onto the decoded records (two-hop rule, see pid-parse's
@@ -289,6 +298,27 @@ pub(super) fn fill_for<'a>(
     fills.get(&(stream.to_string(), oid))
 }
 
+/// Dedup key for a boundary fill: the ring's vertices as a multiset plus the
+/// resolved colour. SmartPlant files store some checkerboard fills twice --
+/// identical records at different offsets -- and its own plots draw the area
+/// once; emitting the second copy only doubles the hatch count.
+pub(super) fn fill_dedupe_key(kind: &PidGraphicKind, fill: &ResolvedFill) -> Option<u64> {
+    let PidGraphicKind::Polyline { points, .. } = kind else {
+        return None;
+    };
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    let mut vertices: Vec<(i64, i64)> = points
+        .iter()
+        .map(|p| ((p.x * 1e6).round() as i64, (p.y * 1e6).round() as i64))
+        .collect();
+    vertices.sort_unstable();
+    vertices.hash(&mut hasher);
+    fill.rgb().hash(&mut hasher);
+    Some(hasher.finish())
+}
+
 /// Draw a filled area rather than its outline.
 ///
 /// `pid-parse` emits an `igBoundary2d` as a closed polyline whose segments
@@ -330,9 +360,34 @@ pub(super) fn build_fill(
     hatch.paths.push(path);
     hatch.common.layer = LAYER_FILL.to_string();
     if let Some([r, g, b]) = fill.rgb() {
-        hatch.common.color = Color::from_rgb(r, g, b);
+        hatch.common.color = foreground_color(r, g, b);
     }
     vec![EntityType::Hatch(hatch)]
+}
+
+/// What a stated RGB becomes in the drawing.
+///
+/// `RGB(0,0,0)` in a `.pid` is the paper's ink, not a literal black: the
+/// drawing is authored against a white sheet, and on the editor's dark
+/// canvas only the indexed contrast colour (ACI 7) is what
+/// `scene::view::render::adapt_to_bg` swaps -- a true colour is nudged off
+/// pure black instead and would stay invisible. ACI 7 is also what the
+/// plotter resolves to black on paper, so the stored entity prints
+/// identically to the authored ink while remaining readable on screen.
+///
+/// `RGB(255,255,255)` means the same foreground pen, not a white mask: the
+/// linked `.igr` declares its margin strip, frame and title-block drafting
+/// white — 104 records on CPE-SQ-A1 — and SmartPlant's own PDFs print every
+/// one of them black. Stored as a true colour it plotted as written and
+/// vanished on the page; as ACI 7 it reads and prints like the reference.
+/// The five `.pid` sheets state no white at all, so no authored white is
+/// harmed by the swap. Every other stated colour stays the true colour it is.
+pub(super) fn foreground_color(r: u8, g: u8, b: u8) -> Color {
+    if (r, g, b) == (0, 0, 0) || (r, g, b) == (255, 255, 255) {
+        Color::Index(7)
+    } else {
+        Color::from_rgb(r, g, b)
+    }
 }
 
 /// Give an entity the width and colour its source record asks for.
@@ -369,7 +424,7 @@ pub(super) fn apply_symbology(
         let common = entity.common_mut();
         if common.layer == LAYER_SYMBOL {
             let [r, g, b] = style.symbology.rgb();
-            common.color = Color::from_rgb(r, g, b);
+            common.color = foreground_color(r, g, b);
         }
         return;
     }
@@ -382,7 +437,7 @@ pub(super) fn apply_symbology(
         return;
     }
     let [r, g, b] = style.symbology.rgb();
-    common.color = Color::from_rgb(r, g, b);
+    common.color = foreground_color(r, g, b);
     // DXF stores line weight in hundredths of a millimetre. The source values
     // are mostly on the ISO 128 ladder; the 0.10mm point ticks are not, and
     // are carried across as measured rather than snapped, because snapping

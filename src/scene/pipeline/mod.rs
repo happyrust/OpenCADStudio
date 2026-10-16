@@ -961,55 +961,54 @@ impl Pipeline {
                     Some(wire_gpu::BlockWireInstance::layout()),
                 ]
             };
-        let make_block_wire_pipeline = |
-            label: &'static str,
-            fragment: &'static str,
-            depth_write_enabled: bool,
-            depth_compare: wgpu::CompareFunction,
-        | {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&block_wire_layout),
-                vertex: wgpu::VertexState {
-                    module: &block_wire_shader,
-                    entry_point: Some("vs_main"),
-                    // Storage mode has no geometry vertex buffer: the
-                    // instances become slot 0 and the segments arrive through
-                    // the bind group.
-                    buffers: block_wire_buffers,
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth24PlusStencil8,
-                    depth_write_enabled: Some(depth_write_enabled),
-                    depth_compare: Some(depth_compare),
-                    stencil: content_stencil.clone(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: MSAA_SAMPLES,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &block_wire_shader,
-                    entry_point: Some(fragment),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
+        let make_block_wire_pipeline =
+            |label: &'static str,
+             fragment: &'static str,
+             depth_write_enabled: bool,
+             depth_compare: wgpu::CompareFunction| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&block_wire_layout),
+                    vertex: wgpu::VertexState {
+                        module: &block_wire_shader,
+                        entry_point: Some("vs_main"),
+                        // Storage mode has no geometry vertex buffer: the
+                        // instances become slot 0 and the segments arrive through
+                        // the bind group.
+                        buffers: block_wire_buffers,
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth24PlusStencil8,
+                        depth_write_enabled: Some(depth_write_enabled),
+                        depth_compare: Some(depth_compare),
+                        stencil: content_stencil.clone(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState {
+                        count: MSAA_SAMPLES,
+                        mask: !0,
+                        alpha_to_coverage_enabled: false,
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &block_wire_shader,
+                        entry_point: Some(fragment),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
         let block_wire_pipeline = make_block_wire_pipeline(
             "block_wire.pipeline",
             "fs_main",
@@ -1668,51 +1667,53 @@ impl Pipeline {
         // Edge/wireframe pipeline (LineList). `fs_edge` outputs the flat entity
         // colour — no lighting — for the lines-only modes. A `fs_edge_black`
         // twin (below) forces black for the edge overlay in filled modes.
-        let make_edge_pipeline = |
-            label: &'static str,
-            fs: &'static str,
-            vertex_layout: wgpu::VertexBufferLayout<'static>,
-        | {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&mesh_layout),
-                vertex: wgpu::VertexState {
-                    module: &mesh_shader,
-                    entry_point: Some("vs_edge"),
-                    buffers: &[Some(vertex_layout), Some(mesh_gpu::MeshInstanceGpu::layout())],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::LineList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: wgpu::TextureFormat::Depth24PlusStencil8,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: content_stencil.clone(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: MSAA_SAMPLES,
-                    mask: !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &mesh_shader,
-                    entry_point: Some(fs),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
+        let make_edge_pipeline =
+            |label: &'static str,
+             fs: &'static str,
+             vertex_layout: wgpu::VertexBufferLayout<'static>| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&mesh_layout),
+                    vertex: wgpu::VertexState {
+                        module: &mesh_shader,
+                        entry_point: Some("vs_edge"),
+                        buffers: &[
+                            Some(vertex_layout),
+                            Some(mesh_gpu::MeshInstanceGpu::layout()),
+                        ],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::LineList,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth24PlusStencil8,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                        stencil: content_stencil.clone(),
+                        bias: wgpu::DepthBiasState::default(),
+                    }),
+                    multisample: wgpu::MultisampleState {
+                        count: MSAA_SAMPLES,
+                        mask: !0,
+                        alpha_to_coverage_enabled: false,
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &mesh_shader,
+                        entry_point: Some(fs),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
         let mesh_wireframe_pipeline = make_edge_pipeline(
             "mesh.wireframe.pipeline",
             "fs_edge",
@@ -3924,10 +3925,13 @@ analytic={:.1} regular={:.1} blocks={:.1}",
             .iter()
             .filter(|hatch| hatch.boundary.len() >= 3)
             .count();
-        let (translucent, opaque): (Vec<HatchModel>, Vec<HatchModel>) =
-            hatches.iter().cloned().partition(|hatch| hatch.color[3] < 0.999);
+        let (translucent, opaque): (Vec<HatchModel>, Vec<HatchModel>) = hatches
+            .iter()
+            .cloned()
+            .partition(|hatch| hatch.color[3] < 0.999);
         self.hatch_gpu.upload(device, queue, &opaque);
-        self.hatch_translucent_gpu.upload(device, queue, &translucent);
+        self.hatch_translucent_gpu
+            .upload(device, queue, &translucent);
         if let Some(started) = perf_started {
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
             if elapsed_ms >= 1.0 {
@@ -5015,8 +5019,11 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                 // Transparent hatches blend over the lines already drawn; the
                 // lines in front of them still win the depth test.
                 if !self.skip_hatch_frame {
-                    self.hatch_translucent_gpu
-                        .draw(&mut pass, &self.uniform_bind_group, stencil_ref);
+                    self.hatch_translucent_gpu.draw(
+                        &mut pass,
+                        &self.uniform_bind_group,
+                        stencil_ref,
+                    );
                 }
             }
 
@@ -5845,10 +5852,7 @@ impl MultiPipeline {
             total.wire_arena += slot.wire_arena;
             total.block_geometry +=
                 wire_gpu::block_arena_bytes(&inner.gpu_block_wires, &mut counted)
-                    + wire_gpu::block_arena_bytes(
-                        &inner.gpu_selected_block_wires,
-                        &mut counted,
-                    );
+                    + wire_gpu::block_arena_bytes(&inner.gpu_selected_block_wires, &mut counted);
         }
         for entry in self.wire_buffer_cache.values() {
             total.block_geometry += wire_gpu::block_arena_bytes(&entry.1, &mut counted);

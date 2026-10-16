@@ -3961,7 +3961,9 @@ pub(super) fn recent_files_panel<'a>(
                         ..Default::default()
                     }
                 }),
-            container(text(tip).size(11)).padding([2, 6]).style(container::rounded_box),
+            container(text(tip).size(11))
+                .padding([2, 6])
+                .style(container::rounded_box),
             iced::widget::tooltip::Position::Bottom,
         )
     };
@@ -3998,12 +4000,10 @@ pub(super) fn recent_files_panel<'a>(
         .into()
     } else if view != RecentView::List {
         iced::widget::scrollable(
-            recent_tiles(recents, thumbs, view == RecentView::Preview).padding(
-                iced::Padding {
-                    right: 12.0,
-                    ..iced::Padding::ZERO
-                },
-            ),
+            recent_tiles(recents, thumbs, view == RecentView::Preview).padding(iced::Padding {
+                right: 12.0,
+                ..iced::Padding::ZERO
+            }),
         )
         .width(Fill)
         .height(Fill)
