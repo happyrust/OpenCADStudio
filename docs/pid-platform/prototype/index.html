@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能 P&amp;ID 平台原型</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header class="app-header">
+  <span class="app-header__brand">智能 P&amp;ID 平台</span>
+  <nav class="main-nav" data-testid="main-nav">
+    <a class="main-nav__item" href="#/screen/workbench">工作台</a>
+    <a class="main-nav__item" href="#/screen/drawings">图纸管理</a>
+    <a class="main-nav__item" href="#/screen/editor">P&amp;ID 编辑器</a>
+  </nav>
+</header>
+<main class="app-main">
+  <div id="app" class="panel" data-testid="app-shell">
+    <h1>智能 P&amp;ID 平台原型</h1>
+    <p>这是原型外壳骨架，规格包中定义的 14 个界面后续将逐一挂载到此容器中。</p>
+    <span data-testid="boot-status">加载中</span>
+  </div>
+</main>
+<script src="assets/app.js" defer></script>
+</body>
+</html>

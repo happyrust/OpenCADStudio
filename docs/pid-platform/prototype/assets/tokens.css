@@ -1,0 +1,28 @@
+/* Design tokens for the P&ID platform prototype shell.
+   Industrial software palette: dark canvas, light panels. */
+:root {
+  --color-canvas: #16191d;
+  --color-surface: #20252b;
+  --color-panel: #f2f4f6;
+  --color-text: #e6eaee;
+  --color-text-muted: #97a1ab;
+  --color-text-inverse: #1d2329;
+  --color-accent: #2f7fd1;
+  --color-accent-strong: #5aa9f0;
+  --color-border: #39424b;
+  --color-border-strong: #5a6570;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --font-size-sm: 12px;
+  --font-size-md: 14px;
+  --font-size-lg: 18px;
+  --font-size-xl: 24px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --border-width: 1px;
+  --shadow-panel: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
