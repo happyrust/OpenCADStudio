@@ -1,0 +1,726 @@
+"""Requirement-ID and traceability contract for the P&ID requirement documents.
+
+The validators are pure functions over ``{relative path: text}`` maps so the
+negative controls can build broken documents in memory. ``load_documents`` and
+``load_all_documents`` are the only filesystem readers; every error string is
+shaped ``"<path>:<line>: <problem>"`` so a failure points at the offending line.
+
+Contract sources:
+- ``VAL-REQ-001`` requirement ID format, uniqueness and the per-area floor
+- ``VAL-REQ-002`` the five fields every requirement entry must carry
+- ``VAL-REQ-003`` the area table and the bidirectional traceability matrix
+- ``VAL-REQ-004`` the six platform sections and their mandatory topics
+- ``VAL-REQ-005`` the seven type-library sections and their hard constraints
+- ``VAL-REQ-013`` one area, one file; the overview only references IDs
+"""
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+
+from docs_contract import NEW_DESIGN, allowed_sections, parse_tables
+from manifest_contract import normalize_heading
+
+# Nine requirement areas, in the order the contract lists them. The area code
+# is also the ID segment, so this list is the single source for both.
+REQ_AREAS = ["PLAT", "TYPE", "SYM", "DRW", "DATA", "DELV", "COLL", "IO", "MIG"]
+
+AREA_NAMES = {
+    "PLAT": "平台层",
+    "TYPE": "类型库",
+    "SYM": "符号与项目设置",
+    "DRW": "图纸与绘图",
+    "DATA": "数据与规则检查",
+    "DELV": "交付与发布",
+    "COLL": "权限与协同",
+    "IO": "导入导出",
+    "MIG": "迁移与互操作",
+}
+
+REQ_AREA_FILES = {
+    "PLAT": "10-platform.md",
+    "TYPE": "20-type-library.md",
+    "SYM": "30-symbol-library-and-project-settings.md",
+    "DRW": "40-drawing-and-drafting.md",
+    "DATA": "50-data-and-rule-engine.md",
+    "DELV": "60-deliverables-and-publish.md",
+    "COLL": "70-collaboration-and-permissions.md",
+    "IO": "80-import-export-matrix.md",
+    "MIG": "90-migration-and-interop.md",
+}
+
+AREA_FILE_OF = {area: "requirements/" + name for area, name in REQ_AREA_FILES.items()}
+
+OVERVIEW_PATH = "requirements/00-overview.md"
+REUSE_MAPPING_PATH = "requirements/95-reuse-mapping.md"
+REFERENCE_ONLY_PATHS = {OVERVIEW_PATH, REUSE_MAPPING_PATH}
+
+AREA_FLOOR = 5
+NO_INTERFACE = "无界面"
+
+# The anchored pattern is normative: the negative lookbehind stops
+# "VAL-REQ-001" from being read as a product requirement, the lookahead stops a
+# four-digit number from matching its first three digits.
+REQ_ID_TEXT = (
+    r"(?<![A-Za-z-])REQ-(PLAT|TYPE|SYM|DRW|DATA|DELV|COLL|IO|MIG)-\d{3}(?!\d)"
+)
+REQ_ID_RE = re.compile(REQ_ID_TEXT)
+
+# Deliberately looser: it finds anything shaped like a requirement ID so a
+# wrong area code or a two-digit number is reported instead of ignored.
+LOOSE_REQ_RE = re.compile(r"(?<![A-Za-z-])REQ-[A-Za-z]+-\d+")
+
+REQ_HEADING_RE = re.compile(
+    r"^###[ \t]+(?P<id>REQ-(?P<area>[A-Za-z]+)-(?P<number>\d+))[ \t]*(?P<title>.*)$"
+)
+ANY_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$")
+
+MATRIX_COLUMNS = ["需求 ID", "区域", "屏幕 ID 或 无界面", "说明"]
+CONTRACT_COLUMNS = ["字段", "类型", "必填", "约束"]
+FIELD_NAMES = ["优先级", "用户故事", "验收标准", "数据与界面契约", "来源"]
+PRIORITIES = ["必须", "应该", "可以"]
+SOURCE_SECTION_RE = re.compile(r"^§\d+(?:\.\d+)+$")
+FIELD_LINE_RE = re.compile(r"^[-*]\s+\*\*(?P<name>[^*]+)\*\*[ \t]*[：:][ \t]*(?P<value>.*)$")
+NUMBERED_ITEM_RE = re.compile(r"^\s*\d+[.、)][ \t]*\S")
+
+PLATFORM_SECTIONS = [
+    "身份与会话",
+    "角色与成员管理",
+    "项目空间",
+    "权限模型",
+    "审计日志",
+    "系统配置",
+]
+TYPE_SECTIONS = [
+    "业务类型树",
+    "属性分组",
+    "数据要素与数据类型",
+    "属性级别与默认值",
+    "属性拼接",
+    "类型与符号的关系",
+    "规则继承",
+]
+
+# A criterion is decidable when it carries a number, a named command/field in
+# backticks, or an observable state. The words below are the observable-state
+# vocabulary the contract itself uses.
+OBSERVABLE_WORDS = [
+    "显示",
+    "返回",
+    "出现",
+    "变为",
+    "为空",
+    "行数",
+    "增加",
+    "减少",
+    "禁止",
+    "拒绝",
+    "只读",
+    "隐藏",
+    "置为",
+    "自动",
+]
+
+
+# ---------------------------------------------------------------------------
+# Filesystem readers
+# ---------------------------------------------------------------------------
+
+
+def load_documents(docs_root) -> dict:
+    """Every markdown file under ``<docs_root>/requirements`` as rel-path -> text."""
+    root = Path(docs_root) / "requirements"
+    documents = {}
+    if not root.is_dir():
+        return documents
+    for path in sorted(root.rglob("*.md")):
+        name = "requirements/" + str(path.relative_to(root)).replace(os.sep, "/")
+        documents[name] = path.read_text(encoding="utf-8")
+    return documents
+
+
+def load_all_documents(docs_root) -> dict:
+    """Every markdown file under ``docs_root`` as rel-path -> text."""
+    root = Path(docs_root)
+    documents = {}
+    if not root.is_dir():
+        return documents
+    for path in sorted(root.rglob("*.md")):
+        name = str(path.relative_to(root)).replace(os.sep, "/")
+        documents[name] = path.read_text(encoding="utf-8")
+    return documents
+
+
+# ---------------------------------------------------------------------------
+# Requirement entries
+# ---------------------------------------------------------------------------
+
+
+def _line_of(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def split_entries(text: str) -> list:
+    """Return every ``### REQ-<AREA>-<NNN>`` entry with its body and line.
+
+    A body ends at the next heading of level 3 or higher so a requirement that
+    is followed by a sibling entry or by an H2 does not inherit its lines.
+    """
+    lines = text.splitlines()
+    entries = []
+    current = None
+    for index, line in enumerate(lines, start=1):
+        heading = ANY_HEADING_RE.match(line)
+        if heading:
+            level = len(heading.group(1))
+            if level <= 3:
+                if current is not None:
+                    current["body"] = "\n".join(current.pop("_body"))
+                    entries.append(current)
+                    current = None
+                if level == 3:
+                    match = REQ_HEADING_RE.match(line)
+                    if match:
+                        current = {
+                            "id": match.group("id"),
+                            "area": match.group("area"),
+                            "number": match.group("number"),
+                            "title": match.group("title").strip(),
+                            "line": index,
+                            "_body": [],
+                        }
+                continue
+        if current is not None:
+            current["_body"].append(line)
+    if current is not None:
+        current["body"] = "\n".join(current.pop("_body"))
+        entries.append(current)
+    return entries
+
+
+def parse_entry_fields(body: str) -> dict:
+    """Split an entry body into ``{field name: value text}`` blocks."""
+    fields = {}
+    current = None
+    for line in body.splitlines():
+        match = FIELD_LINE_RE.match(line.strip())
+        if match:
+            current = match.group("name").strip()
+            fields[current] = [match.group("value")]
+        elif current is not None:
+            fields[current].append(line)
+    return {name: "\n".join(lines).strip() for name, lines in fields.items()}
+
+
+def definitions(documents: dict) -> dict:
+    """Map every defined requirement ID to its location and metadata."""
+    defined = {}
+    for path in sorted(documents):
+        if not path.startswith("requirements/"):
+            continue
+        for entry in split_entries(documents[path]):
+            defined.setdefault(
+                entry["id"],
+                {
+                    "path": path,
+                    "line": entry["line"],
+                    "area": entry["area"],
+                    "title": entry["title"],
+                    "entries": [],
+                },
+            )
+            defined[entry["id"]]["entries"].append(entry)
+    return defined
+
+
+def _is_observable(criterion: str) -> bool:
+    if any(char.isdigit() for char in criterion):
+        return True
+    if "`" in criterion:
+        return True
+    return any(word in criterion for word in OBSERVABLE_WORDS)
+
+
+def validate_entry(entry: dict, path: str, allowed=None) -> list:
+    """Validate the five contractual fields of one requirement entry."""
+    errors = []
+    where = "%s:%d" % (path, entry["line"])
+    fields = parse_entry_fields(entry["body"])
+
+    for name in FIELD_NAMES:
+        if name not in fields or not fields[name].strip():
+            errors.append("%s: %s is missing field '%s'" % (where, entry["id"], name))
+    if errors:
+        return errors
+
+    priority = fields["优先级"].strip()
+    if priority not in PRIORITIES:
+        errors.append(
+            "%s: %s has priority '%s'; expected one of %s"
+            % (where, entry["id"], priority, "/".join(PRIORITIES))
+        )
+
+    story = fields["用户故事"]
+    if not story.startswith("作为") or "我希望" not in story or "以便" not in story:
+        errors.append(
+            "%s: %s user story is not shaped like 作为…我希望…以便…"
+            % (where, entry["id"])
+        )
+
+    criteria = [
+        line.strip()
+        for line in fields["验收标准"].splitlines()
+        if NUMBERED_ITEM_RE.match(line)
+    ]
+    if len(criteria) < 2:
+        errors.append(
+            "%s: %s has %d numbered acceptance criteria; at least 2 are required"
+            % (where, entry["id"], len(criteria))
+        )
+    for index, criterion in enumerate(criteria, start=1):
+        if not _is_observable(criterion):
+            errors.append(
+                "%s: %s acceptance criterion %d has no number, named command or "
+                "observable state: %s"
+                % (where, entry["id"], index, criterion[:60])
+            )
+
+    contract_tables = [
+        table
+        for table in parse_tables(fields["数据与界面契约"])
+        if table["header"] == CONTRACT_COLUMNS
+    ]
+    if not contract_tables:
+        headers = [table["header"] for table in parse_tables(fields["数据与界面契约"])]
+        errors.append(
+            "%s: %s data/UI contract has no table with header %s (found %s)"
+            % (where, entry["id"], " | ".join(CONTRACT_COLUMNS), headers or "none")
+        )
+    elif not contract_tables[0]["rows"]:
+        errors.append(
+            "%s: %s data/UI contract table has no data rows" % (where, entry["id"])
+        )
+
+    # The source field is a single line; an explanatory table may follow it and
+    # still belongs to the entry, so only the first line is the citation.
+    source = fields["来源"].strip().splitlines()[0].strip().strip("`").strip()
+    if source == NEW_DESIGN:
+        pass
+    elif not SOURCE_SECTION_RE.match(source):
+        errors.append(
+            "%s: %s source '%s' is neither a §section nor %s"
+            % (where, entry["id"], source, NEW_DESIGN)
+        )
+    else:
+        section = source[1:]
+        if allowed is not None and section not in set(allowed):
+            errors.append(
+                "%s: %s cites §%s, which is not in the verified section whitelist"
+                % (where, entry["id"], section)
+            )
+    return errors
+
+
+def validate_entries(documents: dict, allowed=None) -> list:
+    errors = []
+    for path in sorted(documents):
+        if not path.startswith("requirements/"):
+            continue
+        for entry in split_entries(documents[path]):
+            errors.extend(validate_entry(entry, path, allowed))
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# ID format, uniqueness and area/file correspondence
+# ---------------------------------------------------------------------------
+
+
+def validate_requirement_ids(documents: dict) -> list:
+    """Malformed IDs, duplicate definitions, and wrong-file definitions."""
+    errors = []
+
+    for path in sorted(documents):
+        if not path.startswith("requirements/"):
+            continue
+        for number, line in enumerate(documents[path].splitlines(), start=1):
+            for match in LOOSE_REQ_RE.finditer(line):
+                token = match.group(0)
+                if not REQ_ID_RE.fullmatch(token):
+                    errors.append(
+                        "%s:%d: requirement ID '%s' does not match the anchored "
+                        "pattern %s"
+                        % (path, number, token, REQ_ID_TEXT)
+                    )
+
+    by_id = {}
+    for path in sorted(documents):
+        for entry in split_entries(documents[path]):
+            if not path.startswith("requirements/"):
+                errors.append(
+                    "%s:%d: requirement '%s' is defined outside the requirements "
+                    "directory"
+                    % (path, entry["line"], entry["id"])
+                )
+                continue
+            by_id.setdefault(entry["id"], []).append((path, entry["line"]))
+
+    for req_id in sorted(by_id):
+        locations = by_id[req_id]
+        if len(locations) > 1:
+            rendered = ", ".join("%s:%d" % loc for loc in locations)
+            errors.append(
+                "%s:%d: requirement ID '%s' is defined %d times (%s)"
+                % (locations[0][0], locations[0][1], req_id, len(locations), rendered)
+            )
+
+    for req_id, locations in sorted(by_id.items()):
+        area = req_id.split("-")[1]
+        for path, line in locations:
+            name = path.split("/")[-1]
+            if path in REFERENCE_ONLY_PATHS:
+                errors.append(
+                    "%s:%d: %s may reference requirement IDs but must not define "
+                    "'%s'"
+                    % (path, line, name, req_id)
+                )
+                continue
+            expected = REQ_AREA_FILES.get(area)
+            if expected is None:
+                errors.append(
+                    "%s:%d: requirement ID '%s' uses an unknown area segment"
+                    % (path, line, req_id)
+                )
+            elif name != expected:
+                errors.append(
+                    "%s:%d: requirement ID '%s' belongs in %s, not %s"
+                    % (path, line, req_id, "requirements/" + expected, path)
+                )
+    return errors
+
+
+def validate_area_floors(documents: dict, require_all: bool = False) -> list:
+    """Every authored area document must define at least five requirements.
+
+    ``require_all`` is for the closeout state, where all nine area documents
+    exist. During M2 only PLAT and TYPE are authored, so the default checks the
+    documents that exist instead of failing on the seven planned ones.
+    """
+    errors = []
+    for area in REQ_AREAS:
+        path = AREA_FILE_OF[area]
+        if path not in documents:
+            if require_all:
+                errors.append("%s: area document %s is missing" % (area, path))
+            continue
+        entries = [entry for entry in split_entries(documents[path]) if entry["area"] == area]
+        if len(entries) < AREA_FLOOR:
+            errors.append(
+                "%s: area %s defines %d requirements; at least %d are required"
+                % (path, area, len(entries), AREA_FLOOR)
+            )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Overview tables
+# ---------------------------------------------------------------------------
+
+
+def find_area_table(text: str):
+    """The first table whose first two columns are 区域 / 文档."""
+    for table in parse_tables(text):
+        header = table["header"]
+        if len(header) >= 2 and header[0] == "区域" and header[1] == "文档":
+            return table
+    return None
+
+
+def find_matrix_table(text: str):
+    """The traceability matrix: four columns with the contract header."""
+    for table in parse_tables(text):
+        if table["header"] == MATRIX_COLUMNS:
+            return table
+    return None
+
+
+def validate_area_table(text: str, path: str = OVERVIEW_PATH) -> list:
+    errors = []
+    table = find_area_table(text)
+    if table is None:
+        return ["%s: no table with columns 区域 / 文档" % path]
+    seen = {}
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) < 2:
+            errors.append("%s:%d: area row has fewer than 2 cells" % (path, line))
+            continue
+        area, document = row[0].strip(), row[1].strip()
+        if area not in REQ_AREAS:
+            errors.append("%s:%d: unknown area code '%s'" % (path, line, area))
+            continue
+        if area in seen:
+            errors.append(
+                "%s:%d: area %s mapped twice (already on line %d)"
+                % (path, line, area, seen[area])
+            )
+        seen[area] = line
+        expected = REQ_AREA_FILES[area]
+        if expected not in document:
+            errors.append(
+                "%s:%d: area %s must map to %s, found '%s'"
+                % (path, line, area, expected, document)
+            )
+    if len(table["rows"]) != len(REQ_AREAS):
+        errors.append(
+            "%s: area table has %d rows; exactly %d are required"
+            % (path, len(table["rows"]), len(REQ_AREAS))
+        )
+    missing = [area for area in REQ_AREAS if area not in seen]
+    if missing:
+        errors.append(
+            "%s: area table omits %s" % (path, ", ".join(missing))
+        )
+    return errors
+
+
+def matrix_rows(text: str, path: str = OVERVIEW_PATH) -> list:
+    """Return matrix rows as dicts with the source line number."""
+    table = find_matrix_table(text)
+    if table is None:
+        return []
+    rows = []
+    for index, row in enumerate(table["rows"]):
+        cells = list(row) + [""] * (len(MATRIX_COLUMNS) - len(row))
+        rows.append(
+            {
+                "id": cells[0].strip(),
+                "area": cells[1].strip(),
+                "screen": cells[2].strip(),
+                "note": cells[3].strip(),
+                "line": table["line"] + 2 + index,
+            }
+        )
+    return rows
+
+
+def validate_matrix(text: str, defined: dict, screen_ids, path: str = OVERVIEW_PATH) -> list:
+    """Bidirectional closure, area agreement and screen values of the matrix."""
+    errors = []
+    if find_matrix_table(text) is None:
+        return [
+            "%s: no traceability matrix with header %s"
+            % (path, " | ".join(MATRIX_COLUMNS))
+        ]
+
+    allowed_screens = set(screen_ids) | {NO_INTERFACE}
+    rows = matrix_rows(text, path)
+    seen = {}
+    for row in rows:
+        req_id = row["id"]
+        if not REQ_ID_RE.fullmatch(req_id):
+            errors.append(
+                "%s:%d: matrix row '%s' is not a valid requirement ID"
+                % (path, row["line"], req_id)
+            )
+        if req_id in seen:
+            errors.append(
+                "%s:%d: matrix row repeats %s (already on line %d)"
+                % (path, row["line"], req_id, seen[req_id])
+            )
+        seen[req_id] = row["line"]
+
+        expected_area = req_id.split("-")[1] if req_id.count("-") >= 2 else ""
+        if row["area"] != expected_area:
+            errors.append(
+                "%s:%d: matrix row %s declares area '%s'; the ID segment is '%s'"
+                % (path, row["line"], req_id, row["area"], expected_area)
+            )
+        if row["screen"] not in allowed_screens:
+            errors.append(
+                "%s:%d: matrix row %s has unknown screen '%s'; expected one of "
+                "the %d screen ids or %s"
+                % (path, row["line"], req_id, row["screen"], len(screen_ids), NO_INTERFACE)
+            )
+        if row["screen"] == NO_INTERFACE and len(row["note"]) < 8:
+            errors.append(
+                "%s:%d: matrix row %s is %s but its 说明 does not state a reason"
+                % (path, row["line"], req_id, NO_INTERFACE)
+            )
+
+    defined_ids = set(defined)
+    matrix_ids = {row["id"] for row in rows}
+    for req_id in sorted(defined_ids - matrix_ids):
+        location = defined[req_id]
+        errors.append(
+            "%s:%d: %s is defined but missing from the traceability matrix"
+            % (location["path"], location["line"], req_id)
+        )
+    for row in rows:
+        if row["id"] not in defined_ids:
+            errors.append(
+                "%s:%d: matrix row %s has no requirement definition"
+                % (path, row["line"], row["id"])
+            )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Section coverage (VAL-REQ-004 / VAL-REQ-005)
+# ---------------------------------------------------------------------------
+
+
+def section_requirement_counts(text: str) -> dict:
+    """{normalized H2 heading: number of direct REQ entries beneath it}."""
+    counts = {}
+    current = None
+    for line in text.splitlines():
+        heading = ANY_HEADING_RE.match(line)
+        if heading:
+            level = len(heading.group(1))
+            if level == 1:
+                current = None
+                continue
+            if level == 2:
+                current = normalize_heading(heading.group(2))
+                counts.setdefault(current, 0)
+                continue
+        if current is not None and REQ_HEADING_RE.match(line):
+            counts[current] += 1
+    return counts
+
+
+def section_text(text: str, heading: str) -> str:
+    """Raw body of the H2 named ``heading`` (normalized comparison)."""
+    wanted = normalize_heading(heading)
+    current = None
+    buffer = []
+    for line in text.splitlines():
+        match = ANY_HEADING_RE.match(line)
+        if match:
+            level = len(match.group(1))
+            if level <= 2:
+                if current == wanted:
+                    return "\n".join(buffer)
+                current = normalize_heading(match.group(2)) if level == 2 else None
+                buffer = []
+                continue
+        if current == wanted:
+            buffer.append(line)
+    if current == wanted:
+        return "\n".join(buffer)
+    return ""
+
+
+def validate_sections(text: str, sections, path: str, minimum: int = 1) -> list:
+    errors = []
+    counts = section_requirement_counts(text)
+    for name in sections:
+        key = normalize_heading(name)
+        if key not in counts:
+            errors.append(
+                "%s: missing section '%s' (found %s)"
+                % (path, name, sorted(counts))
+            )
+        elif counts[key] < minimum:
+            errors.append(
+                "%s: section '%s' has %d requirements; at least %d required"
+                % (path, name, counts[key], minimum)
+            )
+    return errors
+
+
+def validate_platform_coverage(documents: dict) -> list:
+    """VAL-REQ-004: six sections plus the three mandatory identity topics."""
+    path = AREA_FILE_OF["PLAT"]
+    text = documents.get(path)
+    if text is None:
+        return ["%s: platform requirement document is missing" % path]
+    errors = validate_sections(text, PLATFORM_SECTIONS, path)
+    identity = section_text(text, "身份与会话")
+    for topic in ["登录失败锁定", "密码有效期", "找回密码"]:
+        if topic not in identity:
+            errors.append("%s: 身份与会话 does not cover %s" % (path, topic))
+    authorization = section_text(text, "权限模型")
+    for token in ["角色权限", "PBS 节点", "图纸状态"]:
+        if token not in authorization:
+            errors.append(
+                "%s: 权限模型 does not state the three-level chain component %s"
+                % (path, token)
+            )
+    audit = section_text(text, "审计日志")
+    if "保留" not in audit:
+        errors.append("%s: 审计日志 does not state a retention policy" % path)
+    return errors
+
+
+def validate_type_library_coverage(documents: dict) -> list:
+    """VAL-REQ-005: seven sections plus the five hard constraints."""
+    path = AREA_FILE_OF["TYPE"]
+    text = documents.get(path)
+    if text is None:
+        return ["%s: type-library requirement document is missing" % path]
+    errors = validate_sections(text, TYPE_SECTIONS, path)
+    tree = section_text(text, "业务类型树")
+    if "类型编码" not in tree or not any(
+        word in tree for word in ["不可修改", "不可改"]
+    ):
+        errors.append("%s: 业务类型树 does not state that 类型编码 is immutable" % path)
+    if "子节点" not in tree or "删除" not in tree:
+        errors.append("%s: 业务类型树 does not state the cascade delete rule" % path)
+    level = section_text(text, "属性级别与默认值")
+    for value in ["可选信息", "必选信息"]:
+        if value not in level:
+            errors.append("%s: 属性级别与默认值 does not name %s" % (path, value))
+    concatenation = section_text(text, "属性拼接")
+    if "&" not in concatenation:
+        errors.append("%s: 属性拼接 does not use & as the connector" % path)
+    if "单引号" not in concatenation:
+        errors.append("%s: 属性拼接 does not require single quotes for constants" % path)
+    elements = section_text(text, "数据要素与数据类型")
+    if "全局唯一" not in elements:
+        errors.append("%s: 数据要素与数据类型 does not state global uniqueness" % path)
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Whole-contract validation
+# ---------------------------------------------------------------------------
+
+
+def validate_traceability(
+    documents: dict,
+    screen_ids,
+    require_all_areas: bool = False,
+    allowed=None,
+) -> list:
+    """Every requirement/traceability rule at once, over a document map."""
+    errors = []
+    errors.extend(validate_requirement_ids(documents))
+    errors.extend(validate_area_floors(documents, require_all=require_all_areas))
+
+    overview = documents.get(OVERVIEW_PATH)
+    if overview is None:
+        errors.append("%s: requirement overview is missing" % OVERVIEW_PATH)
+    else:
+        errors.extend(validate_area_table(overview))
+        errors.extend(
+            validate_matrix(overview, definitions(documents), screen_ids)
+        )
+        if REQ_ID_TEXT not in overview:
+            errors.append(
+                "%s: the anchored requirement-ID pattern is not documented"
+                % OVERVIEW_PATH
+            )
+
+    errors.extend(validate_entries(documents, allowed=allowed))
+    return sorted(errors)
+
+
+def whitelisted_sections():
+    """The verified manual section numbers, or None if the fixture is unreadable."""
+    try:
+        return set(allowed_sections())
+    except (OSError, ValueError):
+        return None
