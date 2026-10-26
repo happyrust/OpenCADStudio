@@ -1,0 +1,8 @@
+[
+  { "kind": "eval", "label": "title", "expression": "document.title" },
+  { "kind": "eval", "label": "hash-before", "expression": "location.hash" },
+  { "kind": "click", "label": "nav-workbench", "selector": "[data-testid='main-nav'] a" },
+  { "kind": "wait", "label": "settle", "ms": 300 },
+  { "kind": "eval", "label": "hash-after", "expression": "location.hash" },
+  { "kind": "screenshot", "label": "shot", "file": "example-1.png" }
+]
