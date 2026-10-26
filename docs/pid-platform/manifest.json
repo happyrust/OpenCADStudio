@@ -4,7 +4,7 @@
     { "id": "docs-readme", "path": "docs/pid-platform/README.md", "kind": "readme", "requiredSections": ["交付物索引", "阅读路径", "原型运行方法"], "owner": "three-way-consistency-audit-and-readme", "status": "planned" },
     { "id": "prd", "path": "docs/pid-platform/PRD.md", "kind": "prd", "requiredSections": ["产品定位与价值主张", "目标行业与客户", "目标用户与角色", "应用场景", "功能架构", "功能模块清单", "路线图", "成功指标"], "owner": "prd-main-document", "status": "planned" },
     { "id": "glossary", "path": "docs/pid-platform/glossary.md", "kind": "glossary", "requiredSections": ["术语表", "唯一词源声明"], "owner": "glossary-and-reference-baseline", "status": "delivered" },
-    { "id": "gap-analysis", "path": "docs/pid-platform/gap-analysis.md", "kind": "gap-analysis", "requiredSections": ["能力矩阵", "已确认不存在的能力"], "owner": "gap-analysis-and-reuse-mapping", "status": "planned" },
+    { "id": "gap-analysis", "path": "docs/pid-platform/gap-analysis.md", "kind": "gap-analysis", "requiredSections": ["能力矩阵", "已确认不存在的能力"], "owner": "gap-analysis-and-reuse-mapping", "status": "delivered" },
     { "id": "reference-source-index", "path": "docs/pid-platform/reference/source-index.md", "kind": "reference", "requiredSections": ["区域代码", "来源映射表"], "owner": "glossary-and-reference-baseline", "status": "delivered" },
     { "id": "reference-product-summary", "path": "docs/pid-platform/reference/reference-product-summary.md", "kind": "reference", "requiredSections": ["模块能力基线", "无文档支撑的能力"], "owner": "glossary-and-reference-baseline", "status": "delivered" },
     { "id": "architecture-system", "path": "docs/pid-platform/architecture/system-architecture.md", "kind": "architecture", "requiredSections": ["分层架构", "跨层交互契约", "复用锚点"], "owner": "architecture-documents", "status": "planned" },

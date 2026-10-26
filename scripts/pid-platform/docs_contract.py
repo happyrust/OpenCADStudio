@@ -574,3 +574,208 @@ def area_counts(text: str) -> dict:
         if row.get("区域") in counts:
             counts[row["区域"]] += 1
     return counts
+
+
+# ---------------------------------------------------------------------------
+# gap-analysis.md (VAL-DOC-005)
+# ---------------------------------------------------------------------------
+
+GAP_COLUMNS = ["能力", "现状", "目标状态", "处置", "证据路径"]
+GAP_MATRIX_SECTION = "能力矩阵"
+GAP_ABSENT_SECTION = "已确认不存在的能力"
+GAP_DISPOSITIONS = ["复用", "改造", "新增"]
+GAP_EVIDENCE_PREFIXES = ("src/", "crates/", "assets/", "docs/")
+GAP_NO_EVIDENCE = "—"
+GAP_MIN_ROWS = 20
+
+# Capabilities the matrix must cover because they exist in the repository
+# today. "pid-legend.json" is normally satisfied by the evidence path.
+GAP_REQUIRED_TOKENS = [
+    "图例识别器",
+    "管道连通性推断",
+    "视图过滤",
+    "PIDLEGEND",
+    "PIDLINE",
+    "PIDTAG",
+    "PIDGROUP",
+    "PIDPLOT",
+    "自动化 API",
+    "插件系统",
+    "DWG/DXF",
+    "统一导出 schema",
+    "图例规则集",
+    "pid-legend.json",
+]
+
+# The ten capabilities VAL-DOC-005 requires the 已确认不存在的能力 section
+# to enumerate, verbatim.
+GAP_CONFIRMED_ABSENT = [
+    "位号主数据与带类型属性模型",
+    "跨图纸拓扑持久化",
+    "可配置校验引擎",
+    "P&ID 语义材料清单",
+    "服务端项目库",
+    "多用户权限与审计",
+    "图例库可视化编辑器",
+    "协同设计",
+    "审计日志",
+    "数据交换标准（DEXPI/ISO 15926/CFIHOS）",
+]
+
+
+def gap_matrix_rows(text: str):
+    """Return (rows, errors) for the five-column capability matrix."""
+    body = section_body(text, 2, GAP_MATRIX_SECTION)
+    if body is None:
+        return [], ["missing H2 section " + GAP_MATRIX_SECTION]
+    table = find_table(body, GAP_COLUMNS)
+    if table is None:
+        return [], [
+            "capability matrix table not found; expected header "
+            + " | ".join(GAP_COLUMNS)
+        ]
+    rows = []
+    errors = []
+    for index, cells in enumerate(table["rows"], start=2):
+        if len(cells) != len(GAP_COLUMNS):
+            errors.append(
+                "capability matrix row %d has %d cells, expected %d: %s"
+                % (index, len(cells), len(GAP_COLUMNS), " | ".join(cells))
+            )
+            continue
+        rows.append(dict(zip(GAP_COLUMNS, cells)))
+    return rows, errors
+
+
+def gap_evidence_paths(cell: str) -> list:
+    """Split a 证据路径 cell into individual repo-relative paths."""
+    parts = re.split(r"[、,，;；\s]+", cell)
+    return [p for p in parts if p]
+
+
+def validate_gap_analysis(text: str, repo_root=None) -> list:
+    """Check VAL-DOC-005 against gap-analysis.md.
+
+    ``repo_root`` is optional; when supplied, every evidence path on a
+    复用/改造 row must resolve to a real file or directory under it.
+    """
+    errors = []
+    if h1_count(text) != 1:
+        errors.append(
+            "gap-analysis.md must contain exactly one H1, found %d" % h1_count(text)
+        )
+    matrix = section_body(text, 2, GAP_MATRIX_SECTION)
+    absent = section_body(text, 2, GAP_ABSENT_SECTION)
+    if matrix is None:
+        errors.append("missing H2 section " + GAP_MATRIX_SECTION)
+    if absent is None:
+        errors.append("missing H2 section " + GAP_ABSENT_SECTION)
+
+    rows, row_errors = gap_matrix_rows(text)
+    errors.extend(row_errors)
+    if len(rows) < GAP_MIN_ROWS:
+        errors.append(
+            "capability matrix has %d data rows, the contract requires at "
+            "least %d" % (len(rows), GAP_MIN_ROWS)
+        )
+    root = Path(repo_root) if repo_root is not None else None
+    for index, row in enumerate(rows, start=2):
+        capability = row["能力"].strip()
+        status = row["现状"].strip()
+        target = row["目标状态"].strip()
+        disposition = row["处置"].strip()
+        evidence = row["证据路径"].strip()
+        if len(capability) < 2:
+            errors.append("capability matrix row %d has an empty 能力" % index)
+        if len(status) < 8:
+            errors.append(
+                "capability matrix row %d (%s) has a 现状 shorter than 8 "
+                "characters" % (index, capability)
+            )
+        if len(target) < 6:
+            errors.append(
+                "capability matrix row %d (%s) has a 目标状态 shorter than 6 "
+                "characters" % (index, capability)
+            )
+        if disposition not in GAP_DISPOSITIONS:
+            errors.append(
+                "capability matrix row %d (%s) has 处置 %r outside the enum 复用/"
+                "改造/新增" % (index, capability, disposition)
+            )
+            continue
+        if disposition == "新增":
+            if evidence not in (GAP_NO_EVIDENCE, "-", "无"):
+                errors.append(
+                    "capability matrix row %d (%s) is 新增 but its 证据路径 is %r; "
+                    "it must be %s"
+                    % (index, capability, evidence, GAP_NO_EVIDENCE)
+                )
+            continue
+        if evidence in ("", GAP_NO_EVIDENCE, "-", "无"):
+            errors.append(
+                "capability matrix row %d (%s) is %s but carries no 证据路径"
+                % (index, capability, disposition)
+            )
+            continue
+        if not evidence.startswith(GAP_EVIDENCE_PREFIXES):
+            errors.append(
+                "capability matrix row %d (%s) has 证据路径 %r outside src/, "
+                "crates/, assets/, docs/" % (index, capability, evidence)
+            )
+            continue
+        if root is not None:
+            for path in gap_evidence_paths(evidence):
+                if not path.startswith(GAP_EVIDENCE_PREFIXES):
+                    errors.append(
+                        "capability matrix row %d (%s) has 证据路径 %r outside "
+                        "src/, crates/, assets/, docs/"
+                        % (index, capability, path)
+                    )
+                    continue
+                if not (root / path).exists():
+                    errors.append(
+                        "capability matrix row %d (%s) cites a path that does "
+                        "not exist in the repository: %s"
+                        % (index, capability, path)
+                    )
+
+    if matrix is not None:
+        missing = [t for t in GAP_REQUIRED_TOKENS if t not in matrix]
+        if missing:
+            errors.append(
+                "capability matrix does not cover these existing capabilities: "
+                + "、".join(missing)
+            )
+
+    if absent is not None:
+        subsections = dict(sections_at(absent, 3))
+        for item in GAP_CONFIRMED_ABSENT:
+            body = None
+            for name, candidate in subsections.items():
+                if item in name:
+                    body = candidate
+                    break
+            if body is None:
+                pattern = re.compile(
+                    r"\*\*" + re.escape(item) + r"\*\*(.*?)"
+                    r"(?=\n\s*[-*]\s*\*\*|\Z)",
+                    re.DOTALL,
+                )
+                match = pattern.search(absent)
+                body = match.group(1) if match else None
+            if body is None:
+                errors.append(
+                    GAP_ABSENT_SECTION + " does not address: " + item
+                )
+                continue
+            if len(body.strip()) < 60:
+                errors.append(
+                    "%s entry '%s' is too thin (%d characters) to say what is "
+                    "missing" % (GAP_ABSENT_SECTION, item, len(body.strip()))
+                )
+            if "新增" not in body:
+                errors.append(
+                    "%s entry '%s' does not state that the capability is 新增"
+                    % (GAP_ABSENT_SECTION, item)
+                )
+    return errors
