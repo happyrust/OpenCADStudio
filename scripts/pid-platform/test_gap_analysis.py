@@ -11,6 +11,8 @@ validator can actually fail.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from conftest import DOCS, REPO_ROOT
 from docs_contract import (
     GAP_ABSENT_SECTION,
@@ -22,6 +24,7 @@ from docs_contract import (
     GAP_MIN_ROWS,
     GAP_NO_EVIDENCE,
     GAP_REQUIRED_TOKENS,
+    gap_banned_identifier_hits,
     gap_evidence_paths,
     gap_matrix_rows,
     h1_count,
@@ -31,6 +34,7 @@ from docs_contract import (
 )
 
 GAP = DOCS / "gap-analysis.md"
+HARNESS = Path(__file__).resolve().parent
 
 
 def _text(path) -> str:
@@ -221,6 +225,63 @@ def test_structure_gap_analysis_confirmed_absent_lists_ten_items():
     assert missing == [], "confirmed-absent items not listed: %s" % missing
 
 
+def test_structure_gap_analysis_does_not_name_a_nonexistent_mcp_operation():
+    """The automation-API row may only claim what src/mcp.rs contains.
+
+    Its evidence path is src/mcp.rs; every operation name in that row must
+    therefore be one of READ_OPS/EXECUTE_OPS, and the P&ID group capability
+    must be described as the PIDGROUP command from
+    src/app/commands/pidlegend.rs, not as an MCP operation.
+    """
+    text = _text(GAP)
+    hits = gap_banned_identifier_hits(text)
+    assert hits == [], (
+        "gap-analysis.md claims an MCP operation that src/mcp.rs does not "
+        "define; report PIDGROUP as a command instead: %s" % hits
+    )
+    rows, errors = gap_matrix_rows(text)
+    assert errors == [], "matrix parsing failed: " + "; ".join(errors)
+    row = next(r for r in rows if r["能力"].strip() == "自动化 API")
+    assert "PIDGROUP" in row["现状"], (
+        "the automation-API row must name the PIDGROUP command: %s" % row["现状"]
+    )
+    assert "`pid_legend`" in row["现状"], row["现状"]
+    paths = gap_evidence_paths(row["证据路径"])
+    assert paths == ["src/mcp.rs", "src/app/commands/pidlegend.rs"], (
+        "unexpected evidence paths: %s" % paths
+    )
+
+
+def test_structure_no_retired_group_identifier_in_documents_or_harness():
+    """Neither the deliverables nor the test harness may use that name.
+
+    The harness bans the identifier but must not carry it, so the pattern
+    lives in docs_contract as a character class and this sweep reads files
+    from disk rather than comparing constants.
+    """
+    offenders = []
+    for path in sorted(DOCS.rglob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        for number, line in gap_banned_identifier_hits(text):
+            offenders.append(
+                "%s:%d: %s"
+                % (path.relative_to(REPO_ROOT).as_posix(), number, line)
+            )
+    for path in sorted(HARNESS.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for number, line in gap_banned_identifier_hits(text):
+            offenders.append(
+                "%s:%d: %s"
+                % (path.relative_to(REPO_ROOT).as_posix(), number, line)
+            )
+    print("scanned", len(list(DOCS.rglob("*.md"))), "documents and",
+          len(list(HARNESS.rglob("*.py"))), "harness modules")
+    assert offenders == [], (
+        "the retired identifier reappeared (write PIDGROUP instead): %s"
+        % offenders
+    )
+
+
 # ---------------------------------------------------------------------------
 # Negative controls: the validator must reject broken documents
 # ---------------------------------------------------------------------------
@@ -324,3 +385,41 @@ def test_structure_gap_validator_rejects_wrong_table_header():
     assert any("table not found" in e for e in errors), (
         "wrong header not reported: %s" % errors
     )
+
+
+def test_structure_gap_validator_rejects_the_retired_group_identifier(tmp_path):
+    """Writing the old name back into the document must fail the gate.
+
+    The token is assembled here from fragments so the harness itself stays
+    clean: a grep for the identifier across docs/pid-platform and
+    scripts/pid-platform must return nothing, while the guard still rejects
+    a document that reintroduces it.
+    """
+    retired = "pid" + "_group"
+    clean = _text(GAP)
+    assert validate_gap_analysis(clean, REPO_ROOT) == [], (
+        "the committed document must satisfy VAL-DOC-005"
+    )
+    assert gap_banned_identifier_hits(clean) == []
+    dirty = clean.replace(
+        "写侧不占用独立的 MCP 操作位",
+        "写侧不占用独立的 MCP 操作位（另有 `" + retired + "` 操作）",
+        1,
+    )
+    assert dirty != clean, "the injection anchor no longer exists"
+    copy = tmp_path / "gap-analysis.md"
+    copy.write_text(dirty, encoding="utf-8")
+    errors = validate_gap_analysis(copy.read_text(encoding="utf-8"), REPO_ROOT)
+    print("observed errors:", errors)
+    assert errors, "validator accepted a document naming the retired identifier"
+    assert any("PIDGROUP command instead" in e for e in errors), (
+        "no error points at PIDGROUP as the correct name: %s" % errors
+    )
+    assert any("line " in e for e in errors), (
+        "no error gives the offending line number: %s" % errors
+    )
+    assert gap_banned_identifier_hits(dirty) != [], (
+        "the scan predicate must see the injected identifier"
+    )
+    assert _text(GAP) == clean, "the committed document must not be modified"
+

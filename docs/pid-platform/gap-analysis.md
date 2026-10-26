@@ -31,7 +31,7 @@
 | P&ID 命令面（PIDLEGEND / PIDLINE / PIDTAG / PIDGROUP） | PIDLEGEND / PIDLINE / PIDTAG / PIDGROUP 挂在 `dispatch_families` 链上；`PIDLEGEND` 有 ON / OFF / PURGE / REPORT / LIST / EXPORT 六个动词 | 作为 L2 编辑器命令骨架，在其上新增插入符号、生成位号、批量属性等命令族 | 改造 | src/app/commands/pidlegend.rs |
 | 命令注册与分发链 | 编译期 inventory 注册加运行期 `dispatch_families` 首个命中胜出，新增命令只需登记，无需维护中心清单 | 承载新增的 P&ID 命令族，注册机制保持不变 | 复用 | src/app/commands/mod.rs |
 | PIDPLOT 出图 | 用 pid-parse 绘图器把 `.pid` 出成 PDF，重建设计文件自带的图框与符号库；原生可用，web 构建显式报错 | 作为 L4 图纸输出通道之一，纳入统一出图与发布包 | 复用 | src/app/commands/pidplot.rs |
-| 自动化 API | MCP 面 30 个读操作与 43 个执行操作，同一套 handler 供 stdio、TCP、REST、MCP 与无头一次性五种传输使用；P&ID 相关只有 `pid_legend` 与 `pid_group` | 作为 L4 发布与集成通道，补齐位号、拓扑、规则、材料的操作面 | 改造 | src/mcp.rs |
+| 自动化 API | MCP 面 30 个读操作与 43 个执行操作，同一套 handler 供 stdio、TCP、REST、MCP 与无头一次性五种传输使用；P&ID 相关的读操作只有 `pid_legend`，写侧不占用独立的 MCP 操作位，符号组合、改位号与解散由命令面 `PIDGROUP` 经执行通道 `run` 到达 | 作为 L4 发布与集成通道，补齐位号、拓扑、规则、材料的操作面 | 改造 | src/mcp.rs、src/app/commands/pidlegend.rs |
 | 通用对象读写 | `records`、`record_schema`、`set_properties`、`xdata_set` 提供全对象库的通用读写，支持 JSON Pointer 路径、比较并设置与 where 过滤 | 作为 L3 属性读写的现成通道，不另建对象 API | 改造 | src/app/automation.rs |
 | 插件系统 | 带外进程 cdylib 加本地 socket IPC，插件 API v13（最低支持 3），清单声明命令前缀与 XDATA 应用名 | 作为扩展点承载业主规则包与交付格式；插件持久化仍走 XDATA | 复用 | crates/ocs_plugin_api/ |
 | DWG/DXF 多版本读写 | DWG 与 DXF 各 7 个版本（2018 / 2013 / 2010 / 2007 / 2004 / 2000 / R14）加 DWT 2018；原子写、`.bak` 备份、`save_verified` 重开校验与 SHA-256 | 作为 L1 文件 IO 承担全部图纸往返，不做格式层改造 | 复用 | src/io/mod.rs |

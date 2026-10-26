@@ -1186,6 +1186,24 @@ def gap_evidence_paths(cell: str) -> list:
     return [p for p in parts if p]
 
 
+# The P&ID group operation was once named in the matrix as though it were an
+# operation of src/mcp.rs; that identifier appears zero times in that file, so
+# the claim overstated what the MCP surface exposes. The spelling is written
+# as a character class on purpose: the harness that bans the identifier must
+# not itself contain it, so a plain grep for it stays empty across
+# docs/pid-platform and scripts/pid-platform.
+GAP_BANNED_IDENTIFIER_RE = re.compile(r"pid[_]group")
+
+
+def gap_banned_identifier_hits(text: str) -> list:
+    """Return (line number, stripped line) for every banned identifier hit."""
+    return [
+        (number, line.strip())
+        for number, line in enumerate(text.splitlines(), start=1)
+        if GAP_BANNED_IDENTIFIER_RE.search(line)
+    ]
+
+
 def validate_gap_analysis(text: str, repo_root=None) -> list:
     """Check VAL-DOC-005 against gap-analysis.md.
 
@@ -1197,6 +1215,13 @@ def validate_gap_analysis(text: str, repo_root=None) -> list:
         errors.append(
             "gap-analysis.md must contain exactly one H1, found %d" % h1_count(text)
         )
+    for number, line in gap_banned_identifier_hits(text):
+        errors.append(
+            "gap-analysis.md line %d names the P&ID group operation with an "
+            "identifier that src/mcp.rs does not contain; call it the "
+            "PIDGROUP command instead: %s" % (number, line)
+        )
+
     matrix = section_body(text, 2, GAP_MATRIX_SECTION)
     absent = section_body(text, 2, GAP_ABSENT_SECTION)
     if matrix is None:

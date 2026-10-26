@@ -191,11 +191,8 @@ def check_delivered(manifest: dict, docs_root: Path) -> list:
     return errors
 
 
-def check_closure(
-    manifest: dict, docs_root: Path, expected_paths: Sequence[str]
-) -> list:
-    """Check the registered markdown set against the promised set and disk."""
-    errors = []
+def registered_markdown_paths(manifest: dict, docs_root: Path) -> list:
+    """Return every markdown path the manifest registers, docs-relative."""
     registered = []
     if isinstance(manifest, dict):
         for entry in manifest.get("deliverables", []):
@@ -204,6 +201,15 @@ def check_closure(
             path = entry.get("path")
             if isinstance(path, str) and path.endswith(".md"):
                 registered.append(docs_relative_path(path, docs_root))
+    return registered
+
+
+def check_closure(
+    manifest: dict, docs_root: Path, expected_paths: Sequence[str]
+) -> list:
+    """Check the registered markdown set against the promised set and disk."""
+    errors = []
+    registered = registered_markdown_paths(manifest, docs_root)
     counts = Counter(registered)
     for rel in sorted(counts):
         if counts[rel] > 1:
@@ -232,10 +238,34 @@ def check_closure(
     return errors
 
 
+def check_cardinality(
+    manifest: dict, docs_root: Path, expected_paths: Sequence[str]
+) -> list:
+    """VAL-DOC-008: the registered set must equal the promised set exactly.
+
+    ``check_closure`` walks the promised paths and the files on disk, so an
+    entry added to the manifest for a path that is neither promised nor
+    present (a 21st deliverable, typically still ``planned``) slips through
+    both directions. This check compares the two sets directly and reports
+    entries in either difference, naming the offending path.
+    """
+    errors = []
+    registered = set(registered_markdown_paths(manifest, docs_root))
+    promised = {docs_relative_path(p, docs_root) for p in expected_paths}
+    for rel in sorted(registered - promised):
+        errors.append(
+            "manifest registers a deliverable outside the promised set of "
+            "%d: %s" % (len(promised), rel)
+        )
+    for rel in sorted(promised - registered):
+        errors.append("manifest is missing a promised deliverable: " + rel)
+    return errors
+
+
 def validate_manifest(
     manifest_path: Path, docs_root: Path, expected_paths: Sequence[str]
 ) -> list:
-    """Full contract check: load, schema, delivered entries, closure."""
+    """Full contract check: load, schema, delivered entries, closure, count."""
     try:
         manifest = load_manifest_file(manifest_path)
     except json.JSONDecodeError as exc:
@@ -247,4 +277,5 @@ def validate_manifest(
     errors = validate_schema(manifest)
     errors += check_delivered(manifest, docs_root)
     errors += check_closure(manifest, docs_root, expected_paths)
+    errors += check_cardinality(manifest, docs_root, expected_paths)
     return errors
