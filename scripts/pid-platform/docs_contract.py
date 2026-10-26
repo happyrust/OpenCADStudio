@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from itertools import combinations
 from pathlib import Path
 
 from manifest_contract import normalize_heading
@@ -480,6 +481,272 @@ def banned_alias_map(text: str) -> dict:
                 continue
             out[alias] = term
     return out
+
+
+# ---------------------------------------------------------------------------
+# Banned-alias policy (glossary-alias-correction)
+# ---------------------------------------------------------------------------
+
+# The alias column is machine-enforced, so it may only carry strings that are
+# a wrong name for the row's own concept. These are the sections that have to
+# quote the forbidden strings in order to explain the policy, and are
+# therefore excluded from the alias scan of the glossary itself.
+ALIAS_CRITERIA_HEADING = "禁用别名判定规则"
+ALIAS_EXEMPT_SECTIONS = (ALIAS_CRITERIA_HEADING, "已移除与不登记的疑似别名")
+
+ALIAS_CRITERIA_KEYWORDS = ["同一概念", "非普通工程用词", "不另有所指", "可机械判定"]
+ALIAS_CRITERIA_MIN_ITEMS = 4
+ALIAS_SCAN_SCOPE_TOKEN = "docs/pid-platform"
+
+RETIRED_ALIAS_COLUMNS = ["词", "曾被归到", "理由"]
+RETIRED_ALIAS_MIN_ROWS = 15
+RETIRED_ALIAS_REASON_MIN_CHARS = 20
+
+# Words the criteria disqualify. Registering any of them as a banned alias is
+# the defect this contract exists to prevent, so the validator rejects the
+# registration outright rather than trusting the prose around it. "Was never
+# a second name for the object" and "requirement prose must use it" are the
+# two reasons a word lands here.
+NOT_AN_ALIAS = {
+    "阀体": "阀体是阀门的组成部分，与阀门不是同一对象",
+    "WBS": "WBS 与 PBS 是两套不同标准的分解结构",
+    "控制回路": "控制回路属于控制方案，与仪表回路不是同一概念",
+    "线段": "线段是几何形态描述，手册用它说明管段在图面上的外观",
+    "编号": "编号是通用计数词，需求正文必须使用",
+    "数据字段": "手册把数据要素定义为数据字段或属性，正文必须使用",
+    "基础数据": "基础数据泛指项目开工前的基础资料，需求正文必须使用",
+    "料表": "料表泛指任何材料表，需求正文必须使用",
+    "物料表": "物料表泛指任何材料表，需求正文必须使用",
+    "支管": "支管是管道专业中真实存在的构件称谓",
+    "主线": "手册中主线指绘图栅格主线，另有所指",
+    "接管": "接管是真实存在的管道构件，手册正文使用",
+    "接口": "接口是通用词，API/数据/界面接口都要用它",
+    "配件": "配件泛指备品备件与附件，与管件不是同一类别",
+    "接头": "接头兼指电气与机械接头，与管件不是同一类别",
+    "仪器": "仪器指实验室与精密测量器具，且仪器仪表是惯用并列短语",
+    "阀类": "阀类是类别集合称谓，不是单个对象的错名",
+    "设备对象": "设备对象指对象实例层面，需求正文要与其他对象并列使用",
+    "设备接口": "设备接口泛指设备对外的一切接口",
+    "信号电缆": "信号电缆是实物采购件，信号线是图面连线对象",
+    "控制线": "控制线另指控制线路，含义随语境漂移",
+    "模板属性": "手册用源模板属性值指模板项的属性值，另有所指",
+    "属性集模板": "指属性集的模板，是另一层组合对象，本规范包未定义属性集",
+}
+
+
+def alias_scan_body(text: str) -> str:
+    """Glossary text with the parts that must quote aliases removed.
+
+    Only the alias column of the 术语表 table and the two policy sections are
+    dropped; the term names, English names, definitions and maintenance rules
+    stay in scope, so a stray alias in the glossary's own prose is still
+    reported. The scan is a plain substring test, matching how the pytest
+    module enforces the column.
+    """
+    kept = []
+    skip_level = None
+    table_header = None
+    for line in text.splitlines():
+        heading = _HEADING_RE.match(line)
+        if heading:
+            level = len(heading.group(1))
+            if skip_level is not None and level <= skip_level:
+                skip_level = None
+            title = normalize_heading(heading.group(2))
+            if skip_level is None and title in ALIAS_EXEMPT_SECTIONS:
+                skip_level = level
+                table_header = None
+                continue
+        if skip_level is not None:
+            continue
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            table_header = None
+            kept.append(line)
+            continue
+        cells = _split_cells(line)
+        if table_header is None:
+            table_header = cells
+            kept.append(line)
+            continue
+        if table_header == GLOSSARY_COLUMNS and len(cells) == len(GLOSSARY_COLUMNS):
+            if not _is_separator(line):
+                cells = cells[:-1]
+            kept.append("| " + " | ".join(cells) + " |")
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def alias_scan_documents(docs_root) -> dict:
+    """Every markdown deliverable under ``docs_root`` as {relative_path: text}."""
+    root = Path(docs_root)
+    documents = {}
+    if not root.is_dir():
+        return documents
+    for path in sorted(root.rglob("*.md")):
+        name = str(path.relative_to(root)).replace(os.sep, "/")
+        documents[name] = path.read_text(encoding="utf-8")
+    return documents
+
+
+def scan_alias_violations(glossary_text: str, documents: dict) -> list:
+    """Report every banned alias found in ``documents`` as (file, word) pairs.
+
+    ``documents`` maps a display path to its text. The glossary is scanned with
+    :func:`alias_scan_body`, because it has to spell the aliases out in order to
+    ban them. Errors name both the file and the word so a failure is
+    actionable without re-running the scan by hand.
+    """
+    aliases = banned_alias_map(glossary_text)
+    errors = []
+    for name in sorted(documents):
+        body = documents[name]
+        if Path(name).name == "glossary.md":
+            body = alias_scan_body(body)
+        for alias in sorted(aliases):
+            if alias and alias in body:
+                errors.append(
+                    "%s uses banned alias '%s'; use %s instead"
+                    % (name, alias, aliases[alias])
+                )
+    return errors
+
+
+def retired_alias_rows(text: str):
+    """Return (rows, errors) for the 已移除与不登记的疑似别名 table."""
+    body = section_body(text, 2, ALIAS_EXEMPT_SECTIONS[1])
+    if body is None:
+        return [], [
+            "glossary.md has no H2 section named " + ALIAS_EXEMPT_SECTIONS[1]
+        ]
+    table = find_table(body, RETIRED_ALIAS_COLUMNS)
+    if table is None:
+        return [], [
+            "the %s section has no table with header %s"
+            % (ALIAS_EXEMPT_SECTIONS[1], " | ".join(RETIRED_ALIAS_COLUMNS))
+        ]
+    rows = []
+    errors = []
+    for index, row in enumerate(table["rows"], start=2):
+        if len(row) != len(RETIRED_ALIAS_COLUMNS):
+            errors.append(
+                "retired-alias row %d has %d cells, expected %d"
+                % (index, len(row), len(RETIRED_ALIAS_COLUMNS))
+            )
+            continue
+        rows.append(dict(zip(RETIRED_ALIAS_COLUMNS, row)))
+    return rows, errors
+
+
+def alias_hygiene_errors(text: str) -> list:
+    """Structural rules that keep the alias column mechanically decidable."""
+    rows, _ = glossary_rows(text)
+    aliases = banned_alias_map(text)
+    canonical = list(rows)
+    sanctioned = [s for forms in SANCTIONED_ALIASES.values() for s in forms]
+    errors = []
+    for alias in sorted(aliases):
+        if len(alias) < 2:
+            errors.append(
+                "banned alias '%s' is shorter than 2 characters and cannot be "
+                "scanned safely" % alias
+            )
+        if alias in rows:
+            errors.append(
+                "'%s' is registered as both a canonical term and a banned alias"
+                % alias
+            )
+        for term in canonical:
+            if alias != term and alias in term:
+                errors.append(
+                    "banned alias '%s' is a substring of canonical term '%s'"
+                    % (alias, term)
+                )
+        for short in sanctioned:
+            if alias in short:
+                errors.append(
+                    "banned alias '%s' is a substring of the sanctioned short "
+                    "form '%s'" % (alias, short)
+                )
+    for first, second in combinations(sorted(aliases), 2):
+        if first in second or second in first:
+            errors.append(
+                "banned aliases '%s' and '%s' are substrings of one another"
+                % (first, second)
+            )
+    return errors
+
+
+def validate_alias_policy(text: str) -> list:
+    """Check the alias column against the criteria documented in the glossary."""
+    errors = []
+    body = section_body(text, 2, ALIAS_CRITERIA_HEADING)
+    if body is None:
+        errors.append("glossary.md is missing the H2 section " + ALIAS_CRITERIA_HEADING)
+    else:
+        missing = [k for k in ALIAS_CRITERIA_KEYWORDS if k not in body]
+        if missing:
+            errors.append(
+                "the %s section does not state criterion/criteria: %s"
+                % (ALIAS_CRITERIA_HEADING, "、".join(missing))
+            )
+        items = re.findall(r"(?m)^\s*\*{0,2}\s*\d+[.、)]\s*\*{0,2}\s*\S", body)
+        if len(items) < ALIAS_CRITERIA_MIN_ITEMS:
+            errors.append(
+                "the %s section states %d numbered criteria, expected at least %d"
+                % (ALIAS_CRITERIA_HEADING, len(items), ALIAS_CRITERIA_MIN_ITEMS)
+            )
+        if ALIAS_SCAN_SCOPE_TOKEN not in body:
+            errors.append(
+                "the %s section never names the scan scope %s"
+                % (ALIAS_CRITERIA_HEADING, ALIAS_SCAN_SCOPE_TOKEN)
+            )
+
+    retired, retired_errors = retired_alias_rows(text)
+    errors.extend(retired_errors)
+    if retired:
+        if len(retired) < RETIRED_ALIAS_MIN_ROWS:
+            errors.append(
+                "the retired-alias table has %d rows, expected at least %d"
+                % (len(retired), RETIRED_ALIAS_MIN_ROWS)
+            )
+        for row in retired:
+            reason = row["理由"].strip()
+            if len(reason) < RETIRED_ALIAS_REASON_MIN_CHARS:
+                errors.append(
+                    "retired entry '%s' has a %d-character reason; it must "
+                    "explain the judgement" % (row["词"], len(reason))
+                )
+            if not re.search(r"(?:判据|第)\s*[1-4]", reason):
+                errors.append(
+                    "retired entry '%s' does not name the criterion it "
+                    "violates" % row["词"]
+                )
+        listed = {row["词"].strip() for row in retired}
+        missing = [w for w in NOT_AN_ALIAS if w not in listed]
+        if missing:
+            errors.append(
+                "the retired-alias table omits %d word(s) the criteria "
+                "disqualify: %s" % (len(missing), "、".join(missing))
+            )
+    else:
+        listed = set()
+
+    aliases = banned_alias_map(text)
+    for word in sorted(NOT_AN_ALIAS):
+        if word in aliases:
+            errors.append(
+                "glossary registers '%s' as a banned alias of %s, but it is "
+                "not an alias: %s" % (word, aliases[word], NOT_AN_ALIAS[word])
+            )
+    for word in sorted(set(aliases) & listed):
+        errors.append(
+            "'%s' is both a registered banned alias and a retired suspect"
+            % word
+        )
+    errors.extend(alias_hygiene_errors(text))
+    return errors
 
 
 # ---------------------------------------------------------------------------
