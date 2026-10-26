@@ -92,6 +92,31 @@ ANY_SECTION_TOKEN_RE = re.compile(r"§(\d+(?:\.\d+)+)(?![\d.])")
 
 DEFAULT_ANALYSIS_DIR = Path(r"D:\work\plant-code\cad\pid-资料\analysis")
 
+# Raw manual plain-text extract. Outside the repository by mission rule, so
+# every check that needs it must skip rather than fail when it is absent.
+DEFAULT_MANUAL_TEXT = Path(
+    r"D:\work\plant-code\cad\pid-资料\text"
+    r"\5.PIMCenter_Designer_P_ID_V25R4.1用户手册.txt"
+)
+
+SECTION_NUMBER_RE = re.compile(r"^\d+(?:\.\d+)+$")
+
+# source-index.md must end with this appendix: the fact table that pins every
+# cited section number to the manual heading it actually carries.
+CITATION_APPENDIX_HEADING = "引用章节标题对照"
+CITATION_APPENDIX_COLUMNS = ["节号", "手册标题"]
+
+# The fixture shipped 80 verified sections before the symbol-editor citations
+# were corrected; .3.4/.3.5/.3.7 were added because the corrected citations
+# need them. The floor only guards against the list being truncated.
+MANUAL_MIN_SECTION_TITLES = 80
+
+# A manual body heading line: number, optional trailing period, then the title.
+# Table-of-contents lines (dot leaders) are filtered out by the caller.
+MANUAL_HEADING_RE = re.compile(
+    r"^(?P<number>\d+(?:\.\d+)+)\.?[ \t]*(?P<title>[^\s.][^\n]*)$"
+)
+
 # ---------------------------------------------------------------------------
 # Markdown primitives
 # ---------------------------------------------------------------------------
@@ -217,12 +242,56 @@ def section_tokens(text: str) -> list:
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
-def allowed_sections(fixture_path=None) -> list:
-    """The verified manual-section whitelist."""
+def section_titles(fixture_path=None) -> dict:
+    """Map each verified manual section to its verbatim manual heading title.
+
+    The fixture records two independent facts per section: the number occurs as
+    a literal ``§`` token in the analysis extract, and the title is the heading
+    line of that section in the raw manual. The legacy form of the fixture was a
+    bare list of numbers; it is still accepted, but every entry then carries an
+    empty title so :func:`validate_section_fixture` reports the missing fact
+    instead of silently passing.
+    """
     path = Path(fixture_path) if fixture_path else FIXTURES / "manual-sections.json"
     with path.open(encoding="utf-8") as fh:
         data = json.load(fh)
-    return list(data.get("sections", []))
+    sections = data.get("sections", {})
+    if isinstance(sections, dict):
+        return {str(key): str(value) for key, value in sections.items()}
+    return {str(key): "" for key in sections}
+
+
+def allowed_sections(fixture_path=None) -> list:
+    """The verified manual-section whitelist."""
+    return list(section_titles(fixture_path).keys())
+
+
+def validate_section_fixture(fixture_path=None) -> list:
+    """Every fixture entry must be a section number with a verbatim title."""
+    path = Path(fixture_path) if fixture_path else FIXTURES / "manual-sections.json"
+    try:
+        titles = section_titles(path)
+    except (OSError, ValueError) as exc:
+        return ["cannot read the manual-section fixture %s: %s" % (path, exc)]
+    if not titles:
+        return ["the manual-section fixture lists no sections: " + str(path)]
+    errors = []
+    if len(titles) < MANUAL_MIN_SECTION_TITLES:
+        errors.append(
+            "the manual-section fixture lists %d sections; the contract "
+            "requires at least %d" % (len(titles), MANUAL_MIN_SECTION_TITLES)
+        )
+    for section in sorted(titles):
+        if not SECTION_NUMBER_RE.match(section):
+            errors.append(
+                "fixture key %r is not a section number such as 6.2.2.3.4"
+                % section
+            )
+        if len(titles[section].strip()) < 2:
+            errors.append(
+                "fixture section %s carries no manual heading title" % section
+            )
+    return errors
 
 
 def analysis_dir() -> Path:
@@ -243,6 +312,74 @@ def analysis_section_tokens(directory=None) -> set:
 
 def split_aliases(cell: str) -> list:
     return [a.strip() for a in re.split(r"[、,，;；/]", cell) if a.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Raw manual corpus (outside the repository, read-only)
+# ---------------------------------------------------------------------------
+
+
+def manual_text_path() -> Path:
+    override = os.environ.get("PID_MANUAL_TEXT")
+    return Path(override) if override else DEFAULT_MANUAL_TEXT
+
+
+def read_manual_text(path=None):
+    """The raw manual plain text, or ``None`` when the corpus is unavailable."""
+    target = Path(path) if path is not None else manual_text_path()
+    if not target.is_file():
+        return None
+    try:
+        return target.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def manual_heading_lines(corpus_text: str) -> dict:
+    """Map section number to the heading title line found in the manual body.
+
+    Table-of-contents lines carry dot leaders and page numbers, so they are
+    skipped: only a real body heading counts as evidence for a title. The first
+    occurrence wins, which matches how the section tree is laid out.
+    """
+    found = {}
+    for line in corpus_text.splitlines():
+        if "..." in line:
+            continue
+        match = MANUAL_HEADING_RE.match(line.replace("\f", " "))
+        if match is None:
+            continue
+        title = match.group("title").strip().rstrip("。")
+        found.setdefault(match.group("number"), title)
+    return found
+
+
+def manual_heading_numbers(corpus_text: str) -> set:
+    return set(manual_heading_lines(corpus_text).keys())
+
+
+def validate_titles_against_manual(titles: dict, corpus_text: str) -> list:
+    """Each section's fixture title must be a real heading line in the manual.
+
+    This is what stops the fixture from being self-referential: a wrong title
+    (or a right title attached to the wrong number) is caught here, because the
+    corpus is the manual itself, not a file the fixture authors control.
+    """
+    headings = manual_heading_lines(corpus_text)
+    errors = []
+    for section in sorted(titles):
+        expected = titles[section]
+        actual = headings.get(section)
+        if actual is None:
+            errors.append(
+                "the manual has no body heading line for §%s" % section
+            )
+        elif expected != actual:
+            errors.append(
+                "fixture title for §%s is %r but the manual heading line "
+                "reads %r" % (section, expected, actual)
+            )
+    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +711,117 @@ def area_counts(text: str) -> dict:
         if row.get("区域") in counts:
             counts[row["区域"]] += 1
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Citation-title appendix (source-index.md)
+# ---------------------------------------------------------------------------
+
+
+def _body_before_appendix(text: str) -> str:
+    """``text`` with the citation appendix removed, so it cannot self-certify."""
+    marker = re.search(
+        r"^##[ \t]+" + re.escape(CITATION_APPENDIX_HEADING) + r"[ \t]*$",
+        text,
+        re.MULTILINE,
+    )
+    return text[: marker.start()] if marker else text
+
+
+def document_cited_sections(text: str) -> set:
+    """Every manual section a document cites, ignoring its own appendix."""
+    return set(section_tokens(_body_before_appendix(text)))
+
+
+def citation_appendix(text: str):
+    """Return ({section: title}, errors) for the 节号 / 手册标题 appendix table."""
+    body = section_body(text, 2, CITATION_APPENDIX_HEADING)
+    if body is None:
+        return {}, ["missing H2 section " + CITATION_APPENDIX_HEADING]
+    table = find_table(body, CITATION_APPENDIX_COLUMNS)
+    if table is None:
+        return {}, [
+            "the %s section has no table with header %s"
+            % (
+                CITATION_APPENDIX_HEADING,
+                " | ".join(CITATION_APPENDIX_COLUMNS),
+            )
+        ]
+    rows = {}
+    errors = []
+    for index, cells in enumerate(table["rows"], start=2):
+        if len(cells) != len(CITATION_APPENDIX_COLUMNS):
+            errors.append(
+                "citation appendix row %d has %d cells, expected %d: %s"
+                % (index, len(cells), len(CITATION_APPENDIX_COLUMNS), " | ".join(cells))
+            )
+            continue
+        reference = cells[0].strip()
+        title = cells[1].strip()
+        match = SECTION_REF_RE.match(reference)
+        if match is None:
+            errors.append(
+                "citation appendix row %d has 节号 %r; expected §x.y.z"
+                % (index, reference)
+            )
+            continue
+        section = match.group(1)
+        if section in rows:
+            errors.append(
+                "citation appendix lists §%s more than once" % section
+            )
+            continue
+        if len(title) < 2:
+            errors.append(
+                "citation appendix row %d (§%s) has an empty 手册标题"
+                % (index, section)
+            )
+        rows[section] = title
+    return rows, errors
+
+
+def _section_sort_key(section: str) -> list:
+    return [int(part) for part in section.split(".")]
+
+
+def validate_citation_appendix(index_text: str, summary_text: str, titles=None) -> list:
+    """The appendix must cover exactly the sections the two documents cite.
+
+    Three facts are checked, and each has its own negative control:
+    the appendix exists and parses; its section set equals the union of the
+    sections cited by source-index.md and reference-product-summary.md (both
+    directions, so neither an omission nor a stale row passes); and every row's
+    title equals the fixture title character for character.
+    """
+    if titles is None:
+        titles = section_titles()
+    errors = []
+    rows, row_errors = citation_appendix(index_text)
+    errors.extend(row_errors)
+    cited = document_cited_sections(index_text) | document_cited_sections(summary_text)
+    for section in sorted(cited - set(rows), key=_section_sort_key):
+        errors.append(
+            "§%s is cited by a document but missing from the %s appendix"
+            % (section, CITATION_APPENDIX_HEADING)
+        )
+    for section in sorted(set(rows) - cited, key=_section_sort_key):
+        errors.append(
+            "the %s appendix lists §%s but no document cites it"
+            % (CITATION_APPENDIX_HEADING, section)
+        )
+    for section in sorted(rows, key=_section_sort_key):
+        expected = titles.get(section)
+        if expected is None:
+            errors.append(
+                "the %s appendix cites §%s, which is absent from the "
+                "manual-section fixture" % (CITATION_APPENDIX_HEADING, section)
+            )
+        elif rows[section] != expected:
+            errors.append(
+                "the %s appendix title for §%s is %r; the fixture records %r"
+                % (CITATION_APPENDIX_HEADING, section, rows[section], expected)
+            )
+    return errors
 
 
 # ---------------------------------------------------------------------------

@@ -22,8 +22,11 @@ from docs_contract import (
     area_counts,
     field_present,
     find_table,
+    manual_heading_numbers,
+    manual_text_path,
     module_sections,
     raw_sections_at,
+    read_manual_text,
     section_body,
     sections_at,
     source_index_rows,
@@ -273,17 +276,29 @@ def test_structure_source_index_area_codes_table_matches_enum():
 
 
 def test_structure_manual_section_whitelist_exists_in_analysis():
-    """Every whitelisted section must be present in the extracted manual."""
+    """Every whitelisted section must be traceable to the manual.
+
+    The analysis extract collapses the symbol-editor block into the range
+    "§5.1.4.3.2.2.3.2–5", so §5.1.4.3.2.2.3.4 and §5.1.4.3.2.2.3.7 appear
+    there only as an interval and never as tokens. A body heading line in the
+    raw manual is strictly stronger evidence than a token, so a section
+    qualifies on either source.
+    """
     derived = analysis_section_tokens()
-    if not derived:
+    corpus = read_manual_text()
+    headings = manual_heading_numbers(corpus) if corpus is not None else set()
+    if not derived and not headings:
         pytest.skip(
-            "manual analysis not available at %s; whitelist cross-check skipped"
-            % analysis_dir()
+            "neither the analysis extract (%s) nor the raw manual (%s) is "
+            "available; whitelist cross-check skipped"
+            % (analysis_dir(), manual_text_path())
         )
-    unknown = [s for s in allowed_sections() if s not in derived]
+    unknown = [
+        s for s in allowed_sections() if s not in derived and s not in headings
+    ]
     assert unknown == [], (
-        "whitelist entries not found in the analysis text (fabricated?): %s"
-        % unknown
+        "whitelist entries found neither in the analysis text nor as a manual "
+        "heading line (fabricated?): %s" % unknown
     )
 
 
