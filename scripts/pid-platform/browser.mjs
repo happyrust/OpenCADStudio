@@ -5,10 +5,12 @@ import path from "node:path";
 
 const PROG = "browser.mjs";
 const DEFAULT_CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-const STEP_KINDS = ["eval", "click", "wait", "screenshot"];
+const STEP_KINDS = ["eval", "click", "wait", "screenshot", "console", "snapshot"];
 const MAX_PORT_ATTEMPTS = 3;
 const DEVTOOLS_TIMEOUT_MS = 15000;
 const READYSTATE_TIMEOUT_MS = 15000;
+const CONSOLE_MAX_MESSAGES = 1000;
+const CONSOLE_TEXT_MAX = 500;
 
 const USAGE = `Usage: node ${PROG} --url <url> --out <evidence-dir> --steps <steps.json> [--timeout-ms <n>] [--chrome <path>]
        node ${PROG} --help
@@ -22,7 +24,8 @@ always removed afterwards.
 Options:
   --url <url>       Page URL to open; http(s):// and file:/// URLs accepted.
   --out <dir>       Evidence directory for screenshots; created recursively.
-  --steps <file>    JSON array of step objects (eval | click | wait | screenshot).
+  --steps <file>    JSON array of step objects (eval | click | wait | screenshot |
+                    console | snapshot).
   --timeout-ms <n>  Overall watchdog timeout in milliseconds (default 90000).
   --chrome <path>   Chrome binary path (default: CHROME_PATH env var, then
                     ${DEFAULT_CHROME}).
@@ -33,6 +36,8 @@ Step kinds:
   click       { "kind":"click", "selector":"<css>"[, "index":0] }
   wait        { "kind":"wait", "ms":<non-negative integer> }
   screenshot  { "kind":"screenshot"[, "file":"<name.png>"] }
+  console     { "kind":"console"[, "clear":true|false] }
+  snapshot    { "kind":"snapshot" }
 
 Exit codes: 0 = navigation and all steps ok; 1 = step or navigation failed;
             2 = usage/config error; 3 = watchdog timeout.`;
@@ -114,6 +119,7 @@ class Cdp {
   constructor(wsUrl) {
     this.nextId = 0;
     this.pending = new Map();
+    this.listeners = new Set();
     this.dead = false;
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
@@ -142,7 +148,17 @@ class Cdp {
     } catch {
       return;
     }
-    if (!msg || msg.id === undefined) return;
+    if (!msg) return;
+    if (msg.id === undefined) {
+      if (typeof msg.method === "string") {
+        for (const fn of this.listeners) {
+          try {
+            fn(msg);
+          } catch {}
+        }
+      }
+      return;
+    }
     const p = this.pending.get(msg.id);
     if (!p) return;
     this.pending.delete(msg.id);
@@ -171,6 +187,11 @@ class Cdp {
         reject(e);
       }
     });
+  }
+
+  onEvent(fn) {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
   }
 
   close() {
@@ -360,7 +381,150 @@ async function evaluate(cdp, sessionId, expression) {
   return r;
 }
 
-async function execStep(cdp, sessionId, step, n, outDir) {
+// Collects Runtime.consoleAPICalled / Runtime.exceptionThrown / Log.entryAdded
+// events for one session into a bounded buffer drained by `console` steps.
+function createConsoleCollector(sessionId) {
+  const messages = [];
+  let droppedCount = 0;
+
+  const normText = (s) => {
+    const t = String(s).trim();
+    return t.length > CONSOLE_TEXT_MAX ? t.slice(0, CONSOLE_TEXT_MAX) : t;
+  };
+
+  const push = (level, text, source, url, line) => {
+    messages.push({ level, text: normText(text), source, url: url || "", line: line || 0 });
+    while (messages.length > CONSOLE_MAX_MESSAGES) {
+      let idx = messages.findIndex((m) => m.level === "log" || m.level === "info");
+      if (idx === -1) idx = messages.findIndex((m) => m.level === "warning");
+      if (idx === -1) return; // buffer holds only errors; errors are never dropped
+      messages.splice(idx, 1);
+      droppedCount++;
+    }
+  };
+
+  const onConsoleApi = (params) => {
+    const type = params.type;
+    const level = type === "error" || type === "assert" ? "error"
+      : type === "warning" ? "warning"
+      : type === "info" ? "info"
+      : "log";
+    const args = Array.isArray(params.args) ? params.args : [];
+    const text = args.map((a) => {
+      if (a && typeof a === "object") {
+        if (a.value !== undefined) return String(a.value);
+        if (a.description !== undefined) return String(a.description);
+        if (a.type !== undefined) return String(a.type);
+      }
+      return String(a);
+    }).join(" ");
+    let url = "";
+    let line = 0;
+    const frames = params.stackTrace && params.stackTrace.callFrames;
+    if (Array.isArray(frames) && frames.length) {
+      url = frames[0].url || "";
+      line = frames[0].lineNumber || 0;
+    }
+    push(level, text, "console", url, line);
+  };
+
+  const onException = (params) => {
+    const d = params.exceptionDetails || {};
+    const ex = d.exception;
+    let text;
+    if (ex && ex.description) text = String(ex.description);
+    else if (ex && ex.value !== undefined) text = String(ex.value);
+    else text = String(d.text || "");
+    if (!text.startsWith("Uncaught")) text = `Uncaught ${text}`;
+    push("error", text, "exception", d.url || "", d.lineNumber || 0);
+  };
+
+  const onLogEntry = (params) => {
+    const entry = params.entry || {};
+    const lvl = entry.level;
+    const level = lvl === "error" ? "error"
+      : lvl === "warning" ? "warning"
+      : lvl === "info" ? "info"
+      : "log"; // verbose and any other level
+    const text = normText(entry.text || "");
+    const dupe = messages.some(
+      (m) => (m.source === "console" || m.source === "exception") &&
+        m.level === level && m.text === text
+    );
+    if (dupe) return;
+    push(level, text, "log", entry.url || "", entry.lineNumber || 0);
+  };
+
+  const handle = (msg) => {
+    if (!msg || typeof msg !== "object") return;
+    if (msg.sessionId !== undefined && msg.sessionId !== sessionId) return;
+    const params = msg.params && typeof msg.params === "object" ? msg.params : {};
+    if (msg.method === "Runtime.consoleAPICalled") onConsoleApi(params);
+    else if (msg.method === "Runtime.exceptionThrown") onException(params);
+    else if (msg.method === "Log.entryAdded") onLogEntry(params);
+  };
+
+  const report = ({ clear } = {}) => {
+    const result = {
+      errorCount: 0,
+      warningCount: 0,
+      infoCount: 0,
+      logCount: 0,
+      totalCount: messages.length,
+      droppedCount,
+      messages: messages.slice(),
+    };
+    for (const m of messages) {
+      if (m.level === "error") result.errorCount++;
+      else if (m.level === "warning") result.warningCount++;
+      else if (m.level === "info") result.infoCount++;
+      else result.logCount++;
+    }
+    if (clear) {
+      messages.length = 0;
+      droppedCount = 0;
+    }
+    return result;
+  };
+
+  return { handle, report };
+}
+
+// IIFE evaluated by `snapshot` steps; always returns a plain object.
+const SNAPSHOT_EXPRESSION = `(() => {
+  const norm = (s) => String(s == null ? "" : s).replace(/\\s+/g, " ").trim();
+  const preferred = "[data-testid='main-nav'] a";
+  const navSelector = document.querySelector(preferred) ? preferred : "nav a";
+  const nav = [...document.querySelectorAll(navSelector)].map((a) => ({
+    text: norm(a.textContent),
+    href: a.getAttribute("href") || "",
+    screen: a.getAttribute("data-screen") || "",
+  }));
+  const headings = [...document.querySelectorAll("h1, h2, h3")].map((h) => ({
+    level: Number(h.tagName.slice(1)),
+    text: norm(h.textContent),
+  }));
+  const testids = [...new Set(
+    [...document.querySelectorAll("[data-testid]")].map((el) => el.getAttribute("data-testid"))
+  )].sort();
+  let body = "";
+  try {
+    body = document.body ? norm(document.body.innerText) : "";
+  } catch {}
+  return {
+    title: document.title,
+    url: location.href,
+    hash: location.hash,
+    navSelector: navSelector,
+    nav: nav,
+    navCount: nav.length,
+    headings: headings,
+    testids: testids,
+    text: body.length > 4000 ? body.slice(0, 4000) : body,
+  };
+})()`;
+
+async function execStep(cdp, sessionId, step, n, outDir, collector) {
   switch (step.kind) {
     case "eval": {
       if (typeof step.expression !== "string" || !step.expression) {
@@ -434,6 +598,17 @@ async function execStep(cdp, sessionId, step, n, outDir) {
       fs.writeFileSync(dest, buf);
       return { file: dest, bytes: buf.length };
     }
+    case "console": {
+      if (step.clear !== undefined && typeof step.clear !== "boolean") {
+        throw new RunError(`console step 'clear' must be a boolean, got ${JSON.stringify(step.clear)}`);
+      }
+      if (!collector) throw new RunError("console step requires an active console collector");
+      return collector.report({ clear: step.clear === true });
+    }
+    case "snapshot": {
+      const r = await evaluate(cdp, sessionId, SNAPSHOT_EXPRESSION);
+      return resolveValue(r.result);
+    }
     default:
       throw new RunError(
         `unknown step kind ${JSON.stringify(step.kind)} (allowed kinds: ${STEP_KINDS.join(", ")})`
@@ -441,7 +616,7 @@ async function execStep(cdp, sessionId, step, n, outDir) {
   }
 }
 
-async function runSteps(cdp, sessionId, steps, outDir) {
+async function runSteps(cdp, sessionId, steps, outDir, collector) {
   for (let i = 0; i < steps.length; i++) {
     const n = i + 1;
     const raw = steps[i];
@@ -449,7 +624,7 @@ async function runSteps(cdp, sessionId, steps, outDir) {
     const kind = step.kind === undefined ? null : step.kind;
     const line = { step: n, kind, value: null, error: null };
     try {
-      line.value = await execStep(cdp, sessionId, step, n, outDir);
+      line.value = await execStep(cdp, sessionId, step, n, outDir, collector);
     } catch (e) {
       line.error = `step ${n} (${kind}) failed: ${e && e.message ? e.message : String(e)}`;
       process.stdout.write(JSON.stringify(line) + "\n");
@@ -555,6 +730,11 @@ async function main() {
     const { sessionId } = await state.cdp.call("Target.attachToTarget", { targetId, flatten: true });
     await state.cdp.call("Page.enable", {}, sessionId);
     await state.cdp.call("Runtime.enable", {}, sessionId);
+    try {
+      await state.cdp.call("Log.enable", {}, sessionId);
+    } catch {}
+    const consoleCollector = createConsoleCollector(sessionId);
+    state.cdp.onEvent((msg) => consoleCollector.handle(msg));
     await state.cdp.call("Page.bringToFront", {}, sessionId);
     const nav = await state.cdp.call("Page.navigate", { url: args.url }, sessionId);
     if (nav && nav.errorText) {
@@ -562,7 +742,7 @@ async function main() {
       summary = `navigation failed for ${args.url}: ${nav.errorText}`;
     } else {
       await waitForReady(state.cdp, sessionId, args.url);
-      const failed = await runSteps(state.cdp, sessionId, steps, args.out);
+      const failed = await runSteps(state.cdp, sessionId, steps, args.out, consoleCollector);
       if (failed) {
         exitCode = 1;
         summary = failed.error;

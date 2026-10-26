@@ -4,5 +4,7 @@
   { "kind": "click", "label": "nav-workbench", "selector": "[data-testid='main-nav'] a" },
   { "kind": "wait", "label": "settle", "ms": 300 },
   { "kind": "eval", "label": "hash-after", "expression": "location.hash" },
-  { "kind": "screenshot", "label": "shot", "file": "example-1.png" }
+  { "kind": "screenshot", "label": "shot", "file": "example-1.png" },
+  { "kind": "snapshot", "label": "snapshot" },
+  { "kind": "console", "label": "console" }
 ]

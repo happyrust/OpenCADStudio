@@ -176,3 +176,115 @@ def test_browser_tool_fails_cleanly_on_missing_page(tmp_path):
     assert lines == []
     assert "Traceback" not in proc.stderr
     assert "node:internal" not in proc.stderr
+
+
+@requires_chrome
+def test_browser_tool_console_reports_zero_errors_on_clean_page(tmp_path):
+    steps = [
+        {"kind": "console"},
+    ]
+    proc, lines = _run(steps, tmp_path, PROTO_INDEX.as_uri())
+    assert proc.returncode == 0, proc.stderr
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["kind"] == "console"
+    assert line["error"] is None
+    assert line["value"]["errorCount"] == 0
+    assert line["value"]["messages"] == []
+
+
+@requires_chrome
+def test_browser_tool_console_captures_console_error(tmp_path):
+    page = tmp_path / "console-error.html"
+    page.write_text(
+        '<!doctype html><html><head><meta charset="utf-8">'
+        "<title>console error</title></head><body>"
+        "<script>console.error('ocs-smoke-console-error');</script>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    steps = [
+        {"kind": "console"},
+    ]
+    proc, lines = _run(steps, tmp_path, page.as_uri())
+    assert proc.returncode == 0, proc.stderr
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["error"] is None
+    assert line["value"]["errorCount"] >= 1
+    assert any(
+        "ocs-smoke-console-error" in m["text"]
+        for m in line["value"]["messages"]
+    )
+
+
+@requires_chrome
+def test_browser_tool_console_captures_load_time_exception(tmp_path):
+    page = tmp_path / "load-exception.html"
+    page.write_text(
+        '<!doctype html><html><head><meta charset="utf-8">'
+        "<title>load exception</title></head><body>"
+        "<script>throw new Error('ocs-smoke-load-exception');</script>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    steps = [
+        {"kind": "console"},
+    ]
+    proc, lines = _run(steps, tmp_path, page.as_uri())
+    assert proc.returncode == 0, proc.stderr
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["error"] is None
+    assert line["value"]["errorCount"] >= 1
+    assert any(
+        "ocs-smoke-load-exception" in m["text"]
+        for m in line["value"]["messages"]
+    )
+
+
+@requires_chrome
+def test_browser_tool_snapshot_lists_navigation(tmp_path):
+    steps = [
+        {"kind": "snapshot"},
+    ]
+    proc, lines = _run(steps, tmp_path, PROTO_INDEX.as_uri())
+    assert proc.returncode == 0, proc.stderr
+    assert len(lines) == 1
+    line = lines[0]
+    assert line["kind"] == "snapshot"
+    assert line["error"] is None
+    value = line["value"]
+    assert value["title"] == "智能 P&ID 平台原型"
+    assert value["hash"] == ""
+    assert value["navCount"] == 3
+    assert [a["text"] for a in value["nav"]] == [
+        "工作台",
+        "图纸管理",
+        "P&ID 编辑器",
+    ]
+    assert [a["href"] for a in value["nav"]] == [
+        "#/screen/workbench",
+        "#/screen/drawings",
+        "#/screen/editor",
+    ]
+
+
+@requires_chrome
+def test_browser_tool_snapshot_reflects_hash_after_click(tmp_path):
+    steps = [
+        {
+            "kind": "click",
+            "label": "nav",
+            "selector": "[data-testid='main-nav'] a",
+        },
+        {"kind": "wait", "label": "settle", "ms": 200},
+        {"kind": "snapshot"},
+    ]
+    proc, lines = _run(steps, tmp_path, PROTO_INDEX.as_uri())
+    assert proc.returncode == 0, proc.stderr
+    assert len(lines) == len(steps)
+    line = lines[-1]
+    assert line["error"] is None
+    assert line["value"]["hash"] == "#/screen/workbench"
+    assert line["value"]["navCount"] == 3
