@@ -17,7 +17,6 @@ from docs_contract import (
     SOURCE_AREAS,
     UNDOCUMENTED_CAPABILITIES,
     allowed_sections,
-    analysis_dir,
     analysis_section_tokens,
     area_counts,
     field_present,
@@ -32,6 +31,7 @@ from docs_contract import (
     source_index_rows,
     validate_reference_summary,
     validate_source_index,
+    whitelist_gaps,
 )
 
 REFERENCE = DOCS / "reference"
@@ -278,28 +278,79 @@ def test_structure_source_index_area_codes_table_matches_enum():
 def test_structure_manual_section_whitelist_exists_in_analysis():
     """Every whitelisted section must be traceable to the manual.
 
-    The analysis extract collapses the symbol-editor block into the range
-    "§5.1.4.3.2.2.3.2–5", so §5.1.4.3.2.2.3.4 and §5.1.4.3.2.2.3.7 appear
-    there only as an interval and never as tokens. A body heading line in the
+    The analysis extract collapses the symbol-editor block into the interval
+    "§5.1.4.3.2.2.3.2–5", so §5.1.4.3.2.2.3.4 and §5.1.4.3.2.2.3.5 occur there
+    only inside that interval and never as individual tokens, and
+    §5.1.4.3.2.2.3.7 has no analysis token at all. A body heading line in the
     raw manual is strictly stronger evidence than a token, so a section
     qualifies on either source.
+
+    The raw manual sits outside the repository, so a clean clone cannot prove
+    those three entries. That is a missing witness rather than a defective
+    deliverable: skip, the way test_citation_titles.py does, and keep the
+    assertion strict whenever the corpus is readable.
     """
     derived = analysis_section_tokens()
     corpus = read_manual_text()
-    headings = manual_heading_numbers(corpus) if corpus is not None else set()
-    if not derived and not headings:
+    if corpus is None:
         pytest.skip(
-            "neither the analysis extract (%s) nor the raw manual (%s) is "
-            "available; whitelist cross-check skipped"
-            % (analysis_dir(), manual_text_path())
+            "raw manual text not available at %s; the analysis extract only "
+            "yields literal § tokens and three whitelist entries are never "
+            "tokens there, so the cross-check cannot run"
+            % manual_text_path()
         )
-    unknown = [
-        s for s in allowed_sections() if s not in derived and s not in headings
-    ]
+    headings = manual_heading_numbers(corpus)
+    assert headings, (
+        "the raw manual at %s yielded no heading lines; the section-number "
+        "pattern no longer matches the corpus format" % manual_text_path()
+    )
+    unknown = whitelist_gaps(allowed_sections(), derived, headings)
     assert unknown == [], (
         "whitelist entries found neither in the analysis text nor as a manual "
         "heading line (fabricated?): %s" % unknown
     )
+
+
+def test_structure_whitelist_gap_detector_rejects_a_fabricated_section():
+    """The strict arm still bites: a section in neither source is reported."""
+    gaps = whitelist_gaps(
+        # one section evidenced by a token, one by a heading line, one by neither
+        ["5.1.4.3.2.2.3.2", "5.1.4.3.2.2.3.4", "9.9.9"],
+        {"5.1.4.3.2.2.3.2"},
+        {"5.1.4.3.2.2.3.4"},
+    )
+    assert gaps == ["9.9.9"], (
+        "the gap detector lost a section that neither source evidences: %s"
+        % gaps
+    )
+
+
+def test_structure_manual_section_whitelist_skips_without_the_manual_corpus(
+    monkeypatch, tmp_path
+):
+    """A clean clone has no raw manual: the check must skip, not go red."""
+    monkeypatch.setenv("PID_MANUAL_TEXT", str(tmp_path / "absent-manual.txt"))
+    with pytest.raises(pytest.skip.Exception) as excinfo:
+        test_structure_manual_section_whitelist_exists_in_analysis()
+    assert "raw manual" in str(excinfo.value), (
+        "the skip did not name the missing corpus: %s" % excinfo.value
+    )
+
+
+def test_structure_manual_section_whitelist_runs_with_the_manual_corpus():
+    """With the corpus present the check must actually assert, never skip."""
+    if read_manual_text() is None:
+        pytest.skip(
+            "raw manual text not available at %s; nothing to prove"
+            % manual_text_path()
+        )
+    try:
+        test_structure_manual_section_whitelist_exists_in_analysis()
+    except pytest.skip.Exception as exc:
+        pytest.fail(
+            "the whitelist check skipped even though the manual corpus is "
+            "readable at %s: %s" % (manual_text_path(), exc)
+        )
 
 
 def test_structure_source_index_validator_rejects_thin_area():

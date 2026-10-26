@@ -28,7 +28,10 @@ from conftest import DOCS
 from docs_contract import (
     CITATION_APPENDIX_COLUMNS,
     CITATION_APPENDIX_HEADING,
+    FIXTURES,
     MANUAL_MIN_SECTION_TITLES,
+    analysis_dir,
+    analysis_section_tokens,
     citation_appendix,
     document_cited_sections,
     find_table,
@@ -52,6 +55,16 @@ SYMBOL_EDITOR_ROWS = {
     "符号编辑器绘图能力": ("§5.1.4.3.2.2.3.3", "外形"),
     "连接点类型与方向": ("§5.1.4.3.2.2.3.4", "连接点"),
 }
+
+# The analysis extract writes the symbol-editor block as this one interval
+# instead of six headings, so the sections below never appear there as tokens:
+# .4 and .5 are inside the interval, .7 is not covered by it at all.
+SYMBOL_EDITOR_INTERVAL = "5.1.4.3.2.2.3.2–5"
+INTERVAL_ONLY_SECTIONS = (
+    "5.1.4.3.2.2.3.4",
+    "5.1.4.3.2.2.3.5",
+    "5.1.4.3.2.2.3.7",
+)
 
 
 def _text(path) -> str:
@@ -120,6 +133,50 @@ def test_structure_manual_section_fixture_covers_the_symbol_editor_family():
     assert wrong == {}, (
         "fixture titles disagree with the manual headings (actual, expected): %s"
         % wrong
+    )
+
+
+def _fixture_comment() -> str:
+    path = FIXTURES / "manual-sections.json"
+    with path.open(encoding="utf-8") as fh:
+        return json.load(fh)["comment"]
+
+
+def test_structure_fixture_comment_states_the_interval_collapse():
+    """The comment must tell the truth about which sections lack a token."""
+    comment = _fixture_comment()
+    missing = [s for s in INTERVAL_ONLY_SECTIONS if s not in comment]
+    assert missing == [], (
+        "the fixture comment does not name the sections it says have no "
+        "analysis token: %s" % missing
+    )
+    assert SYMBOL_EDITOR_INTERVAL in comment, (
+        "the fixture comment does not quote the collapsed analysis interval %s"
+        % SYMBOL_EDITOR_INTERVAL
+    )
+
+
+def test_structure_fixture_comment_matches_the_analysis_extract():
+    """The comment's claim is checked against the extract, not just its wording."""
+    root = analysis_dir()
+    if not root.is_dir():
+        pytest.skip(
+            "analysis extract not available at %s; the token claim cannot be "
+            "checked" % root
+        )
+    tokens = analysis_section_tokens()
+    tokened = [s for s in INTERVAL_ONLY_SECTIONS if s in tokens]
+    assert tokened == [], (
+        "the analysis now carries these sections as standalone § tokens, but "
+        "the fixture comment says they occur only inside §%s: %s"
+        % (SYMBOL_EDITOR_INTERVAL, tokened)
+    )
+    text = "\n".join(
+        path.read_text(encoding="utf-8") for path in sorted(root.glob("*.md"))
+    )
+    assert SYMBOL_EDITOR_INTERVAL in text, (
+        "the analysis no longer contains the collapsed interval §%s that the "
+        "fixture comment relies on" % SYMBOL_EDITOR_INTERVAL
     )
 
 

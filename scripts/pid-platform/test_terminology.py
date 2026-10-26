@@ -303,11 +303,61 @@ def test_terminology_alias_policy_requires_the_criteria_section():
     )
 
 
-def test_terminology_alias_policy_requires_a_reason_for_every_retired_word():
-    text = _drop_row(_text(GLOSSARY), "WBS")
+@pytest.mark.parametrize(
+    "word",
+    ["WBS", "数据项"],
+    ids=["different-concept", "another-object-name"],
+)
+def test_terminology_alias_policy_requires_a_reason_for_every_retired_word(word):
+    text = _drop_row(_text(GLOSSARY), word)
     errors = validate_alias_policy(text)
-    assert any("WBS" in error for error in errors), (
-        "dropping the WBS judgement from the retired table passed: %s" % errors
+    assert any(word in error for error in errors), (
+        "dropping the %s judgement from the retired table passed: %s"
+        % (word, errors)
+    )
+
+
+def test_terminology_retired_table_matches_the_disqualified_word_set():
+    rows, errors = retired_alias_rows(_text(GLOSSARY))
+    assert errors == [], errors
+    listed = {row["词"] for row in rows}
+    assert listed == set(NOT_AN_ALIAS), (
+        "the retired-alias table and NOT_AN_ALIAS have drifted apart; only in "
+        "the table: %s; only in the constant: %s"
+        % (
+            sorted(listed - set(NOT_AN_ALIAS)),
+            sorted(set(NOT_AN_ALIAS) - listed),
+        )
+    )
+    assert len(rows) == 24, (
+        "the retired-alias table carries %d rows; the round-2 revision leaves "
+        "24 once 数据项 joins 数据字段" % len(rows)
+    )
+
+
+def test_terminology_data_item_is_retired_under_data_element():
+    text = _text(GLOSSARY)
+    rows, errors = retired_alias_rows(text)
+    assert errors == [], errors
+    by_word = {row["词"]: row for row in rows}
+    assert "数据项" in by_word, (
+        "数据项 is absent from the retired table; the glossary's own rule "
+        "requires a stated judgement for every removed word"
+    )
+    assert by_word["数据项"]["曾被归到"] == "数据要素", (
+        "the 数据项 entry must record that it was formerly grouped under "
+        "数据要素, got %r" % by_word["数据项"]["曾被归到"]
+    )
+    assert by_word["数据项"]["理由"].strip(), "the 数据项 judgement has no reason"
+    assert "数据项" not in banned_alias_map(text), (
+        "数据项 is still registered as a banned alias"
+    )
+    # Negative control: the NOT_AN_ALIAS entry is what rejects a relapse.
+    relapsed = _set_alias(text, "数据要素", "数据项")
+    errors = validate_alias_policy(relapsed)
+    assert any("数据项" in error for error in errors), (
+        "re-registering 数据项 as a banned alias of 数据要素 was accepted: %s"
+        % errors
     )
 
 

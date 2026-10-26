@@ -246,12 +246,18 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 def section_titles(fixture_path=None) -> dict:
     """Map each verified manual section to its verbatim manual heading title.
 
-    The fixture records two independent facts per section: the number occurs as
-    a literal ``§`` token in the analysis extract, and the title is the heading
-    line of that section in the raw manual. The legacy form of the fixture was a
-    bare list of numbers; it is still accepted, but every entry then carries an
-    empty title so :func:`validate_section_fixture` reports the missing fact
-    instead of silently passing.
+    Two facts are recorded per section, and they are not equally strong
+    evidence: the number usually occurs as a literal ``§`` token in the analysis
+    extract, but that extract collapses some blocks into ranges (the symbol
+    editor is written ``§5.1.4.3.2.2.3.2–5``), so §5.1.4.3.2.2.3.4 and
+    §5.1.4.3.2.2.3.5 appear there only inside that interval, and
+    §5.1.4.3.2.2.3.7 has no analysis token at all. For those entries the only
+    evidence is the second fact: the title is the heading line of that section
+    in the raw manual body, which is what :func:`validate_titles_against_manual`
+    checks. The legacy form of the fixture was a bare list of numbers; it is
+    still accepted, but every entry then carries an empty title so
+    :func:`validate_section_fixture` reports the missing fact instead of
+    silently passing.
     """
     path = Path(fixture_path) if fixture_path else FIXTURES / "manual-sections.json"
     with path.open(encoding="utf-8") as fh:
@@ -357,6 +363,17 @@ def manual_heading_lines(corpus_text: str) -> dict:
 
 def manual_heading_numbers(corpus_text: str) -> set:
     return set(manual_heading_lines(corpus_text).keys())
+
+
+def whitelist_gaps(sections, tokens, headings) -> list:
+    """Sections proven by neither an analysis token nor a manual heading line.
+
+    An empty result means every whitelisted section is traceable to the manual;
+    a non-empty one is the fabrications report. Kept separate from the pytest
+    test so the negative control can feed it a known-bad section without
+    editing the fixture.
+    """
+    return [s for s in sections if s not in tokens and s not in headings]
 
 
 def validate_titles_against_manual(titles: dict, corpus_text: str) -> list:
@@ -514,6 +531,7 @@ NOT_AN_ALIAS = {
     "线段": "线段是几何形态描述，手册用它说明管段在图面上的外观",
     "编号": "编号是通用计数词，需求正文必须使用",
     "数据字段": "手册把数据要素定义为数据字段或属性，正文必须使用",
+    "数据项": "手册在权限控制正文用数据项指可修改的数据条目，另有所指",
     "基础数据": "基础数据泛指项目开工前的基础资料，需求正文必须使用",
     "料表": "料表泛指任何材料表，需求正文必须使用",
     "物料表": "物料表泛指任何材料表，需求正文必须使用",
