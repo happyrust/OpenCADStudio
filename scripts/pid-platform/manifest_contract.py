@@ -14,8 +14,16 @@ from pathlib import Path
 from typing import Sequence
 
 HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+# Section numbering is stripped only when it really is numbering: digits
+# (optionally dotted, optionally ending in a dot) or Chinese numerals
+# followed by 、 or ., and the token must not run straight into an ASCII
+# letter or digit. Without that guard "2D 绘图" would normalize to "D 绘图"
+# and could never match the required section name "2D 绘图" in the manifest.
+# The atomic group stops the engine from backtracking to a shorter numbering
+# prefix, so "2.5D 视图" is left untouched instead of becoming ".5D 视图".
 _NUMBERING_RE = re.compile(
-    r"^(?:\d+(?:\.\d+)*\.?|[一二三四五六七八九十]+[、.])[ \t]*"
+    r"^(?>\d+(?:\.\d+)*\.?|[一二三四五六七八九十]+[、.])"
+    r"(?![0-9A-Za-z])[ \t]*"
 )
 _ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
