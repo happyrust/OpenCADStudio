@@ -3027,3 +3027,729 @@
   window.PidScreens.bom = renderBom;
 })();
 
+/* Type library, symbol library and symbol editor screens for the P&ID
+   platform prototype. Classic script, ES5, no modules/network. Extends
+   window.PidScreens without replacing the renderers registered above. */
+(function () {
+  "use strict";
+
+  var Shell = window.PidShell;
+
+  function esc(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  /* ---------- Shared helpers ---------- */
+
+  function screenOpen(id, def) {
+    return (
+      '<section class="screen" data-screen="' +
+      esc(id) +
+      '">' +
+      '<header class="screen__header">' +
+      '<h1 class="screen__title" data-testid="screen-title">' +
+      esc(def.title) +
+      "</h1>" +
+      '<p class="screen__desc">' +
+      esc(def.desc) +
+      "</p>" +
+      "</header>"
+    );
+  }
+
+  function closestEl(el, selector) {
+    var matcher =
+      el && (el.matches || el.msMatchesSelector || el.webkitMatchesSelector);
+    while (el && el.nodeType === 1) {
+      if (matcher && matcher.call(el, selector)) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  /* Guards every delegated listener so clicks on other screens are never
+     mistaken for input on these screens. */
+  /* The module navigation also carries data-screen attributes for every
+     screen, so a document-wide lookup would match a nav link and report
+     every screen as active. Restrict the DOM fallback to the rendered
+     screen body. */
+  function screenActive(id) {
+    if (
+      Shell &&
+      typeof Shell.currentScreenId === "function" &&
+      Shell.currentScreenId() === id
+    ) {
+      return true;
+    }
+    var body = document.querySelector('[data-testid="screen-body"]');
+    return !!(body && body.querySelector('[data-screen="' + id + '"]'));
+  }
+
+  function rerenderScreen(id) {
+    var body = document.querySelector('[data-testid="screen-body"]');
+    if (!body || !Shell) {
+      return;
+    }
+    body.innerHTML = Shell.renderScreenHtml(id);
+    Shell.publishProto(id);
+  }
+
+  /* ---------- Type library screen ---------- */
+
+  /* Three-level type hierarchy: root categories own discipline groups,
+     which in turn own concrete business types. */
+  var TL_TREE = [
+    {
+      id: "process-equipment",
+      name: "工艺设备",
+      children: [
+        {
+          id: "rotating",
+          name: "转动设备",
+          children: [
+            { id: "pump", name: "泵", children: [] },
+            { id: "compressor", name: "压缩机", children: [] }
+          ]
+        },
+        {
+          id: "static",
+          name: "静设备",
+          children: [
+            { id: "vessel", name: "容器", children: [] },
+            { id: "tower", name: "塔器", children: [] }
+          ]
+        }
+      ]
+    },
+    {
+      id: "piping",
+      name: "管道附件",
+      children: [
+        { id: "valve", name: "阀门", children: [] },
+        { id: "fitting", name: "管件", children: [] }
+      ]
+    },
+    {
+      id: "instrument",
+      name: "仪表",
+      children: [
+        { id: "field-instrument", name: "现场仪表", children: [] },
+        { id: "instrument-loop", name: "仪表回路", children: [] }
+      ]
+    }
+  ];
+
+  /* Attribute templates keyed by type id. Row counts differ between
+     neighbouring types so switching nodes always changes the table;
+     the first row stays 位号 for every type while second rows differ. */
+  var TL_ATTRS = {
+    "process-equipment": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["类别编码", "CLASS_CODE", "字符串", "—", "类"],
+      ["描述", "DESC_TEXT", "字符串", "—", "实例"],
+      ["材质", "MATERIAL", "字符串", "—", "实例"]
+    ],
+    "rotating": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["额定功率", "RATED_POWER", "数值", "—", "实例"],
+      ["转速", "SPEED", "数值", "—", "实例"]
+    ],
+    "pump": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["名称", "NAME", "字符串", "—", "类"],
+      ["设计压力", "DESIGN_PRESS", "数值", "1.6", "实例"],
+      ["设计温度", "DESIGN_TEMP", "数值", "80", "实例"],
+      ["额定流量", "RATED_FLOW", "数值", "—", "实例"],
+      ["扬程", "HEAD", "数值", "—", "实例"]
+    ],
+    "compressor": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["排气量", "CAPACITY", "数值", "—", "实例"],
+      ["出口压力", "OUTLET_PRESS", "数值", "—", "实例"],
+      ["轴功率", "SHAFT_POWER", "数值", "—", "实例"]
+    ],
+    "static": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["材质", "MATERIAL", "字符串", "—", "实例"],
+      ["重量", "WEIGHT", "数值", "—", "实例"]
+    ],
+    "vessel": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["名称", "NAME", "字符串", "—", "类"],
+      ["设计压力", "DESIGN_PRESS", "数值", "1.6", "实例"],
+      ["公称直径", "NOM_DIA", "字符串", "DN1000", "实例"],
+      ["容积", "VOLUME", "数值", "—", "实例"]
+    ],
+    "tower": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["塔板数", "TRAY_COUNT", "数值", "—", "实例"],
+      ["塔径", "TOWER_DIA", "数值", "—", "实例"],
+      ["设计压力", "DESIGN_PRESS", "数值", "—", "实例"]
+    ],
+    "piping": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["连接形式", "END_CONN", "字符串", "—", "类"],
+      ["材质", "MATERIAL", "字符串", "—", "实例"]
+    ],
+    "valve": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["名称", "NAME", "字符串", "—", "类"],
+      ["公称直径", "NOM_DIA", "字符串", "DN50", "实例"],
+      ["压力等级", "PRESS_CLASS", "字符串", "PN16", "类"]
+    ],
+    "fitting": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["规格", "SPEC", "字符串", "—", "实例"],
+      ["壁厚等级", "WALL_CLASS", "字符串", "—", "实例"]
+    ],
+    "instrument": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["名称", "NAME", "字符串", "—", "类"],
+      ["仪表类型", "INST_TYPE", "字符串", "—", "类"],
+      ["量程", "MEASURE_RANGE", "字符串", "—", "实例"],
+      ["精度等级", "ACCURACY", "字符串", "—", "实例"]
+    ],
+    "field-instrument": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["信号类型", "SIGNAL_TYPE", "字符串", "4-20mA", "类"],
+      ["防护等级", "IP_CLASS", "字符串", "IP65", "实例"],
+      ["安装方式", "MOUNTING", "字符串", "—", "实例"]
+    ],
+    "instrument-loop": [
+      ["位号", "TAG_NO", "字符串", "—", "类"],
+      ["回路功能", "LOOP_FUNC", "字符串", "—", "类"],
+      ["控制方式", "CTRL_MODE", "字符串", "—", "实例"]
+    ]
+  };
+
+  var tlState = { typeId: "pump", collapsed: {}, hint: "当前类型：泵" };
+
+  function tlFind(node, id) {
+    if (node.id === id) {
+      return node;
+    }
+    for (var i = 0; i < node.children.length; i++) {
+      var found = tlFind(node.children[i], id);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  function tlFindInTree(id) {
+    for (var i = 0; i < TL_TREE.length; i++) {
+      var found = tlFind(TL_TREE[i], id);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  function tlTypeName(id) {
+    var node = tlFindInTree(id);
+    return node ? node.name : id;
+  }
+
+  /* Recursive tree markup. Collapsed subtrees are omitted entirely so
+     the toggle visibly hides them; leaf toggles stay inert. */
+  function tlTreeHtml(nodes, level) {
+    var html = '<ul class="tl__level">';
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      var hasKids = node.children && node.children.length > 0;
+      var collapsed = hasKids && !!tlState.collapsed[node.id];
+      html +=
+        '<li class="tl__node' + (node.id === tlState.typeId ? " is-selected" : "") +
+        '" data-testid="type-tree-node" data-type-id="' + esc(node.id) +
+        '" data-level="' + level + '">' +
+        '<button type="button" class="tl__toggle" data-testid="type-tree-toggle">' +
+        (collapsed ? "▸" : "▾") + "</button>" +
+        '<span class="tl__label">' + esc(node.name) + "</span>";
+      if (hasKids && !collapsed) {
+        html += tlTreeHtml(node.children, level + 1);
+      }
+      html += "</li>";
+    }
+    return html + "</ul>";
+  }
+
+  function tlRowsHtml(typeId) {
+    var rows = TL_ATTRS[typeId] || TL_ATTRS["process-equipment"];
+    var html = "";
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      html +=
+        '<tr class="tl__row" data-testid="attribute-row" data-label="' + esc(r[0]) + '">' +
+        "<td>" + esc(r[0]) + "</td>" +
+        "<td>" + esc(r[1]) + "</td>" +
+        "<td>" + esc(r[2]) + "</td>" +
+        "<td>" + esc(r[3]) + "</td>" +
+        "<td>" + esc(r[4]) + "</td>" +
+        "</tr>";
+    }
+    return html;
+  }
+
+  function renderTypelib(def) {
+    if (!TL_ATTRS[tlState.typeId]) {
+      tlState.typeId = "pump";
+    }
+    var html = screenOpen("typelib", def);
+    html +=
+      '<div class="panel tl">' +
+      '<div class="tl__toolbar" data-testid="typelib-toolbar">' +
+      '<button type="button" class="tl__btn tl__btn--primary" data-testid="add-subtype">新增子类</button>' +
+      '<button type="button" class="tl__btn" data-testid="add-attribute">添加属性</button>' +
+      '<span class="tl__status" data-testid="tl-status">' + esc(tlState.hint) + "</span>" +
+      "</div>" +
+      '<div class="tl__body">' +
+      '<aside class="tl__tree" data-testid="type-structure-tree">' + tlTreeHtml(TL_TREE, 1) + "</aside>" +
+      '<section class="tl__detail">' +
+      '<h2 class="panel__title">属性模板</h2>' +
+      '<table class="tl__table" data-testid="attribute-table">' +
+      "<thead><tr><th>要素标签</th><th>数据要素</th><th>数据类型</th><th>默认值</th><th>级别</th></tr></thead>" +
+      "<tbody>" + tlRowsHtml(tlState.typeId) + "</tbody></table>" +
+      "</section>" +
+      "</div>" +
+      "</div>";
+    return html + "</section>";
+  }
+
+  function setTlHint(text) {
+    tlState.hint = text;
+    var el = document.querySelector('[data-testid="tl-status"]');
+    if (el) {
+      el.textContent = text;
+    }
+  }
+
+  function typelibClick(target) {
+    var toggle = closestEl(target, '[data-testid="type-tree-toggle"]');
+    if (toggle) {
+      var tNode = closestEl(toggle, '[data-testid="type-tree-node"]');
+      var tInfo = tNode ? tlFindInTree(tNode.getAttribute("data-type-id")) : null;
+      if (tInfo && tInfo.children && tInfo.children.length) {
+        tlState.collapsed[tInfo.id] = !tlState.collapsed[tInfo.id];
+        rerenderScreen("typelib");
+      }
+      return;
+    }
+    var node = closestEl(target, '[data-testid="type-tree-node"]');
+    if (node) {
+      var id = node.getAttribute("data-type-id");
+      if (id && TL_ATTRS[id] && id !== tlState.typeId) {
+        tlState.typeId = id;
+        setTlHint("当前类型：" + tlTypeName(id));
+        rerenderScreen("typelib");
+      }
+      return;
+    }
+    var btn = closestEl(target, ".tl__btn");
+    if (btn) {
+      var act = btn.getAttribute("data-testid");
+      if (act === "add-subtype") {
+        setTlHint("新增子类请求已记录，原型阶段暂不展开表单。");
+      } else if (act === "add-attribute") {
+        setTlHint("添加属性请求已记录，原型阶段暂不展开表单。");
+      }
+    }
+  }
+
+  /* ---------- Symbol library screen ---------- */
+
+  /* Two shipped legend standards plus the project-custom set. Each set
+     owns a small kind grouping used for grid filtering. */
+  var SL_STANDARDS = [
+    {
+      id: "std-hg",
+      name: "企业标准 HG/T 20519",
+      children: [
+        { id: "std-hg-eq", name: "设备" },
+        { id: "std-hg-valve", name: "阀门" },
+        { id: "std-hg-inst", name: "仪表" },
+        { id: "std-hg-fitting", name: "管件" }
+      ]
+    },
+    {
+      id: "std-gb",
+      name: "国标 GB/T 6567",
+      children: [
+        { id: "std-gb-eq", name: "设备" },
+        { id: "std-gb-valve", name: "阀门" },
+        { id: "std-gb-inst", name: "仪表" },
+        { id: "std-gb-fitting", name: "管件" }
+      ]
+    },
+    {
+      id: "std-custom",
+      name: "项目自定义标准",
+      children: [
+        { id: "std-cust-eq", name: "设备" },
+        { id: "std-cust-valve", name: "阀门" },
+        { id: "std-cust-inst", name: "仪表" }
+      ]
+    }
+  ];
+
+  /* Symbol catalogue. stds lists every legend standard adopting the
+     symbol, so one symbol can appear under more than one standard. */
+  var SL_SYMBOLS = [
+    { id: "eq-vessel", name: "立式容器", kind: "设备", state: "启用", stds: ["std-hg", "std-custom"], shape: "vessel" },
+    { id: "eq-vessel-h", name: "卧式容器", kind: "设备", state: "启用", stds: ["std-hg"], shape: "vessel-h" },
+    { id: "eq-pump", name: "离心泵", kind: "设备", state: "启用", stds: ["std-hg"], shape: "pump" },
+    { id: "eq-exchanger", name: "换热器", kind: "设备", state: "启用", stds: ["std-gb"], shape: "exchanger" },
+    { id: "eq-furnace", name: "加热炉", kind: "设备", state: "停用", stds: ["std-gb"], shape: "furnace" },
+    { id: "eq-tower", name: "塔器", kind: "设备", state: "启用", stds: ["std-hg"], shape: "tower" },
+    { id: "eq-tank", name: "储罐", kind: "设备", state: "启用", stds: ["std-gb"], shape: "tank" },
+    { id: "vlv-gate", name: "闸阀", kind: "阀门", state: "启用", stds: ["std-hg", "std-custom"], shape: "gate-valve" },
+    { id: "vlv-globe", name: "截止阀", kind: "阀门", state: "启用", stds: ["std-gb"], shape: "globe-valve" },
+    { id: "vlv-control", name: "调节阀", kind: "阀门", state: "停用", stds: ["std-gb"], shape: "control-valve" },
+    { id: "inst-pressure", name: "压力指示", kind: "仪表", state: "启用", stds: ["std-hg", "std-custom"], shape: "inst" },
+    { id: "inst-temp", name: "温度指示", kind: "仪表", state: "启用", stds: ["std-custom"], shape: "inst-t" }
+  ];
+
+  /* 48x48 stroke glyphs keyed by shape name. Geometry only — colours
+     come from currentColor and the .sl__thumb svg rules. */
+  var SL_SHAPES = {
+    "vessel":
+      '<rect x="17" y="8" width="14" height="28" rx="6"/>' +
+      '<line x1="21" y1="36" x2="21" y2="42"/>' +
+      '<line x1="27" y1="36" x2="27" y2="42"/>',
+    "vessel-h":
+      '<rect x="8" y="17" width="32" height="14" rx="7"/>' +
+      '<line x1="16" y1="31" x2="16" y2="38"/>' +
+      '<line x1="32" y1="31" x2="32" y2="38"/>',
+    "pump":
+      '<circle cx="24" cy="18" r="10"/>' +
+      '<line x1="24" y1="28" x2="24" y2="38"/>' +
+      '<line x1="14" y1="38" x2="34" y2="38"/>',
+    "exchanger":
+      '<rect x="8" y="16" width="32" height="16"/>' +
+      '<path d="M14 28 L20 20 L26 28 L32 20"/>',
+    "furnace":
+      '<rect x="12" y="10" width="24" height="28"/>' +
+      '<path d="M18 38 L18 26 A6 6 0 0 1 30 26 L30 38"/>',
+    "tower":
+      '<rect x="18" y="6" width="12" height="36" rx="4"/>' +
+      '<line x1="18" y1="16" x2="30" y2="16"/>' +
+      '<line x1="18" y1="26" x2="30" y2="26"/>',
+    "tank":
+      '<path d="M12 13 L12 34 A12 5 0 0 0 36 34 L36 13"/>' +
+      '<ellipse cx="24" cy="13" rx="12" ry="5"/>',
+    "gate-valve":
+      '<path d="M10 17 L24 24 L10 31 Z"/>' +
+      '<path d="M38 17 L24 24 L38 31 Z"/>' +
+      '<line x1="24" y1="24" x2="24" y2="10"/>',
+    "globe-valve":
+      '<path d="M10 17 L24 24 L10 31 Z"/>' +
+      '<path d="M38 17 L24 24 L38 31 Z"/>' +
+      '<line x1="24" y1="24" x2="24" y2="14"/>' +
+      '<circle cx="24" cy="11" r="3"/>',
+    "control-valve":
+      '<path d="M10 17 L24 24 L10 31 Z"/>' +
+      '<path d="M38 17 L24 24 L38 31 Z"/>' +
+      '<line x1="24" y1="24" x2="24" y2="14"/>' +
+      '<path d="M16 14 A8 8 0 0 1 32 14"/>',
+    "inst":
+      '<circle cx="24" cy="21" r="12"/>' +
+      '<line x1="12" y1="21" x2="36" y2="21"/>' +
+      '<line x1="24" y1="33" x2="24" y2="42"/>',
+    "inst-t":
+      '<circle cx="24" cy="21" r="12"/>' +
+      '<line x1="12" y1="18" x2="36" y2="18"/>' +
+      '<line x1="12" y1="24" x2="36" y2="24"/>' +
+      '<line x1="24" y1="33" x2="24" y2="42"/>'
+  };
+
+  function slGlyph(shape) {
+    var inner = Object.prototype.hasOwnProperty.call(SL_SHAPES, shape)
+      ? SL_SHAPES[shape]
+      : SL_SHAPES.vessel;
+    return (
+      '<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" aria-hidden="true">' +
+      inner +
+      "</svg>"
+    );
+  }
+
+  var slState = { view: "grid", nodeId: null, hint: "就绪" };
+
+  /* Resolves a tree node id to its owning standard id and (for child
+     nodes) the kind name used for grid filtering. */
+  function slFindNode(id) {
+    for (var i = 0; i < SL_STANDARDS.length; i++) {
+      var std = SL_STANDARDS[i];
+      if (std.id === id) {
+        return { std: std.id, kind: null, name: std.name };
+      }
+      for (var j = 0; j < std.children.length; j++) {
+        if (std.children[j].id === id) {
+          return { std: std.id, kind: std.children[j].name, name: std.children[j].name };
+        }
+      }
+    }
+    return null;
+  }
+
+  function slVisibleSymbols() {
+    var node = slFindNode(slState.nodeId);
+    var list = [];
+    for (var i = 0; i < SL_SYMBOLS.length; i++) {
+      var s = SL_SYMBOLS[i];
+      if (!node) {
+        list.push(s);
+      } else if (s.stds.indexOf(node.std) !== -1 &&
+                 (!node.kind || s.kind === node.kind)) {
+        list.push(s);
+      }
+    }
+    return list;
+  }
+
+  function slTreeHtml() {
+    var html = '<ul class="sl__level">';
+    for (var i = 0; i < SL_STANDARDS.length; i++) {
+      var std = SL_STANDARDS[i];
+      html +=
+        '<li class="sl__node' + (std.id === slState.nodeId ? " is-selected" : "") +
+        '" data-testid="legend-standard-node" data-node-id="' + esc(std.id) +
+        '" data-level="1">' +
+        '<span class="sl__node-label">' + esc(std.name) + "</span>" +
+        '<ul class="sl__level">';
+      for (var j = 0; j < std.children.length; j++) {
+        var child = std.children[j];
+        html +=
+          '<li class="sl__node' + (child.id === slState.nodeId ? " is-selected" : "") +
+          '" data-testid="legend-standard-node" data-node-id="' + esc(child.id) +
+          '" data-level="2">' +
+          '<span class="sl__node-label">' + esc(child.name) + "</span></li>";
+      }
+      html += "</ul></li>";
+    }
+    return html + "</ul>";
+  }
+
+  function renderSymbols(def) {
+    if (slState.nodeId && !slFindNode(slState.nodeId)) {
+      slState.nodeId = null;
+    }
+    var items = slVisibleSymbols();
+    var gridView = slState.view === "list" ? "list" : "grid";
+    if (Shell && typeof Shell.setPendingProtoMerge === "function") {
+      Shell.setPendingProtoMerge("symbols", { symbolCount: items.length });
+    }
+    var html = screenOpen("symbols", def);
+    html +=
+      '<div class="panel sl">' +
+      '<div class="sl__toolbar" data-testid="symbols-toolbar">' +
+      '<button type="button" class="sl__btn sl__btn--primary" data-testid="new-symbol">新建符号</button>' +
+      '<span class="sl__status" data-testid="sl-status">' + esc(slState.hint) + "</span>" +
+      '<span class="sl__spacer"></span>' +
+      '<button type="button" class="sl__view' + (gridView === "grid" ? " sl__view--active" : "") +
+      '" data-testid="view-toggle-grid" data-view="grid">平铺</button>' +
+      '<button type="button" class="sl__view' + (gridView === "list" ? " sl__view--active" : "") +
+      '" data-testid="view-toggle-list" data-view="list">列表</button>' +
+      "</div>" +
+      '<div class="sl__body">' +
+      '<aside class="sl__tree" data-testid="legend-standard-tree">' + slTreeHtml() + "</aside>" +
+      '<section class="sl__grid" data-testid="symbol-grid" data-view="' + gridView + '">';
+    for (var i = 0; i < items.length; i++) {
+      var s = items[i];
+      var on = s.state === "启用";
+      html +=
+        '<article class="sl__card" data-testid="symbol-card" data-symbol-id="' + esc(s.id) +
+        '" data-state="' + esc(s.state) + '">' +
+        '<span class="sl__thumb">' + slGlyph(s.shape) + "</span>" +
+        '<span class="sl__name">' + esc(s.name) + "</span>" +
+        '<span class="sl__type">' + esc(s.kind) + "</span>" +
+        '<span class="sl__badge ' + (on ? "sl__badge--on" : "sl__badge--off") + '">' +
+        esc(s.state) + "</span>" +
+        "</article>";
+    }
+    if (!items.length) {
+      html += '<p class="sl__empty">该节点下暂无符号。</p>';
+    }
+    html += "</section></div></div>";
+    return html + "</section>";
+  }
+
+  function setSlHint(text) {
+    slState.hint = text;
+    var el = document.querySelector('[data-testid="sl-status"]');
+    if (el) {
+      el.textContent = text;
+    }
+  }
+
+  function symbolsClick(target) {
+    var view = closestEl(target, ".sl__view");
+    if (view) {
+      var v = view.getAttribute("data-view");
+      if ((v === "grid" || v === "list") && v !== slState.view) {
+        slState.view = v;
+        setSlHint(v === "grid" ? "平铺视图" : "列表视图");
+        rerenderScreen("symbols");
+      }
+      return;
+    }
+    var node = closestEl(target, '[data-testid="legend-standard-node"]');
+    if (node) {
+      var id = node.getAttribute("data-node-id");
+      if (id) {
+        if (slState.nodeId === id) {
+          slState.nodeId = null;
+          slState.hint = "显示全部符号";
+        } else {
+          slState.nodeId = id;
+          var info = slFindNode(id);
+          slState.hint = "当前图例标准节点：" + (info ? info.name : id);
+        }
+        rerenderScreen("symbols");
+      }
+      return;
+    }
+    if (closestEl(target, '[data-testid="new-symbol"]')) {
+      setSlHint("新建符号请求已记录，将在符号编辑器中创建。");
+    }
+  }
+
+  /* ---------- Symbol editor screen ---------- */
+
+  var seState = { tab: "draw" };
+
+  var SE_CONNECTIONS = [
+    ["工艺", "上", "120, 20"],
+    ["工艺", "下", "120, 220"],
+    ["仪表", "左", "20, 120"]
+  ];
+
+  var SE_ATTRIBUTES = [
+    ["位号", "输入设备位号", "—", "下方"],
+    ["名称", "输入设备名称", "—", "下方"],
+    ["设计压力", "输入设计压力", "1.6", "右侧"]
+  ];
+
+  /* Default glyph: a vertical vessel (rounded body on two legs) with
+     stem lines reaching the three connection-point ports. */
+  var SE_GLYPH =
+    '<g class="se__glyph">' +
+    '<rect x="90" y="40" width="60" height="150" rx="16"/>' +
+    '<line x1="102" y1="190" x2="102" y2="212"/>' +
+    '<line x1="138" y1="190" x2="138" y2="212"/>' +
+    '<line x1="120" y1="20" x2="120" y2="40"/>' +
+    '<line x1="20" y1="120" x2="90" y2="120"/>' +
+    '<line x1="120" y1="190" x2="120" y2="220"/>' +
+    "</g>";
+
+  function seTableRows(rows, testid) {
+    var html = "";
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      html += '<tr class="se__row" data-testid="' + testid + '">';
+      for (var j = 0; j < r.length; j++) {
+        html += "<td>" + esc(r[j]) + "</td>";
+      }
+      html += "</tr>";
+    }
+    return html;
+  }
+
+  function renderSymbolEditor(def) {
+    var html = screenOpen("symbol-editor", def);
+    html +=
+      '<div class="panel se">' +
+      '<div class="se__tabs" data-testid="symbol-editor-tabs" role="tablist">';
+    var tabs = [["draw", "绘图"], ["common", "常用"]];
+    for (var t = 0; t < tabs.length; t++) {
+      var on = tabs[t][0] === seState.tab;
+      html +=
+        '<button type="button" class="se__tab' + (on ? " is-active" : "") +
+        '" data-testid="se-tab" data-tab="' + tabs[t][0] +
+        '" role="tab" aria-selected="' + (on ? "true" : "false") + '">' +
+        tabs[t][1] + "</button>";
+    }
+    html +=
+      "</div>" +
+      '<div class="se__body">' +
+      '<section class="se__canvas-panel">' +
+      '<h2 class="panel__title">符号图形</h2>' +
+      '<svg class="se__canvas" data-testid="symbol-canvas" viewBox="0 0 240 240" role="img" aria-label="符号图形画布">' +
+      SE_GLYPH +
+      '<circle class="se__port" cx="120" cy="20" r="6" data-testid="symbol-port"/>' +
+      '<circle class="se__port" cx="120" cy="220" r="6" data-testid="symbol-port"/>' +
+      '<circle class="se__port" cx="20" cy="120" r="6" data-testid="symbol-port"/>' +
+      "</svg>" +
+      "</section>" +
+      '<aside class="se__tables">' +
+      '<section class="se__table-block">' +
+      '<h2 class="panel__title">连接点</h2>' +
+      '<table class="se__table" data-testid="connection-point-table">' +
+      "<thead><tr><th>类型</th><th>方向</th><th>坐标</th></tr></thead>" +
+      "<tbody>" + seTableRows(SE_CONNECTIONS, "connection-point-row") + "</tbody></table>" +
+      "</section>" +
+      '<section class="se__table-block">' +
+      '<h2 class="panel__title">属性标签</h2>' +
+      '<table class="se__table" data-testid="symbol-attribute-table">' +
+      "<thead><tr><th>标记</th><th>提示</th><th>默认</th><th>位置</th></tr></thead>" +
+      "<tbody>" + seTableRows(SE_ATTRIBUTES, "symbol-attribute-row") + "</tbody></table>" +
+      "</section>" +
+      "</aside>" +
+      "</div>" +
+      "</div>";
+    return html + "</section>";
+  }
+
+  /* Tab switching only flips visual state in place so the canvas is
+     never rebuilt mid-edit. */
+  function symbolEditorClick(target) {
+    var tab = closestEl(target, '[data-testid="se-tab"]');
+    if (!tab) {
+      return;
+    }
+    var id = tab.getAttribute("data-tab") || "draw";
+    seState.tab = id;
+    var tabs = document.querySelectorAll('[data-testid="se-tab"]');
+    for (var i = 0; i < tabs.length; i++) {
+      var on = tabs[i].getAttribute("data-tab") === id;
+      tabs[i].setAttribute("aria-selected", on ? "true" : "false");
+      if (on && tabs[i].className.indexOf("is-active") === -1) {
+        tabs[i].className += " is-active";
+      } else if (!on) {
+        tabs[i].className = tabs[i].className.replace(/\s*is-active/g, "");
+      }
+    }
+  }
+
+  /* ---------- Delegated interaction ---------- */
+
+  document.addEventListener("click", function (event) {
+    var target = event.target || event.srcElement;
+    while (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+    if (screenActive("typelib")) {
+      typelibClick(target);
+    } else if (screenActive("symbols")) {
+      symbolsClick(target);
+    } else if (screenActive("symbol-editor")) {
+      symbolEditorClick(target);
+    }
+  });
+
+  window.PidScreens = window.PidScreens || {};
+  window.PidScreens.typelib = renderTypelib;
+  window.PidScreens.symbols = renderSymbols;
+  window.PidScreens["symbol-editor"] = renderSymbolEditor;
+})();
+
