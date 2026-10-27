@@ -2610,3 +2610,420 @@
   window.PidScreens = window.PidScreens || {};
   window.PidScreens.properties = renderProperties;
 })();
+
+/* Design rule check and material list screens. Both renderers live in a
+   single IIFE appended after the properties bundle; each guards its
+   delegated listeners by the active screen so no other screen is affected.
+   Classic script, ES5, no modules/network. */
+(function () {
+  "use strict";
+
+  var Shell = window.PidShell;
+
+  function esc(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  /* ---------- Design rule check screen ---------- */
+
+  /* Rule names keyed by rule id. The violation entries themselves carry
+     only the six contract keys required for __proto.violations items. */
+  var VL_RULE_NAMES = {
+    "DR-001": "管段未连接到设备管口",
+    "DR-002": "设备管口未连接管段",
+    "DR-003": "仪表未加入仪表回路",
+    "DR-004": "管路缺少管道等级",
+    "DR-005": "位号重复",
+    "DR-006": "必填属性为空",
+    "DR-007": "管线缺少流体介质",
+    "DR-008": "图例标准与项目标准不一致"
+  };
+
+  /* Check results across all drawings. Counts per severity are derived
+     from this list, never hard-coded into the summary markup. */
+  var VIOLATIONS = [
+    { ruleId: "DR-001", severity: "错误", tag: "P-1001", sheet: "PID-1101 原油换热网络.dwg",
+      message: "设备管口 N2 与出口管路 L-1001-01 未建立连接",
+      suggestion: "建议：在 P-1001 的 N2 管口与 L-1001-01 端点之间建立连接关系。" },
+    { ruleId: "DR-003", severity: "警告", tag: "TI-1101", sheet: "PID-1201 常压塔系统.dwg",
+      message: "仪表未加入仪表回路 LIC-1101",
+      suggestion: "建议：将 TI-1101 关联到仪表回路 LIC-1101。" },
+    { ruleId: "DR-004", severity: "警告", tag: "L-2103-01", sheet: "PID-2102 减顶抽空系统.dwg",
+      message: "管路缺少管道等级取值",
+      suggestion: "建议：为该管路指定管道等级。" },
+    { ruleId: "DR-005", severity: "错误", tag: "P-1001", sheet: "PID-1101 原油换热网络.dwg",
+      message: "位号 P-1001 在本图纸出现 2 次",
+      suggestion: "建议：修改重复实例的位号。" },
+    { ruleId: "DR-006", severity: "错误", tag: "E-1101", sheet: "PID-1201 常压塔系统.dwg",
+      message: "必填属性「设计压力」为空",
+      suggestion: "建议：补全设计压力取值。" },
+    { ruleId: "DR-002", severity: "错误", tag: "V-2101", sheet: "PID-2101 减压塔系统.dwg",
+      message: "设备管口未连接管段",
+      suggestion: "建议：为 V-2101 的进出口管口连接管段。" },
+    { ruleId: "DR-007", severity: "提示", tag: "L-9101-01", sheet: "PID-9101 燃料气分配.dwg",
+      message: "管线缺少流体介质",
+      suggestion: "建议：补充流体介质取值。" },
+    { ruleId: "DR-008", severity: "警告", tag: "PI-9001", sheet: "PID-9000 公用工程流程图.dwg",
+      message: "图例标准与项目标准不一致",
+      suggestion: "建议：切换为项目采用的图例标准。" },
+    { ruleId: "DR-003", severity: "警告", tag: "LI-1101", sheet: "PID-1202 常顶回流系统.dwg",
+      message: "仪表未加入仪表回路",
+      suggestion: "建议：将 LI-1101 关联到相应仪表回路。" }
+  ];
+
+  var vlState = { hint: "就绪" };
+
+  /* Live counts per severity; the summary numbers must always match the
+     number of rows actually listed. */
+  function vlSeverityCounts() {
+    var counts = { "错误": 0, "警告": 0, "提示": 0 };
+    for (var i = 0; i < VIOLATIONS.length; i++) {
+      var sev = VIOLATIONS[i].severity;
+      if (Object.prototype.hasOwnProperty.call(counts, sev)) {
+        counts[sev] += 1;
+      }
+    }
+    return counts;
+  }
+
+  function vlRowsHtml() {
+    var html = "";
+    for (var i = 0; i < VIOLATIONS.length; i++) {
+      var v = VIOLATIONS[i];
+      html +=
+        '<tr class="vl__row" data-testid="violation-row" data-rule-id="' +
+        esc(v.ruleId) + '" data-severity="' + esc(v.severity) +
+        '" data-tag="' + esc(v.tag) + '"><td>' + esc(v.ruleId) +
+        "</td><td>" + esc(VL_RULE_NAMES[v.ruleId] || v.ruleId) +
+        "</td><td>" + esc(v.tag) + "</td><td>" + esc(v.sheet) +
+        "</td><td>" + esc(v.message) + "</td></tr>";
+    }
+    return html;
+  }
+
+  function renderValidation(def) {
+    var counts = vlSeverityCounts();
+    if (Shell && typeof Shell.setPendingProtoMerge === "function") {
+      Shell.setPendingProtoMerge("validation", { violations: VIOLATIONS });
+    }
+    return (
+      '<section class="screen" data-screen="validation">' +
+      '<header class="screen__header">' +
+      '<h1 class="screen__title" data-testid="screen-title">设计规则检查</h1>' +
+      '<p class="screen__desc">' + esc(def && def.desc ? def.desc : "") + "</p>" +
+      "</header>" +
+      '<div class="panel vl">' +
+      '<div class="vl__toolbar" data-testid="validation-toolbar">' +
+      '<button type="button" class="vl__btn vl__btn--primary" data-testid="rerun-check">重新检查</button>' +
+      '<button type="button" class="vl__btn" data-testid="export-result">导出结果</button>' +
+      "</div>" +
+      '<div class="vl__summary" data-testid="validation-summary">' +
+      '<span class="vl__stat vl__stat--error" data-testid="summary-error">错误 <b>' +
+      counts["错误"] + "</b></span>" +
+      '<span class="vl__stat vl__stat--warning" data-testid="summary-warning">警告 <b>' +
+      counts["警告"] + "</b></span>" +
+      '<span class="vl__stat vl__stat--info" data-testid="summary-info">提示 <b>' +
+      counts["提示"] + "</b></span>" +
+      "</div>" +
+      '<div class="vl__body">' +
+      '<section class="vl__list">' +
+      '<table class="vl__table" data-testid="violation-list">' +
+      "<thead><tr><th>规则 ID</th><th>规则名</th><th>位号</th><th>图纸</th><th>消息</th></tr></thead>" +
+      "<tbody>" + vlRowsHtml() + "</tbody></table>" +
+      "</section>" +
+      '<aside class="vl__detail" data-testid="violation-detail">' +
+      '<h2 class="panel__title">违规详情</h2>' +
+      '<p class="vl__detail-text" data-testid="violation-detail-text"></p>' +
+      "</aside>" +
+      "</div>" +
+      '<p class="vl__status" data-testid="vl-status">' + esc(vlState.hint) + "</p>" +
+      "</div>" +
+      "</section>"
+    );
+  }
+
+  function closestEl(el, selector) {
+    var matcher = el && (el.matches || el.msMatchesSelector || el.webkitMatchesSelector);
+    while (el && el.nodeType === 1) {
+      if (matcher && matcher.call(el, selector)) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function vlActive() {
+    if (Shell && typeof Shell.currentScreenId === "function" &&
+        Shell.currentScreenId() === "validation") {
+      return true;
+    }
+    return !!document.querySelector('[data-screen="validation"]');
+  }
+
+  function rerenderValidation() {
+    var body = document.querySelector('[data-testid="screen-body"]');
+    if (!body || !Shell) {
+      return;
+    }
+    body.innerHTML = Shell.renderScreenHtml("validation");
+    Shell.publishProto("validation");
+  }
+
+  function setVlHint(text) {
+    vlState.hint = text;
+    var el = document.querySelector('[data-testid="vl-status"]');
+    if (el) {
+      el.textContent = text;
+    }
+  }
+
+  document.addEventListener("click", function (event) {
+    if (!vlActive()) {
+      return;
+    }
+    var target = event.target || event.srcElement;
+    while (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+    var btn = closestEl(target, ".vl__btn");
+    if (btn) {
+      var act = btn.getAttribute("data-testid");
+      if (act === "rerun-check") {
+        vlState.hint = "检查完成，共 " + VIOLATIONS.length + " 项";
+        rerenderValidation();
+      } else if (act === "export-result") {
+        setVlHint("检查结果已导出。");
+      }
+      return;
+    }
+    var row = closestEl(target, '[data-testid="violation-row"]');
+    if (row) {
+      var rows = document.querySelectorAll('[data-testid="violation-row"]');
+      var idx = -1;
+      for (var i = 0; i < rows.length; i++) {
+        rows[i].classList.remove("is-selected");
+        if (rows[i] === row) {
+          idx = i;
+        }
+      }
+      row.classList.add("is-selected");
+      var detail = document.querySelector('[data-testid="violation-detail-text"]');
+      if (detail && idx >= 0 && idx < VIOLATIONS.length) {
+        detail.textContent = VIOLATIONS[idx].suggestion;
+      }
+      if (typeof window.__protoSet === "function") {
+        window.__protoSet({ violations: VIOLATIONS });
+      }
+    }
+  });
+
+  /* ---------- Bill of materials screen ---------- */
+
+  /* Scope "current" keeps only objects placed on this drawing. */
+  var CURRENT_SHEET = "PID-1101 原油换热网络.dwg";
+
+  /* Source rows carry a sheet field used only for scope filtering; the
+     rows staged into __proto.bomRows are rebuilt to expose exactly the
+     seven contract keys no/type/tag/name/qty/unit/note. Tags stay unique
+     within every scope: fitting tags inherit their host line tag form
+     plus a suffix, so two rows never share one tag. */
+  var BOM_SOURCE = [
+    { sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "P-1001", name: "离心泵", qty: 1, unit: "台", note: "—" },
+    { sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "E-1001", name: "原油换热器", qty: 1, unit: "台", note: "—" },
+    { sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "V-1001", name: "原油缓冲罐", qty: 1, unit: "台", note: "—" },
+    { sheet: "PID-1101 原油换热网络.dwg", type: "仪表", tag: "TI-1001", name: "温度指示", qty: 1, unit: "台", note: "—" },
+    { sheet: "PID-1101 原油换热网络.dwg", type: "管路", tag: "L-1001-01", name: "原油进料管路", qty: 38, unit: "m", note: "管段长度合计" },
+    { sheet: "PID-1101 原油换热网络.dwg", type: "管件", tag: "L-1001-01-F1", name: "对焊法兰", qty: 12, unit: "个", note: "隶属 L-1001-01" },
+    { sheet: "PID-1101 原油换热网络.dwg", type: "管件", tag: "L-1001-01-F2", name: "90°弯头", qty: 6, unit: "个", note: "隶属 L-1001-01" },
+    { sheet: "PID-1102 原油泵区配管.dwg", type: "设备", tag: "P-1002", name: "原油泵", qty: 1, unit: "台", note: "—" },
+    { sheet: "PID-1102 原油泵区配管.dwg", type: "设备", tag: "P-1003", name: "原油泵", qty: 1, unit: "台", note: "—" },
+    { sheet: "PID-1102 原油泵区配管.dwg", type: "阀门", tag: "XV-1002", name: "切断阀", qty: 1, unit: "台", note: "—" },
+    { sheet: "PID-1102 原油泵区配管.dwg", type: "仪表", tag: "PI-1002", name: "压力指示", qty: 1, unit: "台", note: "—" },
+    { sheet: "PID-1102 原油泵区配管.dwg", type: "管路", tag: "L-1002-01", name: "原油泵出口管路", qty: 25, unit: "m", note: "管段长度合计" },
+    { sheet: "PID-1201 常压塔系统.dwg", type: "设备", tag: "T-1001", name: "常压塔", qty: 1, unit: "台", note: "—" },
+    { sheet: "PID-1201 常压塔系统.dwg", type: "仪表", tag: "TI-1101", name: "温度指示", qty: 1, unit: "台", note: "—" },
+    { sheet: "PID-2101 减压塔系统.dwg", type: "设备", tag: "V-2101", name: "减顶罐", qty: 1, unit: "台", note: "—" }
+  ];
+
+  var BM_TEMPLATES = ["标准材料清单", "管件汇总表", "阀门汇总表"];
+
+  var bmState = { scope: "all", template: "标准材料清单", hint: "就绪" };
+
+  /* Rows for the active scope, renumbered from 1 and reduced to the seven
+     contract keys, so the footer count, the table and __proto.bomRows all
+     describe the same list. */
+  function bmRowsForScope() {
+    var rows = [];
+    for (var i = 0; i < BOM_SOURCE.length; i++) {
+      var r = BOM_SOURCE[i];
+      if (bmState.scope === "current" && r.sheet !== CURRENT_SHEET) {
+        continue;
+      }
+      rows.push({
+        no: rows.length + 1,
+        type: r.type,
+        tag: r.tag,
+        name: r.name,
+        qty: r.qty,
+        unit: r.unit,
+        note: r.note
+      });
+    }
+    return rows;
+  }
+
+  function bmTemplateOptions() {
+    var html = "";
+    for (var i = 0; i < BM_TEMPLATES.length; i++) {
+      html += "<option" +
+        (BM_TEMPLATES[i] === bmState.template ? " selected" : "") +
+        ">" + esc(BM_TEMPLATES[i]) + "</option>";
+    }
+    return html;
+  }
+
+  function bmRowsHtml(rows) {
+    var html = "";
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      html +=
+        '<tr class="bm__row" data-testid="bom-row" data-tag="' + esc(r.tag) + '">' +
+        "<td>" + r.no + "</td><td>" + esc(r.type) + "</td><td>" + esc(r.tag) +
+        "</td><td>" + esc(r.name) + "</td><td>" + r.qty + "</td><td>" +
+        esc(r.unit) + "</td><td>" + esc(r.note) + "</td></tr>";
+    }
+    return html;
+  }
+
+  function renderBom(def) {
+    var rows = bmRowsForScope();
+    if (Shell && typeof Shell.setPendingProtoMerge === "function") {
+      Shell.setPendingProtoMerge("bom", { bomRows: rows });
+    }
+    return (
+      '<section class="screen" data-screen="bom">' +
+      '<header class="screen__header">' +
+      '<h1 class="screen__title" data-testid="screen-title">材料清单</h1>' +
+      '<p class="screen__desc">' + esc(def && def.desc ? def.desc : "") + "</p>" +
+      "</header>" +
+      '<div class="panel bm">' +
+      '<div class="bm__toolbar" data-testid="bom-toolbar">' +
+      '<label class="bm__field">模板 ' +
+      '<select class="field" data-testid="bom-template">' +
+      bmTemplateOptions() +
+      "</select></label>" +
+      '<label class="bm__field">数据范围 ' +
+      '<select class="field" data-testid="bom-scope">' +
+      '<option value="all"' + (bmState.scope === "all" ? " selected" : "") +
+      ">全部图纸</option>" +
+      '<option value="current"' + (bmState.scope === "current" ? " selected" : "") +
+      ">当前图纸</option>" +
+      "</select></label>" +
+      '<span class="bm__spacer"></span>' +
+      '<button type="button" class="bm__btn" data-testid="export-excel">导出 Excel</button>' +
+      '<button type="button" class="bm__btn" data-testid="export-csv">导出 CSV</button>' +
+      '<button type="button" class="bm__btn" data-testid="export-pdf">导出 PDF</button>' +
+      "</div>" +
+      '<div class="bm__scroll">' +
+      '<table class="bm__table" data-testid="bom-table">' +
+      "<thead><tr><th>序号</th><th>类型</th><th>位号</th><th>名称</th><th>数量</th><th>单位</th><th>备注</th></tr></thead>" +
+      "<tbody>" + bmRowsHtml(rows) + "</tbody></table>" +
+      "</div>" +
+      '<div class="bm__footer" data-testid="bom-footer">' +
+      '<span class="bm__summary" data-testid="bom-summary">共 ' + rows.length + " 条</span>" +
+      '<span class="bm__status" data-testid="bm-status">' + esc(bmState.hint) + "</span>" +
+      "</div>" +
+      "</div>" +
+      "</section>"
+    );
+  }
+
+  function bmActive() {
+    if (Shell && typeof Shell.currentScreenId === "function" &&
+        Shell.currentScreenId() === "bom") {
+      return true;
+    }
+    return !!document.querySelector('[data-screen="bom"]');
+  }
+
+  function rerenderBom() {
+    var body = document.querySelector('[data-testid="screen-body"]');
+    if (!body || !Shell) {
+      return;
+    }
+    body.innerHTML = Shell.renderScreenHtml("bom");
+    Shell.publishProto("bom");
+  }
+
+  function setBmHint(text) {
+    bmState.hint = text;
+    var el = document.querySelector('[data-testid="bm-status"]');
+    if (el) {
+      el.textContent = text;
+    }
+  }
+
+  document.addEventListener("click", function (event) {
+    if (!bmActive()) {
+      return;
+    }
+    var target = event.target || event.srcElement;
+    while (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+    var btn = closestEl(target, ".bm__btn");
+    if (btn) {
+      var act = btn.getAttribute("data-testid");
+      if (act === "export-excel") {
+        setBmHint("Excel 导出任务已提交，完成后将在消息中通知。");
+      } else if (act === "export-csv") {
+        setBmHint("CSV 导出任务已提交，完成后将在消息中通知。");
+      } else if (act === "export-pdf") {
+        setBmHint("PDF 导出任务已提交，完成后将在消息中通知。");
+      }
+    }
+  });
+
+  document.addEventListener("change", function (event) {
+    if (!bmActive()) {
+      return;
+    }
+    var target = event.target || event.srcElement;
+    while (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+    var scopeSel = closestEl(target, '[data-testid="bom-scope"]');
+    if (scopeSel) {
+      bmState.scope = scopeSel.value === "current" ? "current" : "all";
+      bmState.hint = bmState.scope === "current"
+        ? "数据范围：当前图纸"
+        : "数据范围：全部图纸";
+      rerenderBom();
+      return;
+    }
+    var tplSel = closestEl(target, '[data-testid="bom-template"]');
+    if (tplSel) {
+      bmState.template = tplSel.value;
+      setBmHint("已切换模板：" + tplSel.value);
+    }
+  });
+
+  window.PidScreens = window.PidScreens || {};
+  window.PidScreens.validation = renderValidation;
+  window.PidScreens.bom = renderBom;
+})();
+
