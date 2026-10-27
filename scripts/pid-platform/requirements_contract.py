@@ -83,6 +83,10 @@ PRIORITIES = ["必须", "应该", "可以"]
 SOURCE_SECTION_RE = re.compile(r"^§\d+(?:\.\d+)+$")
 FIELD_LINE_RE = re.compile(r"^[-*]\s+\*\*(?P<name>[^*]+)\*\*[ \t]*[：:][ \t]*(?P<value>.*)$")
 NUMBERED_ITEM_RE = re.compile(r"^\s*\d+[.、)][ \t]*\S")
+# The marker a numbered acceptance criterion opens with, in any of the three
+# forms the documents use. Stripped before decidability is judged, because the
+# marker's own digit is numbering, not evidence.
+LIST_NUMBER_RE = re.compile(r"^\s*\d+[.、)][ \t]*")
 
 PLATFORM_SECTIONS = [
     "身份与会话",
@@ -104,7 +108,8 @@ TYPE_SECTIONS = [
 
 # A criterion is decidable when it carries a number, a named command/field in
 # backticks, or an observable state. The words below are the observable-state
-# vocabulary the contract itself uses.
+# vocabulary the contract itself uses. Each one names a state a reviewer can
+# look at (a value, a list, a precedence outcome) rather than an opinion.
 OBSERVABLE_WORDS = [
     "显示",
     "返回",
@@ -120,6 +125,12 @@ OBSERVABLE_WORDS = [
     "隐藏",
     "置为",
     "自动",
+    # Added when the list-number prefix stopped counting as a digit: two shipped
+    # criteria state their outcome in these terms only (REQ-PLAT-006 criterion 1
+    # inherits the role's permission items; REQ-TYPE-015 criterion 1 gives the
+    # child rule precedence over the parent). No other criterion depends on them.
+    "继承",
+    "优先于",
 ]
 
 
@@ -234,12 +245,23 @@ def definitions(documents: dict) -> dict:
     return defined
 
 
+def strip_list_number(criterion: str) -> str:
+    """Drop a ``1.`` / ``1、`` / ``1)`` list marker from an acceptance criterion.
+
+    ``validate_entry`` receives the whole stripped line, so the criterion's own
+    numbering would otherwise satisfy the "carries a number" branch for any
+    text at all, including pure sentiment.
+    """
+    return LIST_NUMBER_RE.sub("", criterion, count=1).strip()
+
+
 def _is_observable(criterion: str) -> bool:
-    if any(char.isdigit() for char in criterion):
+    body = strip_list_number(criterion)
+    if any(char.isdigit() for char in body):
         return True
-    if "`" in criterion:
+    if "`" in body:
         return True
-    return any(word in criterion for word in OBSERVABLE_WORDS)
+    return any(word in body for word in OBSERVABLE_WORDS)
 
 
 def validate_entry(entry: dict, path: str, allowed=None) -> list:

@@ -13,9 +13,11 @@ import pytest
 
 import conftest
 from conftest import CATALOG, DOCS, SCREEN_IDS
+from manifest_contract import normalize_heading
 from requirements_contract import (
     AREA_FLOOR,
     MATRIX_COLUMNS,
+    OBSERVABLE_WORDS,
     OVERVIEW_PATH,
     REQ_AREA_FILES,
     REQ_ID_RE,
@@ -26,7 +28,9 @@ from requirements_contract import (
     load_all_documents,
     load_documents,
     matrix_rows,
+    section_requirement_counts,
     split_entries,
+    strip_list_number,
     validate_area_floors,
     validate_area_table,
     validate_matrix,
@@ -40,6 +44,13 @@ from requirements_contract import (
 
 PLAT_PATH = "requirements/10-platform.md"
 TYPE_PATH = "requirements/20-type-library.md"
+
+# Every declared section, paired with the area document that must carry it as
+# an H2 heading. The names themselves live in the contract module; the pairing
+# is what makes the parametrized check below assert file state.
+SECTION_HEADINGS = [(PLAT_PATH, name) for name in PLATFORM_SECTIONS] + [
+    (TYPE_PATH, name) for name in TYPE_SECTIONS
+]
 
 
 def _screen_ids() -> list:
@@ -66,6 +77,50 @@ def _entry(req_id: str, source: str = "§4.1.1", title: str = "示例需求") ->
         "- **来源**：%s\n"
         % (req_id, title, source)
     )
+
+
+def _vague_entry(req_id: str) -> str:
+    """An entry whose criteria are pure sentiment, each with a different list marker.
+
+    ``1.`` / ``2、`` / ``3)`` are the three markers the contract accepts; all of
+    them must be stripped before decidability is judged.
+    """
+    return (
+        "### %s 情感描述不可判定\n\n"
+        "- **优先级**：必须\n"
+        "- **用户故事**：作为设计人员，我希望系统好用，以便提升效率。\n"
+        "- **验收标准**：\n"
+        "  1. 用户感觉系统表现良好。\n"
+        "  2、用户觉得体验顺畅。\n"
+        "  3) 界面令人满意。\n"
+        "- **数据与界面契约**：\n"
+        "  | 字段 | 类型 | 必填 | 约束 |\n"
+        "  | --- | --- | --- | --- |\n"
+        "  | 示例字段 | String | 是 | ≤ 64 字符 |\n"
+        "- **来源**：§4.1.1\n" % req_id
+    )
+
+
+def _threshold_entry(req_id: str) -> str:
+    """An entry decidable only through numeric thresholds, no backticks or state words."""
+    return (
+        "### %s 账户锁定阈值\n\n"
+        "- **优先级**：必须\n"
+        "- **用户故事**：作为项目管理员，我希望连续失败后锁定账户，以便抵御暴力破解。\n"
+        "- **验收标准**：\n"
+        "  1. 连续 5 次登录失败后锁定 30 分钟。\n"
+        "  2. 第 31 分钟起计数归零，可再次尝试。\n"
+        "- **数据与界面契约**：\n"
+        "  | 字段 | 类型 | 必填 | 约束 |\n"
+        "  | --- | --- | --- | --- |\n"
+        "  | 锁定阈值 | Integer | 是 | 1–10 次 |\n"
+        "- **来源**：§4.1.1\n" % req_id
+    )
+
+
+def _h2_sections(text: str) -> set:
+    """Normalized names of every H2 heading in ``text``."""
+    return set(section_requirement_counts(text))
 
 
 def _area_table() -> str:
@@ -421,7 +476,70 @@ def test_traceability_validator_rejects_an_unverified_source_section():
     assert any("9.9.9.9" in error for error in errors), errors
 
 
-@pytest.mark.parametrize("section", PLATFORM_SECTIONS + TYPE_SECTIONS)
-def test_traceability_required_section_names_are_distinct(section):
-    assert section.strip() == section and section, "section name has stray spaces"
-    assert "\n" not in section
+def test_traceability_validator_rejects_vague_acceptance_criteria():
+    """VAL-REQ-002 decidability can fail: a criterion's own list number is not evidence.
+
+    The three criteria below use the three list markers the contract accepts
+    (``1.`` / ``2、`` / ``3)``). Before the marker was stripped, its digit
+    satisfied the "carries a number" branch and every one of them passed.
+    """
+    documents = _valid_documents()
+    documents[PLAT_PATH] = (
+        "# 平台层需求\n\n## 身份与会话\n\n" + _vague_entry("REQ-PLAT-001")
+    )
+    errors = validate_entries(documents)
+    vague = [
+        error
+        for error in errors
+        if "no number, named command or observable state" in error
+    ]
+    assert len(vague) == 3, (
+        "expected all three sentiment-only criteria to be rejected, got: %s" % errors
+    )
+    for index in (1, 2, 3):
+        matching = [error for error in vague if "criterion %d" % index in error]
+        assert matching, "criterion %d was not rejected: %s" % (index, vague)
+        assert "REQ-PLAT-001" in matching[0] and PLAT_PATH in matching[0], matching[0]
+
+
+def test_traceability_validator_keeps_numeric_threshold_criteria_decidable():
+    """Positive control: a threshold-only criterion still passes.
+
+    Both criteria are checked to carry neither a backticked token nor an
+    observable word, so only the numeric branch can accept them.
+    """
+    for criterion in [
+        "1. 连续 5 次登录失败后锁定 30 分钟。",
+        "2. 第 31 分钟起计数归零，可再次尝试。",
+    ]:
+        body = strip_list_number(criterion)
+        assert "`" not in body, criterion
+        assert not any(word in body for word in OBSERVABLE_WORDS), (
+            "%s would pass on an observable word rather than its numbers" % criterion
+        )
+    documents = _valid_documents()
+    documents[PLAT_PATH] = (
+        "# 平台层需求\n\n## 身份与会话\n\n" + _threshold_entry("REQ-PLAT-001")
+    )
+    errors = validate_entries(documents, allowed=whitelisted_sections())
+    assert errors == [], "a numeric threshold must stay decidable: %s" % errors
+
+
+@pytest.mark.parametrize("path,section", SECTION_HEADINGS)
+def test_traceability_section_names_appear_as_h2_in_their_area_document(path, section):
+    """Each declared section must be an H2 heading of the document that owns it."""
+    text = load_documents(DOCS)[path]
+    present = _h2_sections(text)
+    assert normalize_heading(section) in present, (
+        "%s does not carry '%s' as an H2 heading; found %s"
+        % (path, section, sorted(present))
+    )
+
+
+def test_traceability_section_heading_check_rejects_a_renamed_heading():
+    """Negative control: the H2 extraction really notices a heading going away."""
+    documents = load_documents(DOCS)
+    renamed = documents[PLAT_PATH].replace("## 身份与会话", "## 身份与安全")
+    assert renamed != documents[PLAT_PATH], "the control could not rename the heading"
+    assert normalize_heading("身份与会话") in _h2_sections(documents[PLAT_PATH])
+    assert normalize_heading("身份与会话") not in _h2_sections(renamed)
