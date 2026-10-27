@@ -80,3 +80,27 @@
   `DOMContentLoaded` 与 `hashchange` 时执行。
 - 每个渲染界面在外壳内恰好包含一个 `<h1>`（即 `screen-title`）。
 - 界面切换后 `window.__proto` 整体重建，`screen` 字段与当前路由 id 保持一致。
+
+## 6. 界面级 `data-testid` 补充登记
+
+以下 `data-testid` 随具体界面实现挂载，仅在对应界面渲染完成后出现。
+
+| data-testid | 所在界面 | 所在区域 | 说明 |
+| --- | --- | --- | --- |
+| `overview-stats` | `workbench` | 概览指标条 | 含且仅含 4 个指标项：项目名、图纸数、对象数、待处理问题数；取值由种子数据计算得出 |
+| `recent-drawings` | `workbench` | 最近图纸列表 | `<ul>` 列表，每行含文件名、生命周期状态、版本、修改人、修改时间，至少 3 行 |
+| `activity` | `workbench` | 最近动态列表 | `<ul>` 列表，每行含时间、操作人、事件描述，至少 3 行 |
+| `quick-actions` | `workbench` | 快捷入口区 | 至少 2 个入口链接，分别将 `location.hash` 置为 `#/screen/drawings` 与 `#/screen/editor` |
+| `pbs-tree` | `drawings` | 左侧 PBS 树区 | 至少 3 级嵌套 `<ul>/<li>`：工厂 → 装置 → 单元；任一时刻恰有一个节点带 `.is-selected` |
+| `pbs-node` | `drawings` | PBS 树内每个节点 | 可点击节点，携带 `data-pbs-id` 与 `data-level` |
+| `drawing-list` | `drawings` | 图纸清单表格 | `<table>`，表头恰为 文件名、状态、版本、修改人、修改时间 五列；数据行携带 `data-drawing-id` 与 `data-pbs-id` |
+| `drawing-preview` | `drawings` | 图纸预览区 | 显示当前选中图纸的名称、版本、生命周期状态与内联 SVG 示意图 |
+| `drawings-toolbar` | `drawings` | 顶部工具栏 | 恰含 6 个按钮，顺序固定：新建图纸、导入、复制、移动、权限、版本比对 |
+
+## 7. `window.__proto.symbolCount` 填充说明
+
+- `drawings` 界面在每次渲染后（路由进入、PBS 节点选中变更、图纸行选中变更），将
+  当前预览图纸的 `objectCount` 经 `window.__protoSet({ symbolCount: n })` 写入
+  `window.__proto.symbolCount`。路由进入时该值经外壳的一次性合并机制写入；
+  界面内交互重绘时由界面脚本直接调用 `window.__protoSet`。
+- 其余 13 个界面当前不修改该字段，`symbolCount` 保持路由重建时的种子值 `0`。

@@ -1,0 +1,1020 @@
+/* Consolidated screen bundle for the P&ID platform prototype.
+   Classic script, ES5, no modules/network. This file concatenates, in load
+   order, the former screens-shell.js (registry + test surface), screens-data.js
+   (seed dataset) and screens-workbench.js (workbench & drawings renderers),
+   each preserved as its own IIFE. */
+
+/* Screen registry, placeholder renderers and the programmatic test surface
+   for the P&ID platform prototype. Classic script, ES5, no modules/network. */
+(function () {
+  "use strict";
+
+  var ROUTE_PREFIX = "#/screen/";
+
+  var SCREENS = [
+    {
+      id: "workbench",
+      title: "工作台",
+      group: "总览",
+      desc: "项目入口与待办汇总页，呈现项目概览、最近打开的图纸与任务提醒。",
+      points: ["项目概览与最近图纸", "待办事项与消息提醒", "常用功能快捷入口"]
+    },
+    {
+      id: "drawings",
+      title: "图纸管理",
+      group: "总览",
+      desc: "按 PBS 层级组织图纸台账，维护图纸版本快照与发布状态。",
+      points: ["PBS 层级浏览", "图纸清单与状态", "图纸版本快照管理"]
+    },
+    {
+      id: "editor",
+      title: "P&ID 编辑器",
+      group: "绘制",
+      desc: "图面绘制主界面，放置设备、管线、管路与仪表对象，经管口与连接点建立拓扑。",
+      points: ["符号放置与移动", "管段绘制与连接点吸附", "设备管口与仪表回路关联"]
+    },
+    {
+      id: "palette",
+      title: "符号调色板",
+      group: "绘制",
+      desc: "按图例标准组织的符号选取面板，支持检索与拖拽进入画布。",
+      points: ["符号分组浏览", "按图例标准过滤", "拖拽放置到画布"]
+    },
+    {
+      id: "properties",
+      title: "属性面板",
+      group: "绘制",
+      desc: "查看并编辑当前选中对象的位号与数据要素取值。",
+      points: ["位号与属性编辑", "必选信息提示", "关联要素取值"]
+    },
+    {
+      id: "typelib",
+      title: "业务类型库",
+      group: "库与规则",
+      desc: "类型库的类与型树管理，维护属性模板并绑定数据要素。",
+      points: ["类型树维护", "属性模板配置", "数据要素绑定"]
+    },
+    {
+      id: "symbols",
+      title: "标准图例定制",
+      group: "库与规则",
+      desc: "项目级图例标准的选定与符号启用管理入口。",
+      points: ["图例标准选择", "符号启用与状态管理"]
+    },
+    {
+      id: "symbol-editor",
+      title: "符号编辑器",
+      group: "库与规则",
+      desc: "绘制与编辑符号图形，配置连接点与显示属性。",
+      points: ["符号图形绘制", "连接点配置"]
+    },
+    {
+      id: "tag-rules",
+      title: "位号规则",
+      group: "库与规则",
+      desc: "定义各类对象的位号生成规则，提供位号预览与唯一校验。",
+      points: ["位号规则定义", "位号预览", "唯一校验配置"]
+    },
+    {
+      id: "color-rules",
+      title: "颜色规则",
+      group: "库与规则",
+      desc: "按介质、管道等级等条件定义管线与图面对象的颜色规则。",
+      points: ["规则条件定义", "颜色映射维护"]
+    },
+    {
+      id: "masterdata",
+      title: "主数据管理",
+      group: "库与规则",
+      desc: "维护项目主数据，包括公称直径序列、管道等级、绝热等级与流体介质。",
+      points: ["公称直径序列", "管道等级", "流体介质"]
+    },
+    {
+      id: "validation",
+      title: "设计规则检查",
+      group: "检查与交付",
+      desc: "对图纸执行连通性与属性完整性的设计规则检查并呈现结果。",
+      points: ["检查规则集", "检查结果列表", "定位到图面对象"]
+    },
+    {
+      id: "bom",
+      title: "材料清单",
+      group: "检查与交付",
+      desc: "按位号聚合管件、阀门与设备等对象实例，形成材料清单。",
+      points: ["按位号聚合统计", "分类汇总", "清单导出"]
+    },
+    {
+      id: "permissions",
+      title: "权限管理",
+      group: "系统",
+      desc: "按角色配置功能入口与图纸范围的访问权限。",
+      points: ["角色维护", "权限范围配置"]
+    }
+  ];
+
+  var MAP = {};
+  var i;
+  for (i = 0; i < SCREENS.length; i++) {
+    MAP[SCREENS[i].id] = SCREENS[i];
+  }
+
+  /* ---------- Programmatic test surface ---------- */
+
+  var PROTO_KEYS = [
+    "screen",
+    "symbolCount",
+    "selectedTag",
+    "selectedProps",
+    "violations",
+    "bomRows",
+    "paletteItemCount",
+    "tagRulePreview"
+  ];
+
+  function protoSeed() {
+    return {
+      screen: "",
+      symbolCount: 0,
+      selectedTag: "",
+      selectedProps: [],
+      violations: [],
+      bomRows: [],
+      paletteItemCount: 0,
+      tagRulePreview: ""
+    };
+  }
+
+  var currentScreenId = "";
+
+  /* One-shot merge staged by a screen renderer (see window.PidScreens below).
+     renderScreenHtml runs before publishProto on every route pass, so a
+     renderer can stage values here and have them applied to the freshly
+     rebuilt window.__proto for the same screen. A merge staged for a
+     different screen is dropped, so stale values never leak across routes. */
+  var pendingProtoMerge = null;
+
+  function setPendingProtoMerge(screenId, partial) {
+    pendingProtoMerge = {
+      screen: screenId,
+      partial: partial && typeof partial === "object" ? partial : {}
+    };
+  }
+
+  function publishProto(screenId) {
+    currentScreenId = screenId;
+    var proto = protoSeed();
+    proto.screen = screenId;
+    window.__proto = proto;
+    var merge = pendingProtoMerge;
+    pendingProtoMerge = null;
+    if (merge && merge.screen === screenId) {
+      window.__protoSet(merge.partial);
+    }
+    return proto;
+  }
+
+  /* Merge helper for later screens. Only the contractual keys are merged;
+     `screen` stays owned by the router. Never triggers a re-render. */
+  window.__protoSet = function (partial) {
+    if (!partial || typeof partial !== "object") {
+      return;
+    }
+    if (!window.__proto || typeof window.__proto !== "object") {
+      publishProto(currentScreenId);
+    }
+    for (var j = 0; j < PROTO_KEYS.length; j++) {
+      var key = PROTO_KEYS[j];
+      if (key !== "screen" && Object.prototype.hasOwnProperty.call(partial, key)) {
+        window.__proto[key] = partial[key];
+      }
+    }
+    window.__proto.screen = currentScreenId;
+  };
+
+  /* ---------- Rendering helpers ---------- */
+
+  function esc(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  function renderScreenHtml(id) {
+    var def = MAP[id];
+    if (!def) {
+      return "";
+    }
+    /* Real screens register a renderer on window.PidScreens (registered by a
+       later IIFE in this bundle). A renderer failure falls back to the
+       placeholder so it never surfaces as an uncaught page error. */
+    if (window.PidScreens && typeof window.PidScreens[id] === "function") {
+      try {
+        return window.PidScreens[id](def);
+      } catch (err) {
+        /* fall through to placeholder */
+      }
+    }
+    var points = "";
+    for (var k = 0; k < def.points.length; k++) {
+      points += "<li>" + esc(def.points[k]) + "</li>";
+    }
+    return (
+      '<section class="screen" data-screen="' + esc(id) + '">' +
+      '<header class="screen__header">' +
+      '<h1 class="screen__title" data-testid="screen-title">' + esc(def.title) + "</h1>" +
+      '<p class="screen__desc">' + esc(def.desc) + "</p>" +
+      "</header>" +
+      '<div class="panel">' +
+      '<p class="panel__lead">本界面已在规格包中完成定义，当前原型阶段仅提供外壳占位，' +
+      "具体功能将随迭代逐步挂载。</p>" +
+      '<ul class="spec-list">' + points + "</ul>" +
+      '<p class="screen__meta">路由 ' + esc(ROUTE_PREFIX + id) +
+      " · 分组 " + esc(def.group) + " · 界面 ID " + esc(id) + "</p>" +
+      "</div>" +
+      "</section>"
+    );
+  }
+
+  function buildModuleNav(navEl) {
+    var html = "";
+    var openGroup = false;
+    var lastGroup = null;
+    for (var k = 0; k < SCREENS.length; k++) {
+      var screen = SCREENS[k];
+      if (screen.group !== lastGroup) {
+        if (openGroup) {
+          html += "</div>";
+        }
+        html += '<div class="module-nav__group">' +
+          '<div class="module-nav__group-title">' + esc(screen.group) + "</div>";
+        lastGroup = screen.group;
+        openGroup = true;
+      }
+      html += '<a class="module-nav__item" data-testid="module-nav-item" data-screen="' +
+        esc(screen.id) + '" href="' + esc(ROUTE_PREFIX + screen.id) + '">' +
+        esc(screen.title) + "</a>";
+    }
+    if (openGroup) {
+      html += "</div>";
+    }
+    navEl.innerHTML = html;
+  }
+
+  window.PidShell = {
+    ROUTE_PREFIX: ROUTE_PREFIX,
+    DEFAULT_SCREEN: "workbench",
+    SCREENS: SCREENS,
+    MAP: MAP,
+    PROTO_KEYS: PROTO_KEYS,
+    publishProto: publishProto,
+    setPendingProtoMerge: setPendingProtoMerge,
+    renderScreenHtml: renderScreenHtml,
+    buildModuleNav: buildModuleNav,
+    currentScreenId: function () {
+      return currentScreenId;
+    }
+  };
+
+  /* Publish the seeded surface immediately so window.__proto always exists. */
+  publishProto("");
+})();
+
+/* Seed dataset for the P&ID platform prototype.
+   Classic script, ES5, no modules/network. Exposes window.PID_DATA.
+   Counts on `project` are derived from the arrays below so the workbench
+   stats stay consistent when the data changes. */
+(function () {
+  "use strict";
+
+  var pbs = [
+    {
+      id: "plant-01",
+      name: "炼油厂区",
+      level: "工厂",
+      children: [
+        {
+          id: "unit-cdu",
+          name: "常减压装置",
+          level: "装置",
+          children: [
+            { id: "cell-heat", name: "原油换热单元", level: "单元", children: [] },
+            { id: "cell-atm", name: "常压蒸馏单元", level: "单元", children: [] },
+            { id: "cell-vac", name: "减压蒸馏单元", level: "单元", children: [] }
+          ]
+        },
+        {
+          id: "unit-utility",
+          name: "公用工程装置",
+          level: "装置",
+          children: [
+            { id: "cell-fuel", name: "燃料气单元", level: "单元", children: [] }
+          ]
+        }
+      ]
+    }
+  ];
+
+  /* Ordered most-recently-modified first, matching the default list order
+     the drawing manager presents. Every node level owns at least one drawing
+     whose modifiedAt is newer than anything in its subtree, so selecting any
+     two different PBS nodes always yields a different first row. */
+  var drawings = [
+    {
+      id: "dwg-0000",
+      fileName: "PID-0000 厂区总览.dwg",
+      pbsId: "plant-01",
+      state: "已发布",
+      version: 3,
+      modifier: "张工",
+      modifiedAt: "2026-10-28 09:40",
+      objectCount: 6,
+      symbols: [
+        { kind: "管路", tag: "L-0001-01", name: "原油总管" },
+        { kind: "管路", tag: "L-0002-01", name: "常压渣油总管" },
+        { kind: "管路", tag: "L-0003-01", name: "减压渣油总管" },
+        { kind: "设备", tag: "V-0001", name: "污油罐" },
+        { kind: "仪表", tag: "PI-0001", name: "压力指示" },
+        { kind: "页间连接符", tag: "OC-0001", name: "原油来向接续" }
+      ]
+    },
+    {
+      id: "dwg-1000",
+      fileName: "PID-1000 常减压总流程图.dwg",
+      pbsId: "unit-cdu",
+      state: "已发布",
+      version: 2,
+      modifier: "李工",
+      modifiedAt: "2026-10-27 17:05",
+      objectCount: 8,
+      symbols: [
+        { kind: "设备", tag: "T-1001", name: "常压塔" },
+        { kind: "设备", tag: "T-2001", name: "减压塔" },
+        { kind: "设备", tag: "F-1001", name: "常压加热炉" },
+        { kind: "设备", tag: "E-1001", name: "原油换热器" },
+        { kind: "管路", tag: "L-1001-01", name: "原油进料管路" },
+        { kind: "管路", tag: "L-1002-01", name: "常压塔进料管路" },
+        { kind: "仪表", tag: "TI-1001", name: "温度指示" },
+        { kind: "仪表回路", tag: "TIC-1001", name: "常压塔温度回路" }
+      ]
+    },
+    {
+      id: "dwg-9000",
+      fileName: "PID-9000 公用工程流程图.dwg",
+      pbsId: "unit-utility",
+      state: "设计中",
+      version: 1,
+      modifier: "王工",
+      modifiedAt: "2026-10-26 14:20",
+      objectCount: 5,
+      symbols: [
+        { kind: "管路", tag: "L-9001-01", name: "蒸汽总管" },
+        { kind: "管路", tag: "L-9002-01", name: "氮气总管" },
+        { kind: "管路", tag: "L-9003-01", name: "工业水总管" },
+        { kind: "仪表", tag: "PI-9001", name: "压力指示" },
+        { kind: "仪表", tag: "TI-9001", name: "温度指示" }
+      ]
+    },
+    {
+      id: "dwg-1101",
+      fileName: "PID-1101 原油换热网络.dwg",
+      pbsId: "cell-heat",
+      state: "已校核",
+      version: 2,
+      modifier: "张工",
+      modifiedAt: "2026-10-25 16:42",
+      objectCount: 5,
+      symbols: [
+        { kind: "设备", tag: "P-1001", name: "离心泵" },
+        { kind: "设备", tag: "E-1001", name: "原油换热器" },
+        { kind: "设备", tag: "V-1001", name: "原油缓冲罐" },
+        { kind: "管路", tag: "L-1001-01", name: "原油进料管路" },
+        { kind: "仪表", tag: "TI-1001", name: "温度指示" }
+      ]
+    },
+    {
+      id: "dwg-1201",
+      fileName: "PID-1201 常压塔系统.dwg",
+      pbsId: "cell-atm",
+      state: "已校核",
+      version: 2,
+      modifier: "李工",
+      modifiedAt: "2026-10-25 10:30",
+      objectCount: 7,
+      symbols: [
+        { kind: "设备", tag: "T-1001", name: "常压塔" },
+        { kind: "设备", tag: "E-1101", name: "常顶冷凝器" },
+        { kind: "设备", tag: "V-1101", name: "常顶回流罐" },
+        { kind: "管路", tag: "L-1101-01", name: "常顶油气路" },
+        { kind: "管路", tag: "L-1102-01", name: "常顶回流管路" },
+        { kind: "仪表", tag: "TI-1101", name: "温度指示" },
+        { kind: "仪表回路", tag: "LIC-1101", name: "回流罐液位回路" }
+      ]
+    },
+    {
+      id: "dwg-2101",
+      fileName: "PID-2101 减压塔系统.dwg",
+      pbsId: "cell-vac",
+      state: "设计中",
+      version: 1,
+      modifier: "王工",
+      modifiedAt: "2026-10-24 15:47",
+      objectCount: 7,
+      symbols: [
+        { kind: "设备", tag: "T-2001", name: "减压塔" },
+        { kind: "设备", tag: "E-2101", name: "减顶冷凝器" },
+        { kind: "设备", tag: "V-2101", name: "减顶罐" },
+        { kind: "管路", tag: "L-2101-01", name: "减压塔进料管路" },
+        { kind: "管路", tag: "L-2102-01", name: "减底抽出管路" },
+        { kind: "仪表", tag: "TI-2101", name: "温度指示" },
+        { kind: "仪表", tag: "PI-2101", name: "压力指示" }
+      ]
+    },
+    {
+      id: "dwg-1102",
+      fileName: "PID-1102 原油泵区配管.dwg",
+      pbsId: "cell-heat",
+      state: "设计中",
+      version: 1,
+      modifier: "王工",
+      modifiedAt: "2026-10-24 11:18",
+      objectCount: 6,
+      symbols: [
+        { kind: "设备", tag: "P-1002", name: "原油泵" },
+        { kind: "设备", tag: "P-1003", name: "原油泵" },
+        { kind: "管路", tag: "L-1002-01", name: "原油泵出口管路" },
+        { kind: "管路", tag: "L-1003-01", name: "原油泵出口管路" },
+        { kind: "阀门", tag: "XV-1002", name: "切断阀" },
+        { kind: "仪表", tag: "PI-1002", name: "压力指示" }
+      ]
+    },
+    {
+      id: "dwg-1202",
+      fileName: "PID-1202 常顶回流系统.dwg",
+      pbsId: "cell-atm",
+      state: "设计中",
+      version: 1,
+      modifier: "张工",
+      modifiedAt: "2026-10-23 09:12",
+      objectCount: 5,
+      symbols: [
+        { kind: "设备", tag: "P-1101", name: "常顶回流泵" },
+        { kind: "管路", tag: "L-1103-01", name: "常顶回流管路" },
+        { kind: "管路", tag: "L-1104-01", name: "回流泵出口管路" },
+        { kind: "阀门", tag: "LV-1101", name: "液位调节阀" },
+        { kind: "仪表", tag: "LI-1101", name: "液位指示" }
+      ]
+    },
+    {
+      id: "dwg-2102",
+      fileName: "PID-2102 减顶抽空系统.dwg",
+      pbsId: "cell-vac",
+      state: "已发布",
+      version: 2,
+      modifier: "李工",
+      modifiedAt: "2026-10-22 13:55",
+      objectCount: 4,
+      symbols: [
+        { kind: "设备", tag: "V-2102", name: "减顶分液罐" },
+        { kind: "管路", tag: "L-2103-01", name: "减顶抽空管路" },
+        { kind: "管路", tag: "L-2104-01", name: "抽空排放管路" },
+        { kind: "仪表", tag: "PI-2102", name: "压力指示" }
+      ]
+    },
+    {
+      id: "dwg-9101",
+      fileName: "PID-9101 燃料气分配.dwg",
+      pbsId: "cell-fuel",
+      state: "设计中",
+      version: 1,
+      modifier: "王工",
+      modifiedAt: "2026-10-21 10:05",
+      objectCount: 5,
+      symbols: [
+        { kind: "设备", tag: "V-9101", name: "燃料气分液罐" },
+        { kind: "管路", tag: "L-9101-01", name: "燃料气总管" },
+        { kind: "管路", tag: "L-9102-01", name: "常压炉燃料气管路" },
+        { kind: "阀门", tag: "PV-9101", name: "压力调节阀" },
+        { kind: "仪表", tag: "PI-9101", name: "压力指示" }
+      ]
+    }
+  ];
+
+  var issues = [
+    {
+      id: "ISS-001",
+      severity: "高",
+      tag: "P-1001",
+      sheet: "PID-1101 原油换热网络.dwg",
+      text: "设备管口 N2 与出口管路 L-1001-01 未建立连接"
+    },
+    {
+      id: "ISS-002",
+      severity: "中",
+      tag: "TI-1101",
+      sheet: "PID-1201 常压塔系统.dwg",
+      text: "仪表未加入仪表回路 LIC-1101"
+    },
+    {
+      id: "ISS-003",
+      severity: "低",
+      tag: "L-2103-01",
+      sheet: "PID-2102 减顶抽空系统.dwg",
+      text: "管路缺少管道等级取值"
+    }
+  ];
+
+  var activity = [
+    {
+      time: "2026-10-28 09:40",
+      actor: "张工",
+      text: "发布 PID-0000 厂区总览.dwg 的第 3 版图纸版本快照"
+    },
+    {
+      time: "2026-10-27 17:05",
+      actor: "李工",
+      text: "将 PID-1000 常减压总流程图.dwg 更新至第 2 版并发布"
+    },
+    {
+      time: "2026-10-27 11:20",
+      actor: "王工",
+      text: "提交 PID-1101 原油换热网络.dwg 的设计规则检查待处理问题 3 项"
+    },
+    {
+      time: "2026-10-26 14:20",
+      actor: "王工",
+      text: "新建 PID-9000 公用工程流程图.dwg 并挂接至公用工程装置"
+    }
+  ];
+
+  var objectTotal = 0;
+  var i;
+  for (i = 0; i < drawings.length; i++) {
+    objectTotal += drawings[i].objectCount;
+  }
+
+  window.PID_DATA = {
+    project: {
+      name: "常减压装置改造项目",
+      drawings: drawings.length,
+      objects: objectTotal,
+      issues: issues.length
+    },
+    pbs: pbs,
+    drawings: drawings,
+    recentDrawings: drawings.slice(0, 4),
+    activity: activity,
+    issues: issues
+  };
+})();
+
+/* Workbench and drawing-management screens for the P&ID platform prototype.
+   Classic script, ES5, no modules/network. Requires the shell and data IIFEs
+   above. Registers renderers on window.PidScreens, which the shell consults
+   inside renderScreenHtml before falling back to the placeholder. */
+(function () {
+  "use strict";
+
+  var Shell = window.PidShell;
+
+  function esc(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  /* ---------- Data helpers ---------- */
+
+  function data() {
+    return (
+      window.PID_DATA || {
+        project: { name: "", drawings: 0, objects: 0, issues: 0 },
+        pbs: [],
+        drawings: [],
+        recentDrawings: [],
+        activity: [],
+        issues: []
+      }
+    );
+  }
+
+  function totalObjects() {
+    var list = data().drawings;
+    var total = 0;
+    for (var i = 0; i < list.length; i++) {
+      total += list[i].objectCount || 0;
+    }
+    return total;
+  }
+
+  function findPbsNode(id, nodes) {
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      if (node.id === id) {
+        return node;
+      }
+      var hit =
+        node.children && node.children.length
+          ? findPbsNode(id, node.children)
+          : null;
+      if (hit) {
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  function collectNodeIds(node, acc) {
+    acc[node.id] = true;
+    var children = node.children || [];
+    for (var i = 0; i < children.length; i++) {
+      collectNodeIds(children[i], acc);
+    }
+    return acc;
+  }
+
+  /* Drawings attached to the node itself plus every descendant node,
+     most recently modified first. */
+  function drawingsFor(pbsId) {
+    var node = findPbsNode(pbsId, data().pbs);
+    if (!node) {
+      return [];
+    }
+    var ids = collectNodeIds(node, {});
+    var all = data().drawings;
+    var list = [];
+    for (var i = 0; i < all.length; i++) {
+      if (ids[all[i].pbsId]) {
+        list.push(all[i]);
+      }
+    }
+    list.sort(function (a, b) {
+      if (a.modifiedAt < b.modifiedAt) {
+        return 1;
+      }
+      if (a.modifiedAt > b.modifiedAt) {
+        return -1;
+      }
+      return 0;
+    });
+    return list;
+  }
+
+  /* ---------- Shared screen frame ---------- */
+
+  function screenOpen(id, def) {
+    return (
+      '<section class="screen" data-screen="' +
+      esc(id) +
+      '">' +
+      '<header class="screen__header">' +
+      '<h1 class="screen__title" data-testid="screen-title">' +
+      esc(def.title) +
+      "</h1>" +
+      '<p class="screen__desc">' +
+      esc(def.desc) +
+      "</p>" +
+      "</header>"
+    );
+  }
+
+  /* ---------- Workbench ---------- */
+
+  function renderWorkbench(def) {
+    var d = data();
+    var stats = [
+      { label: "项目名", value: d.project.name },
+      { label: "图纸数", value: String(d.drawings.length) },
+      { label: "对象数", value: String(totalObjects()) },
+      { label: "待处理问题数", value: String(d.issues.length) }
+    ];
+
+    var html = screenOpen("workbench", def);
+
+    html += '<div class="wb-stats" data-testid="overview-stats">';
+    for (var i = 0; i < stats.length; i++) {
+      html +=
+        '<div class="wb-stat">' +
+        '<span class="wb-stat__label">' +
+        esc(stats[i].label) +
+        "</span>" +
+        '<span class="wb-stat__value">' +
+        esc(stats[i].value) +
+        "</span>" +
+        "</div>";
+    }
+    html += "</div>";
+
+    html += '<div class="wb-grid">';
+
+    html +=
+      '<section class="panel wb-panel">' +
+      '<h2 class="panel__title">最近图纸</h2>' +
+      '<ul class="wb-list" data-testid="recent-drawings">';
+    var recent = d.recentDrawings;
+    for (var r = 0; r < recent.length; r++) {
+      var g = recent[r];
+      html +=
+        '<li class="wb-row" data-drawing-id="' +
+        esc(g.id) +
+        '">' +
+        '<span class="wb-file">' +
+        esc(g.fileName) +
+        "</span>" +
+        '<span class="wb-badge">' +
+        esc(g.state) +
+        "</span>" +
+        '<span class="wb-rev">' +
+        esc(g.version) +
+        "</span>" +
+        '<span class="wb-user">' +
+        esc(g.modifier) +
+        "</span>" +
+        '<span class="wb-time">' +
+        esc(g.modifiedAt) +
+        "</span>" +
+        "</li>";
+    }
+    html += "</ul></section>";
+
+    html +=
+      '<section class="panel wb-panel">' +
+      '<h2 class="panel__title">最近动态</h2>' +
+      '<ul class="wb-list" data-testid="activity">';
+    var acts = d.activity;
+    for (var a = 0; a < acts.length; a++) {
+      html +=
+        '<li class="wb-activity-row">' +
+        '<span class="wb-activity__time">' +
+        esc(acts[a].time) +
+        "</span>" +
+        '<span class="wb-activity__actor">' +
+        esc(acts[a].actor) +
+        "</span>" +
+        '<span class="wb-activity__text">' +
+        esc(acts[a].text) +
+        "</span>" +
+        "</li>";
+    }
+    html += "</ul></section>";
+
+    html += "</div>";
+
+    html +=
+      '<section class="panel wb-panel" data-testid="quick-actions">' +
+      '<h2 class="panel__title">快捷入口</h2>' +
+      '<div class="quick-actions">' +
+      '<a class="quick-action" href="#/screen/drawings">进入图纸管理</a>' +
+      '<a class="quick-action" href="#/screen/editor">进入 P&amp;ID 编辑器</a>' +
+      '<a class="quick-action" href="#/screen/bom">查看材料清单</a>' +
+      "</div>" +
+      "</section>";
+
+    return html + "</section>";
+  }
+
+  /* ---------- Drawing management ---------- */
+
+  var drawingsState = { pbsId: null, drawingId: null };
+
+  function pbsTreeHtml(nodes) {
+    var html = "<ul>";
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      html +=
+        "<li>" +
+        '<button type="button" class="pbs-node' +
+        (node.id === drawingsState.pbsId ? " is-selected" : "") +
+        '" data-testid="pbs-node" data-pbs-id="' +
+        esc(node.id) +
+        '" data-level="' +
+        esc(node.level) +
+        '">' +
+        esc(node.name) +
+        "</button>";
+      if (node.children && node.children.length) {
+        html += pbsTreeHtml(node.children);
+      }
+      html += "</li>";
+    }
+    return html + "</ul>";
+  }
+
+  var PREVIEW_SVG =
+    '<svg class="dw-preview__svg" viewBox="0 0 240 140" role="img" aria-label="图纸示意">' +
+    "<style>" +
+    ".pid-frame{fill:none;stroke:var(--color-border-strong);stroke-width:var(--border-width);}" +
+    ".pid-line{fill:none;stroke:var(--color-accent);stroke-width:var(--border-width-thick);}" +
+    ".pid-eq{fill:var(--color-accent-soft);stroke:var(--color-accent);stroke-width:var(--border-width);}" +
+    ".pid-inst{fill:var(--color-panel);stroke:var(--color-warning);stroke-width:var(--border-width);}" +
+    ".pid-stem{fill:none;stroke:var(--color-warning);stroke-width:var(--border-width);}" +
+    ".pid-tag{fill:var(--color-text-inverse-muted);font-size:var(--font-size-xs);}" +
+    "</style>" +
+    '<rect class="pid-frame" x="4" y="4" width="232" height="132" rx="4"/>' +
+    '<rect class="pid-eq" x="16" y="55" width="44" height="60" rx="6"/>' +
+    '<text class="pid-tag" x="18" y="49">V-1001</text>' +
+    '<line class="pid-line" x1="60" y1="95" x2="88" y2="95"/>' +
+    '<path class="pid-eq" d="M88 87 L100 95 L88 103 Z"/>' +
+    '<path class="pid-eq" d="M112 87 L100 95 L112 103 Z"/>' +
+    '<line class="pid-line" x1="112" y1="95" x2="136" y2="95"/>' +
+    '<circle class="pid-eq" cx="150" cy="95" r="14"/>' +
+    '<path class="pid-eq" d="M144 89 L156 95 L144 101 Z"/>' +
+    '<text class="pid-tag" x="132" y="74">P-1001</text>' +
+    '<line class="pid-line" x1="164" y1="95" x2="212" y2="95"/>' +
+    '<path class="pid-eq" d="M212 87 L226 95 L212 103 Z"/>' +
+    '<text class="pid-tag" x="202" y="80">OC-1001</text>' +
+    '<circle class="pid-inst" cx="70" cy="52" r="9"/>' +
+    '<line class="pid-stem" x1="70" y1="61" x2="70" y2="95"/>' +
+    '<text class="pid-tag" x="60" y="40">TI-1001</text>' +
+    "</svg>";
+
+  function previewHtml(current, node) {
+    if (!current) {
+      return '<p class="dw-preview__empty">该节点下暂无图纸。</p>';
+    }
+    return (
+      '<div class="dw-preview__name">' +
+      esc(current.fileName) +
+      "</div>" +
+      '<dl class="dw-preview__meta">' +
+      "<div><dt>生命周期状态</dt><dd>" +
+      esc(current.state) +
+      "</dd></div>" +
+      "<div><dt>版本</dt><dd>" +
+      esc(current.version) +
+      "</dd></div>" +
+      "<div><dt>对象数</dt><dd>" +
+      esc(current.objectCount) +
+      "</dd></div>" +
+      "<div><dt>所在节点</dt><dd>" +
+      esc(node ? node.name : "") +
+      "</dd></div>" +
+      "</dl>" +
+      '<div class="dw-preview__thumb">' +
+      PREVIEW_SVG +
+      "</div>"
+    );
+  }
+
+  function renderDrawings(def) {
+    var d = data();
+    var node = drawingsState.pbsId
+      ? findPbsNode(drawingsState.pbsId, d.pbs)
+      : null;
+    if (!node) {
+      drawingsState.pbsId = d.pbs.length ? d.pbs[0].id : null;
+      node = drawingsState.pbsId
+        ? findPbsNode(drawingsState.pbsId, d.pbs)
+        : null;
+    }
+
+    var list = node ? drawingsFor(node.id) : [];
+    var current = null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === drawingsState.drawingId) {
+        current = list[i];
+        break;
+      }
+    }
+    if (!current) {
+      current = list.length ? list[0] : null;
+      drawingsState.drawingId = current ? current.id : null;
+    }
+
+    if (Shell && typeof Shell.setPendingProtoMerge === "function") {
+      Shell.setPendingProtoMerge("drawings", {
+        symbolCount: current ? current.objectCount : 0
+      });
+    }
+
+    var html = screenOpen("drawings", def);
+
+    html +=
+      '<div class="dw-toolbar" data-testid="drawings-toolbar" role="toolbar" aria-label="图纸操作">' +
+      '<button type="button" class="dw-btn dw-btn--primary">新建图纸</button>' +
+      '<button type="button" class="dw-btn">导入</button>' +
+      '<button type="button" class="dw-btn">复制</button>' +
+      '<button type="button" class="dw-btn">移动</button>' +
+      '<button type="button" class="dw-btn">权限</button>' +
+      '<button type="button" class="dw-btn">版本比对</button>' +
+      "</div>";
+
+    html += '<div class="dw-layout">';
+
+    html +=
+      '<aside class="panel dw-tree" data-testid="pbs-tree">' +
+      '<h2 class="panel__title">PBS 层级</h2>' +
+      pbsTreeHtml(d.pbs) +
+      "</aside>";
+
+    html += '<div class="dw-main">';
+
+    html +=
+      '<section class="panel dw-list">' +
+      '<h2 class="panel__title">图纸清单</h2>' +
+      '<div class="dw-list-scroll">' +
+      '<table class="dw-table" data-testid="drawing-list">' +
+      '<colgroup><col class="col-file"><col><col><col><col></colgroup>' +
+      "<thead><tr>" +
+      "<th>文件名</th><th>状态</th><th>版本</th><th>修改人</th><th>修改时间</th>" +
+      "</tr></thead><tbody>";
+    for (var r = 0; r < list.length; r++) {
+      var g = list[r];
+      html +=
+        '<tr class="dw-row' +
+        (current && g.id === current.id ? " is-selected" : "") +
+        '" data-drawing-id="' +
+        esc(g.id) +
+        '" data-pbs-id="' +
+        esc(g.pbsId) +
+        '">' +
+        "<td>" +
+        esc(g.fileName) +
+        "</td>" +
+        "<td>" +
+        esc(g.state) +
+        "</td>" +
+        "<td>" +
+        esc(g.version) +
+        "</td>" +
+        "<td>" +
+        esc(g.modifier) +
+        "</td>" +
+        "<td>" +
+        esc(g.modifiedAt) +
+        "</td>" +
+        "</tr>";
+    }
+    html += "</tbody></table></div></section>";
+
+    html +=
+      '<section class="panel dw-preview" data-testid="drawing-preview">' +
+      '<h2 class="panel__title">图纸预览</h2>' +
+      previewHtml(current, node) +
+      "</section>";
+
+    html += "</div></div>";
+
+    return html + "</section>";
+  }
+
+  /* ---------- Delegated interaction ---------- */
+
+  function closestEl(el, selector) {
+    var matcher =
+      el && (el.matches || el.msMatchesSelector || el.webkitMatchesSelector);
+    while (el && el.nodeType === 1) {
+      if (matcher && matcher.call(el, selector)) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function rerenderDrawings() {
+    var body = document.querySelector('[data-testid="screen-body"]');
+    if (!body || !Shell) {
+      return;
+    }
+    body.innerHTML = Shell.renderScreenHtml("drawings");
+    Shell.publishProto("drawings");
+  }
+
+  document.addEventListener("click", function (event) {
+    var target = event.target || event.srcElement;
+    if (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+    var node = closestEl(target, '[data-testid="pbs-node"]');
+    if (node) {
+      var pbsId = node.getAttribute("data-pbs-id");
+      if (pbsId && pbsId !== drawingsState.pbsId) {
+        drawingsState.pbsId = pbsId;
+        drawingsState.drawingId = null;
+        rerenderDrawings();
+      }
+      return;
+    }
+    var row = closestEl(
+      target,
+      '[data-testid="drawing-list"] tr[data-drawing-id]'
+    );
+    if (row) {
+      var drawingId = row.getAttribute("data-drawing-id");
+      if (drawingId && drawingId !== drawingsState.drawingId) {
+        drawingsState.drawingId = drawingId;
+        rerenderDrawings();
+      }
+    }
+  });
+
+  window.PidScreens = {
+    workbench: renderWorkbench,
+    drawings: renderDrawings
+  };
+})();

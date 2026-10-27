@@ -164,3 +164,106 @@ def test_syntax_tokens_css_defines_at_least_twelve_custom_properties():
         "expected at least 12 custom properties, found %d: %s"
         % (len(names), sorted(names))
     )
+
+
+# ---------------------------------------------------------------------------
+# Screen-level static contract (VAL-PROTO-003 / VAL-PROTO-004)
+#
+# These read the shipped sources, so a screen that loses a required block or
+# renames a contractual column fails here without a browser. The rendered
+# behaviour itself is proven with browser.mjs; this pins the strings.
+# ---------------------------------------------------------------------------
+
+SCREENS_JS = ASSETS / "screens.js"
+
+# The exact BOM-independent column set the drawings list must carry, in order.
+DRAWING_COLUMNS = ["文件名", "状态", "版本", "修改人", "修改时间"]
+# The exact toolbar labels, in order.
+DRAWINGS_TOOLBAR = ["新建图纸", "导入", "复制", "移动", "权限", "版本比对"]
+# Blocks the workbench must expose.
+WORKBENCH_TESTIDS = [
+    "overview-stats",
+    "recent-drawings",
+    "activity",
+    "quick-actions",
+]
+DRAWINGS_TESTIDS = [
+    "pbs-tree",
+    "drawing-list",
+    "drawing-preview",
+    "drawings-toolbar",
+    "pbs-node",
+]
+
+
+def _screens_text() -> str:
+    assert SCREENS_JS.is_file(), "missing screen bundle: " + str(SCREENS_JS)
+    return SCREENS_JS.read_text(encoding="utf-8")
+
+
+def test_syntax_workbench_exposes_its_four_blocks():
+    text = _screens_text()
+    missing = [t for t in WORKBENCH_TESTIDS if t not in text]
+    assert missing == [], "workbench is missing blocks: %s" % missing
+
+
+def test_syntax_drawings_exposes_tree_list_preview_and_toolbar():
+    text = _screens_text()
+    missing = [t for t in DRAWINGS_TESTIDS if t not in text]
+    assert missing == [], "drawings screen is missing blocks: %s" % missing
+
+
+def test_syntax_drawings_column_labels_are_exact_and_ordered():
+    text = _screens_text()
+    # The header row is emitted as one contiguous run of <th> cells, so matching
+    # the run proves both membership and order in one step.
+    expected = "".join("<th>%s</th>" % name for name in DRAWING_COLUMNS)
+    assert expected in text, (
+        "the drawing-list header is not the ordered run %r; the bundle has %r"
+        % (expected, re.findall(r"<th>[^<]*</th>", text))
+    )
+
+
+def test_syntax_drawings_toolbar_labels_are_exact_and_ordered():
+    text = _screens_text()
+    labels = re.findall(
+        r"<button[^>]*>([^<]+)</button>", text
+    )
+    # Restrict to the drawings toolbar block so unrelated buttons cannot satisfy
+    # the check.
+    start = text.find('data-testid="drawings-toolbar"')
+    assert start >= 0, "the drawings toolbar block is missing"
+    block = text[start: text.find("</div>", start)]
+    in_block = re.findall(r"<button[^>]*>([^<]+)</button>", block)
+    assert in_block == DRAWINGS_TOOLBAR, (
+        "the toolbar labels are %r; expected %r (all buttons in bundle: %r)"
+        % (in_block, DRAWINGS_TOOLBAR, labels)
+    )
+
+
+def test_syntax_seed_data_contains_the_p1001_equipment_tag():
+    """VAL-PROTO-004 and later cross-screen flows depend on this seed tag."""
+    text = _screens_text()
+    assert "P-1001" in text, "the seed data no longer carries the tag P-1001"
+    # It must be a 设备 symbol, not a bare string in a comment.
+    match = re.search(r"tag:\s*[\"']P-1001[\"']", text)
+    assert match, "P-1001 is not attached to a symbol object"
+    window = text[max(0, match.start() - 200): match.end() + 200]
+    assert "设备" in window, (
+        "P-1001 is not seeded as a 设备 symbol; nearby text was: %r" % window
+    )
+
+
+def test_syntax_no_hard_coded_hex_outside_tokens():
+    offenders = []
+    for path in [INDEX, SCREENS_JS] + sorted(ASSETS.glob("*.css")):
+        if path.name == "tokens.css":
+            continue
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if re.search(r"#[0-9a-fA-F]{3,8}\b", line):
+                offenders.append("%s:%d" % (path.name, lineno))
+    assert offenders == [], (
+        "hard-coded hex colours outside tokens.css: %s" % offenders
+    )
