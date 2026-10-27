@@ -1453,3 +1453,747 @@
   window.PidScreens = window.PidScreens || {};
   window.PidScreens.palette = renderPalette;
 })();
+
+/* P&ID editor screen for the P&ID platform prototype.
+   Classic script, ES5, no modules/network. Extends window.PidScreens without
+   replacing the renderers registered above. */
+(function () {
+  "use strict";
+
+  var Shell = window.PidShell;
+
+  function esc(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  /* In-editor symbol catalogue. The palette screen keeps its symbol table
+     private to its own IIFE, so the editor carries the trimmed subset it
+     can place on the canvas. Category sizes are all different so switching
+     the in-palette page tabs always changes the visible item count. */
+  var ED_CATEGORIES = [
+    { id: "equipment", label: "设备" },
+    { id: "valve", label: "阀门" },
+    { id: "instrument", label: "仪表" },
+    { id: "fitting", label: "管件" }
+  ];
+
+  var ED_SYMBOLS = [
+    { name: "离心泵", category: "equipment", shape: "pump" },
+    { name: "立式容器", category: "equipment", shape: "vessel" },
+    { name: "换热器", category: "equipment", shape: "exchanger" },
+    { name: "加热炉", category: "equipment", shape: "furnace" },
+    { name: "塔器", category: "equipment", shape: "tower" },
+    { name: "储罐", category: "equipment", shape: "tank" },
+    { name: "闸阀", category: "valve", shape: "gate-valve" },
+    { name: "截止阀", category: "valve", shape: "globe-valve" },
+    { name: "球阀", category: "valve", shape: "ball-valve" },
+    { name: "调节阀", category: "valve", shape: "control-valve" },
+    { name: "止回阀", category: "valve", shape: "check-valve" },
+    { name: "压力指示", category: "instrument", shape: "instrument" },
+    { name: "温度指示", category: "instrument", shape: "instrument" },
+    { name: "流量指示", category: "instrument", shape: "instrument" },
+    { name: "液位指示", category: "instrument", shape: "instrument" },
+    { name: "弯头", category: "fitting", shape: "elbow" },
+    { name: "三通", category: "fitting", shape: "tee" },
+    { name: "大小头", category: "fitting", shape: "reducer" },
+    { name: "法兰", category: "fitting", shape: "flange" },
+    { name: "过滤器", category: "fitting", shape: "filter" }
+  ];
+
+  /* Stroke geometry on the shared 48x48 grid, same convention as the
+     palette screen: currentColor strokes, border tokens for width.
+     Unknown shapes fall back to the generic outline so a glyph is never
+     blank and this function never throws. */
+  var ED_SHAPES = {
+    "generic":
+      '<rect x="10" y="10" width="28" height="28" rx="4"/>' +
+      '<line x1="10" y1="24" x2="38" y2="24"/>',
+    "pump":
+      '<circle cx="24" cy="24" r="13"/>' +
+      '<path d="M18 18 L32 24 L18 30 Z"/>',
+    "vessel":
+      '<rect x="16" y="6" width="16" height="32" rx="8"/>' +
+      '<line x1="18" y1="38" x2="18" y2="44"/>' +
+      '<line x1="30" y1="38" x2="30" y2="44"/>',
+    "exchanger":
+      '<rect x="10" y="16" width="28" height="16"/>' +
+      '<path d="M14 28 L20 20 L26 28 L32 20"/>',
+    "furnace":
+      '<rect x="12" y="8" width="24" height="32"/>' +
+      '<path d="M24 32 C20 28 22 24 24 19 C26 24 28 28 24 32 Z"/>',
+    "tower":
+      '<rect x="18" y="6" width="12" height="32"/>' +
+      '<line x1="18" y1="16" x2="30" y2="16"/>' +
+      '<line x1="18" y1="25" x2="30" y2="25"/>' +
+      '<line x1="20" y1="38" x2="20" y2="43"/>' +
+      '<line x1="28" y1="38" x2="28" y2="43"/>',
+    "tank":
+      '<path d="M10 15 L24 8 L38 15"/>' +
+      '<line x1="10" y1="15" x2="10" y2="38"/>' +
+      '<line x1="38" y1="15" x2="38" y2="38"/>' +
+      '<line x1="10" y1="38" x2="38" y2="38"/>',
+    "gate-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<line x1="24" y1="12" x2="24" y2="36"/>' +
+      '<line x1="18" y1="12" x2="30" y2="12"/>',
+    "globe-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<circle cx="24" cy="24" r="4"/>',
+    "ball-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<circle cx="24" cy="24" r="5"/>' +
+      '<line x1="19" y1="24" x2="29" y2="24"/>',
+    "control-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<line x1="24" y1="24" x2="24" y2="14"/>' +
+      '<path d="M18 14 A6 6 0 0 1 30 14 Z"/>',
+    "check-valve":
+      '<path d="M12 18 L26 24 L12 30 Z"/>' +
+      '<line x1="30" y1="17" x2="30" y2="31"/>' +
+      '<line x1="36" y1="17" x2="36" y2="31"/>',
+    "instrument":
+      '<circle cx="24" cy="24" r="12"/>' +
+      '<line x1="12" y1="24" x2="36" y2="24"/>',
+    "elbow":
+      '<path d="M6 20 L22 20 A8 8 0 0 1 30 28 L30 42"/>',
+    "tee":
+      '<line x1="6" y1="20" x2="42" y2="20"/>' +
+      '<line x1="24" y1="20" x2="24" y2="38"/>' +
+      '<line x1="20" y1="38" x2="28" y2="38"/>',
+    "reducer":
+      '<path d="M8 16 L30 21 L30 27 L8 32 Z"/>' +
+      '<line x1="6" y1="24" x2="8" y2="24"/>' +
+      '<line x1="30" y1="24" x2="42" y2="24"/>',
+    "flange":
+      '<line x1="6" y1="24" x2="42" y2="24"/>' +
+      '<line x1="19" y1="15" x2="19" y2="33"/>' +
+      '<line x1="29" y1="15" x2="29" y2="33"/>',
+    "filter":
+      '<line x1="6" y1="18" x2="42" y2="18"/>' +
+      '<path d="M18 18 L26 38 L34 18"/>'
+  };
+
+  function glyphInner(shape) {
+    return Object.prototype.hasOwnProperty.call(ED_SHAPES, shape)
+      ? ED_SHAPES[shape]
+      : ED_SHAPES.generic;
+  }
+
+  function editorDrawSymbol(shape) {
+    return (
+      '<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" aria-hidden="true">' +
+      glyphInner(shape) +
+      "</svg>"
+    );
+  }
+
+  /* Property templates per object kind: the data elements the property
+     panel lists for a selected instance and which ones are required. */
+  var PROP_DEFS = {
+    equipment: [
+      { name: "位号", required: true },
+      { name: "名称", required: true },
+      { name: "设计压力", required: true },
+      { name: "设计温度", required: false },
+      { name: "公称直径", required: false },
+      { name: "管道等级", required: false }
+    ],
+    valve: [
+      { name: "位号", required: true },
+      { name: "名称", required: true },
+      { name: "公称直径", required: false },
+      { name: "压力等级", required: false },
+      { name: "开度", required: false }
+    ],
+    instrument: [
+      { name: "位号", required: true },
+      { name: "名称", required: true },
+      { name: "量程", required: false },
+      { name: "精度等级", required: false }
+    ],
+    fitting: [
+      { name: "位号", required: true },
+      { name: "名称", required: true },
+      { name: "公称直径", required: false }
+    ]
+  };
+
+  function makeSymbol(tag, kind, shape, x, y, name, extra) {
+    var props = { "位号": tag, "名称": name };
+    var defs = PROP_DEFS[kind] || [];
+    for (var i = 0; i < defs.length; i++) {
+      var n = defs[i].name;
+      if (!Object.prototype.hasOwnProperty.call(props, n)) {
+        props[n] =
+          extra && Object.prototype.hasOwnProperty.call(extra, n)
+            ? extra[n]
+            : "";
+      }
+    }
+    return { tag: tag, kind: kind, shape: shape, x: x, y: y, props: props };
+  }
+
+  /* Canvas seed: six placed instances. */
+  var symbols = [
+    makeSymbol("P-1001", "equipment", "pump", 120, 140, "离心泵", {
+      "设计压力": "1.6 MPa",
+      "设计温度": "120 ℃",
+      "公称直径": "DN80",
+      "管道等级": "CL150"
+    }),
+    makeSymbol("T-1001", "equipment", "tower", 300, 90, "常压塔", {
+      "设计压力": "0.35 MPa",
+      "设计温度": "360 ℃",
+      "公称直径": "DN2600",
+      "管道等级": "CL150"
+    }),
+    makeSymbol("E-1001", "equipment", "exchanger", 470, 140, "原油换热器", {
+      "设计压力": "2.0 MPa",
+      "设计温度": "220 ℃",
+      "公称直径": "DN150",
+      "管道等级": "CL300"
+    }),
+    makeSymbol("V-1001", "equipment", "vessel", 630, 140, "原油缓冲罐", {
+      "设计压力": "1.0 MPa",
+      "设计温度": "80 ℃",
+      "公称直径": "DN1800",
+      "管道等级": "CL150"
+    }),
+    makeSymbol("V-2001", "valve", "gate-valve", 470, 280, "闸阀", {
+      "公称直径": "DN80",
+      "压力等级": "CL150",
+      "开度": "100%"
+    }),
+    makeSymbol("PI-1001", "instrument", "instrument", 300, 300, "压力指示", {
+      "量程": "0~1.6 MPa",
+      "精度等级": "1.6"
+    })
+  ];
+
+  /* Pipeline routes: every polyline keeps at least three vertices so the
+     geometry is a real routed line, never a single straight segment. */
+  var pipelines = [
+    { tag: "L-1001-01", points: "146,140 296,140 296,155 446,155", lx: 262, ly: 132 },
+    { tag: "L-1002-01", points: "494,140 550,140 550,155 606,155", lx: 516, ly: 132 },
+    { tag: "L-1003-01", points: "300,114 300,238 470,238 470,256", lx: 308, ly: 180 }
+  ];
+
+  var state = {
+    selectedTag: "P-1001",
+    paletteCategory: "equipment",
+    paletteKeyword: "",
+    hint: "就绪"
+  };
+
+  var addedCount = 0;
+
+  function findSymbol(tag) {
+    for (var i = 0; i < symbols.length; i++) {
+      if (symbols[i].tag === tag) {
+        return symbols[i];
+      }
+    }
+    return null;
+  }
+
+  /* Property panel payload for one instance: exactly {name, value, required}
+     per row, following the kind's template order. */
+  function propsFor(tag) {
+    var sym = findSymbol(tag);
+    var defs = sym ? PROP_DEFS[sym.kind] || [] : [];
+    var out = [];
+    for (var i = 0; i < defs.length; i++) {
+      var n = defs[i].name;
+      var v;
+      if (
+        sym &&
+        sym.props &&
+        Object.prototype.hasOwnProperty.call(sym.props, n)
+      ) {
+        v = sym.props[n];
+      } else if (n === "位号") {
+        v = tag;
+      } else {
+        v = "";
+      }
+      out.push({ name: n, value: String(v), required: !!defs[i].required });
+    }
+    return out;
+  }
+
+  /* Next free tag under a kind's prefix. The tag-rules screen may override
+     prefix/start/step through window.__tagRuleConfig; otherwise the built-in
+     defaults apply. The highest numeric suffix already on the canvas wins,
+     so numbering really advances past existing tags. */
+  function nextTag(kind) {
+    var cfg = window.__tagRuleConfig || {};
+    var conf = cfg[kind] || null;
+    var prefix =
+      conf && conf.prefix
+        ? conf.prefix
+        : kind === "equipment"
+          ? "P"
+          : kind === "valve"
+            ? "V"
+            : kind === "instrument"
+              ? "PI"
+              : "F";
+    var start =
+      conf && typeof conf.start === "number"
+        ? conf.start
+        : kind === "equipment"
+          ? 1001
+          : kind === "valve"
+            ? 2001
+            : kind === "instrument"
+              ? 1001
+              : 1;
+    var step = conf && typeof conf.step === "number" ? conf.step : 1;
+    var max = 0;
+    var re = new RegExp("^" + prefix + "-(\\d+)$");
+    for (var i = 0; i < symbols.length; i++) {
+      var m = re.exec(symbols[i].tag);
+      if (m) {
+        var n = parseInt(m[1], 10);
+        if (n > max) {
+          max = n;
+        }
+      }
+    }
+    var next = max > 0 ? max + step : start;
+    return prefix + "-" + next;
+  }
+
+  /* Fixed drop-point sequence for new instances so repeated placements
+     stagger across the canvas instead of stacking on one spot. */
+  function spotFor(index) {
+    var col = index % 7;
+    var row = (index - col) / 7;
+    return { x: 120 + col * 100, y: 340 - row * 80 };
+  }
+
+  /* Symbols of the active palette category filtered by the search keyword:
+     case-insensitive substring match on the Chinese name. */
+  function paletteItems() {
+    var items = [];
+    var kw = String(state.paletteKeyword || "").toLowerCase();
+    for (var i = 0; i < ED_SYMBOLS.length; i++) {
+      var s = ED_SYMBOLS[i];
+      if (s.category !== state.paletteCategory) { continue; }
+      if (kw && s.name.toLowerCase().indexOf(kw) === -1) { continue; }
+      items.push(s);
+    }
+    return items;
+  }
+
+  /* ---------- Rendering ---------- */
+
+  var RIBBON_TABS = ["常用", "工具", "显示", "绘图", "注释", "帮助"];
+
+  function ribbonHtml() {
+    var html =
+      '<div class="ed-ribbon" data-testid="ribbon" role="tablist" aria-label="功能区">';
+    for (var i = 0; i < RIBBON_TABS.length; i++) {
+      html +=
+        '<button type="button" class="ed-ribbon__tab' +
+        (i === 0 ? " is-active" : "") +
+        '" role="tab" aria-selected="' +
+        (i === 0 ? "true" : "false") +
+        '">' +
+        esc(RIBBON_TABS[i]) +
+        "</button>";
+    }
+    return html + "</div>";
+  }
+
+  function palettePanelHtml(items) {
+    var html =
+      '<aside class="panel ed-palette" data-testid="palette">' +
+      '<h2 class="panel__title">符号调色板</h2>' +
+      '<div class="ed-palette__tabs" role="tablist">';
+    for (var c = 0; c < ED_CATEGORIES.length; c++) {
+      var cat = ED_CATEGORIES[c];
+      var on = cat.id === state.paletteCategory;
+      html +=
+        '<button type="button" class="ed-palette__tab' +
+        (on ? " is-active" : "") +
+        '" data-testid="editor-palette-tab" data-category="' +
+        esc(cat.id) +
+        '" role="tab" aria-selected="' +
+        (on ? "true" : "false") +
+        '">' +
+        esc(cat.label) +
+        "</button>";
+    }
+    html += "</div>";
+    html +=
+      '<input class="field ed-palette__search" data-testid="editor-palette-search"' +
+      ' type="search" placeholder="搜索符号名称" aria-label="搜索符号" value="' +
+      esc(state.paletteKeyword) +
+      '">';
+    html += '<div class="ed-palette__grid" data-testid="editor-palette-grid">';
+    for (var i = 0; i < items.length; i++) {
+      var s = items[i];
+      html +=
+        '<button type="button" class="ed-palette__item" data-testid="editor-palette-item"' +
+        ' data-symbol-name="' +
+        esc(s.name) +
+        '" data-symbol-kind="' +
+        esc(s.category) +
+        '" data-shape="' +
+        esc(s.shape) +
+        '" title="' +
+        esc(s.name) +
+        '">' +
+        '<span class="ed-palette__thumb">' +
+        editorDrawSymbol(s.shape) +
+        "</span>" +
+        '<span class="ed-palette__name">' +
+        esc(s.name) +
+        "</span>" +
+        "</button>";
+    }
+    return html + "</div></aside>";
+  }
+
+  /* Canvas markup: pipelines first so symbol instances paint on top. */
+  function canvasHtml(sel) {
+    var html =
+      '<section class="panel ed-canvas-panel">' +
+      '<h2 class="panel__title">绘图画布</h2>' +
+      '<div class="ed-canvas__scroll">' +
+      '<svg class="ed-canvas" data-testid="canvas" viewBox="0 0 820 420" role="img" aria-label="P&amp;ID 绘图画布">';
+    for (var p = 0; p < pipelines.length; p++) {
+      var pl = pipelines[p];
+      html +=
+        '<polyline class="ed-pipe" data-testid="canvas-pipeline" data-pipeline-tag="' +
+        esc(pl.tag) +
+        '" points="' +
+        pl.points +
+        '"/>' +
+        '<text class="ed-pipe__tag" x="' +
+        pl.lx +
+        '" y="' +
+        pl.ly +
+        '">' +
+        esc(pl.tag) +
+        "</text>";
+    }
+    for (var i = 0; i < symbols.length; i++) {
+      var s = symbols[i];
+      html +=
+        '<g data-testid="canvas-symbol" data-symbol-tag="' +
+        esc(s.tag) +
+        '" data-symbol-kind="' +
+        esc(s.kind) +
+        '" transform="translate(' +
+        s.x +
+        "," +
+        s.y +
+        ')" class="ed-sym' +
+        (s.tag === sel ? " is-selected" : "") +
+        '">' +
+        '<rect class="ed-sym__hit" x="-30" y="-30" width="60" height="92"/>' +
+        '<g class="ed-sym__glyph" transform="translate(-24,-24)">' +
+        glyphInner(s.shape) +
+        "</g>" +
+        '<text class="ed-sym__tag" x="0" y="58" text-anchor="middle">' +
+        esc(s.tag) +
+        "</text>" +
+        "</g>";
+    }
+    return html + "</svg></div></section>";
+  }
+
+  function propsHtml(sel, selProps) {
+    var html =
+      '<aside class="panel ed-props" data-testid="property-panel">' +
+      '<h2 class="panel__title">特性</h2>' +
+      '<p class="ed-props__tag" data-testid="selected-tag">' +
+      esc(sel) +
+      "</p>" +
+      '<table class="ed-props__table"><tbody>';
+    for (var i = 0; i < selProps.length; i++) {
+      var p = selProps[i];
+      html +=
+        '<tr class="ed-props__row" data-testid="prop-row" data-prop-name="' +
+        esc(p.name) +
+        '">' +
+        '<th scope="row">' +
+        esc(p.name) +
+        (p.required ? '<span class="ed-props__req">*</span>' : "") +
+        "</th>" +
+        '<td><input class="field ed-props__value" data-testid="prop-value" data-prop-name="' +
+        esc(p.name) +
+        '" value="' +
+        esc(p.value) +
+        '"></td>' +
+        "</tr>";
+    }
+    return html + "</tbody></table></aside>";
+  }
+
+  function statusbarHtml() {
+    return (
+      '<div class="ed-statusbar" data-testid="statusbar">' +
+      '<span class="ed-statusbar__coords" data-testid="cursor-coords">X 0 · Y 0</span>' +
+      '<input class="field ed-statusbar__command" data-testid="command-input" type="text" placeholder="输入命令" aria-label="命令输入">' +
+      '<span class="ed-statusbar__hint" data-testid="status-hint">' +
+      esc(state.hint || "就绪") +
+      "</span>" +
+      "</div>"
+    );
+  }
+
+  function renderEditor(def) {
+    var sel = state.selectedTag;
+    if (!findSymbol(sel)) {
+      sel = symbols.length ? symbols[0].tag : "";
+      state.selectedTag = sel;
+    }
+    var selProps = propsFor(sel);
+    var items = paletteItems();
+
+    if (Shell && typeof Shell.setPendingProtoMerge === "function") {
+      Shell.setPendingProtoMerge("editor", {
+        symbolCount: symbols.length,
+        selectedTag: sel,
+        selectedProps: selProps,
+        paletteItemCount: items.length
+      });
+    }
+
+    var html =
+      '<section class="screen screen--editor" data-screen="editor">' +
+      '<header class="screen__header">' +
+      '<h1 class="screen__title" data-testid="screen-title">' +
+      esc(def.title) +
+      "</h1>" +
+      '<p class="screen__desc">' +
+      esc(def.desc) +
+      "</p>" +
+      "</header>";
+
+    html += ribbonHtml();
+    html += '<div class="ed-body">';
+    html += palettePanelHtml(items);
+    html += canvasHtml(sel);
+    html += propsHtml(sel, selProps);
+    html += "</div>";
+    html += statusbarHtml();
+    return html + "</section>";
+  }
+
+  /* ---------- Delegated interaction ---------- */
+
+  function closestEl(el, selector) {
+    var matcher =
+      el && (el.matches || el.msMatchesSelector || el.webkitMatchesSelector);
+    while (el && el.nodeType === 1) {
+      if (matcher && matcher.call(el, selector)) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  /* Guards every delegated listener so input on other screens is never
+     mistaken for editor input. */
+  function editorActive() {
+    if (
+      Shell &&
+      typeof Shell.currentScreenId === "function" &&
+      Shell.currentScreenId() === "editor"
+    ) {
+      return true;
+    }
+    return !!document.querySelector('[data-screen="editor"]');
+  }
+
+  function rerenderEditor(refocusSearch) {
+    var body = document.querySelector('[data-testid="screen-body"]');
+    if (!body || !Shell) {
+      return;
+    }
+    body.innerHTML = Shell.renderScreenHtml("editor");
+    Shell.publishProto("editor");
+    if (refocusSearch) {
+      var input = body.querySelector('[data-testid="editor-palette-search"]');
+      if (input) {
+        input.focus();
+        var len = (input.value || "").length;
+        if (input.setSelectionRange) {
+          try {
+            input.setSelectionRange(len, len);
+          } catch (err) {
+            /* caret restore is best-effort */
+          }
+        }
+      }
+    }
+  }
+
+  function addInstance(name, kind, shape) {
+    var tag = nextTag(kind);
+    var spot = spotFor(addedCount);
+    addedCount += 1;
+    symbols.push(makeSymbol(tag, kind, shape, spot.x, spot.y, name, null));
+    state.selectedTag = tag;
+    state.hint = "已放置 " + tag;
+  }
+
+  document.addEventListener("click", function (event) {
+    if (!editorActive()) {
+      return;
+    }
+    var target = event.target || event.srcElement;
+    if (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+
+    var ptab = closestEl(target, '[data-testid="editor-palette-tab"]');
+    if (ptab) {
+      var cat = ptab.getAttribute("data-category");
+      if (cat && cat !== state.paletteCategory) {
+        state.paletteCategory = cat;
+        state.paletteKeyword = "";
+        state.hint = "就绪";
+        rerenderEditor(false);
+      }
+      return;
+    }
+
+    var item = closestEl(target, '[data-testid="editor-palette-item"]');
+    if (item) {
+      addInstance(
+        item.getAttribute("data-symbol-name") || "",
+        item.getAttribute("data-symbol-kind") || "equipment",
+        item.getAttribute("data-shape") || "generic"
+      );
+      rerenderEditor(false);
+      return;
+    }
+
+    var symEl = closestEl(target, '[data-testid="canvas-symbol"]');
+    if (symEl) {
+      var picked = symEl.getAttribute("data-symbol-tag");
+      if (picked && picked !== state.selectedTag) {
+        state.selectedTag = picked;
+        state.hint = "已选中 " + picked;
+        rerenderEditor(false);
+      }
+      return;
+    }
+
+    /* Ribbon page tabs are visual only: they swap is-active in place and
+       never re-render the canvas, so editing state stays intact. */
+    var rtab = closestEl(target, ".ed-ribbon__tab");
+    if (rtab) {
+      var ribbon = closestEl(rtab, '[data-testid="ribbon"]');
+      if (ribbon) {
+        var tabs = ribbon.querySelectorAll(".ed-ribbon__tab");
+        for (var i = 0; i < tabs.length; i++) {
+          var on = tabs[i] === rtab;
+          if (on) {
+            tabs[i].classList.add("is-active");
+          } else {
+            tabs[i].classList.remove("is-active");
+          }
+          tabs[i].setAttribute("aria-selected", on ? "true" : "false");
+        }
+      }
+    }
+  });
+
+  document.addEventListener("input", function (event) {
+    if (!editorActive()) {
+      return;
+    }
+    var target = event.target || event.srcElement;
+    if (!target || target.nodeType !== 1) {
+      return;
+    }
+
+    var search = closestEl(target, '[data-testid="editor-palette-search"]');
+    if (search) {
+      state.paletteKeyword = search.value || "";
+      rerenderEditor(true);
+      return;
+    }
+
+    /* Property edits update the in-memory instance and the test surface
+       only; re-rendering here would steal the input focus mid-typing. */
+    var pv = closestEl(target, '[data-testid="prop-value"]');
+    if (!pv) {
+      return;
+    }
+    var propName = pv.getAttribute("data-prop-name");
+    var sym = findSymbol(state.selectedTag);
+    if (!sym || !propName) {
+      return;
+    }
+    var oldTag = sym.tag;
+    sym.props[propName] = pv.value;
+    if (propName === "位号" && pv.value !== oldTag) {
+      sym.tag = pv.value;
+      state.selectedTag = pv.value;
+      var gs = document.querySelectorAll('[data-testid="canvas-symbol"]');
+      for (var k = 0; k < gs.length; k++) {
+        if (gs[k].getAttribute("data-symbol-tag") === oldTag) {
+          gs[k].setAttribute("data-symbol-tag", pv.value);
+          var t = gs[k].querySelector(".ed-sym__tag");
+          if (t) {
+            t.textContent = pv.value;
+          }
+        }
+      }
+      var tagEl = document.querySelector('[data-testid="selected-tag"]');
+      if (tagEl) {
+        tagEl.textContent = pv.value;
+      }
+    }
+    if (typeof window.__protoSet === "function") {
+      window.__protoSet({ selectedProps: propsFor(state.selectedTag) });
+    }
+  });
+
+  document.addEventListener("mousemove", function (event) {
+    if (!editorActive()) {
+      return;
+    }
+    var target = event.target || event.srcElement;
+    if (!target || target.nodeType !== 1) {
+      return;
+    }
+    var canvas = closestEl(target, '[data-testid="canvas"]');
+    if (!canvas || !canvas.getBoundingClientRect) {
+      return;
+    }
+    var coordsEl = document.querySelector('[data-testid="cursor-coords"]');
+    if (!coordsEl) {
+      return;
+    }
+    var rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return;
+    }
+    var vx = ((event.clientX - rect.left) * 820) / rect.width;
+    var vy = ((event.clientY - rect.top) * 420) / rect.height;
+    coordsEl.textContent = "X " + Math.round(vx) + " · Y " + Math.round(vy);
+  });
+
+  window.PidScreens = window.PidScreens || {};
+  window.PidScreens.editor = renderEditor;
+})();
