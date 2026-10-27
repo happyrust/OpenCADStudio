@@ -1729,6 +1729,10 @@
     return out;
   }
 
+  function escapeRegExp(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
   /* Next free tag under a kind's prefix. The tag-rules screen may override
      prefix/start/step through window.__tagRuleConfig; otherwise the built-in
      defaults apply. The highest numeric suffix already on the canvas wins,
@@ -1758,7 +1762,7 @@
               : 1;
     var step = conf && typeof conf.step === "number" ? conf.step : 1;
     var max = 0;
-    var re = new RegExp("^" + prefix + "-(\\d+)$");
+    var re = new RegExp("^" + escapeRegExp(prefix) + "-(\\d+)$");
     for (var i = 0; i < symbols.length; i++) {
       var m = re.exec(symbols[i].tag);
       if (m) {
@@ -3147,88 +3151,89 @@
 
   /* Attribute templates keyed by type id. Row counts differ between
      neighbouring types so switching nodes always changes the table;
-     the first row stays 位号 for every type while second rows differ. */
+     the first row is each type's most characteristic element while the
+     位号 row sits at a per-type position. */
   var TL_ATTRS = {
     "process-equipment": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["类别编码", "CLASS_CODE", "字符串", "—", "类"],
-      ["描述", "DESC_TEXT", "字符串", "—", "实例"],
-      ["材质", "MATERIAL", "字符串", "—", "实例"]
+      ["类别编码", "CLASS_CODE", "字符串", "—", "可选信息"],
+      ["描述", "DESC_TEXT", "字符串", "—", "可选信息"],
+      ["材质", "MATERIAL", "字符串", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "rotating": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["额定功率", "RATED_POWER", "数值", "—", "实例"],
-      ["转速", "SPEED", "数值", "—", "实例"]
+      ["额定功率", "RATED_POWER", "数值", "—", "可选信息"],
+      ["转速", "SPEED", "数值", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "pump": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["名称", "NAME", "字符串", "—", "类"],
-      ["设计压力", "DESIGN_PRESS", "数值", "1.6", "实例"],
-      ["设计温度", "DESIGN_TEMP", "数值", "80", "实例"],
-      ["额定流量", "RATED_FLOW", "数值", "—", "实例"],
-      ["扬程", "HEAD", "数值", "—", "实例"]
+      ["额定流量", "RATED_FLOW", "数值", "—", "可选信息"],
+      ["名称", "NAME", "字符串", "—", "可选信息"],
+      ["设计压力", "DESIGN_PRESS", "数值", "1.6", "可选信息"],
+      ["设计温度", "DESIGN_TEMP", "数值", "80", "可选信息"],
+      ["扬程", "HEAD", "数值", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "compressor": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["排气量", "CAPACITY", "数值", "—", "实例"],
-      ["出口压力", "OUTLET_PRESS", "数值", "—", "实例"],
-      ["轴功率", "SHAFT_POWER", "数值", "—", "实例"]
+      ["排气量", "CAPACITY", "数值", "—", "可选信息"],
+      ["出口压力", "OUTLET_PRESS", "数值", "—", "可选信息"],
+      ["轴功率", "SHAFT_POWER", "数值", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "static": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["材质", "MATERIAL", "字符串", "—", "实例"],
-      ["重量", "WEIGHT", "数值", "—", "实例"]
+      ["材质", "MATERIAL", "字符串", "—", "可选信息"],
+      ["重量", "WEIGHT", "数值", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "vessel": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["名称", "NAME", "字符串", "—", "类"],
-      ["设计压力", "DESIGN_PRESS", "数值", "1.6", "实例"],
-      ["公称直径", "NOM_DIA", "字符串", "DN1000", "实例"],
-      ["容积", "VOLUME", "数值", "—", "实例"]
+      ["容积", "VOLUME", "数值", "—", "可选信息"],
+      ["名称", "NAME", "字符串", "—", "可选信息"],
+      ["设计压力", "DESIGN_PRESS", "数值", "1.6", "可选信息"],
+      ["公称直径", "NOM_DIA", "字符串", "DN1000", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "tower": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["塔板数", "TRAY_COUNT", "数值", "—", "实例"],
-      ["塔径", "TOWER_DIA", "数值", "—", "实例"],
-      ["设计压力", "DESIGN_PRESS", "数值", "—", "实例"]
+      ["塔板数", "TRAY_COUNT", "数值", "—", "可选信息"],
+      ["塔径", "TOWER_DIA", "数值", "—", "可选信息"],
+      ["设计压力", "DESIGN_PRESS", "数值", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "piping": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["连接形式", "END_CONN", "字符串", "—", "类"],
-      ["材质", "MATERIAL", "字符串", "—", "实例"]
+      ["连接形式", "END_CONN", "字符串", "—", "可选信息"],
+      ["材质", "MATERIAL", "字符串", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "valve": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["名称", "NAME", "字符串", "—", "类"],
-      ["公称直径", "NOM_DIA", "字符串", "DN50", "实例"],
-      ["压力等级", "PRESS_CLASS", "字符串", "PN16", "类"]
+      ["公称直径", "NOM_DIA", "字符串", "DN50", "可选信息"],
+      ["名称", "NAME", "字符串", "—", "可选信息"],
+      ["压力等级", "PRESS_CLASS", "字符串", "PN16", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "fitting": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["规格", "SPEC", "字符串", "—", "实例"],
-      ["壁厚等级", "WALL_CLASS", "字符串", "—", "实例"]
+      ["规格", "SPEC", "字符串", "—", "可选信息"],
+      ["壁厚等级", "WALL_CLASS", "字符串", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "instrument": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["名称", "NAME", "字符串", "—", "类"],
-      ["仪表类型", "INST_TYPE", "字符串", "—", "类"],
-      ["量程", "MEASURE_RANGE", "字符串", "—", "实例"],
-      ["精度等级", "ACCURACY", "字符串", "—", "实例"]
+      ["量程", "MEASURE_RANGE", "字符串", "—", "可选信息"],
+      ["名称", "NAME", "字符串", "—", "可选信息"],
+      ["仪表类型", "INST_TYPE", "字符串", "—", "可选信息"],
+      ["精度等级", "ACCURACY", "字符串", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "field-instrument": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["信号类型", "SIGNAL_TYPE", "字符串", "4-20mA", "类"],
-      ["防护等级", "IP_CLASS", "字符串", "IP65", "实例"],
-      ["安装方式", "MOUNTING", "字符串", "—", "实例"]
+      ["信号类型", "SIGNAL_TYPE", "字符串", "4-20mA", "可选信息"],
+      ["防护等级", "IP_CLASS", "字符串", "IP65", "可选信息"],
+      ["安装方式", "MOUNTING", "字符串", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ],
     "instrument-loop": [
-      ["位号", "TAG_NO", "字符串", "—", "类"],
-      ["回路功能", "LOOP_FUNC", "字符串", "—", "类"],
-      ["控制方式", "CTRL_MODE", "字符串", "—", "实例"]
+      ["回路功能", "LOOP_FUNC", "字符串", "—", "可选信息"],
+      ["控制方式", "CTRL_MODE", "字符串", "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
     ]
   };
 
-  var tlState = { typeId: "pump", collapsed: {}, hint: "当前类型：泵" };
+  var tlState = { typeId: "pump", collapsed: {}, levels: {}, hint: "当前类型：泵" };
 
   function tlFind(node, id) {
     if (node.id === id) {
@@ -3286,13 +3291,18 @@
     var html = "";
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
+      var level = tlState.levels[typeId + "|" + r[0]] || r[4];
       html +=
         '<tr class="tl__row" data-testid="attribute-row" data-label="' + esc(r[0]) + '">' +
         "<td>" + esc(r[0]) + "</td>" +
         "<td>" + esc(r[1]) + "</td>" +
         "<td>" + esc(r[2]) + "</td>" +
         "<td>" + esc(r[3]) + "</td>" +
-        "<td>" + esc(r[4]) + "</td>" +
+        '<td><select class="field tl__level" data-testid="attribute-level" data-level-type="' +
+        esc(typeId) + '" data-level-label="' + esc(r[0]) + '">' +
+        '<option' + (level === "可选信息" ? ' selected="selected"' : "") + ">可选信息</option>" +
+        '<option' + (level === "必选信息" ? ' selected="selected"' : "") + ">必选信息</option>" +
+        "</select></td>" +
         "</tr>";
     }
     return html;
@@ -3626,15 +3636,15 @@
   var seState = { tab: "draw" };
 
   var SE_CONNECTIONS = [
-    ["工艺", "上", "120, 20"],
-    ["工艺", "下", "120, 220"],
-    ["仪表", "左", "20, 120"]
+    ["等径", "双向点", "120, 20"],
+    ["等径", "流入点", "120, 220"],
+    ["信号线", "流出点", "20, 120"]
   ];
 
   var SE_ATTRIBUTES = [
-    ["位号", "输入设备位号", "—", "下方"],
-    ["名称", "输入设备名称", "—", "下方"],
-    ["设计压力", "输入设计压力", "1.6", "右侧"]
+    ["位号", "输入设备位号", "—", "上"],
+    ["名称", "输入设备名称", "—", "下"],
+    ["设计压力", "输入设计压力", "1.6", "右"]
   ];
 
   /* Default glyph: a vertical vessel (rounded body on two legs) with
@@ -3745,6 +3755,29 @@
     } else if (screenActive("symbol-editor")) {
       symbolEditorClick(target);
     }
+  });
+
+  /* Level selects fire change rather than click; the override lives in
+     tlState.levels so a later re-render keeps the user's choice. No
+     re-render here: rebuilding the table would drop select focus. */
+  document.addEventListener("change", function (event) {
+    var target = event.target || event.srcElement;
+    while (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target || !screenActive("typelib")) {
+      return;
+    }
+    var el = closestEl(target, '[data-testid="attribute-level"]');
+    if (!el) {
+      return;
+    }
+    var typeId = el.getAttribute("data-level-type") || "";
+    var label = el.getAttribute("data-level-label") || "";
+    tlState.levels[typeId + "|" + label] = el.value;
+    setTlHint(
+      "当前类型：" + tlTypeName(tlState.typeId) + " · " + label + " 级别：" + el.value
+    );
   });
 
   window.PidScreens = window.PidScreens || {};
@@ -3901,8 +3934,15 @@
 
   var trState = {
     typeId: "pump", ruleId: "pump", name: "泵位号规则",
-    prefix: "P", start: "1001", collapsed: {}, hint: "就绪"
+    prefix: "P", start: "1001", hierarchy: "当前类型依次递增", step: "1",
+    collapsed: {}, hint: "就绪"
   };
+
+  /* The prefix feeds the editor's RegExp construction, so regex
+     metacharacters must be stripped before they reach trState. */
+  function sanitizeTagPrefix(text) {
+    return String(text).replace(/[.*+?^${}()|[\]\\]/g, "");
+  }
 
   function trRule(id) {
     for (var i = 0; i < TAG_RULES.length; i++) {
@@ -3967,6 +4007,13 @@
       '<input class="field" data-testid="rule-prefix" type="text" value="' + esc(trState.prefix) + '"></label>' +
       '<label class="tr__field">起始编码' +
       '<input class="field" data-testid="rule-start" type="number" value="' + esc(trState.start) + '"></label>' +
+      '<label class="tr__field">层级选择' +
+      '<select class="field" data-testid="rule-hierarchy-select">' +
+      '<option' + (trState.hierarchy === "当前类型依次递增" ? ' selected="selected"' : "") + ">当前类型依次递增</option>" +
+      '<option' + (trState.hierarchy === "父类型递增" ? ' selected="selected"' : "") + ">父类型递增</option>" +
+      "</select></label>" +
+      '<label class="tr__field">增量' +
+      '<input class="field" data-testid="rule-step" type="number" value="' + esc(trState.step) + '"></label>' +
       "</div>" +
       '<p class="tr__preview" data-testid="tag-rule-preview">' + esc(trPreviewText()) + "</p>" +
       '<button type="button" class="tr__btn tr__btn--primary" data-testid="rule-save">保存</button>' +
@@ -3986,6 +4033,8 @@
     trState.name = rule.name;
     trState.prefix = rule.prefix;
     trState.start = rule.start;
+    trState.hierarchy = "当前类型依次递增";
+    trState.step = rule.step;
   }
 
   function trUpdatePreview() {
@@ -4006,6 +4055,12 @@
     if (isNaN(startNum)) {
       startNum = 0;
     }
+    var cleanPrefix = sanitizeTagPrefix(trState.prefix);
+    trState.prefix = cleanPrefix;
+    var stepNum = parseInt(trState.step, 10);
+    if (isNaN(stepNum) || stepNum < 1) {
+      stepNum = 1;
+    }
     var cfg = window.__tagRuleConfig;
     if (!cfg || typeof cfg !== "object") {
       cfg = {};
@@ -4019,9 +4074,10 @@
     if (!cfg.instrument) {
       cfg.instrument = { prefix: "PI", start: 1001, step: 1 };
     }
-    cfg[kind] = { prefix: trState.prefix, start: startNum, step: 1 };
+    cfg[kind] = { prefix: cleanPrefix, start: startNum, step: stepNum };
     window.__tagRuleConfig = cfg;
-    trState.hint = "已保存位号规则：" + trState.prefix + "-" + trState.start;
+    trState.hint =
+      "已保存位号规则：" + trState.prefix + "-" + trState.start + " · " + trState.hierarchy;
     var el = document.querySelector('[data-testid="tr-status"]');
     if (el) {
       el.textContent = trState.hint;
@@ -4072,13 +4128,29 @@
   function tagRulesInput(target) {
     var el = closestEl(target, '[data-testid="rule-prefix"]');
     if (el) {
-      trState.prefix = el.value || "";
+      var cleaned = sanitizeTagPrefix(el.value || "");
+      trState.prefix = cleaned;
+      if (el.value !== cleaned) {
+        el.value = cleaned;
+      }
       trUpdatePreview();
       return;
     }
     el = closestEl(target, '[data-testid="rule-start"]');
     if (el) {
       trState.start = el.value || "";
+      trUpdatePreview();
+      return;
+    }
+    el = closestEl(target, '[data-testid="rule-hierarchy-select"]');
+    if (el) {
+      trState.hierarchy = el.value;
+      trUpdatePreview();
+      return;
+    }
+    el = closestEl(target, '[data-testid="rule-step"]');
+    if (el) {
+      trState.step = el.value || "";
       trUpdatePreview();
       return;
     }

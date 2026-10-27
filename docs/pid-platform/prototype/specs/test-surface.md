@@ -83,7 +83,8 @@
 
 ## 6. 界面级 `data-testid` 补充登记
 
-以下 `data-testid` 随具体界面实现挂载，仅在对应界面渲染完成后出现。
+以下 `data-testid` 随具体界面实现挂载，仅在对应界面渲染完成后出现。符号编辑器两张表的
+枚举取值与类型库「级别」列的取值都直接抄自 owning 需求文档的 `Enum(...)`，改代码前先改需求。
 
 | data-testid | 所在界面 | 所在区域 | 说明 |
 | --- | --- | --- | --- |
@@ -96,6 +97,11 @@
 | `drawing-list` | `drawings` | 图纸清单表格 | `<table>`，表头恰为 文件名、状态、版本、修改人、修改时间 五列；数据行携带 `data-drawing-id` 与 `data-pbs-id` |
 | `drawing-preview` | `drawings` | 图纸预览区 | 显示当前选中图纸的名称、版本、生命周期状态与内联 SVG 示意图 |
 | `drawings-toolbar` | `drawings` | 顶部工具栏 | 恰含 6 个按钮，顺序固定：新建图纸、导入、复制、移动、权限、版本比对 |
+| `attribute-level` | `typelib` | 属性表「级别」列 | 每行一个 `<select>`，选项恰为 `可选信息`、`必选信息`，`位号` 行默认 `必选信息`，其余行默认 `可选信息`；切换后 `tlState.levels` 记住该行取值 |
+| `rule-hierarchy-select` | `tag-rules` | 规则编辑区 | 层级选择下拉，选项恰为 `当前类型依次递增`、`父类型递增`，默认 `当前类型依次递增`（REQ-SYM-007） |
+| `rule-step` | `tag-rules` | 规则编辑区 | 增量输入框，默认 `1`，保存时写入 `window.__tagRuleConfig` 的 `step`（REQ-SYM-007） |
+| `connection-point-table` | `symbol-editor` | 连接点表 | 列头恰为 类型、方向、坐标；类型取 `等径`/`异径`/`信号线`，方向取 `双向点`/`流入点`/`流出点`（REQ-SYM-005） |
+| `symbol-attribute-table` | `symbol-editor` | 属性标签表 | 列头恰为 标记、提示、默认、位置；位置取 `上`/`下`/`左`/`右`（REQ-SYM-006） |
 
 ## 7. `window.__proto.symbolCount` 填充说明
 
