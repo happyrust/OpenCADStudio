@@ -1018,3 +1018,438 @@
     drawings: renderDrawings
   };
 })();
+
+/* Symbol palette screen for the P&ID platform prototype.
+   Classic script, ES5, no modules/network. Extends window.PidScreens without
+   replacing the renderers registered by the bundle above. */
+(function () {
+  "use strict";
+
+  var Shell = window.PidShell;
+
+  function esc(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  /* ---------- Symbol catalogue ---------- */
+
+  var CATEGORIES = [
+    { id: "favorites", label: "我的常用" },
+    { id: "equipment", label: "设备" },
+    { id: "valve", label: "阀门" },
+    { id: "instrument", label: "仪表" },
+    { id: "fitting", label: "管件" }
+  ];
+
+  var SYMBOLS = [
+    { id: "fv-pump", name: "离心泵", category: "favorites", shape: "pump" },
+    { id: "fv-vessel-v", name: "立式容器", category: "favorites", shape: "vessel" },
+    { id: "fv-vessel-h", name: "卧式容器", category: "favorites", shape: "vessel-h" },
+    { id: "fv-gate", name: "闸阀", category: "favorites", shape: "gate-valve" },
+    { id: "fv-globe", name: "截止阀", category: "favorites", shape: "globe-valve" },
+    { id: "fv-pi", name: "压力指示", category: "favorites", shape: "instrument" },
+    { id: "fv-ti", name: "温度指示", category: "favorites", shape: "instrument" },
+    { id: "fv-reducer", name: "大小头", category: "favorites", shape: "reducer" },
+
+    { id: "eq-vessel", name: "立式容器", category: "equipment", shape: "vessel" },
+    { id: "eq-vessel-h", name: "卧式容器", category: "equipment", shape: "vessel-h" },
+    { id: "eq-pump", name: "离心泵", category: "equipment", shape: "pump" },
+    { id: "eq-pump-recip", name: "往复泵", category: "equipment", shape: "pump-recip" },
+    { id: "eq-exchanger", name: "换热器", category: "equipment", shape: "exchanger" },
+    { id: "eq-air-cooler", name: "空冷器", category: "equipment", shape: "air-cooler" },
+    { id: "eq-furnace", name: "加热炉", category: "equipment", shape: "furnace" },
+    { id: "eq-reactor", name: "反应器", category: "equipment", shape: "reactor" },
+    { id: "eq-compressor", name: "压缩机", category: "equipment", shape: "compressor" },
+    { id: "eq-blower", name: "鼓风机", category: "equipment", shape: "blower" },
+    { id: "eq-tower", name: "塔器", category: "equipment", shape: "tower" },
+    { id: "eq-tank", name: "储罐", category: "equipment", shape: "tank" },
+
+    { id: "vv-gate", name: "闸阀", category: "valve", shape: "gate-valve" },
+    { id: "vv-globe", name: "截止阀", category: "valve", shape: "globe-valve" },
+    { id: "vv-ball", name: "球阀", category: "valve", shape: "ball-valve" },
+    { id: "vv-butterfly", name: "蝶阀", category: "valve", shape: "butterfly-valve" },
+    { id: "vv-check", name: "止回阀", category: "valve", shape: "check-valve" },
+    { id: "vv-control", name: "调节阀", category: "valve", shape: "control-valve" },
+    { id: "vv-relief", name: "安全阀", category: "valve", shape: "relief-valve" },
+    { id: "vv-trap", name: "疏水阀", category: "valve", shape: "trap" },
+    { id: "vv-shutoff", name: "切断阀", category: "valve", shape: "shutoff-valve" },
+    { id: "vv-reducing", name: "减压阀", category: "valve", shape: "reducing-valve" },
+
+    { id: "in-pi", name: "压力指示", category: "instrument", shape: "instrument" },
+    { id: "in-ti", name: "温度指示", category: "instrument", shape: "instrument" },
+    { id: "in-fi", name: "流量指示", category: "instrument", shape: "instrument" },
+    { id: "in-li", name: "液位指示", category: "instrument", shape: "instrument" },
+    { id: "in-pt", name: "压力变送", category: "instrument", shape: "instrument-xmit" },
+    { id: "in-tt", name: "温度变送", category: "instrument", shape: "instrument-xmit" },
+    { id: "in-loop", name: "仪表回路", category: "instrument", shape: "instrument-loop" },
+    { id: "in-local", name: "就地仪表", category: "instrument", shape: "instrument-local" },
+
+    { id: "ft-elbow", name: "弯头", category: "fitting", shape: "elbow" },
+    { id: "ft-tee", name: "三通", category: "fitting", shape: "tee" },
+    { id: "ft-reducer", name: "大小头", category: "fitting", shape: "reducer" },
+    { id: "ft-flange", name: "法兰", category: "fitting", shape: "flange" },
+    { id: "ft-blind", name: "盲板", category: "fitting", shape: "blind" },
+    { id: "ft-sight", name: "视镜", category: "fitting", shape: "sight-glass" },
+    { id: "ft-filter", name: "过滤器", category: "fitting", shape: "filter" },
+    { id: "ft-arrester", name: "阻火器", category: "fitting", shape: "flame-arrester" },
+    { id: "ft-hose", name: "软管接头", category: "fitting", shape: "hose" }
+  ];
+
+  /* Thumbnail geometry keyed by shape id. Every glyph is a stroke drawing on
+     a shared 48x48 grid; colour and stroke width come from the
+     .pal__thumb svg rule (currentColor + border tokens). Unknown shapes
+     fall back to the generic outline so a glyph can never be blank. */
+  var SHAPES = {
+    "generic":
+      '<rect x="10" y="10" width="28" height="28" rx="4"/>' +
+      '<line x1="10" y1="24" x2="38" y2="24"/>',
+    "vessel":
+      '<rect x="16" y="6" width="16" height="32" rx="8"/>' +
+      '<line x1="18" y1="38" x2="18" y2="44"/>' +
+      '<line x1="30" y1="38" x2="30" y2="44"/>',
+    "vessel-h":
+      '<rect x="6" y="16" width="36" height="16" rx="8"/>' +
+      '<line x1="14" y1="32" x2="14" y2="38"/>' +
+      '<line x1="34" y1="32" x2="34" y2="38"/>',
+    "pump":
+      '<circle cx="24" cy="24" r="13"/>' +
+      '<path d="M18 18 L32 24 L18 30 Z"/>',
+    "pump-recip":
+      '<rect x="8" y="18" width="18" height="12"/>' +
+      '<line x1="26" y1="24" x2="33" y2="24"/>' +
+      '<circle cx="37" cy="24" r="4"/>',
+    "exchanger":
+      '<rect x="10" y="16" width="28" height="16"/>' +
+      '<path d="M14 28 L20 20 L26 28 L32 20"/>',
+    "air-cooler":
+      '<rect x="8" y="18" width="32" height="14"/>' +
+      '<circle cx="24" cy="25" r="5"/>' +
+      '<line x1="24" y1="18" x2="24" y2="32"/>' +
+      '<line x1="19" y1="25" x2="29" y2="25"/>',
+    "furnace":
+      '<rect x="12" y="8" width="24" height="32"/>' +
+      '<path d="M24 32 C20 28 22 24 24 19 C26 24 28 28 24 32 Z"/>',
+    "reactor":
+      '<rect x="16" y="12" width="16" height="26" rx="6"/>' +
+      '<line x1="24" y1="4" x2="24" y2="30"/>' +
+      '<line x1="18" y1="30" x2="30" y2="30"/>',
+    "compressor":
+      '<path d="M10 16 L36 21 L36 27 L10 32 Z"/>' +
+      '<line x1="36" y1="24" x2="44" y2="24"/>',
+    "blower":
+      '<path d="M10 21 L36 16 L36 32 L10 27 Z"/>' +
+      '<line x1="4" y1="24" x2="10" y2="24"/>',
+    "tower":
+      '<rect x="18" y="6" width="12" height="32"/>' +
+      '<line x1="18" y1="16" x2="30" y2="16"/>' +
+      '<line x1="18" y1="25" x2="30" y2="25"/>' +
+      '<line x1="20" y1="38" x2="20" y2="43"/>' +
+      '<line x1="28" y1="38" x2="28" y2="43"/>',
+    "tank":
+      '<path d="M10 15 L24 8 L38 15"/>' +
+      '<line x1="10" y1="15" x2="10" y2="38"/>' +
+      '<line x1="38" y1="15" x2="38" y2="38"/>' +
+      '<line x1="10" y1="38" x2="38" y2="38"/>',
+    "gate-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<line x1="24" y1="12" x2="24" y2="36"/>' +
+      '<line x1="18" y1="12" x2="30" y2="12"/>',
+    "globe-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<circle cx="24" cy="24" r="4"/>',
+    "ball-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<circle cx="24" cy="24" r="5"/>' +
+      '<line x1="19" y1="24" x2="29" y2="24"/>',
+    "butterfly-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<line x1="24" y1="24" x2="31" y2="12"/>',
+    "check-valve":
+      '<path d="M12 18 L26 24 L12 30 Z"/>' +
+      '<line x1="30" y1="17" x2="30" y2="31"/>' +
+      '<line x1="36" y1="17" x2="36" y2="31"/>',
+    "control-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<line x1="24" y1="24" x2="24" y2="14"/>' +
+      '<path d="M18 14 A6 6 0 0 1 30 14 Z"/>',
+    "relief-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<line x1="24" y1="24" x2="24" y2="16"/>' +
+      '<path d="M20 16 L28 13 L20 10 L28 7"/>',
+    "trap":
+      '<circle cx="24" cy="24" r="11"/>' +
+      '<path d="M17 20 L31 20 L24 30 Z"/>',
+    "shutoff-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<line x1="24" y1="24" x2="24" y2="16"/>' +
+      '<rect x="19" y="8" width="10" height="8"/>',
+    "reducing-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<line x1="24" y1="24" x2="24" y2="15"/>' +
+      '<circle cx="24" cy="11" r="4"/>',
+    "instrument":
+      '<circle cx="24" cy="24" r="12"/>' +
+      '<line x1="12" y1="24" x2="36" y2="24"/>',
+    "instrument-xmit":
+      '<circle cx="24" cy="24" r="12"/>' +
+      '<line x1="12" y1="21" x2="36" y2="21"/>' +
+      '<line x1="12" y1="27" x2="36" y2="27"/>',
+    "instrument-loop":
+      '<circle cx="24" cy="20" r="11"/>' +
+      '<line x1="13" y1="20" x2="35" y2="20"/>' +
+      '<path d="M24 31 L29 38 L24 45 L19 38 Z"/>',
+    "instrument-local":
+      '<circle cx="24" cy="18" r="10"/>' +
+      '<line x1="14" y1="18" x2="34" y2="18"/>' +
+      '<line x1="24" y1="28" x2="24" y2="40"/>' +
+      '<line x1="8" y1="40" x2="40" y2="40"/>',
+    "elbow":
+      '<path d="M6 20 L22 20 A8 8 0 0 1 30 28 L30 42"/>',
+    "tee":
+      '<line x1="6" y1="20" x2="42" y2="20"/>' +
+      '<line x1="24" y1="20" x2="24" y2="38"/>' +
+      '<line x1="20" y1="38" x2="28" y2="38"/>',
+    "reducer":
+      '<path d="M8 16 L30 21 L30 27 L8 32 Z"/>' +
+      '<line x1="6" y1="24" x2="8" y2="24"/>' +
+      '<line x1="30" y1="24" x2="42" y2="24"/>',
+    "flange":
+      '<line x1="6" y1="24" x2="42" y2="24"/>' +
+      '<line x1="19" y1="15" x2="19" y2="33"/>' +
+      '<line x1="29" y1="15" x2="29" y2="33"/>',
+    "blind":
+      '<line x1="6" y1="24" x2="32" y2="24"/>' +
+      '<line x1="32" y1="14" x2="32" y2="34"/>' +
+      '<line x1="37" y1="14" x2="37" y2="34"/>',
+    "sight-glass":
+      '<line x1="6" y1="24" x2="42" y2="24"/>' +
+      '<line x1="16" y1="16" x2="16" y2="32"/>' +
+      '<line x1="32" y1="16" x2="32" y2="32"/>' +
+      '<circle cx="24" cy="24" r="5"/>',
+    "filter":
+      '<line x1="6" y1="18" x2="42" y2="18"/>' +
+      '<path d="M18 18 L26 38 L34 18"/>',
+    "flame-arrester":
+      '<line x1="6" y1="24" x2="42" y2="24"/>' +
+      '<rect x="17" y="13" width="14" height="22"/>' +
+      '<line x1="22" y1="13" x2="22" y2="35"/>' +
+      '<line x1="26" y1="13" x2="26" y2="35"/>',
+    "hose":
+      '<path d="M4 24 C10 14 16 34 22 24 C28 14 34 34 40 24"/>' +
+      '<line x1="42" y1="17" x2="42" y2="31"/>'
+  };
+
+  function drawSymbol(shape) {
+    var inner = Object.prototype.hasOwnProperty.call(SHAPES, shape)
+      ? SHAPES[shape]
+      : SHAPES.generic;
+    return (
+      '<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" aria-hidden="true">' +
+      inner +
+      "</svg>"
+    );
+  }
+
+  /* ---------- Screen state & rendering ---------- */
+
+  var state = { category: "favorites", keyword: "" };
+
+  function categoryLabel(id) {
+    for (var i = 0; i < CATEGORIES.length; i++) {
+      if (CATEGORIES[i].id === id) {
+        return CATEGORIES[i].label;
+      }
+    }
+    return id;
+  }
+
+  /* Symbols in the active category filtered by the current keyword.
+     Matching is a case-insensitive substring test on the Chinese name. */
+  function currentItems() {
+    var items = [];
+    var kw = String(state.keyword || "").toLowerCase();
+    for (var i = 0; i < SYMBOLS.length; i++) {
+      var s = SYMBOLS[i];
+      if (s.category !== state.category) {
+        continue;
+      }
+      if (kw && s.name.toLowerCase().indexOf(kw) === -1) {
+        continue;
+      }
+      items.push(s);
+    }
+    return items;
+  }
+
+  function renderPalette(def) {
+    var items = currentItems();
+
+    if (Shell && typeof Shell.setPendingProtoMerge === "function") {
+      Shell.setPendingProtoMerge("palette", {
+        paletteItemCount: items.length
+      });
+    }
+
+    var html =
+      '<section class="screen" data-screen="palette">' +
+      '<header class="screen__header">' +
+      '<h1 class="screen__title" data-testid="screen-title">' +
+      esc(def.title) +
+      "</h1>" +
+      '<p class="screen__desc">' +
+      esc(def.desc) +
+      "</p>" +
+      "</header>";
+
+    html += '<div class="panel pal">';
+
+    html += '<div class="pal__toolbar">';
+    html += '<div class="pal__tabs" data-testid="palette-tabs" role="tablist">';
+    for (var c = 0; c < CATEGORIES.length; c++) {
+      var cat = CATEGORIES[c];
+      var active = cat.id === state.category;
+      html +=
+        '<button type="button" class="pal__tab' +
+        (active ? " is-active" : "") +
+        '" data-testid="palette-tab" data-category="' +
+        esc(cat.id) +
+        '" role="tab" aria-selected="' +
+        (active ? "true" : "false") +
+        '">' +
+        esc(cat.label) +
+        "</button>";
+    }
+    html += "</div>";
+    html +=
+      '<input class="field pal__search" data-testid="palette-search" type="search"' +
+      ' placeholder="搜索符号名称" aria-label="搜索符号" value="' +
+      esc(state.keyword) +
+      '">';
+    html += "</div>";
+
+    html +=
+      '<p class="pal__summary" data-testid="palette-summary">当前分类：' +
+      esc(categoryLabel(state.category)) +
+      " · 共 " +
+      items.length +
+      " 个符号</p>";
+
+    html += '<div class="pal__grid" data-testid="palette-grid">';
+    for (var i = 0; i < items.length; i++) {
+      var s = items[i];
+      html +=
+        '<button type="button" class="pal__item" data-testid="palette-item"' +
+        ' data-symbol-id="' +
+        esc(s.id) +
+        '" title="' +
+        esc(s.name) +
+        '">' +
+        '<span class="pal__thumb">' +
+        drawSymbol(s.shape) +
+        "</span>" +
+        '<span class="pal__name">' +
+        esc(s.name) +
+        "</span>" +
+        "</button>";
+    }
+    html += "</div>";
+
+    html += "</div></section>";
+    return html;
+  }
+
+  /* ---------- Delegated interaction ---------- */
+
+  function closestEl(el, selector) {
+    var matcher =
+      el && (el.matches || el.msMatchesSelector || el.webkitMatchesSelector);
+    while (el && el.nodeType === 1) {
+      if (matcher && matcher.call(el, selector)) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  /* Guards every delegated listener so clicks and keystrokes on other
+     screens are never mistaken for palette input. */
+  function paletteActive() {
+    if (
+      Shell &&
+      typeof Shell.currentScreenId === "function" &&
+      Shell.currentScreenId() === "palette"
+    ) {
+      return true;
+    }
+    return !!document.querySelector('[data-screen="palette"]');
+  }
+
+  function rerenderPalette(refocusSearch) {
+    var body = document.querySelector('[data-testid="screen-body"]');
+    if (!body || !Shell) {
+      return;
+    }
+    body.innerHTML = Shell.renderScreenHtml("palette");
+    Shell.publishProto("palette");
+    if (refocusSearch) {
+      var input = body.querySelector('[data-testid="palette-search"]');
+      if (input) {
+        input.focus();
+      }
+    }
+  }
+
+  document.addEventListener("click", function (event) {
+    if (!paletteActive()) {
+      return;
+    }
+    var target = event.target || event.srcElement;
+    if (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+    var tab = closestEl(target, '[data-testid="palette-tab"]');
+    if (tab) {
+      var category = tab.getAttribute("data-category");
+      if (category && category !== state.category) {
+        state.category = category;
+        state.keyword = "";
+        rerenderPalette(false);
+      }
+    }
+  });
+
+  document.addEventListener("input", function (event) {
+    if (!paletteActive()) {
+      return;
+    }
+    var target = event.target || event.srcElement;
+    if (!target || target.nodeType !== 1) {
+      return;
+    }
+    var input = closestEl(target, '[data-testid="palette-search"]');
+    if (!input) {
+      return;
+    }
+    state.keyword = input.value || "";
+    rerenderPalette(true);
+  });
+
+  window.PidScreens = window.PidScreens || {};
+  window.PidScreens.palette = renderPalette;
+})();

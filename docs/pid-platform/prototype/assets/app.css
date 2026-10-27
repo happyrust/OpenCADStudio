@@ -631,3 +631,109 @@ body {
   width: 100%;
   height: auto;
 }
+
+/* ---------- Symbol palette screen ---------- */
+
+.pal {
+  padding: var(--space-4);
+}
+
+.pal__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.pal__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 1 1 auto;
+}
+
+.pal__tab {
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-inverse);
+  background: var(--color-canvas);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  min-height: var(--control-height);
+  cursor: pointer;
+}
+
+.pal__tab:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.pal__tab.is-active {
+  background: var(--color-accent);
+  color: var(--color-accent-on);
+  border-color: var(--color-accent);
+  font-weight: 600;
+}
+
+.pal__search {
+  flex: 0 1 auto;
+  width: var(--control-max-width);
+  height: var(--control-height);
+}
+
+.pal__summary {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-inverse-muted);
+}
+
+.pal__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--space-3);
+}
+
+.pal__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-xs);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-panel);
+  color: var(--color-text-inverse);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.pal__item:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.pal__thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pal__thumb svg {
+  width: var(--space-6);
+  height: var(--space-6);
+  stroke: currentColor;
+  fill: none;
+  stroke-width: var(--border-width-thick);
+}
+
+.pal__name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
