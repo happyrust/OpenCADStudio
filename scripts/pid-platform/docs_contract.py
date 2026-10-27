@@ -125,14 +125,44 @@ MANUAL_HEADING_RE = re.compile(
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$")
 _SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
 
+# Inline code spans are masked before a table row is split, exactly as
+# ``lint_rules.split_table_cells`` has always done. The two splitters must agree:
+# a cell holding ``a|b`` in backticks is one column for the lint gate but used to
+# be two for the contract parser, so a document could pass ``-k lint`` with the
+# right column count while a validator silently read the wrong cell.
+_CODE_SPAN_RE = re.compile(r"(`+).*?\1")
+
+
+def _mask_code_spans(line: str) -> str:
+    """Replace every inline code span with same-length filler.
+
+    Length is preserved so an offset computed on the masked line indexes the
+    original text; that is what lets :func:`_split_cells` return the real cell
+    content instead of the filler.
+    """
+    return _CODE_SPAN_RE.sub(lambda match: "\x00" * len(match.group(0)), line)
+
 
 def _split_cells(line: str) -> list:
-    s = line.strip()
-    if s.startswith("|"):
-        s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [cell.strip() for cell in s.split("|")]
+    """Split a pipe-table row, ignoring pipes inside code spans or ``\\|``."""
+    masked = _mask_code_spans(line)
+    start, end = 0, len(masked)
+    while start < end and masked[start].isspace():
+        start += 1
+    while end > start and masked[end - 1].isspace():
+        end -= 1
+    if start < end and masked[start] == "|":
+        start += 1
+    if start < end and masked[end - 1] == "|" and masked[end - 2] != "\\":
+        end -= 1
+    bounds = []
+    cell_start = start
+    for index in range(start, end):
+        if masked[index] == "|" and masked[index - 1] != "\\":
+            bounds.append((cell_start, index))
+            cell_start = index + 1
+    bounds.append((cell_start, end))
+    return [line[left:right].strip() for left, right in bounds]
 
 
 def _is_separator(line: str) -> bool:

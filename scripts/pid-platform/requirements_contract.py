@@ -1488,6 +1488,571 @@ def find_bom_header(text: str):
 
 
 # ---------------------------------------------------------------------------
+# Collaboration, drawing states and the permission matrix (VAL-REQ-010)
+# ---------------------------------------------------------------------------
+
+COLLABORATION_SECTIONS = [
+    "三级授权链",
+    "图纸状态",
+    "并发编辑策略",
+    "冲突检测与解决",
+    "编辑会话",
+    "权限矩阵",
+]
+
+# The permission field group VAL-DOC-009 makes authoritative in this document.
+DRAWING_PERMISSION_FIELDS = ["角色", "PBS 节点", "图纸状态", "允许", "拒绝"]
+
+# The lifecycle-side entry this document has to connect to, so 图纸权限 is no
+# longer a dangling forward reference from 40-drawing-and-drafting.md.
+DRAWING_PERMISSION_ENTRY = "REQ-DRW-007"
+
+# The closed drawing-state enum. The platform document's REQ-PLAT-010 uses the
+# same three values; a fourth state anywhere is a contract breach.
+DRAWING_STATES = ["单人编辑", "协同编辑", "只读"]
+DRAWING_STATE_COLUMN = "图纸状态"
+
+CONCURRENCY_COLUMNS = ["状态", "事件", "动作"]
+CONCURRENCY_FLOOR = 6
+# Each tuple is (event name used in messages, tokens the 事件 cell must carry).
+CONCURRENCY_EVENTS = [
+    ("位号占用申请", ["位号", "占用"]),
+    ("占用超时释放", ["超时", "释放"]),
+    ("图纸锁定只读降级", ["只读"]),
+    ("协同编辑属性合并冲突", ["合并", "冲突"]),
+    ("删除已被引用对象", ["删除", "引用"]),
+    ("发布后修改", ["发布", "修改"]),
+]
+
+PERMISSION_ROLE_COLUMN = "角色"
+PERMISSION_ROLE_FLOOR = 4
+PERMISSION_OPERATION_FLOOR = 6
+PERMISSION_CELL_VALUES = {"允许", "拒绝"}
+
+COLLABORATION_SEMANTICS = [
+    (
+        "三级授权链",
+        ["角色权限", "PBS 节点", "图纸状态", DRAWING_PERMISSION_ENTRY, "判定"],
+    ),
+    ("冲突检测与解决", ["冲突", "合并"]),
+    ("编辑会话", ["会话", "心跳", "超时"]),
+]
+
+
+def _table_with_first_column(text: str, name: str):
+    """The first table whose first header cell equals ``name``."""
+    for table in parse_tables(text):
+        if table["header"] and _plain_cell(table["header"][0]) == name:
+            return table
+    return None
+
+
+def _cell(row, index: int) -> str:
+    if index >= len(row):
+        return ""
+    return _plain_cell(row[index])
+
+
+def validate_drawing_state_table(text: str, path: str = None) -> list:
+    """The 图纸状态 enum table must list exactly the three contract states."""
+    path = path or AREA_FILE_OF["COLL"]
+    section = section_text(text, "图纸状态")
+    table = _table_with_first_column(section, DRAWING_STATE_COLUMN)
+    if table is None:
+        found = [table["header"] for table in parse_tables(section)]
+        return [
+            "%s: 图纸状态 has no table whose first column is 图纸状态 (found %s)"
+            % (path, found)
+        ]
+    states = [_cell(row, 0) for row in table["rows"] if row]
+    if sorted(states) != sorted(DRAWING_STATES):
+        return [
+            "%s: 图纸状态 enum table lists %s; the enum is exactly %s"
+            % (path, states, DRAWING_STATES)
+        ]
+    return []
+
+
+def validate_concurrency_table(text: str, path: str = None) -> list:
+    """状态 × 事件 → 动作 with at least six rows and all six event classes."""
+    path = path or AREA_FILE_OF["COLL"]
+    section = section_text(text, "并发编辑策略")
+    table = None
+    for candidate in parse_tables(section):
+        header = [_plain_cell(cell) for cell in candidate["header"]]
+        if header[:3] == CONCURRENCY_COLUMNS:
+            table = candidate
+            break
+    if table is None:
+        found = [table["header"] for table in parse_tables(section)]
+        return [
+            "%s: 并发编辑策略 has no table starting with the columns %s (found %s)"
+            % (path, " | ".join(CONCURRENCY_COLUMNS), found)
+        ]
+
+    errors = []
+    if len(table["rows"]) < CONCURRENCY_FLOOR:
+        errors.append(
+            "%s: 并发编辑策略 has %d rows; at least %d are required"
+            % (path, len(table["rows"]), CONCURRENCY_FLOOR)
+        )
+    events = []
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) < 3:
+            errors.append(
+                "%s:%d: concurrency row has %d cells; expected at least 3"
+                % (path, line, len(row))
+            )
+            continue
+        state = _cell(row, 0)
+        if state not in DRAWING_STATES:
+            errors.append(
+                "%s:%d: concurrency row state '%s' is not one of %s"
+                % (path, line, state, "/".join(DRAWING_STATES))
+            )
+        # The scenario may be named in the 事件 cell and completed in 动作
+        # ("图纸被他人锁定" -> "降级为只读"), so the tokens are matched over the
+        # whole row rather than the event cell alone.
+        events.append(" ".join(_plain_cell(cell) for cell in row[1:]))
+
+    for name, tokens in CONCURRENCY_EVENTS:
+        if not any(all(token in event for token in tokens) for event in events):
+            errors.append(
+                "%s: 并发编辑策略 does not cover the event '%s' (no row states %s)"
+                % (path, name, " and ".join("'%s'" % token for token in tokens))
+            )
+    return errors
+
+
+def validate_permission_matrix(text: str, path: str = None) -> list:
+    """A role-by-operation matrix with >=4 roles and >=6 operations."""
+    path = path or AREA_FILE_OF["COLL"]
+    section = section_text(text, "权限矩阵")
+    table = _table_with_first_column(section, PERMISSION_ROLE_COLUMN)
+    if table is None:
+        found = [table["header"] for table in parse_tables(section)]
+        return [
+            "%s: 权限矩阵 has no table whose first column is 角色 (found %s)"
+            % (path, found)
+        ]
+
+    errors = []
+    header = [_plain_cell(cell) for cell in table["header"]]
+    operations = [cell for cell in header[1:] if cell]
+    if len(operations) < PERMISSION_OPERATION_FLOOR:
+        errors.append(
+            "%s: 权限矩阵 has %d operation columns; at least %d are required"
+            % (path, len(operations), PERMISSION_OPERATION_FLOOR)
+        )
+    if len(table["rows"]) < PERMISSION_ROLE_FLOOR:
+        errors.append(
+            "%s: 权限矩阵 has %d roles; at least %d are required"
+            % (path, len(table["rows"]), PERMISSION_ROLE_FLOOR)
+        )
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) != len(header):
+            errors.append(
+                "%s:%d: permission row has %d cells; the header has %d"
+                % (path, line, len(row), len(header))
+            )
+            continue
+        if not _cell(row, 0):
+            errors.append("%s:%d: permission row has an empty role" % (path, line))
+        for position, cell in enumerate(row[1:], start=2):
+            value = _plain_cell(cell)
+            if value not in PERMISSION_CELL_VALUES:
+                errors.append(
+                    "%s:%d: permission cell %d is '%s'; cells are only %s"
+                    % (
+                        path,
+                        line,
+                        position,
+                        value,
+                        "/".join(sorted(PERMISSION_CELL_VALUES)),
+                    )
+                )
+    return errors
+
+
+def validate_permission_matrix_provenance(text: str, path: str = None) -> list:
+    """The matrix entry's 来源 must be 新增设计, never a manual section.
+
+    The reference manual's operation table stops at 1-7 while its prose cites
+    4-12, and the drawing-permission section is a single sentence, so no manual
+    section can be the source of this matrix.
+    """
+    path = path or AREA_FILE_OF["COLL"]
+    section = section_text(text, "权限矩阵")
+    sources = [
+        parse_entry_fields(entry["body"]).get("来源", "").strip()
+        for entry in split_entries(section)
+    ]
+    if not sources:
+        return ["%s: 权限矩阵 defines no requirement entry" % path]
+    if not any(source.startswith(NEW_DESIGN) for source in sources):
+        return [
+            "%s: no 权限矩阵 entry cites %s; the matrix is our own design and "
+            "cannot be attributed to a manual section (sources found: %s)"
+            % (path, NEW_DESIGN, sources)
+        ]
+    return []
+
+
+def validate_collaboration_coverage(documents: dict) -> list:
+    """VAL-REQ-010: six sections, the semantics, and the two tables."""
+    path = AREA_FILE_OF["COLL"]
+    text = documents.get(path)
+    if text is None:
+        return ["%s: collaboration requirement document is missing" % path]
+
+    errors = validate_sections(text, COLLABORATION_SECTIONS, path)
+    for section, tokens in COLLABORATION_SEMANTICS:
+        body = section_text(text, section)
+        for token in tokens:
+            if token not in body:
+                errors.append("%s: %s does not state '%s'" % (path, section, token))
+    for field in DRAWING_PERMISSION_FIELDS:
+        if field not in text:
+            errors.append(
+                "%s: does not define the permission field name '%s'" % (path, field)
+            )
+    errors.extend(validate_drawing_state_table(text, path))
+    errors.extend(validate_concurrency_table(text, path))
+    errors.extend(validate_permission_matrix(text, path))
+    errors.extend(validate_permission_matrix_provenance(text, path))
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Import / export matrix (VAL-REQ-011)
+# ---------------------------------------------------------------------------
+
+IMPORT_EXPORT_SECTIONS = ["导入导出矩阵", "格式支持与限制"]
+IMPORT_EXPORT_COLUMNS = ["数据类别", "导入", "导出", "支持程度", "限制"]
+IMPORT_EXPORT_ROW_FLOOR = 6
+IMPORT_EXPORT_CATEGORIES = [
+    "图纸",
+    "P&ID 对象与属性",
+    "项目主数据",
+    "配置包",
+    "报表",
+    "符号库",
+]
+IMPORT_EXPORT_FORMATS = ["DWG", "DXF", "PDF", "SVG", "Excel", "CSV", "JSON"]
+FORMAT_TABLE_COLUMNS = ["格式", "导入方向", "导出方向", "支持程度", "限制"]
+FORMAT_TABLE_ROW_FLOOR = 7
+
+
+def validate_import_export_matrix(text: str, path: str = None) -> list:
+    """VAL-REQ-011: the category-by-direction matrix and its format coverage."""
+    path = path or AREA_FILE_OF["IO"]
+    section = section_text(text, "导入导出矩阵")
+    table = _find_table(section, IMPORT_EXPORT_COLUMNS)
+    if table is None:
+        found = [table["header"] for table in parse_tables(section)]
+        return [
+            "%s: 导入导出矩阵 has no table with columns %s (found %s)"
+            % (path, " | ".join(IMPORT_EXPORT_COLUMNS), found)
+        ]
+
+    errors = []
+    if len(table["rows"]) < IMPORT_EXPORT_ROW_FLOOR:
+        errors.append(
+            "%s: 导入导出矩阵 has %d data categories; at least %d are required"
+            % (path, len(table["rows"]), IMPORT_EXPORT_ROW_FLOOR)
+        )
+    categories = [_cell(row, 0) for row in table["rows"] if row]
+    for category in IMPORT_EXPORT_CATEGORIES:
+        if not any(category in value for value in categories):
+            errors.append(
+                "%s: 导入导出矩阵 has no row for the data category '%s' (rows: %s)"
+                % (path, category, categories)
+            )
+    matrix_text = " ".join(
+        _plain_cell(cell) for row in table["rows"] for cell in row
+    )
+    for fmt in IMPORT_EXPORT_FORMATS:
+        if fmt not in matrix_text:
+            errors.append(
+                "%s: 导入导出矩阵 never mentions the format '%s'" % (path, fmt)
+            )
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) != len(IMPORT_EXPORT_COLUMNS):
+            errors.append(
+                "%s:%d: matrix row has %d cells; the header has %d"
+                % (path, line, len(row), len(IMPORT_EXPORT_COLUMNS))
+            )
+            continue
+        if not _cell(row, 1) or not _cell(row, 2):
+            errors.append(
+                "%s:%d: matrix row for '%s' leaves 导入 or 导出 empty"
+                % (path, line, _cell(row, 0))
+            )
+        if not _cell(row, 4):
+            errors.append(
+                "%s:%d: matrix row for '%s' has no 限制" % (path, line, _cell(row, 0))
+            )
+    return errors
+
+
+def validate_format_support_table(text: str, path: str = None) -> list:
+    """The per-format table must cover all seven contractual formats."""
+    path = path or AREA_FILE_OF["IO"]
+    section = section_text(text, "格式支持与限制")
+    table = _find_table(section, FORMAT_TABLE_COLUMNS)
+    if table is None:
+        found = [table["header"] for table in parse_tables(section)]
+        return [
+            "%s: 格式支持与限制 has no table with columns %s (found %s)"
+            % (path, " | ".join(FORMAT_TABLE_COLUMNS), found)
+        ]
+    errors = []
+    if len(table["rows"]) < FORMAT_TABLE_ROW_FLOOR:
+        errors.append(
+            "%s: 格式支持与限制 has %d format rows; at least %d are required"
+            % (path, len(table["rows"]), FORMAT_TABLE_ROW_FLOOR)
+        )
+    formats = [_cell(row, 0) for row in table["rows"] if row]
+    for fmt in IMPORT_EXPORT_FORMATS:
+        if not any(value.startswith(fmt) for value in formats):
+            errors.append(
+                "%s: 格式支持与限制 has no row for the format '%s' (rows: %s)"
+                % (path, fmt, formats)
+            )
+    return errors
+
+
+def validate_import_export_coverage(documents: dict) -> list:
+    """VAL-REQ-011 over the whole document map."""
+    path = AREA_FILE_OF["IO"]
+    text = documents.get(path)
+    if text is None:
+        return ["%s: import/export requirement document is missing" % path]
+    errors = validate_sections(text, IMPORT_EXPORT_SECTIONS, path)
+    errors.extend(validate_import_export_matrix(text, path))
+    errors.extend(validate_format_support_table(text, path))
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Migration and interoperability (VAL-REQ-012)
+# ---------------------------------------------------------------------------
+
+MIGRATION_SECTIONS = [
+    "存量图纸导入",
+    "参考产品迁移",
+    "三维模型关联",
+    "自动化接口",
+    "插件扩展",
+    "数据交换标准",
+]
+
+CONFIDENCE_COLUMN = "识别置信度等级"
+CONFIDENCE_LEVEL_FLOOR = 3
+CONFIDENCE_COLUMNS = ["识别置信度等级", "置信度区间", "判定依据", "处置"]
+
+MIGRATION_SEMANTICS = [
+    ("存量图纸导入", ["人工确认"]),
+    ("三维模型关联", ["位号", "关联键"]),
+    ("自动化接口", ["--serve", "--http", "--mcp"]),
+    ("插件扩展", ["plugin.toml", "api_version"]),
+]
+
+EXCHANGE_COLUMNS = ["标准", "是否在范围内", "理由", "后续阶段位置"]
+EXCHANGE_STANDARDS = ["DEXPI", "ISO 15926", "CFIHOS"]
+EXCHANGE_OUT_OF_SCOPE = "范围外"
+
+
+def validate_confidence_table(text: str, path: str = None) -> list:
+    """At least three recognition-confidence levels with a stated disposition."""
+    path = path or AREA_FILE_OF["MIG"]
+    section = section_text(text, "存量图纸导入")
+    table = _find_table(section, CONFIDENCE_COLUMNS)
+    if table is None:
+        found = [table["header"] for table in parse_tables(section)]
+        return [
+            "%s: 存量图纸导入 has no table with columns %s (found %s)"
+            % (path, " | ".join(CONFIDENCE_COLUMNS), found)
+        ]
+    errors = []
+    if len(table["rows"]) < CONFIDENCE_LEVEL_FLOOR:
+        errors.append(
+            "%s: 存量图纸导入 defines %d confidence levels; at least %d are "
+            "required" % (path, len(table["rows"]), CONFIDENCE_LEVEL_FLOOR)
+        )
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) < len(CONFIDENCE_COLUMNS):
+            errors.append(
+                "%s:%d: confidence row has %d cells; expected %d"
+                % (path, line, len(row), len(CONFIDENCE_COLUMNS))
+            )
+            continue
+        for position in (0, 1, 2, 3):
+            if not _cell(row, position):
+                errors.append(
+                    "%s:%d: confidence row leaves column %d empty"
+                    % (path, line, position + 1)
+                )
+    return errors
+
+
+def validate_exchange_standard_table(text: str, path: str = None) -> list:
+    """DEXPI / ISO 15926 / CFIHOS must each be declared in or out of scope."""
+    path = path or AREA_FILE_OF["MIG"]
+    section = section_text(text, "数据交换标准")
+    table = _find_table(section, EXCHANGE_COLUMNS)
+    if table is None:
+        found = [table["header"] for table in parse_tables(section)]
+        return [
+            "%s: 数据交换标准 has no table with columns %s (found %s)"
+            % (path, " | ".join(EXCHANGE_COLUMNS), found)
+        ]
+    errors = []
+    standards = [_cell(row, 0) for row in table["rows"] if row]
+    for standard in EXCHANGE_STANDARDS:
+        if standard not in standards:
+            errors.append(
+                "%s: 数据交换标准 does not declare the standard '%s' (declared: %s)"
+                % (path, standard, standards)
+            )
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) < len(EXCHANGE_COLUMNS):
+            errors.append(
+                "%s:%d: exchange-standard row has %d cells; expected %d"
+                % (path, line, len(row), len(EXCHANGE_COLUMNS))
+            )
+            continue
+        decision = _cell(row, 1)
+        if decision not in ("范围内", EXCHANGE_OUT_OF_SCOPE):
+            errors.append(
+                "%s:%d: '%s' is marked '%s'; expected 范围内 or %s"
+                % (path, line, _cell(row, 0), decision, EXCHANGE_OUT_OF_SCOPE)
+            )
+            continue
+        if decision == EXCHANGE_OUT_OF_SCOPE:
+            if len(_cell(row, 2)) < 8:
+                errors.append(
+                    "%s:%d: '%s' is %s but gives no reason"
+                    % (path, line, _cell(row, 0), EXCHANGE_OUT_OF_SCOPE)
+                )
+            if len(_cell(row, 3)) < 4:
+                errors.append(
+                    "%s:%d: '%s' is %s but names no later phase"
+                    % (path, line, _cell(row, 0), EXCHANGE_OUT_OF_SCOPE)
+                )
+    return errors
+
+
+def validate_migration_coverage(documents: dict) -> list:
+    """VAL-REQ-012 over the whole document map."""
+    path = AREA_FILE_OF["MIG"]
+    text = documents.get(path)
+    if text is None:
+        return ["%s: migration requirement document is missing" % path]
+    errors = validate_sections(text, MIGRATION_SECTIONS, path)
+    for section, tokens in MIGRATION_SEMANTICS:
+        body = section_text(text, section)
+        for token in tokens:
+            if token not in body:
+                errors.append("%s: %s does not state '%s'" % (path, section, token))
+    errors.extend(validate_confidence_table(text, path))
+    errors.extend(validate_exchange_standard_table(text, path))
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Reuse mapping (VAL-REQ-014)
+# ---------------------------------------------------------------------------
+
+REUSE_MAPPING_SECTIONS = ["复用映射表", "改造点说明"]
+REUSE_TABLE_COLUMNS = ["现有实现", "路径", "复用于", "需改造点"]
+REUSE_ROW_FLOOR = 12
+
+
+def _normalise_repo_path(cell: str) -> str:
+    """The repo-relative path a 路径 cell names, with decoration removed."""
+    value = _plain_cell(cell).strip().replace("\\", "/")
+    while value.startswith("./"):
+        value = value[2:]
+    return value.rstrip("/")
+
+
+def validate_reuse_mapping(documents: dict, repo_root=None) -> list:
+    """Two sections, the four contract columns, >=12 rows, real paths.
+
+    ``repo_root`` is required: a path column that is never checked against the
+    filesystem would accept any string, which is exactly the failure mode
+    VAL-REQ-014 exists to prevent.
+    """
+    path = REUSE_MAPPING_PATH
+    text = documents.get(path)
+    if text is None:
+        return ["%s: reuse mapping document is missing" % path]
+    if repo_root is None:
+        return ["%s: validate_reuse_mapping needs a repo root to verify paths" % path]
+
+    headings = {normalize_heading(name) for name in section_requirement_counts(text)}
+    errors = []
+    for section in REUSE_MAPPING_SECTIONS:
+        if normalize_heading(section) not in headings:
+            errors.append(
+                "%s: missing section '%s' (found %s)"
+                % (path, section, sorted(headings))
+            )
+
+    section = section_text(text, "复用映射表")
+    table = _find_table(section, REUSE_TABLE_COLUMNS)
+    if table is None:
+        found = [table["header"] for table in parse_tables(section)]
+        errors.append(
+            "%s: 复用映射表 has no table with columns %s (found %s)"
+            % (path, " | ".join(REUSE_TABLE_COLUMNS), found)
+        )
+        return errors
+
+    if len(table["rows"]) < REUSE_ROW_FLOOR:
+        errors.append(
+            "%s: 复用映射表 has %d rows; at least %d are required"
+            % (path, len(table["rows"]), REUSE_ROW_FLOOR)
+        )
+
+    root = Path(repo_root)
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) != len(REUSE_TABLE_COLUMNS):
+            errors.append(
+                "%s:%d: reuse row has %d cells; the header has %d"
+                % (path, line, len(row), len(REUSE_TABLE_COLUMNS))
+            )
+            continue
+        for position in range(len(REUSE_TABLE_COLUMNS)):
+            if not _cell(row, position):
+                errors.append(
+                    "%s:%d: reuse row leaves column '%s' empty"
+                    % (path, line, REUSE_TABLE_COLUMNS[position])
+                )
+        candidate = _normalise_repo_path(row[1])
+        if not candidate:
+            continue
+        if candidate.startswith("/") or re.match(r"^[A-Za-z]:", candidate) or ".." in candidate.split("/"):
+            errors.append(
+                "%s:%d: path '%s' is not a repo-relative path" % (path, line, candidate)
+            )
+            continue
+        if not (root / candidate).exists():
+            errors.append(
+                "%s:%d: path '%s' does not exist in the repository"
+                % (path, line, candidate)
+            )
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Whole-contract validation
 # ---------------------------------------------------------------------------
 

@@ -18,17 +18,21 @@ from docs_contract import find_table
 from manifest_contract import normalize_heading
 from requirements_contract import (
     AREA_FLOOR,
+    COLLABORATION_SECTIONS,
     CONNECTION_POINT_DIRECTIONS,
     CONNECTION_POINT_TYPES,
     DATA_SECTIONS,
     DELIVERABLE_SECTIONS,
     DRAWING_SECTIONS,
+    IMPORT_EXPORT_SECTIONS,
     MATRIX_COLUMNS,
+    MIGRATION_SECTIONS,
     OBSERVABLE_WORDS,
     OVERVIEW_PATH,
     REQ_AREA_FILES,
     REQ_ID_RE,
     REQ_ID_TEXT,
+    REUSE_MAPPING_SECTIONS,
     RULE_TABLE_COLUMNS,
     SHIPPED_DESIGN_RULES,
     SYMBOL_SECTIONS,
@@ -46,15 +50,19 @@ from requirements_contract import (
     strip_list_number,
     validate_area_floors,
     validate_area_table,
+    validate_collaboration_coverage,
     validate_connection_point_table,
     validate_data_rule_engine_coverage,
     validate_deliverable_coverage,
     validate_design_rule_table,
     validate_drawing_coverage,
+    validate_import_export_coverage,
     validate_matrix,
+    validate_migration_coverage,
     validate_platform_coverage,
     validate_requirement_ids,
     validate_entries,
+    validate_reuse_mapping,
     validate_result_model,
     validate_rule_dsl_grammar,
     validate_symbol_library_coverage,
@@ -70,6 +78,10 @@ SYMBOL_PATH = "requirements/30-symbol-library-and-project-settings.md"
 DRAWING_PATH = "requirements/40-drawing-and-drafting.md"
 DATA_PATH = "requirements/50-data-and-rule-engine.md"
 DELIVERABLE_PATH = "requirements/60-deliverables-and-publish.md"
+COLLABORATION_PATH = "requirements/70-collaboration-and-permissions.md"
+IMPORT_EXPORT_PATH = "requirements/80-import-export-matrix.md"
+MIGRATION_PATH = "requirements/90-migration-and-interop.md"
+REUSE_PATH = "requirements/95-reuse-mapping.md"
 
 # Every declared section, paired with the area document that must carry it as
 # an H2 heading. The names themselves live in the contract module; the pairing
@@ -81,6 +93,10 @@ SECTION_HEADINGS = (
     + [(DRAWING_PATH, name) for name in DRAWING_SECTIONS]
     + [(DATA_PATH, name) for name in DATA_SECTIONS]
     + [(DELIVERABLE_PATH, name) for name in DELIVERABLE_SECTIONS]
+    + [(COLLABORATION_PATH, name) for name in COLLABORATION_SECTIONS]
+    + [(IMPORT_EXPORT_PATH, name) for name in IMPORT_EXPORT_SECTIONS]
+    + [(MIGRATION_PATH, name) for name in MIGRATION_SECTIONS]
+    + [(REUSE_PATH, name) for name in REUSE_MAPPING_SECTIONS]
 )
 
 
@@ -1164,3 +1180,422 @@ def test_traceability_deliverable_validator_rejects_a_missing_document():
         "%s: deliverables and publication requirement document is missing"
         % DELIVERABLE_PATH
     ]
+
+
+# ---------------------------------------------------------------------------
+# Collaboration, import/export, migration and the reuse mapping
+# ---------------------------------------------------------------------------
+
+
+def _collaboration_document() -> str:
+    chain_table = (
+        "| 角色权限 | PBS 节点 ACL | 图纸状态 | 判定 | 拒绝级别 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 允许 | 允许 | 单人编辑 | 允许 | — |\n"
+        "| 允许 | 允许 | 只读 | 拒绝 | 图纸状态 |\n"
+        "| 允许 | 拒绝 | 协同编辑 | 拒绝 | PBS 节点 ACL |\n"
+        "| 拒绝 | 允许 | 单人编辑 | 拒绝 | 角色权限 |\n"
+        "| 允许 | 允许 | 协同编辑 | 允许 | — |\n"
+    )
+    state_table = (
+        "| 图纸状态 | 含义 | 可写 | 允许的编辑会话数 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 单人编辑 | 单人独占编辑 | 是 | 1 |\n"
+        "| 协同编辑 | 多人共享编辑 | 是 | 多 |\n"
+        "| 只读 | 只读查看 | 否 | 0 |\n"
+    )
+    concurrency_table = (
+        "| 状态 | 事件 | 动作 |\n"
+        "| --- | --- | --- |\n"
+        "| 单人编辑 | 位号占用申请 | 授予占用并广播变更 |\n"
+        "| 单人编辑 | 占用超时释放 | 释放占用并写入审计 |\n"
+        "| 单人编辑 | 图纸被他人锁定 | 降级为只读并拒绝写入 |\n"
+        "| 协同编辑 | 属性合并冲突 | 生成冲突条目并等待人工裁决 |\n"
+        "| 协同编辑 | 删除已被引用对象 | 拒绝删除并列出引用方清单 |\n"
+        "| 只读 | 发布后修改 | 拒绝写入，须新建修订版本 |\n"
+    )
+    matrix = (
+        "| 角色 | 查看图纸 | 编辑图纸 | 导出图纸 | 删除图纸 | 发布签核 | 授权配置 | 规则检查 | 主数据维护 |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| 系统管理员 | 允许 | 允许 | 允许 | 允许 | 允许 | 允许 | 允许 | 允许 |\n"
+        "| 项目管理员 | 允许 | 允许 | 允许 | 拒绝 | 允许 | 允许 | 允许 | 允许 |\n"
+        "| 工艺设计人员 | 允许 | 允许 | 允许 | 拒绝 | 拒绝 | 拒绝 | 允许 | 拒绝 |\n"
+        "| 校对人员 | 允许 | 允许 | 允许 | 拒绝 | 拒绝 | 拒绝 | 允许 | 拒绝 |\n"
+        "| 只读查看者 | 允许 | 拒绝 | 拒绝 | 拒绝 | 拒绝 | 拒绝 | 允许 | 拒绝 |\n"
+    )
+    return (
+        "# 协同与权限需求\n\n"
+        "本文档定义协同与权限需求。权限字段名 角色、PBS 节点、图纸状态、允许、拒绝 以本文档为权威定义处。\n\n"
+        "## 三级授权链\n\n"
+        "判定顺序恰 3 级：角色权限、PBS 节点 ACL、图纸状态；"
+        "判定 = 角色权限 × PBS 节点 ACL × 图纸状态。"
+        "图纸权限的生命周期入口是 `REQ-DRW-007`，本节补齐其粒度。\n\n"
+        + chain_table
+        + "\n"
+        + _entry("REQ-COLL-001", source="新增设计", title="三级授权链判定顺序")
+        + "\n## 图纸状态\n\n图纸状态枚举恰 3 值。\n\n"
+        + state_table
+        + "\n"
+        + _entry("REQ-COLL-002", title="图纸状态枚举与迁移")
+        + "\n## 并发编辑策略\n\n同一图纸最多 1 个单人编辑会话。\n\n"
+        + concurrency_table
+        + "\n"
+        + _entry("REQ-COLL-003", title="状态与事件的并发处置")
+        + "\n## 冲突检测与解决\n\n冲突分对象级与属性级，字段级自动合并。\n\n"
+        + _entry("REQ-COLL-004", title="属性合并冲突检测")
+        + "\n## 编辑会话\n\n会话每 15 秒心跳一次，超时阈值 90 秒。\n\n"
+        + _entry("REQ-COLL-005", title="编辑会话心跳与接管")
+        + "\n## 权限矩阵\n\n本节不复刻手册编号，按角色 × 操作自定义矩阵。\n\n"
+        + matrix
+        + "\n"
+        + _entry("REQ-COLL-006", source="新增设计", title="角色与操作二维权限矩阵")
+    )
+
+
+def _import_export_document() -> str:
+    matrix = (
+        "| 数据类别 | 导入 | 导出 | 支持程度 | 限制 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| 图纸 | DWG、DXF、SVG | DWG、DXF、PDF、SVG | 完整支持 | 图纸文件名唯一 |\n"
+        "| P&ID 对象与属性 | Excel（XLSX）、CSV、JSON | Excel（XLSX）、CSV、JSON | 完整支持 | 位号必须存在 |\n"
+        "| 项目主数据 | Excel（XLSX）、CSV | Excel（XLSX）、CSV | 完整支持 | 名称列非空 |\n"
+        "| 配置包 | JSON | JSON | 部分支持 | 授权校验通过才导入 |\n"
+        "| 报表与材料清单 | 不支持 | Excel（XLSX）、CSV、PDF | 完整支持 | 位号唯一 |\n"
+        "| 符号库 | JSON | JSON、SVG | 部分支持 | 类型库须一致 |\n"
+        "| 类型库与规则 | Excel（XLSX）、JSON | Excel（XLSX）、JSON | 部分支持 | 编码不可重复 |\n"
+    )
+    format_table = (
+        "| 格式 | 导入方向 | 导出方向 | 支持程度 | 限制 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| DWG | 图纸 | 图纸 | 完整支持 | 版本 R14 至 2018 |\n"
+        "| DXF | 图纸 | 图纸 | 完整支持 | 不保留语义扩展数据 |\n"
+        "| PDF | 不支持 | 图纸、报表 | 完整支持 | 只读 |\n"
+        "| SVG | 图纸 | 图纸 | 部分支持 | 仅当前图纸 |\n"
+        "| Excel（XLSX） | 属性表、主数据 | 属性表、报表 | 完整支持 | 列映射由模板声明 |\n"
+        "| CSV | 属性表、主数据 | 属性表、报表 | 完整支持 | UTF-8 编码 |\n"
+        "| JSON | 配置包、符号库 | 配置包、属性表 | 完整支持 | 含 schemaVersion |\n"
+    )
+    return (
+        "# 导入导出矩阵需求\n\n本文档定义导入导出能力矩阵。\n\n"
+        "## 导入导出矩阵\n\n矩阵按数据类别给出导入与导出格式。\n\n"
+        + matrix
+        + "\n"
+        + _entry("REQ-IO-001", source="新增设计", title="导入导出矩阵的数据类别覆盖")
+        + "\n"
+        + _entry("REQ-IO-002", source="§6.2.2.1.2.1.2", title="图纸导入格式与文件名唯一")
+        + "\n## 格式支持与限制\n\n每种格式给出导入导出方向与限制。\n\n"
+        + format_table
+        + "\n"
+        + _entry("REQ-IO-003", source="§6.2.2.4.1", title="图纸导出四格式")
+        + "\n"
+        + _entry("REQ-IO-004", source="§6.2.2.3.6", title="属性表格导入导出与行级错误定位")
+    )
+
+
+def _migration_document() -> str:
+    confidence = (
+        "| 识别置信度等级 | 置信度区间 | 判定依据 | 处置 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 高置信 | ≥ 0.90 | 块字典命中且位号配对唯一 | 自动接受 |\n"
+        "| 中置信 | 0.60–0.89 | 形状哈希命中但配对存在多解 | 进入人工确认队列 |\n"
+        "| 低置信 | < 0.60 | 仅几何相似或位号缺失 | 默认不导入 |\n"
+    )
+    exchange = (
+        "| 标准 | 是否在范围内 | 理由 | 后续阶段位置 |\n"
+        "| --- | --- | --- | --- |\n"
+        "| DEXPI | 范围外 | 需要语义类树与标准类库的双向映射，工作量同量级 | P4 之后的扩展阶段 |\n"
+        "| ISO 15926 | 范围外 | 需要本体映射与参考数据校验，超出本期范围 | P4 迁移与互操作 |\n"
+        "| CFIHOS | 范围外 | 需要业主交付规范与版本对齐，取决于客户项目 | P4 迁移与互操作 |\n"
+    )
+    return (
+        "# 迁移与互操作需求\n\n本文档定义迁移与互操作需求。\n\n"
+        "## 存量图纸导入\n\n识别置信度分 3 级，中低置信进入人工确认队列。\n\n"
+        + confidence
+        + "\n人工确认流程共 6 步。\n\n"
+        + _entry("REQ-MIG-001", source="§6.2.2.1.2.1.2", title="存量图纸识别的置信度分级")
+        + "\n## 参考产品迁移\n\n迁移 5 类对象，按批次号幂等重跑。\n\n"
+        + _entry("REQ-MIG-002", source="§5.1.13.2.2.2.2", title="迁移的字段映射与幂等重跑")
+        + "\n## 三维模型关联\n\n关联键恰为位号（Tag），一对一匹配。\n\n"
+        + _entry("REQ-MIG-003", source="§3.2.1", title="以位号为关联键的三维模型关联")
+        + "\n## 自动化接口\n\n三条通道：`--serve`、`--http`、`--mcp`，各 1 条用例通过。\n\n"
+        + _entry("REQ-MIG-004", source="新增设计", title="自动化接口三通道契约")
+        + "\n## 插件扩展\n\n清单 `plugin.toml` 声明 `api_version` 13。\n\n"
+        + _entry("REQ-MIG-005", source="新增设计", title="插件扩展点与 XDATA 持久化")
+        + "\n## 数据交换标准\n\n本期只定义交换接口形状，三套标准的数据模型映射不在范围内。\n\n"
+        + exchange
+        + "\n"
+        + _entry("REQ-MIG-006", source="新增设计", title="数据交换标准的范围声明")
+    )
+
+
+def _reuse_mapping_document(paths) -> str:
+    rows = "\n".join(
+        "| 实现 %d | `%s` | 复用于第 %d 项能力 | 需补语义字段与版本号 |"
+        % (number, path, number)
+        for number, path in enumerate(paths, start=1)
+    )
+    return (
+        "# 复用映射\n\n本文档只引用需求 ID，不定义需求。\n\n"
+        "## 复用映射表\n\n"
+        "| 现有实现 | 路径 | 复用于 | 需改造点 |\n"
+        "| --- | --- | --- | --- |\n" + rows + "\n\n"
+        "## 改造点说明\n\n五类改造点按行分组说明。\n"
+    )
+
+
+def _real_reuse_paths(count: int = 12) -> list:
+    from conftest import REPO_ROOT
+
+    candidates = [
+        "src/io/pid_legend/",
+        "src/io/pid_legend/pairing.rs",
+        "src/io/pid_legend/export.rs",
+        "assets/pid-legend.json",
+        "src/io/pid_pipes.rs",
+        "src/io/pid_view_filter.rs",
+        "src/app/commands/mod.rs",
+        "src/mcp.rs",
+        "src/app/automation.rs",
+        "src/rest.rs",
+        "crates/ocs_plugin_api",
+        "docs/plugin-template-v2/plugin.toml",
+        "crates/ocs_save/src/lib.rs",
+        "src/io/svg_export",
+        "src/io/pdf_export",
+        "src/io/edit_lock.rs",
+    ]
+    existing = [path for path in candidates if (REPO_ROOT / path.rstrip("/")).exists()]
+    assert len(existing) >= count, "fewer than %d reuse paths exist: %s" % (
+        count,
+        existing,
+    )
+    return existing[:count]
+
+
+def test_traceability_collaboration_document_satisfies_the_contract():
+    """VAL-REQ-010 over the real 70-collaboration-and-permissions.md."""
+    documents = load_documents(DOCS)
+    errors = validate_collaboration_coverage(documents)
+    assert errors == [], "collaboration document breaches the contract: %s" % errors
+
+
+def test_traceability_collaboration_document_defines_twelve_entries():
+    """The document states 12 entries and actually defines 12."""
+    text = load_documents(DOCS)[COLLABORATION_PATH]
+    entries = [entry for entry in split_entries(text) if entry["area"] == "COLL"]
+    assert len(entries) == 12, "expected 12 REQ-COLL entries, got %d" % len(entries)
+    assert "共 12 条" in text, "the introduction does not state the entry count"
+
+
+def test_traceability_collaboration_document_cross_references_the_permission_entry():
+    """REQ-DRW-007 must be wired from 70, in the 三级授权链 section itself."""
+    text = load_documents(DOCS)[COLLABORATION_PATH]
+    assert "REQ-DRW-007" in text, "70 never mentions REQ-DRW-007"
+    assert "REQ-DRW-007" in section_text(text, "三级授权链"), (
+        "REQ-DRW-007 is not cited in the 三级授权链 section"
+    )
+
+
+def test_traceability_collaboration_validator_accepts_the_synthetic_document():
+    """Positive control: the synthetic document satisfies every VAL-REQ-010 check."""
+    errors = validate_collaboration_coverage({COLLABORATION_PATH: _collaboration_document()})
+    assert errors == [], "the synthetic collaboration document must pass: %s" % errors
+
+
+def test_traceability_collaboration_validator_rejects_a_fourth_drawing_state():
+    """Negative control: the drawing-state enum is closed at three values."""
+    document = _collaboration_document().replace(
+        "| 只读 | 只读查看 | 否 | 0 |\n",
+        "| 只读 | 只读查看 | 否 | 0 |\n| 归档 | 归档只读 | 否 | 0 |\n",
+    )
+    assert "归档" in document, "the control added nothing"
+    errors = validate_collaboration_coverage({COLLABORATION_PATH: document})
+    assert any("enum table lists" in error for error in errors), errors
+
+
+def test_traceability_collaboration_validator_rejects_a_missing_event_class():
+    """Negative control: dropping a row must name the uncovered event."""
+    document = _collaboration_document().replace(
+        "| 只读 | 发布后修改 | 拒绝写入，须新建修订版本 |\n", ""
+    )
+    assert "发布后修改" not in document, "the control removed nothing"
+    errors = validate_collaboration_coverage({COLLABORATION_PATH: document})
+    assert any("发布后修改" in error for error in errors), errors
+
+
+def test_traceability_collaboration_validator_rejects_a_third_permission_value():
+    """Negative control: matrix cells are only 允许 or 拒绝."""
+    document = _collaboration_document().replace(
+        "| 工艺设计人员 | 允许 | 允许 | 允许 | 拒绝 | 拒绝 | 拒绝 | 允许 | 拒绝 |",
+        "| 工艺设计人员 | 允许 | 允许 | 部分允许 | 拒绝 | 拒绝 | 拒绝 | 允许 | 拒绝 |",
+    )
+    assert "部分允许" in document, "the control changed nothing"
+    errors = validate_collaboration_coverage({COLLABORATION_PATH: document})
+    assert any("cells are only" in error for error in errors), errors
+
+
+def test_traceability_collaboration_validator_rejects_a_manual_sourced_matrix():
+    """Negative control: the matrix cannot be attributed to a manual section."""
+    document = _collaboration_document().replace(
+        _entry("REQ-COLL-006", source="新增设计", title="角色与操作二维权限矩阵"),
+        _entry("REQ-COLL-006", source="§6.1.3", title="角色与操作二维权限矩阵"),
+    )
+    assert "§6.1.3" in document, "the control changed nothing"
+    errors = validate_collaboration_coverage({COLLABORATION_PATH: document})
+    assert any("no 权限矩阵 entry cites 新增设计" in error for error in errors), errors
+
+
+def test_traceability_collaboration_validator_rejects_a_missing_document():
+    """Negative control: an absent area document is reported."""
+    errors = validate_collaboration_coverage({})
+    assert errors == [
+        "%s: collaboration requirement document is missing" % COLLABORATION_PATH
+    ]
+
+
+def test_traceability_import_export_document_satisfies_the_contract():
+    """VAL-REQ-011 over the real 80-import-export-matrix.md."""
+    documents = load_documents(DOCS)
+    errors = validate_import_export_coverage(documents)
+    assert errors == [], "import/export document breaches the contract: %s" % errors
+
+
+def test_traceability_import_export_validator_accepts_the_synthetic_document():
+    """Positive control for the import/export matrix checks."""
+    errors = validate_import_export_coverage({IMPORT_EXPORT_PATH: _import_export_document()})
+    assert errors == [], "the synthetic import/export document must pass: %s" % errors
+
+
+def test_traceability_import_export_validator_rejects_a_missing_category():
+    """Negative control: the symbol-library row is one of the six required rows."""
+    document = _import_export_document().replace(
+        "| 符号库 | JSON | JSON、SVG | 部分支持 | 类型库须一致 |\n", ""
+    )
+    assert "符号库" not in document.split("## 格式支持与限制")[0], (
+        "the control removed nothing from the matrix"
+    )
+    errors = validate_import_export_coverage({IMPORT_EXPORT_PATH: document})
+    assert any("data category '符号库'" in error for error in errors), errors
+
+
+def test_traceability_import_export_validator_rejects_a_missing_format():
+    """Negative control: all seven formats must appear in the matrix."""
+    document = _import_export_document().replace("PDF", "PostScript")
+    errors = validate_import_export_coverage({IMPORT_EXPORT_PATH: document})
+    assert any("format 'PDF'" in error for error in errors), errors
+
+
+def test_traceability_migration_document_satisfies_the_contract():
+    """VAL-REQ-012 over the real 90-migration-and-interop.md."""
+    documents = load_documents(DOCS)
+    errors = validate_migration_coverage(documents)
+    assert errors == [], "migration document breaches the contract: %s" % errors
+
+
+def test_traceability_migration_validator_accepts_the_synthetic_document():
+    """Positive control for the migration checks."""
+    errors = validate_migration_coverage({MIGRATION_PATH: _migration_document()})
+    assert errors == [], "the synthetic migration document must pass: %s" % errors
+
+
+def test_traceability_migration_validator_rejects_two_confidence_levels():
+    """Negative control: at least three confidence levels are required."""
+    document = _migration_document().replace(
+        "| 低置信 | < 0.60 | 仅几何相似或位号缺失 | 默认不导入 |\n", ""
+    )
+    errors = validate_migration_coverage({MIGRATION_PATH: document})
+    assert any("at least 3 are required" in error for error in errors), errors
+
+
+def test_traceability_migration_validator_rejects_a_missing_automation_channel():
+    """Negative control: all three automation channels are load-bearing."""
+    document = _migration_document().replace("`--mcp`", "MCP 通道")
+    assert "--mcp" not in document, "the control removed nothing"
+    errors = validate_migration_coverage({MIGRATION_PATH: document})
+    assert any("does not state '--mcp'" in error for error in errors), errors
+
+
+def test_traceability_migration_validator_rejects_an_undeclared_standard():
+    """Negative control: DEXPI / ISO 15926 / CFIHOS must each be declared."""
+    document = _migration_document().replace(
+        "| CFIHOS | 范围外 | 需要业主交付规范与版本对齐，取决于客户项目 | P4 迁移与互操作 |\n",
+        "",
+    )
+    errors = validate_migration_coverage({MIGRATION_PATH: document})
+    assert any("standard 'CFIHOS'" in error for error in errors), errors
+
+
+def test_traceability_migration_validator_rejects_an_out_of_scope_without_a_phase():
+    """Negative control: a 范围外 standard must name where it lands later."""
+    document = _migration_document().replace(
+        "| ISO 15926 | 范围外 | 需要本体映射与参考数据校验，超出本期范围 | P4 迁移与互操作 |",
+        "| ISO 15926 | 范围外 | 需要本体映射与参考数据校验，超出本期范围 | — |",
+    )
+    errors = validate_migration_coverage({MIGRATION_PATH: document})
+    assert any("names no later phase" in error for error in errors), errors
+
+
+def test_traceability_reuse_mapping_document_uses_real_paths():
+    """VAL-REQ-014: >=12 rows whose 路径 all exist in this repository."""
+    from conftest import REPO_ROOT
+
+    documents = load_documents(DOCS)
+    errors = validate_reuse_mapping(documents, repo_root=REPO_ROOT)
+    assert errors == [], "reuse mapping breaches the contract: %s" % errors
+
+
+def test_traceability_reuse_mapping_document_defines_no_requirement_ids():
+    """95 may cite IDs but must not define them (the parser sees no H3 entries)."""
+    text = load_documents(DOCS)[REUSE_PATH]
+    assert split_entries(text) == [], "95-reuse-mapping.md defines requirement entries"
+
+
+def test_traceability_reuse_mapping_validator_accepts_verified_paths():
+    """Positive control: twelve real paths pass the existence check."""
+    from conftest import REPO_ROOT
+
+    paths = _real_reuse_paths(12)
+    errors = validate_reuse_mapping(
+        {REUSE_PATH: _reuse_mapping_document(paths)}, repo_root=REPO_ROOT
+    )
+    assert errors == [], "twelve real paths must pass: %s" % errors
+
+
+def test_traceability_reuse_mapping_validator_rejects_a_nonexistent_path():
+    """Negative control: a path string that exists nowhere is reported."""
+    from conftest import REPO_ROOT
+
+    paths = _real_reuse_paths(12)
+    paths[3] = "src/io/pid_legend/does-not-exist.rs"
+    errors = validate_reuse_mapping(
+        {REUSE_PATH: _reuse_mapping_document(paths)}, repo_root=REPO_ROOT
+    )
+    assert any("does not exist in the repository" in error for error in errors), errors
+
+
+def test_traceability_reuse_mapping_validator_rejects_eleven_rows():
+    """Negative control: the twelve-row floor is enforced."""
+    from conftest import REPO_ROOT
+
+    paths = _real_reuse_paths(12)[:11]
+    errors = validate_reuse_mapping(
+        {REUSE_PATH: _reuse_mapping_document(paths)}, repo_root=REPO_ROOT
+    )
+    assert any("at least 12 are required" in error for error in errors), errors
+
+
+def test_traceability_reuse_mapping_validator_rejects_a_missing_section():
+    """Negative control: the two section names are load-bearing."""
+    from conftest import REPO_ROOT
+
+    paths = _real_reuse_paths(12)
+    document = _reuse_mapping_document(paths).replace("## 改造点说明", "## 说明")
+    errors = validate_reuse_mapping({REUSE_PATH: document}, repo_root=REPO_ROOT)
+    assert any("missing section '改造点说明'" in error for error in errors), errors
+
+
+def test_traceability_reuse_mapping_requires_a_repo_root():
+    """Negative control: without a repo root the path arm cannot be satisfied."""
+    paths = _real_reuse_paths(12)
+    errors = validate_reuse_mapping({REUSE_PATH: _reuse_mapping_document(paths)})
+    assert any("needs a repo root" in error for error in errors), errors

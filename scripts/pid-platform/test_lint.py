@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from conftest import DOCS, MANIFEST
+from docs_contract import _split_cells
 from lint_rules import (
     BANNED_PHRASES,
     PLACEHOLDERS,
@@ -23,6 +24,7 @@ from lint_rules import (
     markdown_registration_errors,
     placeholder_errors,
     planned_entry_errors,
+    split_table_cells,
     table_errors,
 )
 from manifest_contract import load_manifest_file
@@ -213,6 +215,53 @@ def test_lint_table_check_ignores_pipe_inside_code_span():
         ]
     )
     assert table_errors(sample, "sample/code-span.md") == []
+
+
+def test_lint_and_contract_splitters_agree_on_a_code_span_pipe():
+    """The negative control for the ``_split_cells`` code-span fix.
+
+    A cell holding ``a|b`` inside backticks must be one column for both
+    splitters. The naive splitter is asserted to disagree, which proves the
+    control is not vacuous: if ``docs_contract._split_cells`` stopped masking
+    code spans it would fall back to the naive count and this test fails.
+    """
+    row = "| 位号 | `a|b` | 说明 |"
+    lint_cells = split_table_cells(row)
+    contract_cells = _split_cells(row)
+    naive_cells = row.strip().strip("|").split("|")
+
+    assert len(lint_cells) == 3, lint_cells
+    assert len(contract_cells) == 3, contract_cells
+    assert len(lint_cells) == len(contract_cells)
+    assert len(naive_cells) == 4, (
+        "the unmasked splitter must disagree, otherwise the control proves "
+        "nothing: %s" % naive_cells
+    )
+    assert contract_cells == ["位号", "`a|b`", "说明"], (
+        "the contract splitter must keep the cell content, not the mask: %s"
+        % contract_cells
+    )
+
+
+def test_lint_and_contract_splitters_agree_on_every_shipped_table_row():
+    """Both splitters see the same column count on every real table row."""
+    mismatches = []
+    for path in _docs_files():
+        text = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if not line.lstrip().startswith("|"):
+                continue
+            lint_count = len(split_table_cells(line))
+            contract_count = len(_split_cells(line))
+            if lint_count != contract_count:
+                mismatches.append(
+                    "%s:%d lint=%d contract=%d"
+                    % (_rel(path), lineno, lint_count, contract_count)
+                )
+    assert mismatches == [], (
+        "%d table row(s) split differently by the lint and contract splitters: %s"
+        % (len(mismatches), mismatches[:5])
+    )
 
 
 @pytest.mark.parametrize("marker", PLACEHOLDERS)

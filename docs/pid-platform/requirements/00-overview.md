@@ -38,9 +38,9 @@
 | DRW | `docs/pid-platform/requirements/40-drawing-and-drafting.md` | 图纸与绘图需求，共 30 条 |
 | DATA | `docs/pid-platform/requirements/50-data-and-rule-engine.md` | 数据与设计规则检查需求，共 16 条 |
 | DELV | `docs/pid-platform/requirements/60-deliverables-and-publish.md` | 交付与发布需求，共 11 条 |
-| COLL | `docs/pid-platform/requirements/70-collaboration-and-permissions.md` | 协同与权限需求 |
-| IO | `docs/pid-platform/requirements/80-import-export-matrix.md` | 导入导出矩阵需求 |
-| MIG | `docs/pid-platform/requirements/90-migration-and-interop.md` | 迁移与互操作需求 |
+| COLL | `docs/pid-platform/requirements/70-collaboration-and-permissions.md` | 协同与权限需求，共 12 条 |
+| IO | `docs/pid-platform/requirements/80-import-export-matrix.md` | 导入导出矩阵需求，共 8 条 |
+| MIG | `docs/pid-platform/requirements/90-migration-and-interop.md` | 迁移与互操作需求，共 7 条 |
 
 `docs/pid-platform/requirements/95-reuse-mapping.md` 不属于九个区域，只引用需求 ID、不定义需求，故不列入本表。
 
@@ -155,6 +155,33 @@
 | REQ-DELV-009 | DELV | validation | 发布门禁读取校验结果屏的错误级结果 |
 | REQ-DELV-010 | DELV | bom | 导出矩阵的格式清单在 BOM 屏导出格式下拉呈现 |
 | REQ-DELV-011 | DELV | 无界面 | 导出任务队列在服务端运行，原型不单列任务屏 |
+| REQ-COLL-001 | COLL | permissions | 三级授权链的判定顺序与拒绝级别在权限屏呈现 |
+| REQ-COLL-002 | COLL | permissions | PBS 节点的显式 ACL 与继承标记在权限屏节点树维护 |
+| REQ-COLL-003 | COLL | permissions | 单图授权行与 `继承自` 切换在权限屏图纸页签维护 |
+| REQ-COLL-004 | COLL | drawings | 图纸状态在图纸管理屏列表以状态列显示，切换入口在该屏操作菜单 |
+| REQ-COLL-005 | COLL | 无界面 | 状态 × 事件处置由服务端会话仲裁执行，14 屏原型不含协同会话屏 |
+| REQ-COLL-006 | COLL | 无界面 | 位号占用与 300 秒租约在服务端执行，原型不含占用列表屏 |
+| REQ-COLL-007 | COLL | editor | 只读降级在编辑器屏以只读标记与 409 提示呈现 |
+| REQ-COLL-008 | COLL | 无界面 | 属性合并冲突在保存链路上检测，14 屏原型不含冲突列表屏 |
+| REQ-COLL-009 | COLL | 无界面 | 冲突裁决属管理端待办，14 屏原型不含裁决屏 |
+| REQ-COLL-010 | COLL | 无界面 | 会话心跳与超时由客户端与服务端维持，无可视交互面 |
+| REQ-COLL-011 | COLL | permissions | 角色 × 操作矩阵在权限屏以角色行与操作列勾选呈现 |
+| REQ-COLL-012 | COLL | permissions | 拒绝优先与最小权限在权限屏按格取值判定 |
+| REQ-IO-001 | IO | 无界面 | 导入导出能力矩阵属规格层清单，14 屏原型不含导入导出配置屏 |
+| REQ-IO-002 | IO | 无界面 | 图纸导入的格式校验与文件名唯一在服务端执行，入口屏由 `REQ-DRW-004` 承载 |
+| REQ-IO-003 | IO | 无界面 | 四格式导出的格式契约在服务端执行，出口屏由 `REQ-DELV-006` 承载 |
+| REQ-IO-004 | IO | 无界面 | 属性表格的行级错误定位在服务端产出，编辑面由 `REQ-DATA-006` 承载 |
+| REQ-IO-005 | IO | 无界面 | JSON 交换 schema 与版本号是无界面文件契约 |
+| REQ-IO-006 | IO | 无界面 | 符号库导入的类型依赖校验在服务端执行，符号维护面由 `REQ-SYM-002` 承载 |
+| REQ-IO-007 | IO | 无界面 | 配置包导入导出为管理端功能，14 屏原型不含配置包屏 |
+| REQ-IO-008 | IO | 无界面 | 错误文件与重导任务在服务端产出，无可视屏幕 |
+| REQ-MIG-001 | MIG | 无界面 | 存量图纸识别在导入服务执行，14 屏原型不含识别确认屏 |
+| REQ-MIG-002 | MIG | 无界面 | 人工确认队列属独立迁移工具界面，不在 14 屏原型范围 |
+| REQ-MIG-003 | MIG | 无界面 | 参考产品迁移按批在服务端执行，无对应屏幕 |
+| REQ-MIG-004 | MIG | 无界面 | 三维模型关联表在服务端维护，14 屏原型不含关联屏 |
+| REQ-MIG-005 | MIG | 无界面 | 自动化接口以进程参数启动，无图形交互面 |
+| REQ-MIG-006 | MIG | 无界面 | 插件是带外进程，加载与清单校验在进程启动时完成 |
+| REQ-MIG-007 | MIG | 无界面 | 数据交换标准的范围声明是口径文档，无界面 |
 
 ## 校验规则
 
