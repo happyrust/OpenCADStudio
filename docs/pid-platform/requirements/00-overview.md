@@ -35,7 +35,7 @@
 | PLAT | `docs/pid-platform/requirements/10-platform.md` | 平台层需求，共 15 条 |
 | TYPE | `docs/pid-platform/requirements/20-type-library.md` | 类型库与属性模型需求，共 15 条 |
 | SYM | `docs/pid-platform/requirements/30-symbol-library-and-project-settings.md` | 符号库与项目设置需求，共 18 条 |
-| DRW | `docs/pid-platform/requirements/40-drawing-and-drafting.md` | 图纸与绘图需求 |
+| DRW | `docs/pid-platform/requirements/40-drawing-and-drafting.md` | 图纸与绘图需求，共 30 条 |
 | DATA | `docs/pid-platform/requirements/50-data-and-rule-engine.md` | 数据与设计规则检查需求 |
 | DELV | `docs/pid-platform/requirements/60-deliverables-and-publish.md` | 交付与发布需求 |
 | COLL | `docs/pid-platform/requirements/70-collaboration-and-permissions.md` | 协同与权限需求 |
@@ -98,6 +98,36 @@
 | REQ-SYM-016 | SYM | masterdata | 流体介质在项目主数据屏流体介质页签维护 |
 | REQ-SYM-017 | SYM | 无界面 | 相交断线权重属 P&ID 基础设置，14 屏原型未含基础设置屏 |
 | REQ-SYM-018 | SYM | 无界面 | 打断符样式与高度属 P&ID 基础设置，14 屏原型未含基础设置屏 |
+| REQ-DRW-001 | DRW | drawings | PBS 层级树与图纸列表在图纸管理屏呈现，图纸挂接与层级检索在该屏完成 |
+| REQ-DRW-002 | DRW | drawings | PBS 节点重命名与删除守卫在图纸管理屏操作 |
+| REQ-DRW-003 | DRW | drawings | 图纸新建与属性编辑在图纸管理屏完成 |
+| REQ-DRW-004 | DRW | drawings | 图纸导入入口与格式选择在图纸管理屏操作 |
+| REQ-DRW-005 | DRW | drawings | 图纸复制与位号冲突标记在图纸管理屏与编辑器屏可见 |
+| REQ-DRW-006 | DRW | drawings | 图纸移动与父节点重选在图纸管理屏完成 |
+| REQ-DRW-007 | DRW | permissions | 图纸权限的主体与权限集在权限管理屏维护，图纸屏只读展示 |
+| REQ-DRW-008 | DRW | drawings | 平铺视图预览与位号检索在图纸管理屏呈现 |
+| REQ-DRW-009 | DRW | drawings | 版本快照列表与导出入口在图纸管理屏的版本区呈现 |
+| REQ-DRW-010 | DRW | drawings | 两版本勾选与比对结果在图纸管理屏的版本区呈现 |
+| REQ-DRW-011 | DRW | editor | 新建管线与管路分支绘制在编辑器画布完成，管线号与该屏位号生成联动 |
+| REQ-DRW-012 | DRW | editor | 管线管路管段三级层级在编辑器目录树与特性面板呈现 |
+| REQ-DRW-013 | DRW | editor | 管路拆分合并与层级拖动在编辑器目录树与画布完成 |
+| REQ-DRW-014 | DRW | editor | 阀门插入断开与拖动补位在编辑器画布直接可见 |
+| REQ-DRW-015 | DRW | editor | 自动旋转与连接点切换在编辑器画布以空格与 Ctrl+空格触发 |
+| REQ-DRW-016 | DRW | editor | 设备放置与 XY 缩放比例在编辑器特性面板编辑 |
+| REQ-DRW-017 | DRW | editor | 管口插入与位号前缀在编辑器属性表呈现 |
+| REQ-DRW-018 | DRW | editor | 默认管口与逻辑连接点的生成差异在编辑器目录树可辨 |
+| REQ-DRW-019 | DRW | editor | 设备关联对话框与属性同步在编辑器画布触发 |
+| REQ-DRW-020 | DRW | editor | 仪表放置与属性标记在编辑器画布呈现 |
+| REQ-DRW-021 | DRW | editor | 新建回路、添加仪表、移除仪表在编辑器常用选项卡操作 |
+| REQ-DRW-022 | DRW | editor | 信号线绘制与信号线型连接点吸附在编辑器画布完成 |
+| REQ-DRW-023 | DRW | editor | 管道连接符流入流出与跳转在编辑器画布与目录树呈现 |
+| REQ-DRW-024 | DRW | editor | 信号线连接符流入流出与跨图跳转在编辑器画布呈现 |
+| REQ-DRW-025 | DRW | editor | 打断符插入与间距拖动在编辑器画布完成 |
+| REQ-DRW-026 | DRW | editor | 手动标注的落位与属性提取在编辑器画布完成 |
+| REQ-DRW-027 | DRW | editor | 自动标注与提示标注在编辑器插入符号时呈现 |
+| REQ-DRW-028 | DRW | editor | 对象复制粘贴与落点在编辑器目录树与画布完成 |
+| REQ-DRW-029 | DRW | 无界面 | 草图设置为编辑器内的模态对话框，14 屏原型未单列该屏幕，仅在编辑器屏以入口示意 |
+| REQ-DRW-030 | DRW | 无界面 | 用户环境为按用户保存的客户端偏好对话框，14 屏原型未单列该屏幕 |
 
 ## 校验规则
 

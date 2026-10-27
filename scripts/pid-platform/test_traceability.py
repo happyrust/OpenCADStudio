@@ -18,6 +18,7 @@ from requirements_contract import (
     AREA_FLOOR,
     CONNECTION_POINT_DIRECTIONS,
     CONNECTION_POINT_TYPES,
+    DRAWING_SECTIONS,
     MATRIX_COLUMNS,
     OBSERVABLE_WORDS,
     OVERVIEW_PATH,
@@ -39,6 +40,7 @@ from requirements_contract import (
     validate_area_floors,
     validate_area_table,
     validate_connection_point_table,
+    validate_drawing_coverage,
     validate_matrix,
     validate_platform_coverage,
     validate_requirement_ids,
@@ -52,6 +54,7 @@ from requirements_contract import (
 PLAT_PATH = "requirements/10-platform.md"
 TYPE_PATH = "requirements/20-type-library.md"
 SYMBOL_PATH = "requirements/30-symbol-library-and-project-settings.md"
+DRAWING_PATH = "requirements/40-drawing-and-drafting.md"
 
 # Every declared section, paired with the area document that must carry it as
 # an H2 heading. The names themselves live in the contract module; the pairing
@@ -60,6 +63,7 @@ SECTION_HEADINGS = (
     [(PLAT_PATH, name) for name in PLATFORM_SECTIONS]
     + [(TYPE_PATH, name) for name in TYPE_SECTIONS]
     + [(SYMBOL_PATH, name) for name in SYMBOL_SECTIONS]
+    + [(DRAWING_PATH, name) for name in DRAWING_SECTIONS]
 )
 
 
@@ -240,6 +244,36 @@ def _symbol_document() -> str:
     return "".join(parts)
 
 
+def _drawing_document() -> str:
+    """A synthetic 40-drawing document carrying every VAL-REQ-007 phrase."""
+    extras = {
+        "管件与阀门插入": "插入时管线自动断开，移动时自动补位。\n\n",
+        "设备与管口": (
+            "管口位号前缀继承设备位号；未设默认管口时生成逻辑连接点；"
+            "关联设备属性共享。\n\n"
+        ),
+        "页间连接符": (
+            "管道连接符流入、管道连接符流出、信号线连接符流入、"
+            "信号线连接符流出。\n\n"
+        ),
+        "草图设置与用户环境": "草图设置随图纸保存，用户环境随用户保存。\n\n",
+        "管线与管路层级": "管线 → 管路 → 管段，属性下传。\n\n",
+        "仪表与仪表回路": (
+            "回路与仪表多对多；支持新建仪表回路、添加仪表、移除仪表。\n\n"
+        ),
+        "图纸生命周期": "新建、导入 SVG/DWG、复制、移动、权限、预览。\n\n",
+        "图纸版本与比对": "版本快照可两两比对。\n\n",
+        "对象复制": "支持图纸内与跨图纸复制。\n\n",
+    }
+    parts = ["# 图纸与绘图需求\n\n共 %d 条需求。\n\n" % len(DRAWING_SECTIONS)]
+    for index, name in enumerate(DRAWING_SECTIONS, start=1):
+        parts.append("## %s\n\n" % name)
+        parts.append(extras.get(name, ""))
+        parts.append(_entry("REQ-DRW-%03d" % index, title="%s示例" % name))
+        parts.append("\n")
+    return "".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Real documents
 # ---------------------------------------------------------------------------
@@ -366,6 +400,21 @@ def test_traceability_type_library_document_covers_the_seven_topics():
 def test_traceability_symbol_document_covers_the_thirteen_topics():
     errors = validate_symbol_library_coverage(load_documents(DOCS))
     assert errors == [], "symbol-library coverage errors: %s" % errors
+
+
+def test_traceability_drawing_document_covers_the_thirteen_topics():
+    errors = validate_drawing_coverage(load_documents(DOCS))
+    assert errors == [], "drawing coverage errors: %s" % errors
+
+
+def test_traceability_drawing_connectors_split_kind_by_direction():
+    """VAL-REQ-007: 管道/信号线 x 流入/流出, four symbol types, none merged."""
+    documents = load_documents(DOCS)
+    connectors = section_text(documents[DRAWING_PATH], "页间连接符")
+    for kind in ("管道连接符", "信号线连接符"):
+        for direction in ("流入", "流出"):
+            token = kind + direction
+            assert token in connectors, "页间连接符 does not name '%s'" % token
 
 
 def test_traceability_symbol_document_lists_nine_connection_point_combinations():
@@ -707,3 +756,73 @@ def test_traceability_symbol_validator_rejects_a_missing_document():
     """Negative control: an absent area document is reported, not silently skipped."""
     errors = validate_symbol_library_coverage({})
     assert errors == ["%s: symbol library requirement document is missing" % SYMBOL_PATH]
+
+
+# ---------------------------------------------------------------------------
+# Drawing document (VAL-REQ-007) controls
+# ---------------------------------------------------------------------------
+
+
+def test_traceability_drawing_validator_accepts_the_synthetic_document():
+    """Positive control: the synthetic document satisfies every VAL-REQ-007 check."""
+    errors = validate_drawing_coverage({DRAWING_PATH: _drawing_document()})
+    assert errors == [], "the synthetic drawing document must pass: %s" % errors
+
+
+def test_traceability_drawing_validator_rejects_a_missing_break_and_fill_semantics():
+    """Negative control: VAL-REQ-007's auto-break/auto-fill pair is load-bearing."""
+    document = _drawing_document().replace(
+        "插入时管线自动断开，移动时自动补位。",
+        "插入时可选择断开管线。",
+    )
+    assert "自动补位" not in document, "the control removed nothing"
+    errors = validate_drawing_coverage({DRAWING_PATH: document})
+    assert any(
+        "管件与阀门插入 does not state '自动补位'" in error for error in errors
+    ), errors
+
+
+def test_traceability_drawing_validator_rejects_a_missing_connector_kind():
+    """Negative control: dropping 信号线连接符流出 must name that kind."""
+    document = _drawing_document().replace("信号线连接符流出。", "。")
+    assert "信号线连接符流出" not in document, "the control removed nothing"
+    errors = validate_drawing_coverage({DRAWING_PATH: document})
+    assert any(
+        "页间连接符 does not state '信号线连接符流出'" in error for error in errors
+    ), errors
+
+
+def test_traceability_drawing_validator_rejects_a_renamed_section():
+    """Negative control: renaming one of the thirteen sections must be detected."""
+    document = _drawing_document().replace("## 标注\n", "## 对象标注\n")
+    errors = validate_drawing_coverage({DRAWING_PATH: document})
+    assert any("missing section '标注'" in error for error in errors), errors
+
+
+def test_traceability_drawing_validator_rejects_a_section_without_requirements():
+    """Negative control: a present-but-empty section is not coverage."""
+    parts = _drawing_document().split("\n## ")
+    trimmed = []
+    removed = False
+    for part in parts:
+        if part.startswith("打断符"):
+            head, separator, _rest = part.partition("### REQ-DRW-")
+            assert separator, "打断符 carries no requirement entry to remove"
+            trimmed.append(head.rstrip() + "\n\n")
+            removed = True
+        else:
+            trimmed.append(part)
+    document = "\n## ".join(trimmed)
+    assert removed, "the control did not touch the 打断符 section"
+    empty_section = document.split("\n## 打断符")[1].split("\n## ")[0]
+    assert "### REQ-DRW-" not in empty_section, "the entry survived the removal"
+    errors = validate_drawing_coverage({DRAWING_PATH: document})
+    assert any(
+        "section '打断符' has 0 requirements" in error for error in errors
+    ), errors
+
+
+def test_traceability_drawing_validator_rejects_a_missing_document():
+    """Negative control: an absent area document is reported, not silently skipped."""
+    errors = validate_drawing_coverage({})
+    assert errors == ["%s: drawing requirement document is missing" % DRAWING_PATH]

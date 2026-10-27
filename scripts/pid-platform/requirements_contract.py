@@ -867,6 +867,70 @@ def validate_symbol_library_coverage(documents: dict) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Drawing management (VAL-REQ-007)
+# ---------------------------------------------------------------------------
+
+# The thirteen sections VAL-REQ-007 names, in manifest order. Each must carry
+# at least one requirement entry.
+DRAWING_SECTIONS = [
+    "PBS 层级",
+    "图纸生命周期",
+    "图纸版本与比对",
+    "管线与管路层级",
+    "管件与阀门插入",
+    "设备与管口",
+    "仪表与仪表回路",
+    "信号线",
+    "页间连接符",
+    "打断符",
+    "标注",
+    "对象复制",
+    "草图设置与用户环境",
+]
+
+# VAL-REQ-007's four mandatory semantics, plus the ones the feature contract
+# makes load-bearing: the many-to-many loops, the connector-kind matrix, the
+# lifecycle operation set and the three-level pipe hierarchy.
+DRAWING_SEMANTICS = [
+    ("管件与阀门插入", ["自动断开", "自动补位"]),
+    ("设备与管口", ["继承设备位号", "逻辑连接点", "属性共享"]),
+    (
+        "页间连接符",
+        [
+            "管道连接符流入",
+            "管道连接符流出",
+            "信号线连接符流入",
+            "信号线连接符流出",
+        ],
+    ),
+    ("草图设置与用户环境", ["随图纸", "随用户"]),
+    ("管线与管路层级", ["管段", "下传"]),
+    ("仪表与仪表回路", ["多对多", "新建仪表回路", "添加仪表", "移除仪表"]),
+    ("图纸生命周期", ["导入", "SVG", "DWG", "复制", "移动", "权限", "预览"]),
+    ("图纸版本与比对", ["快照", "比对"]),
+    ("对象复制", ["跨图纸"]),
+]
+
+
+def validate_drawing_coverage(documents: dict) -> list:
+    """VAL-REQ-007: thirteen sections and the mandatory drawing semantics."""
+    path = AREA_FILE_OF["DRW"]
+    text = documents.get(path)
+    if text is None:
+        return ["%s: drawing requirement document is missing" % path]
+
+    errors = validate_sections(text, DRAWING_SECTIONS, path)
+    for section, tokens in DRAWING_SEMANTICS:
+        body = section_text(text, section)
+        for token in tokens:
+            if token not in body:
+                errors.append(
+                    "%s: %s does not state '%s'" % (path, section, token)
+                )
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Whole-contract validation
 # ---------------------------------------------------------------------------
 
