@@ -987,6 +987,62 @@ GRAMMAR_TERMINALS = [
     '")"',
 ]
 
+# Every nonterminal on the right-hand side of the published grammar must be
+# defined by some production. The earlier check only looked for a fixed list of
+# production names, so ``string = '"' { character } '"'`` shipped with no
+# ``character`` production and stayed green: a terminal is proven to appear, not
+# that the grammar is closed. These helpers parse the block and compare.
+EBNF_COMMENT_RE = re.compile(r"\(\*.*?\*\)", re.DOTALL)
+EBNF_SPECIAL_SEQUENCE_RE = re.compile(r"\?.*?\?", re.DOTALL)
+# A character literal such as ``'"'`` (the double quote itself) has to be masked
+# BEFORE the double-quote terminal rule, otherwise the terminal pattern runs from
+# that embedded quote to the next one and swallows everything between them. That
+# is exactly how ``string = '"' { character } '"'`` hid the dangling ``character``
+# reference: the terminal regex ate ``"' { character } '"`` as one token.
+EBNF_CHAR_LITERAL_RE = re.compile(r"'[^'\n]'")
+EBNF_TERMINAL_RE = re.compile(r'"[^"\n]*"')
+EBNF_LHS_RE = re.compile(r"\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*$")
+EBNF_NONTERMINAL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def ebnf_productions(body: str) -> dict:
+    """``{production: right-hand side}`` for an EBNF block.
+
+    Comments (``(* … *)``), special sequences (``? … ?``) and quoted terminals
+    are masked first, so only nonterminals survive on the right-hand side.
+    Statements are split on ``;``, which also folds the multi-line ``operator``
+    production into one entry.
+    """
+    cleaned = EBNF_COMMENT_RE.sub(" ", body)
+    cleaned = EBNF_SPECIAL_SEQUENCE_RE.sub(" ", cleaned)
+    cleaned = EBNF_CHAR_LITERAL_RE.sub(" ", cleaned)
+    cleaned = EBNF_TERMINAL_RE.sub(" ", cleaned)
+    productions = {}
+    for statement in cleaned.split(";"):
+        if not statement.strip():
+            continue
+        left, separator, right = statement.partition("=")
+        match = EBNF_LHS_RE.match(left)
+        if not separator or match is None:
+            continue
+        productions[match.group("name")] = right
+    return productions
+
+
+def undefined_ebnf_nonterminals(body: str) -> list:
+    """Nonterminals referenced on a right-hand side but never defined."""
+    productions = ebnf_productions(body)
+    undefined = []
+    seen = set()
+    for right in productions.values():
+        for token in EBNF_NONTERMINAL_RE.findall(right):
+            if token in productions or token in seen:
+                continue
+            seen.add(token)
+            undefined.append(token)
+    return sorted(undefined)
+
+
 # The 25 rules the document ships, in table order. This is the single source the
 # synthetic positive control builds from and the real document is compared to;
 # ``REQUIRED_DESIGN_RULES`` below derives the tolerant per-rule tokens from it.
@@ -1150,6 +1206,13 @@ def validate_rule_dsl_grammar(text: str, path: str = None) -> list:
             errors.append(
                 "%s: EBNF block does not show the terminal %s" % (path, terminal)
             )
+    if not ebnf_productions(body):
+        errors.append("%s: EBNF block defines no production" % path)
+    for name in undefined_ebnf_nonterminals(body):
+        errors.append(
+            "%s: EBNF block uses the nonterminal '%s' but no production defines it"
+            % (path, name)
+        )
     return errors
 
 
@@ -1329,6 +1392,49 @@ def validate_trigger_modes(text: str, path: str = None) -> list:
     return errors
 
 
+# The tag master data is keyed by the pair (类型编码, 位号): 50-data-and-rule-engine.md
+# makes 位号 unique *within a type*, so a single-column key would contradict its
+# own rule and the L-1001 example (a 管线 and an 仪表回路 may legitimately share a
+# tag value because they are different types).
+TAG_MASTER_SECTION = "位号主数据与唯一性"
+TAG_MASTER_KEY_PHRASE = "(类型编码,位号)"
+TAG_MASTER_KEY_DISPLAY = "(类型编码, 位号)"
+TAG_MASTER_SINGLE_COLUMN_PHRASES = ["项目内唯一主键", "位号是该实例在数据层的唯一主键"]
+
+
+def _normalise_key_text(text: str) -> str:
+    """Squash a sentence and fold full-width parentheses/commas for comparison."""
+    folded = (
+        text.replace("（", "(")
+        .replace("）", ")")
+        .replace("，", ",")
+        .replace("、", ",")
+    )
+    return _squash(folded)
+
+
+def validate_tag_master_key(text: str, path: str = None) -> list:
+    """The master-data uniqueness key must be the composite (类型编码, 位号)."""
+    path = path or AREA_FILE_OF["DATA"]
+    section = section_text(text, TAG_MASTER_SECTION)
+    if not section:
+        return []  # the missing section is already reported by validate_sections
+    normalised = _normalise_key_text(section)
+    errors = []
+    if TAG_MASTER_KEY_PHRASE not in normalised:
+        errors.append(
+            "%s: %s does not state the composite uniqueness key %s"
+            % (path, TAG_MASTER_SECTION, TAG_MASTER_KEY_DISPLAY)
+        )
+    for phrase in TAG_MASTER_SINGLE_COLUMN_PHRASES:
+        if _normalise_key_text(phrase) in normalised:
+            errors.append(
+                "%s: %s still calls 位号 a single-column key ('%s'); the key is %s"
+                % (path, TAG_MASTER_SECTION, phrase, TAG_MASTER_KEY_DISPLAY)
+            )
+    return errors
+
+
 def validate_data_rule_engine_coverage(documents: dict) -> list:
     """VAL-REQ-008: nine sections, an EBNF block, a rule table and a result model."""
     path = AREA_FILE_OF["DATA"]
@@ -1341,6 +1447,7 @@ def validate_data_rule_engine_coverage(documents: dict) -> list:
     errors.extend(validate_design_rule_table(text, path))
     errors.extend(validate_result_model(text, path))
     errors.extend(validate_trigger_modes(text, path))
+    errors.extend(validate_tag_master_key(text, path))
     return errors
 
 
@@ -1391,6 +1498,7 @@ def validate_deliverable_coverage(documents: dict) -> list:
             errors.append(
                 "%s: 材料清单聚合 does not state the quantity term '%s'" % (path, token)
             )
+    errors.extend(validate_bom_row_identity(text, path))
 
     drawings = section_text(text, "图纸输出")
     for name in DRAWING_OUTPUT_FORMATS:
@@ -1485,6 +1593,125 @@ def find_bom_header(text: str):
         if [cell.strip() for cell in table["header"]] == BOM_COLUMNS:
             return table
     return None
+
+
+# ---------------------------------------------------------------------------
+# Material-list row identity (the ruling this document now states)
+# ---------------------------------------------------------------------------
+#
+# 位号 is the row key of the material list. An independently tagged object
+# (设备/阀门/仪表) therefore occupies its own row and counts exactly 1; a 管件
+# has no tag of its own, inherits the host 管路's tag, and several instances
+# legitimately collapse into that one row with 数量 > 1. 管线 rows are the
+# length-measured category (Σ 管段长度, unit m). The two-sided rule below is what
+# keeps the document from regressing to "3 个 V-1001 实例", a state that
+# REQ-DATA-001 (same-type uniqueness) and DR-004 (错误, blocking) forbid.
+
+BOM_ROW_KEY_PHRASE = "位号是材料清单的行键"
+BOM_ROW_KEY_TYPES = ("设备", "阀门", "仪表")
+BOM_INHERITED_TAG_TYPES = ("管件",)
+BOM_LENGTH_TYPES = ("管线",)
+BOM_ROW_IDENTITY_TOKENS = [
+    BOM_INVARIANT_PHRASE,
+    BOM_ROW_KEY_PHRASE,
+    "实例计数",
+    "管件",
+    "继承",
+    "DR-004",
+    "不冲突",
+]
+
+
+def bom_rows(table) -> list:
+    """Parse a standard BOM table into ``{序号, 类型, 位号, 名称, 数量, 单位}`` maps."""
+    header = [_plain_cell(cell) for cell in table["header"]]
+    if any(name not in header for name in BOM_COLUMNS):
+        return []
+    index = {name: header.index(name) for name in BOM_COLUMNS}
+    rows = []
+    for row in table["rows"]:
+        if len(row) < len(BOM_COLUMNS):
+            continue
+        rows.append({name: _plain_cell(row[index[name]]) for name in BOM_COLUMNS})
+    return rows
+
+
+def _bom_quantity(value):
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def validate_bom_rows(rows, path: str = None) -> list:
+    """Check the one-位号-one-row invariant over parsed BOM rows.
+
+    Two-sided by construction: a 设备/阀门/仪表 row whose 数量 exceeds 1 is an
+    error (two instances cannot share one 位号), while a 管件 row inheriting a host
+    位号 may carry several instances. ``rows`` maps use the six standard columns;
+    序号 defaults to the row position when absent.
+    """
+    path = path or AREA_FILE_OF["DELV"]
+    errors = []
+    seen = {}
+    for position, row in enumerate(rows, start=1):
+        sequence = str(row.get("序号") or position).strip()
+        kind = str(row.get("类型") or "").strip()
+        tag = str(row.get("位号") or "").strip()
+        label = "row %s (%s %s)" % (sequence, kind or "?", tag or "?")
+        if not tag:
+            errors.append("%s: %s has no 位号" % (path, label))
+            continue
+        if tag in seen:
+            errors.append(
+                "%s: %s repeats the 位号 of row %s; one 位号 occupies at most one row"
+                % (path, label, seen[tag])
+            )
+            continue
+        seen[tag] = sequence
+        quantity = _bom_quantity(row.get("数量"))
+        if quantity is None:
+            errors.append(
+                "%s: %s has a non-numeric 数量 %r"
+                % (path, label, row.get("数量"))
+            )
+            continue
+        if kind in BOM_ROW_KEY_TYPES and quantity != 1:
+            errors.append(
+                "%s: %s counts %s; an independently tagged %s keeps 数量 1"
+                % (path, label, row.get("数量"), kind)
+            )
+        elif kind in BOM_INHERITED_TAG_TYPES and (
+            quantity < 1 or quantity != int(quantity)
+        ):
+            errors.append(
+                "%s: %s counts %s; a 管件 row counts whole instances"
+                % (path, label, row.get("数量"))
+            )
+        elif kind in BOM_LENGTH_TYPES and quantity <= 0:
+            errors.append(
+                "%s: %s counts %s; a 管线 row needs a positive length"
+                % (path, label, row.get("数量"))
+            )
+    return errors
+
+
+def validate_bom_row_identity(text: str, path: str = None) -> list:
+    """The 材料清单聚合 section states the row-key ruling and its example obeys it."""
+    path = path or AREA_FILE_OF["DELV"]
+    section = section_text(text, "材料清单聚合")
+    squashed = _squash(section)
+    errors = []
+    for token in BOM_ROW_IDENTITY_TOKENS:
+        if _squash(token) not in squashed:
+            errors.append(
+                "%s: 材料清单聚合 does not state '%s'" % (path, token)
+            )
+    table = find_bom_header(section)
+    if table is None:
+        return errors  # the header itself is checked by validate_deliverable_coverage
+    errors.extend(validate_bom_rows(bom_rows(table), path))
+    return errors
 
 
 # ---------------------------------------------------------------------------

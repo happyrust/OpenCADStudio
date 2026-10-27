@@ -23,6 +23,7 @@ Grammar (same production names as the document)::
     segment    = identifier ;
     identifier = letter { letter | digit | "_" } ;
     string     = '"' { character } '"' ;
+    character  = ? 除双引号外的任意字符 ? ;
     number     = [ "-" ] digit { digit } [ "." digit { digit } ] ;
     enum_ref   = "#" identifier ;
     boolean    = "TRUE" | "FALSE" ;
@@ -52,6 +53,7 @@ PRODUCTIONS = [
     "segment",
     "identifier",
     "string",
+    "character",
     "number",
     "enum_ref",
     "boolean",
@@ -81,6 +83,7 @@ path          = segment { "." segment } ;
 segment       = identifier ;
 identifier    = letter { letter | digit | "_" } ;
 string        = '"' { character } '"' ;
+character     = ? 除双引号外的任意字符 ? ;
 number        = [ "-" ] digit { digit } [ "." digit { digit } ] ;
 enum_ref      = "#" identifier ;
 boolean       = "TRUE" | "FALSE" ;

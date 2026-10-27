@@ -40,7 +40,10 @@ from requirements_contract import (
     TYPE_SECTIONS,
     PLATFORM_SECTIONS,
     _plain_cell,
+    bom_rows,
     definitions,
+    ebnf_productions,
+    find_bom_header,
     load_all_documents,
     load_documents,
     matrix_rows,
@@ -48,8 +51,11 @@ from requirements_contract import (
     section_text,
     split_entries,
     strip_list_number,
+    undefined_ebnf_nonterminals,
     validate_area_floors,
     validate_area_table,
+    validate_bom_row_identity,
+    validate_bom_rows,
     validate_collaboration_coverage,
     validate_connection_point_table,
     validate_data_rule_engine_coverage,
@@ -66,6 +72,7 @@ from requirements_contract import (
     validate_result_model,
     validate_rule_dsl_grammar,
     validate_symbol_library_coverage,
+    validate_tag_master_key,
     validate_traceability,
     validate_trigger_modes,
     validate_type_library_coverage,
@@ -896,6 +903,9 @@ def _rule_table(rows) -> str:
 def _data_document() -> str:
     """A synthetic 50 document that satisfies every VAL-REQ-008 check."""
     extras = {
+        "位号主数据与唯一性": (
+            "位号主数据以 `(类型编码, 位号)` 为唯一键，`位号` 与 `类型编码` 组合后唯一。\n\n"
+        ),
         "规则 DSL": "```ebnf\n" + rule_dsl.EBNF_GRAMMAR + "\n```\n\n",
         "触发时机": TRIGGER_TABLE + "\n",
         "结果模型": RESULT_TABLE + "\n",
@@ -968,6 +978,35 @@ def test_traceability_data_validator_rejects_an_incomplete_grammar():
     assert "operator      =" not in document, "the control renamed nothing"
     errors = validate_rule_dsl_grammar(document)
     assert any("production 'operator'" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_a_missing_character_production():
+    """Negative control: a referenced but undefined nonterminal must be named."""
+    grammar = rule_dsl.EBNF_GRAMMAR
+    stripped = "\n".join(
+        line
+        for line in grammar.splitlines()
+        if not line.strip().startswith("character ")
+    )
+    assert stripped != grammar, "the control removed nothing"
+    assert "character     =" not in stripped, "the production survived the strip"
+    # ``string`` still mentions the nonterminal, so the reference really dangles.
+    assert "character" in stripped, "the control also deleted the reference"
+    assert undefined_ebnf_nonterminals(grammar) == [], "the shipped grammar is broken"
+    assert undefined_ebnf_nonterminals(stripped) == ["character"]
+    document = _data_document().replace(grammar, stripped)
+    assert stripped in document, "the control did not reach the document"
+    errors = validate_rule_dsl_grammar(document)
+    assert any(
+        "'character'" in error and "no production defines it" in error
+        for error in errors
+    ), errors
+
+
+def test_traceability_data_validator_accepts_the_shipped_grammar():
+    """Positive control: every nonterminal in the shipped block is defined."""
+    assert undefined_ebnf_nonterminals(rule_dsl.EBNF_GRAMMAR) == []
+    assert "character" in ebnf_productions(rule_dsl.EBNF_GRAMMAR)
 
 
 def test_traceability_data_validator_rejects_fewer_than_twenty_rules():
@@ -1062,8 +1101,9 @@ BOM_TABLE = (
     "| --- | --- | --- | --- | --- | --- |\n"
     "| 1 | 管线 | L-1001 | 工艺水进料管线 | 24.5 | m |\n"
     "| 2 | 设备 | P-1001 | 离心泵 | 1 | 台 |\n"
-    "| 3 | 阀门 | V-1001 | 截止阀 DN50 | 2 | 个 |\n"
+    "| 3 | 阀门 | V-1001 | 截止阀 DN50 | 1 | 个 |\n"
     "| 4 | 仪表 | TI-1001 | 温度变送器 | 1 | 台 |\n"
+    "| 5 | 管件 | L-1001-01 | 90°弯头 DN50 | 3 | 个 |\n"
 )
 
 EXPORT_TABLE = (
@@ -1079,8 +1119,10 @@ EXPORT_TABLE = (
 )
 
 BOM_BODY = (
-    "一个位号在同一份材料清单中至多占一行。管路类材料 `数量 = Σ管段长度`，单位 `m`；"
-    "设备、阀门与仪表类 `数量 = 实例计数`，单位 `台/个`。\n\n"
+    "一个位号在同一份材料清单中至多占一行，位号是材料清单的行键：每个位号恰占一行。"
+    "管线行 `数量 = Σ管段长度`，单位 `m`；设备、阀门与仪表类 `数量 = 实例计数` 且恒为 1，单位 `台/个`；"
+    "管件不单独编号、继承所属管路的位号，同一宿主位号下的多个实例合并为一行。"
+    "本不变量与 `DR-004` 不冲突：清单不聚合不同位号，只对继承同一宿主位号的管件求和。\n\n"
     + BOM_TABLE
 )
 
@@ -1180,6 +1222,137 @@ def test_traceability_deliverable_validator_rejects_a_missing_document():
         "%s: deliverables and publication requirement document is missing"
         % DELIVERABLE_PATH
     ]
+
+
+BOM_TWO_SIDED_ROWS = [
+    {
+        "序号": "1",
+        "类型": "设备",
+        "位号": "P-1001",
+        "名称": "离心泵",
+        "数量": "1",
+        "单位": "台",
+    },
+    {
+        "序号": "2",
+        "类型": "阀门",
+        "位号": "V-1001",
+        "名称": "截止阀 DN50",
+        "数量": "2",
+        "单位": "个",
+    },
+    {
+        "序号": "3",
+        "类型": "管件",
+        "位号": "L-1001-01",
+        "名称": "90°弯头 DN50",
+        "数量": "3",
+        "单位": "个",
+    },
+]
+
+
+def test_traceability_bom_rows_reject_a_multi_instance_independent_tag():
+    """The failing half: 2 instances under one 阀门 位号 is exactly what DR-004 bans."""
+    bad = [row for row in BOM_TWO_SIDED_ROWS if row["类型"] == "阀门"][0]
+    assert float(bad["数量"]) > 1, "the control row must really count more than one"
+    errors = validate_bom_rows(BOM_TWO_SIDED_ROWS)
+    assert any(
+        "V-1001" in error and "keeps 数量 1" in error for error in errors
+    ), errors
+    # The violation is scoped to the 阀门 row: the 设备 row is not reported.
+    assert not any("P-1001" in error for error in errors), errors
+
+
+def test_traceability_bom_rows_accept_a_multi_instance_inherited_tag():
+    """The passing half: 管件 inherit the host 位号, so 数量 3 is legal."""
+    good = [row for row in BOM_TWO_SIDED_ROWS if row["类型"] == "管件"][0]
+    assert float(good["数量"]) > 1, "the control row must really count more than one"
+    without_the_violation = [
+        row for row in BOM_TWO_SIDED_ROWS if row["类型"] != "阀门"
+    ]
+    assert len(without_the_violation) == 2, "the control still carries the bad row"
+    assert validate_bom_rows(without_the_violation) == []
+
+
+def test_traceability_bom_rows_reject_a_duplicate_tag_across_two_rows():
+    """The row-key half: the same 位号 twice breaks the one-row-per-位号 invariant."""
+    rows = [
+        dict(BOM_TWO_SIDED_ROWS[0]),
+        {
+            "序号": "2",
+            "类型": "设备",
+            "位号": "P-1001",
+            "名称": "备用泵",
+            "数量": "1",
+            "单位": "台",
+        },
+    ]
+    assert rows[0]["位号"] == rows[1]["位号"], "the control did not duplicate the tag"
+    errors = validate_bom_rows(rows)
+    assert any(
+        "repeats the 位号 of row 1" in error and "at most one row" in error
+        for error in errors
+    ), errors
+
+
+def test_traceability_bom_document_obeys_the_row_identity_ruling():
+    """Real document: the ruling prose is present and its sample table is legal."""
+    text = load_documents(DOCS)[DELIVERABLE_PATH]
+    assert validate_bom_row_identity(text) == []
+    table = find_bom_header(section_text(text, "材料清单聚合"))
+    assert table is not None, "the sample table lost its standard header"
+    parsed = bom_rows(table)
+    assert parsed, "the sample table has no data row"
+    assert any(row["类型"] == "管件" and float(row["数量"]) > 1 for row in parsed), (
+        "the sample no longer shows a legal multi-instance 管件 row"
+    )
+    for row in parsed:
+        if row["类型"] in ("设备", "阀门", "仪表"):
+            assert float(row["数量"]) == 1, (
+                "row %s counts %s under an independent 位号"
+                % (row["位号"], row["数量"])
+            )
+
+
+def test_traceability_bom_document_validator_rejects_a_merged_independent_tag():
+    """Negative control: putting two instances under V-1001 must be caught."""
+    document = _deliverable_document().replace(
+        "| 3 | 阀门 | V-1001 | 截止阀 DN50 | 1 | 个 |",
+        "| 3 | 阀门 | V-1001 | 截止阀 DN50 | 2 | 个 |",
+    )
+    assert "| 2 | 个 |" in document, "the control changed nothing"
+    errors = validate_bom_row_identity(document)
+    assert any(
+        "V-1001" in error and "keeps 数量 1" in error for error in errors
+    ), errors
+
+
+def test_traceability_bom_document_validator_rejects_a_missing_ruling():
+    """Negative control: the DR-004 compatibility argument is load-bearing."""
+    document = _deliverable_document().replace("本不变量与 `DR-004` 不冲突", "本不变量与 `DR-004` 相容")
+    assert "不冲突" not in document, "the control kept the ruling"
+    errors = validate_bom_row_identity(document)
+    assert any("不冲突" in error for error in errors), errors
+
+
+def test_traceability_tag_master_key_is_composite():
+    """The master-data key is (类型编码, 位号), matching same-type uniqueness."""
+    text = load_documents(DOCS)[DATA_PATH]
+    assert validate_tag_master_key(text) == []
+
+
+def test_traceability_tag_master_key_validator_rejects_a_single_column_key():
+    """Negative control: restoring the single-column key must be caught."""
+    text = load_documents(DOCS)[DATA_PATH]
+    degraded = text.replace(
+        "`(类型编码, 位号)` 是该实例在数据层的唯一键",
+        "位号是该实例在数据层的唯一主键",
+    )
+    assert degraded != text, "the control changed nothing"
+    errors = validate_tag_master_key(degraded)
+    assert errors, "the degraded key was accepted"
+    assert any("唯一主键" in error for error in errors), errors
 
 
 # ---------------------------------------------------------------------------
