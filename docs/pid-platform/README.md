@@ -8,25 +8,25 @@
 
 | 文档 | 路径 | 内容概要 |
 | --- | --- | --- |
-| PRD | `docs/pid-platform/PRD.md` | 产品定位、目标行业与客户、目标用户与角色、应用场景、功能架构、十三个功能模块清单、路线图与成功指标 |
-| 术语表 | `docs/pid-platform/glossary.md` | 全部领域术语的中文名、英文名、定义、禁用别名与单一词源声明，是全部文档与原型用词的唯一权威 |
-| 差距分析 | `docs/pid-platform/gap-analysis.md` | 逐项比对竞品手册能力与本项目现有实现，给出必建、改造、复用三类结论与复用锚点 |
-| 需求来源索引 | `docs/pid-platform/reference/source-index.md` | 竞品手册章节与需求区域的映射表，登记每条需求的候选来源章节与读表规则 |
-| 竞品能力摘要 | `docs/pid-platform/reference/reference-product-summary.md` | 五份竞品手册的能力归纳，按九个功能域整理其界面构成与操作流程 |
-| 系统架构 | `docs/pid-platform/architecture/system-architecture.md` | 五层架构的职责划分、上游消费者、向下依赖与层间契约表，以及脱机与在线两种运行模式 |
-| 数据模型 | `docs/pid-platform/architecture/data-model.md` | 对象、属性、拓扑、位号与图纸版本的实体关系与关键约束，含位号唯一性的实现口径 |
-| 非功能需求 | `docs/pid-platform/architecture/non-functional.md` | 性能、容量、可用性、兼容性、可维护性与安全合规的量化指标与验收方式 |
-| 需求总览 | `docs/pid-platform/requirements/00-overview.md` | 九个需求区域的代码与文件映射、需求编号规则、需求到屏幕的追溯矩阵与跨区域约束 |
-| 平台层需求 | `docs/pid-platform/requirements/10-platform.md` | 用户、角色、项目空间、三级授权链、审计日志与系统配置的需求定义与验收标准 |
-| 类型库需求 | `docs/pid-platform/requirements/20-type-library.md` | 类型树、属性分组、数据要素、必填与默认值、拼接表达式与规则继承的需求定义 |
-| 符号库与项目设置需求 | `docs/pid-platform/requirements/30-symbol-library-and-project-settings.md` | 图例标准、符号分类、连接点、位号规则、颜色规则与项目主数据的需求定义 |
-| 图纸与绘图需求 | `docs/pid-platform/requirements/40-drawing-and-drafting.md` | PBS 层级、图纸生命周期与版本、绘图命令、管线管路管段拓扑、标注与断线的需求定义 |
-| 数据与规则引擎需求 | `docs/pid-platform/requirements/50-data-and-rule-engine.md` | 位号主数据、对象属性、检索、设计规则检查引擎与违规处置的需求定义 |
-| 交付物与发布需求 | `docs/pid-platform/requirements/60-deliverables-and-publish.md` | 材料清单、报表模板、图纸输出、数据发布与导出矩阵的需求定义 |
-| 协同与权限需求 | `docs/pid-platform/requirements/70-collaboration-and-permissions.md` | 三级授权链、图纸状态、并发编辑、冲突处置与权限矩阵的需求定义 |
-| 导入导出矩阵需求 | `docs/pid-platform/requirements/80-import-export-matrix.md` | 支持格式的导入导出能力矩阵，逐格式登记支持程度与限制条件 |
-| 迁移与互操作需求 | `docs/pid-platform/requirements/90-migration-and-interop.md` | 从既有图纸与既有平台迁移的路径、字段映射与互操作接口的需求定义 |
-| 复用映射 | `docs/pid-platform/requirements/95-reuse-mapping.md` | 每条需求与现有代码锚点的对应关系，标明复用、改造或新建 |
+| PRD | [docs/pid-platform/PRD.md](PRD.md) | 产品定位、目标行业与客户、目标用户与角色、应用场景、功能架构、十三个功能模块清单、路线图与成功指标 |
+| 术语表 | [docs/pid-platform/glossary.md](glossary.md) | 全部领域术语的中文名、英文名、定义、禁用别名与单一词源声明，是全部文档与原型用词的唯一权威 |
+| 差距分析 | [docs/pid-platform/gap-analysis.md](gap-analysis.md) | 逐项比对竞品手册能力与本项目现有实现，给出必建、改造、复用三类结论与复用锚点 |
+| 需求来源索引 | [docs/pid-platform/reference/source-index.md](reference/source-index.md) | 竞品手册章节与需求区域的映射表，登记每条需求的候选来源章节与读表规则 |
+| 竞品能力摘要 | [docs/pid-platform/reference/reference-product-summary.md](reference/reference-product-summary.md) | 五份竞品手册的能力归纳，按九个功能域整理其界面构成与操作流程 |
+| 系统架构 | [docs/pid-platform/architecture/system-architecture.md](architecture/system-architecture.md) | 五层架构的职责划分、上游消费者、向下依赖与层间契约表，以及脱机与在线两种运行模式 |
+| 数据模型 | [docs/pid-platform/architecture/data-model.md](architecture/data-model.md) | 对象、属性、拓扑、位号与图纸版本的实体关系与关键约束，含位号唯一性的实现口径 |
+| 非功能需求 | [docs/pid-platform/architecture/non-functional.md](architecture/non-functional.md) | 性能、容量、可用性、兼容性、可维护性与安全合规的量化指标与验收方式 |
+| 需求总览 | [docs/pid-platform/requirements/00-overview.md](requirements/00-overview.md) | 九个需求区域的代码与文件映射、需求编号规则、需求到屏幕的追溯矩阵与跨区域约束 |
+| 平台层需求 | [docs/pid-platform/requirements/10-platform.md](requirements/10-platform.md) | 用户、角色、项目空间、三级授权链、审计日志与系统配置的需求定义与验收标准 |
+| 类型库需求 | [docs/pid-platform/requirements/20-type-library.md](requirements/20-type-library.md) | 类型树、属性分组、数据要素、必填与默认值、拼接表达式与规则继承的需求定义 |
+| 符号库与项目设置需求 | [docs/pid-platform/requirements/30-symbol-library-and-project-settings.md](requirements/30-symbol-library-and-project-settings.md) | 图例标准、符号分类、连接点、位号规则、颜色规则与项目主数据的需求定义 |
+| 图纸与绘图需求 | [docs/pid-platform/requirements/40-drawing-and-drafting.md](requirements/40-drawing-and-drafting.md) | PBS 层级、图纸生命周期与版本、绘图命令、管线管路管段拓扑、标注与断线的需求定义 |
+| 数据与规则引擎需求 | [docs/pid-platform/requirements/50-data-and-rule-engine.md](requirements/50-data-and-rule-engine.md) | 位号主数据、对象属性、检索、设计规则检查引擎与违规处置的需求定义 |
+| 交付物与发布需求 | [docs/pid-platform/requirements/60-deliverables-and-publish.md](requirements/60-deliverables-and-publish.md) | 材料清单、报表模板、图纸输出、数据发布与导出矩阵的需求定义 |
+| 协同与权限需求 | [docs/pid-platform/requirements/70-collaboration-and-permissions.md](requirements/70-collaboration-and-permissions.md) | 三级授权链、图纸状态、并发编辑、冲突处置与权限矩阵的需求定义 |
+| 导入导出矩阵需求 | [docs/pid-platform/requirements/80-import-export-matrix.md](requirements/80-import-export-matrix.md) | 支持格式的导入导出能力矩阵，逐格式登记支持程度与限制条件 |
+| 迁移与互操作需求 | [docs/pid-platform/requirements/90-migration-and-interop.md](requirements/90-migration-and-interop.md) | 从既有图纸与既有平台迁移的路径、字段映射与互操作接口的需求定义 |
+| 复用映射 | [docs/pid-platform/requirements/95-reuse-mapping.md](requirements/95-reuse-mapping.md) | 每条需求与现有代码锚点的对应关系，标明复用、改造或新建 |
 
 ## 阅读路径
 
