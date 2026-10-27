@@ -3753,3 +3753,802 @@
   window.PidScreens["symbol-editor"] = renderSymbolEditor;
 })();
 
+/* Tag rules, colour rules, master data and permissions screens for the
+   P&ID platform prototype. Classic script, ES5, no modules/network.
+   Extends window.PidScreens without replacing earlier renderers. */
+(function () {
+  "use strict";
+
+  var Shell = window.PidShell;
+
+  function esc(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function screenOpen(id, def) {
+    return (
+      '<section class="screen" data-screen="' + esc(id) + '">' +
+      '<header class="screen__header">' +
+      '<h1 class="screen__title" data-testid="screen-title">' + esc(def.title) + "</h1>" +
+      '<p class="screen__desc">' + esc(def.desc) + "</p>" +
+      "</header>"
+    );
+  }
+
+  function closestEl(el, selector) {
+    var matcher =
+      el && (el.matches || el.msMatchesSelector || el.webkitMatchesSelector);
+    while (el && el.nodeType === 1) {
+      if (matcher && matcher.call(el, selector)) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  /* Same guard as the previous bundle: currentScreenId first, then a DOM
+     fallback restricted to the rendered screen body so the navigation's
+     data-screen links never report a false positive. */
+  function screenActive(id) {
+    if (
+      Shell &&
+      typeof Shell.currentScreenId === "function" &&
+      Shell.currentScreenId() === id
+    ) {
+      return true;
+    }
+    var body = document.querySelector('[data-testid="screen-body"]');
+    return !!(body && body.querySelector('[data-screen="' + id + '"]'));
+  }
+
+  function rerenderScreen(id) {
+    var body = document.querySelector('[data-testid="screen-body"]');
+    if (!body || !Shell) {
+      return;
+    }
+    body.innerHTML = Shell.renderScreenHtml(id);
+    Shell.publishProto(id);
+  }
+
+  /* ---------- Shared type hierarchy ----------
+     Same three-level tree as the type library so both rules screens show
+     identical structure; only the node test ids differ per screen. */
+  var TYPE_TREE = [
+    { id: "process", name: "工艺设备", children: [
+      { id: "rotating", name: "转动设备", children: [
+        { id: "pump", name: "泵", children: [] },
+        { id: "compressor", name: "压缩机", children: [] } ] },
+      { id: "static-eq", name: "静设备", children: [
+        { id: "vessel", name: "容器", children: [] },
+        { id: "tower", name: "塔器", children: [] } ] } ] },
+    { id: "piping", name: "管道附件", children: [
+      { id: "valve", name: "阀门", children: [] },
+      { id: "fitting", name: "管件", children: [] } ] },
+    { id: "instrument", name: "仪表", children: [
+      { id: "field-instrument", name: "现场仪表", children: [] },
+      { id: "instrument-loop", name: "仪表回路", children: [] } ] }
+  ];
+
+  function findTypeNode(nodes, id) {
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      if (node.id === id) {
+        return node;
+      }
+      var found = findTypeNode(node.children, id);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  /* Recursive tree markup shared by both rules screens. The class prefix
+     and test ids are parameters so each screen keeps its own hooks. */
+  function typeTreeHtml(nodes, level, selId, collapsed, cls, nodeTest, toggleTest) {
+    var html = '<ul class="' + cls + '__level">';
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      var kids = n.children && n.children.length > 0;
+      var col = kids && !!collapsed[n.id];
+      html += '<li class="' + cls + '__node' + (n.id === selId ? " is-selected" : "") +
+        '" data-testid="' + nodeTest + '" data-type-id="' + esc(n.id) +
+        '" data-level="' + level + '">' +
+        '<button type="button" class="' + cls + '__toggle" data-testid="' + toggleTest + '">' +
+        (col ? "▸" : "▾") + "</button>" +
+        '<span class="' + cls + '__label">' + esc(n.name) + "</span>";
+      if (kids && !col) {
+        html += typeTreeHtml(n.children, level + 1, selId, collapsed, cls, nodeTest, toggleTest);
+      }
+      html += "</li>";
+    }
+    return html + "</ul>";
+  }
+
+  /* ---------- Tag rules screen ---------- */
+
+  /* Rule rows keep prefix/start as strings so the editor inputs and the
+     data attributes round-trip without coercion. */
+  var TAG_RULES = [
+    { id: "pump", name: "泵位号规则", format: "P-{序号}", prefix: "P", start: "1001", step: "1", state: "启用" },
+    { id: "valve", name: "阀门位号规则", format: "V-{序号}", prefix: "V", start: "2001", step: "1", state: "启用" },
+    { id: "instrument", name: "仪表位号规则", format: "PI-{序号}", prefix: "PI", start: "1001", step: "1", state: "启用" },
+    { id: "vessel", name: "容器位号规则", format: "V-{序号}", prefix: "V", start: "1001", step: "1", state: "启用" },
+    { id: "tower", name: "塔器位号规则", format: "T-{序号}", prefix: "T", start: "1001", step: "1", state: "停用" },
+    { id: "fitting", name: "管件位号规则", format: "{宿主位号}-{序号}", prefix: "宿主位号", start: "1", step: "1", state: "启用" }
+  ];
+
+  /* Which rule row each type node loads into the editor, and which
+     window.__tagRuleConfig kind each node writes on save. */
+  var TR_NODE_RULE = {
+    process: "pump", rotating: "pump", pump: "pump", compressor: "pump",
+    "static-eq": "vessel", vessel: "vessel", tower: "tower", piping: "valve",
+    valve: "valve", fitting: "fitting", instrument: "instrument",
+    "field-instrument": "instrument", "instrument-loop": "instrument"
+  };
+  var TR_KIND = {
+    process: "equipment", rotating: "equipment", pump: "equipment",
+    compressor: "equipment", "static-eq": "equipment", vessel: "equipment",
+    tower: "equipment", piping: "valve", valve: "valve", fitting: "valve",
+    instrument: "instrument", "field-instrument": "instrument",
+    "instrument-loop": "instrument"
+  };
+
+  var trState = {
+    typeId: "pump", ruleId: "pump", name: "泵位号规则",
+    prefix: "P", start: "1001", collapsed: {}, hint: "就绪"
+  };
+
+  function trRule(id) {
+    for (var i = 0; i < TAG_RULES.length; i++) {
+      if (TAG_RULES[i].id === id) {
+        return TAG_RULES[i];
+      }
+    }
+    return null;
+  }
+
+  function trPreviewText() {
+    return "格式预览：" + trState.prefix + "-" + trState.start;
+  }
+
+  function trRowsHtml() {
+    var html = "";
+    for (var i = 0; i < TAG_RULES.length; i++) {
+      var r = TAG_RULES[i];
+      html += '<tr class="tr__row' + (r.id === trState.ruleId ? " is-selected" : "") +
+        '" data-testid="tag-rule-row" data-rule-id="' + esc(r.id) +
+        '" data-prefix="' + esc(r.prefix) + '" data-start="' + esc(r.start) + '">' +
+        "<td>" + esc(r.name) + "</td><td>" + esc(r.format) + "</td><td>" + esc(r.start) +
+        "</td><td>" + esc(r.step) + "</td><td>" + esc(r.state) + "</td></tr>";
+    }
+    return html;
+  }
+
+  function renderTagRules(def) {
+    if (Shell && typeof Shell.setPendingProtoMerge === "function") {
+      Shell.setPendingProtoMerge("tag-rules", {
+        tagRulePreview: trState.prefix + "-" + trState.start
+      });
+    }
+    var html = screenOpen("tag-rules", def);
+    html +=
+      '<div class="panel tr"><div class="tr__body">' +
+      '<aside class="tr__tree" data-testid="tag-type-tree">' +
+      typeTreeHtml(TYPE_TREE, 1, trState.typeId, trState.collapsed, "tr", "tag-type-node", "tag-type-toggle") +
+      "</aside>" +
+      '<div class="tr__main">' +
+      '<section class="tr__list-block"><h2 class="panel__title">规则列表</h2>' +
+      '<table class="tr__table" data-testid="tag-rule-list">' +
+      "<thead><tr><th>规则名</th><th>格式</th><th>起始编码</th><th>增量</th><th>状态</th></tr></thead>" +
+      "<tbody>" + trRowsHtml() + "</tbody></table></section>" +
+      '<section class="tr__editor" data-testid="tag-rule-editor">' +
+      '<h2 class="panel__title">规则编辑</h2><div class="tr__fields">' +
+      '<label class="tr__field">格式名称' +
+      '<input class="field" data-testid="rule-format-name" type="text" value="' + esc(trState.name) + '"></label>' +
+      '<label class="tr__field">自动编码' +
+      '<input class="tr__check" data-testid="rule-auto-code" type="checkbox" checked></label>' +
+      '<div class="tr__field tr__field--wide">拼接字段' +
+      '<div class="tr__tokens" data-testid="rule-concat-fields">' +
+      '<span class="tr__token">前缀</span><span class="tr__token">分隔符</span><span class="tr__token">序号</span>' +
+      "</div></div>" +
+      '<label class="tr__field">后缀递增' +
+      '<input class="tr__check" data-testid="rule-suffix-increment" type="checkbox" checked></label>' +
+      '<label class="tr__field">位号唯一校验' +
+      '<input class="tr__check" data-testid="rule-unique-check" type="checkbox" checked></label>' +
+      '<label class="tr__field">自动弹窗' +
+      '<input class="tr__check" data-testid="rule-auto-popup" type="checkbox" checked></label>' +
+      '<label class="tr__field">前缀' +
+      '<input class="field" data-testid="rule-prefix" type="text" value="' + esc(trState.prefix) + '"></label>' +
+      '<label class="tr__field">起始编码' +
+      '<input class="field" data-testid="rule-start" type="number" value="' + esc(trState.start) + '"></label>' +
+      "</div>" +
+      '<p class="tr__preview" data-testid="tag-rule-preview">' + esc(trPreviewText()) + "</p>" +
+      '<button type="button" class="tr__btn tr__btn--primary" data-testid="rule-save">保存</button>' +
+      '<p class="tr__status" data-testid="tr-status">' + esc(trState.hint) + "</p>" +
+      "</section></div></div></div>";
+    return html + "</section>";
+  }
+
+  /* Backfill the editor from a rule row; the preview text is always
+     derived from the current prefix/start, never stored. */
+  function trApplyRule(ruleId) {
+    var rule = trRule(ruleId);
+    if (!rule) {
+      return;
+    }
+    trState.ruleId = rule.id;
+    trState.name = rule.name;
+    trState.prefix = rule.prefix;
+    trState.start = rule.start;
+  }
+
+  function trUpdatePreview() {
+    var el = document.querySelector('[data-testid="tag-rule-preview"]');
+    if (el) {
+      el.textContent = trPreviewText();
+    }
+    if (typeof window.__protoSet === "function") {
+      window.__protoSet({ tagRulePreview: trState.prefix + "-" + trState.start });
+    }
+  }
+
+  /* Save writes window.__tagRuleConfig keyed by the selected type node's
+     kind (equipment/valve/instrument); the editor's nextTag reads it. */
+  function trSave() {
+    var kind = TR_KIND[trState.typeId] || "equipment";
+    var startNum = parseInt(trState.start, 10);
+    if (isNaN(startNum)) {
+      startNum = 0;
+    }
+    var cfg = window.__tagRuleConfig;
+    if (!cfg || typeof cfg !== "object") {
+      cfg = {};
+    }
+    if (!cfg.equipment) {
+      cfg.equipment = { prefix: "P", start: 1001, step: 1 };
+    }
+    if (!cfg.valve) {
+      cfg.valve = { prefix: "V", start: 2001, step: 1 };
+    }
+    if (!cfg.instrument) {
+      cfg.instrument = { prefix: "PI", start: 1001, step: 1 };
+    }
+    cfg[kind] = { prefix: trState.prefix, start: startNum, step: 1 };
+    window.__tagRuleConfig = cfg;
+    trState.hint = "已保存位号规则：" + trState.prefix + "-" + trState.start;
+    var el = document.querySelector('[data-testid="tr-status"]');
+    if (el) {
+      el.textContent = trState.hint;
+    }
+    trUpdatePreview();
+  }
+
+  function tagRulesClick(target) {
+    var toggle = closestEl(target, '[data-testid="tag-type-toggle"]');
+    if (toggle) {
+      var tNode = closestEl(toggle, '[data-testid="tag-type-node"]');
+      var tid = tNode ? tNode.getAttribute("data-type-id") : null;
+      var info = tid ? findTypeNode(TYPE_TREE, tid) : null;
+      if (info && info.children && info.children.length) {
+        trState.collapsed[tid] = !trState.collapsed[tid];
+        rerenderScreen("tag-rules");
+      }
+      return;
+    }
+    var node = closestEl(target, '[data-testid="tag-type-node"]');
+    if (node) {
+      var id = node.getAttribute("data-type-id");
+      if (id && id !== trState.typeId) {
+        trState.typeId = id;
+        trApplyRule(TR_NODE_RULE[id] || "pump");
+        rerenderScreen("tag-rules");
+      }
+      return;
+    }
+    var row = closestEl(target, '[data-testid="tag-rule-row"]');
+    if (row) {
+      var rid = row.getAttribute("data-rule-id");
+      if (rid && trRule(rid)) {
+        trApplyRule(rid);
+        /* Rule ids double as type-node ids so the saved kind always
+           matches the clicked row. */
+        trState.typeId = rid;
+        trState.hint = "当前规则：" + trState.name;
+        rerenderScreen("tag-rules");
+      }
+      return;
+    }
+    if (closestEl(target, '[data-testid="rule-save"]')) {
+      trSave();
+    }
+  }
+
+  function tagRulesInput(target) {
+    var el = closestEl(target, '[data-testid="rule-prefix"]');
+    if (el) {
+      trState.prefix = el.value || "";
+      trUpdatePreview();
+      return;
+    }
+    el = closestEl(target, '[data-testid="rule-start"]');
+    if (el) {
+      trState.start = el.value || "";
+      trUpdatePreview();
+      return;
+    }
+    el = closestEl(target, '[data-testid="rule-format-name"]');
+    if (el) {
+      trState.name = el.value || "";
+    }
+  }
+
+  /* ---------- Colour rules screen ---------- */
+
+  /* Swatch colours are data: they carry design-token references and are
+     applied through an inline style. */
+  var COLOR_RULES = [
+    { id: "process-water", name: "工艺水管路", color: "var(--color-accent)", attr: "流体介质", op: "等于", value: "工艺水", joiner: "且", cond: "流体介质 = 工艺水", state: "启用" },
+    { id: "circ-water", name: "循环水管路", color: "var(--color-success)", attr: "流体介质", op: "等于", value: "循环水", joiner: "且", cond: "流体介质 = 循环水", state: "启用" },
+    { id: "steam", name: "蒸汽管路", color: "var(--color-warning)", attr: "流体介质", op: "等于", value: "蒸汽", joiner: "且", cond: "流体介质 = 蒸汽", state: "启用" },
+    { id: "hydrocarbon", name: "含烃管路", color: "var(--color-danger)", attr: "流体介质", op: "包含", value: "烃", joiner: "或", cond: "流体介质 包含 烃", state: "启用" },
+    { id: "inst-air", name: "仪表信号", color: "var(--color-text-muted)", attr: "流体介质", op: "等于", value: "仪表风", joiner: "且", cond: "流体介质 = 仪表风", state: "停用" }
+  ];
+
+  var CR_ATTRS = ["流体介质", "管道等级", "绝热等级", "公称直径"];
+  var CR_OPS = ["等于", "不等于", "包含"];
+  var CR_JOINERS = ["且", "或"];
+
+  var crState = {
+    typeId: "piping", ruleId: "process-water",
+    attr: "流体介质", op: "等于", value: "工艺水", joiner: "且",
+    collapsed: {}
+  };
+
+  function crRule(id) {
+    for (var i = 0; i < COLOR_RULES.length; i++) {
+      if (COLOR_RULES[i].id === id) {
+        return COLOR_RULES[i];
+      }
+    }
+    return null;
+  }
+
+  function crRowsHtml() {
+    var html = "";
+    for (var i = 0; i < COLOR_RULES.length; i++) {
+      var r = COLOR_RULES[i];
+      html += '<tr class="cr__row' + (r.id === crState.ruleId ? " is-selected" : "") +
+        '" data-testid="color-rule-row" data-rule-id="' + esc(r.id) +
+        '" data-color="' + esc(r.color) + '">' +
+        "<td>" + esc(r.name) + "</td>" +
+        '<td><span class="cr__swatch" data-testid="color-swatch" data-color="' +
+        esc(r.color) + '" style="background-color: ' + esc(r.color) + ';"></span></td>' +
+        "<td>" + esc(r.cond) + "</td><td>" + esc(r.state) + "</td></tr>";
+    }
+    return html;
+  }
+
+  function crOptions(list, sel) {
+    var html = "";
+    for (var i = 0; i < list.length; i++) {
+      html += "<option" + (list[i] === sel ? " selected" : "") + ">" + esc(list[i]) + "</option>";
+    }
+    return html;
+  }
+
+  function renderColorRules(def) {
+    var html = screenOpen("color-rules", def);
+    html +=
+      '<div class="panel cr"><div class="cr__body">' +
+      '<aside class="cr__tree" data-testid="color-type-tree">' +
+      typeTreeHtml(TYPE_TREE, 1, crState.typeId, crState.collapsed, "cr", "color-type-node", "color-type-toggle") +
+      "</aside>" +
+      '<div class="cr__main">' +
+      '<section class="cr__list-block"><h2 class="panel__title">规则列表</h2>' +
+      '<table class="cr__table" data-testid="color-rule-list">' +
+      "<thead><tr><th>名称</th><th>颜色</th><th>条件</th><th>状态</th></tr></thead>" +
+      "<tbody>" + crRowsHtml() + "</tbody></table></section>" +
+      '<section class="cr__editor" data-testid="color-rule-editor">' +
+      '<h2 class="panel__title">条件编辑</h2><div class="cr__fields">' +
+      '<label class="cr__field">属性' +
+      '<select class="field" data-testid="condition-attribute">' +
+      crOptions(CR_ATTRS, crState.attr) + "</select></label>" +
+      '<label class="cr__field">运算符' +
+      '<select class="field" data-testid="condition-operator">' +
+      crOptions(CR_OPS, crState.op) + "</select></label>" +
+      '<label class="cr__field">值' +
+      '<input class="field" data-testid="condition-value" type="text" value="' +
+      esc(crState.value) + '"></label>' +
+      '<label class="cr__field">连接符' +
+      '<select class="field" data-testid="condition-joiner">' +
+      crOptions(CR_JOINERS, crState.joiner) + "</select></label>" +
+      "</div>" +
+      '<p class="cr__inherit" data-testid="color-inherit-hint">当前类型无规则时，沿用父类规则。</p>' +
+      "</section></div></div></div>";
+    return html + "</section>";
+  }
+
+  function colorRulesClick(target) {
+    var toggle = closestEl(target, '[data-testid="color-type-toggle"]');
+    if (toggle) {
+      var tNode = closestEl(toggle, '[data-testid="color-type-node"]');
+      var tid = tNode ? tNode.getAttribute("data-type-id") : null;
+      var info = tid ? findTypeNode(TYPE_TREE, tid) : null;
+      if (info && info.children && info.children.length) {
+        crState.collapsed[tid] = !crState.collapsed[tid];
+        rerenderScreen("color-rules");
+      }
+      return;
+    }
+    var node = closestEl(target, '[data-testid="color-type-node"]');
+    if (node) {
+      var id = node.getAttribute("data-type-id");
+      if (id && id !== crState.typeId) {
+        crState.typeId = id;
+        rerenderScreen("color-rules");
+      }
+      return;
+    }
+    var row = closestEl(target, '[data-testid="color-rule-row"]');
+    if (row) {
+      var rule = crRule(row.getAttribute("data-rule-id"));
+      if (rule) {
+        crState.ruleId = rule.id;
+        crState.attr = rule.attr;
+        crState.op = rule.op;
+        crState.value = rule.value;
+        crState.joiner = rule.joiner;
+        rerenderScreen("color-rules");
+      }
+    }
+  }
+
+  /* Condition edits only update state; nothing re-renders so the active
+     field keeps its focus. */
+  function colorRulesChange(target) {
+    var el = closestEl(target, '[data-testid="condition-attribute"]');
+    if (el) {
+      crState.attr = el.value;
+      return;
+    }
+    el = closestEl(target, '[data-testid="condition-operator"]');
+    if (el) {
+      crState.op = el.value;
+      return;
+    }
+    el = closestEl(target, '[data-testid="condition-joiner"]');
+    if (el) {
+      crState.joiner = el.value;
+      return;
+    }
+    el = closestEl(target, '[data-testid="condition-value"]');
+    if (el) {
+      crState.value = el.value || "";
+    }
+  }
+
+  /* ---------- Master data screen ---------- */
+
+  var MD_TABS = [
+    ["dn", "公称直径"],
+    ["pipe-class", "管道等级"],
+    ["insulation", "绝热等级"],
+    ["medium", "流体介质"]
+  ];
+
+  /* Row shape: [编码, 名称, 说明]. Each tab owns a different row count
+     and a different first row so switching tabs is always observable. */
+  var MD_DATA = {
+    dn: [
+      ["DN15", "15", "小口径"],
+      ["DN25", "25", "小口径"],
+      ["DN40", "40", "小口径"],
+      ["DN50", "50", "常用"],
+      ["DN80", "80", "常用"],
+      ["DN100", "100", "常用"]
+    ],
+    "pipe-class": [
+      ["A1A", "碳钢 150LB", "一般腐蚀"],
+      ["A2A", "碳钢 300LB", "一般腐蚀"],
+      ["B1A", "不锈钢 150LB", "低腐蚀"],
+      ["B2A", "不锈钢 300LB", "低腐蚀"],
+      ["C1A", "衬里 150LB", "强腐蚀"]
+    ],
+    insulation: [
+      ["H", "保温", "热保温"],
+      ["C", "保冷", "冷保温"],
+      ["P", "防烫", "人身防护"],
+      ["N", "无", "不绝热"]
+    ],
+    medium: [
+      ["PW", "工艺水", "—"],
+      ["CW", "循环水", "—"],
+      ["STM", "蒸汽", "—"],
+      ["N2", "氮气", "—"],
+      ["IA", "仪表风", "—"],
+      ["FG", "燃料气", "—"],
+      ["HC", "烃类", "—"]
+    ]
+  };
+
+  var mdState = { tab: "dn", sel: -1, hint: "就绪" };
+
+  /* The 名称 column is an in-place input, so every row carries its index
+     for selection and write-back. */
+  function mdRowsHtml() {
+    var rows = MD_DATA[mdState.tab] || [];
+    var html = "";
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      html += '<tr class="md__row' + (i === mdState.sel ? " is-selected" : "") +
+        '" data-testid="masterdata-row" data-index="' + i + '">' +
+        "<td>" + esc(r[0]) + "</td>" +
+        '<td><input class="field md__input" data-testid="masterdata-cell-input" type="text" value="' +
+        esc(r[1]) + '"></td>' +
+        "<td>" + esc(r[2]) + "</td></tr>";
+    }
+    return html;
+  }
+
+  function renderMasterdata(def) {
+    var html = screenOpen("masterdata", def);
+    html += '<div class="panel md">';
+    html += '<div class="md__tabs" data-testid="masterdata-tabs" role="tablist">';
+    for (var i = 0; i < MD_TABS.length; i++) {
+      var on = MD_TABS[i][0] === mdState.tab;
+      html += '<button type="button" class="md__tab' + (on ? " is-active" : "") +
+        '" data-testid="masterdata-tab" data-tab="' + esc(MD_TABS[i][0]) +
+        '" role="tab" aria-selected="' + (on ? "true" : "false") + '">' +
+        esc(MD_TABS[i][1]) + "</button>";
+    }
+    html +=
+      "</div>" +
+      '<div class="md__toolbar">' +
+      '<button type="button" class="md__btn md__btn--primary" data-testid="masterdata-add">新增行</button>' +
+      '<button type="button" class="md__btn" data-testid="masterdata-delete">删除行</button>' +
+      "</div>" +
+      '<div class="md__scroll">' +
+      '<table class="md__table" data-testid="masterdata-table">' +
+      '<thead><tr data-testid="masterdata-header-row"><th>编码</th><th>名称</th><th>说明</th></tr></thead>' +
+      "<tbody>" + mdRowsHtml() + "</tbody></table>" +
+      "</div>" +
+      '<p class="md__status" data-testid="md-status">' + esc(mdState.hint) + "</p>" +
+      "</div>";
+    return html + "</section>";
+  }
+
+  function mdSetHint(text) {
+    mdState.hint = text;
+    var el = document.querySelector('[data-testid="md-status"]');
+    if (el) {
+      el.textContent = text;
+    }
+  }
+
+  /* Row selection flips classes in place: a re-render would steal focus
+     from the 名称 input being clicked into. */
+  function mdSelectRow(row) {
+    var idx = parseInt(row.getAttribute("data-index"), 10);
+    mdState.sel = isNaN(idx) ? -1 : idx;
+    var sib = row.parentNode.children;
+    for (var i = 0; i < sib.length; i++) {
+      if (sib[i] === row) {
+        if (sib[i].className.indexOf("is-selected") === -1) {
+          sib[i].className += " is-selected";
+        }
+      } else {
+        sib[i].className = sib[i].className.replace(/\s*is-selected/g, "");
+      }
+    }
+  }
+
+  function masterdataClick(target) {
+    var tab = closestEl(target, '[data-testid="masterdata-tab"]');
+    if (tab) {
+      var t = tab.getAttribute("data-tab");
+      if (t && MD_DATA[t] && t !== mdState.tab) {
+        mdState.tab = t;
+        mdState.sel = -1;
+        rerenderScreen("masterdata");
+      }
+      return;
+    }
+    if (closestEl(target, '[data-testid="masterdata-add"]')) {
+      var rows = MD_DATA[mdState.tab];
+      rows.push(["NEW", "", ""]);
+      mdState.sel = rows.length - 1;
+      mdState.hint = "已新增 1 行";
+      rerenderScreen("masterdata");
+      return;
+    }
+    if (closestEl(target, '[data-testid="masterdata-delete"]')) {
+      var list = MD_DATA[mdState.tab];
+      if (!list.length) {
+        mdSetHint("无可删除行");
+        return;
+      }
+      var idx = mdState.sel >= 0 && mdState.sel < list.length ? mdState.sel : list.length - 1;
+      list.splice(idx, 1);
+      mdState.sel = -1;
+      mdState.hint = "已删除 1 行";
+      rerenderScreen("masterdata");
+      return;
+    }
+    var row = closestEl(target, '[data-testid="masterdata-row"]');
+    if (row) {
+      mdSelectRow(row);
+    }
+  }
+
+  function masterdataInput(target) {
+    var cell = closestEl(target, '[data-testid="masterdata-cell-input"]');
+    if (!cell) {
+      return;
+    }
+    var row = closestEl(cell, '[data-testid="masterdata-row"]');
+    var idx = row ? parseInt(row.getAttribute("data-index"), 10) : -1;
+    var list = MD_DATA[mdState.tab];
+    if (list && idx >= 0 && idx < list.length) {
+      list[idx][1] = cell.value || "";
+    }
+  }
+
+  /* ---------- Permissions screen ---------- */
+
+  var PE_ROLES = [
+    ["engineer", "工艺工程师", "12"],
+    ["designer", "绘图员", "8"],
+    ["reviewer", "校核人", "5"],
+    ["admin", "项目管理员", "2"]
+  ];
+
+  /* Operation rows x role columns; cells only ever read 允许 or 拒绝. */
+  var PE_MATRIX = [
+    ["查看图纸", "允许", "允许", "允许", "允许"],
+    ["编辑图纸", "允许", "允许", "拒绝", "允许"],
+    ["发布图纸", "拒绝", "拒绝", "允许", "允许"],
+    ["管理权限", "拒绝", "拒绝", "拒绝", "允许"]
+  ];
+
+  var peState = { role: "", hint: "按 PBS 节点配置图纸范围的访问权限。" };
+
+  function renderPermissions(def) {
+    var html = screenOpen("permissions", def);
+    html +=
+      '<div class="panel pe"><div class="pe__body">' +
+      '<section class="pe__roles">' +
+      '<h2 class="panel__title">角色</h2>' +
+      '<table class="pe__table" data-testid="role-list">' +
+      "<thead><tr><th>角色名</th><th>成员数</th></tr></thead><tbody>";
+    for (var i = 0; i < PE_ROLES.length; i++) {
+      var r = PE_ROLES[i];
+      html += '<tr class="pe__row' + (r[0] === peState.role ? " is-selected" : "") +
+        '" data-testid="role-row" data-role="' + esc(r[0]) + '">' +
+        "<td>" + esc(r[1]) + "</td><td>" + esc(r[2]) + "</td></tr>";
+    }
+    html +=
+      "</tbody></table></section>" +
+      '<section class="pe__matrix">' +
+      '<h2 class="panel__title">权限矩阵</h2>' +
+      '<table class="pe__matrix-table" data-testid="permission-matrix">' +
+      "<thead><tr><th>操作项</th><th>工艺工程师</th><th>绘图员</th><th>校核人</th><th>项目管理员</th></tr></thead><tbody>";
+    for (var m = 0; m < PE_MATRIX.length; m++) {
+      var line = PE_MATRIX[m];
+      html += '<tr class="pe__mrow" data-testid="permission-row">';
+      for (var c = 0; c < line.length; c++) {
+        html += "<td>" + esc(line[c]) + "</td>";
+      }
+      html += "</tr>";
+    }
+    html +=
+      "</tbody></table></section>" +
+      '<aside class="pe__scope">' +
+      '<h2 class="panel__title">图纸状态</h2>' +
+      '<select class="field" data-testid="drawing-state-select">' +
+      "<option>单人编辑</option><option>协同编辑</option><option>只读</option>" +
+      "</select>" +
+      '<p class="pe__hint" data-testid="pe-hint">' + esc(peState.hint) + "</p>" +
+      "</aside></div></div>";
+    return html + "</section>";
+  }
+
+  /* Role selection flips classes in place and mirrors the role name in
+     the hint line; the matrix itself never re-renders. */
+  function permissionsClick(target) {
+    var row = closestEl(target, '[data-testid="role-row"]');
+    if (!row) {
+      return;
+    }
+    var role = row.getAttribute("data-role") || "";
+    var name = role;
+    for (var i = 0; i < PE_ROLES.length; i++) {
+      if (PE_ROLES[i][0] === role) {
+        name = PE_ROLES[i][1];
+      }
+    }
+    peState.role = role;
+    peState.hint = "当前角色：" + name;
+    var sib = row.parentNode.children;
+    for (var k = 0; k < sib.length; k++) {
+      if (sib[k] === row) {
+        if (sib[k].className.indexOf("is-selected") === -1) {
+          sib[k].className += " is-selected";
+        }
+      } else {
+        sib[k].className = sib[k].className.replace(/\s*is-selected/g, "");
+      }
+    }
+    var el = document.querySelector('[data-testid="pe-hint"]');
+    if (el) {
+      el.textContent = peState.hint;
+    }
+  }
+
+  /* ---------- Delegated interaction ---------- */
+
+  document.addEventListener("click", function (event) {
+    var target = event.target || event.srcElement;
+    while (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+    if (screenActive("tag-rules")) {
+      tagRulesClick(target);
+    } else if (screenActive("color-rules")) {
+      colorRulesClick(target);
+    } else if (screenActive("masterdata")) {
+      masterdataClick(target);
+    } else if (screenActive("permissions")) {
+      permissionsClick(target);
+    }
+  });
+
+  document.addEventListener("input", function (event) {
+    var target = event.target || event.srcElement;
+    while (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+    if (screenActive("tag-rules")) {
+      tagRulesInput(target);
+    } else if (screenActive("masterdata")) {
+      masterdataInput(target);
+    } else if (screenActive("color-rules")) {
+      colorRulesChange(target);
+    }
+  });
+
+  /* Selects fire change rather than input, so both events route to the
+     same handlers. */
+  document.addEventListener("change", function (event) {
+    var target = event.target || event.srcElement;
+    while (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+    if (screenActive("tag-rules")) {
+      tagRulesInput(target);
+    } else if (screenActive("color-rules")) {
+      colorRulesChange(target);
+    }
+  });
+
+  window.PidScreens = window.PidScreens || {};
+  window.PidScreens["tag-rules"] = renderTagRules;
+  window.PidScreens["color-rules"] = renderColorRules;
+  window.PidScreens.masterdata = renderMasterdata;
+  window.PidScreens.permissions = renderPermissions;
+})();
+
