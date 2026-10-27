@@ -225,6 +225,30 @@ Desktop plugins run in separate processes and communicate with the host through 
 - [Tessellation pipeline](docs/tessellation.md)
 - [Security policy](SECURITY.md)
 
+## P&ID 平台规格包
+
+本仓库的 [`docs/pid-platform/`](docs/pid-platform/README.md) 目录是一份智能 P&ID 平台的产品规格包，包含产品需求、术语基线、架构设计、需求条目、交付物定义与 14 屏交互原型。它是**规格文本，不是产品实现**：其中描述的位号主数据、类型属性模型、可配置校验引擎、语义材料清单、权限与审计等能力，均以需求条目与原型界面的形式给出，本仓库不包含对应的产品代码。
+
+从 [P&ID 平台规格包入口](docs/pid-platform/README.md) 开始阅读，该文档给出全部交付物的索引、按角色的阅读顺序与原型打开方式。
+
+### 按角色阅读路径
+
+- **产品与项目经理**：[PRD](docs/pid-platform/PRD.md) → [需求总览](docs/pid-platform/requirements/00-overview.md) → [差距分析](docs/pid-platform/gap-analysis.md)
+- **架构师**：[系统架构](docs/pid-platform/architecture/system-architecture.md) → [数据模型](docs/pid-platform/architecture/data-model.md) → [复用映射](docs/pid-platform/requirements/95-reuse-mapping.md)
+- **需求与测试工程师**：[需求总览](docs/pid-platform/requirements/00-overview.md) → [图纸与绘图需求](docs/pid-platform/requirements/40-drawing-and-drafting.md) → [数据与规则引擎需求](docs/pid-platform/requirements/50-data-and-rule-engine.md)
+
+### 打开原型
+
+原型是零依赖静态页面，入口为 `docs/pid-platform/prototype/index.html`，采用 hash 路由，地址形如 `#/screen/<屏幕id>`。
+
+直接以 `file://` 协议打开入口文件即可浏览界面，适合快速查看屏幕结构与导航，无需任何运行时依赖。需要读取界面发布的状态对象时改用本地静态服务，在仓库根目录执行：
+
+```bash
+python -m http.server 3110 --bind 127.0.0.1 --directory docs/pid-platform/prototype
+```
+
+然后访问 `http://127.0.0.1:3110/index.html`。`file://` 下部分浏览器会限制脚本与本地资源加载，HTTP 方式的行为与正式部署一致，因此自动化校验以 HTTP 访问为准。
+
 ## Contributing
 
 Bug reports, focused pull requests, translations, documentation improvements, and plugin contributions are welcome.

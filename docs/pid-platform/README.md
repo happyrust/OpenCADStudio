@@ -72,10 +72,10 @@
 
 ### 本地静态服务
 
-在 `docs/pid-platform/prototype` 目录执行以下命令：
+在仓库根目录执行以下命令：
 
 ```
-python -m http.server 3110 --bind 127.0.0.1
+python -m http.server 3110 --bind 127.0.0.1 --directory docs/pid-platform/prototype
 ```
 
 随后访问 `http://127.0.0.1:3110/index.html`。HTTP 协议下脚本、样式与路由行为与正式部署一致，自动化校验脚本可稳定读取界面发布的状态对象，因此这是推荐的取证方式。
