@@ -2197,3 +2197,416 @@
   window.PidScreens = window.PidScreens || {};
   window.PidScreens.editor = renderEditor;
 })();
+
+/* Object property manager screen for the P&ID platform prototype.
+   Classic script, ES5, no modules/network. Extends window.PidScreens without
+   replacing the renderers registered above. */
+(function () {
+  "use strict";
+
+  var Shell = window.PidShell;
+
+  function esc(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  /* Field groups per leaf type. The required flag drives the star marker in
+     the detail table and the required key of each __proto.selectedProps
+     entry. */
+  var TYPE_GROUPS = {
+    pump: [
+      {
+        name: "基本属性",
+        fields: [
+          { name: "位号", required: true },
+          { name: "名称", required: true },
+          { name: "设备类别", required: false }
+        ]
+      },
+      {
+        name: "工艺参数",
+        fields: [
+          { name: "设计压力", required: true },
+          { name: "设计温度", required: false },
+          { name: "额定流量", required: false },
+          { name: "扬程", required: false }
+        ]
+      }
+    ],
+    vessel: [
+      {
+        name: "基本属性",
+        fields: [
+          { name: "位号", required: true },
+          { name: "名称", required: true },
+          { name: "容器形式", required: false }
+        ]
+      },
+      {
+        name: "设计参数",
+        fields: [
+          { name: "设计压力", required: true },
+          { name: "设计温度", required: false },
+          { name: "公称直径", required: false },
+          { name: "容积", required: false }
+        ]
+      }
+    ],
+    valve: [
+      {
+        name: "阀门属性",
+        fields: [
+          { name: "位号", required: true },
+          { name: "名称", required: true },
+          { name: "公称直径", required: false },
+          { name: "压力等级", required: false },
+          { name: "开度", required: false }
+        ]
+      }
+    ],
+    instrument: [
+      {
+        name: "仪表属性",
+        fields: [
+          { name: "位号", required: true },
+          { name: "名称", required: true },
+          { name: "仪表类型", required: false },
+          { name: "量程", required: false },
+          { name: "精度等级", required: false }
+        ]
+      }
+    ]
+  };
+
+  /* Type tree. The equipment branch reaches three levels; leaf ids match
+     instance typeId values and parents resolve to descendant instances. */
+  var TYPE_TREE = [
+    {
+      id: "process",
+      name: "工艺设备",
+      children: [
+        {
+          id: "rotating",
+          name: "转动设备",
+          children: [
+            { id: "pump", name: "泵", children: [] },
+            { id: "compressor", name: "压缩机", children: [] }
+          ]
+        },
+        {
+          id: "static-eq",
+          name: "静设备",
+          children: [
+            { id: "vessel", name: "容器", children: [] },
+            { id: "tower", name: "塔器", children: [] }
+          ]
+        }
+      ]
+    },
+    {
+      id: "piping",
+      name: "管道附件",
+      children: [
+        { id: "valve", name: "阀门", children: [] },
+        { id: "fitting", name: "管件", children: [] }
+      ]
+    },
+    {
+      id: "instrument-root",
+      name: "仪表",
+      children: [
+        { id: "instrument", name: "现场仪表", children: [] },
+        { id: "loop", name: "仪表回路", children: [] }
+      ]
+    }
+  ];
+
+  var INSTANCES = [
+    { tag: "P-1001", typeId: "pump", typeName: "泵", status: "已校核", props: { "位号": "P-1001", "名称": "原油进料泵", "设备类别": "离心泵", "设计压力": "1.6 MPa", "设计温度": "120 ℃", "额定流量": "150 m³/h", "扬程": "60 m" } },
+    { tag: "P-1002", typeId: "pump", typeName: "泵", status: "设计中", props: { "位号": "P-1002", "名称": "常压塔回流泵", "设备类别": "离心泵", "设计压力": "1.2 MPa", "设计温度": "180 ℃", "额定流量": "80 m³/h", "扬程": "45 m" } },
+    { tag: "P-1003", typeId: "pump", typeName: "泵", status: "设计中", props: { "位号": "P-1003", "名称": "减压渣油泵", "设备类别": "离心泵", "设计压力": "2.5 MPa", "设计温度": "320 ℃", "额定流量": "45 m³/h", "扬程": "90 m" } },
+    { tag: "V-1001", typeId: "vessel", typeName: "容器", status: "已校核", props: { "位号": "V-1001", "名称": "原油缓冲罐", "容器形式": "卧式容器", "设计压力": "0.8 MPa", "设计温度": "90 ℃", "公称直径": "DN2400", "容积": "40 m³" } },
+    { tag: "V-1002", typeId: "vessel", typeName: "容器", status: "设计中", props: { "位号": "V-1002", "名称": "污油罐", "容器形式": "立式容器", "设计压力": "常压", "设计温度": "60 ℃", "公称直径": "DN1800", "容积": "25 m³" } },
+    { tag: "XV-2001", typeId: "valve", typeName: "阀门", status: "已发布", props: { "位号": "XV-2001", "名称": "原油切断阀", "公称直径": "DN100", "压力等级": "PN16", "开度": "50%" } },
+    { tag: "XV-2002", typeId: "valve", typeName: "阀门", status: "设计中", props: { "位号": "XV-2002", "名称": "回流调节阀", "公称直径": "DN80", "压力等级": "PN16", "开度": "35%" } },
+    { tag: "PI-3001", typeId: "instrument", typeName: "仪表", status: "已校核", props: { "位号": "PI-3001", "名称": "泵出口压力指示", "仪表类型": "压力表", "量程": "0~2.5 MPa", "精度等级": "1.6 级" } },
+    { tag: "TI-3001", typeId: "instrument", typeName: "仪表", status: "已发布", props: { "位号": "TI-3001", "名称": "塔顶温度指示", "仪表类型": "双金属温度计", "量程": "0~300 ℃", "精度等级": "1.5 级" } }
+  ];
+
+  var state = { selectedTag: "P-1001", selectedTypeId: "pump", collapsed: {}, hint: "就绪" };
+
+  function findInstance(tag) {
+    for (var i = 0; i < INSTANCES.length; i++) {
+      if (INSTANCES[i].tag === tag) {
+        return INSTANCES[i];
+      }
+    }
+    return null;
+  }
+
+  function findNode(id, nodes) {
+    nodes = nodes || TYPE_TREE;
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].id === id) {
+        return nodes[i];
+      }
+      var hit = findNode(id, nodes[i].children);
+      if (hit) {
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  /* Ids of a node and every descendant, preorder. */
+  function idsUnder(node, out) {
+    out.push(node.id);
+    for (var i = 0; i < node.children.length; i++) {
+      idsUnder(node.children[i], out);
+    }
+    return out;
+  }
+
+  /* First instance in list order whose type is the node or a descendant. */
+  function firstInstanceUnder(typeId) {
+    var node = findNode(typeId);
+    if (!node) {
+      return null;
+    }
+    var ids = idsUnder(node, []);
+    for (var i = 0; i < INSTANCES.length; i++) {
+      if (ids.indexOf(INSTANCES[i].typeId) >= 0) {
+        return INSTANCES[i];
+      }
+    }
+    return null;
+  }
+
+  /* Flattened {name, value, required} rows for __proto.selectedProps. */
+  function propsFor(inst) {
+    var out = [];
+    var vals = inst.props || {};
+    var groups = TYPE_GROUPS[inst.typeId] || [];
+    for (var g = 0; g < groups.length; g++) {
+      for (var f = 0; f < groups[g].fields.length; f++) {
+        var field = groups[g].fields[f];
+        out.push({
+          name: field.name,
+          value: vals[field.name] || "",
+          required: !!field.required
+        });
+      }
+    }
+    return out;
+  }
+
+  /* ---------- Section renderers ---------- */
+
+  function treeHtml(nodes, level, cls) {
+    var html = '<ul class="' + cls + '">';
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      var collapsed = !!state.collapsed[node.id];
+      html +=
+        '<li class="pm__node' +
+        (state.selectedTypeId === node.id ? " is-selected" : "") +
+        '" data-testid="type-node" data-type-id="' + esc(node.id) +
+        '" data-level="' + level + '">' +
+        '<div class="pm__node-row">' +
+        '<button type="button" class="pm__toggle" data-testid="type-toggle">' +
+        (collapsed ? "▸" : "▾") + "</button>" +
+        '<span class="pm__node-label">' + esc(node.name) + "</span></div>";
+      if (node.children.length && !collapsed) {
+        html += treeHtml(node.children, level + 1, "pm__children");
+      }
+      html += "</li>";
+    }
+    return html + "</ul>";
+  }
+
+  function listHtml() {
+    var html =
+      '<table class="pm__table" data-testid="instance-list"><thead><tr>' +
+      "<th>位号</th><th>类型</th><th>状态</th></tr></thead><tbody>";
+    for (var i = 0; i < INSTANCES.length; i++) {
+      var inst = INSTANCES[i];
+      html +=
+        '<tr class="pm__row' +
+        (inst.tag === state.selectedTag ? " is-selected" : "") +
+        '" data-testid="instance-row" data-tag="' +
+        esc(inst.tag) +
+        '" data-type-id="' +
+        esc(inst.typeId) +
+        '"><td>' +
+        esc(inst.tag) +
+        "</td><td>" +
+        esc(inst.typeName) +
+        "</td><td>" +
+        esc(inst.status) +
+        "</td></tr>";
+    }
+    return html + "</tbody></table>";
+  }
+
+  function detailHtml(inst, typeId) {
+    var node = findNode(typeId);
+    if (!inst) {
+      return '<p class="pm__empty">「' + esc(node ? node.name : typeId) +
+        "」类型下暂无实例。</p>";
+    }
+    var vals = inst.props || {};
+    var html =
+      '<div class="pm__detail-head">' +
+      '<span class="pm__detail-tag">' + esc(inst.tag) + "</span>" +
+      '<span class="pm__detail-type">' +
+      esc((node ? node.name : inst.typeName) + " · " + inst.status) +
+      "</span></div>";
+    var groups = TYPE_GROUPS[inst.typeId] || [];
+    for (var g = 0; g < groups.length; g++) {
+      html +=
+        '<div class="pm__group" data-testid="prop-group" data-group-name="' +
+        esc(groups[g].name) + '">' +
+        '<h3 class="pm__group-title">' + esc(groups[g].name) + "</h3>" +
+        '<table class="pm__props"><tbody>';
+      var fields = groups[g].fields;
+      for (var f = 0; f < fields.length; f++) {
+        var field = fields[f];
+        html +=
+          '<tr class="pm__prop-row" data-testid="prop-row" data-prop-name="' +
+          esc(field.name) + '"><th scope="row">' + esc(field.name) +
+          (field.required ? '<span class="pm__req">*</span>' : "") +
+          "</th><td>" + esc(vals[field.name] || "") + "</td></tr>";
+      }
+      html += "</tbody></table></div>";
+    }
+    return html;
+  }
+
+  function renderProperties(def) {
+    var inst = state.selectedTag ? findInstance(state.selectedTag) : null;
+    if (!inst && state.selectedTag) {
+      inst = INSTANCES[0] || null;
+      state.selectedTag = inst ? inst.tag : state.selectedTag;
+    }
+    var props = inst ? propsFor(inst) : [];
+    if (Shell && typeof Shell.setPendingProtoMerge === "function") {
+      Shell.setPendingProtoMerge("properties", {
+        selectedTag: inst ? inst.tag : "",
+        selectedProps: props
+      });
+    }
+    var html =
+      '<section class="screen" data-screen="properties"><header class="screen__header">' +
+      '<h1 class="screen__title" data-testid="screen-title">对象属性管理器</h1>' +
+      '<p class="screen__desc">' + esc(def && def.desc ? def.desc : "") + "</p></header>" +
+      '<div class="panel pm"><div class="pm__toolbar" data-testid="properties-toolbar">' +
+      '<button type="button" class="pm__btn pm__btn--primary" data-testid="batch-edit">批量编辑</button>' +
+      '<button type="button" class="pm__btn" data-testid="export-props">导出</button>' +
+      '<button type="button" class="pm__btn" data-testid="import-props">导入</button></div>' +
+      '<div class="pm__body"><aside class="pm__tree" data-testid="type-tree">' +
+      treeHtml(TYPE_TREE, 1, "pm__tree-list") +
+      '</aside><section class="pm__list">' + listHtml() +
+      '</section><aside class="pm__detail" data-testid="property-detail">' +
+      detailHtml(inst, state.selectedTypeId) +
+      '</aside></div><p class="pm__status" data-testid="pm-status">' +
+      esc(state.hint) + "</p></div></section>";
+    return html;
+  }
+
+  /* ---------- Delegated interaction ---------- */
+
+  function closestEl(el, selector) {
+    var matcher = el && (el.matches || el.msMatchesSelector || el.webkitMatchesSelector);
+    while (el && el.nodeType === 1) {
+      if (matcher && matcher.call(el, selector)) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function propsActive() {
+    if (Shell && typeof Shell.currentScreenId === "function" &&
+        Shell.currentScreenId() === "properties") {
+      return true;
+    }
+    return !!document.querySelector('[data-screen="properties"]');
+  }
+
+  function rerenderProps() {
+    var body = document.querySelector('[data-testid="screen-body"]');
+    if (!body || !Shell) {
+      return;
+    }
+    body.innerHTML = Shell.renderScreenHtml("properties");
+    Shell.publishProto("properties");
+  }
+
+  function setHint(text) {
+    state.hint = text;
+    var el = document.querySelector('[data-testid="pm-status"]');
+    if (el) { el.textContent = text; }
+  }
+
+  document.addEventListener("click", function (event) {
+    if (!propsActive()) {
+      return;
+    }
+    var target = event.target || event.srcElement;
+    while (target && target.nodeType !== 1) {
+      target = target.parentElement;
+    }
+    if (!target) {
+      return;
+    }
+    var tog = closestEl(target, '[data-testid="type-toggle"]');
+    var nrow = closestEl(target, ".pm__node-row");
+    if (tog || nrow) {
+      var li = closestEl(tog || nrow, '[data-testid="type-node"]');
+      if (li) {
+        var nid = li.getAttribute("data-type-id");
+        if (tog) {
+          state.collapsed[nid] = !state.collapsed[nid];
+        } else {
+          var first = firstInstanceUnder(nid);
+          var selNode = findNode(nid);
+          state.selectedTypeId = nid;
+          state.selectedTag = first ? first.tag : "";
+          state.hint = "已选中类型 " + (selNode ? selNode.name : nid);
+        }
+        rerenderProps();
+      }
+      return;
+    }
+    var row = closestEl(target, '[data-testid="instance-row"]');
+    if (row) {
+      var inst = findInstance(row.getAttribute("data-tag"));
+      if (inst && inst.tag !== state.selectedTag) {
+        state.selectedTag = inst.tag;
+        state.selectedTypeId = inst.typeId;
+        state.hint = "已选中 " + inst.tag;
+        rerenderProps();
+      }
+      return;
+    }
+    var btn = closestEl(target, ".pm__btn");
+    if (btn) {
+      var act = btn.getAttribute("data-testid");
+      if (act === "batch-edit") {
+        setHint("批量编辑已开启，请在右侧属性表中逐条修改。");
+      } else if (act === "export-props") {
+        setHint("属性导出任务已提交，完成后将在消息中通知。");
+      } else if (act === "import-props") {
+        setHint("请选择要导入的属性文件（原型仅演示入口）。");
+      }
+    }
+  });
+
+  window.PidScreens = window.PidScreens || {};
+  window.PidScreens.properties = renderProperties;
+})();
