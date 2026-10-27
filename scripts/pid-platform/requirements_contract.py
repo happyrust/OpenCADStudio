@@ -707,6 +707,166 @@ def validate_type_library_coverage(documents: dict) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Symbol library & project settings (VAL-REQ-006)
+# ---------------------------------------------------------------------------
+
+# The thirteen sections VAL-REQ-006 names, in the order the manifest declares
+# them. Each must carry at least one requirement entry.
+SYMBOL_SECTIONS = [
+    "图例标准",
+    "符号分类",
+    "符号属性",
+    "符号编辑器",
+    "连接点",
+    "符号标签",
+    "位号规则",
+    "颜色规则",
+    "公称直径",
+    "管道等级",
+    "绝热等级",
+    "流体介质",
+    "相交断线与打断符",
+]
+
+CONNECTION_POINT_COLUMNS = ["类型", "方向", "用途"]
+CONNECTION_POINT_TYPES = ["等径", "异径", "信号线"]
+CONNECTION_POINT_DIRECTIONS = ["双向点", "流入点", "流出点"]
+CONNECTION_POINT_COMBINATIONS = 9
+
+# VAL-DOC-009 makes this document the authoritative definition site for the
+# tag-rule field names. The list is the set the prototype and the data document
+# must reproduce character-identically; the synonym below must never stand in
+# for the canonical name inside this same document.
+TAG_RULE_FIELDS = [
+    "格式名称",
+    "起始编码",
+    "增量",
+    "后缀递增",
+    "层级选择",
+    "拼接字段",
+    "位号唯一校验",
+    "自动弹窗",
+]
+TAG_RULE_SYNONYMS = ["位号唯一性校验"]
+
+COLOR_RULE_ELEMENTS = ["属性", "运算符", "值", "连接符"]
+INTERSECTION_TOKENS = [
+    "夹套管",
+    "在役次工艺管线",
+    "权重",
+    "打断符样式",
+    "打断符高度",
+]
+
+
+def _connection_type(cell: str) -> str:
+    """Strip an optional 连接点 suffix so 等径 and 等径连接点 compare equal."""
+    text = cell.strip()
+    if text.endswith("连接点"):
+        text = text[: -len("连接点")]
+    return text.strip()
+
+
+def validate_connection_point_table(text: str, path: str = None) -> list:
+    """The 3 types x 3 directions table required by VAL-REQ-006."""
+    path = path or AREA_FILE_OF["SYM"]
+    errors = []
+    table = None
+    for candidate in parse_tables(text):
+        if candidate["header"] == CONNECTION_POINT_COLUMNS:
+            table = candidate
+            break
+    if table is None:
+        return [
+            "%s: 连接点 has no table with columns %s"
+            % (path, " | ".join(CONNECTION_POINT_COLUMNS))
+        ]
+
+    if len(table["rows"]) != CONNECTION_POINT_COMBINATIONS:
+        errors.append(
+            "%s: 连接点 table has %d rows; exactly %d combinations are required"
+            % (path, len(table["rows"]), CONNECTION_POINT_COMBINATIONS)
+        )
+
+    seen = {}
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) < 3:
+            errors.append("%s:%d: 连接点 row has fewer than 3 cells" % (path, line))
+            continue
+        kind = _connection_type(row[0])
+        direction = row[1].strip()
+        if kind not in CONNECTION_POINT_TYPES:
+            errors.append(
+                "%s:%d: unknown connection point type '%s'; expected one of %s"
+                % (path, line, row[0].strip(), "/".join(CONNECTION_POINT_TYPES))
+            )
+            continue
+        if direction not in CONNECTION_POINT_DIRECTIONS:
+            errors.append(
+                "%s:%d: unknown connection point direction '%s'; expected one of %s"
+                % (path, line, row[1].strip(), "/".join(CONNECTION_POINT_DIRECTIONS))
+            )
+            continue
+        if (kind, direction) in seen:
+            errors.append(
+                "%s:%d: connection point %s/%s repeats the row on line %d"
+                % (path, line, kind, direction, seen[(kind, direction)])
+            )
+        elif not row[2].strip():
+            errors.append(
+                "%s:%d: connection point %s/%s has no 用途"
+                % (path, line, kind, direction)
+            )
+        seen[(kind, direction)] = line
+
+    for kind in CONNECTION_POINT_TYPES:
+        for direction in CONNECTION_POINT_DIRECTIONS:
+            if (kind, direction) not in seen:
+                errors.append(
+                    "%s: 连接点 table omits the %s/%s combination" % (path, kind, direction)
+                )
+    return errors
+
+
+def validate_symbol_library_coverage(documents: dict) -> list:
+    """VAL-REQ-006: thirteen sections, nine connection points, eight tag fields."""
+    path = AREA_FILE_OF["SYM"]
+    text = documents.get(path)
+    if text is None:
+        return ["%s: symbol library requirement document is missing" % path]
+
+    errors = validate_sections(text, SYMBOL_SECTIONS, path)
+    errors.extend(validate_connection_point_table(section_text(text, "连接点"), path))
+
+    tag_rules = section_text(text, "位号规则")
+    for name in TAG_RULE_FIELDS:
+        if name not in tag_rules:
+            errors.append("%s: 位号规则 does not define the field '%s'" % (path, name))
+    for synonym in TAG_RULE_SYNONYMS:
+        if synonym in tag_rules:
+            errors.append(
+                "%s: 位号规则 uses the synonym '%s'; the canonical field name is '位号唯一校验'"
+                % (path, synonym)
+            )
+
+    colors = section_text(text, "颜色规则")
+    for element in COLOR_RULE_ELEMENTS:
+        if element not in colors:
+            errors.append(
+                "%s: 颜色规则 does not state the condition element '%s'" % (path, element)
+            )
+    if "继承" not in colors:
+        errors.append("%s: 颜色规则 does not state the inheritance rule" % path)
+
+    crossing = section_text(text, "相交断线与打断符")
+    for token in INTERSECTION_TOKENS:
+        if token not in crossing:
+            errors.append("%s: 相交断线与打断符 does not state '%s'" % (path, token))
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Whole-contract validation
 # ---------------------------------------------------------------------------
 

@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | PLAT | `docs/pid-platform/requirements/10-platform.md` | 平台层需求，共 15 条 |
 | TYPE | `docs/pid-platform/requirements/20-type-library.md` | 类型库与属性模型需求，共 15 条 |
-| SYM | `docs/pid-platform/requirements/30-symbol-library-and-project-settings.md` | 符号库与项目设置需求 |
+| SYM | `docs/pid-platform/requirements/30-symbol-library-and-project-settings.md` | 符号库与项目设置需求，共 18 条 |
 | DRW | `docs/pid-platform/requirements/40-drawing-and-drafting.md` | 图纸与绘图需求 |
 | DATA | `docs/pid-platform/requirements/50-data-and-rule-engine.md` | 数据与设计规则检查需求 |
 | DELV | `docs/pid-platform/requirements/60-deliverables-and-publish.md` | 交付与发布需求 |
@@ -80,6 +80,24 @@
 | REQ-TYPE-013 | TYPE | typelib | 类型变更影响提示在类型库屏保存时给出 |
 | REQ-TYPE-014 | TYPE | tag-rules | 位号规则继承来源与层级在位号规则屏预览 |
 | REQ-TYPE-015 | TYPE | color-rules | 子类型覆盖标记与预览在颜色规则屏维护 |
+| REQ-SYM-001 | SYM | symbols | 图例标准选定与不可切换规则在符号库屏呈现 |
+| REQ-SYM-002 | SYM | symbols | 符号分类树与选项板分组同步在符号库屏维护 |
+| REQ-SYM-003 | SYM | symbols | 符号属性七项在符号库屏属性对话框编辑 |
+| REQ-SYM-004 | SYM | symbol-editor | 符号编辑器绘图与常用选项卡在符号编辑器屏呈现 |
+| REQ-SYM-005 | SYM | symbol-editor | 连接点三类型与三方向组合在符号编辑器屏连接点表定义 |
+| REQ-SYM-006 | SYM | symbol-editor | 符号标签四字段在符号编辑器屏属性标签表编辑 |
+| REQ-SYM-007 | SYM | tag-rules | 位号规则八字段与格式拼接在位号规则屏定义 |
+| REQ-SYM-008 | SYM | tag-rules | 自动编码、层级选择与后缀递增在位号规则屏配置 |
+| REQ-SYM-009 | SYM | tag-rules | 位号唯一校验与自动弹窗开关在位号规则屏设置 |
+| REQ-SYM-010 | SYM | tag-rules | 位号规则继承来源与导入导出在位号规则屏呈现 |
+| REQ-SYM-011 | SYM | color-rules | 颜色规则条件表达式在颜色规则屏条件编辑区配置 |
+| REQ-SYM-012 | SYM | color-rules | 颜色规则继承与启动规则开关在颜色规则屏维护 |
+| REQ-SYM-013 | SYM | masterdata | 公称直径序列在项目主数据屏公称直径页签维护 |
+| REQ-SYM-014 | SYM | masterdata | 管道等级在项目主数据屏管道等级页签维护 |
+| REQ-SYM-015 | SYM | masterdata | 绝热等级在项目主数据屏绝热等级页签维护 |
+| REQ-SYM-016 | SYM | masterdata | 流体介质在项目主数据屏流体介质页签维护 |
+| REQ-SYM-017 | SYM | 无界面 | 相交断线权重属 P&ID 基础设置，14 屏原型未含基础设置屏 |
+| REQ-SYM-018 | SYM | 无界面 | 打断符样式与高度属 P&ID 基础设置，14 屏原型未含基础设置屏 |
 
 ## 校验规则
 

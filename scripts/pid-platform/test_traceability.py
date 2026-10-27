@@ -16,12 +16,16 @@ from conftest import CATALOG, DOCS, SCREEN_IDS
 from manifest_contract import normalize_heading
 from requirements_contract import (
     AREA_FLOOR,
+    CONNECTION_POINT_DIRECTIONS,
+    CONNECTION_POINT_TYPES,
     MATRIX_COLUMNS,
     OBSERVABLE_WORDS,
     OVERVIEW_PATH,
     REQ_AREA_FILES,
     REQ_ID_RE,
     REQ_ID_TEXT,
+    SYMBOL_SECTIONS,
+    TAG_RULE_FIELDS,
     TYPE_SECTIONS,
     PLATFORM_SECTIONS,
     definitions,
@@ -29,14 +33,17 @@ from requirements_contract import (
     load_documents,
     matrix_rows,
     section_requirement_counts,
+    section_text,
     split_entries,
     strip_list_number,
     validate_area_floors,
     validate_area_table,
+    validate_connection_point_table,
     validate_matrix,
     validate_platform_coverage,
     validate_requirement_ids,
     validate_entries,
+    validate_symbol_library_coverage,
     validate_traceability,
     validate_type_library_coverage,
     whitelisted_sections,
@@ -44,13 +51,16 @@ from requirements_contract import (
 
 PLAT_PATH = "requirements/10-platform.md"
 TYPE_PATH = "requirements/20-type-library.md"
+SYMBOL_PATH = "requirements/30-symbol-library-and-project-settings.md"
 
 # Every declared section, paired with the area document that must carry it as
 # an H2 heading. The names themselves live in the contract module; the pairing
 # is what makes the parametrized check below assert file state.
-SECTION_HEADINGS = [(PLAT_PATH, name) for name in PLATFORM_SECTIONS] + [
-    (TYPE_PATH, name) for name in TYPE_SECTIONS
-]
+SECTION_HEADINGS = (
+    [(PLAT_PATH, name) for name in PLATFORM_SECTIONS]
+    + [(TYPE_PATH, name) for name in TYPE_SECTIONS]
+    + [(SYMBOL_PATH, name) for name in SYMBOL_SECTIONS]
+)
 
 
 def _screen_ids() -> list:
@@ -181,6 +191,55 @@ def _valid_documents() -> dict:
     return _documents(platform_ids, type_ids, matrix)
 
 
+CONNECTION_POINT_ROWS = [
+    ("等径", "双向点", "等径直通管件两端，介质可双向流动"),
+    ("等径", "流入点", "等径单向流元件入口，介质只能流入"),
+    ("等径", "流出点", "等径单向流元件出口，介质只能流出"),
+    ("异径", "双向点", "异径管两端的变径连接，介质可双向流动"),
+    ("异径", "流入点", "异径单向流元件入口，介质只能流入"),
+    ("异径", "流出点", "异径单向流元件出口，介质只能流出"),
+    ("信号线", "双向点", "仪表之间的双向信号传递"),
+    ("信号线", "流入点", "进入仪表的单向信号"),
+    ("信号线", "流出点", "离开仪表的单向信号"),
+]
+
+
+def _symbol_document() -> str:
+    """A synthetic symbol-library document that satisfies every VAL-REQ-006 check.
+
+    The negative controls below mutate one fact at a time, so each failure class
+    is proven to be detected rather than merely described.
+    """
+    connection_table = (
+        "| 类型 | 方向 | 用途 |\n"
+        "| --- | --- | --- |\n"
+        + "\n".join("| %s | %s | %s |" % row for row in CONNECTION_POINT_ROWS)
+        + "\n"
+    )
+    tag_table = (
+        "| 字段 | 类型 | 必填 | 约束 |\n"
+        "| --- | --- | --- | --- |\n"
+        + "\n".join("| %s | String | 是 | — |" % name for name in TAG_RULE_FIELDS)
+        + "\n"
+    )
+    extras = {
+        "连接点": connection_table,
+        "位号规则": tag_table + "\n格式 `P-{序号}` 配起始编码 1001 生成 `P-1001`。\n\n",
+        "颜色规则": "条件要素：属性、运算符、值、连接符；当前类型无规则时继承父类型规则。\n\n",
+        "相交断线与打断符": (
+            "7 种管线类型权重中夹套管最高、在役次工艺管线最低；"
+            "打断符样式 3 种；打断符高度 默认 3。\n\n"
+        ),
+    }
+    parts = ["# 符号库与项目设置需求\n\n共 %d 条需求。\n\n" % len(SYMBOL_SECTIONS)]
+    for index, name in enumerate(SYMBOL_SECTIONS, start=1):
+        parts.append("## %s\n\n" % name)
+        parts.append(extras.get(name, ""))
+        parts.append(_entry("REQ-SYM-%03d" % index, title="%s示例" % name))
+        parts.append("\n")
+    return "".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Real documents
 # ---------------------------------------------------------------------------
@@ -302,6 +361,45 @@ def test_traceability_platform_document_covers_the_six_topics():
 def test_traceability_type_library_document_covers_the_seven_topics():
     errors = validate_type_library_coverage(load_documents(DOCS))
     assert errors == [], "type-library coverage errors: %s" % errors
+
+
+def test_traceability_symbol_document_covers_the_thirteen_topics():
+    errors = validate_symbol_library_coverage(load_documents(DOCS))
+    assert errors == [], "symbol-library coverage errors: %s" % errors
+
+
+def test_traceability_symbol_document_lists_nine_connection_point_combinations():
+    """VAL-REQ-006: 3 types x 3 directions, each row carrying a 用途."""
+    documents = load_documents(DOCS)
+    connection = section_text(documents[SYMBOL_PATH], "连接点")
+    assert validate_connection_point_table(connection) == [], "连接点 table errors: %s" % (
+        validate_connection_point_table(connection),
+    )
+    rows = [
+        line
+        for line in connection.splitlines()
+        if line.startswith("|") and "---" not in line
+    ]
+    # header + 9 data rows: the combination table is the only 3-column table here
+    data_rows = [line for line in rows if line.count("|") == 4]
+    assert len(data_rows) == 10, "expected the header and 9 rows, got %d: %s" % (
+        len(data_rows),
+        data_rows,
+    )
+    for kind in CONNECTION_POINT_TYPES:
+        for direction in CONNECTION_POINT_DIRECTIONS:
+            assert any(
+                ("| %s | %s |" % (kind, direction)) in line for line in data_rows
+            ), "%s/%s is missing from the 连接点 table" % (kind, direction)
+
+
+def test_traceability_symbol_document_defines_the_eight_tag_rule_fields():
+    documents = load_documents(DOCS)
+    tag_rules = section_text(documents[SYMBOL_PATH], "位号规则")
+    assert len(TAG_RULE_FIELDS) == 8, TAG_RULE_FIELDS
+    for name in TAG_RULE_FIELDS:
+        assert name in tag_rules, "位号规则 does not define '%s'" % name
+    assert "P-1001" in tag_rules, "位号规则 carries no concrete 格式拼接 example"
 
 
 def test_traceability_screen_catalog_uses_the_fourteen_contract_ids():
@@ -543,3 +641,69 @@ def test_traceability_section_heading_check_rejects_a_renamed_heading():
     assert renamed != documents[PLAT_PATH], "the control could not rename the heading"
     assert normalize_heading("身份与会话") in _h2_sections(documents[PLAT_PATH])
     assert normalize_heading("身份与会话") not in _h2_sections(renamed)
+
+
+def test_traceability_symbol_validator_accepts_the_synthetic_document():
+    """Positive control: the synthetic document satisfies every VAL-REQ-006 check."""
+    errors = validate_symbol_library_coverage({SYMBOL_PATH: _symbol_document()})
+    assert errors == [], "the synthetic symbol document must pass: %s" % errors
+
+
+def test_traceability_symbol_validator_rejects_a_missing_connection_combination():
+    """Negative control: dropping one of the nine rows must name the missing pair."""
+    document = _symbol_document().replace(
+        "| 信号线 | 流出点 | 离开仪表的单向信号 |\n", ""
+    )
+    assert "| 信号线 | 流出点 |" not in document, "the control removed nothing"
+    errors = validate_symbol_library_coverage({SYMBOL_PATH: document})
+    assert any("信号线/流出点" in error for error in errors), errors
+    assert any("8 rows" in error for error in errors), errors
+
+
+def test_traceability_symbol_validator_rejects_a_repeated_connection_combination():
+    """Negative control: a duplicate pair plus a hole must both be reported."""
+    document = _symbol_document().replace(
+        "| 异径 | 流入点 | 异径单向流元件入口，介质只能流入 |",
+        "| 等径 | 双向点 | 重复的一行 |",
+    )
+    errors = validate_symbol_library_coverage({SYMBOL_PATH: document})
+    assert any("等径/双向点 repeats" in error for error in errors), errors
+    assert any("omits the 异径/流入点 combination" in error for error in errors), errors
+
+
+def test_traceability_symbol_validator_rejects_a_missing_tag_rule_field():
+    """Negative control: an absent field name must be reported by name."""
+    document = _symbol_document().replace("| 后缀递增 | String | 是 | — |\n", "")
+    assert "后缀递增" not in document, "the control removed nothing"
+    errors = validate_symbol_library_coverage({SYMBOL_PATH: document})
+    assert any("does not define the field '后缀递增'" in error for error in errors), errors
+
+
+def test_traceability_symbol_validator_rejects_a_tag_rule_field_synonym():
+    """Negative control: VAL-DOC-009 forbids rewording the field inside its own document."""
+    document = _symbol_document().replace("位号唯一校验", "位号唯一性校验")
+    errors = validate_symbol_library_coverage({SYMBOL_PATH: document})
+    assert any("uses the synonym" in error for error in errors), errors
+
+
+def test_traceability_symbol_validator_rejects_a_renamed_section():
+    """Negative control: renaming one of the thirteen sections must be detected."""
+    document = _symbol_document().replace("## 绝热等级\n", "## 绝热等级设置\n")
+    errors = validate_symbol_library_coverage({SYMBOL_PATH: document})
+    assert any("missing section '绝热等级'" in error for error in errors), errors
+
+
+def test_traceability_symbol_validator_rejects_a_missing_color_rule_element():
+    """Negative control: the four condition elements are each load-bearing."""
+    document = _symbol_document().replace(
+        "条件要素：属性、运算符、值、连接符；当前类型无规则时继承父类型规则。",
+        "条件要素：属性、运算符、值；当前类型无规则时继承父类型规则。",
+    )
+    errors = validate_symbol_library_coverage({SYMBOL_PATH: document})
+    assert any("condition element '连接符'" in error for error in errors), errors
+
+
+def test_traceability_symbol_validator_rejects_a_missing_document():
+    """Negative control: an absent area document is reported, not silently skipped."""
+    errors = validate_symbol_library_coverage({})
+    assert errors == ["%s: symbol library requirement document is missing" % SYMBOL_PATH]
