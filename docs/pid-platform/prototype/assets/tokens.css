@@ -1,5 +1,7 @@
 /* Design tokens for the P&ID platform prototype shell.
-   Industrial software palette: dark canvas, light panels. */
+   Industrial software palette: dark canvas, light panels.
+   Every colour, spacing, font size, radius and border width used by the
+   shell must resolve to one of the custom properties defined here. */
 :root {
   --color-canvas: #16191d;
   --color-surface: #20252b;
@@ -25,4 +27,27 @@
   --radius-md: 8px;
   --border-width: 1px;
   --shadow-panel: 0 2px 8px rgba(0, 0, 0, 0.35);
+
+  /* Shell-stage additions */
+  --color-accent-soft: #24405e;
+  --color-accent-on: #ffffff;
+  --color-text-inverse-muted: #5a6672;
+  --color-success: #3fae6a;
+  --color-warning: #d9a03f;
+  --color-danger: #d9534f;
+  --font-size-xs: 11px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+  --border-width-thick: 2px;
+  --app-bar-height: 52px;
+  --module-nav-width: 208px;
+  --control-height: 28px;
+  --control-max-width: 200px;
+  --search-max-width: 320px;
+  --screen-max-width: 960px;
+  --avatar-size: 28px;
+  --focus-offset: 2px;
+  --shell-height: 100vh;
+  --font-family-base: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --shadow-nav-active: inset 0 -2px 0 var(--color-accent-strong);
 }

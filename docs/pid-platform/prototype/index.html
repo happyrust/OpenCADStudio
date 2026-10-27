@@ -3,27 +3,60 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 空的 data: favicon 必须保留：当以 http://127.0.0.1:3110/ 源打开本页时，浏览器会
+     自动请求 /favicon.ico，得到 404 后 Chrome 会在控制台记录一条 error 级消息；
+     使用 data: URI 可让浏览器不再发起该请求，保持控制台干净。请勿移除或挪离本注释。 -->
 <link rel="icon" href="data:,">
 <title>智能 P&amp;ID 平台原型</title>
 <link rel="stylesheet" href="assets/tokens.css">
 <link rel="stylesheet" href="assets/app.css">
+<script>
+/* Must run before any other script: collect uncaught errors for validators. */
+window.__protoErrors = [];
+window.addEventListener("error", function (event) {
+  window.__protoErrors.push(String(event.message || event.error || event));
+});
+</script>
 </head>
 <body>
-<header class="app-header">
-  <span class="app-header__brand">智能 P&amp;ID 平台</span>
-  <nav class="main-nav" data-testid="main-nav">
-    <a class="main-nav__item" href="#/screen/workbench">工作台</a>
-    <a class="main-nav__item" href="#/screen/drawings">图纸管理</a>
-    <a class="main-nav__item" href="#/screen/editor">P&amp;ID 编辑器</a>
-  </nav>
-</header>
-<main class="app-main">
-  <div id="app" class="panel" data-testid="app-shell">
-    <h1>智能 P&amp;ID 平台原型</h1>
-    <p>这是原型外壳骨架，规格包中定义的 14 个界面后续将逐一挂载到此容器中。</p>
-    <span data-testid="boot-status">加载中</span>
+<div id="app" class="app-shell" data-testid="app-shell">
+  <header class="app-bar" data-testid="app-bar">
+    <span class="app-bar__brand">智能 P&amp;ID 平台</span>
+    <nav class="main-nav" data-testid="main-nav" aria-label="主导航">
+      <a class="main-nav__item" data-testid="main-nav-item" data-screen="workbench" href="#/screen/workbench">工作台</a>
+      <a class="main-nav__item" data-testid="main-nav-item" data-screen="drawings" href="#/screen/drawings">图纸管理</a>
+      <a class="main-nav__item" data-testid="main-nav-item" data-screen="editor" href="#/screen/editor">P&amp;ID 编辑器</a>
+    </nav>
+    <select class="field project-selector" data-testid="project-selector" aria-label="项目选择">
+      <option value="proj-a">常减压装置改造项目</option>
+      <option value="proj-b">乙烯二期扩建项目</option>
+      <option value="proj-c">LNG 接收站一期项目</option>
+    </select>
+    <input class="field search-entry" data-testid="search-entry" type="search" placeholder="搜索位号、图纸、设备" aria-label="搜索">
+    <div class="user-area" data-testid="user-area">
+      <span class="user-area__avatar" aria-hidden="true">张</span>
+      <span class="user-area__name">张工</span>
+      <span class="user-area__role">工艺工程师</span>
+    </div>
+  </header>
+  <div class="app-shell__body">
+    <nav class="module-nav" data-testid="module-nav" aria-label="模块导航"></nav>
+    <main class="screen-body" data-testid="screen-body">
+      <section class="screen">
+        <header class="screen__header">
+          <h1 class="screen__title" data-testid="screen-title">智能 P&amp;ID 平台原型</h1>
+          <p class="screen__desc">外壳脚本加载完成后，本区域将按地址栏 hash 渲染对应界面。</p>
+        </header>
+      </section>
+    </main>
   </div>
-</main>
-<script src="assets/app.js" defer></script>
+  <footer class="status-bar">
+    <span class="boot-status" data-testid="boot-status">初始化</span>
+    <span class="status-bar__route" data-status-route>—</span>
+    <span class="status-bar__hint">规格原型 · 仅供设计评审</span>
+  </footer>
+</div>
+<script src="assets/screens-shell.js"></script>
+<script src="assets/app.js"></script>
 </body>
 </html>

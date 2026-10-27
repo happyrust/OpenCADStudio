@@ -43,6 +43,13 @@ STATUSES = frozenset({"planned", "delivered"})
 REQUIRED_FIELDS = ("id", "path", "kind", "requiredSections", "status")
 DOCS_PREFIX = "docs/pid-platform/"
 
+# The prototype subtree is deliberately outside the deliverable set: VAL-DOC-008
+# promises exactly 20 markdown deliverables, and the prototype's own notes
+# (``prototype/specs/test-surface.md``, and any later screen notes) are checked by
+# the prototype assertions instead. Without this exemption the orphan walk below
+# reports the first prototype note as an unregistered deliverable.
+UNREGISTERED_DOCS_SUBTREES = ("prototype/",)
+
 PRD_REQUIRED_SECTIONS = [
     "产品定位与价值主张",
     "目标行业与客户",
@@ -225,6 +232,8 @@ def check_closure(
     if docs_root.is_dir():
         for file in sorted(docs_root.rglob("*.md")):
             rel = docs_relative_path(file, docs_root)
+            if rel.replace("\\", "/").startswith(UNREGISTERED_DOCS_SUBTREES):
+                continue
             n = counts.get(rel, 0)
             if n == 0:
                 errors.append(

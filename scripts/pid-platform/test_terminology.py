@@ -508,3 +508,64 @@ def test_terminology_validator_rejects_bom_names_that_never_form_a_header():
     )
     errors = validate_field_group_consistency(documents)
     assert any("never appear together as the header" in error for error in errors), errors
+
+
+# ---------------------------------------------------------------------------
+# VAL-PROTO-020 / VAL-CROSS-002, prototype half: the rendered prototype must use
+# the same vocabulary as the glossary. The alias list is never duplicated here —
+# it comes from ``banned_alias_map`` over the committed glossary, so the glossary
+# stays the single source of truth.
+# ---------------------------------------------------------------------------
+
+PROTO = DOCS / "prototype"
+PROTO_SOURCES = (".html", ".js")
+
+
+def _proto_rendered_strings() -> dict:
+    """Every prototype text source as {docs-relative path: text}.
+
+    CSS is excluded on purpose: it carries no user-visible Chinese copy, and the
+    colour tokens there are machine values rather than terminology.
+    """
+    documents = {}
+    for path in sorted(PROTO.rglob("*")):
+        if path.is_file() and path.suffix in PROTO_SOURCES:
+            rel = str(path.relative_to(DOCS)).replace("\\", "/")
+            documents[rel] = path.read_text(encoding="utf-8")
+    return documents
+
+
+def test_terminology_prototype_sources_exist_and_cover_the_shell():
+    """The scan must have something real to scan, or the check below is vacuous."""
+    documents = _proto_rendered_strings()
+    assert documents, "no prototype .html/.js sources found under " + str(PROTO)
+    joined = "\n".join(documents.values())
+    for testid in ("app-shell", "main-nav", "module-nav", "screen-body"):
+        assert testid in joined, "prototype sources never mention data-testid " + testid
+    assert "位号" in joined, "the prototype copy does not use the term 位号"
+
+
+def test_terminology_prototype_uses_no_banned_alias():
+    """VAL-CROSS-002: no banned alias reaches the prototype's rendered strings."""
+    glossary = GLOSSARY.read_text(encoding="utf-8")
+    aliases = banned_alias_map(glossary)
+    assert aliases, "the glossary registers no banned alias; the scan would be vacuous"
+    errors = scan_alias_violations(glossary, _proto_rendered_strings())
+    assert errors == [], "banned alias in the prototype: %s" % errors
+
+
+def test_terminology_prototype_alias_check_rejects_a_planted_alias():
+    """Negative control: planting one alias must be caught, with file and word."""
+    glossary = GLOSSARY.read_text(encoding="utf-8")
+    aliases = banned_alias_map(glossary)
+    planted_word = "物料清单"
+    assert planted_word in aliases, (
+        "the control needs %r to be a registered alias" % planted_word
+    )
+    documents = _proto_rendered_strings()
+    target = sorted(documents)[0]
+    documents[target] = documents[target] + "\n<!-- " + planted_word + " -->\n"
+    errors = scan_alias_violations(glossary, documents)
+    assert any(
+        target in error and planted_word in error for error in errors
+    ), "planted alias not reported for %s: %s" % (target, errors)

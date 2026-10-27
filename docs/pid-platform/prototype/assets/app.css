@@ -1,5 +1,6 @@
-/* Shell layout for the P&ID platform prototype.
-   All colours, spacing, font sizes and radii come from tokens.css. */
+/* Shell layout and design system for the P&ID platform prototype.
+   All colours, spacing, font sizes, radii and border widths resolve to
+   custom properties declared in tokens.css. */
 *,
 *::before,
 *::after {
@@ -15,45 +16,212 @@ body {
 body {
   background: var(--color-canvas);
   color: var(--color-text);
-  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-family-base);
   font-size: var(--font-size-md);
+  line-height: 1.5;
 }
 
-.app-header {
+:focus-visible {
+  outline: var(--border-width-thick) solid var(--color-accent-strong);
+  outline-offset: var(--focus-offset);
+}
+
+/* ---------- Shell frame ---------- */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: var(--shell-height);
+}
+
+.app-shell__body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ---------- Top application bar ---------- */
+
+.app-bar {
   display: flex;
   align-items: center;
-  gap: var(--space-5);
-  padding: var(--space-3) var(--space-5);
+  gap: var(--space-3);
+  flex: 0 0 auto;
+  min-height: var(--app-bar-height);
+  padding: 0 var(--space-4);
   background: var(--color-surface);
   border-bottom: var(--border-width) solid var(--color-border-strong);
 }
 
-.app-header__brand {
+.app-bar__brand {
   font-size: var(--font-size-lg);
   font-weight: 600;
   color: var(--color-accent-strong);
+  white-space: nowrap;
+  margin-right: var(--space-2);
 }
 
 .main-nav {
   display: flex;
-  gap: var(--space-2);
+  align-items: stretch;
+  align-self: stretch;
+  gap: var(--space-1);
 }
 
 .main-nav__item {
+  display: inline-flex;
+  align-items: center;
   color: var(--color-text);
   text-decoration: none;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
+  padding: 0 var(--space-3);
+  font-size: var(--font-size-md);
+  white-space: nowrap;
 }
 
 .main-nav__item:hover {
+  color: var(--color-accent-strong);
+  background: var(--color-canvas);
+}
+
+.main-nav__item.is-active {
+  color: var(--color-accent-strong);
+  box-shadow: var(--shadow-nav-active);
+}
+
+/* ---------- Form controls ---------- */
+
+.field {
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-sm);
+  color: var(--color-text);
+  background: var(--color-canvas);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  min-height: var(--control-height);
+}
+
+.field::placeholder {
+  color: var(--color-text-muted);
+}
+
+.project-selector {
+  margin-left: auto;
+  max-width: var(--control-max-width);
+  flex: 0 1 auto;
+}
+
+.search-entry {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: var(--search-max-width);
+}
+
+/* ---------- User area ---------- */
+
+.user-area {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.user-area__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-accent-on);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.user-area__name {
+  font-size: var(--font-size-sm);
+}
+
+.user-area__role {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}
+
+/* ---------- Module navigation ---------- */
+
+.module-nav {
+  flex: 0 0 var(--module-nav-width);
+  width: var(--module-nav-width);
+  overflow-y: auto;
+  background: var(--color-surface);
+  border-right: var(--border-width) solid var(--color-border);
+  padding: var(--space-3) var(--space-2);
+}
+
+.module-nav__group + .module-nav__group {
+  margin-top: var(--space-4);
+}
+
+.module-nav__group-title {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  padding: var(--space-1) var(--space-2);
+}
+
+.module-nav__item {
+  display: block;
+  color: var(--color-text);
+  text-decoration: none;
+  font-size: var(--font-size-sm);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+.module-nav__item:hover {
   background: var(--color-canvas);
   color: var(--color-accent-strong);
 }
 
-.app-main {
+.module-nav__item.is-active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-strong);
+  font-weight: 600;
+}
+
+/* ---------- Screen body ---------- */
+
+.screen-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
   padding: var(--space-6);
 }
+
+.screen {
+  max-width: var(--screen-max-width);
+}
+
+.screen__header {
+  margin-bottom: var(--space-5);
+}
+
+.screen__title {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-xl);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.screen__desc {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+/* ---------- Panel & placeholder content ---------- */
 
 .panel {
   background: var(--color-panel);
@@ -64,11 +232,44 @@ body {
   padding: var(--space-6);
 }
 
-.panel h1 {
+.panel__lead {
   margin: 0 0 var(--space-4);
-  font-size: var(--font-size-xl);
+  font-weight: 600;
 }
 
-.panel p {
+.spec-list {
   margin: 0 0 var(--space-4);
+  padding-left: var(--space-5);
+}
+
+.spec-list li {
+  margin-bottom: var(--space-1);
+}
+
+.screen__meta {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-inverse-muted);
+}
+
+/* ---------- Status bar ---------- */
+
+.status-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-1) var(--space-4);
+  background: var(--color-surface);
+  border-top: var(--border-width) solid var(--color-border);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.boot-status {
+  font-weight: 600;
+}
+
+.status-bar__hint {
+  margin-left: auto;
 }

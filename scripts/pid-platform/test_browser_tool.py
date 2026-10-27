@@ -126,17 +126,28 @@ def test_browser_tool_reads_title(tmp_path):
     assert line["step"] == 1
     assert line["kind"] == "eval"
     assert line["error"] is None
-    assert line["value"] == "智能 P&ID 平台原型"
+    # The router rewrites document.title to "<屏幕标题> · 智能 P&ID 平台" once the
+    # shell boots, so the tool contract is "a non-empty title naming the product",
+    # not the pre-router static title.
+    assert isinstance(line["value"], str) and line["value"]
+    assert "智能 P&ID 平台" in line["value"]
 
 
 @requires_chrome
 def test_browser_tool_click_changes_hash(tmp_path):
+    """A nav click must move the hash, and the tool must report both sides.
+
+    The shell redirects an empty hash to ``#/screen/workbench`` on boot, so the
+    "before" value is that default rather than "". What the tool contract needs
+    to prove is that the click itself changes the hash: click the second nav
+    item and require the hash to move from the default to ``drawings``.
+    """
     steps = [
         {"kind": "eval", "label": "hash-before", "expression": "location.hash"},
         {
             "kind": "click",
             "label": "nav",
-            "selector": "[data-testid='main-nav'] a",
+            "selector": "[data-testid='main-nav'] a:nth-of-type(2)",
         },
         {"kind": "wait", "label": "settle", "ms": 300},
         {"kind": "eval", "label": "hash-after", "expression": "location.hash"},
@@ -145,9 +156,9 @@ def test_browser_tool_click_changes_hash(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert len(lines) == len(steps)
     assert lines[0]["error"] is None
-    assert lines[0]["value"] == ""
+    assert lines[0]["value"] == "#/screen/workbench"
     assert lines[-1]["error"] is None
-    assert lines[-1]["value"] == "#/screen/workbench"
+    assert lines[-1]["value"] == "#/screen/drawings"
     assert lines[0]["value"] != lines[-1]["value"]
 
 
@@ -255,8 +266,9 @@ def test_browser_tool_snapshot_lists_navigation(tmp_path):
     assert line["kind"] == "snapshot"
     assert line["error"] is None
     value = line["value"]
-    assert value["title"] == "智能 P&ID 平台原型"
-    assert value["hash"] == ""
+    assert "智能 P&ID 平台" in value["title"]
+    # The router normalises an empty hash to the default screen on boot.
+    assert value["hash"] == "#/screen/workbench"
     assert value["navCount"] == 3
     assert [a["text"] for a in value["nav"]] == [
         "工作台",

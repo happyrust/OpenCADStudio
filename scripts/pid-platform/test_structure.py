@@ -11,6 +11,7 @@ from collections import Counter
 from conftest import DOCS, EXPECTED_DELIVERABLES, MANIFEST, delivered_entries
 from manifest_contract import (
     PRD_REQUIRED_SECTIONS,
+    UNREGISTERED_DOCS_SUBTREES,
     check_cardinality,
     check_closure,
     check_delivered,
@@ -85,15 +86,35 @@ def test_structure_every_expected_deliverable_is_registered():
 
 
 def test_structure_no_orphan_markdown_files():
+    """Every deliverable markdown is registered exactly once.
+
+    The ``prototype/`` subtree is exempt (single source: ``UNREGISTERED_DOCS_SUBTREES``
+    in ``manifest_contract``): its notes are checked by the prototype assertions,
+    not by the 20-deliverable set. The exemption is asserted to be non-empty so
+    this test cannot silently skip everything.
+    """
+    assert UNREGISTERED_DOCS_SUBTREES, "the exemption list must not be empty"
     manifest = load_manifest_file(MANIFEST)
     counts = Counter(
         docs_relative_path(d.get("path", ""), DOCS)
         for d in _deliverables(manifest)
         if isinstance(d, dict) and str(d.get("path", "")).endswith(".md")
     )
+    scanned = [
+        f
+        for f in sorted(DOCS.rglob("*.md"))
+        if not docs_relative_path(f, DOCS)
+        .replace("\\", "/")
+        .startswith(UNREGISTERED_DOCS_SUBTREES)
+    ]
+    assert len(scanned) >= 19, (
+        "the orphan scan must still cover the promised deliverables, saw %d "
+        "(19 is the floor while README.md is still undelivered; the closeout "
+        "feature adds it and raises this to 20)" % len(scanned)
+    )
     orphans = [
         docs_relative_path(f, DOCS)
-        for f in sorted(DOCS.rglob("*.md"))
+        for f in scanned
         if counts.get(docs_relative_path(f, DOCS), 0) != 1
     ]
     assert orphans == [], (
