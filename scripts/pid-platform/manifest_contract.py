@@ -211,6 +211,24 @@ def registered_markdown_paths(manifest: dict, docs_root: Path) -> list:
     return registered
 
 
+def registered_paths(manifest: dict, docs_root: Path) -> list:
+    """Return every deliverable path the manifest registers, docs-relative.
+
+    Unlike :func:`registered_markdown_paths` this keeps non-markdown entries
+    (prototype assets, data files) so the cardinality check cannot be
+    bypassed by registering a path with another extension.
+    """
+    registered = []
+    if isinstance(manifest, dict):
+        for entry in manifest.get("deliverables", []):
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            if isinstance(path, str) and path:
+                registered.append(docs_relative_path(path, docs_root))
+    return registered
+
+
 def check_closure(
     manifest: dict, docs_root: Path, expected_paths: Sequence[str]
 ) -> list:
@@ -256,10 +274,12 @@ def check_cardinality(
     entry added to the manifest for a path that is neither promised nor
     present (a 21st deliverable, typically still ``planned``) slips through
     both directions. This check compares the two sets directly and reports
-    entries in either difference, naming the offending path.
+    entries in either difference, naming the offending path. Every
+    deliverable path counts, not only markdown, so registering a prototype
+    asset cannot hide behind the extension filter.
     """
     errors = []
-    registered = set(registered_markdown_paths(manifest, docs_root))
+    registered = set(registered_paths(manifest, docs_root))
     promised = {docs_relative_path(p, docs_root) for p in expected_paths}
     for rel in sorted(registered - promised):
         errors.append(

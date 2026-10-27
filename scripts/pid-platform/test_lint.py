@@ -390,6 +390,17 @@ def test_lint_planned_entry_check_accepts_delivered_manifest():
     assert planned_entry_errors(manifest) == []
 
 
+def test_lint_real_manifest_has_no_planned_entries():
+    """VAL-DOC-007: the committed manifest carries no planned entry.
+
+    The synthetic cases above prove the validator can fail and pass; this
+    case is the one that binds it to the shipped manifest, which is only
+    meaningful once every promised deliverable is delivered.
+    """
+    errors = planned_entry_errors(load_manifest_file(MANIFEST))
+    assert errors == [], "planned entries in the committed manifest: %s" % errors
+
+
 # ---------------------------------------------------------------------------
 # Positive control: a compliant document must yield zero errors from every
 # rule, proving the validators are not always-false.

@@ -107,10 +107,10 @@ def test_structure_no_orphan_markdown_files():
         .replace("\\", "/")
         .startswith(UNREGISTERED_DOCS_SUBTREES)
     ]
-    assert len(scanned) >= 19, (
+    assert len(scanned) >= 20, (
         "the orphan scan must still cover the promised deliverables, saw %d "
-        "(19 is the floor while README.md is still undelivered; the closeout "
-        "feature adds it and raises this to 20)" % len(scanned)
+        "(all 20 promised deliverables are now delivered and registered)"
+        % len(scanned)
     )
     orphans = [
         docs_relative_path(f, DOCS)
@@ -246,6 +246,51 @@ def test_structure_cardinality_rejects_a_deleted_deliverable(tmp_path):
         for e in errors
     ), "cardinality check did not report the missing path %s: %s" % (
         missing_rel, errors,
+    )
+    assert len(_deliverables(load_manifest_file(MANIFEST))) == 20, (
+        "the committed manifest must stay at 20 entries"
+    )
+
+
+def test_structure_cardinality_rejects_a_prototype_deliverable():
+    """A registered prototype asset must fail the set-equality check.
+
+    ``check_closure`` walks only the promised paths and the markdown files
+    on disk, so an extra entry whose path is neither promised nor markdown
+    is invisible in both directions: ``prototype/index.html`` really exists
+    on disk (``check_delivered`` finds the file), the promised-path walk
+    never names it, and the orphan walk only globs ``*.md``. That is the
+    shape ``check_cardinality`` must catch, which is why it counts every
+    registered path rather than only markdown.
+    """
+    manifest = load_manifest_file(MANIFEST)
+    assert check_cardinality(manifest, DOCS, EXPECTED_DELIVERABLES) == []
+    manifest["deliverables"] = list(_deliverables(manifest)) + [
+        {
+            "id": "prototype-shell",
+            "path": "docs/pid-platform/prototype/index.html",
+            "kind": "prototype",
+            "requiredSections": [],
+            "status": "delivered",
+        }
+    ]
+    assert check_closure(manifest, DOCS, EXPECTED_DELIVERABLES) == [], (
+        "check_closure is expected to miss a registered non-markdown path; "
+        "if this fails the scenario no longer reproduces the gap"
+    )
+    errors = check_cardinality(manifest, DOCS, EXPECTED_DELIVERABLES)
+    assert errors, (
+        "check_cardinality accepted a 21st deliverable pointing at a "
+        "prototype asset"
+    )
+    extra_rel = docs_relative_path(
+        "docs/pid-platform/prototype/index.html", DOCS
+    )
+    assert any(extra_rel in e for e in errors), (
+        "no error names the extra deliverable %s: %s" % (extra_rel, errors)
+    )
+    assert not any("missing a promised deliverable" in e for e in errors), (
+        "the extra-entry case must not report a missing deliverable: %s" % errors
     )
     assert len(_deliverables(load_manifest_file(MANIFEST))) == 20, (
         "the committed manifest must stay at 20 entries"
