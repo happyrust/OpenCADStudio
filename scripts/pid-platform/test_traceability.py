@@ -12,12 +12,16 @@ import json
 import pytest
 
 import conftest
+import rule_dsl
 from conftest import CATALOG, DOCS, SCREEN_IDS
+from docs_contract import find_table
 from manifest_contract import normalize_heading
 from requirements_contract import (
     AREA_FLOOR,
     CONNECTION_POINT_DIRECTIONS,
     CONNECTION_POINT_TYPES,
+    DATA_SECTIONS,
+    DELIVERABLE_SECTIONS,
     DRAWING_SECTIONS,
     MATRIX_COLUMNS,
     OBSERVABLE_WORDS,
@@ -25,10 +29,13 @@ from requirements_contract import (
     REQ_AREA_FILES,
     REQ_ID_RE,
     REQ_ID_TEXT,
+    RULE_TABLE_COLUMNS,
+    SHIPPED_DESIGN_RULES,
     SYMBOL_SECTIONS,
     TAG_RULE_FIELDS,
     TYPE_SECTIONS,
     PLATFORM_SECTIONS,
+    _plain_cell,
     definitions,
     load_all_documents,
     load_documents,
@@ -40,13 +47,19 @@ from requirements_contract import (
     validate_area_floors,
     validate_area_table,
     validate_connection_point_table,
+    validate_data_rule_engine_coverage,
+    validate_deliverable_coverage,
+    validate_design_rule_table,
     validate_drawing_coverage,
     validate_matrix,
     validate_platform_coverage,
     validate_requirement_ids,
     validate_entries,
+    validate_result_model,
+    validate_rule_dsl_grammar,
     validate_symbol_library_coverage,
     validate_traceability,
+    validate_trigger_modes,
     validate_type_library_coverage,
     whitelisted_sections,
 )
@@ -55,6 +68,8 @@ PLAT_PATH = "requirements/10-platform.md"
 TYPE_PATH = "requirements/20-type-library.md"
 SYMBOL_PATH = "requirements/30-symbol-library-and-project-settings.md"
 DRAWING_PATH = "requirements/40-drawing-and-drafting.md"
+DATA_PATH = "requirements/50-data-and-rule-engine.md"
+DELIVERABLE_PATH = "requirements/60-deliverables-and-publish.md"
 
 # Every declared section, paired with the area document that must carry it as
 # an H2 heading. The names themselves live in the contract module; the pairing
@@ -64,6 +79,8 @@ SECTION_HEADINGS = (
     + [(TYPE_PATH, name) for name in TYPE_SECTIONS]
     + [(SYMBOL_PATH, name) for name in SYMBOL_SECTIONS]
     + [(DRAWING_PATH, name) for name in DRAWING_SECTIONS]
+    + [(DATA_PATH, name) for name in DATA_SECTIONS]
+    + [(DELIVERABLE_PATH, name) for name in DELIVERABLE_SECTIONS]
 )
 
 
@@ -826,3 +843,324 @@ def test_traceability_drawing_validator_rejects_a_missing_document():
     """Negative control: an absent area document is reported, not silently skipped."""
     errors = validate_drawing_coverage({})
     assert errors == ["%s: drawing requirement document is missing" % DRAWING_PATH]
+
+
+# ---------------------------------------------------------------------------
+# Data & rule engine document (VAL-REQ-008)
+# ---------------------------------------------------------------------------
+
+RESULT_TABLE = (
+    "| 字段 | 类型 | 必填 | 约束 |\n"
+    "| --- | --- | --- | --- |\n"
+    "| 规则 ID | String | 是 | 形如 DR-001 |\n"
+    "| 对象引用 | ObjectRef | 是 | 类型编码、位号与图纸 ID |\n"
+    "| 严重度 | Enum(错误/警告/提示) | 是 | 三值枚举 |\n"
+    "| 消息 | String | 是 | 不超过 200 字符 |\n"
+    "| 建议修复 | String | 否 | 不超过 200 字符 |\n"
+)
+
+TRIGGER_TABLE = (
+    "| 触发时机 | 执行范围 | 阻塞行为 | 结果处理 |\n"
+    "| --- | --- | --- | --- |\n"
+    "| 按需 | 当前图纸 | 不阻断 | 写入检查结果集 |\n"
+    "| 保存前 | 当前图纸 | 阻断 | 返回 `RULE_BLOCKED` |\n"
+    "| 发布前 | 待发布图纸 | 阻断 | 返回 `PUBLISH_BLOCKED` |\n"
+)
+
+
+def _rule_table(rows) -> str:
+    body = "\n".join("| `%s` | %s | %s | %s | `%s` |" % row for row in rows)
+    return (
+        "| %s |\n| --- | --- | --- | --- | --- |\n" % " | ".join(RULE_TABLE_COLUMNS)
+        + body
+        + "\n"
+    )
+
+
+def _data_document() -> str:
+    """A synthetic 50 document that satisfies every VAL-REQ-008 check."""
+    extras = {
+        "规则 DSL": "```ebnf\n" + rule_dsl.EBNF_GRAMMAR + "\n```\n\n",
+        "触发时机": TRIGGER_TABLE + "\n",
+        "结果模型": RESULT_TABLE + "\n",
+        "设计规则清单": _rule_table(SHIPPED_DESIGN_RULES) + "\n",
+    }
+    parts = ["# 数据管理与规则检查需求\n\n共 %d 条需求。\n\n" % len(DATA_SECTIONS)]
+    for index, name in enumerate(DATA_SECTIONS, start=1):
+        parts.append("## %s\n\n" % name)
+        parts.append(extras.get(name, ""))
+        parts.append(_entry("REQ-DATA-%03d" % index, title="%s示例" % name))
+        parts.append("\n")
+    return "".join(parts)
+
+
+def test_traceability_data_validator_accepts_the_synthetic_document():
+    """Positive control: the synthetic document satisfies every VAL-REQ-008 check."""
+    errors = validate_data_rule_engine_coverage({DATA_PATH: _data_document()})
+    assert errors == [], "the synthetic data document must pass: %s" % errors
+
+
+def test_traceability_data_document_satisfies_the_contract():
+    """Real document: nine sections, the EBNF block, the rule table, the result model."""
+    errors = validate_data_rule_engine_coverage(load_documents(DOCS))
+    assert errors == [], "VAL-REQ-008 errors: %s" % errors
+
+
+def test_traceability_data_document_meets_the_element_and_rule_floors():
+    """Real document: at least nine REQ-DATA entries and at least twenty rules."""
+    text = load_documents(DOCS)[DATA_PATH]
+    ids = {entry["id"] for entry in split_entries(text)}
+    assert len(ids) >= 9, "the data document defines %d requirements" % len(ids)
+    table = find_table(section_text(text, "设计规则清单"), RULE_TABLE_COLUMNS)
+    assert table is not None, "no design-rule table found"
+    assert len(table["rows"]) >= 20, "%d rules shipped" % len(table["rows"])
+    parsed = [
+        (
+            _plain_cell(row[0]),
+            _plain_cell(row[1]),
+            _plain_cell(row[2]),
+            _plain_cell(row[3]),
+            _plain_cell(row[4]),
+        )
+        for row in table["rows"]
+    ]
+    assert parsed[: len(SHIPPED_DESIGN_RULES)] == [
+        tuple(row) for row in SHIPPED_DESIGN_RULES
+    ], "the shipped rules drifted from the design contract"
+
+
+def test_traceability_data_validator_rejects_a_renamed_section():
+    """Negative control: renaming one of the nine sections must be detected."""
+    document = _data_document().replace("## 结果模型\n", "## 检查结果模型\n")
+    errors = validate_data_rule_engine_coverage({DATA_PATH: document})
+    assert any("missing section '结果模型'" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_a_missing_ebnf_block():
+    """Negative control: prose about the grammar is not a grammar."""
+    document = _data_document().replace("```ebnf", "```text")
+    errors = validate_data_rule_engine_coverage({DATA_PATH: document})
+    assert any("no fenced code block tagged ebnf" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_an_incomplete_grammar():
+    """Negative control: dropping the operator production must name it."""
+    document = _data_document().replace(
+        'operator      = "=" | "!="',
+        'op            = "=" | "!="',
+    )
+    assert "operator      =" not in document, "the control renamed nothing"
+    errors = validate_rule_dsl_grammar(document)
+    assert any("production 'operator'" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_fewer_than_twenty_rules():
+    """Negative control: a short rule list is counted, not estimated."""
+    document = _data_document().replace(
+        _rule_table(SHIPPED_DESIGN_RULES),
+        _rule_table(SHIPPED_DESIGN_RULES[:14]),
+    )
+    assert "DR-025" not in document, "the control kept the full table"
+    errors = validate_design_rule_table(document)
+    assert any("14 rules; at least 20 required" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_an_unparseable_rule_expression():
+    """Negative control: '==' is not in the grammar, so the row must be rejected."""
+    document = _data_document().replace("`管道等级 = NULL`", "`管道等级 == NULL`")
+    assert "`管道等级 == NULL`" in document, "the control changed nothing"
+    errors = validate_design_rule_table(document)
+    assert any("does not parse" in error and "DR-001" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_an_unknown_severity():
+    """Negative control: the severity vocabulary is closed at three values."""
+    document = _data_document().replace(
+        "| `DR-004` | 位号重复 | 对象实例 | 错误 |",
+        "| `DR-004` | 位号重复 | 对象实例 | 严重 |",
+    )
+    assert "| 严重 |" in document, "the control changed nothing"
+    errors = validate_design_rule_table(document)
+    assert any("has severity '严重'" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_a_missing_rule():
+    """Negative control: a dropped mandated rule is named by ID."""
+    document = _data_document().replace(
+        "| `DR-009` | 图纸未设图例标准 | 图纸 | 错误 | `图例标准 = NULL` |\n", ""
+    )
+    assert "DR-009" not in document, "the control removed nothing"
+    errors = validate_design_rule_table(document)
+    assert any("omits the required rule DR-009" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_a_renamed_severity_enum():
+    """Negative control: 错误/警告/提示 is exact; dropping one value must fail."""
+    document = _data_document().replace("Enum(错误/警告/提示)", "Enum(错误/警告)")
+    errors = validate_result_model(document)
+    assert any("must be exactly 错误/警告/提示" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_a_missing_result_field():
+    """Negative control: each of the five result fields is load-bearing."""
+    document = _data_document().replace(
+        "| 建议修复 | String | 否 | 不超过 200 字符 |\n", ""
+    )
+    assert "建议修复" not in document, "the control removed nothing"
+    errors = validate_result_model(document)
+    assert any("does not define the field '建议修复'" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_a_missing_trigger_mode():
+    """Negative control: all three trigger modes must be distinguished."""
+    document = _data_document().replace(
+        "| 发布前 | 待发布图纸 | 阻断 | 返回 `PUBLISH_BLOCKED` |\n", ""
+    )
+    assert "发布前" not in document, "the control removed nothing"
+    errors = validate_trigger_modes(document)
+    assert any("'发布前' mode" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_a_trigger_table_without_blocking():
+    """Negative control: naming the modes without a blocking behaviour is not enough."""
+    document = _data_document().replace("不阻断", "放行").replace("| 阻断 |", "| 放行 |")
+    assert "阻断" not in document, "the control left a blocking statement"
+    errors = validate_trigger_modes(document)
+    assert any("states no blocking behaviour" in error for error in errors), errors
+
+
+def test_traceability_data_validator_rejects_a_missing_document():
+    """Negative control: an absent area document is reported, not silently skipped."""
+    errors = validate_data_rule_engine_coverage({})
+    assert errors == [
+        "%s: data and rule engine requirement document is missing" % DATA_PATH
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Deliverables document (VAL-REQ-009)
+# ---------------------------------------------------------------------------
+
+BOM_TABLE = (
+    "| 序号 | 类型 | 位号 | 名称 | 数量 | 单位 |\n"
+    "| --- | --- | --- | --- | --- | --- |\n"
+    "| 1 | 管线 | L-1001 | 工艺水进料管线 | 24.5 | m |\n"
+    "| 2 | 设备 | P-1001 | 离心泵 | 1 | 台 |\n"
+    "| 3 | 阀门 | V-1001 | 截止阀 DN50 | 2 | 个 |\n"
+    "| 4 | 仪表 | TI-1001 | 温度变送器 | 1 | 台 |\n"
+)
+
+EXPORT_TABLE = (
+    "| 格式 | 导出对象 | 支持程度 | 限制 |\n"
+    "| --- | --- | --- | --- |\n"
+    "| DWG | 图纸 | 完整支持 | 不写位号主数据 |\n"
+    "| DXF | 图纸 | 完整支持 | 不保留语义扩展数据 |\n"
+    "| PDF | 图纸与报表 | 完整支持 | 只读 |\n"
+    "| SVG | 图纸 | 完整支持 | 仅当前图纸 |\n"
+    "| XLSX | 材料清单与报表 | 完整支持 | 列映射由模板声明 |\n"
+    "| CSV | 材料清单与校验结果 | 完整支持 | 不含样式 |\n"
+    "| JSON | 对象属性与发布清单 | 完整支持 | 遵循统一导出规则 |\n"
+)
+
+BOM_BODY = (
+    "一个位号在同一份材料清单中至多占一行。管路类材料 `数量 = Σ管段长度`，单位 `m`；"
+    "设备、阀门与仪表类 `数量 = 实例计数`，单位 `台/个`。\n\n"
+    + BOM_TABLE
+)
+
+
+def _deliverable_document() -> str:
+    """A synthetic 60 document that satisfies every VAL-REQ-009 check."""
+    extras = {
+        "材料清单聚合": BOM_BODY + "\n",
+        "图纸输出": "支持 DWG、DXF、PDF、SVG 四种格式。\n\n",
+        "导出矩阵": EXPORT_TABLE + "\n",
+    }
+    parts = ["# 交付与发布需求\n\n共 %d 条需求。\n\n" % len(DELIVERABLE_SECTIONS)]
+    for index, name in enumerate(DELIVERABLE_SECTIONS, start=1):
+        parts.append("## %s\n\n" % name)
+        parts.append(extras.get(name, ""))
+        parts.append(_entry("REQ-DELV-%03d" % index, title="%s示例" % name))
+        parts.append("\n")
+    return "".join(parts)
+
+
+def test_traceability_deliverable_validator_accepts_the_synthetic_document():
+    """Positive control: the synthetic document satisfies every VAL-REQ-009 check."""
+    errors = validate_deliverable_coverage({DELIVERABLE_PATH: _deliverable_document()})
+    assert errors == [], "the synthetic deliverable document must pass: %s" % errors
+
+
+def test_traceability_deliverable_document_satisfies_the_contract():
+    """Real document: five sections, the invariant, the formulas, four formats."""
+    errors = validate_deliverable_coverage(load_documents(DOCS))
+    assert errors == [], "VAL-REQ-009 errors: %s" % errors
+
+
+def test_traceability_deliverable_document_meets_the_id_floor():
+    """Real document: at least five REQ-DELV entries."""
+    text = load_documents(DOCS)[DELIVERABLE_PATH]
+    ids = {entry["id"] for entry in split_entries(text)}
+    assert len(ids) >= 5, "the deliverable document defines %d requirements" % len(ids)
+
+
+def test_traceability_deliverable_validator_rejects_a_weakened_bom_invariant():
+    """Negative control: the uniqueness invariant is a sentence, not a theme."""
+    document = _deliverable_document().replace(
+        "一个位号在同一份材料清单中至多占一行",
+        "一个位号可以在同一份材料清单中出现多行",
+    )
+    errors = validate_deliverable_coverage({DELIVERABLE_PATH: document})
+    assert any("does not state the invariant" in error for error in errors), errors
+
+
+def test_traceability_deliverable_validator_rejects_a_missing_quantity_formula():
+    """Negative control: dropping the length summation must name the term."""
+    document = _deliverable_document().replace(
+        "`数量 = Σ管段长度`", "`数量 = 管段长度合计`"
+    )
+    assert "Σ" not in document, "the control removed the summation sign"
+    errors = validate_deliverable_coverage({DELIVERABLE_PATH: document})
+    assert any("quantity term 'Σ'" in error for error in errors), errors
+
+
+def test_traceability_deliverable_validator_rejects_a_missing_drawing_format():
+    """Negative control: all four drawing formats are load-bearing."""
+    document = _deliverable_document().replace(
+        "支持 DWG、DXF、PDF、SVG 四种格式。", "支持 DWG、DXF、PDF 三种格式。"
+    )
+    errors = validate_deliverable_coverage({DELIVERABLE_PATH: document})
+    assert any("does not cover the SVG format" in error for error in errors), errors
+
+
+def test_traceability_deliverable_validator_rejects_a_thin_export_matrix():
+    """Negative control: four formats is below the six-format floor."""
+    document = _deliverable_document().replace(
+        EXPORT_TABLE,
+        "\n".join(EXPORT_TABLE.strip().splitlines()[:6]) + "\n",
+    )
+    assert "JSON" not in document, "the control kept the full matrix"
+    errors = validate_deliverable_coverage({DELIVERABLE_PATH: document})
+    assert any("at least 6 required" in error for error in errors), errors
+
+
+def test_traceability_deliverable_validator_rejects_a_missing_bom_column():
+    """Negative control: the six standard BOM columns are the prototype's header."""
+    document = _deliverable_document().replace(
+        "| 序号 | 类型 | 位号 | 名称 | 数量 | 单位 |",
+        "| 序号 | 类型 | 位号 | 名称 | 数量 |",
+    ).replace(
+        "| --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- |",
+    )
+    errors = validate_deliverable_coverage({DELIVERABLE_PATH: document})
+    assert any("no standard header" in error for error in errors), errors
+
+
+def test_traceability_deliverable_validator_rejects_a_missing_document():
+    """Negative control: an absent area document is reported, not silently skipped."""
+    errors = validate_deliverable_coverage({})
+    assert errors == [
+        "%s: deliverables and publication requirement document is missing"
+        % DELIVERABLE_PATH
+    ]

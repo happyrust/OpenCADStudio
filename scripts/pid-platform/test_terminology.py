@@ -26,6 +26,11 @@ from docs_contract import (
     validate_alias_policy,
     validate_glossary,
 )
+from requirements_contract import (
+    TAG_RULE_FIELDS_IN_DATA_DOC,
+    load_documents,
+    validate_field_group_consistency,
+)
 
 GLOSSARY = DOCS / "glossary.md"
 
@@ -431,3 +436,75 @@ def test_terminology_validator_rejects_blank_alias_and_thin_definition():
     assert any("位号" in e and "definition" in e for e in errors), (
         "thin definition not reported: %s" % errors
     )
+
+
+# ---------------------------------------------------------------------------
+# VAL-DOC-009, document half: the reference documents reuse the defining
+# document's field names verbatim. The prototype halves (DOM labels and
+# screen-catalog.json) belong to the prototype milestones.
+# ---------------------------------------------------------------------------
+
+DATA_DOC_PATH = "requirements/50-data-and-rule-engine.md"
+DELIVERABLE_DOC_PATH = "requirements/60-deliverables-and-publish.md"
+
+
+def _field_group_documents() -> dict:
+    """Minimal pair: a data document reusing the tag fields, a BOM header."""
+    data = "# 数据\n\n位号生成沿用位号规则定义的 " + "、".join(
+        TAG_RULE_FIELDS_IN_DATA_DOC
+    ) + "。\n"
+    bom = (
+        "| 序号 | 类型 | 位号 | 名称 | 数量 | 单位 |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| 1 | 设备 | P-1001 | 离心泵 | 1 | 台 |\n"
+    )
+    return {DATA_DOC_PATH: data, DELIVERABLE_DOC_PATH: "# 交付\n\n" + bom}
+
+
+def test_terminology_field_groups_agree_across_the_delivered_documents():
+    """VAL-DOC-009: tag-rule and BOM field names match their defining documents."""
+    errors = validate_field_group_consistency(load_documents(DOCS))
+    assert errors == [], "field-name drift: %s" % errors
+
+
+def test_terminology_field_group_control_accepts_the_synthetic_pair():
+    """Positive control: the synthetic pair reuses every name verbatim."""
+    assert validate_field_group_consistency(_field_group_documents()) == []
+
+
+def test_terminology_validator_rejects_a_tag_rule_field_synonym_in_the_data_document():
+    """Negative control: the rewritten name is drift even in a referencing document."""
+    documents = _field_group_documents()
+    documents[DATA_DOC_PATH] = documents[DATA_DOC_PATH].replace(
+        "位号唯一校验", "位号唯一性校验"
+    )
+    errors = validate_field_group_consistency(documents)
+    assert any("uses the synonym" in error for error in errors), errors
+
+
+def test_terminology_validator_rejects_a_dropped_tag_rule_field():
+    """Negative control: each of the six names must appear in the data document."""
+    documents = _field_group_documents()
+    documents[DATA_DOC_PATH] = documents[DATA_DOC_PATH].replace("自动弹窗", "自动弹出")
+    errors = validate_field_group_consistency(documents)
+    assert any("tag-rule field name '自动弹窗'" in error for error in errors), errors
+
+
+def test_terminology_validator_rejects_a_renamed_bom_column():
+    """Negative control: 数量 renamed in every occurrence must still be caught."""
+    documents = _field_group_documents()
+    documents[DELIVERABLE_DOC_PATH] = (
+        documents[DELIVERABLE_DOC_PATH].replace("数量", "件数")
+    )
+    errors = validate_field_group_consistency(documents)
+    assert any("material-list column name '数量'" in error for error in errors), errors
+
+
+def test_terminology_validator_rejects_bom_names_that_never_form_a_header():
+    """Negative control: the six words scattered in prose are not the table header."""
+    documents = _field_group_documents()
+    documents[DELIVERABLE_DOC_PATH] = (
+        "# 交付\n\n材料清单列有 序号、类型、位号、名称、数量、单位 六项。\n"
+    )
+    errors = validate_field_group_consistency(documents)
+    assert any("never appear together as the header" in error for error in errors), errors

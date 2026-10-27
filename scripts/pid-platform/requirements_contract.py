@@ -19,6 +19,8 @@ import os
 import re
 from pathlib import Path
 
+import rule_dsl
+
 from docs_contract import NEW_DESIGN, allowed_sections, parse_tables
 from manifest_contract import normalize_heading
 
@@ -928,6 +930,561 @@ def validate_drawing_coverage(documents: dict) -> list:
                     "%s: %s does not state '%s'" % (path, section, token)
                 )
     return errors
+
+
+# ---------------------------------------------------------------------------
+# Data management & design-rule checking (VAL-REQ-008)
+# ---------------------------------------------------------------------------
+
+# The nine sections VAL-REQ-008 names, in manifest order. Each must carry at
+# least one requirement entry.
+DATA_SECTIONS = [
+    "位号主数据与唯一性",
+    "位号冲突处理",
+    "对象属性管理器",
+    "检索与查询",
+    "规则引擎模型",
+    "规则 DSL",
+    "触发时机",
+    "结果模型",
+    "设计规则清单",
+]
+
+RULE_TABLE_COLUMNS = ["规则 ID", "名称", "作用对象", "严重度", "DSL 表达式"]
+RULE_SEVERITIES = ["错误", "警告", "提示"]
+MIN_DESIGN_RULES = 20
+
+# The five result fields VAL-REQ-008 makes load-bearing. The severity enum must
+# be exactly 错误/警告/提示 -- no fourth level, no renamed middle level.
+RESULT_FIELDS = ["规则 ID", "对象引用", "严重度", "消息", "建议修复"]
+RESULT_TABLE_COLUMNS = CONTRACT_COLUMNS
+
+# The three trigger modes and the column that states each one's blocking
+# behaviour. VAL-REQ-008 requires the modes to be distinguished, so a document
+# that lists them without a 阻塞行为 column has not answered the question.
+TRIGGER_MODES = ["按需", "保存前", "发布前"]
+TRIGGER_COLUMNS = ["触发时机", "执行范围", "阻塞行为", "结果处理"]
+
+# Terminals the EBNF block must show, quoted as EBNF terminals. Parentheses are
+# listed because VAL-REQ-008 requires grouping to be part of the grammar.
+GRAMMAR_PRODUCTIONS = list(rule_dsl.PRODUCTIONS)
+GRAMMAR_TERMINALS = [
+    '"AND"',
+    '"OR"',
+    '"NOT"',
+    '"IN"',
+    '"NOT IN"',
+    '"MATCH"',
+    '"NOT MATCH"',
+    '"="',
+    '"!="',
+    '">"',
+    '"<"',
+    '">="',
+    '"<="',
+    '"NULL"',
+    '"("',
+    '")"',
+]
+
+# The 25 rules the document ships, in table order. This is the single source the
+# synthetic positive control builds from and the real document is compared to;
+# ``REQUIRED_DESIGN_RULES`` below derives the tolerant per-rule tokens from it.
+SHIPPED_DESIGN_RULES = [
+    ("DR-001", "管线缺管道等级", "管线", "错误", "管道等级 = NULL"),
+    ("DR-002", "管线缺公称直径", "管线", "错误", "公称直径 = NULL"),
+    ("DR-003", "设备无位号", "设备", "错误", '位号 = NULL OR 位号 = ""'),
+    ("DR-004", "位号重复", "对象实例", "错误", "位号.同类型重复数 > 1"),
+    ("DR-005", "仪表未分配回路", "仪表", "警告", "仪表回路 = NULL"),
+    ("DR-006", "页间连接符对端缺失", "页间连接符", "错误", "对端图纸 = NULL OR 对端位号 = NULL"),
+    ("DR-007", "阀门压力等级高于管道等级", "阀门", "错误", "压力等级 > 所属管线.管道等级.最大公称压力"),
+    ("DR-008", "管口未连接", "管口", "提示", "连接状态 = #未连接"),
+    ("DR-009", "图纸未设图例标准", "图纸", "错误", "图例标准 = NULL"),
+    ("DR-010", "属性必填项为空", "对象实例", "错误", "必填项缺失数 > 0"),
+    ("DR-011", "管路位号后缀缺失", "管路", "错误", '后缀 = NULL OR 后缀 = ""'),
+    ("DR-012", "管段长度非法", "管段", "警告", "长度 <= 0"),
+    ("DR-013", "仪表回路仪表数不足", "仪表回路", "提示", "仪表数 < 2"),
+    ("DR-014", "管线端口未闭合", "管线", "错误", "端口未连接数 > 0"),
+    ("DR-015", "信号线端点缺失", "信号线", "错误", "起点仪表 = NULL OR 终点仪表 = NULL"),
+    ("DR-016", "标注文字为空", "标注", "提示", '文字 = NULL OR 文字 = ""'),
+    ("DR-017", "阀门开度越界", "阀门", "警告", "开度 > 100 OR 开度 < 0"),
+    ("DR-018", "位号格式不符", "对象实例", "警告", '位号 NOT MATCH "^[A-Z]{1,2}-[0-9]{4}$"'),
+    ("DR-019", "位号长度超限", "对象实例", "提示", "位号.长度 > 32"),
+    ("DR-020", "管口位号前缀不继承设备", "管口", "错误", "位号前缀 != 所属设备.位号"),
+    (
+        "DR-021",
+        "介质与管道等级材质不兼容",
+        "管线",
+        "错误",
+        "介质 IN (#氯气, #氢氟酸) AND 管道等级.材质 = #碳钢",
+    ),
+    ("DR-022", "管道等级不在项目主数据", "管线", "错误", "管道等级 NOT IN (项目.管道等级表)"),
+    ("DR-023", "设备管口数不足", "设备", "警告", "管口数 < 2 AND NOT (设备类别 = #储罐)"),
+    ("DR-024", "符号实例状态非法", "符号实例", "提示", "符号.状态 != #有效"),
+    (
+        "DR-025",
+        "高温管线缺绝热等级",
+        "管线",
+        "警告",
+        "(设计温度 > 200 OR 介质 = #蒸汽) AND 绝热等级 = NULL",
+    ),
+]
+
+# The distinctive token each mandated rule's 名称 must mention, and the tokens
+# the whole list must cover. Short tokens, not full names, so a legitimate
+# rewording of the surrounding prose still passes while a dropped rule, a
+# renamed scope or a changed severity does not.
+RULE_NAME_TOKENS = {
+    "DR-001": "缺管道等级",
+    "DR-002": "缺公称直径",
+    "DR-003": "无位号",
+    "DR-004": "位号重复",
+    "DR-005": "未分配回路",
+    "DR-006": "对端缺失",
+    "DR-007": "管道等级",
+    "DR-008": "管口未连接",
+    "DR-009": "未设图例标准",
+    "DR-010": "必填项为空",
+    "DR-011": "后缀缺失",
+    "DR-012": "长度非法",
+    "DR-013": "仪表数不足",
+    "DR-014": "端口未闭合",
+    "DR-015": "端点缺失",
+    "DR-016": "文字为空",
+    "DR-017": "开度越界",
+    "DR-018": "格式不符",
+    "DR-019": "长度超限",
+    "DR-020": "前缀不继承",
+    "DR-021": "材质不兼容",
+    "DR-022": "不在项目主数据",
+    "DR-023": "管口数不足",
+    "DR-024": "状态非法",
+    "DR-025": "缺绝热等级",
+}
+
+REQUIRED_DESIGN_RULES = {
+    rule_id: (RULE_NAME_TOKENS[rule_id], scope, severity)
+    for rule_id, _name, scope, severity, _expression in SHIPPED_DESIGN_RULES
+}
+
+# The ten rule kinds the feature contract requires the list to cover. Each is
+# a token that must appear in some rule's 名称 cell.
+RULE_TOPIC_TOKENS = [
+    "缺管道等级",
+    "缺公称直径",
+    "无位号",
+    "位号重复",
+    "未分配回路",
+    "对端缺失",
+    "阀门",
+    "管口未连接",
+    "未设图例标准",
+    "必填项为空",
+]
+
+_FENCE_RE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})[ \t]*(?P<info>[^`\s]*)")
+
+
+def fenced_blocks(text: str) -> list:
+    """Return ``{'info': str, 'body': str}`` for every fenced code block."""
+    blocks = []
+    marker = None
+    info = ""
+    body = []
+    for line in text.splitlines():
+        if marker is None:
+            opening = _FENCE_RE.match(line)
+            if opening:
+                marker = opening.group("marker")
+                info = opening.group("info") or ""
+                body = []
+            continue
+        stripped = line.strip()
+        if stripped.startswith(marker[0]) and not stripped.strip(marker[0]):
+            blocks.append({"info": info, "body": "\n".join(body)})
+            marker = None
+            continue
+        body.append(line)
+    if marker is not None:
+        blocks.append({"info": info, "body": "\n".join(body)})
+    return blocks
+
+
+def _plain_cell(cell: str) -> str:
+    """Strip inline-code delimiters and surrounding emphasis from a table cell."""
+    text = cell.strip()
+    if text.startswith("`") and text.endswith("`") and len(text) >= 2:
+        text = text[1:-1]
+    return text.replace("**", "").replace("`", "").strip()
+
+
+def _find_table(section: str, header=None, must_contain=()):
+    for table in parse_tables(section):
+        if header is not None and [cell.strip() for cell in table["header"]] != list(header):
+            continue
+        if any(token not in " ".join(table["header"]) for token in must_contain):
+            continue
+        return table
+    return None
+
+
+def validate_rule_dsl_grammar(text: str, path: str = None) -> list:
+    """VAL-REQ-008: the 规则 DSL section must carry a real EBNF block."""
+    path = path or AREA_FILE_OF["DATA"]
+    section = section_text(text, "规则 DSL")
+    errors = []
+    blocks = [block for block in fenced_blocks(section) if "ebnf" in block["info"].lower()]
+    if not blocks:
+        return [
+            "%s: 规则 DSL has no fenced code block tagged ebnf (found %s)"
+            % (path, [block["info"] for block in fenced_blocks(section)])
+        ]
+    body = blocks[0]["body"]
+    for production in GRAMMAR_PRODUCTIONS:
+        if not re.search(r"^\s*%s\s*=" % re.escape(production), body, re.MULTILINE):
+            errors.append(
+                "%s: EBNF block does not define the production '%s'" % (path, production)
+            )
+    for terminal in GRAMMAR_TERMINALS:
+        if terminal not in body:
+            errors.append(
+                "%s: EBNF block does not show the terminal %s" % (path, terminal)
+            )
+    return errors
+
+
+def validate_design_rule_table(text: str, path: str = None) -> list:
+    """VAL-REQ-008: >=20 rules, five columns, every expression parseable."""
+    path = path or AREA_FILE_OF["DATA"]
+    section = section_text(text, "设计规则清单")
+    table = _find_table(section, RULE_TABLE_COLUMNS)
+    if table is None:
+        found = [table["header"] for table in parse_tables(section)]
+        return [
+            "%s: 设计规则清单 has no table with columns %s (found %s)"
+            % (path, " | ".join(RULE_TABLE_COLUMNS), found)
+        ]
+
+    errors = []
+    if len(table["rows"]) < MIN_DESIGN_RULES:
+        errors.append(
+            "%s: 设计规则清单 has %d rules; at least %d required"
+            % (path, len(table["rows"]), MIN_DESIGN_RULES)
+        )
+
+    seen = {}
+    names = {}
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) != len(RULE_TABLE_COLUMNS):
+            errors.append(
+                "%s:%d: rule row has %d cells; expected %d"
+                % (path, line, len(row), len(RULE_TABLE_COLUMNS))
+            )
+            continue
+        rule_id = _plain_cell(row[0])
+        name = _plain_cell(row[1])
+        scope = _plain_cell(row[2])
+        severity = _plain_cell(row[3])
+        expression = _plain_cell(row[4])
+
+        if not re.match(r"^DR-\d{3}$", rule_id):
+            errors.append(
+                "%s:%d: rule ID '%s' does not match DR-<three digits>" % (path, line, rule_id)
+            )
+        elif rule_id in seen:
+            errors.append(
+                "%s:%d: rule %s repeats the row on line %d"
+                % (path, line, rule_id, seen[rule_id])
+            )
+        else:
+            seen[rule_id] = line
+            names[rule_id] = (name, scope, severity)
+
+        if severity not in RULE_SEVERITIES:
+            errors.append(
+                "%s:%d: rule %s has severity '%s'; expected one of %s"
+                % (path, line, rule_id, severity, "/".join(RULE_SEVERITIES))
+            )
+        try:
+            rule_dsl.parse(expression)
+        except rule_dsl.DSLParseError as error:
+            errors.append(
+                "%s:%d: rule %s has an expression that does not parse (%s): %s"
+                % (path, line, rule_id, error.summary(), expression)
+            )
+
+    for rule_id, (name_token, scope_token, severity) in sorted(REQUIRED_DESIGN_RULES.items()):
+        if rule_id not in names:
+            errors.append("%s: 设计规则清单 omits the required rule %s" % (path, rule_id))
+            continue
+        name, scope, actual_severity = names[rule_id]
+        if name_token not in name:
+            errors.append(
+                "%s: rule %s is named '%s'; it must mention '%s'"
+                % (path, rule_id, name, name_token)
+            )
+        if scope_token not in scope:
+            errors.append(
+                "%s: rule %s applies to '%s'; it must mention '%s'"
+                % (path, rule_id, scope, scope_token)
+            )
+        if actual_severity != severity:
+            errors.append(
+                "%s: rule %s has severity '%s'; expected '%s'"
+                % (path, rule_id, actual_severity, severity)
+            )
+
+    joined_names = " ".join(entry[0] for entry in names.values())
+    for topic in RULE_TOPIC_TOKENS:
+        if topic not in joined_names:
+            errors.append(
+                "%s: no rule name covers the required topic '%s'" % (path, topic)
+            )
+    return errors
+
+
+def _enum_values(*cells) -> set:
+    for cell in cells:
+        match = re.search(r"Enum\(([^)]*)\)", cell)
+        if match:
+            parts = re.split(r"[/、,，\s]+", match.group(1).strip())
+            return {part for part in parts if part}
+    return set()
+
+
+def validate_result_model(text: str, path: str = None) -> list:
+    """VAL-REQ-008: five result fields and the exact 错误/警告/提示 enum."""
+    path = path or AREA_FILE_OF["DATA"]
+    section = section_text(text, "结果模型")
+    table = _find_table(section, RESULT_TABLE_COLUMNS)
+    if table is None:
+        return [
+            "%s: 结果模型 has no field table with columns %s"
+            % (path, " | ".join(RESULT_TABLE_COLUMNS))
+        ]
+
+    errors = []
+    by_name = {}
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) != len(RESULT_TABLE_COLUMNS):
+            errors.append(
+                "%s:%d: result field row has %d cells; expected %d"
+                % (path, line, len(row), len(RESULT_TABLE_COLUMNS))
+            )
+            continue
+        by_name[_plain_cell(row[0])] = row
+
+    for field in RESULT_FIELDS:
+        if field not in by_name:
+            errors.append("%s: 结果模型 does not define the field '%s'" % (path, field))
+
+    if "严重度" in by_name:
+        row = by_name["严重度"]
+        values = _enum_values(row[1], row[3])
+        if values != set(RULE_SEVERITIES):
+            errors.append(
+                "%s: 严重度 enumerates %s; it must be exactly %s"
+                % (path, sorted(values), "/".join(RULE_SEVERITIES))
+            )
+    return errors
+
+
+def validate_trigger_modes(text: str, path: str = None) -> list:
+    """VAL-REQ-008: 按需/保存前/发布前, each with its own blocking behaviour."""
+    path = path or AREA_FILE_OF["DATA"]
+    section = section_text(text, "触发时机")
+    errors = []
+    for mode in TRIGGER_MODES:
+        if mode not in section:
+            errors.append("%s: 触发时机 does not define the '%s' mode" % (path, mode))
+
+    table = _find_table(section, must_contain=("触发时机", "阻塞行为"))
+    if table is None:
+        return errors + [
+            "%s: 触发时机 has no table with a 触发时机 column and a 阻塞行为 column"
+            % path
+        ]
+
+    header = [cell.strip() for cell in table["header"]]
+    mode_index = next(i for i, cell in enumerate(header) if "触发时机" in cell)
+    block_index = next(i for i, cell in enumerate(header) if "阻塞行为" in cell)
+    for mode in TRIGGER_MODES:
+        rows = [
+            row
+            for row in table["rows"]
+            if len(row) > max(mode_index, block_index)
+            and mode in row[mode_index]
+        ]
+        if not rows:
+            errors.append("%s: 触发时机 has no row for the '%s' mode" % (path, mode))
+            continue
+        behaviour = _plain_cell(rows[0][block_index])
+        if "阻断" not in behaviour:
+            errors.append(
+                "%s: 触发时机 row for '%s' states no blocking behaviour (%r)"
+                % (path, mode, behaviour)
+            )
+    return errors
+
+
+def validate_data_rule_engine_coverage(documents: dict) -> list:
+    """VAL-REQ-008: nine sections, an EBNF block, a rule table and a result model."""
+    path = AREA_FILE_OF["DATA"]
+    text = documents.get(path)
+    if text is None:
+        return ["%s: data and rule engine requirement document is missing" % path]
+
+    errors = validate_sections(text, DATA_SECTIONS, path)
+    errors.extend(validate_rule_dsl_grammar(text, path))
+    errors.extend(validate_design_rule_table(text, path))
+    errors.extend(validate_result_model(text, path))
+    errors.extend(validate_trigger_modes(text, path))
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Deliverables & publication (VAL-REQ-009)
+# ---------------------------------------------------------------------------
+
+DELIVERABLE_SECTIONS = ["材料清单聚合", "报表模板", "图纸输出", "数据发布", "导出矩阵"]
+
+# VAL-DOC-009 makes this document the authoritative definition site for the six
+# material-list columns; the standard header below is the one the prototype's
+# bom screen must reproduce.
+BOM_COLUMNS = ["序号", "类型", "位号", "名称", "数量", "单位"]
+BOM_INVARIANT_PHRASE = "一个位号在同一份材料清单中至多占一行"
+BOM_QUANTITY_TOKENS = ["Σ", "管段长度", "实例计数", "台/个", "m"]
+DRAWING_OUTPUT_FORMATS = ["DWG", "DXF", "PDF", "SVG"]
+EXPORT_FORMAT_TOKENS = ["DWG", "DXF", "PDF", "SVG", "XLSX", "CSV", "JSON"]
+MIN_EXPORT_FORMATS = 6
+
+
+def _squash(text: str) -> str:
+    """Drop whitespace and emphasis markers so a sentence compares as one token."""
+    return re.sub(r"[\s*_`]+", "", text)
+
+
+def validate_deliverable_coverage(documents: dict) -> list:
+    """VAL-REQ-009: five sections, the BOM invariant, formulas and four formats."""
+    path = AREA_FILE_OF["DELV"]
+    text = documents.get(path)
+    if text is None:
+        return ["%s: deliverables and publication requirement document is missing" % path]
+
+    errors = validate_sections(text, DELIVERABLE_SECTIONS, path)
+
+    bom = section_text(text, "材料清单聚合")
+    if BOM_INVARIANT_PHRASE not in _squash(bom):
+        errors.append(
+            "%s: 材料清单聚合 does not state the invariant '%s'"
+            % (path, BOM_INVARIANT_PHRASE)
+        )
+    if _find_table(bom, BOM_COLUMNS) is None:
+        errors.append(
+            "%s: 材料清单聚合 has no standard header with columns %s"
+            % (path, " | ".join(BOM_COLUMNS))
+        )
+    for token in BOM_QUANTITY_TOKENS:
+        if token not in bom:
+            errors.append(
+                "%s: 材料清单聚合 does not state the quantity term '%s'" % (path, token)
+            )
+
+    drawings = section_text(text, "图纸输出")
+    for name in DRAWING_OUTPUT_FORMATS:
+        if name not in drawings:
+            errors.append("%s: 图纸输出 does not cover the %s format" % (path, name))
+
+    export = section_text(text, "导出矩阵")
+    present = [name for name in EXPORT_FORMAT_TOKENS if name in export]
+    if len(present) < MIN_EXPORT_FORMATS:
+        errors.append(
+            "%s: 导出矩阵 covers %d of the known formats (%s); at least %d required"
+            % (path, len(present), "/".join(present), MIN_EXPORT_FORMATS)
+        )
+    table = _find_table(export, must_contain=("格式",))
+    if table is None:
+        errors.append("%s: 导出矩阵 has no table with a 格式 column" % path)
+    elif len(table["rows"]) < MIN_EXPORT_FORMATS:
+        errors.append(
+            "%s: 导出矩阵 table has %d rows; at least %d formats required"
+            % (path, len(table["rows"]), MIN_EXPORT_FORMATS)
+        )
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# Cross-document field names (VAL-DOC-009, document half)
+# ---------------------------------------------------------------------------
+
+# The tag-rule fields 30-symbol-library-and-project-settings.md owns. The data
+# document must reuse them character-identically when it describes generation
+# and uniqueness; a synonym there is drift even though the defining document is
+# untouched, because a reader comparing the two documents sees two names.
+TAG_RULE_FIELDS_IN_DATA_DOC = [
+    "格式名称",
+    "起始编码",
+    "增量",
+    "后缀递增",
+    "位号唯一校验",
+    "自动弹窗",
+]
+TAG_RULE_FIELD_SYNONYMS = ["位号唯一性校验"]
+
+
+def validate_field_group_consistency(documents: dict) -> list:
+    """VAL-DOC-009 on the document side: definition site and reference site agree.
+
+    The prototype halves of the assertion (DOM labels, ``screen-catalog.json``)
+    are not checked here; they arrive with the prototype. What is enforceable
+    today is that the reference documents reuse the defining document's field
+    names verbatim and never invent a synonym.
+    """
+    errors = []
+    data_path = AREA_FILE_OF["DATA"]
+    data = documents.get(data_path)
+    if data is None:
+        errors.append("%s: data and rule engine requirement document is missing" % data_path)
+    else:
+        for name in TAG_RULE_FIELDS_IN_DATA_DOC:
+            if name not in data:
+                errors.append(
+                    "%s: does not reuse the tag-rule field name '%s' defined in %s"
+                    % (data_path, name, AREA_FILE_OF["SYM"])
+                )
+        for synonym in TAG_RULE_FIELD_SYNONYMS:
+            if synonym in data:
+                errors.append(
+                    "%s: uses the synonym '%s'; the canonical field name is '位号唯一校验'"
+                    % (data_path, synonym)
+                )
+
+    delv_path = AREA_FILE_OF["DELV"]
+    delv = documents.get(delv_path)
+    if delv is None:
+        errors.append("%s: deliverables and publication requirement document is missing" % delv_path)
+    else:
+        missing = [name for name in BOM_COLUMNS if name not in delv]
+        for name in missing:
+            errors.append(
+                "%s: does not define the material-list column name '%s'" % (delv_path, name)
+            )
+        if not missing and find_bom_header(delv) is None:
+            errors.append(
+                "%s: the material-list column names never appear together as the header %s"
+                % (delv_path, " | ".join(BOM_COLUMNS))
+            )
+    return errors
+
+
+def find_bom_header(text: str):
+    """The standard material-list header table, wherever it appears in ``text``."""
+    for table in parse_tables(text):
+        if [cell.strip() for cell in table["header"]] == BOM_COLUMNS:
+            return table
+    return None
 
 
 # ---------------------------------------------------------------------------

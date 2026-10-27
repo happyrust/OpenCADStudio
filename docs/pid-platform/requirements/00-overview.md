@@ -36,8 +36,8 @@
 | TYPE | `docs/pid-platform/requirements/20-type-library.md` | 类型库与属性模型需求，共 15 条 |
 | SYM | `docs/pid-platform/requirements/30-symbol-library-and-project-settings.md` | 符号库与项目设置需求，共 18 条 |
 | DRW | `docs/pid-platform/requirements/40-drawing-and-drafting.md` | 图纸与绘图需求，共 30 条 |
-| DATA | `docs/pid-platform/requirements/50-data-and-rule-engine.md` | 数据与设计规则检查需求 |
-| DELV | `docs/pid-platform/requirements/60-deliverables-and-publish.md` | 交付与发布需求 |
+| DATA | `docs/pid-platform/requirements/50-data-and-rule-engine.md` | 数据与设计规则检查需求，共 16 条 |
+| DELV | `docs/pid-platform/requirements/60-deliverables-and-publish.md` | 交付与发布需求，共 11 条 |
 | COLL | `docs/pid-platform/requirements/70-collaboration-and-permissions.md` | 协同与权限需求 |
 | IO | `docs/pid-platform/requirements/80-import-export-matrix.md` | 导入导出矩阵需求 |
 | MIG | `docs/pid-platform/requirements/90-migration-and-interop.md` | 迁移与互操作需求 |
@@ -128,6 +128,33 @@
 | REQ-DRW-028 | DRW | editor | 对象复制粘贴与落点在编辑器目录树与画布完成 |
 | REQ-DRW-029 | DRW | 无界面 | 草图设置为编辑器内的模态对话框，14 屏原型未单列该屏幕，仅在编辑器屏以入口示意 |
 | REQ-DRW-030 | DRW | 无界面 | 用户环境为按用户保存的客户端偏好对话框，14 屏原型未单列该屏幕 |
+| REQ-DATA-001 | DATA | properties | 位号作为实例列表首列在属性管理器屏呈现 |
+| REQ-DATA-002 | DATA | tag-rules | 位号唯一校验开关在位号规则屏配置 |
+| REQ-DATA-003 | DATA | validation | 重复位号在校验结果屏以错误级结果列出 |
+| REQ-DATA-004 | DATA | properties | 冲突解决在属性管理器屏改位号并回写 |
+| REQ-DATA-005 | DATA | properties | 类型树与实例列表在属性管理器屏呈现 |
+| REQ-DATA-006 | DATA | properties | 批量编辑与表格回写在属性管理器屏完成 |
+| REQ-DATA-007 | DATA | properties | 必填项为空在属性表标红并阻止保存 |
+| REQ-DATA-008 | DATA | drawings | 图纸预览的位号检索在图纸管理屏完成 |
+| REQ-DATA-009 | DATA | properties | 多条件查询结果列表在属性管理器屏呈现 |
+| REQ-DATA-010 | DATA | 无界面 | 规则集配置属配置端功能，14 屏原型只呈现检查结果 |
+| REQ-DATA-011 | DATA | 无界面 | 规则作用域与规则包为配置端对象，原型不单列屏幕 |
+| REQ-DATA-012 | DATA | 无界面 | DSL 编辑器为配置端文本控件，原型不单列屏幕 |
+| REQ-DATA-013 | DATA | validation | 三种触发时机的结果汇入校验结果屏 |
+| REQ-DATA-014 | DATA | validation | 结果字段与严重度在校验结果屏按严重度分组呈现 |
+| REQ-DATA-015 | DATA | validation | 结果分组定位与豁免在校验结果屏操作 |
+| REQ-DATA-016 | DATA | validation | 内置规则清单与启停状态在校验结果屏规则列表呈现 |
+| REQ-DELV-001 | DELV | bom | 材料清单表头与位号唯一性在 BOM 屏呈现 |
+| REQ-DELV-002 | DELV | bom | 数量公式结果在 BOM 屏数量列呈现 |
+| REQ-DELV-003 | DELV | bom | 聚合范围切换在 BOM 屏范围选择器呈现 |
+| REQ-DELV-004 | DELV | bom | 报表模板字段映射在 BOM 屏预览表头可见 |
+| REQ-DELV-005 | DELV | bom | 模板与导出格式选择在 BOM 屏导出区完成 |
+| REQ-DELV-006 | DELV | drawings | 四格式导出入口在图纸管理屏操作菜单 |
+| REQ-DELV-007 | DELV | drawings | 导出范围与出图参数在图纸管理屏导出对话框 |
+| REQ-DELV-008 | DELV | 无界面 | 发布包与发布状态在服务端执行，原型不含发布屏 |
+| REQ-DELV-009 | DELV | validation | 发布门禁读取校验结果屏的错误级结果 |
+| REQ-DELV-010 | DELV | bom | 导出矩阵的格式清单在 BOM 屏导出格式下拉呈现 |
+| REQ-DELV-011 | DELV | 无界面 | 导出任务队列在服务端运行，原型不单列任务屏 |
 
 ## 校验规则
 
