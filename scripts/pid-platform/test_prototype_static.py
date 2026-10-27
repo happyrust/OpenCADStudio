@@ -267,3 +267,199 @@ def test_syntax_no_hard_coded_hex_outside_tokens():
     assert offenders == [], (
         "hard-coded hex colours outside tokens.css: %s" % offenders
     )
+
+
+# ---------------------------------------------------------------------------
+# Enum-column contract (REQ-TYPE-008 / REQ-SYM-005 / REQ-SYM-006 / REQ-SYM-007)
+#
+# These pin the values, not just the headers. M6 scrutiny round 1 failed on
+# three tables whose headers were right and whose cells carried invented
+# enumerations, so each owning Enum(...) is now checked against the seed data
+# in both directions: nothing outside the allowed set is emitted, and every
+# allowed value appears.
+# ---------------------------------------------------------------------------
+
+TL_ATTRS_BLOCK_RE = re.compile(
+    r"var TL_ATTRS = \{(.*?)\n  \};", re.DOTALL
+)
+TL_TYPE_RE = re.compile(r'"([a-z-]+)": \[(.*?)\n    \]', re.DOTALL)
+
+TYPELIB_LEVEL_VALUES = ["可选信息", "必选信息"]
+# Each type's most characteristic element must lead its attribute table.
+TYPELIB_FIRST_ROWS = {
+    "process-equipment": "类别编码",
+    "rotating": "额定功率",
+    "pump": "额定流量",
+    "compressor": "排气量",
+    "static": "材质",
+    "vessel": "容积",
+    "tower": "塔板数",
+    "piping": "连接形式",
+    "valve": "公称直径",
+    "fitting": "规格",
+    "instrument": "量程",
+    "field-instrument": "信号类型",
+    "instrument-loop": "回路功能",
+}
+CONNECTION_TYPES = ["等径", "异径", "信号线"]
+CONNECTION_DIRECTIONS = ["双向点", "流入点", "流出点"]
+LABEL_POSITIONS = ["上", "下", "左", "右"]
+
+
+def _tl_attrs() -> dict:
+    text = _screens_text()
+    block = TL_ATTRS_BLOCK_RE.search(text)
+    assert block, "the TL_ATTRS seed block is missing from the bundle"
+    out = {}
+    for type_id, body in TL_TYPE_RE.findall(block.group(1)):
+        rows = re.findall(r'\[([^\]]*)\]', body)
+        out[type_id] = [
+            [cell.strip().strip('"') for cell in row.split(",")]
+            for row in rows
+        ]
+    assert out, "TL_ATTRS parsed to no types"
+    return out
+
+
+def test_syntax_typelib_level_column_uses_the_requirement_enum():
+    """REQ-TYPE-008: 级别 is Enum(可选信息/必选信息), default 可选信息.
+
+    Both directions are checked: every seeded cell is inside the allowed set,
+    and the control offers every allowed value, so neither an invented value
+    nor a dropped option can pass.
+    """
+    offenders = []
+    seen = set()
+    for type_id, rows in _tl_attrs().items():
+        for row in rows:
+            level = row[4]
+            seen.add(level)
+            if level not in TYPELIB_LEVEL_VALUES:
+                offenders.append("%s/%s -> %r" % (type_id, row[0], level))
+    assert offenders == [], (
+        "typelib 级别 carries values outside %r: %s"
+        % (TYPELIB_LEVEL_VALUES, offenders)
+    )
+    assert seen, "TL_ATTRS carries no 级别 values at all"
+    assert seen == {"可选信息"}, (
+        "seeded 级别 values must all default to 可选信息; saw %r"
+        % (sorted(seen),)
+    )
+    text = _screens_text()
+    at = text.index('data-testid="attribute-level"')
+    offered = re.findall(r">([^<>]+)</option>", text[at: at + 700])[:2]
+    assert offered == TYPELIB_LEVEL_VALUES, (
+        "the 级别 select offers %r; the Enum requires %r"
+        % (offered, TYPELIB_LEVEL_VALUES)
+    )
+
+
+def test_syntax_typelib_level_cell_is_a_select_with_two_options():
+    """The 级别 cell must be editable, not a static string."""
+    text = _screens_text()
+    assert 'data-testid="attribute-level"' in text, (
+        "the 级别 cell has no data-testid=attribute-level select"
+    )
+    select_at = text.index('data-testid="attribute-level"')
+    window = text[select_at: select_at + 700]
+    options = re.findall(r">([^<>]+)</option>", window)
+    assert options[:2] == TYPELIB_LEVEL_VALUES, (
+        "the 级别 select options are %r; expected %r"
+        % (options[:2], TYPELIB_LEVEL_VALUES)
+    )
+    # Default is 可选信息 per REQ-TYPE-008: the seed data must say so.
+    assert '["位号", "TAG_NO", "字符串", "—", "可选信息"]' in text, (
+        "the 位号 row does not default to 可选信息"
+    )
+
+
+def test_syntax_typelib_first_row_is_the_types_characteristic_element():
+    """VAL-PROTO-009 accepts a first-row change; make the change unambiguous."""
+    attrs = _tl_attrs()
+    assert set(attrs) == set(TYPELIB_FIRST_ROWS), (
+        "TL_ATTRS covers %r; expected %r"
+        % (sorted(attrs), sorted(TYPELIB_FIRST_ROWS))
+    )
+    wrong = {
+        type_id: attrs[type_id][0][0]
+        for type_id in attrs
+        if attrs[type_id][0][0] != TYPELIB_FIRST_ROWS[type_id]
+    }
+    assert wrong == {}, "types whose first row is not the characteristic one: %s" % wrong
+    # The 位号 row must survive the reorder.
+    missing = [t for t, rows in attrs.items() if "位号" not in [r[0] for r in rows]]
+    assert missing == [], "types that lost their 位号 row: %s" % missing
+    # Row counts must still differ between types so switching always redraws.
+    assert len({len(rows) for rows in attrs.values()}) > 1, (
+        "every type has the same row count, so switching nodes cannot change the table"
+    )
+
+
+def _seed_block(start_marker: str, end_marker: str) -> str:
+    text = _screens_text()
+    start = text.index(start_marker)
+    return text[start: text.index(end_marker, start)]
+
+
+def test_syntax_symbol_editor_connection_enum_matches_req_sym_005():
+    """REQ-SYM-005: 类型 Enum(等径/异径/信号线), 方向 Enum(双向点/流入点/流出点)."""
+    block = _seed_block("var SE_CONNECTIONS", "var SE_ATTRIBUTES")
+    rows = re.findall(r'\["([^"]+)", "([^"]+)", "([^"]+)"\]', block)
+    assert rows, "SE_CONNECTIONS has no rows"
+    bad_types = [r[0] for r in rows if r[0] not in CONNECTION_TYPES]
+    bad_dirs = [r[1] for r in rows if r[1] not in CONNECTION_DIRECTIONS]
+    assert bad_types == [], (
+        "connection 类型 carries values outside %r: %s"
+        % (CONNECTION_TYPES, bad_types)
+    )
+    assert bad_dirs == [], (
+        "connection 方向 carries values outside %r: %s"
+        % (CONNECTION_DIRECTIONS, bad_dirs)
+    )
+
+
+def test_syntax_symbol_editor_label_position_enum_matches_req_sym_006():
+    """REQ-SYM-006: 位置 Enum(上/下/左/右)."""
+    block = _seed_block("var SE_ATTRIBUTES", "var SE_GLYPH")
+    rows = re.findall(r'\["([^"]+)", "([^"]+)", "([^"]+)", "([^"]+)"\]', block)
+    assert rows, "SE_ATTRIBUTES has no rows"
+    bad = [r[3] for r in rows if r[3] not in LABEL_POSITIONS]
+    assert bad == [], (
+        "label 位置 carries values outside %r: %s" % (LABEL_POSITIONS, bad)
+    )
+
+
+def test_syntax_tag_rule_editor_declares_the_hierarchy_select():
+    """REQ-SYM-007: 层级选择 Enum(当前类型依次递增/父类型递增)."""
+    text = _screens_text()
+    assert 'data-testid="rule-hierarchy-select"' in text, (
+        "the tag-rule editor has no 层级选择 select"
+    )
+    at = text.index('data-testid="rule-hierarchy-select"')
+    window = text[at: at + 700]
+    options = re.findall(r">([^<>]+)</option>", window)
+    assert options[:2] == ["当前类型依次递增", "父类型递增"], (
+        "the 层级选择 options are %r" % (options[:2],)
+    )
+    # VAL-PROTO-012 still requires the auto-code switch and the prefix source.
+    for testid in ("rule-auto-code", "rule-prefix", "rule-step"):
+        assert 'data-testid="%s"' % testid in text, (
+            "the tag-rule editor lost data-testid=%s" % testid
+        )
+
+
+def test_syntax_tag_prefix_is_escaped_before_regex_construction():
+    """A prefix such as `E(` must not reach RegExp unescaped (VAL-PROTO-020)."""
+    text = _screens_text()
+    assert "function escapeRegExp(text)" in text, (
+        "the bundle has no escapeRegExp helper"
+    )
+    assert "escapeRegExp(prefix)" in text, (
+        "nextTag does not escape the prefix before building its RegExp"
+    )
+    assert 'new RegExp("^" + prefix' not in text, (
+        "nextTag still concatenates the raw prefix into a RegExp"
+    )
+    assert "function sanitizeTagPrefix(text)" in text, (
+        "the tag-rule prefix input is not sanitised"
+    )
