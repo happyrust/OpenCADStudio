@@ -156,12 +156,16 @@
 
 `BOM_SOURCE` 的行键是位号主数据那把复合键 `(类型编码, 位号)`（`requirements/60-deliverables-and-publish.md`）：同一 `类型编码` 下 `位号` 全表唯一，不同 `类型编码` 允许同值位号。管线行用管线位号 `L-1001`、`L-1002`；管件行继承管路位号 `L-1001-01`（管线位号加两位后缀）。同一类型下两者不得相同，否则 `__proto.bomRows` 会出现重复复合键并违反 `VAL-PROTO-016`。当前种子的 14 行位号互不相同，因此复合键唯一性也成立。该不变量由独立用例 `test_syntax_bom_seed_keeps_tags_unique` 钉住，类型词汇与继承关系由 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` 钉住。
 
+**位号字面值不得跨类型复用。** `requirements/60` 的标准示例表把 `V-1001`、`V-1002` 分配给 `阀门`（截止阀 DN50 等），因此原型侧的两个容器改为 `V-1301`（原油缓冲罐）与 `V-1302`（污油罐）。`V-1101` 不可用，它已属于 `PID-1201` 的常顶回流罐。容器位号在画布 `makeSymbol`（权威值来源）、`drawings` 种子、`INSTANCES`、`BOM_SOURCE` 与 `drawings` 预览 SVG 文本中必须同一字面值；材料清单 14 行数量不变，`duplicateTags` 为空。
+
 `-k syntax` 目前守护的边界，以及**明确交由浏览器环节守卫**的路径：
 
 | 路径 | 守卫方式 |
 | --- | --- |
 | `BOM_SOURCE` 类型词汇、管件继承宿主位号 | 静态用例 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` + 负向对照 |
 | `BOM_SOURCE` 位号全表唯一 | 独立静态用例 `test_syntax_bom_seed_keeps_tags_unique` + 负向对照 |
+| 同一字面位号不得在同一类型语境下指两个对象（原型种子 vs `requirements/60` 示例表） | `_assert_no_seed_tag_collision` 从 `requirements/60` 的标准表取出 `位号 → 类型`，与原型三处种子（`drawings` 的 `kind`、`makeSymbol` 的 kind 实参经 `CANVAS_KIND_LABELS` 翻译、`INSTANCES` 的 `typeName` 经 `SUBTYPE_TO_TYPE` 归一）逐一比对，只比对 `设备`/`阀门`/`仪表` 三个独立位号类型（管线与管件共享位号族，不参与）。用例 `test_syntax_prototype_seed_tags_never_collide_with_the_bom_example_table`；负向对照 `test_syntax_prototype_tag_collision_guard_can_fail` 把 `drawings` 种子与画布种子各还原成 `V-1001` 一次，两次都须转红 |
+| 原油缓冲罐的位号在各处种子中一致 | `_assert_vessel_tag_is_consistent` 从 `makeSymbol("<tag>", "equipment", "vessel", ...)` 读出权威位号，再要求 `drawings` 种子、`BOM_SOURCE` 行、`INSTANCES` 记录与 `drawings` 预览 SVG 文本这四处都出现同一字面值，且该值不是 `V-1001`。用例 `test_syntax_prototype_vessel_tag_is_consistent_across_every_seed_site`；负向对照 `test_syntax_prototype_vessel_tag_consistency_guard_can_fail` 分别改坏 `BOM_SOURCE` 行与 SVG 文本，各须转红 |
 | 三组字段名在原型两处逐字一致（VAL-DOC-009 原型半边） | `requirements_contract.validate_prototype_field_labels` 按字段名逐条比对 `screen-catalog.json` 的该屏条目与 `screens.js` 该屏自身源码区段；由 `-k terminology` 的 5 条用例驱动，负向对照把 `起始编码`→`起始编号`（screens.js 与 catalog 各一次）、`"数量"`→`"件数"`、`拒绝`→`禁止` 逐条改坏，各须点名该字段与该屏 |
 | `renderBom` 用 `bmHeadHtml()` 拼表头、change 分支调用 `rerenderBom()` | 静态用例钉完整调用表达式 + 负向对照 |
 | 模板按 `def.types` 过滤行、下拉选项集合等于 `BM_TEMPLATE_DEFS` 键集合 | 静态用例钉完整 `if` 条件表达式 + 负向对照 |
@@ -211,7 +215,7 @@
 - `DR-004` 的作用对象是 `对象实例`，位号写被判定重复的那个位号。
 - `DR-006` 的作用对象是 `页间连接符`，`requirements/50` 未给该对象定义位号前缀约定，因此不对它的位号前缀做断言，只要求它与消息指同一对象。
 
-**种子违规行必须能从它指名的对象上被证明。** `DR-010` 的 DSL 是 `必填项缺失数 > 0`，所以它的消息必须点名一个在 `PROP_DEFS.equipment` 里 `required: true`、且在 `P-1001` 上确实为空的属性。当前实现：`PROP_DEFS.equipment` 的必填项是 位号 / 名称 / 设计压力 / 材质 四项，`P-1001` 的 `材质` 在画布种子与 `INSTANCES` 两处都留空，其余必填项都有值，因此 `必填项缺失数 = 1`，消息写「设备 P-1001 的必填项材质为空」。`T-1001` / `E-1001` / `V-1001` 与 `P-1002` / `P-1003` 的 `材质` 都已填，缺失数为 0，不会被误报。
+**种子违规行必须能从它指名的对象上被证明。** `DR-010` 的 DSL 是 `必填项缺失数 > 0`，所以它的消息必须点名一个在 `PROP_DEFS.equipment` 里 `required: true`、且在 `P-1001` 上确实为空的属性。当前实现：`PROP_DEFS.equipment` 的必填项是 位号 / 名称 / 设计压力 / 材质 四项，`P-1001` 的 `材质` 在画布种子与 `INSTANCES` 两处都留空，其余必填项都有值，因此 `必填项缺失数 = 1`，消息写「设备 P-1001 的必填项材质为空」。`T-1001` / `E-1001` / `V-1301` 与 `P-1002` / `P-1003` 的 `材质` 都已填，缺失数为 0，不会被误报。
 
 严重度汇总由 `vlSeverityCounts()` 从 `VIOLATIONS` 推导，不硬编码。当前种子 10 行为 错误 8 / 警告 1 / 提示 1。`DR-003` 出现两次是两条不同对象的记录，不是缺陷。
 

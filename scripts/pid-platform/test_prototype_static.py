@@ -15,7 +15,8 @@ bs4 = pytest.importorskip(
 )
 BeautifulSoup = bs4.BeautifulSoup
 
-from conftest import PROTO  # noqa: E402
+from conftest import DOCS, PROTO  # noqa: E402
+from requirements_contract import bom_rows, find_bom_header  # noqa: E402
 
 INDEX = PROTO / "index.html"
 ASSETS = PROTO / "assets"
@@ -1009,6 +1010,130 @@ def _instance_props(text, tag):
     return dict(re.findall(r'"([^"]+)": "([^"]*)"', block[at:end]))
 
 
+CANVAS_KIND_LABELS = {
+    "equipment": "设备",
+    "valve": "阀门",
+    "instrument": "仪表",
+    "fitting": "管件",
+}
+
+# INSTANCES carries the subtype name (容器, 泵, ...) while the drawings seed and
+# the BOM rows carry the top-level type. Normalizing keeps one tag described as
+# 设备 in one seed and 容器 in another from reading as a type clash.
+SUBTYPE_TO_TYPE = {
+    "容器": "设备",
+    "泵": "设备",
+    "换热器": "设备",
+    "塔器": "设备",
+    "阀门": "阀门",
+    "仪表": "仪表",
+    "管件": "管件",
+    "管路": "管线",
+}
+
+# Only the independently tagged types take one literal per object. 管线 and
+# 管件 deliberately share a tag family (a 管件 inherits its host line's 位号,
+# and requirements/60 keeps 管路 out of the material list altogether), so
+# comparing them across the two surfaces would report a clash that is not one.
+INDEPENDENT_TAG_TYPES = ("设备", "阀门", "仪表")
+
+
+def _prototype_tag_types(text):
+    """Every seeded 位号 literal mapped to the type words it is bound to.
+
+    Reads the three seed sources that carry a type label next to a tag: the
+    drawings seed and the BOM rows (``kind:`` / ``type:`` immediately before
+    ``tag:``), the canvas ``makeSymbol`` calls (whose second argument is
+    ``equipment``/``valve``/...) and the properties ``INSTANCES`` records
+    (``tag:`` followed by ``typeName:``). The canvas kinds are translated
+    through ``CANVAS_KIND_LABELS`` so all sources speak one vocabulary. A tag
+    bound to several types keeps every one of them, which is what makes a
+    collision detectable instead of silently overwritten.
+    """
+    found = {}
+
+    def add(tag, kind):
+        found.setdefault(tag, set()).add(SUBTYPE_TO_TYPE.get(kind, kind))
+
+    for kind, tag in re.findall(r'kind: "([^"]+)", tag: "([^"]+)"', text):
+        add(tag, kind)
+    for kind, tag in re.findall(r'type: "([^"]+)", tag: "([^"]+)"', text):
+        add(tag, kind)
+    for tag, kind in re.findall(r'makeSymbol\("([^"]+)", "([a-z]+)", "', text):
+        add(tag, CANVAS_KIND_LABELS.get(kind, kind))
+    for tag, kind in re.findall(
+        r'\{ tag: "([^"]+)", typeId: "[^"]*", typeName: "([^"]+)"', text
+    ):
+        add(tag, kind)
+    return found
+
+
+def _assert_no_seed_tag_collision(text):
+    """No prototype 位号 may be assigned to a type the example table disagrees with."""
+    doc = (DOCS / "requirements" / "60-deliverables-and-publish.md").read_text(
+        encoding="utf-8"
+    )
+    table = find_bom_header(doc)
+    assert table is not None, (
+        "requirements/60 no longer carries the standard material-list table"
+    )
+    example_tags = {row["位号"]: row["类型"] for row in bom_rows(table)}
+    assert example_tags, "the standard table parsed to zero rows"
+    assert example_tags.get("V-1001") == "阀门", (
+        "the guard assumes requirements/60 binds V-1001 to a 阀门 row, got %r"
+        % (example_tags.get("V-1001"),)
+    )
+    colliding = _prototype_tag_types(text)
+    assert colliding, "the prototype seed exposed no tags at all"
+    internal = sorted(
+        "%s (%s)" % (tag, " / ".join(sorted(kinds)))
+        for tag, kinds in colliding.items()
+        if len([k for k in kinds if k in INDEPENDENT_TAG_TYPES]) > 1
+    )
+    assert internal == [], (
+        "the prototype binds one literal 位号 to more than one independently "
+        "tagged type, so a tag-scoped lookup lands on two objects: %r"
+        % (internal,)
+    )
+    clashes = sorted(
+        "%s (%s in the prototype, %s in requirements/60)"
+        % (tag, kind, example_tags[tag])
+        for tag, kinds in colliding.items()
+        for kind in kinds
+        if kind in INDEPENDENT_TAG_TYPES
+        and example_tags.get(tag) in INDEPENDENT_TAG_TYPES
+        and example_tags[tag] != kind
+    )
+    assert clashes == [], (
+        "a literal 位号 names two objects in different type contexts: %r"
+        % (clashes,)
+    )
+
+
+def _assert_vessel_tag_is_consistent(text):
+    """The 原油缓冲罐 tag is one literal across the drawings, canvas, INSTANCES and SVG."""
+    canvas = re.search(
+        r'makeSymbol\("([^"]+)", "equipment", "vessel", \d+, \d+, "原油缓冲罐"',
+        text,
+    )
+    assert canvas, "the canvas no longer places the 原油缓冲罐 vessel"
+    tag = canvas.group(1)
+    sites = {
+        "drawings seed": '{ kind: "设备", tag: "%s", name: "原油缓冲罐" }' % tag,
+        "BOM_SOURCE row": 'type: "设备", tag: "%s", name: "原油缓冲罐"' % tag,
+        "INSTANCES record": '{ tag: "%s", typeId: "vessel", typeName: "容器"' % tag,
+        "SVG preview label": '>%s</text>' % tag,
+    }
+    missing = [name for name, needle in sites.items() if needle not in text]
+    assert missing == [], (
+        "the vessel tag %r is missing from %r, so the rename was partial"
+        % (tag, missing)
+    )
+    assert tag != "V-1001", (
+        "the vessel is back on V-1001, which requirements/60 assigns to a 阀门"
+    )
+
+
 def _assert_rule_names(text):
     """VL_RULE_NAMES binds exactly the nine rules the seed uses."""
     block = _block_after(text, "var VL_RULE_NAMES = {", "\n  };")
@@ -1265,6 +1390,71 @@ def test_syntax_properties_list_filters_by_the_selected_type():
     assert "allowed.indexOf(inst.typeId) === -1" in text, (
         "listHtml does not filter INSTANCES by type"
     )
+
+
+def test_syntax_prototype_seed_tags_never_collide_with_the_bom_example_table():
+    """One literal 位号 may not name two objects in the same type context.
+
+    requirements/60's standard example table binds V-1001 and V-1002 to 阀门
+    rows. The prototype used to bind V-1001 to a 设备 (原油缓冲罐) and V-1002 to
+    a 容器 (污油罐), so the same literal named two objects and any
+    tag-scoped cross-screen assertion was ambiguous on it. The equipment side
+    now uses V-1301 / V-1302; this guard reads the owning document's table and
+    rejects every prototype 设备/容器 literal that the table already assigns to
+    a different type.
+    """
+    _assert_no_seed_tag_collision(_screens_text())
+
+
+def test_syntax_prototype_tag_collision_guard_can_fail():
+    """Negative control: restoring V-1001 on the 设备 seed must turn it red."""
+    text = _screens_text()
+    mutated = text.replace(
+        '{ kind: "设备", tag: "V-1301", name: "原油缓冲罐" }',
+        '{ kind: "设备", tag: "V-1001", name: "原油缓冲罐" }',
+    )
+    assert mutated != text, "the mutation did not restore the colliding tag"
+    with pytest.raises(AssertionError):
+        _assert_no_seed_tag_collision(mutated)
+
+    mutated = text.replace(
+        'makeSymbol("V-1301", "equipment", "vessel"',
+        'makeSymbol("V-1001", "equipment", "vessel"',
+    )
+    assert mutated != text, "the canvas-seed mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_no_seed_tag_collision(mutated)
+
+
+def test_syntax_prototype_vessel_tag_is_consistent_across_every_seed_site():
+    """The 原油缓冲罐 tag must be the same literal in all four seed sites.
+
+    The feature that renamed the vessel off V-1001 had to touch the drawings
+    seed, the canvas makeSymbol call, the INSTANCES record and the BOM_SOURCE
+    row. A rename that misses one site leaves the prototype describing two
+    objects, so this pins all four to one value read from the canvas seed.
+    """
+    _assert_vessel_tag_is_consistent(_screens_text())
+
+
+def test_syntax_prototype_vessel_tag_consistency_guard_can_fail():
+    """Negative control: a partial rename must be caught site by site."""
+    text = _screens_text()
+    mutated = text.replace(
+        '{ sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "V-1301"',
+        '{ sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "V-9999"',
+    )
+    assert mutated != text, "the BOM-site mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_vessel_tag_is_consistent(mutated)
+
+    mutated = text.replace(
+        '<text class="pid-tag" x="18" y="49">V-1301</text>',
+        '<text class="pid-tag" x="18" y="49">V-9999</text>',
+    )
+    assert mutated != text, "the SVG-label mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_vessel_tag_is_consistent(mutated)
 
 
 def test_syntax_data_correctness_checks_can_fail():
