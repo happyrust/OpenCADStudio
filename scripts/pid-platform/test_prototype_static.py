@@ -588,3 +588,108 @@ def test_syntax_cross003_element_checks_can_fail():
     assert "节点名称：" not in mutated[at: at + 900], (
         "renaming 节点名称 did not break the PBS check"
     )
+
+
+def test_syntax_validation_rule_names_match_the_requirement_table():
+    """requirements/50 defines DR-001..DR-008; the screen must not rename them."""
+    text = _screens_text()
+    expected = {
+        "DR-001": "管线缺管道等级",
+        "DR-002": "管线缺公称直径",
+        "DR-003": "设备无位号",
+        "DR-004": "位号重复",
+        "DR-005": "仪表未分配回路",
+        "DR-006": "页间连接符对端缺失",
+        "DR-007": "阀门压力等级高于管道等级",
+        "DR-008": "管口未连接",
+    }
+    at = text.find("var VL_RULE_NAMES = {")
+    assert at != -1, "VL_RULE_NAMES is gone"
+    block = text[at: at + 900]
+    for rule_id, name in expected.items():
+        assert '"%s": "%s"' % (rule_id, name) in block, (
+            "%s is not bound to %s" % (rule_id, name)
+        )
+
+
+def test_syntax_validation_severities_match_the_requirement_table():
+    """DR-001..008 severities: 错误 for 001-004/006/007, 警告 005, 提示 008."""
+    text = _screens_text()
+    at = text.find("var VIOLATIONS = [")
+    assert at != -1, "VIOLATIONS is gone"
+    block = text[at: text.find("];", at)]
+    expected = {
+        "DR-001": "错误", "DR-002": "错误", "DR-003": "错误", "DR-004": "错误",
+        "DR-005": "警告", "DR-006": "错误", "DR-007": "错误", "DR-008": "提示",
+    }
+    seen = {}
+    for entry in re.findall(r'\{ ruleId: "(DR-\d{3})", severity: "([^"]+)"', block):
+        seen.setdefault(entry[0], entry[1])
+    for rule_id, sev in expected.items():
+        assert rule_id in seen, "%s has no violation row" % rule_id
+        assert seen[rule_id] == sev, (
+            "%s is %s, the requirement table says %s" % (rule_id, seen[rule_id], sev)
+        )
+
+
+def test_syntax_bom_seed_uses_the_standard_type_vocabulary():
+    """requirements/60: 管路 never becomes a row; 管件 inherits the host tag."""
+    text = _screens_text()
+    at = text.find("var BOM_SOURCE = [")
+    assert at != -1, "BOM_SOURCE is gone"
+    block = text[at: text.find("\n  ];", at)]
+    types = set(re.findall(r'type: "([^"]+)"', block))
+    assert "管路" not in types, "BOM still carries a 管路 row: %r" % (types,)
+    assert types <= {"管线", "设备", "阀门", "仪表", "管件"}, (
+        "unexpected BOM types: %r" % (types,)
+    )
+    assert "管线" in types, "BOM has no 管线 row"
+    assert "-F1" not in block and "-F2" not in block, (
+        "BOM still carries per-instance fitting tags"
+    )
+    assert 'type: "管件", tag: "L-1001-01"' in block, (
+        "the fitting row does not inherit the host tag L-1001-01"
+    )
+
+
+def test_syntax_properties_list_filters_by_the_selected_type():
+    """REQ-DATA-005 AC2: a parent type lists its subtypes' instances."""
+    text = _screens_text()
+    assert "function idsUnderType(typeId)" in text, (
+        "properties has no descendant-type helper"
+    )
+    assert "listHtml(state.selectedTypeId)" in text, (
+        "listHtml is not called with the selected type"
+    )
+    assert "allowed.indexOf(inst.typeId) === -1" in text, (
+        "listHtml does not filter INSTANCES by type"
+    )
+
+
+def test_syntax_data_correctness_checks_can_fail():
+    """Negative control for the four checks above."""
+    text = _screens_text()
+    mutated = text.replace('"DR-001": "管线缺管道等级"', '"DR-001": "管段未连接到设备管口"')
+    mutated = mutated.replace('{ ruleId: "DR-005", severity: "警告"', '{ ruleId: "DR-005", severity: "错误"')
+    mutated = mutated.replace('type: "管线", tag: "L-1001-01"', 'type: "管路", tag: "L-1001-01"')
+    mutated = mutated.replace("function idsUnderType(typeId)", "function idsUnderTypeRenamed(typeId)")
+    assert mutated != text, "the mutation changed nothing"
+
+    at = mutated.find("var VL_RULE_NAMES = {")
+    assert '"DR-001": "管线缺管道等级"' not in mutated[at: at + 900], (
+        "renaming a rule did not break the rule-name check"
+    )
+    at = mutated.find("var VIOLATIONS = [")
+    block = mutated[at: mutated.find("];", at)]
+    seen = dict(re.findall(r'\{ ruleId: "(DR-\d{3})", severity: "([^"]+)"', block))
+    assert seen.get("DR-005") != "警告", (
+        "changing a severity did not break the severity check"
+    )
+    at = mutated.find("var BOM_SOURCE = [")
+    block = mutated[at: mutated.find("\n  ];", at)]
+    assert "管路" in set(re.findall(r'type: "([^"]+)"', block)), (
+        "renaming a BOM type did not break the type-vocabulary check"
+    )
+    assert "function idsUnderType(typeId)" not in mutated, (
+        "renaming the helper did not break the filter check"
+    )

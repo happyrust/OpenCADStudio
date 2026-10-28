@@ -2447,12 +2447,39 @@
     return html + "</ul>";
   }
 
-  function listHtml() {
+  var pmShown = 0;
+
+  /* Ids of a type node and every descendant, so selecting a parent type
+     lists the instances of all its subtypes (REQ-DATA-005 AC2). */
+  function idsUnderType(typeId) {
+    var out = [];
+    function walk(node) {
+      out.push(node.id);
+      for (var i = 0; i < node.children.length; i++) {
+        walk(node.children[i]);
+      }
+    }
+    var start = findNode(typeId);
+    if (start) {
+      walk(start);
+    } else {
+      out.push(typeId);
+    }
+    return out;
+  }
+
+  function listHtml(typeId) {
+    var allowed = idsUnderType(typeId);
     var html =
       '<table class="pm__table" data-testid="instance-list"><thead><tr>' +
       "<th>位号</th><th>类型</th><th>状态</th></tr></thead><tbody>";
+    var shown = 0;
     for (var i = 0; i < INSTANCES.length; i++) {
       var inst = INSTANCES[i];
+      if (allowed.indexOf(inst.typeId) === -1) {
+        continue;
+      }
+      shown += 1;
       html +=
         '<tr class="pm__row' +
         (inst.tag === state.selectedTag ? " is-selected" : "") +
@@ -2468,6 +2495,10 @@
         esc(inst.status) +
         "</td></tr>";
     }
+    if (shown === 0) {
+      html += '<tr><td colspan="3">该类型下暂无实例。</td></tr>';
+    }
+    pmShown = shown;
     return html + "</tbody></table>";
   }
 
@@ -2523,6 +2554,8 @@
       state.selectedTag = inst ? inst.tag : state.selectedTag;
     }
     var props = inst ? propsFor(inst) : [];
+    var typeNode = findNode(state.selectedTypeId);
+    var typeName = typeNode ? typeNode.name : state.selectedTypeId;
     if (Shell && typeof Shell.setPendingProtoMerge === "function") {
       Shell.setPendingProtoMerge("properties", {
         selectedTag: inst ? inst.tag : "",
@@ -2539,11 +2572,11 @@
       '<button type="button" class="pm__btn" data-testid="import-props">导入</button></div>' +
       '<div class="pm__body"><aside class="pm__tree" data-testid="type-tree">' +
       treeHtml(TYPE_TREE, 1, "pm__tree-list") +
-      '</aside><section class="pm__list">' + listHtml() +
+      '</aside><section class="pm__list">' + listHtml(state.selectedTypeId) +
       '</section><aside class="pm__detail" data-testid="property-detail">' +
       detailHtml(inst, state.selectedTypeId) +
       '</aside></div><p class="pm__status" data-testid="pm-status">' +
-      esc(state.hint) + "</p></div></section>";
+      esc("当前类型：" + typeName + "，实例 " + pmShown + " 个") + "</p></div></section>";
     return html;
   }
 
@@ -2663,46 +2696,46 @@
   /* Rule names keyed by rule id. The violation entries themselves carry
      only the six contract keys required for __proto.violations items. */
   var VL_RULE_NAMES = {
-    "DR-001": "管段未连接到设备管口",
-    "DR-002": "设备管口未连接管段",
-    "DR-003": "仪表未加入仪表回路",
-    "DR-004": "管路缺少管道等级",
-    "DR-005": "位号重复",
-    "DR-006": "必填属性为空",
-    "DR-007": "管线缺少流体介质",
-    "DR-008": "图例标准与项目标准不一致"
+    "DR-001": "管线缺管道等级",
+    "DR-002": "管线缺公称直径",
+    "DR-003": "设备无位号",
+    "DR-004": "位号重复",
+    "DR-005": "仪表未分配回路",
+    "DR-006": "页间连接符对端缺失",
+    "DR-007": "阀门压力等级高于管道等级",
+    "DR-008": "管口未连接"
   };
 
   /* Check results across all drawings. Counts per severity are derived
      from this list, never hard-coded into the summary markup. */
   var VIOLATIONS = [
     { ruleId: "DR-001", severity: "错误", tag: "P-1001", sheet: "PID-1101 原油换热网络.dwg",
-      message: "设备管口 N2 与出口管路 L-1001-01 未建立连接",
-      suggestion: "建议：在 P-1001 的 N2 管口与 L-1001-01 端点之间建立连接关系。" },
-    { ruleId: "DR-003", severity: "警告", tag: "TI-1101", sheet: "PID-1201 常压塔系统.dwg",
-      message: "仪表未加入仪表回路 LIC-1101",
-      suggestion: "建议：将 TI-1101 关联到仪表回路 LIC-1101。" },
-    { ruleId: "DR-004", severity: "警告", tag: "L-2103-01", sheet: "PID-2102 减顶抽空系统.dwg",
-      message: "管路缺少管道等级取值",
-      suggestion: "建议：为该管路指定管道等级。" },
-    { ruleId: "DR-005", severity: "错误", tag: "P-1001", sheet: "PID-1101 原油换热网络.dwg",
-      message: "位号 P-1001 在本图纸出现 2 次",
+      message: "管线 L-1001-01 未填写管道等级",
+      suggestion: "建议：为 L-1001-01 指定管道等级。" },
+    { ruleId: "DR-003", severity: "错误", tag: "TI-1101", sheet: "PID-1201 常压塔系统.dwg",
+      message: "设备 TI-1101 未填写位号",
+      suggestion: "建议：为 TI-1101 补全位号。" },
+    { ruleId: "DR-004", severity: "错误", tag: "L-2103-01", sheet: "PID-2102 减顶抽空系统.dwg",
+      message: "位号 L-2103-01 在同一类型下重复登记",
       suggestion: "建议：修改重复实例的位号。" },
+    { ruleId: "DR-005", severity: "警告", tag: "PI-1002", sheet: "PID-1102 原油泵区配管.dwg",
+      message: "仪表 PI-1002 未分配到仪表回路",
+      suggestion: "建议：把 PI-1002 加入相应仪表回路。" },
     { ruleId: "DR-006", severity: "错误", tag: "E-1101", sheet: "PID-1201 常压塔系统.dwg",
-      message: "必填属性「设计压力」为空",
-      suggestion: "建议：补全设计压力取值。" },
-    { ruleId: "DR-002", severity: "错误", tag: "V-2101", sheet: "PID-2101 减压塔系统.dwg",
-      message: "设备管口未连接管段",
-      suggestion: "建议：为 V-2101 的进出口管口连接管段。" },
-    { ruleId: "DR-007", severity: "提示", tag: "L-9101-01", sheet: "PID-9101 燃料气分配.dwg",
-      message: "管线缺少流体介质",
-      suggestion: "建议：补充流体介质取值。" },
-    { ruleId: "DR-008", severity: "警告", tag: "PI-9001", sheet: "PID-9000 公用工程流程图.dwg",
-      message: "图例标准与项目标准不一致",
-      suggestion: "建议：切换为项目采用的图例标准。" },
-    { ruleId: "DR-003", severity: "警告", tag: "LI-1101", sheet: "PID-1202 常顶回流系统.dwg",
-      message: "仪表未加入仪表回路",
-      suggestion: "建议：将 LI-1101 关联到相应仪表回路。" }
+      message: "页间连接符的对端图纸与对端位号均为空",
+      suggestion: "建议：补全该页间连接符的对端图纸与对端位号。" },
+    { ruleId: "DR-002", severity: "错误", tag: "L-1002-01", sheet: "PID-1102 原油泵区配管.dwg",
+      message: "管线 L-1002-01 未填写公称直径",
+      suggestion: "建议：为 L-1002-01 补全公称直径。" },
+    { ruleId: "DR-007", severity: "错误", tag: "XV-1002", sheet: "PID-1102 原油泵区配管.dwg",
+      message: "阀门 XV-1002 的压力等级高于所属管线管道等级",
+      suggestion: "建议：降低 XV-1002 的压力等级或提高所属管线的管道等级。" },
+    { ruleId: "DR-008", severity: "提示", tag: "V-2101", sheet: "PID-2101 减压塔系统.dwg",
+      message: "设备管口 N1 的连接状态为未连接",
+      suggestion: "建议：为 V-2101 的 N1 管口连接管段。" },
+    { ruleId: "DR-003", severity: "错误", tag: "LI-1101", sheet: "PID-1202 常顶回流系统.dwg",
+      message: "设备 LI-1101 未填写位号",
+      suggestion: "建议：为 LI-1101 补全位号。" }
   ];
 
   var vlState = { hint: "就绪" };
@@ -2862,22 +2895,21 @@
 
   /* Source rows carry a sheet field used only for scope filtering; the
      rows staged into __proto.bomRows are rebuilt to expose exactly the
-     seven contract keys no/type/tag/name/qty/unit/note. Tags stay unique
-     within every scope: fitting tags inherit their host line tag form
-     plus a suffix, so two rows never share one tag. */
+     seven contract keys no/type/tag/name/qty/unit/note. A fitting row
+     inherits its host line tag, so the effective row key is the pair
+     (type, tag): two rows may share a tag when their types differ. */
   var BOM_SOURCE = [
     { sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "P-1001", name: "离心泵", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "E-1001", name: "原油换热器", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "V-1001", name: "原油缓冲罐", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1101 原油换热网络.dwg", type: "仪表", tag: "TI-1001", name: "温度指示", qty: 1, unit: "台", note: "—" },
-    { sheet: "PID-1101 原油换热网络.dwg", type: "管路", tag: "L-1001-01", name: "原油进料管路", qty: 38, unit: "m", note: "管段长度合计" },
-    { sheet: "PID-1101 原油换热网络.dwg", type: "管件", tag: "L-1001-01-F1", name: "对焊法兰", qty: 12, unit: "个", note: "隶属 L-1001-01" },
-    { sheet: "PID-1101 原油换热网络.dwg", type: "管件", tag: "L-1001-01-F2", name: "90°弯头", qty: 6, unit: "个", note: "隶属 L-1001-01" },
+    { sheet: "PID-1101 原油换热网络.dwg", type: "管线", tag: "L-1001-01", name: "原油进料管线", qty: 38.00, unit: "m", note: "数量 = Σ 管段长度" },
+    { sheet: "PID-1101 原油换热网络.dwg", type: "管件", tag: "L-1001-01", name: "对焊法兰与 90°弯头", qty: 18, unit: "个", note: "继承宿主位号 L-1001-01" },
     { sheet: "PID-1102 原油泵区配管.dwg", type: "设备", tag: "P-1002", name: "原油泵", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1102 原油泵区配管.dwg", type: "设备", tag: "P-1003", name: "原油泵", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1102 原油泵区配管.dwg", type: "阀门", tag: "XV-1002", name: "切断阀", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1102 原油泵区配管.dwg", type: "仪表", tag: "PI-1002", name: "压力指示", qty: 1, unit: "台", note: "—" },
-    { sheet: "PID-1102 原油泵区配管.dwg", type: "管路", tag: "L-1002-01", name: "原油泵出口管路", qty: 25, unit: "m", note: "管段长度合计" },
+    { sheet: "PID-1102 原油泵区配管.dwg", type: "管线", tag: "L-1002-01", name: "原油泵出口管线", qty: 25.00, unit: "m", note: "数量 = Σ 管段长度" },
     { sheet: "PID-1201 常压塔系统.dwg", type: "设备", tag: "T-1001", name: "常压塔", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1201 常压塔系统.dwg", type: "仪表", tag: "TI-1101", name: "温度指示", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-2101 减压塔系统.dwg", type: "设备", tag: "V-2101", name: "减顶罐", qty: 1, unit: "台", note: "—" }
@@ -2927,7 +2959,8 @@
       html +=
         '<tr class="bm__row" data-testid="bom-row" data-tag="' + esc(r.tag) + '">' +
         "<td>" + r.no + "</td><td>" + esc(r.type) + "</td><td>" + esc(r.tag) +
-        "</td><td>" + esc(r.name) + "</td><td>" + r.qty + "</td><td>" +
+        "</td><td>" + esc(r.name) + "</td><td>" +
+        (r.unit === "m" ? Number(r.qty).toFixed(2) : r.qty) + "</td><td>" +
         esc(r.unit) + "</td><td>" + esc(r.note) + "</td></tr>";
     }
     return html;
