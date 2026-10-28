@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "note": "VAL-CROSS-003 screen-level elements: for each requirement mapped to a concrete screen, the interface element names that must be visible on that screen. Element names are copied verbatim from the owning requirement's 数据与界面契约 table and 验收标准.",
+  "requirements": {
+    "REQ-TYPE-001": {
+      "screen": "typelib",
+      "elements": ["类型编码", "名称", "描述", "父类型"]
+    },
+    "REQ-SYM-001": {
+      "screen": "symbols",
+      "elements": ["标准名称", "符号数", "是否当前标准", "图例列表选择"]
+    },
+    "REQ-DRW-001": {
+      "screen": "drawings",
+      "elements": ["节点名称", "节点类型", "父节点", "图纸数"]
+    },
+    "REQ-DATA-001": {
+      "screen": "properties",
+      "elements": ["位号", "状态", "冷却截止日"]
+    },
+    "REQ-DELV-001": {
+      "screen": "bom",
+      "elements": ["序号", "类型", "位号", "名称", "数量", "单位"]
+    },
+    "REQ-COLL-001": {
+      "screen": "permissions",
+      "elements": ["角色", "PBS 节点", "图纸状态", "允许", "拒绝"]
+    }
+  }
+}

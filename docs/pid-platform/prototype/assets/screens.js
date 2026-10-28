@@ -2502,6 +2502,17 @@
       }
       html += "</tbody></table></div>";
     }
+    html +=
+      '<div class="pm__group" data-testid="master-record" data-group-name="位号主数据">' +
+      '<h3 class="pm__group-title">位号主数据</h3>' +
+      '<table class="pm__props"><tbody>' +
+      '<tr class="pm__prop-row" data-testid="prop-row" data-prop-name="位号"><th scope="row">位号<span class="pm__req">*</span></th><td>' +
+      esc(inst.tag) + "</td></tr>" +
+      '<tr class="pm__prop-row" data-testid="prop-row" data-prop-name="状态"><th scope="row">状态<span class="pm__req">*</span></th><td>' +
+      esc(inst.status) + "</td></tr>" +
+      '<tr class="pm__prop-row" data-testid="prop-row" data-prop-name="冷却截止日"><th scope="row">冷却截止日</th><td>' +
+      esc(inst.coolUntil || "—") + "</td></tr>" +
+      "</tbody></table></div>";
     return html;
   }
 

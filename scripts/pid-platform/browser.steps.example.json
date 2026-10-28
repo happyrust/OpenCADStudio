@@ -6,5 +6,6 @@
   { "kind": "eval", "label": "hash-after", "expression": "location.hash" },
   { "kind": "screenshot", "label": "shot", "file": "example-1.png" },
   { "kind": "snapshot", "label": "snapshot" },
+  { "kind": "eval", "label": "svg-click-via-dispatch", "expression": "var el=document.querySelector('svg'); if(!el){'no-svg'}else{ if(typeof el.click==='function'){el.click();'click-method'}else{el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));'dispatch-fallback'} }" },
   { "kind": "console", "label": "console" }
 ]

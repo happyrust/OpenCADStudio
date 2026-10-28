@@ -13,7 +13,7 @@ import pytest
 
 import conftest
 import rule_dsl
-from conftest import CATALOG, DOCS, SCREEN_IDS
+from conftest import CATALOG, DOCS, PROTO, SCREEN_IDS
 from docs_contract import find_table
 from manifest_contract import normalize_heading
 from requirements_contract import (
@@ -1772,3 +1772,130 @@ def test_traceability_reuse_mapping_requires_a_repo_root():
     paths = _real_reuse_paths(12)
     errors = validate_reuse_mapping({REUSE_PATH: _reuse_mapping_document(paths)})
     assert any("needs a repo root" in error for error in errors), errors
+
+
+# ---------------------------------------------------------------------------
+# VAL-CROSS-003 screen-level elements.
+#
+# The assertion requires the screen mapped from a requirement to show that
+# requirement's key interface element names. Nothing bound this环节 before, so
+# typelib and symbols shipped without REQ-TYPE-001's 类型编码 field or
+# REQ-SYM-001's four legend standards while the suite stayed green.
+#
+# These checks are a SUBSET assertion: each element name must appear somewhere
+# in the prototype bundle. They do not prove that every allowed enum value is
+# rendered, and they do not read the rendered DOM.
+# ---------------------------------------------------------------------------
+
+REQUIREMENT_ELEMENTS = CATALOG.parent / "requirement-elements.json"
+SCREENS_BUNDLE = PROTO / "assets" / "screens.js"
+OVERVIEW_PATH = "requirements/00-overview.md"
+
+
+def load_requirement_elements() -> dict:
+    assert REQUIREMENT_ELEMENTS.exists(), (
+        "requirement-elements.json missing at " + str(REQUIREMENT_ELEMENTS)
+    )
+    with REQUIREMENT_ELEMENTS.open(encoding="utf-8") as fh:
+        data = json.load(fh)
+    assert isinstance(data.get("requirements"), dict), (
+        "requirement-elements.json must carry a 'requirements' object"
+    )
+    return data["requirements"]
+
+
+def _overview_matrix_screens(documents: dict) -> dict:
+    """requirement id -> screen id or 无界面, parsed from the traceability table."""
+    text = documents.get(OVERVIEW_PATH, "")
+    mapping = {}
+    for line in text.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        match = REQ_ID_RE.search(cells[0])
+        if not match:
+            continue
+        mapping[cells[0]] = cells[2]
+    return mapping
+
+
+def test_traceability_requirement_elements_reference_real_screens():
+    entries = load_requirement_elements()
+    valid = set(_screen_ids())
+    bad = {
+        req: entry.get("screen")
+        for req, entry in entries.items()
+        if entry.get("screen") not in valid
+    }
+    assert bad == {}, "requirement-elements.json names unknown screens: %s" % bad
+    for req, entry in entries.items():
+        assert isinstance(entry.get("elements"), list) and entry["elements"], (
+            "%s has no element list" % req
+        )
+
+
+def test_traceability_requirement_elements_match_the_matrix():
+    entries = load_requirement_elements()
+    documents = load_documents(DOCS)
+    matrix = _overview_matrix_screens(documents)
+    problems = []
+    for req, entry in entries.items():
+        if req not in matrix:
+            problems.append("%s is absent from the traceability matrix" % req)
+            continue
+        if matrix[req] != entry["screen"]:
+            problems.append(
+                "%s maps to %s in the matrix but %s in requirement-elements.json"
+                % (req, matrix[req], entry["screen"])
+            )
+    assert problems == [], "; ".join(problems)
+
+
+def test_traceability_requirement_elements_are_absent_for_screenless_requirements():
+    entries = load_requirement_elements()
+    documents = load_documents(DOCS)
+    matrix = _overview_matrix_screens(documents)
+    offenders = [req for req in entries if matrix.get(req) == "无界面"]
+    assert offenders == [], (
+        "screenless requirements must not claim screen elements: %s" % offenders
+    )
+
+
+def test_traceability_requirement_elements_appear_in_the_bundle():
+    entries = load_requirement_elements()
+    text = SCREENS_BUNDLE.read_text(encoding="utf-8")
+    missing = []
+    for req, entry in entries.items():
+        for element in entry["elements"]:
+            if element not in text:
+                missing.append("%s -> %s" % (req, element))
+    assert missing == [], (
+        "element names absent from the prototype bundle: %s" % missing
+    )
+
+
+def test_traceability_requirement_element_check_rejects_a_renamed_element():
+    """Negative control: the element scan must flag a name that is absent."""
+    entries = load_requirement_elements()
+    text = SCREENS_BUNDLE.read_text(encoding="utf-8")
+    probe = "不存在的元素名ZZZ"
+    assert probe not in text, "the probe string unexpectedly exists in the bundle"
+    fake = {"REQ-TYPE-001": {"screen": "typelib", "elements": [probe]}}
+    missing = [
+        "%s -> %s" % (req, element)
+        for req, entry in fake.items()
+        for element in entry["elements"]
+        if element not in text
+    ]
+    assert missing == ["REQ-TYPE-001 -> " + probe], (
+        "the element scan did not flag an absent element: %s" % (missing,)
+    )
+    real_missing = [
+        "%s -> %s" % (req, element)
+        for req, entry in entries.items()
+        for element in entry["elements"]
+        if element not in text
+    ]
+    assert real_missing == [], "real element names are missing: %s" % real_missing

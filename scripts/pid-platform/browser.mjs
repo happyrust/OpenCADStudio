@@ -548,7 +548,11 @@ async function execStep(cdp, sessionId, step, n, outDir, collector) {
         if (idx >= count) return { found: false, count: count };
         const el = els[idx];
         el.scrollIntoView({ block: "center", inline: "center" });
-        el.click();
+        if (typeof el.click === "function") {
+          el.click();
+        } else {
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        }
         const text = (el.textContent || "").trim().slice(0, 80);
         return { found: true, count: count, tag: el.tagName.toLowerCase(), text: text };
       })()`;
