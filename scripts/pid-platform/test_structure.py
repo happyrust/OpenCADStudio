@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from pathlib import Path
+
+import pytest
 
 from conftest import DOCS, EXPECTED_DELIVERABLES, MANIFEST, delivered_entries
 from manifest_contract import (
@@ -400,7 +403,33 @@ def test_structure_section_match_is_exact_after_normalization(tmp_path):
     )
 
 
-def test_structure_delivered_entry_uses_repo_relative_path(tmp_path):
+# ``check_delivered`` echoes the manifest path verbatim in its missing-file
+# message, so the message proves the manifest's own form, not a normalised
+# one. ``docs_relative_path`` is what makes an absolute manifest path still
+# resolve; the message must nevertheless end in the repo-relative form, or a
+# reader (and any consumer that prints the message) sees a machine-specific
+# absolute path. Commit 4d88395aa dropped the assertion that pinned this and
+# left only ``assert errors``, so the case name promised more than it checked.
+MISSING_FILE_SUFFIX = ": docs/pid-platform/PRD.md"
+
+
+def _assert_missing_file_error_is_repo_relative(errors, docs_root):
+    """The missing-file error names the repo-relative path, not an absolute one."""
+    assert errors, "deleted file must be reported as missing"
+    assert any(e.endswith(MISSING_FILE_SUFFIX) for e in errors), (
+        "the missing-file error must end with the repo-relative path %r, got %r"
+        % (MISSING_FILE_SUFFIX, errors)
+    )
+    root = Path(docs_root)
+    if root.is_absolute():
+        assert not any(str(root) in e for e in errors), (
+            "the missing-file error leaked the absolute docs root %r: %r"
+            % (str(root), errors)
+        )
+
+
+def _relative_path_fixture(tmp_path, manifest_path="docs/pid-platform/PRD.md"):
+    """A scratch docs root holding PRD.md, plus a one-entry delivered manifest."""
     docs_root = tmp_path / "docs" / "pid-platform"
     docs_root.mkdir(parents=True)
     target = docs_root / "PRD.md"
@@ -413,17 +442,45 @@ def test_structure_delivered_entry_uses_repo_relative_path(tmp_path):
         "deliverables": [
             {
                 "id": "prd",
-                "path": "docs/pid-platform/PRD.md",
+                "path": manifest_path,
                 "kind": "prd",
                 "requiredSections": ["产品定位与价值主张"],
                 "status": "delivered",
             }
         ],
     }
-    assert check_delivered(manifest, docs_root) == []
+    return docs_root, target, manifest
+
+
+def test_structure_delivered_entry_uses_repo_relative_path(tmp_path):
+    """The missing-file error must name the repo-relative path."""
+    docs_root, target, manifest = _relative_path_fixture(tmp_path)
+    assert check_delivered(manifest, docs_root) == [], (
+        "the fixture must start green, otherwise the mutation below proves nothing"
+    )
     target.unlink()
     errors = check_delivered(manifest, docs_root)
-    assert errors, "deleted file must be reported as missing"
+    _assert_missing_file_error_is_repo_relative(errors, docs_root)
+
+
+def test_structure_repo_relative_path_guard_rejects_an_absolute_message(tmp_path):
+    """Negative control: an absolute manifest path must fail the same guard.
+
+    ``docs_relative_path`` still resolves an absolute path, so this manifest
+    is accepted while the file exists; the missing-file message then carries
+    the absolute form, which is exactly what the case above forbids.
+    """
+    docs_root, target, manifest = _relative_path_fixture(tmp_path)
+    manifest["deliverables"][0]["path"] = str(docs_root / "PRD.md")
+    assert check_delivered(manifest, docs_root) == [], (
+        "the absolute-path manifest must still resolve the existing file, "
+        "otherwise this control mutates two things at once"
+    )
+    target.unlink()
+    errors = check_delivered(manifest, docs_root)
+    assert errors, "the control must still report the missing file"
+    with pytest.raises(AssertionError):
+        _assert_missing_file_error_is_repo_relative(errors, docs_root)
 
 
 # ---------------------------------------------------------------------------
@@ -552,4 +609,68 @@ def test_structure_test_surface_guard_rejects_a_second_h1(tmp_path):
     )
     assert any(TEST_SURFACE_PATH in e for e in errors), (
         "the error should name the document path: %s" % errors
+    )
+
+
+# A row that names a field but leaves 类型 / 含义 / 更新时机 blank records
+# nothing, yet the name-only guard stayed green on it. VAL-PROTO-019 asks for
+# all four columns, so each one gets its own negative control.
+@pytest.mark.parametrize(
+    "row, blanked",
+    [
+        (
+            "| `symbolCount` | number | 符号实例数量 | 编辑器发布后 |",
+            "| `symbolCount` |  | 符号实例数量 | 编辑器发布后 |",
+        ),
+        (
+            "| `symbolCount` | number | 符号实例数量 | 编辑器发布后 |",
+            "| `symbolCount` | number |  | 编辑器发布后 |",
+        ),
+        (
+            "| `symbolCount` | number | 符号实例数量 | 编辑器发布后 |",
+            "| `symbolCount` | number | 符号实例数量 |  |",
+        ),
+    ],
+)
+def test_structure_test_surface_guard_rejects_a_blank_column(
+    tmp_path, row, blanked
+):
+    """Negative control: emptying any of the three descriptive columns fails."""
+    mutated = TEST_SURFACE_DOC.replace(row, blanked)
+    assert mutated != TEST_SURFACE_DOC, "the blanking mutation changed nothing"
+    docs_root = _synthetic_docs_root(tmp_path, mutated)
+    errors = check_test_surface(docs_root)
+    assert errors, "a blank column in a field row must be reported"
+    assert any("symbolCount" in e for e in errors), (
+        "the error should name the offending field row: %s" % errors
+    )
+
+
+def test_structure_test_surface_guard_rejects_a_fenced_table(tmp_path):
+    """Negative control: a table quoted inside a fence is not the contract.
+
+    Moving section 2's body into a ``` fence makes it documentation *about*
+    the contract. Before the fence was stripped, the guard still read the
+    rows out of the fence and stayed green.
+    """
+    head, sep, rest = TEST_SURFACE_DOC.partition("## 2. `window.__proto` 字段契约\n")
+    assert sep, "the fixture lost its section 2 heading"
+    body, sep2, tail = rest.partition("\n## 3. 后续章节")
+    assert sep2, "the fixture lost its section 3 heading"
+    fenced = (
+        head
+        + sep
+        + "\n```markdown\n"
+        + body.strip("\n")
+        + "\n```\n"
+        + sep2
+        + tail
+    )
+    assert "```markdown" in fenced, "the fence mutation changed nothing"
+    docs_root = _synthetic_docs_root(tmp_path, fenced)
+    errors = check_test_surface(docs_root)
+    assert errors, "a fenced section 2 table must not satisfy the guard"
+    assert any("section 2 table carries" in e for e in errors), (
+        "the error should say the section 2 table no longer lists the fields: %s"
+        % errors
     )

@@ -657,15 +657,40 @@ def test_syntax_symbols_declares_the_four_standard_contract_fields():
     )
 
 
+def _unique_index(text: str, marker: str, label: str) -> int:
+    """Index of ``marker`` when it occurs exactly once; assert otherwise.
+
+    A slice helper that silently takes the first of several matches changes
+    what the assertion looks at as soon as the file gains a second similar
+    construct. Zero matches must not return a truncated block either, so both
+    counts are hard failures.
+    """
+    count = text.count(marker)
+    assert count == 1, (
+        "%s must occur exactly once, found %d: %r" % (label, count, marker)
+    )
+    return text.find(marker)
+
+
+# The pbs-node template starts at its own button literal and ends at the
+# 图纸数 field plus the closing tag. ``</button>`` alone is not an anchor:
+# screens.js carries eight ``"</button>";`` literals, so a second template
+# would move the slice without any test noticing.
+PBS_NODE_START = '<button type="button" class="pbs-node'
+PBS_NODE_END = 'pbsDrawingCount(node.id) +\n        "</button>";'
+
+
 def _pbs_node_block(text: str) -> str:
-    """The pbs-node template, sliced to its real terminator.
+    """The pbs-node template, sliced between its own unique terminators.
 
     A character budget (``at + 900``) silently changes the assertion target
     as the seed grows: it can run past the template into unrelated text, or
-    stop short of the last contract field. ``</button>`` is the actual end of
-    the rendered node.
+    stop short of the last contract field.
     """
-    return _block_after(text, 'data-testid="pbs-node"', "</button>")
+    at = _unique_index(text, PBS_NODE_START, "the pbs-node template start")
+    end = _unique_index(text, PBS_NODE_END, "the pbs-node template terminator")
+    assert end > at, "the pbs-node terminator precedes its start"
+    return text[at:end + len(PBS_NODE_END)]
 
 
 def test_syntax_drawings_pbs_nodes_show_the_four_contract_fields():
@@ -689,9 +714,40 @@ def test_syntax_side_channel_state_does_not_grow_the_proto_contract():
         assert side in text, "side-channel state %s is missing" % side
 
 
+# renderScreenHtml is the only function whose catch must feed the error sink.
+# ``screens.js`` carries two ``      } catch (err) {`` blocks (the second is in
+# the masterdata screen), so an unbounded search silently follows the file's
+# order. The slice is bounded to the renderScreenHtml body and additionally
+# required to sit after its own ``window.PidScreens[id](def);`` call.
+RENDER_FN_START = "function renderScreenHtml(id) {"
+RENDER_FN_END = "\n  }\n"
+RENDER_DISPATCH = "window.PidScreens[id](def);"
+CATCH_OPEN = "      } catch (err) {"
+CATCH_CLOSE = "\n      }\n"
+
+
 def _render_catch_block(text: str) -> str:
-    """The catch body of renderScreenHtml, sliced to its real terminator."""
-    return _block_after(text, "      } catch (err) {", "\n      }\n")
+    """The catch body of renderScreenHtml, sliced to its real terminator.
+
+    Bounded to that one function and anchored after its dispatch call, so a
+    reordered second catch block cannot become the assertion target. Both the
+    function and the catch must match exactly once, or the helper fails
+    rather than returning a fragment.
+    """
+    fn_at = _unique_index(text, RENDER_FN_START, "the renderScreenHtml definition")
+    body_end = text.find(RENDER_FN_END, fn_at)
+    assert body_end != -1, "renderScreenHtml has no body terminator"
+    body = text[fn_at:body_end]
+
+    dispatch_at = _unique_index(body, RENDER_DISPATCH, "renderScreenHtml's dispatch")
+    catch_at = _unique_index(body, CATCH_OPEN, "renderScreenHtml's catch header")
+    assert catch_at > dispatch_at, (
+        "the catch header precedes window.PidScreens[id](def); it is not the "
+        "renderer's error path"
+    )
+    end = body.find(CATCH_CLOSE, catch_at)
+    assert end != -1, "renderScreenHtml's catch has no closing brace"
+    return body[catch_at:end]
 
 
 RENDER_CATCH_WRITES = [
@@ -722,16 +778,103 @@ def _assert_renderer_errors_are_recorded(text: str) -> None:
     )
 
 
+def test_syntax_slice_helpers_require_a_unique_anchor():
+    """A slice helper must fail on 0 or 2+ matches, never return a fragment.
+
+    Both helpers used to cut on a token that appears many times in the bundle
+    (``</button>`` eight times, the six-space ``} catch (err) {`` twice), so a
+    second similar construct would silently change what the guard inspects.
+    Here the duplicate is injected into the text the guard already reads, so
+    the control fails for the same reason a real edit would.
+    """
+    text = _screens_text()
+
+    # Two pbs-node template starts: the helper cannot tell which one to slice.
+    doubled_pbs = text.replace(
+        PBS_NODE_START, PBS_NODE_START + "\n" + PBS_NODE_START, 1
+    )
+    assert doubled_pbs != text, "the pbs-node duplicate mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _pbs_node_block(doubled_pbs)
+
+    # No pbs-node template at all.
+    without_pbs = text.replace(PBS_NODE_START, "<!-- removed -->", 1)
+    assert without_pbs != text, "the pbs-node removal mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _pbs_node_block(without_pbs)
+
+    # A second renderScreenHtml definition.
+    doubled_fn = text.replace(
+        RENDER_FN_START, RENDER_FN_START + "\n" + RENDER_FN_START, 1
+    )
+    assert doubled_fn != text, "the renderScreenHtml duplicate mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _render_catch_block(doubled_fn)
+
+    # A second catch header inside renderScreenHtml's own body.
+    fn_at = text.find(RENDER_FN_START)
+    body_end = text.find(RENDER_FN_END, fn_at)
+    body = text[fn_at:body_end]
+    dispatch_at = body.find(RENDER_DISPATCH)
+    assert dispatch_at != -1, "renderScreenHtml no longer dispatches to PidScreens"
+    doubled_catch = (
+        text[:fn_at + dispatch_at]
+        + CATCH_OPEN
+        + "\n      }\n"
+        + text[fn_at + dispatch_at:]
+    )
+    with pytest.raises(AssertionError):
+        _render_catch_block(doubled_catch)
+
+    # The dispatch call is gone, so the catch cannot be proven to belong to
+    # the renderer's error path.
+    without_dispatch = text.replace(RENDER_DISPATCH, "return null;", 1)
+    assert without_dispatch != text, "the dispatch removal mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _render_catch_block(without_dispatch)
+
+
+def test_syntax_pbs_node_block_covers_the_whole_template():
+    """The pbs-node slice starts at the template and ends at its own tag.
+
+    The previous helper began at the ``data-testid`` attribute and stopped at
+    the first ``</button>`` (a 306-character slice); the template itself is
+    435 characters. Tightening the anchors must not shrink the subject, so
+    this pins that the slice still covers the template literal, its closing
+    tag, and every contract field the guard above checks.
+    """
+    text = _screens_text()
+    block = _pbs_node_block(text)
+    assert block.startswith(PBS_NODE_START), (
+        "the pbs-node slice no longer starts at the template literal"
+    )
+    assert block.endswith('"</button>";'), (
+        "the pbs-node slice no longer ends at its own closing tag"
+    )
+    for name in PBS_CONTRACT_FIELDS:
+        assert name in block, "the pbs-node slice lost %s" % name
+    assert 'data-testid="pbs-node"' in block, (
+        "the pbs-node slice lost its own testid"
+    )
+
+
 def test_syntax_renderer_exceptions_reach_the_error_sink():
     """A renderer exception must be recorded, not silently replaced."""
     _assert_renderer_errors_are_recorded(_screens_text())
 
 
 def test_syntax_renderer_error_sink_guard_can_fail():
-    """Negative control: dropping either write must be detected."""
+    """Negative control: dropping either write must be detected.
+
+    The presence check reads the sliced catch block, not the whole bundle: a
+    needle that only survived elsewhere in ``screens.js`` would make the
+    mutation look effective while leaving the catch untouched.
+    """
     text = _screens_text()
     for needle in RENDER_CATCH_WRITES:
-        assert needle in text, "the catch block no longer contains %r" % needle
+        assert needle in _render_catch_block(text), (
+            "the catch block no longer contains %r" % needle
+        )
         mutated = text.replace(needle, "", 1)
         assert mutated != text, "removing %r changed nothing" % needle
         with pytest.raises(AssertionError):
