@@ -102,6 +102,8 @@
 | `rule-step` | `tag-rules` | 规则编辑区 | 增量输入框，默认 `1`，保存时写入 `window.__tagRuleConfig` 的 `step`（REQ-SYM-007） |
 | `connection-point-table` | `symbol-editor` | 连接点表 | 列头恰为 类型、方向、坐标；类型取 `等径`/`异径`/`信号线`，方向取 `双向点`/`流入点`/`流出点`（REQ-SYM-005） |
 | `symbol-attribute-table` | `symbol-editor` | 属性标签表 | 列头恰为 标记、提示、默认、位置；位置取 `上`/`下`/`左`/`右`（REQ-SYM-006） |
+| `type-form` | `typelib` | 新建类型的录入区 | 点【新增子类】后出现；含 `type-form-code`、`type-form-name`、`type-form-desc`、`type-form-parent` 四个控件与确定/取消按钮（REQ-TYPE-001） |
+| `standard-panel` | `symbols` | 标准属性区 | 选中图例标准节点后出现；含标签 `标准名称`、`符号数`、`是否当前标准` 与下拉 `图例列表选择`（REQ-SYM-001） |
 
 ## 7. `window.__proto.symbolCount` 填充说明
 
@@ -110,3 +112,13 @@
   `window.__proto.symbolCount`。路由进入时该值经外壳的一次性合并机制写入；
   界面内交互重绘时由界面脚本直接调用 `window.__protoSet`。
 - 其余 13 个界面当前不修改该字段，`symbolCount` 保持路由重建时的种子值 `0`。
+
+## 8. 旁路状态全局（不进 `window.__proto`）
+
+`window.__proto` 的键集合由 VAL-PROTO-019 钉死为 8 个，任何新增状态一律走旁路全局，不得加键。
+
+| 全局 | 属主界面 | 写入时机 | 形状 |
+| --- | --- | --- | --- |
+| `window.__tagRuleConfig` | `tag-rules` | 保存位号规则时 | `{ <类型>: { prefix, start, step } }` |
+| `window.__typeLibrary` | `typelib` | 新建类型校验通过时 | `{ created: [<类型编码>, ...] }` |
+| `window.__legendStandard` | `symbols` | 切换图例列表选择时 | `{ current: <标准名称> }` |

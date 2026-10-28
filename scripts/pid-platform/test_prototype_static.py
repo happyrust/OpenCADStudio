@@ -463,3 +463,128 @@ def test_syntax_tag_prefix_is_escaped_before_regex_construction():
     assert "function sanitizeTagPrefix(text)" in text, (
         "the tag-rule prefix input is not sanitised"
     )
+
+
+# ---------------------------------------------------------------------------
+# VAL-CROSS-003 screen-level elements.
+#
+# The assertion requires that a requirement mapped to a screen leaves its key
+# interface element names visible on that screen. The gate had no coverage of
+# this, so typelib and symbols shipped without REQ-TYPE-001's 类型编码 field or
+# REQ-SYM-001's four legend standards and four contract fields while the suite
+# stayed green. Each check below is a subset assertion: it proves the element
+# name is present in the bundle, not that every allowed value appears.
+# ---------------------------------------------------------------------------
+
+TYPE_LIBRARY_FIELDS = ["类型编码", "名称", "描述", "父类型"]
+LEGEND_STANDARD_NAMES = ["HG/T 20519", "SY/T 0003", "DIN", "ISO"]
+LEGEND_STANDARD_FIELDS = ["标准名称", "符号数", "是否当前标准", "图例列表选择"]
+PBS_CONTRACT_FIELDS = ["节点名称", "节点类型", "父节点", "图纸数"]
+
+
+def _type_form_block(text: str) -> str:
+    at = text.find('data-testid="type-form"')
+    assert at != -1, "typelib has no type-form block"
+    return text[at: at + 2200]
+
+
+def test_syntax_typelib_declares_the_four_type_contract_fields():
+    """REQ-TYPE-001: 类型编码 / 名称 / 描述 / 父类型 are all录入able."""
+    text = _screens_text()
+    block = _type_form_block(text)
+    missing = [name for name in TYPE_LIBRARY_FIELDS if name not in block]
+    assert missing == [], "type-form is missing contract fields: %s" % missing
+    for testid in (
+        "type-form-code",
+        "type-form-name",
+        "type-form-desc",
+        "type-form-parent",
+        "type-form-ok",
+        "type-form-cancel",
+    ):
+        assert 'data-testid="%s"' % testid in block, (
+            "type-form is missing data-testid=%s" % testid
+        )
+
+
+def test_syntax_typelib_tree_shows_the_type_code():
+    """Every tree node renders name（code） so 类型编码 is visible."""
+    text = _screens_text()
+    assert 'esc(node.code || node.id)' in text, (
+        "the type tree does not render the node code"
+    )
+    codes = re.findall(r'code: "([A-Z-]+)"', text)
+    assert len(codes) >= 13, "expected at least 13 type codes, found %r" % (codes,)
+    for required in ("PUMP", "VALVE", "INSTRUMENT-LOOP"):
+        assert required in codes, "missing type code %s" % required
+
+
+def test_syntax_symbols_ships_the_four_legend_standards():
+    """REQ-SYM-001: 4 preset standards, names verbatim."""
+    text = _screens_text()
+    at = text.find("var SL_STANDARDS = [")
+    assert at != -1, "SL_STANDARDS is gone"
+    block = text[at: at + 2000]
+    found = [name for name in LEGEND_STANDARD_NAMES if 'name: "%s"' % name in block]
+    assert found == LEGEND_STANDARD_NAMES, (
+        "legend standards present: %s" % (found,)
+    )
+    for stale in ("企业标准 HG/T 20519", "国标 GB/T 6567", "项目自定义标准"):
+        assert stale not in block, "stale standard name still present: %s" % stale
+
+
+def test_syntax_symbols_declares_the_four_standard_contract_fields():
+    """REQ-SYM-001: 标准名称 / 符号数 / 是否当前标准 / 图例列表选择."""
+    text = _screens_text()
+    at = text.find('data-testid="standard-panel"')
+    assert at != -1, "symbols has no standard-panel block"
+    block = text[at: at + 1600]
+    missing = [name for name in LEGEND_STANDARD_FIELDS if name not in block]
+    assert missing == [], "standard-panel is missing contract fields: %s" % missing
+    assert 'data-testid="legend-standard-select"' in block, (
+        "standard-panel has no 图例列表选择 select"
+    )
+
+
+def test_syntax_drawings_pbs_nodes_show_the_four_contract_fields():
+    """REQ-DRW-001: PBS nodes expose 节点名称 / 节点类型 / 父节点 / 图纸数."""
+    text = _screens_text()
+    at = text.find('data-testid="pbs-node"')
+    assert at != -1, "the PBS tree renders no pbs-node"
+    block = text[at: at + 900]
+    missing = [name for name in PBS_CONTRACT_FIELDS if name not in block]
+    assert missing == [], "pbs-node is missing contract fields: %s" % missing
+
+
+def test_syntax_side_channel_state_does_not_grow_the_proto_contract():
+    """VAL-PROTO-019 freezes window.__proto at 8 keys; new state is side-channel."""
+    text = _screens_text()
+    keys_block = text[text.find("var PROTO_KEYS = ["):]
+    keys_block = keys_block[: keys_block.find("];") + 2]
+    keys = re.findall(r'"([A-Za-z]+)"', keys_block)
+    assert len(keys) == 8, "window.__proto grew to %d keys: %r" % (len(keys), keys)
+    for side in ("window.__typeLibrary", "window.__legendStandard"):
+        assert side in text, "side-channel state %s is missing" % side
+
+
+def test_syntax_cross003_element_checks_can_fail():
+    """Negative control: the element-name checks above must reject a rename."""
+    text = _screens_text()
+    mutated = text.replace('data-testid="type-form-code"', 'data-testid="type-form-kode"')
+    mutated = mutated.replace('name: "SY/T 0003"', 'name: "SY/T 9999"')
+    mutated = mutated.replace("节点名称：", "节点标题：")
+    assert mutated != text, "the mutation did not change the bundle"
+
+    block = _type_form_block(mutated)
+    assert "type-form-code" not in block, (
+        "renaming type-form-code did not break the field check"
+    )
+    at = mutated.find("var SL_STANDARDS = [")
+    std_block = mutated[at: at + 2000]
+    assert 'name: "SY/T 0003"' not in std_block, (
+        "renaming a standard did not break the standards check"
+    )
+    at = mutated.find('data-testid="pbs-node"')
+    assert "节点名称：" not in mutated[at: at + 900], (
+        "renaming 节点名称 did not break the PBS check"
+    )

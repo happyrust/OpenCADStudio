@@ -778,7 +778,19 @@
 
   var drawingsState = { pbsId: null, drawingId: null };
 
-  function pbsTreeHtml(nodes) {
+  /* Drawings owned directly by one PBS node (descendants not folded in). */
+  function pbsDrawingCount(pbsId) {
+    var all = data().drawings;
+    var n = 0;
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].pbsId === pbsId) {
+        n += 1;
+      }
+    }
+    return n;
+  }
+
+  function pbsTreeHtml(nodes, parentName) {
     var html = "<ul>";
     for (var i = 0; i < nodes.length; i++) {
       var node = nodes[i];
@@ -791,10 +803,13 @@
         '" data-level="' +
         esc(node.level) +
         '">' +
-        esc(node.name) +
+        "节点名称：" + esc(node.name) +
+        " · 节点类型：" + esc(node.level) +
+        " · 父节点：" + esc(parentName || "—") +
+        " · 图纸数：" + pbsDrawingCount(node.id) +
         "</button>";
       if (node.children && node.children.length) {
-        html += pbsTreeHtml(node.children);
+        html += pbsTreeHtml(node.children, node.name);
       }
       html += "</li>";
     }
@@ -3111,40 +3126,45 @@
   var TL_TREE = [
     {
       id: "process-equipment",
+      code: "PROCESS-EQUIPMENT",
       name: "工艺设备",
       children: [
         {
           id: "rotating",
+          code: "ROTATING",
           name: "转动设备",
           children: [
-            { id: "pump", name: "泵", children: [] },
-            { id: "compressor", name: "压缩机", children: [] }
+            { id: "pump", code: "PUMP", name: "泵", children: [] },
+            { id: "compressor", code: "COMPRESSOR", name: "压缩机", children: [] }
           ]
         },
         {
           id: "static",
+          code: "STATIC",
           name: "静设备",
           children: [
-            { id: "vessel", name: "容器", children: [] },
-            { id: "tower", name: "塔器", children: [] }
+            { id: "vessel", code: "VESSEL", name: "容器", children: [] },
+            { id: "tower", code: "TOWER", name: "塔器", children: [] }
           ]
         }
       ]
     },
     {
       id: "piping",
+      code: "PIPING",
       name: "管道附件",
       children: [
-        { id: "valve", name: "阀门", children: [] },
-        { id: "fitting", name: "管件", children: [] }
+        { id: "valve", code: "VALVE", name: "阀门", children: [] },
+        { id: "fitting", code: "FITTING", name: "管件", children: [] }
       ]
     },
     {
       id: "instrument",
+      code: "INSTRUMENT",
       name: "仪表",
       children: [
-        { id: "field-instrument", name: "现场仪表", children: [] },
-        { id: "instrument-loop", name: "仪表回路", children: [] }
+        { id: "field-instrument", code: "FIELD-INSTRUMENT", name: "现场仪表", children: [] },
+        { id: "instrument-loop", code: "INSTRUMENT-LOOP", name: "仪表回路", children: [] }
       ]
     }
   ];
@@ -3233,7 +3253,7 @@
     ]
   };
 
-  var tlState = { typeId: "pump", collapsed: {}, levels: {}, hint: "当前类型：泵" };
+  var tlState = { typeId: "pump", collapsed: {}, levels: {}, hint: "当前类型：泵", formOpen: false, formError: "", pending: { code: "", name: "", desc: "", parent: "" } };
 
   function tlFind(node, id) {
     if (node.id === id) {
@@ -3277,7 +3297,7 @@
         '" data-level="' + level + '">' +
         '<button type="button" class="tl__toggle" data-testid="type-tree-toggle">' +
         (collapsed ? "▸" : "▾") + "</button>" +
-        '<span class="tl__label">' + esc(node.name) + "</span>";
+        '<span class="tl__label">' + esc(node.name) + "（" + esc(node.code || node.id) + "）</span>";
       if (hasKids && !collapsed) {
         html += tlTreeHtml(node.children, level + 1);
       }
@@ -3308,6 +3328,152 @@
     return html;
   }
 
+  /* Inline new-type form. Four contract fields from REQ-TYPE-001:
+     类型编码 / 名称 / 描述 / 父类型. Rendered only while tlState.formOpen. */
+  function tlFormHtml() {
+    if (!tlState.formOpen) {
+      return "";
+    }
+    var parents = '<option value="">无（根类型）</option>';
+    for (var i = 0; i < TL_TREE.length; i++) {
+      parents += tlParentOptions([TL_TREE[i]], 0);
+    }
+    return (
+      '<div class="tl__form" data-testid="type-form">' +
+      '<h3 class="tl__form-title">新建类型</h3>' +
+      '<label class="tl__field">类型编码' +
+      '<input type="text" class="field" data-testid="type-form-code" maxlength="32" value="' +
+      esc(tlState.pending.code) + '" /></label>' +
+      '<label class="tl__field">名称' +
+      '<input type="text" class="field" data-testid="type-form-name" maxlength="64" value="' +
+      esc(tlState.pending.name) + '" /></label>' +
+      '<label class="tl__field">描述' +
+      '<input type="text" class="field" data-testid="type-form-desc" value="' +
+      esc(tlState.pending.desc) + '" /></label>' +
+      '<label class="tl__field">父类型' +
+      '<select class="field" data-testid="type-form-parent">' + parents + "</select></label>" +
+      '<div class="tl__form-actions">' +
+      '<button type="button" class="tl__btn tl__btn--primary" data-testid="type-form-ok">确定</button>' +
+      '<button type="button" class="tl__btn" data-testid="type-form-cancel">取消</button>' +
+      "</div>" +
+      '<p class="tl__form-error" data-testid="type-form-error">' + esc(tlState.formError) + "</p>" +
+      "</div>"
+    );
+  }
+
+  /* Flattened <option> list for the 父类型 select. */
+  function tlParentOptions(nodes, depth) {
+    var html = "";
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      var pad = depth > 0 ? new Array(depth + 1).join("　") : "";
+      html +=
+        '<option value="' + esc(node.id) + '">' + pad + esc(node.name) +
+        "（" + esc(node.code || node.id) + "）</option>";
+      if (node.children && node.children.length) {
+        html += tlParentOptions(node.children, depth + 1);
+      }
+    }
+    return html;
+  }
+
+  /* Flattened type-node lookup used by the uniqueness checks. */
+  function tlAllNodes() {
+    var out = [];
+    function walk(nodes) {
+      for (var i = 0; i < nodes.length; i++) {
+        out.push(nodes[i]);
+        if (nodes[i].children && nodes[i].children.length) {
+          walk(nodes[i].children);
+        }
+      }
+    }
+    walk(TL_TREE);
+    return out;
+  }
+
+  /* Validate and commit the inline form. 类型编码 must be non-empty and
+     globally unique; 名称 must be non-empty and unique among siblings. */
+  function tlCommitType() {
+    var code = (tlState.pending.code || "").replace(/^\s+|\s+$/g, "");
+    var name = (tlState.pending.name || "").replace(/^\s+|\s+$/g, "");
+    var nodes = tlAllNodes();
+    var i;
+    if (!code) {
+      tlState.formError = "类型编码不能为空";
+      rerenderScreen("typelib");
+      return;
+    }
+    if (code.length > 32) {
+      tlState.formError = "类型编码不得超过 32 字符";
+      rerenderScreen("typelib");
+      return;
+    }
+    for (i = 0; i < nodes.length; i++) {
+      if ((nodes[i].code || "").toUpperCase() === code.toUpperCase()) {
+        tlState.formError = "类型编码重复：" + code;
+        rerenderScreen("typelib");
+        return;
+      }
+    }
+    if (!name) {
+      tlState.formError = "名称不能为空";
+      rerenderScreen("typelib");
+      return;
+    }
+    var parentId = tlState.pending.parent || "";
+    var parent = parentId ? tlFindInTree(parentId) : null;
+    var siblings = parent ? parent.children : TL_TREE;
+    for (i = 0; i < siblings.length; i++) {
+      if (siblings[i].name === name) {
+        tlState.formError = "同一父类型下名称重复：" + name;
+        rerenderScreen("typelib");
+        return;
+      }
+    }
+    var node = {
+      id: "type-" + code.toLowerCase(),
+      code: code,
+      name: name,
+      children: []
+    };
+    siblings.push(node);
+    if (parent) {
+      tlState.collapsed[parent.id] = false;
+    }
+    if (!window.__typeLibrary || typeof window.__typeLibrary !== "object") {
+      window.__typeLibrary = { created: [] };
+    }
+    if (!window.__typeLibrary.created || !window.__typeLibrary.created.length) {
+      window.__typeLibrary.created = [];
+    }
+    window.__typeLibrary.created.push(code);
+    TL_ATTRS[node.id] = [
+      ["描述", "DESC_TEXT", "字符串", tlState.pending.desc || "—", "可选信息"],
+      ["位号", "TAG_NO", "字符串", "—", "可选信息"]
+    ];
+    tlState.formOpen = false;
+    tlState.formError = "";
+    tlState.typeId = node.id;
+    setTlHint("已新建类型 " + code);
+    rerenderScreen("typelib");
+  }
+
+  /* Form field persistence: inputs keep their value across rerenders. */
+  function typelibChange(target) {
+    var el = target;
+    var t = el.getAttribute ? el.getAttribute("data-testid") : null;
+    if (t === "type-form-code") {
+      tlState.pending.code = el.value;
+    } else if (t === "type-form-name") {
+      tlState.pending.name = el.value;
+    } else if (t === "type-form-desc") {
+      tlState.pending.desc = el.value;
+    } else if (t === "type-form-parent") {
+      tlState.pending.parent = el.value;
+    }
+  }
+
   function renderTypelib(def) {
     if (!TL_ATTRS[tlState.typeId]) {
       tlState.typeId = "pump";
@@ -3324,6 +3490,7 @@
       '<aside class="tl__tree" data-testid="type-structure-tree">' + tlTreeHtml(TL_TREE, 1) + "</aside>" +
       '<section class="tl__detail">' +
       '<h2 class="panel__title">属性模板</h2>' +
+      tlFormHtml() +
       '<table class="tl__table" data-testid="attribute-table">' +
       "<thead><tr><th>要素标签</th><th>数据要素</th><th>数据类型</th><th>默认值</th><th>级别</th></tr></thead>" +
       "<tbody>" + tlRowsHtml(tlState.typeId) + "</tbody></table>" +
@@ -3366,10 +3533,21 @@
     if (btn) {
       var act = btn.getAttribute("data-testid");
       if (act === "add-subtype") {
-        setTlHint("新增子类请求已记录，原型阶段暂不展开表单。");
+        tlState.formOpen = true;
+        tlState.formError = "";
+        tlState.pending = { code: "", name: "", desc: "", parent: tlState.typeId || "" };
+        rerenderScreen("typelib");
       } else if (act === "add-attribute") {
         setTlHint("添加属性请求已记录，原型阶段暂不展开表单。");
+      } else if (act === "type-form-cancel") {
+        tlState.formOpen = false;
+        tlState.formError = "";
+        setTlHint("已取消新建类型");
+        rerenderScreen("typelib");
+      } else if (act === "type-form-ok") {
+        tlCommitType();
       }
+      return;
     }
   }
 
@@ -3380,7 +3558,7 @@
   var SL_STANDARDS = [
     {
       id: "std-hg",
-      name: "企业标准 HG/T 20519",
+      name: "HG/T 20519",
       children: [
         { id: "std-hg-eq", name: "设备" },
         { id: "std-hg-valve", name: "阀门" },
@@ -3389,22 +3567,29 @@
       ]
     },
     {
-      id: "std-gb",
-      name: "国标 GB/T 6567",
+      id: "std-sy",
+      name: "SY/T 0003",
       children: [
-        { id: "std-gb-eq", name: "设备" },
-        { id: "std-gb-valve", name: "阀门" },
-        { id: "std-gb-inst", name: "仪表" },
-        { id: "std-gb-fitting", name: "管件" }
+        { id: "std-sy-eq", name: "设备" },
+        { id: "std-sy-valve", name: "阀门" },
+        { id: "std-sy-inst", name: "仪表" }
       ]
     },
     {
-      id: "std-custom",
-      name: "项目自定义标准",
+      id: "std-din",
+      name: "DIN",
       children: [
-        { id: "std-cust-eq", name: "设备" },
-        { id: "std-cust-valve", name: "阀门" },
-        { id: "std-cust-inst", name: "仪表" }
+        { id: "std-din-eq", name: "设备" },
+        { id: "std-din-valve", name: "阀门" }
+      ]
+    },
+    {
+      id: "std-iso",
+      name: "ISO",
+      children: [
+        { id: "std-iso-eq", name: "设备" },
+        { id: "std-iso-inst", name: "仪表" },
+        { id: "std-iso-fitting", name: "管件" }
       ]
     }
   ];
@@ -3412,18 +3597,18 @@
   /* Symbol catalogue. stds lists every legend standard adopting the
      symbol, so one symbol can appear under more than one standard. */
   var SL_SYMBOLS = [
-    { id: "eq-vessel", name: "立式容器", kind: "设备", state: "启用", stds: ["std-hg", "std-custom"], shape: "vessel" },
+    { id: "eq-vessel", name: "立式容器", kind: "设备", state: "启用", stds: ["std-hg", "std-iso"], shape: "vessel" },
     { id: "eq-vessel-h", name: "卧式容器", kind: "设备", state: "启用", stds: ["std-hg"], shape: "vessel-h" },
     { id: "eq-pump", name: "离心泵", kind: "设备", state: "启用", stds: ["std-hg"], shape: "pump" },
-    { id: "eq-exchanger", name: "换热器", kind: "设备", state: "启用", stds: ["std-gb"], shape: "exchanger" },
-    { id: "eq-furnace", name: "加热炉", kind: "设备", state: "停用", stds: ["std-gb"], shape: "furnace" },
+    { id: "eq-exchanger", name: "换热器", kind: "设备", state: "启用", stds: ["std-sy"], shape: "exchanger" },
+    { id: "eq-furnace", name: "加热炉", kind: "设备", state: "停用", stds: ["std-sy"], shape: "furnace" },
     { id: "eq-tower", name: "塔器", kind: "设备", state: "启用", stds: ["std-hg"], shape: "tower" },
-    { id: "eq-tank", name: "储罐", kind: "设备", state: "启用", stds: ["std-gb"], shape: "tank" },
-    { id: "vlv-gate", name: "闸阀", kind: "阀门", state: "启用", stds: ["std-hg", "std-custom"], shape: "gate-valve" },
-    { id: "vlv-globe", name: "截止阀", kind: "阀门", state: "启用", stds: ["std-gb"], shape: "globe-valve" },
-    { id: "vlv-control", name: "调节阀", kind: "阀门", state: "停用", stds: ["std-gb"], shape: "control-valve" },
-    { id: "inst-pressure", name: "压力指示", kind: "仪表", state: "启用", stds: ["std-hg", "std-custom"], shape: "inst" },
-    { id: "inst-temp", name: "温度指示", kind: "仪表", state: "启用", stds: ["std-custom"], shape: "inst-t" }
+    { id: "eq-tank", name: "储罐", kind: "设备", state: "启用", stds: ["std-sy"], shape: "tank" },
+    { id: "vlv-gate", name: "闸阀", kind: "阀门", state: "启用", stds: ["std-hg", "std-iso"], shape: "gate-valve" },
+    { id: "vlv-globe", name: "截止阀", kind: "阀门", state: "启用", stds: ["std-sy"], shape: "globe-valve" },
+    { id: "vlv-control", name: "调节阀", kind: "阀门", state: "停用", stds: ["std-sy"], shape: "control-valve" },
+    { id: "inst-pressure", name: "压力指示", kind: "仪表", state: "启用", stds: ["std-hg", "std-iso"], shape: "inst" },
+    { id: "inst-temp", name: "温度指示", kind: "仪表", state: "启用", stds: ["std-iso"], shape: "inst-t" }
   ];
 
   /* 48x48 stroke glyphs keyed by shape name. Geometry only — colours
@@ -3530,6 +3715,7 @@
       var std = SL_STANDARDS[i];
       html +=
         '<li class="sl__node' + (std.id === slState.nodeId ? " is-selected" : "") +
+        (std.id === slCurrentStandard().id ? " is-current" : "") +
         '" data-testid="legend-standard-node" data-node-id="' + esc(std.id) +
         '" data-level="1">' +
         '<span class="sl__node-label">' + esc(std.name) + "</span>" +
@@ -3545,6 +3731,75 @@
       html += "</ul></li>";
     }
     return html + "</ul>";
+  }
+
+  /* Selected legend standard's contract fields (REQ-SYM-001): 标准名称,
+     符号数, 是否当前标准 are read-only; 图例列表选择 switches the project
+     standard. State lives in window.__legendStandard, not window.__proto. */
+  function slCurrentStandard() {
+    var cur = window.__legendStandard && window.__legendStandard.current;
+    if (cur) {
+      for (var i = 0; i < SL_STANDARDS.length; i++) {
+        if (SL_STANDARDS[i].name === cur) {
+          return SL_STANDARDS[i];
+        }
+      }
+    }
+    return SL_STANDARDS[0];
+  }
+
+  function slStandardOfNode(nodeId) {
+    if (!nodeId) {
+      return null;
+    }
+    for (var i = 0; i < SL_STANDARDS.length; i++) {
+      if (SL_STANDARDS[i].id === nodeId) {
+        return SL_STANDARDS[i];
+      }
+      var kids = SL_STANDARDS[i].children;
+      for (var j = 0; j < kids.length; j++) {
+        if (kids[j].id === nodeId) {
+          return SL_STANDARDS[i];
+        }
+      }
+    }
+    return null;
+  }
+
+  function slPanelHtml() {
+    var std = slStandardOfNode(slState.nodeId);
+    if (!std) {
+      return "";
+    }
+    var count = 0;
+    for (var i = 0; i < SL_SYMBOLS.length; i++) {
+      for (var j = 0; j < SL_SYMBOLS[i].stds.length; j++) {
+        if (SL_SYMBOLS[i].stds[j] === std.id) {
+          count += 1;
+          break;
+        }
+      }
+    }
+    var cur = slCurrentStandard();
+    var isCur = cur.id === std.id ? "是" : "否";
+    var opts = "";
+    for (var k = 0; k < SL_STANDARDS.length; k++) {
+      opts +=
+        '<option value="' + esc(SL_STANDARDS[k].name) + '"' +
+        (SL_STANDARDS[k].id === cur.id ? ' selected="selected"' : "") +
+        ">" + esc(SL_STANDARDS[k].name) + "</option>";
+    }
+    return (
+      '<div class="sl__panel" data-testid="standard-panel">' +
+      '<dl class="sl__facts">' +
+      '<dt>标准名称</dt><dd data-testid="standard-name">' + esc(std.name) + "</dd>" +
+      '<dt>符号数</dt><dd data-testid="standard-symbol-count">' + count + "</dd>" +
+      '<dt>是否当前标准</dt><dd data-testid="standard-is-current">' + isCur + "</dd>" +
+      "</dl>" +
+      '<label class="sl__select-label">图例列表选择' +
+      '<select class="field" data-testid="legend-standard-select">' + opts + "</select></label>" +
+      "</div>"
+    );
   }
 
   function renderSymbols(def) {
@@ -3570,7 +3825,8 @@
       "</div>" +
       '<div class="sl__body">' +
       '<aside class="sl__tree" data-testid="legend-standard-tree">' + slTreeHtml() + "</aside>" +
-      '<section class="sl__grid" data-testid="symbol-grid" data-view="' + gridView + '">';
+      '<section class="sl__grid" data-testid="symbol-grid" data-view="' + gridView + '">' +
+      slPanelHtml();
     for (var i = 0; i < items.length; i++) {
       var s = items[i];
       var on = s.state === "启用";
@@ -3784,6 +4040,48 @@
   window.PidScreens.typelib = renderTypelib;
   window.PidScreens.symbols = renderSymbols;
   window.PidScreens["symbol-editor"] = renderSymbolEditor;
+
+  if (!window.__tlChangeBound) {
+    window.__tlChangeBound = true;
+    document.addEventListener("change", function (ev) {
+      var t = ev.target;
+      if (!t || !t.getAttribute) {
+        return;
+      }
+      var sec = closestEl(t, '[data-screen="typelib"]');
+      if (!sec) {
+        return;
+      }
+      typelibChange(t);
+    });
+    document.addEventListener("input", function (ev) {
+      var t = ev.target;
+      if (!t || !t.getAttribute) {
+        return;
+      }
+      var sec = closestEl(t, '[data-screen="typelib"]');
+      if (!sec) {
+        return;
+      }
+      typelibChange(t);
+    });
+  }
+
+  if (!window.__slChangeBound) {
+    window.__slChangeBound = true;
+    document.addEventListener("change", function (ev) {
+      var t = ev.target;
+      if (!t || !t.getAttribute) {
+        return;
+      }
+      if (t.getAttribute("data-testid") !== "legend-standard-select") {
+        return;
+      }
+      window.__legendStandard = { current: t.value };
+      setSlHint("当前图例标准：" + t.value);
+      rerenderScreen("symbols");
+    });
+  }
 })();
 
 /* Tag rules, colour rules, master data and permissions screens for the
