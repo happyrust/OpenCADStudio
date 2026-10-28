@@ -2716,15 +2716,19 @@
     "DR-005": "仪表未分配回路",
     "DR-006": "页间连接符对端缺失",
     "DR-007": "阀门压力等级高于管道等级",
-    "DR-008": "管口未连接"
+    "DR-008": "管口未连接",
+    "DR-010": "属性必填项为空"
   };
 
   /* Check results across all drawings. Counts per severity are derived
      from this list, never hard-coded into the summary markup. */
   var VIOLATIONS = [
-    { ruleId: "DR-001", severity: "错误", tag: "P-1001", sheet: "PID-1101 原油换热网络.dwg",
+    { ruleId: "DR-001", severity: "错误", tag: "L-1001", sheet: "PID-1101 原油换热网络.dwg",
       message: "管线 L-1001 未填写管道等级",
       suggestion: "建议：为 L-1001 指定管道等级。" },
+    { ruleId: "DR-010", severity: "错误", tag: "P-1001", sheet: "PID-1101 原油换热网络.dwg",
+      message: "设备 P-1001 的必填项设计温度为空",
+      suggestion: "建议：为 P-1001 补填设计温度。" },
     { ruleId: "DR-003", severity: "错误", tag: "TI-1101", sheet: "PID-1201 常压塔系统.dwg",
       message: "设备 TI-1101 未填写位号",
       suggestion: "建议：为 TI-1101 补全位号。" },

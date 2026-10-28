@@ -632,12 +632,46 @@ def test_syntax_validation_severities_match_the_requirement_table():
         )
 
 
+def test_syntax_validation_rows_point_at_one_object():
+    """requirements/50: the 位号 column must agree with the message it ships.
+
+    Scoped to the two rules whose message quotes the object by tag (DR-001
+    and DR-002). Their 作用对象 is 管线, so the tag must be a line tag such as
+    L-1001 — never the 管路 tag L-1001-01 and never an equipment tag. Other
+    rows are free prose and are not constrained here.
+    """
+    text = _screens_text()
+    block = _block_after(text, "var VIOLATIONS = [", "\n  ];")
+    rows = re.findall(
+        r'\{ ruleId: "(DR-\d{3})", severity: "[^"]+", tag: "([^"]+)", '
+        r'sheet: "[^"]*",\s*message: "([^"]+)",\s*suggestion: "([^"]+)" \}',
+        block,
+    )
+    assert len(rows) >= 9, (
+        "expected at least nine violation rows, parsed %d" % len(rows)
+    )
+    quoted = {"DR-001", "DR-002"}
+    for rule_id, tag, message, _suggestion in rows:
+        if rule_id not in quoted:
+            continue
+        assert tag in message, (
+            "%s: 位号 %r does not appear in its message %r — the row names two "
+            "different objects" % (rule_id, tag, message)
+        )
+        assert re.match(r"^L-\d{4}$", tag), (
+            "%s acts on 管线, so its 位号 must be a line tag such as L-1001, "
+            "got %r" % (rule_id, tag)
+        )
+    tags = [row[1] for row in rows]
+    assert "P-1001" in tags, (
+        "VAL-CROSS-004 needs a violation whose 位号 is P-1001"
+    )
+
+
 def test_syntax_bom_seed_uses_the_standard_type_vocabulary():
     """requirements/60: 管路 never becomes a row; 管件 inherits the host tag."""
     text = _screens_text()
-    at = text.find("var BOM_SOURCE = [")
-    assert at != -1, "BOM_SOURCE is gone"
-    block = text[at: text.find("\n  ];", at)]
+    block = _block_after(text, "var BOM_SOURCE = [", "\n  ];")
     types = set(re.findall(r'type: "([^"]+)"', block))
     assert "管路" not in types, "BOM still carries a 管路 row: %r" % (types,)
     assert types <= {"管线", "设备", "阀门", "仪表", "管件"}, (
@@ -650,15 +684,22 @@ def test_syntax_bom_seed_uses_the_standard_type_vocabulary():
     assert 'type: "管件", tag: "L-1001-01"' in block, (
         "the fitting row does not inherit the host tag L-1001-01"
     )
+    assert 'type: "管线", tag: "L-1001"' in block, (
+        "the 管线 row does not carry the line tag L-1001 (the 管件 row "
+        "carries L-1001-01, so they must differ)"
+    )
+
+
+def test_syntax_bom_seed_keeps_tags_unique():
+    """requirements/60 + VAL-PROTO-016: 位号 is the row key and must be unique."""
+    text = _screens_text()
+    block = _block_after(text, "var BOM_SOURCE = [", "\n  ];")
     tags = re.findall(r'tag: "([^"]+)"', block)
+    assert tags, "BOM_SOURCE carries no tags at all"
     repeated = sorted({t for t in tags if tags.count(t) > 1})
     assert repeated == [], (
         "BOM_SOURCE repeats a 位号, which breaks the row-key uniqueness "
         "invariant of requirements/60 and VAL-PROTO-016: %r" % (repeated,)
-    )
-    assert 'type: "管线", tag: "L-1001"' in block, (
-        "the 管线 row does not carry the line tag L-1001 (the 管件 row "
-        "carries L-1001-01, so they must differ)"
     )
 
 
@@ -822,7 +863,7 @@ def test_syntax_bom_template_changes_the_header_and_rows():
     assert '"<thead><tr>" + bmHeadHtml() + "</tr></thead>"' in text, (
         "renderBom does not build the table head from bmHeadHtml()"
     )
-    assert "def.types.indexOf(r.type) === -1" in text, (
+    assert "if (def.types && def.types.indexOf(r.type) === -1) {" in text, (
         "bmRowsForScope does not filter rows by the template's types"
     )
     change = _block_after(
@@ -869,6 +910,10 @@ def test_syntax_editor_and_bom_checks_can_fail():
         'type: "管线", tag: "L-1001-01"',
     )
     mutated = mutated.replace(
+        "if (def.types && def.types.indexOf(r.type) === -1) {",
+        "if (false && def.types && def.types.indexOf(r.type) === -1) {",
+    )
+    mutated = mutated.replace(
         "      bmState.hint = \"已切换模板：\" + bmState.template;\n      rerenderBom();",
         "      bmState.hint = \"已切换模板：\" + bmState.template;",
     )
@@ -889,6 +934,10 @@ def test_syntax_editor_and_bom_checks_can_fail():
     tags = re.findall(r'tag: "([^"]+)"', seed)
     assert sorted({t for t in tags if tags.count(t) > 1}) != [], (
         "reusing the 管路 tag on the 管线 row did not break the uniqueness check"
+    )
+    assert "if (def.types && def.types.indexOf(r.type) === -1) {" not in mutated, (
+        "short-circuiting the template type filter did not break the "
+        "type-filter check"
     )
     change = _block_after(
         mutated,

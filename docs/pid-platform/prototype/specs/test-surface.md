@@ -140,17 +140,30 @@
 
 ## 10. 材料清单行键唯一性与已交付的静态守卫
 
-`BOM_SOURCE` 的行键是 `位号`，全表唯一（`requirements/60-deliverables-and-publish.md`）。管线行用管线位号 `L-1001`、`L-1002`；管件行继承管路位号 `L-1001-01`（管线位号加两位后缀）。两者不得相同，否则 `__proto.bomRows` 会出现重复位号并违反 `VAL-PROTO-016`。`test_syntax_bom_seed_keeps_tags_unique`（在 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` 内）钉住该不变量。
+`BOM_SOURCE` 的行键是 `位号`，全表唯一（`requirements/60-deliverables-and-publish.md`）。管线行用管线位号 `L-1001`、`L-1002`；管件行继承管路位号 `L-1001-01`（管线位号加两位后缀）。两者不得相同，否则 `__proto.bomRows` 会出现重复位号并违反 `VAL-PROTO-016`。该不变量由独立用例 `test_syntax_bom_seed_keeps_tags_unique` 钉住，类型词汇与继承关系由 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` 钉住。
 
 `-k syntax` 目前守护的边界，以及**明确交由浏览器环节守卫**的路径：
 
 | 路径 | 守卫方式 |
 | --- | --- |
-| `BOM_SOURCE` 类型词汇、位号唯一性、管件继承宿主位号 | 静态用例 + 负向对照 |
+| `BOM_SOURCE` 类型词汇、管件继承宿主位号 | 静态用例 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` + 负向对照 |
+| `BOM_SOURCE` 位号全表唯一 | 独立静态用例 `test_syntax_bom_seed_keeps_tags_unique` + 负向对照 |
 | `renderBom` 用 `bmHeadHtml()` 拼表头、change 分支调用 `rerenderBom()` | 静态用例钉完整调用表达式 + 负向对照 |
-| 模板下拉选项集合等于 `BM_TEMPLATE_DEFS` 键集合 | 静态用例 |
+| 模板按 `def.types` 过滤行、下拉选项集合等于 `BM_TEMPLATE_DEFS` 键集合 | 静态用例钉完整 `if` 条件表达式 + 负向对照 |
 | 编辑器五区域 `data-testid`、六选项卡顺序、画布 ≥6 符号 ≥3 管线 | 静态用例 |
 | 编辑器内四类页签项数两两不同、独立屏 ≥8 项 | 静态用例 |
 | `canvasHtml` 的渲染循环上限、`paletteItems()` 的分类与关键词两条过滤分支 | **仅由 `VAL-PROTO-005` / `VAL-PROTO-007` 的浏览器环节守卫**，静态用例不覆盖；改动这些分支后必须重跑浏览器取证 |
 | 编辑器内搜索「先分类后关键词」，无匹配时无空态文案 | 已知行为，数据正确；无断言依赖，勿据空网格判缺陷 |
 | `bom` 选「阀门汇总表」+「当前图纸」得 0 行 | 已知组合，空表是正确结果 |
+
+## 11. 设计规则检查的位号与规则名口径
+
+`VL_RULE_NAMES` 逐字绑定 `DR-001`..`DR-008` 与 `DR-010` 的规则名，取值抄自 `requirements/50-data-and-rule-engine.md` 的规则清单。`VIOLATIONS` 的每条记录必须满足：**`位号` 列、`消息`、`建议修复` 三处指向同一个对象**，且该对象的类型与规则的 `作用对象` 一致。
+
+- `DR-001` / `DR-002` 的作用对象是 `管线`，位号写管线位号 `L-1001` / `L-1002`，不写管路位号 `L-1001-01`。
+- `DR-003` / `DR-008` / `DR-010` 的作用对象是 `设备` 或 `对象实例`，位号写设备位号。
+- `DR-004` 的作用对象是 `对象实例`，位号写被判定重复的那个位号。
+
+严重度汇总由 `vlSeverityCounts()` 从 `VIOLATIONS` 推导，不硬编码。当前种子 10 行为 错误 8 / 警告 1 / 提示 1。`DR-003` 出现两次是两条不同对象的记录，不是缺陷。
+
+`VAL-CROSS-004` 要求存在一条 `tag === "P-1001"` 的违规，该职责由 `DR-010` 那条记录承担，因此 `DR-001` 可以合法使用 `L-1001`。改动 `VIOLATIONS` 时必须同时保住这条 `P-1001` 记录。
