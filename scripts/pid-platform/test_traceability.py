@@ -61,6 +61,7 @@ from requirements_contract import (
     validate_data_rule_engine_coverage,
     validate_deliverable_coverage,
     validate_design_rule_table,
+    validate_dr004_independence,
     validate_drawing_coverage,
     validate_import_export_coverage,
     validate_matrix,
@@ -909,6 +910,11 @@ def _data_document() -> str:
             "不得登记相同位号；不同类型对象允许同值位号。\n\n"
         ),
         "规则 DSL": "```ebnf\n" + rule_dsl.EBNF_GRAMMAR + "\n```\n\n",
+        "位号冲突处理": (
+            "位号冲突在登记新实例时检出，并在校验结果中记入 1 条 `DR-004` 错误。\n\n"
+            "`DR-004` 由设计规则检查独立执行，不随 `位号唯一校验` 关闭而停用："
+            "它作为规则表条目在 `按需`、`保存前`、`发布前` 三种触发时机求值。\n\n"
+        ),
         "触发时机": TRIGGER_TABLE + "\n",
         "结果模型": RESULT_TABLE + "\n",
         "设计规则清单": _rule_table(SHIPPED_DESIGN_RULES) + "\n",
@@ -1069,11 +1075,16 @@ def test_traceability_data_validator_rejects_a_missing_result_field():
 
 
 def test_traceability_data_validator_rejects_a_missing_trigger_mode():
-    """Negative control: all three trigger modes must be distinguished."""
+    """Negative control: all three trigger modes must be distinguished.
+
+    The assertion is on the table row, not on the bare word: the synthetic
+    位号冲突处理 prose legitimately mentions 发布前 as one of the three trigger
+    timings, so a whole-document ``not in`` check would be a false control.
+    """
     document = _data_document().replace(
         "| 发布前 | 待发布图纸 | 阻断 | 返回 `PUBLISH_BLOCKED` |\n", ""
     )
-    assert "发布前" not in document, "the control removed nothing"
+    assert "| 发布前 |" not in document, "the control removed nothing"
     errors = validate_trigger_modes(document)
     assert any("'发布前' mode" in error for error in errors), errors
 
@@ -1092,6 +1103,52 @@ def test_traceability_data_validator_rejects_a_missing_document():
     assert errors == [
         "%s: data and rule engine requirement document is missing" % DATA_PATH
     ]
+
+
+def test_traceability_data_document_states_the_dr004_basis():
+    """Real document: 50 must state that DR-004 outlives the uniqueness switch.
+
+    60-deliverables-and-publish.md:11 promises the off-state behaviour; this is
+    the basis for that promise, and it lives in the document that owns the rule
+    engine. Reading 50:19/:44/:57 literally without it means switching the
+    check off stops detection at registration time and the promise dangles.
+    """
+    text = load_documents(DOCS)[DATA_PATH]
+    errors = validate_dr004_independence(text)
+    assert errors == [], errors
+    section = section_text(text, "位号冲突处理")
+    assert "由设计规则检查独立执行" in section, (
+        "the independence sentence is not inside 位号冲突处理"
+    )
+
+
+def test_traceability_dr004_independence_guard_rejects_a_collapsed_paragraph():
+    """Negative control: collapsing the sentence must turn the guard red."""
+    text = load_documents(DOCS)[DATA_PATH]
+    section = section_text(text, "位号冲突处理")
+    anchor = "由设计规则检查独立执行"
+    paragraph = next(
+        block.strip()
+        for block in section.split("\n\n")
+        if anchor in block
+    )
+    assert paragraph, "the control found no paragraph carrying the anchor"
+    degraded = text.replace(paragraph, "`DR-004` 是内置规则。")
+    assert degraded != text, "the control changed nothing"
+    errors = validate_dr004_independence(degraded)
+    assert errors, "a collapsed independence paragraph was accepted"
+
+
+def test_traceability_dr004_independence_guard_rejects_a_dropped_trigger_mode():
+    """Negative control: dropping 发布前 must name that token, not just fail."""
+    text = load_documents(DOCS)[DATA_PATH]
+    degraded = text.replace(
+        "`按需`、`保存前`、`发布前` 三种触发时机求值",
+        "`按需`、`保存前` 两种触发时机求值",
+    )
+    assert degraded != text, "the control changed nothing"
+    errors = validate_dr004_independence(degraded)
+    assert any("发布前" in error for error in errors), errors
 
 
 # ---------------------------------------------------------------------------
@@ -1365,6 +1422,65 @@ def test_traceability_bom_rows_accept_the_same_tag_under_two_types():
     ]
     assert rows[0]["位号"] == rows[1]["位号"], "the control did not share the tag value"
     assert rows[0]["类型"] != rows[1]["类型"], "the control did not differ in type"
+    assert validate_bom_rows(rows) == []
+
+
+def test_traceability_bom_rows_reject_an_unknown_type_word():
+    """Negative control: a typo'd 类型编码 must be reported, not skipped.
+
+    ``阀们`` matches neither the independently-tagged rule nor the inherited-tag
+    rule, so before this branch existed both rules fell through and the row
+    returned ``[]``. A guard that only holds for well-typed input proves
+    nothing about the input it is there to catch.
+    """
+    rows = [
+        {
+            "序号": "1",
+            "类型": "阀们",
+            "位号": "V-1",
+            "名称": "截止阀 DN50",
+            "数量": "9",
+            "单位": "个",
+        }
+    ]
+    errors = validate_bom_rows(rows)
+    assert errors, "a typo'd 类型编码 passed silently"
+    assert any("阀们" in error for error in errors), errors
+    assert any("only carries" in error for error in errors), errors
+
+
+def test_traceability_bom_rows_reject_a_non_finite_quantity():
+    """Negative control: ``nan``/``inf`` 数量 must be a row error, not a raise.
+
+    ``int(nan)`` raised ``ValueError: cannot convert float NaN to integer`` out
+    of the validator, so one malformed cell aborted the whole material-list
+    check instead of naming the row.
+    """
+    for value in ("nan", "inf", "-inf", float("nan"), float("inf")):
+        rows = [
+            {
+                "序号": "1",
+                "类型": "管件",
+                "位号": "L-1-01",
+                "名称": "90°弯头 DN50",
+                "数量": value,
+                "单位": "个",
+            }
+        ]
+        errors = validate_bom_rows(rows)
+        assert errors, "a non-finite 数量 %r was accepted" % (value,)
+        assert any("non-finite" in error for error in errors), errors
+
+
+def test_traceability_bom_rows_accept_every_known_type_word():
+    """Positive control: the five legal type words still pass unchanged."""
+    rows = [
+        {"序号": "1", "类型": "设备", "位号": "P-1001", "名称": "离心泵", "数量": "1", "单位": "台"},
+        {"序号": "2", "类型": "阀门", "位号": "V-1001", "名称": "截止阀", "数量": "1", "单位": "个"},
+        {"序号": "3", "类型": "仪表", "位号": "TI-1001", "名称": "温度变送器", "数量": "1", "单位": "台"},
+        {"序号": "4", "类型": "管线", "位号": "L-1001", "名称": "进料管线", "数量": "24.5", "单位": "m"},
+        {"序号": "5", "类型": "管件", "位号": "L-1001-01", "名称": "弯头", "数量": "3", "单位": "个"},
+    ]
     assert validate_bom_rows(rows) == []
 
 

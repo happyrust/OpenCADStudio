@@ -1037,18 +1037,68 @@ SUBTYPE_TO_TYPE = {
 # comparing them across the two surfaces would report a clash that is not one.
 INDEPENDENT_TAG_TYPES = ("设备", "阀门", "仪表")
 
+# The five type words the material list may carry. requirements/60's prose uses
+# them next to a 位号 in two shapes, both of which bind a tag to a type.
+BOM_TYPE_WORDS = ("设备", "阀门", "仪表", "管线", "管件")
+
+# ``位号 `V-1002` 的另 1 个阀门实例另占 1 行`` — the type word follows the tag
+# within a short clause. V-1002 appears only in this shape (60:32), never in the
+# example table, so a table-only source could not see it at all.
+_DOC_TAG_THEN_TYPE_RE = re.compile(
+    r"位号\s*`([A-Z]{1,3}-\d{4}(?:-\d{2})?)`\s*的([^\n。；]{0,40})"
+)
+# ``设备 `P-1001` 与阀门 `P-1001` 分属不同类型`` — the type word precedes the tag.
+_DOC_TYPE_THEN_TAG_RE = re.compile(
+    r"(%s)\s*`([A-Z]{1,3}-\d{4}(?:-\d{2})?)`" % "|".join(BOM_TYPE_WORDS)
+)
+
+
+def _document_tag_types(doc: str) -> dict:
+    """``{位号: {类型}}`` from requirements/60 — the example table *and* prose.
+
+    The example table alone is not the document's whole claim about which
+    literal names which object: 60:32 and 60:50 discuss ``V-1002`` and
+    ``P-1001`` in acceptance criteria, and ``V-1002`` has no table row at all.
+    Reading only the table made the collision guard blind to it. Both shapes
+    below are read, and a tag bound to several types keeps every one of them —
+    ``P-1001`` is legitimately both a 设备 and a 阀门 in 60:7.
+    """
+    found = {}
+
+    def add(tag, kind):
+        if kind in BOM_TYPE_WORDS:
+            found.setdefault(tag, set()).add(kind)
+
+    table = find_bom_header(doc)
+    if table is not None:
+        for row in bom_rows(table):
+            add(row["位号"], row["类型"])
+    for tag, clause in _DOC_TAG_THEN_TYPE_RE.findall(doc):
+        for word in BOM_TYPE_WORDS:
+            if word in clause:
+                add(tag, word)
+    for kind, tag in _DOC_TYPE_THEN_TAG_RE.findall(doc):
+        add(tag, kind)
+    return found
+
 
 def _prototype_tag_types(text):
     """Every seeded 位号 literal mapped to the type words it is bound to.
 
-    Reads the three seed sources that carry a type label next to a tag: the
+    Reads the five seed sources that carry a type label next to a tag: the
     drawings seed and the BOM rows (``kind:`` / ``type:`` immediately before
     ``tag:``), the canvas ``makeSymbol`` calls (whose second argument is
-    ``equipment``/``valve``/...) and the properties ``INSTANCES`` records
-    (``tag:`` followed by ``typeName:``). The canvas kinds are translated
-    through ``CANVAS_KIND_LABELS`` so all sources speak one vocabulary. A tag
-    bound to several types keeps every one of them, which is what makes a
-    collision detectable instead of silently overwritten.
+    ``equipment``/``valve``/...), the properties ``INSTANCES`` records
+    (``tag:`` followed by ``typeName:``) and each record's own ``props.位号``.
+    The canvas kinds are translated through ``CANVAS_KIND_LABELS`` so all
+    sources speak one vocabulary. A tag bound to several types keeps every one
+    of them, which is what makes a collision detectable instead of silently
+    overwritten.
+
+    The ``props.位号`` source is what makes a half-done rename fail: changing
+    the record's ``tag`` while its ``props.位号`` still carries the old literal
+    leaves the prototype describing two objects, and the old literal is then
+    typed here instead of appearing nowhere.
     """
     found = {}
 
@@ -1065,11 +1115,16 @@ def _prototype_tag_types(text):
         r'\{ tag: "([^"]+)", typeId: "[^"]*", typeName: "([^"]+)"', text
     ):
         add(tag, kind)
+    for tag, kind, props_tag in re.findall(
+        r'\{ tag: "([^"]+)", typeId: "[^"]*", typeName: "([^"]+)"[^\n]*?"位号": "([^"]+)"',
+        text,
+    ):
+        add(props_tag, kind)
     return found
 
 
 def _assert_no_seed_tag_collision(text):
-    """No prototype 位号 may be assigned to a type the example table disagrees with."""
+    """No prototype 位号 may be assigned to a type requirements/60 disagrees with."""
     doc = (DOCS / "requirements" / "60-deliverables-and-publish.md").read_text(
         encoding="utf-8"
     )
@@ -1083,6 +1138,17 @@ def _assert_no_seed_tag_collision(text):
         "the guard assumes requirements/60 binds V-1001 to a 阀门 row, got %r"
         % (example_tags.get("V-1001"),)
     )
+    document_types = _document_tag_types(doc)
+    # Premise check on the prose half: V-1002 has no example-table row, so if
+    # this assertion ever fails the prose regex stopped matching and the guard
+    # silently went blind to it again.
+    assert "阀门" in document_types.get("V-1001", set()), (
+        "the prose scan lost V-1001; document_types = %r" % (document_types,)
+    )
+    assert "阀门" in document_types.get("V-1002", set()), (
+        "the prose scan lost V-1002 (it lives only in 60:32/60:50, not in the "
+        "example table); document_types = %r" % (document_types,)
+    )
     colliding = _prototype_tag_types(text)
     assert colliding, "the prototype seed exposed no tags at all"
     internal = sorted(
@@ -1095,15 +1161,23 @@ def _assert_no_seed_tag_collision(text):
         "tagged type, so a tag-scoped lookup lands on two objects: %r"
         % (internal,)
     )
-    clashes = sorted(
-        "%s (%s in the prototype, %s in requirements/60)"
-        % (tag, kind, example_tags[tag])
-        for tag, kinds in colliding.items()
-        for kind in kinds
-        if kind in INDEPENDENT_TAG_TYPES
-        and example_tags.get(tag) in INDEPENDENT_TAG_TYPES
-        and example_tags[tag] != kind
-    )
+    # A tag may legitimately be several types in the document (60:7 makes
+    # P-1001 both a 设备 and a 阀门 on purpose), so the rule is set inclusion:
+    # every independent type the prototype uses must be one the document names
+    # for that literal. Using V-1002 for a 容器 fails because the document only
+    # ever calls it a 阀门.
+    clashes = []
+    for tag, kinds in colliding.items():
+        allowed = document_types.get(tag, set())
+        if not any(other in INDEPENDENT_TAG_TYPES for other in allowed):
+            continue
+        for kind in sorted(kinds):
+            if kind in INDEPENDENT_TAG_TYPES and kind not in allowed:
+                clashes.append(
+                    "%s (%s in the prototype; requirements/60 only allows %s)"
+                    % (tag, kind, " / ".join(sorted(allowed)))
+                )
+    clashes.sort()
     assert clashes == [], (
         "a literal 位号 names two objects in different type contexts: %r"
         % (clashes,)
@@ -1407,7 +1481,14 @@ def test_syntax_prototype_seed_tags_never_collide_with_the_bom_example_table():
 
 
 def test_syntax_prototype_tag_collision_guard_can_fail():
-    """Negative control: restoring V-1001 on the 设备 seed must turn it red."""
+    """Negative control: restoring a colliding tag must turn the guard red.
+
+    Four sites, because the guard reads four of them. The last two are the ones
+    a table-only source could not catch: ``V-1002`` has no row in
+    requirements/60's example table (it appears only in the prose at 60:32 and
+    60:50), and ``props.位号`` is a second literal inside the same INSTANCES
+    record. Both mutations used to stay green.
+    """
     text = _screens_text()
     mutated = text.replace(
         '{ kind: "设备", tag: "V-1301", name: "原油缓冲罐" }',
@@ -1424,6 +1505,46 @@ def test_syntax_prototype_tag_collision_guard_can_fail():
     assert mutated != text, "the canvas-seed mutation changed nothing"
     with pytest.raises(AssertionError):
         _assert_no_seed_tag_collision(mutated)
+
+    # V-1002 is the prose-only literal: requirements/60 never puts it in the
+    # example table (60:32 and 60:50 are the only sites), so a guard that reads
+    # the table alone returned [] here. V-1302 itself appears only in the
+    # INSTANCES record, so the mutation is applied to that record's ``tag``.
+    mutated = text.replace(
+        'tag: "V-1302", typeId: "vessel"',
+        'tag: "V-1002", typeId: "vessel"',
+    )
+    assert mutated != text, "the V-1002 mutation changed nothing"
+    with pytest.raises(AssertionError) as excinfo:
+        _assert_no_seed_tag_collision(mutated)
+    assert "V-1002" in str(excinfo.value), (
+        "the guard went red but did not name V-1002: %s" % excinfo.value
+    )
+
+    # The INSTANCES record carries the tag twice: ``tag`` and ``props.位号``.
+    # Reverting only the props copy leaves the record describing two objects,
+    # and the old literal is typed here only because the guard reads props.位号.
+    mutated = text.replace('"位号": "V-1302"', '"位号": "V-1002"')
+    assert mutated != text, "the props.位号 mutation changed nothing"
+    with pytest.raises(AssertionError) as excinfo:
+        _assert_no_seed_tag_collision(mutated)
+    assert "V-1002" in str(excinfo.value), (
+        "the props.位号 mutation was not named: %s" % excinfo.value
+    )
+
+    # The internal half: one literal bound to two independently tagged types
+    # inside the prototype itself, regardless of what requirements/60 says.
+    mutated = text.replace(
+        '{ kind: "设备", tag: "V-0001", name: "污油罐" }',
+        '{ kind: "阀门", tag: "V-1301", name: "污油罐" }',
+    )
+    assert mutated != text, "the internal-clash mutation changed nothing"
+    with pytest.raises(AssertionError) as excinfo:
+        _assert_no_seed_tag_collision(mutated)
+    assert "more than one independently" in str(excinfo.value), (
+        "the internal clash was not reported by the internal branch: %s"
+        % excinfo.value
+    )
 
 
 def test_syntax_prototype_vessel_tag_is_consistent_across_every_seed_site():

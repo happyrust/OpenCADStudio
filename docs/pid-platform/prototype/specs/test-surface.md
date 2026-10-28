@@ -156,7 +156,7 @@
 
 `BOM_SOURCE` 的行键是位号主数据那把复合键 `(类型编码, 位号)`（`requirements/60-deliverables-and-publish.md`）：同一 `类型编码` 下 `位号` 全表唯一，不同 `类型编码` 允许同值位号。管线行用管线位号 `L-1001`、`L-1002`；管件行继承管路位号 `L-1001-01`（管线位号加两位后缀）。同一类型下两者不得相同，否则 `__proto.bomRows` 会出现重复复合键并违反 `VAL-PROTO-016`。当前种子的 14 行位号互不相同，因此复合键唯一性也成立。该不变量由独立用例 `test_syntax_bom_seed_keeps_tags_unique` 钉住，类型词汇与继承关系由 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` 钉住。
 
-**位号字面值不得跨类型复用。** `requirements/60` 的标准示例表把 `V-1001`、`V-1002` 分配给 `阀门`（截止阀 DN50 等），因此原型侧的两个容器改为 `V-1301`（原油缓冲罐）与 `V-1302`（污油罐）。`V-1101` 不可用，它已属于 `PID-1201` 的常顶回流罐。容器位号在画布 `makeSymbol`（权威值来源）、`drawings` 种子、`INSTANCES`、`BOM_SOURCE` 与 `drawings` 预览 SVG 文本中必须同一字面值；材料清单 14 行数量不变，`duplicateTags` 为空。
+**位号字面值不得跨类型复用。** `requirements/60` 的标准示例表把 `V-1001`、`V-1002` 分配给 `阀门`（截止阀 DN50 等），因此原型侧的两个容器改为 `V-1301`（原油缓冲罐）与 `V-1302`（污油罐）。`V-1101` 不可用，它已属于 `PID-1201` 的常顶回流罐。两个容器位号的落点并不相同：`V-1301` 共五处出现、六次命中——画布 `makeSymbol`（权威值来源）、`drawings` 种子、`INSTANCES` 记录（`tag` 与 `props.位号` 各一次）、`BOM_SOURCE` 行、`drawings` 预览 SVG 文本，其中除画布外的**四处**正是 `_assert_vessel_tag_is_consistent` 逐处断言的对象，因此该用例只对 `V-1301` 要求跨种子一致；`V-1302` 只出现**两处**、且都在同一条 `INSTANCES` 记录里（`tag` 与 `props.位号`），画布、`drawings` 种子、`BOM_SOURCE` 与预览 SVG 都不含它，该用例不对它做四处一致断言。材料清单 14 行数量不变，`duplicateTags` 为空。
 
 `-k syntax` 目前守护的边界，以及**明确交由浏览器环节守卫**的路径：
 
@@ -164,7 +164,7 @@
 | --- | --- |
 | `BOM_SOURCE` 类型词汇、管件继承宿主位号 | 静态用例 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` + 负向对照 |
 | `BOM_SOURCE` 位号全表唯一 | 独立静态用例 `test_syntax_bom_seed_keeps_tags_unique` + 负向对照 |
-| 同一字面位号不得在同一类型语境下指两个对象（原型种子 vs `requirements/60` 示例表） | `_assert_no_seed_tag_collision` 从 `requirements/60` 的标准表取出 `位号 → 类型`，与原型三处种子（`drawings` 的 `kind`、`makeSymbol` 的 kind 实参经 `CANVAS_KIND_LABELS` 翻译、`INSTANCES` 的 `typeName` 经 `SUBTYPE_TO_TYPE` 归一）逐一比对，只比对 `设备`/`阀门`/`仪表` 三个独立位号类型（管线与管件共享位号族，不参与）。用例 `test_syntax_prototype_seed_tags_never_collide_with_the_bom_example_table`；负向对照 `test_syntax_prototype_tag_collision_guard_can_fail` 把 `drawings` 种子与画布种子各还原成 `V-1001` 一次，两次都须转红 |
+| 同一字面位号不得在同一类型语境下指两个对象（原型种子 vs `requirements/60`） | `_assert_no_seed_tag_collision` 从 `requirements/60` 取 `位号 → 类型` 映射，来源是**标准示例表加文档正文两路**：示例表的六列表格，以及正文里「位号 `X` 的…<类型>实例」与「<类型> `X`」两种句式（`V-1002` 只出现在正文 `60:32`/`60:50`，示例表里没有它）。原型侧 `_prototype_tag_types` 扫**五处**来源并逐项列出：① `drawings` 种子的 `kind`；② `BOM_SOURCE` 行的 `type`；③ `makeSymbol` 的 kind 实参经 `CANVAS_KIND_LABELS` 翻译；④ `INSTANCES` 的 `typeName` 经 `SUBTYPE_TO_TYPE` 归一；⑤ `INSTANCES` 记录 `props.位号` 的字面值。其中 ①③④ 是旧文所称的「三处种子」，② 是 BOM 行（旧文漏计，故「三处」应为「四处」），⑤ 是本特性新增的第五处。只比对 `设备`/`阀门`/`仪表` 三个独立位号类型（管线与管件共享位号族，不参与）。用例 `test_syntax_prototype_seed_tags_never_collide_with_the_bom_example_table`；负向对照 `test_syntax_prototype_tag_collision_guard_can_fail` 做四次变异：`drawings` 种子还原 `V-1001`、画布种子还原 `V-1001`、`INSTANCES` 的 `tag` 还原 `V-1002`、`INSTANCES` 的 `props.位号` 还原 `V-1002`，每次都必须转红并点名该位号 |
 | 原油缓冲罐的位号在各处种子中一致 | `_assert_vessel_tag_is_consistent` 从 `makeSymbol("<tag>", "equipment", "vessel", ...)` 读出权威位号，再要求 `drawings` 种子、`BOM_SOURCE` 行、`INSTANCES` 记录与 `drawings` 预览 SVG 文本这四处都出现同一字面值，且该值不是 `V-1001`。用例 `test_syntax_prototype_vessel_tag_is_consistent_across_every_seed_site`；负向对照 `test_syntax_prototype_vessel_tag_consistency_guard_can_fail` 分别改坏 `BOM_SOURCE` 行与 SVG 文本，各须转红 |
 | 三组字段名在原型两处逐字一致（VAL-DOC-009 原型半边） | `requirements_contract.validate_prototype_field_labels` 按字段名逐条比对 `screen-catalog.json` 的该屏条目与 `screens.js` 该屏自身源码区段；由 `-k terminology` 的 5 条用例驱动，负向对照把 `起始编码`→`起始编号`（screens.js 与 catalog 各一次）、`"数量"`→`"件数"`、`拒绝`→`禁止` 逐条改坏，各须点名该字段与该屏 |
 | `renderBom` 用 `bmHeadHtml()` 拼表头、change 分支调用 `rerenderBom()` | 静态用例钉完整调用表达式 + 负向对照 |

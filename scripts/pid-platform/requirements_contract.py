@@ -16,6 +16,7 @@ Contract sources:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -1499,6 +1500,63 @@ def validate_tag_master_key(text: str, path: str = None) -> list:
     return errors
 
 
+def _paragraph_containing(section: str, anchor: str) -> str:
+    """The single blank-line-delimited paragraph of ``section`` that carries ``anchor``.
+
+    ``_paragraph_from`` matches on the paragraph's first characters, which is
+    wrong here: the sentence starts with the rule ID, not with the claim. This
+    helper requires the anchor to occur in exactly one paragraph, so a document
+    that grows a second copy fails loudly instead of being silently read from
+    the wrong one.
+    """
+    paragraphs = [
+        block.strip() for block in re.split(r"\n\s*\n", section) if block.strip()
+    ]
+    hits = [block for block in paragraphs if anchor in block]
+    if len(hits) != 1:
+        return ""
+    return hits[0]
+
+
+DR004_INDEPENDENCE_ANCHOR = "由设计规则检查独立执行"
+DR004_INDEPENDENCE_TOKENS = ["DR-004", "位号唯一校验", "关闭而停用", "按需", "保存前", "发布前"]
+
+
+def validate_dr004_independence(text: str, path: str = None) -> list:
+    """The 位号冲突处理 section must state that DR-004 outlives the switch.
+
+    60-deliverables-and-publish.md:11 promises that turning 位号唯一校验 off
+    still surfaces a same-type repeat as a DR-004 error. That promise is only
+    true if DR-004 runs independently of the switch, and this document owns the
+    rule engine, so the basis has to be stated here. Without it, reading
+    50:19/:44/:57 literally means switching the check off stops detection at
+    registration time and 60's promise dangles.
+
+    Paragraph-scoped on purpose: pinning the six tokens anywhere in the section
+    lets the sentence collapse while a neighbouring paragraph keeps the words.
+    """
+    path = path or AREA_FILE_OF["DATA"]
+    section = section_text(text, "位号冲突处理")
+    if not section:
+        return []  # the missing section is already reported by validate_sections
+    paragraph = _paragraph_containing(section, DR004_INDEPENDENCE_ANCHOR)
+    if not paragraph:
+        return [
+            "%s: 位号冲突处理 must carry exactly one paragraph containing "
+            "'%s'; 60-deliverables-and-publish.md's off-state promise has no "
+            "basis in the rule engine document" % (path, DR004_INDEPENDENCE_ANCHOR)
+        ]
+    squashed = _squash(paragraph)
+    errors = []
+    for token in DR004_INDEPENDENCE_TOKENS:
+        if _squash(token) not in squashed:
+            errors.append(
+                "%s: the '%s' paragraph does not state '%s'"
+                % (path, DR004_INDEPENDENCE_ANCHOR, token)
+            )
+    return errors
+
+
 def validate_data_rule_engine_coverage(documents: dict) -> list:
     """VAL-REQ-008: nine sections, an EBNF block, a rule table and a result model."""
     path = AREA_FILE_OF["DATA"]
@@ -1512,6 +1570,7 @@ def validate_data_rule_engine_coverage(documents: dict) -> list:
     errors.extend(validate_result_model(text, path))
     errors.extend(validate_trigger_modes(text, path))
     errors.extend(validate_tag_master_key(text, path))
+    errors.extend(validate_dr004_independence(text, path))
     return errors
 
 
@@ -1796,6 +1855,11 @@ BOM_ROW_KEY_PHRASE = "材料清单的行键是位号主数据使用的复合键"
 BOM_ROW_KEY_TYPES = ("设备", "阀门", "仪表")
 BOM_INHERITED_TAG_TYPES = ("管件",)
 BOM_LENGTH_TYPES = ("管线",)
+# The five type words the material list may carry (60:7 — 管路 never forms its
+# own row, so it is not one of them). A row whose 类型 is outside this set is a
+# typo, not a row no rule applies to: without this the two type-scoped quantity
+# rules both skip it and the row passes silently.
+BOM_KNOWN_TYPES = BOM_ROW_KEY_TYPES + BOM_INHERITED_TAG_TYPES + BOM_LENGTH_TYPES
 # The row key is the composite key the master data uses, not a bare 位号: 50
 # allows a 管线 L-1001 and an 仪表回路 L-1001 to coexist, and DR-004 only counts
 # same-type repeats. Every token below is therefore about the type-scoped key.
@@ -1847,6 +1911,13 @@ def bom_rows(table, errors=None) -> list:
 
 
 def _bom_quantity(value):
+    """``float(value)`` or ``None`` when the cell is not numeric.
+
+    A non-finite result (``nan``/``inf``) is returned as-is rather than folded
+    into ``None``: the caller needs to tell "this is not a number" apart from
+    "this is a number that no count or length can be", and the second case used
+    to raise ``ValueError`` from ``int(nan)`` instead of reporting a row error.
+    """
     try:
         return float(str(value).strip())
     except (TypeError, ValueError):
@@ -1870,6 +1941,12 @@ def validate_bom_rows(rows, path: str = None) -> list:
     reject a legal project state. Within one type a repeat is still an error,
     and a 设备/阀门/仪表 row whose 数量 exceeds 1 is an error as well, while a
     管件 row inheriting a host 位号 may carry several instances.
+
+    The guard must survive input the shipped documents never produce: a row
+    whose 类型 is outside ``BOM_KNOWN_TYPES`` (a typo such as 阀们) is reported
+    instead of slipping past both type-scoped quantity rules, and a 数量 that
+    parses to ``nan``/``inf`` is reported instead of reaching ``int(nan)`` and
+    raising ``ValueError`` out of a validator.
     """
     path = path or AREA_FILE_OF["DELV"]
     errors = []
@@ -1885,6 +1962,12 @@ def validate_bom_rows(rows, path: str = None) -> list:
         if not kind:
             errors.append("%s: %s has no 类型编码; the row key is (类型编码, 位号)" % (path, label))
             continue
+        if kind not in BOM_KNOWN_TYPES:
+            errors.append(
+                "%s: %s has 类型编码 %r; the material list only carries %s"
+                % (path, label, kind, " / ".join(BOM_KNOWN_TYPES))
+            )
+            continue
         key = bom_row_key(row)
         if key in seen:
             errors.append(
@@ -1898,6 +1981,12 @@ def validate_bom_rows(rows, path: str = None) -> list:
             errors.append(
                 "%s: %s has a non-numeric 数量 %r"
                 % (path, label, row.get("数量"))
+            )
+            continue
+        if not math.isfinite(quantity):
+            errors.append(
+                "%s: %s has a non-finite 数量 %r; a count or a length must be a "
+                "finite number" % (path, label, row.get("数量"))
             )
             continue
         if kind in BOM_ROW_KEY_TYPES and quantity != 1:
