@@ -650,6 +650,16 @@ def test_syntax_bom_seed_uses_the_standard_type_vocabulary():
     assert 'type: "管件", tag: "L-1001-01"' in block, (
         "the fitting row does not inherit the host tag L-1001-01"
     )
+    tags = re.findall(r'tag: "([^"]+)"', block)
+    repeated = sorted({t for t in tags if tags.count(t) > 1})
+    assert repeated == [], (
+        "BOM_SOURCE repeats a 位号, which breaks the row-key uniqueness "
+        "invariant of requirements/60 and VAL-PROTO-016: %r" % (repeated,)
+    )
+    assert 'type: "管线", tag: "L-1001"' in block, (
+        "the 管线 row does not carry the line tag L-1001 (the 管件 row "
+        "carries L-1001-01, so they must differ)"
+    )
 
 
 def test_syntax_properties_list_filters_by_the_selected_type():
@@ -671,7 +681,7 @@ def test_syntax_data_correctness_checks_can_fail():
     text = _screens_text()
     mutated = text.replace('"DR-001": "管线缺管道等级"', '"DR-001": "管段未连接到设备管口"')
     mutated = mutated.replace('{ ruleId: "DR-005", severity: "警告"', '{ ruleId: "DR-005", severity: "错误"')
-    mutated = mutated.replace('type: "管线", tag: "L-1001-01"', 'type: "管路", tag: "L-1001-01"')
+    mutated = mutated.replace('type: "管线", tag: "L-1001"', 'type: "管路", tag: "L-1001"')
     mutated = mutated.replace("function idsUnderType(typeId)", "function idsUnderTypeRenamed(typeId)")
     assert mutated != text, "the mutation changed nothing"
 
@@ -702,11 +712,18 @@ EDITOR_REGION_TESTIDS = [
 ]
 
 
-def _block_after(text, marker, limit):
-    """Slice from marker to the next blank-line-terminated block, bounded."""
+def _block_after(text, marker, closing):
+    """Slice from marker up to the first ``closing`` token after it.
+
+    Slicing on a real terminator instead of a character budget means adding
+    entries to the literal never silently truncates the slice and starts
+    matching the next block.
+    """
     at = text.find(marker)
     assert at != -1, "%s is gone" % marker
-    return text[at: at + limit]
+    end = text.find(closing, at)
+    assert end != -1, "%s has no %r terminator" % (marker, closing)
+    return text[at:end]
 
 
 def test_syntax_editor_regions_carry_their_testids():
@@ -728,8 +745,8 @@ def test_syntax_editor_regions_carry_their_testids():
 def test_syntax_editor_ribbon_tabs_match_in_order():
     """VAL-PROTO-005: six ribbon tabs, exact text, exact order."""
     text = _screens_text()
-    block = _block_after(text, "var RIBBON_TABS = [", 260)
-    tabs = re.findall(r'"([^"]+)"', block.split("];")[0])
+    block = _block_after(text, "var RIBBON_TABS = [", "];")
+    tabs = re.findall(r'"([^"]+)"', block)
     assert tabs == ["常用", "工具", "显示", "绘图", "注释", "帮助"], (
         "RIBBON_TABS is %r, expected the six documented tabs in order"
         % (tabs,)
@@ -739,11 +756,11 @@ def test_syntax_editor_ribbon_tabs_match_in_order():
 def test_syntax_editor_canvas_carries_symbols_and_pipelines():
     """VAL-PROTO-005: at least six placed symbols and three routed pipelines."""
     text = _screens_text()
-    sym_block = _block_after(text, "var symbols = [", 1600)
+    sym_block = _block_after(text, "var symbols = [", "];")
     assert sym_block.count('makeSymbol("') >= 6, (
         "the editor canvas seed places fewer than six symbols"
     )
-    pipe_block = _block_after(text, "var pipelines = [", 500)
+    pipe_block = _block_after(text, "var pipelines = [", "];")
     assert pipe_block.count("points:") >= 3, (
         "the editor canvas seed carries fewer than three pipelines"
     )
@@ -752,7 +769,7 @@ def test_syntax_editor_canvas_carries_symbols_and_pipelines():
 def test_syntax_editor_palette_categories_have_distinct_sizes():
     """VAL-PROTO-007: switching any two in-editor tabs changes the item count."""
     text = _screens_text()
-    block = _block_after(text, "var ED_SYMBOLS = [", 2000).split("];")[0]
+    block = _block_after(text, "var ED_SYMBOLS = [", "];")
     counts = {}
     for cat in re.findall(r'category: "([^"]+)"', block):
         counts[cat] = counts.get(cat, 0) + 1
@@ -765,7 +782,7 @@ def test_syntax_editor_palette_categories_have_distinct_sizes():
         "editor palette category sizes are not pairwise different: %r"
         % (counts,)
     )
-    tabs_block = _block_after(text, "var ED_CATEGORIES = [", 400).split("];")[0]
+    tabs_block = _block_after(text, "var ED_CATEGORIES = [", "];")
     assert tabs_block.count('id: "') >= 4, (
         "ED_CATEGORIES declares fewer than four page tabs"
     )
@@ -777,7 +794,7 @@ def test_syntax_palette_screen_lists_at_least_eight_items():
     assert text.count('data-testid="palette-item"') == 1, (
         "the palette screen does not render palette-item rows"
     )
-    block = _block_after(text, "var SYMBOLS = [", 4000).split("];")[0]
+    block = _block_after(text, "var SYMBOLS = [", "];")
     favorites = block.count('category: "favorites"')
     assert favorites >= 8, (
         "the default palette category carries %d items, expected >= 8"
@@ -788,7 +805,7 @@ def test_syntax_palette_screen_lists_at_least_eight_items():
 def test_syntax_bom_template_changes_the_header_and_rows():
     """REQ-DELV-004: the template selector really swaps the table head."""
     text = _screens_text()
-    block = _block_after(text, "var BM_TEMPLATE_DEFS = {", 1200).split("\n  };")[0]
+    block = _block_after(text, "var BM_TEMPLATE_DEFS = {", "\n  };")
     assert '"标准材料清单"' in block and '"管件汇总表"' in block and '"阀门汇总表"' in block, (
         "BM_TEMPLATE_DEFS does not define the three templates"
     )
@@ -802,9 +819,32 @@ def test_syntax_bom_template_changes_the_header_and_rows():
     assert '"管件"' in block and '"阀门"' in block, (
         "the summary templates do not filter by object type"
     )
-    assert "bmHeadHtml()" in text, "renderBom does not use bmHeadHtml()"
+    assert '"<thead><tr>" + bmHeadHtml() + "</tr></thead>"' in text, (
+        "renderBom does not build the table head from bmHeadHtml()"
+    )
     assert "def.types.indexOf(r.type) === -1" in text, (
         "bmRowsForScope does not filter rows by the template's types"
+    )
+    change = _block_after(
+        text,
+        'var tplSel = closestEl(target, \'[data-testid="bom-template"]\');',
+        "});",
+    )
+    assert "rerenderBom();" in change, (
+        "the bom-template change handler does not rerender, so switching the "
+        "template cannot change the table"
+    )
+    assert "BM_TEMPLATES = [" in text and "BM_TEMPLATE_DEFS = {" in text, (
+        "the template option list or the template definitions are gone"
+    )
+    options = re.findall(
+        r'"([^"]+)"',
+        _block_after(text, "var BM_TEMPLATES = [", "];"),
+    )
+    defined = re.findall(r'\n    "([^"]+)": \{', block)
+    assert sorted(options) == sorted(defined), (
+        "the template dropdown offers %r but BM_TEMPLATE_DEFS defines %r"
+        % (sorted(options), sorted(defined))
     )
 
 
@@ -820,21 +860,47 @@ def test_syntax_editor_and_bom_checks_can_fail():
         'columns: ["类型", "位号", "名称", "数量", "单位"],\n      types: ["管件"]',
         'columns: ["类型", "位号", "名称", "数量"],\n      types: ["管件"]',
     )
-    mutated = mutated.replace("bmHeadHtml()", "bmHeadHtmlRenamed()")
+    mutated = mutated.replace(
+        '"<thead><tr>" + bmHeadHtml() + "</tr></thead>"',
+        '"<thead><tr><th>序号</th><th>类型</th><th>位号</th><th>名称</th><th>数量</th><th>单位</th><th>备注</th></tr></thead>"',
+    )
+    mutated = mutated.replace(
+        'type: "管线", tag: "L-1001"',
+        'type: "管线", tag: "L-1001-01"',
+    )
+    mutated = mutated.replace(
+        "      bmState.hint = \"已切换模板：\" + bmState.template;\n      rerenderBom();",
+        "      bmState.hint = \"已切换模板：\" + bmState.template;",
+    )
     assert mutated != text, "the mutation changed nothing"
 
-    block = _block_after(mutated, "var ED_SYMBOLS = [", 2000).split("];")[0]
+    block = _block_after(mutated, "var ED_SYMBOLS = [", "];")
     counts = {}
     for cat in re.findall(r'category: "([^"]+)"', block):
         counts[cat] = counts.get(cat, 0) + 1
     assert len(set(counts.values())) != 4, (
         "removing two valve symbols did not break the distinct-size check"
     )
-    assert "bmHeadHtml()" not in mutated, (
-        "renaming bmHeadHtml did not break the header check"
+    assert '"<thead><tr>" + bmHeadHtml() + "</tr></thead>"' not in mutated, (
+        "reverting the table head to a hard-coded column list did not break "
+        "the header check"
     )
-    tpl = _block_after(mutated, "var BM_TEMPLATE_DEFS = {", 1200).split("\n  };")[0]
+    seed = _block_after(mutated, "var BOM_SOURCE = [", "\n  ];")
+    tags = re.findall(r'tag: "([^"]+)"', seed)
+    assert sorted({t for t in tags if tags.count(t) > 1}) != [], (
+        "reusing the 管路 tag on the 管线 row did not break the uniqueness check"
+    )
+    change = _block_after(
+        mutated,
+        'var tplSel = closestEl(target, \'[data-testid="bom-template"]\');',
+        "});",
+    )
+    assert "rerenderBom();" not in change, (
+        "removing the rerender from the change handler did not break the "
+        "rerender check"
+    )
+    tpl = _block_after(mutated, "var BM_TEMPLATE_DEFS = {", "\n  };")
     widths = {len(re.findall(r'"[^"]+"', c)) for c in re.findall(r"columns: \[([^\]]*)\]", tpl)}
     assert widths != {5, 7}, (
-        "widening a summary template did not break the column-width check"
+        "narrowing a summary template did not break the column-width check"
     )

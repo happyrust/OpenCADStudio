@@ -30,7 +30,7 @@
 | `selectedTag` | string | 当前选中对象的位号；无选中时为空串 | 图面选中状态变化时 |
 | `selectedProps` | `Array<{ name: string, value: string, required: boolean }>` | 选中对象的属性列表：属性名、取值、是否必选 | 图面选中状态变化时由属性面板发布 |
 | `violations` | `Array<{ ruleId: string, severity: string, tag: string, sheet: string, message: string, suggestion: string }>` | 设计规则检查结果集合：规则 id、严重级别、位号、所在图纸、问题描述、修改建议 | 设计规则检查执行并发布结果时 |
-| `bomRows` | `Array<{ no: string, type: string, tag: string, name: string, qty: string, unit: string, note: string }>` | 材料清单行集合：序号、对象类型、位号、名称、数量、单位、备注 | 材料清单统计发布时 |
+| `bomRows` | `Array<{ no: number, type: string, tag: string, name: string, qty: number, unit: string, note: string }>` | 材料清单行集合：序号、对象类型、位号、名称、数量、单位、备注。`no` 与 `qty` 是数值，两位小数只在显示层由 `bmCellText` 对 `unit === "m"` 的行格式化 | 材料清单统计发布时 |
 | `paletteItemCount` | number | 符号调色板中可见符号条目的数量 | 调色板数据发布后 |
 | `tagRulePreview` | string | 按当前位号规则生成的位号预览文本 | 位号规则编辑后 |
 | `window.__protoErrors` | `string[]` | 页面级未捕获错误的收集数组 | `window` `error` 事件触发时追加 |
@@ -137,3 +137,20 @@
 | 管件 | `fitting` | 5 |
 
 改动这四个数字时必须保持两两不同，否则 `test_syntax_editor_palette_categories_have_distinct_sizes` 失败。独立屏 `palette` 的默认分类是 `我的常用`（`favorites`），至少 8 个 `palette-item`。
+
+## 10. 材料清单行键唯一性与已交付的静态守卫
+
+`BOM_SOURCE` 的行键是 `位号`，全表唯一（`requirements/60-deliverables-and-publish.md`）。管线行用管线位号 `L-1001`、`L-1002`；管件行继承管路位号 `L-1001-01`（管线位号加两位后缀）。两者不得相同，否则 `__proto.bomRows` 会出现重复位号并违反 `VAL-PROTO-016`。`test_syntax_bom_seed_keeps_tags_unique`（在 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` 内）钉住该不变量。
+
+`-k syntax` 目前守护的边界，以及**明确交由浏览器环节守卫**的路径：
+
+| 路径 | 守卫方式 |
+| --- | --- |
+| `BOM_SOURCE` 类型词汇、位号唯一性、管件继承宿主位号 | 静态用例 + 负向对照 |
+| `renderBom` 用 `bmHeadHtml()` 拼表头、change 分支调用 `rerenderBom()` | 静态用例钉完整调用表达式 + 负向对照 |
+| 模板下拉选项集合等于 `BM_TEMPLATE_DEFS` 键集合 | 静态用例 |
+| 编辑器五区域 `data-testid`、六选项卡顺序、画布 ≥6 符号 ≥3 管线 | 静态用例 |
+| 编辑器内四类页签项数两两不同、独立屏 ≥8 项 | 静态用例 |
+| `canvasHtml` 的渲染循环上限、`paletteItems()` 的分类与关键词两条过滤分支 | **仅由 `VAL-PROTO-005` / `VAL-PROTO-007` 的浏览器环节守卫**，静态用例不覆盖；改动这些分支后必须重跑浏览器取证 |
+| 编辑器内搜索「先分类后关键词」，无匹配时无空态文案 | 已知行为，数据正确；无断言依赖，勿据空网格判缺陷 |
+| `bom` 选「阀门汇总表」+「当前图纸」得 0 行 | 已知组合，空表是正确结果 |

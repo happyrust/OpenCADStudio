@@ -2723,8 +2723,8 @@
      from this list, never hard-coded into the summary markup. */
   var VIOLATIONS = [
     { ruleId: "DR-001", severity: "错误", tag: "P-1001", sheet: "PID-1101 原油换热网络.dwg",
-      message: "管线 L-1001-01 未填写管道等级",
-      suggestion: "建议：为 L-1001-01 指定管道等级。" },
+      message: "管线 L-1001 未填写管道等级",
+      suggestion: "建议：为 L-1001 指定管道等级。" },
     { ruleId: "DR-003", severity: "错误", tag: "TI-1101", sheet: "PID-1201 常压塔系统.dwg",
       message: "设备 TI-1101 未填写位号",
       suggestion: "建议：为 TI-1101 补全位号。" },
@@ -2737,9 +2737,9 @@
     { ruleId: "DR-006", severity: "错误", tag: "E-1101", sheet: "PID-1201 常压塔系统.dwg",
       message: "页间连接符的对端图纸与对端位号均为空",
       suggestion: "建议：补全该页间连接符的对端图纸与对端位号。" },
-    { ruleId: "DR-002", severity: "错误", tag: "L-1002-01", sheet: "PID-1102 原油泵区配管.dwg",
-      message: "管线 L-1002-01 未填写公称直径",
-      suggestion: "建议：为 L-1002-01 补全公称直径。" },
+    { ruleId: "DR-002", severity: "错误", tag: "L-1002", sheet: "PID-1102 原油泵区配管.dwg",
+      message: "管线 L-1002 未填写公称直径",
+      suggestion: "建议：为 L-1002 补全公称直径。" },
     { ruleId: "DR-007", severity: "错误", tag: "XV-1002", sheet: "PID-1102 原油泵区配管.dwg",
       message: "阀门 XV-1002 的压力等级高于所属管线管道等级",
       suggestion: "建议：降低 XV-1002 的压力等级或提高所属管线的管道等级。" },
@@ -2908,21 +2908,26 @@
 
   /* Source rows carry a sheet field used only for scope filtering; the
      rows staged into __proto.bomRows are rebuilt to expose exactly the
-     seven contract keys no/type/tag/name/qty/unit/note. A fitting row
-     inherits its host line tag, so the effective row key is the pair
-     (type, tag): two rows may share a tag when their types differ. */
+     seven contract keys no/type/tag/name/qty/unit/note.
+
+     The row key is 位号 and it is unique across the whole list
+     (requirements/60): a 管线 row carries the line tag L-1001, while the
+     管件 row inherits the 管路 tag L-1001-01 — the line tag plus a
+     two-digit suffix. Those two tags must never be the same string, or the
+     list would carry one tag twice and __proto.bomRows would violate
+     VAL-PROTO-016. test_syntax_bom_seed_keeps_tags_unique enforces it. */
   var BOM_SOURCE = [
     { sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "P-1001", name: "离心泵", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "E-1001", name: "原油换热器", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1101 原油换热网络.dwg", type: "设备", tag: "V-1001", name: "原油缓冲罐", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1101 原油换热网络.dwg", type: "仪表", tag: "TI-1001", name: "温度指示", qty: 1, unit: "台", note: "—" },
-    { sheet: "PID-1101 原油换热网络.dwg", type: "管线", tag: "L-1001-01", name: "原油进料管线", qty: 38.00, unit: "m", note: "数量 = Σ 管段长度" },
-    { sheet: "PID-1101 原油换热网络.dwg", type: "管件", tag: "L-1001-01", name: "对焊法兰与 90°弯头", qty: 18, unit: "个", note: "继承宿主位号 L-1001-01" },
+    { sheet: "PID-1101 原油换热网络.dwg", type: "管线", tag: "L-1001", name: "原油进料管线", qty: 38.00, unit: "m", note: "数量 = Σ 管段长度" },
+    { sheet: "PID-1101 原油换热网络.dwg", type: "管件", tag: "L-1001-01", name: "对焊法兰与 90°弯头", qty: 18, unit: "个", note: "继承宿主管路位号 L-1001-01" },
     { sheet: "PID-1102 原油泵区配管.dwg", type: "设备", tag: "P-1002", name: "原油泵", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1102 原油泵区配管.dwg", type: "设备", tag: "P-1003", name: "原油泵", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1102 原油泵区配管.dwg", type: "阀门", tag: "XV-1002", name: "切断阀", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1102 原油泵区配管.dwg", type: "仪表", tag: "PI-1002", name: "压力指示", qty: 1, unit: "台", note: "—" },
-    { sheet: "PID-1102 原油泵区配管.dwg", type: "管线", tag: "L-1002-01", name: "原油泵出口管线", qty: 25.00, unit: "m", note: "数量 = Σ 管段长度" },
+    { sheet: "PID-1102 原油泵区配管.dwg", type: "管线", tag: "L-1002", name: "原油泵出口管线", qty: 25.00, unit: "m", note: "数量 = Σ 管段长度" },
     { sheet: "PID-1201 常压塔系统.dwg", type: "设备", tag: "T-1001", name: "常压塔", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-1201 常压塔系统.dwg", type: "仪表", tag: "TI-1101", name: "温度指示", qty: 1, unit: "台", note: "—" },
     { sheet: "PID-2101 减压塔系统.dwg", type: "设备", tag: "V-2101", name: "减顶罐", qty: 1, unit: "台", note: "—" }
