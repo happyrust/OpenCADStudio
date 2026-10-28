@@ -104,6 +104,8 @@
 | `symbol-attribute-table` | `symbol-editor` | 属性标签表 | 列头恰为 标记、提示、默认、位置；位置取 `上`/`下`/`左`/`右`（REQ-SYM-006） |
 | `type-form` | `typelib` | 新建类型的录入区 | 点【新增子类】后出现；含 `type-form-code`、`type-form-name`、`type-form-desc`、`type-form-parent` 四个控件与确定/取消按钮（REQ-TYPE-001） |
 | `standard-panel` | `symbols` | 标准属性区 | 选中图例标准节点后出现；含标签 `标准名称`、`符号数`、`是否当前标准` 与下拉 `图例列表选择`（REQ-SYM-001） |
+| `bom-template` | `bom` | 顶部工具栏模板下拉 | 选项恰为 `标准材料清单`、`管件汇总表`、`阀门汇总表`。**切换会同时改变表头与数据行**：`标准材料清单` 为 序号/类型/位号/名称/数量/单位/备注 七列且不筛类型；`管件汇总表` 为 类型/位号/名称/数量/单位 五列且只保留 `管件` 行；`阀门汇总表` 同五列且只保留 `阀门` 行。行对象仍是 `__proto.bomRows` 的七个键，模板只改显示列与行过滤（REQ-DELV-004） |
+| `bom-scope` | `bom` | 顶部工具栏数据范围下拉 | 选项恰为 `全部图纸`、`当前图纸`；`当前图纸` 只保留 `PID-1101 原油换热网络.dwg` 的行 |
 
 ## 7. `window.__proto.symbolCount` 填充说明
 
@@ -122,3 +124,16 @@
 | `window.__tagRuleConfig` | `tag-rules` | 保存位号规则时 | `{ <类型>: { prefix, start, step } }` |
 | `window.__typeLibrary` | `typelib` | 新建类型校验通过时 | `{ created: [<类型编码>, ...] }` |
 | `window.__legendStandard` | `symbols` | 切换图例列表选择时 | `{ current: <标准名称> }` |
+
+## 9. 编辑器内符号调色板的分类项数
+
+编辑器界面（`editor`）内的符号调色板有四个页签，项数**两两不同**，因此切换任意两个页签都会改变网格项数与 `window.__proto.paletteItemCount`（VAL-PROTO-007）：
+
+| 页签 | 分类 id | 符号数 |
+| --- | --- | --- |
+| 设备 | `equipment` | 6 |
+| 阀门 | `valve` | 7 |
+| 仪表 | `instrument` | 4 |
+| 管件 | `fitting` | 5 |
+
+改动这四个数字时必须保持两两不同，否则 `test_syntax_editor_palette_categories_have_distinct_sizes` 失败。独立屏 `palette` 的默认分类是 `我的常用`（`favorites`），至少 8 个 `palette-item`。

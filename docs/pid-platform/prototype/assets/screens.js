@@ -1487,8 +1487,10 @@
 
   /* In-editor symbol catalogue. The palette screen keeps its symbol table
      private to its own IIFE, so the editor carries the trimmed subset it
-     can place on the canvas. Category sizes are all different so switching
-     the in-palette page tabs always changes the visible item count. */
+     can place on the canvas. The four category sizes are 设备 6 / 阀门 7 /
+     仪表 4 / 管件 5 — pairwise different, so switching any two page tabs
+     always changes the visible item count. Keep them pairwise different;
+     test_syntax_editor_palette_categories_have_distinct_sizes enforces it. */
   var ED_CATEGORIES = [
     { id: "equipment", label: "设备" },
     { id: "valve", label: "阀门" },
@@ -1508,6 +1510,8 @@
     { name: "球阀", category: "valve", shape: "ball-valve" },
     { name: "调节阀", category: "valve", shape: "control-valve" },
     { name: "止回阀", category: "valve", shape: "check-valve" },
+    { name: "蝶阀", category: "valve", shape: "butterfly-valve" },
+    { name: "安全阀", category: "valve", shape: "relief-valve" },
     { name: "压力指示", category: "instrument", shape: "instrument" },
     { name: "温度指示", category: "instrument", shape: "instrument" },
     { name: "流量指示", category: "instrument", shape: "instrument" },
@@ -1574,6 +1578,15 @@
       '<path d="M12 18 L26 24 L12 30 Z"/>' +
       '<line x1="30" y1="17" x2="30" y2="31"/>' +
       '<line x1="36" y1="17" x2="36" y2="31"/>',
+    "butterfly-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<line x1="24" y1="24" x2="31" y2="12"/>',
+    "relief-valve":
+      '<path d="M10 18 L24 24 L10 30 Z"/>' +
+      '<path d="M38 18 L24 24 L38 30 Z"/>' +
+      '<line x1="24" y1="24" x2="24" y2="16"/>' +
+      '<path d="M20 16 L28 13 L20 10 L28 7"/>',
     "instrument":
       '<circle cx="24" cy="24" r="12"/>' +
       '<line x1="12" y1="24" x2="36" y2="24"/>',
@@ -2917,16 +2930,45 @@
 
   var BM_TEMPLATES = ["标准材料清单", "管件汇总表", "阀门汇总表"];
 
+  /* Each template owns its header columns and, optionally, the object types
+     it keeps. Switching the template therefore changes both the table head
+     and the row set, which is what screen-catalog.json's fourth bom
+     keyInteraction promises. Row objects keep their seven contract keys
+     regardless of the template, so __proto.bomRows stays the same shape. */
+  var BM_TEMPLATE_DEFS = {
+    "标准材料清单": {
+      columns: ["序号", "类型", "位号", "名称", "数量", "单位", "备注"],
+      types: null
+    },
+    "管件汇总表": {
+      columns: ["类型", "位号", "名称", "数量", "单位"],
+      types: ["管件"]
+    },
+    "阀门汇总表": {
+      columns: ["类型", "位号", "名称", "数量", "单位"],
+      types: ["阀门"]
+    }
+  };
+
   var bmState = { scope: "all", template: "标准材料清单", hint: "就绪" };
 
-  /* Rows for the active scope, renumbered from 1 and reduced to the seven
-     contract keys, so the footer count, the table and __proto.bomRows all
-     describe the same list. */
+  function bmTemplateDef() {
+    return BM_TEMPLATE_DEFS[bmState.template] ||
+      BM_TEMPLATE_DEFS["标准材料清单"];
+  }
+
+  /* Rows for the active scope and template, renumbered from 1 and reduced to
+     the seven contract keys, so the footer count, the table and
+     __proto.bomRows all describe the same list. */
   function bmRowsForScope() {
+    var def = bmTemplateDef();
     var rows = [];
     for (var i = 0; i < BOM_SOURCE.length; i++) {
       var r = BOM_SOURCE[i];
       if (bmState.scope === "current" && r.sheet !== CURRENT_SHEET) {
+        continue;
+      }
+      if (def.types && def.types.indexOf(r.type) === -1) {
         continue;
       }
       rows.push({
@@ -2952,16 +2994,44 @@
     return html;
   }
 
+  /* Header cells for the active template. The standard template carries the
+     seven columns of requirements/60; the two summary templates carry the
+     five columns that make sense without a serial number. */
+  function bmHeadHtml() {
+    var def = bmTemplateDef();
+    var html = "";
+    for (var i = 0; i < def.columns.length; i++) {
+      html += "<th>" + esc(def.columns[i]) + "</th>";
+    }
+    return html;
+  }
+
+  /* One cell's text for a column name. Lengths keep two decimals; every
+     other quantity is the instance count as-is. */
+  function bmCellText(r, column) {
+    if (column === "序号") { return String(r.no); }
+    if (column === "类型") { return r.type; }
+    if (column === "位号") { return r.tag; }
+    if (column === "名称") { return r.name; }
+    if (column === "数量") {
+      return r.unit === "m" ? Number(r.qty).toFixed(2) : String(r.qty);
+    }
+    if (column === "单位") { return r.unit; }
+    if (column === "备注") { return r.note; }
+    return "";
+  }
+
   function bmRowsHtml(rows) {
+    var def = bmTemplateDef();
     var html = "";
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       html +=
-        '<tr class="bm__row" data-testid="bom-row" data-tag="' + esc(r.tag) + '">' +
-        "<td>" + r.no + "</td><td>" + esc(r.type) + "</td><td>" + esc(r.tag) +
-        "</td><td>" + esc(r.name) + "</td><td>" +
-        (r.unit === "m" ? Number(r.qty).toFixed(2) : r.qty) + "</td><td>" +
-        esc(r.unit) + "</td><td>" + esc(r.note) + "</td></tr>";
+        '<tr class="bm__row" data-testid="bom-row" data-tag="' + esc(r.tag) + '">';
+      for (var c = 0; c < def.columns.length; c++) {
+        html += "<td>" + esc(bmCellText(r, def.columns[c])) + "</td>";
+      }
+      html += "</tr>";
     }
     return html;
   }
@@ -2997,7 +3067,7 @@
       "</div>" +
       '<div class="bm__scroll">' +
       '<table class="bm__table" data-testid="bom-table">' +
-      "<thead><tr><th>序号</th><th>类型</th><th>位号</th><th>名称</th><th>数量</th><th>单位</th><th>备注</th></tr></thead>" +
+      "<thead><tr>" + bmHeadHtml() + "</tr></thead>" +
       "<tbody>" + bmRowsHtml(rows) + "</tbody></table>" +
       "</div>" +
       '<div class="bm__footer" data-testid="bom-footer">' +
@@ -3080,8 +3150,11 @@
     }
     var tplSel = closestEl(target, '[data-testid="bom-template"]');
     if (tplSel) {
-      bmState.template = tplSel.value;
-      setBmHint("已切换模板：" + tplSel.value);
+      bmState.template = BM_TEMPLATE_DEFS[tplSel.value]
+        ? tplSel.value
+        : "标准材料清单";
+      bmState.hint = "已切换模板：" + bmState.template;
+      rerenderBom();
     }
   });
 

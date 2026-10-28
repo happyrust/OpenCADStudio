@@ -693,3 +693,148 @@ def test_syntax_data_correctness_checks_can_fail():
     assert "function idsUnderType(typeId)" not in mutated, (
         "renaming the helper did not break the filter check"
     )
+
+
+# --- editor and palette screen contracts -------------------------------
+
+EDITOR_REGION_TESTIDS = [
+    "ribbon", "palette", "canvas", "property-panel", "statusbar",
+]
+
+
+def _block_after(text, marker, limit):
+    """Slice from marker to the next blank-line-terminated block, bounded."""
+    at = text.find(marker)
+    assert at != -1, "%s is gone" % marker
+    return text[at: at + limit]
+
+
+def test_syntax_editor_regions_carry_their_testids():
+    """VAL-PROTO-005: the editor carries exactly five named regions.
+
+    The marker is matched with a leading space so that CSS attribute
+    selectors such as ``[data-testid="ribbon"]`` inside delegated listeners
+    are not counted as a second mount.
+    """
+    text = _screens_text()
+    for testid in EDITOR_REGION_TESTIDS:
+        count = text.count(' data-testid="%s"' % testid)
+        assert count == 1, (
+            "data-testid=%s is mounted %d times in screens.js, expected 1"
+            % (testid, count)
+        )
+
+
+def test_syntax_editor_ribbon_tabs_match_in_order():
+    """VAL-PROTO-005: six ribbon tabs, exact text, exact order."""
+    text = _screens_text()
+    block = _block_after(text, "var RIBBON_TABS = [", 260)
+    tabs = re.findall(r'"([^"]+)"', block.split("];")[0])
+    assert tabs == ["常用", "工具", "显示", "绘图", "注释", "帮助"], (
+        "RIBBON_TABS is %r, expected the six documented tabs in order"
+        % (tabs,)
+    )
+
+
+def test_syntax_editor_canvas_carries_symbols_and_pipelines():
+    """VAL-PROTO-005: at least six placed symbols and three routed pipelines."""
+    text = _screens_text()
+    sym_block = _block_after(text, "var symbols = [", 1600)
+    assert sym_block.count('makeSymbol("') >= 6, (
+        "the editor canvas seed places fewer than six symbols"
+    )
+    pipe_block = _block_after(text, "var pipelines = [", 500)
+    assert pipe_block.count("points:") >= 3, (
+        "the editor canvas seed carries fewer than three pipelines"
+    )
+
+
+def test_syntax_editor_palette_categories_have_distinct_sizes():
+    """VAL-PROTO-007: switching any two in-editor tabs changes the item count."""
+    text = _screens_text()
+    block = _block_after(text, "var ED_SYMBOLS = [", 2000).split("];")[0]
+    counts = {}
+    for cat in re.findall(r'category: "([^"]+)"', block):
+        counts[cat] = counts.get(cat, 0) + 1
+    assert set(counts) == {"equipment", "valve", "instrument", "fitting"}, (
+        "ED_SYMBOLS categories are %r, expected the four editor tabs"
+        % (sorted(counts),)
+    )
+    sizes = sorted(counts.values())
+    assert len(set(sizes)) == 4, (
+        "editor palette category sizes are not pairwise different: %r"
+        % (counts,)
+    )
+    tabs_block = _block_after(text, "var ED_CATEGORIES = [", 400).split("];")[0]
+    assert tabs_block.count('id: "') >= 4, (
+        "ED_CATEGORIES declares fewer than four page tabs"
+    )
+
+
+def test_syntax_palette_screen_lists_at_least_eight_items():
+    """VAL-PROTO-007: the standalone palette screen seeds a real grid."""
+    text = _screens_text()
+    assert text.count('data-testid="palette-item"') == 1, (
+        "the palette screen does not render palette-item rows"
+    )
+    block = _block_after(text, "var SYMBOLS = [", 4000).split("];")[0]
+    favorites = block.count('category: "favorites"')
+    assert favorites >= 8, (
+        "the default palette category carries %d items, expected >= 8"
+        % favorites
+    )
+
+
+def test_syntax_bom_template_changes_the_header_and_rows():
+    """REQ-DELV-004: the template selector really swaps the table head."""
+    text = _screens_text()
+    block = _block_after(text, "var BM_TEMPLATE_DEFS = {", 1200).split("\n  };")[0]
+    assert '"标准材料清单"' in block and '"管件汇总表"' in block and '"阀门汇总表"' in block, (
+        "BM_TEMPLATE_DEFS does not define the three templates"
+    )
+    columns = re.findall(r"columns: \[([^\]]*)\]", block)
+    assert len(columns) == 3, "expected three column lists, got %d" % len(columns)
+    widths = {len(re.findall(r'"[^"]+"', c)) for c in columns}
+    assert widths == {5, 7}, (
+        "template column widths are %r, expected the standard seven and the "
+        "summary five" % (sorted(widths),)
+    )
+    assert '"管件"' in block and '"阀门"' in block, (
+        "the summary templates do not filter by object type"
+    )
+    assert "bmHeadHtml()" in text, "renderBom does not use bmHeadHtml()"
+    assert "def.types.indexOf(r.type) === -1" in text, (
+        "bmRowsForScope does not filter rows by the template's types"
+    )
+
+
+def test_syntax_editor_and_bom_checks_can_fail():
+    """Negative control for the six checks above."""
+    text = _screens_text()
+    mutated = text.replace(
+        '{ name: "蝶阀", category: "valve", shape: "butterfly-valve" },', ""
+    ).replace(
+        '{ name: "安全阀", category: "valve", shape: "relief-valve" },', ""
+    )
+    mutated = mutated.replace(
+        'columns: ["类型", "位号", "名称", "数量", "单位"],\n      types: ["管件"]',
+        'columns: ["类型", "位号", "名称", "数量"],\n      types: ["管件"]',
+    )
+    mutated = mutated.replace("bmHeadHtml()", "bmHeadHtmlRenamed()")
+    assert mutated != text, "the mutation changed nothing"
+
+    block = _block_after(mutated, "var ED_SYMBOLS = [", 2000).split("];")[0]
+    counts = {}
+    for cat in re.findall(r'category: "([^"]+)"', block):
+        counts[cat] = counts.get(cat, 0) + 1
+    assert len(set(counts.values())) != 4, (
+        "removing two valve symbols did not break the distinct-size check"
+    )
+    assert "bmHeadHtml()" not in mutated, (
+        "renaming bmHeadHtml did not break the header check"
+    )
+    tpl = _block_after(mutated, "var BM_TEMPLATE_DEFS = {", 1200).split("\n  };")[0]
+    widths = {len(re.findall(r'"[^"]+"', c)) for c in re.findall(r"columns: \[([^\]]*)\]", tpl)}
+    assert widths != {5, 7}, (
+        "widening a summary template did not break the column-width check"
+    )
