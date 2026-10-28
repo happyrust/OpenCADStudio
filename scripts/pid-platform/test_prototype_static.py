@@ -590,82 +590,318 @@ def test_syntax_cross003_element_checks_can_fail():
     )
 
 
-def test_syntax_validation_rule_names_match_the_requirement_table():
-    """requirements/50 defines DR-001..DR-008; the screen must not rename them."""
-    text = _screens_text()
-    expected = {
-        "DR-001": "管线缺管道等级",
-        "DR-002": "管线缺公称直径",
-        "DR-003": "设备无位号",
-        "DR-004": "位号重复",
-        "DR-005": "仪表未分配回路",
-        "DR-006": "页间连接符对端缺失",
-        "DR-007": "阀门压力等级高于管道等级",
-        "DR-008": "管口未连接",
-    }
-    at = text.find("var VL_RULE_NAMES = {")
-    assert at != -1, "VL_RULE_NAMES is gone"
-    block = text[at: at + 900]
-    for rule_id, name in expected.items():
-        assert '"%s": "%s"' % (rule_id, name) in block, (
-            "%s is not bound to %s" % (rule_id, name)
+# --- design rule check: rule names, severities, rows, derived summary ---
+#
+# Every guard below is a pure function of the bundle text so the negative
+# control at the end of this section can drive the same code with a mutated
+# copy and prove the guard bites. A guard that only re-reads the committed
+# file cannot show that.
+
+VIOLATION_ROW_COUNT = 10
+
+VALIDATION_RULE_NAMES = {
+    "DR-001": "管线缺管道等级",
+    "DR-002": "管线缺公称直径",
+    "DR-003": "设备无位号",
+    "DR-004": "位号重复",
+    "DR-005": "仪表未分配回路",
+    "DR-006": "页间连接符对端缺失",
+    "DR-007": "阀门压力等级高于管道等级",
+    "DR-008": "管口未连接",
+    "DR-010": "属性必填项为空",
+}
+
+VALIDATION_SEVERITIES = {
+    "DR-001": "错误",
+    "DR-002": "错误",
+    "DR-003": "错误",
+    "DR-004": "错误",
+    "DR-005": "警告",
+    "DR-006": "错误",
+    "DR-007": "错误",
+    "DR-008": "提示",
+    "DR-010": "错误",
+}
+
+# Rules whose 位号 must appear in their own message. DR-006 acts on
+# 页间连接符, for which requirements/50 defines no tag-prefix convention, so
+# it is not constrained here rather than pinned to an invented convention.
+TAG_QUOTING_RULES = {"DR-001", "DR-002", "DR-010"}
+LINE_TAG_RULES = {"DR-001", "DR-002"}
+
+
+def _violation_rows(text):
+    """One dict per VIOLATIONS record; ``suggestion`` is optional.
+
+    Records are split on the opener and then parsed field by field, so a row
+    that legally omits 建议修复 (REQ-DATA-014 makes it optional) is still
+    parsed. Matching the whole record with a regex that requires
+    ``suggestion`` silently skips such a row, which turns the guard vacuous.
+    """
+    block = _block_after(text, "var VIOLATIONS = [", "\n  ];")
+    rows = []
+    for chunk in block.split("{ ruleId: ")[1:]:
+        record = chunk.split("}", 1)[0]
+        row = dict(re.findall(r'(\w+): "([^"]*)"', record))
+        row["ruleId"] = re.match(r'"([^"]+)"', record).group(1)
+        rows.append(row)
+    return rows
+
+
+def _required_props(text, kind):
+    """Required attribute names of one PROP_DEFS template, in template order."""
+    block = _block_after(text, "var PROP_DEFS = {", "\n  };")
+    at = block.find("%s: [" % kind)
+    assert at != -1, "PROP_DEFS has no %s template" % kind
+    end = block.find("]", at)
+    assert end != -1, "the %s template has no terminator" % kind
+    return [
+        name
+        for name, required in re.findall(
+            r'\{ name: "([^"]+)", required: (true|false) \}', block[at:end]
         )
+        if required == "true"
+    ]
+
+
+def _canvas_symbol_extra(text, tag):
+    """The props makeSymbol builds for ``<tag>``, as name -> value.
+
+    makeSymbol seeds 位号 and 名称 from its first and sixth arguments and fills
+    every other template attribute from the ``extra`` object, defaulting to
+    the empty string, so a name absent from ``extra`` is empty.
+    """
+    at = text.find('makeSymbol("%s"' % tag)
+    assert at != -1, "no makeSymbol call places %s on the canvas" % tag
+    end = text.find("}),", at)
+    assert end != -1, "the makeSymbol call for %s has no terminator" % tag
+    call = text[at:end]
+    head = re.match(
+        r'makeSymbol\("([^"]+)", "[^"]+", "[^"]+", \d+, \d+, "([^"]+)"', call
+    )
+    assert head, "the makeSymbol call for %s has an unexpected shape" % tag
+    props = {"位号": head.group(1), "名称": head.group(2)}
+    props.update(dict(re.findall(r'"([^"]+)": "([^"]*)"', call[call.find("{"):])))
+    return props
+
+
+def _instance_props(text, tag):
+    """The props object of one INSTANCES record as name -> value."""
+    block = _block_after(text, "var INSTANCES = [", "\n  ];")
+    at = block.find('{ tag: "%s"' % tag)
+    assert at != -1, "INSTANCES has no %s record" % tag
+    end = block.find("} }", at)
+    assert end != -1, "the %s record has no terminator" % tag
+    return dict(re.findall(r'"([^"]+)": "([^"]*)"', block[at:end]))
+
+
+def _assert_rule_names(text):
+    """VL_RULE_NAMES binds exactly the nine rules the seed uses."""
+    block = _block_after(text, "var VL_RULE_NAMES = {", "\n  };")
+    bound = dict(re.findall(r'"(DR-\d{3})": "([^"]+)"', block))
+    assert bound == VALIDATION_RULE_NAMES, (
+        "VL_RULE_NAMES is %r; the requirement table binds %r"
+        % (bound, VALIDATION_RULE_NAMES)
+    )
+
+
+def _assert_severities(text):
+    """Every row's severity equals the requirement table's 严重度 column."""
+    rows = _violation_rows(text)
+    assert len(rows) == VIOLATION_ROW_COUNT, (
+        "VIOLATIONS carries %d rows, expected %d"
+        % (len(rows), VIOLATION_ROW_COUNT)
+    )
+    seen = {}
+    for row in rows:
+        rule_id = row["ruleId"]
+        assert rule_id in VALIDATION_SEVERITIES, (
+            "%s has a violation row but no expected severity" % rule_id
+        )
+        seen.setdefault(rule_id, set()).add(row["severity"])
+    for rule_id, sev in VALIDATION_SEVERITIES.items():
+        assert rule_id in seen, "%s has no violation row" % rule_id
+        assert seen[rule_id] == {sev}, (
+            "%s is %r, the requirement table says %s"
+            % (rule_id, sorted(seen[rule_id]), sev)
+        )
+
+
+def _assert_rows_name_one_object(text):
+    """Each parsed row names one object; exactly one row carries P-1001."""
+    rows = _violation_rows(text)
+    assert len(rows) == VIOLATION_ROW_COUNT, (
+        "expected %d violation rows, parsed %d — a row that cannot be parsed "
+        "is a row that is not guarded" % (VIOLATION_ROW_COUNT, len(rows))
+    )
+    for row in rows:
+        if row["ruleId"] not in TAG_QUOTING_RULES:
+            continue
+        assert row["tag"] in row["message"], (
+            "%s: 位号 %r does not appear in its message %r — the row names two "
+            "different objects" % (row["ruleId"], row["tag"], row["message"])
+        )
+    for row in rows:
+        if row["ruleId"] not in LINE_TAG_RULES:
+            continue
+        assert re.match(r"^L-\d{4}$", row["tag"]), (
+            "%s acts on 管线, so its 位号 must be a line tag such as L-1001, "
+            "got %r" % (row["ruleId"], row["tag"])
+        )
+    tags = [row["tag"] for row in rows]
+    assert tags.count("P-1001") == 1, (
+        "VAL-CROSS-004 needs exactly one violation whose 位号 is P-1001, "
+        "found %d" % tags.count("P-1001")
+    )
+
+
+def _assert_dr010_premise_holds(text):
+    """DR-010 must fire on the object it names, per its own DSL.
+
+    requirements/50 defines DR-010 as ``必填项缺失数 > 0``. The row is
+    therefore provable only if the attribute its message names is a required
+    attribute of the equipment template *and* P-1001 leaves it empty in both
+    seed sources while every other required attribute is filled.
+    """
+    rows = [r for r in _violation_rows(text) if r["ruleId"] == "DR-010"]
+    assert len(rows) == 1, "expected exactly one DR-010 row, found %d" % len(rows)
+    row = rows[0]
+    assert row["tag"] == "P-1001", (
+        "the DR-010 row must name P-1001, got %r" % (row["tag"],)
+    )
+    match = re.search(r"必填项(.+?)为空", row["message"])
+    assert match, (
+        "DR-010's message must name the missing attribute as 「必填项<名称>为空」, "
+        "got %r" % (row["message"],)
+    )
+    missing = match.group(1)
+    required = _required_props(text, "equipment")
+    assert missing in required, (
+        "DR-010 says %r is an empty required attribute of P-1001, but the "
+        "equipment template's required set is %r — 必填项缺失数 would be 0 and "
+        "the row could never fire" % (missing, required)
+    )
+    for source, props in (
+        ("canvas seed", _canvas_symbol_extra(text, "P-1001")),
+        ("INSTANCES record", _instance_props(text, "P-1001")),
+    ):
+        value = props.get(missing, "")
+        assert value == "", (
+            "DR-010 is provable only if %s leaves %r empty on P-1001, but the "
+            "%s gives %r" % (row["ruleId"], missing, source, value)
+        )
+    canvas = _canvas_symbol_extra(text, "P-1001")
+    empty = [name for name in required if canvas.get(name, "") == ""]
+    assert empty == [missing], (
+        "P-1001 must miss exactly the attribute DR-010 names; the empty "
+        "required attributes are %r" % (empty,)
+    )
+
+
+def _assert_summary_is_derived(text):
+    """The severity summary reads the rows; it is never a literal."""
+    body = _block_after(text, "function vlSeverityCounts() {", "\n  }")
+    assert "VIOLATIONS[i].severity" in body, (
+        "vlSeverityCounts no longer reads VIOLATIONS[i].severity"
+    )
+    assert "counts[sev] += 1" in body, (
+        "vlSeverityCounts no longer increments the bucket it read"
+    )
+    render = _block_after(text, "function renderValidation(def) {", "\n  }")
+    assert "var counts = vlSeverityCounts();" in render, (
+        "renderValidation does not call vlSeverityCounts()"
+    )
+    at = render.find('data-testid="validation-summary"')
+    assert at != -1, "the summary block is gone"
+    summary = render[at: render.find("</div>", at)]
+    for bucket in ("错误", "警告", "提示"):
+        assert 'counts["%s"]' % bucket in summary, (
+            "the summary does not interpolate counts[%r]; the count is "
+            "hard-coded" % bucket
+        )
+    assert len(re.findall(r"counts\[", summary)) == 3, (
+        "the summary interpolates %d derived counts, expected exactly 3"
+        % len(re.findall(r"counts\[", summary))
+    )
+
+
+def test_syntax_validation_rule_names_match_the_requirement_table():
+    """requirements/50 binds nine rule names; DR-010 is one of them."""
+    _assert_rule_names(_screens_text())
 
 
 def test_syntax_validation_severities_match_the_requirement_table():
-    """DR-001..008 severities: 错误 for 001-004/006/007, 警告 005, 提示 008."""
-    text = _screens_text()
-    at = text.find("var VIOLATIONS = [")
-    assert at != -1, "VIOLATIONS is gone"
-    block = text[at: text.find("];", at)]
-    expected = {
-        "DR-001": "错误", "DR-002": "错误", "DR-003": "错误", "DR-004": "错误",
-        "DR-005": "警告", "DR-006": "错误", "DR-007": "错误", "DR-008": "提示",
-    }
-    seen = {}
-    for entry in re.findall(r'\{ ruleId: "(DR-\d{3})", severity: "([^"]+)"', block):
-        seen.setdefault(entry[0], entry[1])
-    for rule_id, sev in expected.items():
-        assert rule_id in seen, "%s has no violation row" % rule_id
-        assert seen[rule_id] == sev, (
-            "%s is %s, the requirement table says %s" % (rule_id, seen[rule_id], sev)
-        )
+    """Every seeded severity matches the rule table, DR-010 = 错误 included."""
+    _assert_severities(_screens_text())
 
 
 def test_syntax_validation_rows_point_at_one_object():
     """requirements/50: the 位号 column must agree with the message it ships.
 
-    Scoped to the two rules whose message quotes the object by tag (DR-001
-    and DR-002). Their 作用对象 is 管线, so the tag must be a line tag such as
-    L-1001 — never the 管路 tag L-1001-01 and never an equipment tag. Other
-    rows are free prose and are not constrained here.
+    Scoped to the rules whose message quotes the object by tag (DR-001,
+    DR-002 and DR-010). For DR-001/DR-002 the 作用对象 is 管线, so the tag
+    must be a line tag such as L-1001 — never the 管路 tag L-1001-01 and never
+    an equipment tag. The other rows are free prose.
     """
+    _assert_rows_name_one_object(_screens_text())
+
+
+def test_syntax_validation_dr010_premise_holds_on_p1001():
+    """A seeded violation row must be provable on the object it names."""
+    _assert_dr010_premise_holds(_screens_text())
+
+
+def test_syntax_validation_severity_summary_is_derived():
+    """The summary counts are derived from VIOLATIONS, not hard-coded."""
+    _assert_summary_is_derived(_screens_text())
+
+
+def test_syntax_validation_guards_can_fail():
+    """Negative control: each validation guard must reject its mutation."""
     text = _screens_text()
-    block = _block_after(text, "var VIOLATIONS = [", "\n  ];")
-    rows = re.findall(
-        r'\{ ruleId: "(DR-\d{3})", severity: "[^"]+", tag: "([^"]+)", '
-        r'sheet: "[^"]*",\s*message: "([^"]+)",\s*suggestion: "([^"]+)" \}',
-        block,
+
+    renamed = text.replace('"DR-010": "属性必填项为空"', '"DR-010": "属性缺少必填项"')
+    assert renamed != text, "renaming DR-010 changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_rule_names(renamed)
+
+    flipped = text.replace(
+        '{ ruleId: "DR-010", severity: "错误"',
+        '{ ruleId: "DR-010", severity: "提示"',
     )
-    assert len(rows) >= 9, (
-        "expected at least nine violation rows, parsed %d" % len(rows)
+    assert flipped != text, "flipping DR-010's severity changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_severities(flipped)
+
+    # 建议修复 is optional (REQ-DATA-014): dropping it must not hide the row.
+    dropped = text.replace(
+        '      message: "管线 L-1001 未填写管道等级",\n'
+        '      suggestion: "建议：为 L-1001 指定管道等级。" },',
+        '      message: "管线 L-1001 未填写管道等级" },',
     )
-    quoted = {"DR-001", "DR-002"}
-    for rule_id, tag, message, _suggestion in rows:
-        if rule_id not in quoted:
-            continue
-        assert tag in message, (
-            "%s: 位号 %r does not appear in its message %r — the row names two "
-            "different objects" % (rule_id, tag, message)
-        )
-        assert re.match(r"^L-\d{4}$", tag), (
-            "%s acts on 管线, so its 位号 must be a line tag such as L-1001, "
-            "got %r" % (rule_id, tag)
-        )
-    tags = [row[1] for row in rows]
-    assert "P-1001" in tags, (
-        "VAL-CROSS-004 needs a violation whose 位号 is P-1001"
+    dropped = dropped.replace(
+        '{ ruleId: "DR-001", severity: "错误", tag: "L-1001"',
+        '{ ruleId: "DR-001", severity: "错误", tag: "P-1001"',
     )
+    assert dropped != text, "the suggestion-less DR-001 variant changed nothing"
+    assert "suggestion" not in _violation_rows(dropped)[0], (
+        "the mutation did not actually drop DR-001's suggestion"
+    )
+    with pytest.raises(AssertionError):
+        _assert_rows_name_one_object(dropped)
+
+    literal = text.replace('counts["错误"] + "</b></span>"', '8 + "</b></span>"')
+    assert literal != text, "replacing the summary interpolation changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_summary_is_derived(literal)
+
+    filled = text.replace(
+        '      "设计温度": "120 ℃",\n      "公称直径": "DN80",',
+        '      "材质": "Q345R",\n      "设计温度": "120 ℃",\n      "公称直径": "DN80",',
+    )
+    assert filled != text, "filling 材质 on P-1001 changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_dr010_premise_holds(filled)
 
 
 def test_syntax_bom_seed_uses_the_standard_type_vocabulary():

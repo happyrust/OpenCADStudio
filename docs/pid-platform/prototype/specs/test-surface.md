@@ -158,12 +158,30 @@
 
 ## 11. 设计规则检查的位号与规则名口径
 
-`VL_RULE_NAMES` 逐字绑定 `DR-001`..`DR-008` 与 `DR-010` 的规则名，取值抄自 `requirements/50-data-and-rule-engine.md` 的规则清单。`VIOLATIONS` 的每条记录必须满足：**`位号` 列、`消息`、`建议修复` 三处指向同一个对象**，且该对象的类型与规则的 `作用对象` 一致。
+`VL_RULE_NAMES` 逐字绑定 `DR-001`..`DR-008` 与 `DR-010` 共 **9 条**规则名，取值抄自 `requirements/50-data-and-rule-engine.md` 的规则清单；`VIOLATIONS` 共 **10 行**，逐行严重度与该清单的 `严重度` 列一致。`DR-009` 不在种子里，因为它在种子数据上不触发。
+
+`VIOLATIONS` 的每条记录必须满足：**`位号` 列、`消息`、`建议修复` 三处指向同一个对象**，且该对象的类型与规则的 `作用对象` 一致。
 
 - `DR-001` / `DR-002` 的作用对象是 `管线`，位号写管线位号 `L-1001` / `L-1002`，不写管路位号 `L-1001-01`。
 - `DR-003` / `DR-008` / `DR-010` 的作用对象是 `设备` 或 `对象实例`，位号写设备位号。
 - `DR-004` 的作用对象是 `对象实例`，位号写被判定重复的那个位号。
+- `DR-006` 的作用对象是 `页间连接符`，`requirements/50` 未给该对象定义位号前缀约定，因此不对它的位号前缀做断言，只要求它与消息指同一对象。
+
+**种子违规行必须能从它指名的对象上被证明。** `DR-010` 的 DSL 是 `必填项缺失数 > 0`，所以它的消息必须点名一个在 `PROP_DEFS.equipment` 里 `required: true`、且在 `P-1001` 上确实为空的属性。当前实现：`PROP_DEFS.equipment` 的必填项是 位号 / 名称 / 设计压力 / 材质 四项，`P-1001` 的 `材质` 在画布种子与 `INSTANCES` 两处都留空，其余必填项都有值，因此 `必填项缺失数 = 1`，消息写「设备 P-1001 的必填项材质为空」。`T-1001` / `E-1001` / `V-1001` 与 `P-1002` / `P-1003` 的 `材质` 都已填，缺失数为 0，不会被误报。
 
 严重度汇总由 `vlSeverityCounts()` 从 `VIOLATIONS` 推导，不硬编码。当前种子 10 行为 错误 8 / 警告 1 / 提示 1。`DR-003` 出现两次是两条不同对象的记录，不是缺陷。
 
-`VAL-CROSS-004` 要求存在一条 `tag === "P-1001"` 的违规，该职责由 `DR-010` 那条记录承担，因此 `DR-001` 可以合法使用 `L-1001`。改动 `VIOLATIONS` 时必须同时保住这条 `P-1001` 记录。
+`VAL-CROSS-004` 要求存在一条 `tag === "P-1001"` 的违规，该职责由 `DR-010` 那条记录承担，因此 `DR-001` 可以合法使用 `L-1001`。改动 `VIOLATIONS` 时必须同时保住这条 `P-1001` 记录，且**恰有一条**（`tags.count("P-1001") == 1`）。
+
+### 11.1 本节口径的静态守卫
+
+| 口径 | 守卫用例 | 负向对照（同一条用例内） |
+| --- | --- | --- |
+| 9 条规则名逐字绑定，含 `DR-010` | `test_syntax_validation_rule_names_match_the_requirement_table`（`_assert_rule_names`，整字典相等） | 把 `"DR-010"` 的规则名改掉 → 转红 |
+| 10 行严重度逐行对齐，含 `DR-010` = `错误` | `test_syntax_validation_severities_match_the_requirement_table`（`_assert_severities`） | 把 `DR-010` 的 `错误` 翻成 `提示` → 转红 |
+| 位号与消息指同一对象、恰一条 `P-1001` | `test_syntax_validation_rows_point_at_one_object`（`_assert_rows_name_one_object`） | 删掉 `DR-001` 的 `suggestion` 并把位号改成 `P-1001` → 转红（证明 `建议修复` 的可选性被正确建模） |
+| `DR-010` 的前提在 `P-1001` 上成立 | `test_syntax_validation_dr010_premise_holds_on_p1001`（`_assert_dr010_premise_holds`） | 给 `P-1001` 补上 `材质` → 转红 |
+| 严重度汇总由 `vlSeverityCounts()` 推导 | `test_syntax_validation_severity_summary_is_derived`（`_assert_summary_is_derived`） | 把汇总处的 `counts["错误"]` 插值换成字面量 → 转红 |
+
+行解析器 `_violation_rows` 先按 `{ ruleId: ` 切记录再逐字段解析，`suggestion` 不参与匹配；因此一条合法省略 `建议修复` 的记录仍会被解析并纳入断言，不会整行被跳过。上述五条负向对照集中在 `test_syntax_validation_guards_can_fail` 里，用同一组纯函数驱动变异文本，能证明守卫本身可失败。
+

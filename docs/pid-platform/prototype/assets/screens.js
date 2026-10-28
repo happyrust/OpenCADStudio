@@ -1630,6 +1630,7 @@
       { name: "位号", required: true },
       { name: "名称", required: true },
       { name: "设计压力", required: true },
+      { name: "材质", required: true },
       { name: "设计温度", required: false },
       { name: "公称直径", required: false },
       { name: "管道等级", required: false }
@@ -1680,18 +1681,21 @@
     makeSymbol("T-1001", "equipment", "tower", 300, 90, "常压塔", {
       "设计压力": "0.35 MPa",
       "设计温度": "360 ℃",
+      "材质": "Q345R",
       "公称直径": "DN2600",
       "管道等级": "CL150"
     }),
     makeSymbol("E-1001", "equipment", "exchanger", 470, 140, "原油换热器", {
       "设计压力": "2.0 MPa",
       "设计温度": "220 ℃",
+      "材质": "Q345R",
       "公称直径": "DN150",
       "管道等级": "CL300"
     }),
     makeSymbol("V-1001", "equipment", "vessel", 630, 140, "原油缓冲罐", {
       "设计压力": "1.0 MPa",
       "设计温度": "80 ℃",
+      "材质": "Q345R",
       "公称直径": "DN1800",
       "管道等级": "CL150"
     }),
@@ -2256,7 +2260,8 @@
         fields: [
           { name: "位号", required: true },
           { name: "名称", required: true },
-          { name: "设备类别", required: false }
+          { name: "设备类别", required: false },
+          { name: "材质", required: true }
         ]
       },
       {
@@ -2359,8 +2364,8 @@
 
   var INSTANCES = [
     { tag: "P-1001", typeId: "pump", typeName: "泵", status: "已校核", props: { "位号": "P-1001", "名称": "原油进料泵", "设备类别": "离心泵", "设计压力": "1.6 MPa", "设计温度": "120 ℃", "额定流量": "150 m³/h", "扬程": "60 m" } },
-    { tag: "P-1002", typeId: "pump", typeName: "泵", status: "设计中", props: { "位号": "P-1002", "名称": "常压塔回流泵", "设备类别": "离心泵", "设计压力": "1.2 MPa", "设计温度": "180 ℃", "额定流量": "80 m³/h", "扬程": "45 m" } },
-    { tag: "P-1003", typeId: "pump", typeName: "泵", status: "设计中", props: { "位号": "P-1003", "名称": "减压渣油泵", "设备类别": "离心泵", "设计压力": "2.5 MPa", "设计温度": "320 ℃", "额定流量": "45 m³/h", "扬程": "90 m" } },
+    { tag: "P-1002", typeId: "pump", typeName: "泵", status: "设计中", props: { "位号": "P-1002", "名称": "常压塔回流泵", "设备类别": "离心泵", "材质": "ZG230-450", "设计压力": "1.2 MPa", "设计温度": "180 ℃", "额定流量": "80 m³/h", "扬程": "45 m" } },
+    { tag: "P-1003", typeId: "pump", typeName: "泵", status: "设计中", props: { "位号": "P-1003", "名称": "减压渣油泵", "设备类别": "离心泵", "材质": "ZG230-450", "设计压力": "2.5 MPa", "设计温度": "320 ℃", "额定流量": "45 m³/h", "扬程": "90 m" } },
     { tag: "V-1001", typeId: "vessel", typeName: "容器", status: "已校核", props: { "位号": "V-1001", "名称": "原油缓冲罐", "容器形式": "卧式容器", "设计压力": "0.8 MPa", "设计温度": "90 ℃", "公称直径": "DN2400", "容积": "40 m³" } },
     { tag: "V-1002", typeId: "vessel", typeName: "容器", status: "设计中", props: { "位号": "V-1002", "名称": "污油罐", "容器形式": "立式容器", "设计压力": "常压", "设计温度": "60 ℃", "公称直径": "DN1800", "容积": "25 m³" } },
     { tag: "XV-2001", typeId: "valve", typeName: "阀门", status: "已发布", props: { "位号": "XV-2001", "名称": "原油切断阀", "公称直径": "DN100", "压力等级": "PN16", "开度": "50%" } },
@@ -2727,8 +2732,8 @@
       message: "管线 L-1001 未填写管道等级",
       suggestion: "建议：为 L-1001 指定管道等级。" },
     { ruleId: "DR-010", severity: "错误", tag: "P-1001", sheet: "PID-1101 原油换热网络.dwg",
-      message: "设备 P-1001 的必填项设计温度为空",
-      suggestion: "建议：为 P-1001 补填设计温度。" },
+      message: "设备 P-1001 的必填项材质为空",
+      suggestion: "建议：为 P-1001 补填材质。" },
     { ruleId: "DR-003", severity: "错误", tag: "TI-1101", sheet: "PID-1201 常压塔系统.dwg",
       message: "设备 TI-1101 未填写位号",
       suggestion: "建议：为 TI-1101 补全位号。" },
