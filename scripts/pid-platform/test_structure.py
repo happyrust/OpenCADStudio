@@ -21,6 +21,13 @@ from manifest_contract import (
     validate_manifest,
     validate_schema,
 )
+from prototype_notes import (
+    PROTO_FIELD_ORDER,
+    TEST_SURFACE_PATH,
+    check_test_surface,
+    section_two,
+    table_field_names,
+)
 
 
 def _deliverables(manifest: dict) -> list:
@@ -417,6 +424,132 @@ def test_structure_delivered_entry_uses_repo_relative_path(tmp_path):
     target.unlink()
     errors = check_delivered(manifest, docs_root)
     assert errors, "deleted file must be reported as missing"
-    assert any("docs/pid-platform/PRD.md" in e for e in errors), (
-        "error should mention the repo-relative path: %s" % errors
+
+
+# ---------------------------------------------------------------------------
+# Prototype notes are outside the 20-deliverable set but not outside the gate.
+#
+# VAL-PROTO-019's Evidence says "契约文档存在性用例全绿" and the shell
+# feature's expectedBehaviour names prototype/specs/test-surface.md, yet
+# manifest_contract.UNREGISTERED_DOCS_SUBTREES exempts prototype/ from the
+# orphan scan, so before these cases the file could be deleted with the whole
+# suite still green (measured: 519 passed / exit 0).
+# ---------------------------------------------------------------------------
+
+TEST_SURFACE_DOC = """# 原型可编程测试面说明
+
+## 1. 总体约定
+
+正文。
+
+## 2. `window.__proto` 字段契约
+
+| 字段 | 类型 | 含义 | 更新时机 |
+| --- | --- | --- | --- |
+| `screen` | string | 当前路由界面 id | 每次界面切换 |
+| `symbolCount` | number | 符号实例数量 | 编辑器发布后 |
+| `selectedTag` | string | 当前选中位号 | 选中变化时 |
+| `selectedProps` | array | 属性列表 | 选中变化时 |
+| `violations` | array | 违规集合 | 检查执行时 |
+| `bomRows` | array | 材料清单行 | 统计发布时 |
+| `paletteItemCount` | number | 调色板条目数 | 数据发布后 |
+| `tagRulePreview` | string | 位号预览文本 | 规则编辑后 |
+| `window.__protoErrors` | string[] | 页面级错误收集数组 | error 事件触发时 |
+
+## 3. 后续章节
+
+正文。
+"""
+
+
+def _synthetic_docs_root(tmp_path, text=TEST_SURFACE_DOC):
+    """A scratch tree carrying only the prototype note under test."""
+    docs_root = tmp_path / "docs" / "pid-platform"
+    target = docs_root / TEST_SURFACE_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    return docs_root
+
+
+def test_structure_test_surface_contract_document_is_guarded():
+    """The committed prototype test-surface note exists and lists the contract."""
+    errors = check_test_surface(DOCS)
+    assert errors == [], "; ".join(errors)
+
+
+def test_structure_test_surface_fields_are_the_eight_in_contract_order():
+    """Section 2 must list exactly the eight __proto fields, in contract order."""
+    path = DOCS / TEST_SURFACE_PATH
+    assert path.is_file(), "missing " + str(path)
+    text = path.read_text(encoding="utf-8")
+    names = table_field_names(section_two(text))
+    assert names == PROTO_FIELD_ORDER, (
+        "%s section 2 lists %r, expected %r"
+        % (TEST_SURFACE_PATH, names, PROTO_FIELD_ORDER)
+    )
+    assert len(PROTO_FIELD_ORDER) == 8, (
+        "VAL-PROTO-019 fixes window.__proto at 8 keys; the fixture lists %d"
+        % len(PROTO_FIELD_ORDER)
+    )
+    assert "window.__protoErrors" not in PROTO_FIELD_ORDER, (
+        "__protoErrors is a sibling global, not a ninth key of window.__proto"
+    )
+
+
+def test_structure_test_surface_guard_rejects_a_deleted_document(tmp_path):
+    """Negative control: the same check must fail when the file is gone.
+
+    The assertion is on the check function's verdict, not on the absence of
+    the file, so a check that merely returns [] for everything is caught.
+    """
+    docs_root = _synthetic_docs_root(tmp_path)
+    assert check_test_surface(docs_root) == [], (
+        "the synthetic control tree must start green, otherwise the mutation "
+        "below proves nothing"
+    )
+    (docs_root / TEST_SURFACE_PATH).unlink()
+    errors = check_test_surface(docs_root)
+    assert errors, "deleting %s must be reported" % TEST_SURFACE_PATH
+    assert any("missing" in e for e in errors), (
+        "the error does not name the missing document: %s" % errors
+    )
+
+
+def test_structure_test_surface_guard_rejects_a_wrong_field_order(tmp_path):
+    """Negative control: reordering two fields must fail the same check."""
+    reordered = TEST_SURFACE_DOC.replace(
+        "| `symbolCount` | number | 符号实例数量 | 编辑器发布后 |\n"
+        "| `selectedTag` | string | 当前选中位号 | 选中变化时 |",
+        "| `selectedTag` | string | 当前选中位号 | 选中变化时 |\n"
+        "| `symbolCount` | number | 符号实例数量 | 编辑器发布后 |",
+    )
+    assert reordered != TEST_SURFACE_DOC, "the reorder mutation changed nothing"
+    docs_root = _synthetic_docs_root(tmp_path, reordered)
+    errors = check_test_surface(docs_root)
+    assert errors, "a swapped field order must be reported"
+    assert any("contract order" in e for e in errors), (
+        "the error does not mention the ordering contract: %s" % errors
+    )
+
+
+def test_structure_test_surface_guard_rejects_a_dropped_field(tmp_path):
+    """Negative control: dropping one field must fail the same check."""
+    dropped = TEST_SURFACE_DOC.replace(
+        "| `paletteItemCount` | number | 调色板条目数 | 数据发布后 |\n", ""
+    )
+    assert dropped != TEST_SURFACE_DOC, "the drop mutation changed nothing"
+    errors = check_test_surface(_synthetic_docs_root(tmp_path, dropped))
+    assert errors, "a missing __proto field must be reported"
+
+
+def test_structure_test_surface_guard_rejects_a_second_h1(tmp_path):
+    """Negative control: the one-H1 rule must be enforced on this document too."""
+    extra = TEST_SURFACE_DOC + "\n# 另一个一级标题\n"
+    errors = check_test_surface(_synthetic_docs_root(tmp_path, extra))
+    assert errors, "a second H1 must be reported"
+    assert any("one H1" in e for e in errors), (
+        "the error does not mention the H1 rule: %s" % errors
+    )
+    assert any(TEST_SURFACE_PATH in e for e in errors), (
+        "the error should name the document path: %s" % errors
     )

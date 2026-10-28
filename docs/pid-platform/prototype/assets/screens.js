@@ -207,12 +207,23 @@
     }
     /* Real screens register a renderer on window.PidScreens (registered by a
        later IIFE in this bundle). A renderer failure falls back to the
-       placeholder so it never surfaces as an uncaught page error. */
+       placeholder so it never surfaces as an uncaught page error — but it must
+       not disappear either: window.__protoErrors is the contract's page-level
+       error sink (VAL-PROTO-020), so the message is recorded there and the
+       failure is also logged, otherwise a blank screen keeps app-shell 1,
+       screen-title 1, __protoErrors [] and console errorCount 0. */
     if (window.PidScreens && typeof window.PidScreens[id] === "function") {
       try {
         return window.PidScreens[id](def);
       } catch (err) {
-        /* fall through to placeholder */
+        var message = "renderer " + id + " failed: " +
+          String(err && err.message ? err.message : err);
+        if (window.__protoErrors && typeof window.__protoErrors.push === "function") {
+          window.__protoErrors.push(message);
+        }
+        if (window.console && typeof window.console.error === "function") {
+          window.console.error(message, err);
+        }
       }
     }
     var points = "";

@@ -18,15 +18,18 @@
   所列的字段（`screen` 由路由统一管理，partial 中的 `screen` 会被忽略），合并后
   不触发界面重绘。
 - `window.__protoErrors` 在任何其他脚本运行前初始化为 `[]`，并监听 `window`
-  的 `error` 事件，把每个未捕获错误以字符串形式追加进数组。遍历全部 14 条
-  路由后该数组应保持为空。
+  的 `error` 事件，把每个未捕获错误以字符串形式追加进数组。`renderScreenHtml`
+  的渲染器 `try/catch` 也把捕获到的异常以 `renderer <界面 id> failed: <消息>`
+  形式追加进该数组并发一条 `console.error`，因此被吞成占位页的渲染器在健康断言里
+  仍然可见，不会出现「`app-shell` 1、`screen-title` 1、`__protoErrors` 空、
+  console 零 error」的假健康。遍历全部 14 条路由后该数组应保持为空。
 
 ## 2. `window.__proto` 字段契约
 
 | 字段 | 类型 | 含义 | 更新时机 |
 | --- | --- | --- | --- |
 | `screen` | string | 当前路由界面 id，如 `workbench` | 每次界面切换重建对象时由路由写入 |
-| `symbolCount` | number | 图面画布上的符号实例数量 | 编辑器发布后更新；外壳阶段固定为 `0` |
+| `symbolCount` | number | 数值型计数；含义随写入界面而变（见第 7 节） | `drawings` / `editor` / `symbols` 三屏各自写入，见第 7 节 |
 | `selectedTag` | string | 当前选中对象的位号；无选中时为空串 | 图面选中状态变化时 |
 | `selectedProps` | `Array<{ name: string, value: string, required: boolean }>` | 选中对象的属性列表：属性名、取值、是否必选 | 图面选中状态变化时由属性面板发布 |
 | `violations` | `Array<{ ruleId: string, severity: string, tag: string, sheet: string, message: string, suggestion: string }>` | 设计规则检查结果集合：规则 id、严重级别、位号、所在图纸、问题描述、修改建议 | 设计规则检查执行并发布结果时 |
@@ -107,13 +110,24 @@
 | `bom-template` | `bom` | 顶部工具栏模板下拉 | 选项恰为 `标准材料清单`、`管件汇总表`、`阀门汇总表`。**切换会同时改变表头与数据行**：`标准材料清单` 为 序号/类型/位号/名称/数量/单位/备注 七列且不筛类型；`管件汇总表` 为 类型/位号/名称/数量/单位 五列且只保留 `管件` 行；`阀门汇总表` 同五列且只保留 `阀门` 行。行对象仍是 `__proto.bomRows` 的七个键，模板只改显示列与行过滤（REQ-DELV-004） |
 | `bom-scope` | `bom` | 顶部工具栏数据范围下拉 | 选项恰为 `全部图纸`、`当前图纸`；`当前图纸` 只保留 `PID-1101 原油换热网络.dwg` 的行 |
 
-## 7. `window.__proto.symbolCount` 填充说明
+## 7. `window.__proto.symbolCount` 的写入者与语义
 
-- `drawings` 界面在每次渲染后（路由进入、PBS 节点选中变更、图纸行选中变更），将
-  当前预览图纸的 `objectCount` 经 `window.__protoSet({ symbolCount: n })` 写入
-  `window.__proto.symbolCount`。路由进入时该值经外壳的一次性合并机制写入；
-  界面内交互重绘时由界面脚本直接调用 `window.__protoSet`。
-- 其余 13 个界面当前不修改该字段，`symbolCount` 保持路由重建时的种子值 `0`。
+`symbolCount` 是数值型计数，但**不是单一语义字段**：三个界面各自在渲染时经
+`Shell.setPendingProtoMerge(<screenId>, { symbolCount: n })` 写入，取值含义随写入界面而变。
+读该字段做断言前，必须先确认当前所在界面。
+
+| 写入者 | 源码位置 | 写入值 | 语义 |
+| --- | --- | --- | --- |
+| `drawings` | `screens.js` 的 `renderDrawings` | 当前预览图纸的 `objectCount` | 图纸预览的对象数，随 PBS 节点与图纸行选中变化 |
+| `editor` | `screens.js` 的 `renderEditor` | `symbols.length` | 画布上的符号实例数量，插入符号后递增（VAL-PROTO-006 的判据） |
+| `symbols` | `screens.js` 的 `renderSymbols` | `slVisibleSymbols().length` | 标准图例屏的符号卡片数，随图例标准节点与视图切换变化 |
+
+其余 11 个界面不写该字段，离开上述三屏后它保留路由重建时的种子值 `0`。
+
+**已知语义冲突（登记在案，未修）：** `drawings` 的「预览图纸对象数」与 `symbols` 的
+「符号卡片数」共用同一个键，二者对同一屏的含义不同。做画布断言前必须先回到 `editor` 屏
+重新读取，不得在其他屏上把 `symbolCount` 当作画布实例数使用。修复方式是为 `symbols`
+另开旁路全局（第 8 节），但那会改变既有验证路径，属独立的后续决策。
 
 ## 8. 旁路状态全局（不进 `window.__proto`）
 
@@ -152,9 +166,29 @@
 | 模板按 `def.types` 过滤行、下拉选项集合等于 `BM_TEMPLATE_DEFS` 键集合 | 静态用例钉完整 `if` 条件表达式 + 负向对照 |
 | 编辑器五区域 `data-testid`、六选项卡顺序、画布 ≥6 符号 ≥3 管线 | 静态用例 |
 | 编辑器内四类页签项数两两不同、独立屏 ≥8 项 | 静态用例 |
+| 工作台四区块 `overview-stats` / `recent-drawings` / `activity` / `quick-actions`、图纸管理五区块 `pbs-tree` / `drawing-list` / `drawing-preview` / `drawings-toolbar` / `pbs-node` | `_assert_mounted_testids` 按 `' data-testid="X"'` 逐个计数（每项恰 1 次），由 `test_syntax_workbench_exposes_its_four_blocks` 与 `test_syntax_drawings_exposes_tree_list_preview_and_toolbar` 调用；`test_syntax_screen_mount_guards_can_fail` 对九个挂载点各做一次删除变异，逐一断言转红 |
+| `P-1001` 是 `设备` 符号 | `_assert_p1001_is_equipment` 解析 `makeSymbol("P-1001", "<kind>", ...)` 的 `kind` 实参与 `drawings` 种子里绑定该位号的 `kind`，并校验 `ED_CATEGORIES` 把 `equipment` 映射到 `设备`；`test_syntax_p1001_equipment_guard_can_fail` 对两处种子各做一次 `设备`→`管路` 变异 |
+| `renderScreenHtml` 的 `catch` 把渲染器异常写入 `window.__protoErrors` 并 `console.error` | `test_syntax_renderer_exceptions_reach_the_error_sink` 钉完整调用表达式；`test_syntax_renderer_error_sink_guard_can_fail` 逐条删除写入语句证明转红 |
+| `pbs-node` 的四个契约字段 | 用例按 `</button>` 结束符切片（`_pbs_node_block`），不用字符预算 |
 | `canvasHtml` 的渲染循环上限、`paletteItems()` 的分类与关键词两条过滤分支 | **仅由 `VAL-PROTO-005` / `VAL-PROTO-007` 的浏览器环节守卫**，静态用例不覆盖；改动这些分支后必须重跑浏览器取证 |
 | 编辑器内搜索「先分类后关键词」，无匹配时无空态文案 | 已知行为，数据正确；无断言依赖，勿据空网格判缺陷 |
 | `bom` 选「阀门汇总表」+「当前图纸」得 0 行 | 已知组合，空表是正确结果 |
+
+### 10.1 本文件自身的守卫
+
+本文件在 `prototype/` 子树内，不进 `manifest.json`（`VAL-DOC-008` 承诺恰好 20 份 markdown
+交付物，登记本文件会破坏该集合）。排除孤儿扫描**不等于**可以没有守卫，因此
+`scripts/pid-platform/prototype_notes.py` 提供 `check_test_surface(docs_root)`，由
+`test_structure.py` 的四条用例驱动：
+
+| 用例 | 断言 |
+| --- | --- |
+| `test_structure_test_surface_contract_document_is_guarded` | 真实树上 `check_test_surface(DOCS) == []` |
+| `test_structure_test_surface_fields_are_the_eight_in_contract_order` | 第 2 节表格的字段序列恰为八个、顺序与 VAL-PROTO-019 一致，且 `window.__protoErrors` 不在该序列内 |
+| `test_structure_test_surface_guard_rejects_a_deleted_document` | 合成树上先绿，`unlink()` 后同一函数必须报错并点名路径（**断言的是检查函数的判定，不是文件不存在本身**） |
+| `test_structure_test_surface_guard_rejects_a_wrong_field_order`、`test_structure_test_surface_guard_rejects_a_dropped_field`、`test_structure_test_surface_guard_rejects_a_second_h1` | 调换两个字段、删掉一个字段、追加第二个 H1，三种变异各须报错 |
+
+实测：删除本文件后全量闸门由 `529 passed / exit 0` 转为 `2 failed / 527 passed / exit 1`。
 
 ## 11. 设计规则检查的位号与规则名口径
 

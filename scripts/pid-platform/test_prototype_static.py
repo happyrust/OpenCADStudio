@@ -201,16 +201,72 @@ def _screens_text() -> str:
     return SCREENS_JS.read_text(encoding="utf-8")
 
 
+def _mount_count(text: str, testid: str) -> int:
+    """How many times ``testid`` is actually mounted as an attribute.
+
+    The leading space matters: a delegated listener writes the selector form
+    ``[data-testid="ribbon"]``, which a bare ``count('data-testid="ribbon"')``
+    also matches (ribbon and canvas each score 2 that way, pbs-node and
+    drawing-list likewise). Counting the mount form is the only way the guard
+    can tell a deleted mount point from a surviving CSS selector.
+    """
+    return text.count(' data-testid="%s"' % testid)
+
+
+def _assert_mounted_testids(text: str, testids: list, screen: str) -> None:
+    """Every named testid must be mounted exactly once."""
+    wrong = {
+        testid: _mount_count(text, testid)
+        for testid in testids
+        if _mount_count(text, testid) != 1
+    }
+    assert wrong == {}, (
+        "%s screen mount points are wrong (testid -> mount count, expected 1 "
+        "each): %s" % (screen, wrong)
+    )
+
+
 def test_syntax_workbench_exposes_its_four_blocks():
-    text = _screens_text()
-    missing = [t for t in WORKBENCH_TESTIDS if t not in text]
-    assert missing == [], "workbench is missing blocks: %s" % missing
+    """VAL-PROTO-003: the four workbench blocks are mounted, one each.
+
+    Counting the mount form rather than `in text` means deleting
+    `data-testid="activity"` from the markup fails here even though the
+    screen's delegated listener still contains `[data-testid="activity"]`.
+    """
+    _assert_mounted_testids(_screens_text(), WORKBENCH_TESTIDS, "workbench")
 
 
 def test_syntax_drawings_exposes_tree_list_preview_and_toolbar():
+    """VAL-PROTO-004: the five drawings blocks are mounted, one each."""
+    _assert_mounted_testids(_screens_text(), DRAWINGS_TESTIDS, "drawings")
+
+
+def test_syntax_screen_mount_guards_can_fail():
+    """Negative control: each single-point mount removal must be detected.
+
+    One mutation per guarded testid, driven through the same helper the two
+    tests above use, so a guard that cannot fail is caught here rather than
+    surviving into a release.
+    """
     text = _screens_text()
-    missing = [t for t in DRAWINGS_TESTIDS if t not in text]
-    assert missing == [], "drawings screen is missing blocks: %s" % missing
+    for screen, testids in (
+        ("workbench", WORKBENCH_TESTIDS),
+        ("drawings", DRAWINGS_TESTIDS),
+    ):
+        for testid in testids:
+            mount = ' data-testid="%s"' % testid
+            assert mount in text, (
+                "%s guard names %s but the bundle has no such mount point"
+                % (screen, testid)
+            )
+            mutated = text.replace(mount, "", 1)
+            assert mutated != text, "removing %s changed nothing" % mount
+            with pytest.raises(AssertionError) as excinfo:
+                _assert_mounted_testids(mutated, testids, screen)
+            assert testid in str(excinfo.value), (
+                "removing the %s mount point was reported, but not by name: %s"
+                % (testid, excinfo.value)
+            )
 
 
 def test_syntax_drawings_column_labels_are_exact_and_ordered():
@@ -241,17 +297,72 @@ def test_syntax_drawings_toolbar_labels_are_exact_and_ordered():
     )
 
 
+def _canvas_symbol_kind(text: str, tag: str) -> str:
+    """The second argument of ``makeSymbol("<tag>", <kind>, ...)``.
+
+    The kind is read from the object literal itself. A ±200-character window
+    around the tag string survives the symbol being reseeded under a different
+    kind, because a neighbouring symbol's text still contains 设备.
+    """
+    match = re.search(
+        r'makeSymbol\(\s*"%s"\s*,\s*"([^"]+)"' % re.escape(tag), text
+    )
+    assert match, "no makeSymbol call places %s on the canvas" % tag
+    return match.group(1)
+
+
+def _drawing_symbol_kinds(text: str, tag: str) -> list:
+    """Every ``kind`` bound to ``tag`` inside the drawings seed."""
+    block = _block_after(text, "var drawings = [", "\n  ];")
+    return re.findall(r'\{ kind: "([^"]+)", tag: "%s"' % re.escape(tag), block)
+
+
+def _assert_p1001_is_equipment(text: str) -> None:
+    """P-1001 must be a 设备 symbol in both seed sources, and the canvas kind
+    must map to 设备 through the editor's own category table."""
+    assert _canvas_symbol_kind(text, "P-1001") == "equipment", (
+        "the canvas seed places P-1001 as %r, expected the equipment kind"
+        % _canvas_symbol_kind(text, "P-1001")
+    )
+    kinds = _drawing_symbol_kinds(text, "P-1001")
+    assert kinds, "the drawings seed carries no P-1001 symbol record"
+    assert set(kinds) == {"设备"}, (
+        "the drawings seed binds P-1001 to %r, expected 设备" % (kinds,)
+    )
+    categories = _block_after(text, "var ED_CATEGORIES = [", "];")
+    assert re.search(r'id: "equipment", label: "设备"', categories), (
+        "ED_CATEGORIES no longer maps equipment to 设备, so the canvas kind "
+        "and the 设备 requirement would disagree"
+    )
+
+
 def test_syntax_seed_data_contains_the_p1001_equipment_tag():
-    """VAL-PROTO-004 and later cross-screen flows depend on this seed tag."""
+    """VAL-PROTO-004 and later cross-screen flows depend on this seed tag.
+
+    The kind is parsed off the seed objects, not scanned in a character
+    window, so changing P-1001 from 设备 to 管路 fails here.
+    """
     text = _screens_text()
     assert "P-1001" in text, "the seed data no longer carries the tag P-1001"
-    # It must be a 设备 symbol, not a bare string in a comment.
-    match = re.search(r"tag:\s*[\"']P-1001[\"']", text)
-    assert match, "P-1001 is not attached to a symbol object"
-    window = text[max(0, match.start() - 200): match.end() + 200]
-    assert "设备" in window, (
-        "P-1001 is not seeded as a 设备 symbol; nearby text was: %r" % window
+    _assert_p1001_is_equipment(text)
+
+
+def test_syntax_p1001_equipment_guard_can_fail():
+    """Negative control: reseeding P-1001 as a pipe must be detected."""
+    text = _screens_text()
+    canvas_mutation = text.replace(
+        'makeSymbol("P-1001", "equipment",', 'makeSymbol("P-1001", "piping",', 1
     )
+    assert canvas_mutation != text, "the canvas kind mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_p1001_is_equipment(canvas_mutation)
+
+    drawing_mutation = text.replace(
+        '{ kind: "设备", tag: "P-1001"', '{ kind: "管路", tag: "P-1001"', 1
+    )
+    assert drawing_mutation != text, "the drawings kind mutation changed nothing"
+    with pytest.raises(AssertionError):
+        _assert_p1001_is_equipment(drawing_mutation)
 
 
 def test_syntax_no_hard_coded_hex_outside_tokens():
@@ -546,12 +657,23 @@ def test_syntax_symbols_declares_the_four_standard_contract_fields():
     )
 
 
+def _pbs_node_block(text: str) -> str:
+    """The pbs-node template, sliced to its real terminator.
+
+    A character budget (``at + 900``) silently changes the assertion target
+    as the seed grows: it can run past the template into unrelated text, or
+    stop short of the last contract field. ``</button>`` is the actual end of
+    the rendered node.
+    """
+    return _block_after(text, 'data-testid="pbs-node"', "</button>")
+
+
 def test_syntax_drawings_pbs_nodes_show_the_four_contract_fields():
     """REQ-DRW-001: PBS nodes expose 节点名称 / 节点类型 / 父节点 / 图纸数."""
     text = _screens_text()
     at = text.find('data-testid="pbs-node"')
     assert at != -1, "the PBS tree renders no pbs-node"
-    block = text[at: at + 900]
+    block = _pbs_node_block(text)
     missing = [name for name in PBS_CONTRACT_FIELDS if name not in block]
     assert missing == [], "pbs-node is missing contract fields: %s" % missing
 
@@ -565,6 +687,55 @@ def test_syntax_side_channel_state_does_not_grow_the_proto_contract():
     assert len(keys) == 8, "window.__proto grew to %d keys: %r" % (len(keys), keys)
     for side in ("window.__typeLibrary", "window.__legendStandard"):
         assert side in text, "side-channel state %s is missing" % side
+
+
+def _render_catch_block(text: str) -> str:
+    """The catch body of renderScreenHtml, sliced to its real terminator."""
+    return _block_after(text, "      } catch (err) {", "\n      }\n")
+
+
+RENDER_CATCH_WRITES = [
+    "window.__protoErrors.push(message);",
+    "window.console.error(message, err);",
+]
+
+
+def _assert_renderer_errors_are_recorded(text: str) -> None:
+    """A throwing renderer must reach window.__protoErrors and the console.
+
+    Without this, VAL-PROTO-020's four health signals all stay green on a
+    blank screen: app-shell 1, screen-title 1, __protoErrors [], console
+    errorCount 0 (measured at 88ca2bd8e by replacing window.PidScreens.workbench
+    with a thrower; overview-stats fell to 0 and the body text shrank to 158
+    characters).
+
+    The needles are the complete call expressions, not just the receiver: a
+    guard written as `"window.__protoErrors" in block` would still pass after
+    the push was deleted, because the `typeof window.__protoErrors.push`
+    feature test remains.
+    """
+    block = _render_catch_block(text)
+    missing = [write for write in RENDER_CATCH_WRITES if write not in block]
+    assert missing == [], (
+        "renderScreenHtml's catch is missing %r, so a swallowed renderer stays "
+        "invisible to the health assertions; block was %r" % (missing, block)
+    )
+
+
+def test_syntax_renderer_exceptions_reach_the_error_sink():
+    """A renderer exception must be recorded, not silently replaced."""
+    _assert_renderer_errors_are_recorded(_screens_text())
+
+
+def test_syntax_renderer_error_sink_guard_can_fail():
+    """Negative control: dropping either write must be detected."""
+    text = _screens_text()
+    for needle in RENDER_CATCH_WRITES:
+        assert needle in text, "the catch block no longer contains %r" % needle
+        mutated = text.replace(needle, "", 1)
+        assert mutated != text, "removing %r changed nothing" % needle
+        with pytest.raises(AssertionError):
+            _assert_renderer_errors_are_recorded(mutated)
 
 
 def test_syntax_cross003_element_checks_can_fail():
@@ -584,8 +755,8 @@ def test_syntax_cross003_element_checks_can_fail():
     assert 'name: "SY/T 0003"' not in std_block, (
         "renaming a standard did not break the standards check"
     )
-    at = mutated.find('data-testid="pbs-node"')
-    assert "节点名称：" not in mutated[at: at + 900], (
+    pbs = _pbs_node_block(mutated)
+    assert "节点名称：" not in pbs, (
         "renaming 节点名称 did not break the PBS check"
     )
 
