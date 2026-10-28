@@ -169,7 +169,8 @@
 | 工作台四区块 `overview-stats` / `recent-drawings` / `activity` / `quick-actions`、图纸管理五区块 `pbs-tree` / `drawing-list` / `drawing-preview` / `drawings-toolbar` / `pbs-node` | `_assert_mounted_testids` 按 `' data-testid="X"'` 逐个计数（每项恰 1 次），由 `test_syntax_workbench_exposes_its_four_blocks` 与 `test_syntax_drawings_exposes_tree_list_preview_and_toolbar` 调用；`test_syntax_screen_mount_guards_can_fail` 对九个挂载点各做一次删除变异，逐一断言转红 |
 | `P-1001` 是 `设备` 符号 | `_assert_p1001_is_equipment` 解析 `makeSymbol("P-1001", "<kind>", ...)` 的 `kind` 实参与 `drawings` 种子里绑定该位号的 `kind`，并校验 `ED_CATEGORIES` 把 `equipment` 映射到 `设备`；`test_syntax_p1001_equipment_guard_can_fail` 对两处种子各做一次 `设备`→`管路` 变异 |
 | `renderScreenHtml` 的 `catch` 把渲染器异常写入 `window.__protoErrors` 并 `console.error` | `test_syntax_renderer_exceptions_reach_the_error_sink` 钉完整调用表达式；`test_syntax_renderer_error_sink_guard_can_fail` 逐条删除写入语句证明转红 |
-| `pbs-node` 的四个契约字段 | 用例按 `</button>` 结束符切片（`_pbs_node_block`），不用字符预算 |
+| `pbs-node` 的四个契约字段 | 用例按 pbs-node 模板自身的起止字面量切片（`_pbs_node_block` 取 `PBS_NODE_START` 到 `PBS_NODE_END`），不用字符预算；锚点由 `_unique_index()` 保证唯一。`screens.js` 里有两个六空格缩进的 `} catch (err) {` 块，裸字面量锚点会静默换对象，故不得再按 `</button>` 之类的重复 token 切片 |
+| 切片助手的锚点唯一性（`_pbs_node_block`、`_render_catch_block`） | 助手一律经 `_unique_index()` 取锚点：匹配到 0 处或多处即断言失败，绝不返回残缺块。负向对照是 `test_syntax_slice_helpers_require_a_unique_anchor`，用五种变异逐条证明助手会拒绝——pbs-node 模板起始重复、pbs-node 模板起始缺失、`renderScreenHtml` 定义重复、函数体内第二个 `catch` 头、dispatch 调用被删 |
 | `canvasHtml` 的渲染循环上限、`paletteItems()` 的分类与关键词两条过滤分支 | **仅由 `VAL-PROTO-005` / `VAL-PROTO-007` 的浏览器环节守卫**，静态用例不覆盖；改动这些分支后必须重跑浏览器取证 |
 | 编辑器内搜索「先分类后关键词」，无匹配时无空态文案 | 已知行为，数据正确；无断言依赖，勿据空网格判缺陷 |
 | `bom` 选「阀门汇总表」+「当前图纸」得 0 行 | 已知组合，空表是正确结果 |
@@ -179,7 +180,10 @@
 本文件在 `prototype/` 子树内，不进 `manifest.json`（`VAL-DOC-008` 承诺恰好 20 份 markdown
 交付物，登记本文件会破坏该集合）。排除孤儿扫描**不等于**可以没有守卫，因此
 `scripts/pid-platform/prototype_notes.py` 提供 `check_test_surface(docs_root)`，由
-`test_structure.py` 的四条用例驱动：
+`test_structure.py` 的 10 条用例驱动（下表 6 行，其中最后第二行的三组参数各计一条）。
+`check_test_surface` 现在要求**每个字段行恰四个非空单元格**（`字段` / `类型` / `含义` /
+`更新时机` 一个都不许空），并且**先剥掉围栏代码块再定位第 2 节**——表格被搬进以
+`markdown` 标注的围栏后只是「关于契约的文档」，不再算契约本体。
 
 | 用例 | 断言 |
 | --- | --- |
@@ -187,8 +191,13 @@
 | `test_structure_test_surface_fields_are_the_eight_in_contract_order` | 第 2 节表格的字段序列恰为八个、顺序与 VAL-PROTO-019 一致，且 `window.__protoErrors` 不在该序列内 |
 | `test_structure_test_surface_guard_rejects_a_deleted_document` | 合成树上先绿，`unlink()` 后同一函数必须报错并点名路径（**断言的是检查函数的判定，不是文件不存在本身**） |
 | `test_structure_test_surface_guard_rejects_a_wrong_field_order`、`test_structure_test_surface_guard_rejects_a_dropped_field`、`test_structure_test_surface_guard_rejects_a_second_h1` | 调换两个字段、删掉一个字段、追加第二个 H1，三种变异各须报错 |
+| `test_structure_test_surface_guard_rejects_a_blank_column`（三组参数，各计一条） | 依次清空 `symbolCount` 行的 `类型`、`含义`、`更新时机` 中任意一列，同一函数各须报错并点名该字段行 |
+| `test_structure_test_surface_guard_rejects_a_fenced_table` | 把第 2 节表格整体搬进以 `markdown` 标注的围栏；剥围栏后字段序列为空，必须报错且错误文案含「section 2 table carries」 |
 
-实测：删除本文件后全量闸门由 `529 passed / exit 0` 转为 `2 failed / 527 passed / exit 1`。
+实测（`64b65c44b`）：`-k structure` 为 132 passed，其中 test-surface 相关 10 条；全量闸门为
+536 passed / exit 0。删除本文件后全量闸门转为 `2 failed / 534 passed / exit 1`，失败的是
+`test_structure_test_surface_contract_document_is_guarded` 与
+`test_structure_test_surface_fields_are_the_eight_in_contract_order`。
 
 ## 11. 设计规则检查的位号与规则名口径
 
