@@ -905,6 +905,8 @@ def _data_document() -> str:
     extras = {
         "位号主数据与唯一性": (
             "位号主数据以 `(类型编码, 位号)` 为唯一键，`位号` 与 `类型编码` 组合后唯一。\n\n"
+            "唯一性在项目级生效，唯一键为 `(类型编码, 位号)` 复合键：同一类型下的两个实例"
+            "不得登记相同位号；不同类型对象允许同值位号。\n\n"
         ),
         "规则 DSL": "```ebnf\n" + rule_dsl.EBNF_GRAMMAR + "\n```\n\n",
         "触发时机": TRIGGER_TABLE + "\n",
@@ -1119,11 +1121,29 @@ EXPORT_TABLE = (
 )
 
 BOM_BODY = (
-    "一个位号在同一份材料清单中至多占一行，位号是材料清单的行键：每个位号恰占一行。"
+    "材料清单的行键是位号主数据使用的复合键 `(类型编码, 位号)`：同一 `类型编码` 下每个位号恰占一行，"
+    "一个位号在同一份材料清单中至多占一行。"
     "管线行 `数量 = Σ管段长度`，单位 `m`；设备、阀门与仪表类 `数量 = 实例计数` 且恒为 1，单位 `台/个`；"
     "管件不单独编号、继承所属管路的位号，同一宿主位号下的多个实例合并为一行。"
-    "本不变量与 `DR-004` 不冲突：清单不聚合不同位号，只对继承同一宿主位号的管件求和。\n\n"
+    "本不变量与 `DR-004` 不冲突：清单不聚合不同位号，只对继承同一宿主位号的管件求和。"
+    "`位号唯一校验` 关闭时仍按 `(类型编码, 位号)` 一行，同类重复以 `DR-004` 错误呈现。\n\n"
     + BOM_TABLE
+)
+
+# REQ-DELV-001 owns the aggregation key, so its acceptance criteria must state
+# the type-scoped key rather than the rejected "3 个 V-1001 实例聚合为 1 行".
+BOM_AGGREGATION_ENTRY_TEXT = (
+    "### REQ-DELV-001 材料清单聚合键与唯一性不变量\n\n"
+    "- **优先级**：必须\n"
+    "- **用户故事**：作为设计人员，我希望材料清单以复合键聚合，以便清单与主数据一一对应。\n"
+    "- **验收标准**：\n"
+    "  1. 聚合键为 `(类型编码, 位号)`：设备 `P-1001` 与阀门 `P-1001` 分属两个类型编码，各占 1 行。\n"
+    "  2. 同一 `(类型编码, 位号)` 出现 2 行时返回 `BOM_DUPLICATE_TAG`；不同 `类型编码` 的同值位号不触发。\n"
+    "- **数据与界面契约**：\n"
+    "  | 字段 | 类型 | 必填 | 约束 |\n"
+    "  | --- | --- | --- | --- |\n"
+    "  | 聚合键 | String | 是 | 恒为 `(类型编码, 位号)` 复合键 |\n"
+    "- **来源**：新增设计\n"
 )
 
 
@@ -1138,7 +1158,10 @@ def _deliverable_document() -> str:
     for index, name in enumerate(DELIVERABLE_SECTIONS, start=1):
         parts.append("## %s\n\n" % name)
         parts.append(extras.get(name, ""))
-        parts.append(_entry("REQ-DELV-%03d" % index, title="%s示例" % name))
+        if name == "材料清单聚合":
+            parts.append(BOM_AGGREGATION_ENTRY_TEXT)
+        else:
+            parts.append(_entry("REQ-DELV-%03d" % index, title="%s示例" % name))
         parts.append("\n")
     return "".join(parts)
 
@@ -1224,6 +1247,23 @@ def test_traceability_deliverable_validator_rejects_a_missing_document():
     ]
 
 
+def test_traceability_deliverable_validator_rejects_the_retired_quantity_category():
+    """Negative control: 管路类 must not come back into the quantity contract.
+
+    60:7 states 管路 does not form its own row, so a contract cell that says
+    管路类 describes a category the material list never emits.
+    """
+    document = load_documents(DOCS)[DELIVERABLE_PATH]
+    assert "管路类" not in document, "the delivered document still names 管路类"
+    degraded = document.replace(
+        "| 数量 | Number | 是 | 管线行保留 2 位小数 |",
+        "| 数量 | Number | 是 | 管路类保留 2 位小数 |",
+    )
+    assert "管路类" in degraded, "the control changed nothing"
+    errors = validate_deliverable_coverage({DELIVERABLE_PATH: degraded})
+    assert any("still names '管路类'" in error for error in errors), errors
+
+
 BOM_TWO_SIDED_ROWS = [
     {
         "序号": "1",
@@ -1275,8 +1315,8 @@ def test_traceability_bom_rows_accept_a_multi_instance_inherited_tag():
     assert validate_bom_rows(without_the_violation) == []
 
 
-def test_traceability_bom_rows_reject_a_duplicate_tag_across_two_rows():
-    """The row-key half: the same 位号 twice breaks the one-row-per-位号 invariant."""
+def test_traceability_bom_rows_reject_a_duplicate_composite_key_across_two_rows():
+    """The row-key half: the same (类型编码, 位号) twice breaks the invariant."""
     rows = [
         dict(BOM_TWO_SIDED_ROWS[0]),
         {
@@ -1289,11 +1329,43 @@ def test_traceability_bom_rows_reject_a_duplicate_tag_across_two_rows():
         },
     ]
     assert rows[0]["位号"] == rows[1]["位号"], "the control did not duplicate the tag"
+    assert rows[0]["类型"] == rows[1]["类型"], "the control changed the type"
     errors = validate_bom_rows(rows)
     assert any(
-        "repeats the 位号 of row 1" in error and "at most one row" in error
+        "repeats the (类型编码, 位号) of row 1" in error and "at most one row" in error
         for error in errors
     ), errors
+
+
+def test_traceability_bom_rows_accept_the_same_tag_under_two_types():
+    """The passing half of the two-sided control: 设备 P-1001 + 阀门 P-1001 is legal.
+
+    50-data-and-rule-engine.md:19 allows a same-value 位号 across types (its own
+    example is a 管线 L-1001 and an 仪表回路 L-1001) and DR-004 only counts
+    same-type repeats, so keying the duplicate check on 位号 alone would reject a
+    project state the documents declare legal.
+    """
+    rows = [
+        {
+            "序号": "1",
+            "类型": "设备",
+            "位号": "P-1001",
+            "名称": "离心泵",
+            "数量": "1",
+            "单位": "台",
+        },
+        {
+            "序号": "2",
+            "类型": "阀门",
+            "位号": "P-1001",
+            "名称": "截止阀 DN50",
+            "数量": "1",
+            "单位": "个",
+        },
+    ]
+    assert rows[0]["位号"] == rows[1]["位号"], "the control did not share the tag value"
+    assert rows[0]["类型"] != rows[1]["类型"], "the control did not differ in type"
+    assert validate_bom_rows(rows) == []
 
 
 def test_traceability_bom_document_obeys_the_row_identity_ruling():
@@ -1353,6 +1425,90 @@ def test_traceability_tag_master_key_validator_rejects_a_single_column_key():
     errors = validate_tag_master_key(degraded)
     assert errors, "the degraded key was accepted"
     assert any("唯一主键" in error for error in errors), errors
+
+
+def test_traceability_tag_master_key_validator_rejects_the_uniqueness_paragraph_alone():
+    """Negative control: 50:19 alone reverted to '位号是唯一键' must turn red.
+
+    The composite key is stated in two places (the opening paragraph and the
+    uniqueness paragraph). Reverting only the second one used to leave the
+    validator green, because the phrase was still present in the first. Both
+    guards must fire: the single-column phrase table and the scope paragraph.
+    """
+    text = load_documents(DOCS)[DATA_PATH]
+    original = (
+        "唯一性在项目级生效，唯一键为 `(类型编码, 位号)` 复合键：同一项目内、跨全部图纸、"
+        "同一类型下的两个实例不得登记相同位号；不同类型对象允许同值位号，"
+        "例如管线 `L-1001` 与仪表回路 `L-1001` 分属不同类型互不影响。"
+        "`位号唯一校验` 开关关闭时不做该验证。"
+    )
+    assert original in text, "the uniqueness paragraph changed; update this control"
+    degraded = text.replace(original, "唯一性在项目级生效，位号是唯一键。")
+    assert degraded != text, "the control changed nothing"
+    errors = validate_tag_master_key(degraded)
+    assert any("位号是唯一键" in error for error in errors), errors
+    assert any("paragraph does not state the composite key" in error for error in errors), errors
+
+
+def test_traceability_tag_master_key_validator_rejects_a_bare_primary_key_field_constraint():
+    """Negative control: the field-table constraint '≤ 32 字符，主键' must turn red.
+
+    A bare 主键 is the single-column wording the composite key replaced; only
+    the qualified forms (复合键 / 唯一键 / 组成) stay legal.
+    """
+    text = load_documents(DOCS)[DATA_PATH]
+    degraded = text.replace(
+        "≤ 32 字符，与类型编码组成唯一键", "≤ 32 字符，主键"
+    )
+    assert degraded != text, "the control changed nothing"
+    errors = validate_tag_master_key(degraded)
+    assert any("bare 主键" in error for error in errors), errors
+
+
+def test_traceability_bom_row_identity_validator_rejects_the_rejected_aggregation_wording():
+    """Negative control: '3 个 V-1001 实例聚合为 1 行' is the round-1 rejected state.
+
+    REQ-DELV-001's acceptance criteria must state the type-scoped key, so
+    restoring the merged-instance wording fails even though the section prose
+    still mentions 类型编码 elsewhere.
+    """
+    document = _deliverable_document().replace(
+        "设备 `P-1001` 与阀门 `P-1001` 分属两个类型编码，各占 1 行。",
+        "3 个 `V-1001` 实例聚合为 1 行。",
+    )
+    assert "3 个 `V-1001` 实例聚合为 1 行" in document, "the control changed nothing"
+    errors = validate_bom_row_identity(document)
+    assert any(
+        "REQ-DELV-001" in error and "各占 1 行" in error for error in errors
+    ), errors
+
+
+def test_traceability_bom_row_identity_validator_rejects_a_missing_composite_row_key():
+    """Negative control: the section prose must name the composite row key."""
+    document = _deliverable_document().replace(
+        "材料清单的行键是位号主数据使用的复合键 `(类型编码, 位号)`",
+        "材料清单的行键是位号",
+    )
+    assert "复合键 `(类型编码, 位号)`" not in document, "the control changed nothing"
+    errors = validate_bom_row_identity(document)
+    assert any(
+        "composite row key" in error or "材料清单的行键是位号主数据使用的复合键" in error
+        for error in errors
+    ), errors
+
+
+def test_traceability_bom_rows_parser_reports_a_short_row_instead_of_skipping_it():
+    """Negative control: a malformed sample row is an error, never a silent skip."""
+    table = find_bom_header(section_text(_deliverable_document(), "材料清单聚合"))
+    assert table is not None, "the synthetic document lost its standard header"
+    short = dict(table)
+    short["rows"] = list(table["rows"]) + [["6", "设备", "P-1001"]]
+    collected = []
+    kept = bom_rows(short, collected)
+    assert len(kept) == len(table["rows"]), "the short row was silently kept"
+    assert any("expected 6" in error for error in collected), collected
+    with pytest.raises(ValueError):
+        bom_rows(short)
 
 
 # ---------------------------------------------------------------------------

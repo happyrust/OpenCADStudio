@@ -154,7 +154,7 @@
 
 ## 10. 材料清单行键唯一性与已交付的静态守卫
 
-`BOM_SOURCE` 的行键是 `位号`，全表唯一（`requirements/60-deliverables-and-publish.md`）。管线行用管线位号 `L-1001`、`L-1002`；管件行继承管路位号 `L-1001-01`（管线位号加两位后缀）。两者不得相同，否则 `__proto.bomRows` 会出现重复位号并违反 `VAL-PROTO-016`。该不变量由独立用例 `test_syntax_bom_seed_keeps_tags_unique` 钉住，类型词汇与继承关系由 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` 钉住。
+`BOM_SOURCE` 的行键是位号主数据那把复合键 `(类型编码, 位号)`（`requirements/60-deliverables-and-publish.md`）：同一 `类型编码` 下 `位号` 全表唯一，不同 `类型编码` 允许同值位号。管线行用管线位号 `L-1001`、`L-1002`；管件行继承管路位号 `L-1001-01`（管线位号加两位后缀）。同一类型下两者不得相同，否则 `__proto.bomRows` 会出现重复复合键并违反 `VAL-PROTO-016`。当前种子的 14 行位号互不相同，因此复合键唯一性也成立。该不变量由独立用例 `test_syntax_bom_seed_keeps_tags_unique` 钉住，类型词汇与继承关系由 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` 钉住。
 
 `-k syntax` 目前守护的边界，以及**明确交由浏览器环节守卫**的路径：
 
@@ -162,6 +162,7 @@
 | --- | --- |
 | `BOM_SOURCE` 类型词汇、管件继承宿主位号 | 静态用例 `test_syntax_bom_seed_uses_the_standard_type_vocabulary` + 负向对照 |
 | `BOM_SOURCE` 位号全表唯一 | 独立静态用例 `test_syntax_bom_seed_keeps_tags_unique` + 负向对照 |
+| 三组字段名在原型两处逐字一致（VAL-DOC-009 原型半边） | `requirements_contract.validate_prototype_field_labels` 按字段名逐条比对 `screen-catalog.json` 的该屏条目与 `screens.js` 该屏自身源码区段；由 `-k terminology` 的 5 条用例驱动，负向对照把 `起始编码`→`起始编号`（screens.js 与 catalog 各一次）、`"数量"`→`"件数"`、`拒绝`→`禁止` 逐条改坏，各须点名该字段与该屏 |
 | `renderBom` 用 `bmHeadHtml()` 拼表头、change 分支调用 `rerenderBom()` | 静态用例钉完整调用表达式 + 负向对照 |
 | 模板按 `def.types` 过滤行、下拉选项集合等于 `BM_TEMPLATE_DEFS` 键集合 | 静态用例钉完整 `if` 条件表达式 + 负向对照 |
 | 编辑器五区域 `data-testid`、六选项卡顺序、画布 ≥6 符号 ≥3 管线 | 静态用例 |

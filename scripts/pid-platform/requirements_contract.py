@@ -15,6 +15,7 @@ Contract sources:
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -1399,7 +1400,36 @@ def validate_trigger_modes(text: str, path: str = None) -> list:
 TAG_MASTER_SECTION = "位号主数据与唯一性"
 TAG_MASTER_KEY_PHRASE = "(类型编码,位号)"
 TAG_MASTER_KEY_DISPLAY = "(类型编码, 位号)"
-TAG_MASTER_SINGLE_COLUMN_PHRASES = ["项目内唯一主键", "位号是该实例在数据层的唯一主键"]
+TAG_MASTER_SINGLE_COLUMN_PHRASES = [
+    "项目内唯一主键",
+    "位号是该实例在数据层的唯一主键",
+    "位号是唯一键",
+]
+# A bare 主键 is the single-column wording the composite key replaced, unless
+# the same sentence qualifies it (复合 / 唯一 / 组成). Restoring "≤ 32 字符，主键"
+# or "位号是唯一主键" therefore turns the check red while "与类型编码组成唯一键"
+# and "复合键" stay legal.
+TAG_MASTER_BARE_KEY_WORD = "主键"
+TAG_MASTER_COMPOSITE_QUALIFIERS = ("复合", "唯一", "组成")
+TAG_MASTER_QUALIFIER_WINDOW = 8
+# The paragraph that states *where* uniqueness applies must itself carry the
+# composite key. Reverting only that paragraph used to stay green because the
+# phrase survived in the opening paragraph above it.
+TAG_MASTER_SCOPE_ANCHOR = "唯一性在项目级生效"
+
+
+def _paragraph_from(section: str, anchor: str) -> str:
+    """The paragraph that starts with ``anchor`` (blank line terminates it)."""
+    lines = section.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().startswith(anchor):
+            body = [line]
+            for follow in lines[index + 1:]:
+                if not follow.strip():
+                    break
+                body.append(follow)
+            return "\n".join(body)
+    return ""
 
 
 def _normalise_key_text(text: str) -> str:
@@ -1411,6 +1441,24 @@ def _normalise_key_text(text: str) -> str:
         .replace("、", ",")
     )
     return _squash(folded)
+
+
+def _bare_primary_key_offences(normalised: str) -> list:
+    """Every unqualified 主键 occurrence, with its left-hand context (deduped)."""
+    offences = []
+    seen = set()
+    start = 0
+    while True:
+        at = normalised.find(TAG_MASTER_BARE_KEY_WORD, start)
+        if at < 0:
+            return offences
+        window = normalised[max(0, at - TAG_MASTER_QUALIFIER_WINDOW):at]
+        if not any(word in window for word in TAG_MASTER_COMPOSITE_QUALIFIERS):
+            context = normalised[max(0, at - 12):at + len(TAG_MASTER_BARE_KEY_WORD)]
+            if context not in seen:
+                seen.add(context)
+                offences.append(context)
+        start = at + 1
 
 
 def validate_tag_master_key(text: str, path: str = None) -> list:
@@ -1432,6 +1480,22 @@ def validate_tag_master_key(text: str, path: str = None) -> list:
                 "%s: %s still calls 位号 a single-column key ('%s'); the key is %s"
                 % (path, TAG_MASTER_SECTION, phrase, TAG_MASTER_KEY_DISPLAY)
             )
+    for context in _bare_primary_key_offences(normalised):
+        errors.append(
+            "%s: %s still calls 位号 a bare 主键 ('%s'); the key is %s"
+            % (path, TAG_MASTER_SECTION, context, TAG_MASTER_KEY_DISPLAY)
+        )
+    scope = _paragraph_from(section, TAG_MASTER_SCOPE_ANCHOR)
+    if not scope:
+        errors.append(
+            "%s: %s has no paragraph starting '%s'; the uniqueness scope is unstated"
+            % (path, TAG_MASTER_SECTION, TAG_MASTER_SCOPE_ANCHOR)
+        )
+    elif TAG_MASTER_KEY_PHRASE not in _normalise_key_text(scope):
+        errors.append(
+            "%s: the '%s' paragraph does not state the composite key %s"
+            % (path, TAG_MASTER_SCOPE_ANCHOR, TAG_MASTER_KEY_DISPLAY)
+        )
     return errors
 
 
@@ -1461,6 +1525,11 @@ DELIVERABLE_SECTIONS = ["材料清单聚合", "报表模板", "图纸输出", "�
 # material-list columns; the standard header below is the one the prototype's
 # bom screen must reproduce.
 BOM_COLUMNS = ["序号", "类型", "位号", "名称", "数量", "单位"]
+# 管路 does not form its own row (60:7), so the quantity contract must talk about
+# 管线行. 管路类 survived in REQ-DELV-002's contract table after the prose was
+# unified; a reader following that table would aggregate a category the list
+# never emits.
+BOM_RETIRED_QUANTITY_WORD = "管路类"
 BOM_INVARIANT_PHRASE = "一个位号在同一份材料清单中至多占一行"
 BOM_QUANTITY_TOKENS = ["Σ", "管段长度", "实例计数", "台/个", "m"]
 DRAWING_OUTPUT_FORMATS = ["DWG", "DXF", "PDF", "SVG"]
@@ -1498,6 +1567,12 @@ def validate_deliverable_coverage(documents: dict) -> list:
             errors.append(
                 "%s: 材料清单聚合 does not state the quantity term '%s'" % (path, token)
             )
+    if BOM_RETIRED_QUANTITY_WORD in bom:
+        errors.append(
+            "%s: 材料清单聚合 still names '%s'; 管路 does not form its own row, "
+            "so the length-measured category is 管线行"
+            % (path, BOM_RETIRED_QUANTITY_WORD)
+        )
     errors.extend(validate_bom_row_identity(text, path))
 
     drawings = section_text(text, "图纸输出")
@@ -1541,14 +1616,121 @@ TAG_RULE_FIELDS_IN_DATA_DOC = [
 ]
 TAG_RULE_FIELD_SYNONYMS = ["位号唯一性校验"]
 
+# VAL-DOC-009 names four places that must agree: the defining document, the
+# referencing document, the prototype DOM labels and screen-catalog.json. The
+# prototype half is checked per field name against the owning screen's own
+# source region — never as "the word occurs somewhere in the file", which would
+# stay green when the label is renamed in one screen and the word survives in
+# an unrelated one.
+PROTOTYPE_CATALOG_REL = "prototype/specs/screen-catalog.json"
+PROTOTYPE_SCREENS_JS_REL = "prototype/assets/screens.js"
+PROTOTYPE_FIELD_SCREENS = [
+    ("tag-rules", "位号规则"),
+    ("bom", "材料清单"),
+    ("permissions", "权限"),
+]
+# Each entry is a list of (start anchor, end anchor) pairs; the anchors must be
+# unique in screens.js, so a duplicated function name cannot silently widen or
+# shift the region.
+PROTOTYPE_SCREEN_SPANS = {
+    "tag-rules": [
+        ("function renderTagRules(def) {", "/* Backfill the editor from a rule row"),
+    ],
+    "bom": [
+        ("var BM_TEMPLATE_DEFS = {", "var bmState = {"),
+        ("function renderBom(def) {", "function bmActive() {"),
+    ],
+    "permissions": [
+        ("var PE_ROLES = [", "function renderPermissions(def) {"),
+        ("function renderPermissions(def) {", "/* Role selection flips classes"),
+    ],
+}
 
-def validate_field_group_consistency(documents: dict) -> list:
-    """VAL-DOC-009 on the document side: definition site and reference site agree.
 
-    The prototype halves of the assertion (DOM labels, ``screen-catalog.json``)
-    are not checked here; they arrive with the prototype. What is enforceable
-    today is that the reference documents reuse the defining document's field
-    names verbatim and never invent a synonym.
+def _unique_span(text: str, start: str, end: str, label: str) -> str:
+    """The substring between two anchors that must each occur exactly once."""
+    if text.count(start) != 1:
+        raise ValueError("%s: anchor %r occurs %d times; expected 1"
+                         % (label, start, text.count(start)))
+    if text.count(end) != 1:
+        raise ValueError("%s: anchor %r occurs %d times; expected 1"
+                         % (label, end, text.count(end)))
+    at = text.index(start)
+    stop = text.index(end, at + len(start))
+    return text[at:stop]
+
+
+def prototype_field_group_names() -> dict:
+    """The field names each screen must carry, keyed by screen id."""
+    return {
+        "tag-rules": list(TAG_RULE_FIELDS_IN_DATA_DOC),
+        "bom": list(BOM_COLUMNS),
+        "permissions": list(DRAWING_PERMISSION_FIELDS),
+    }
+
+
+def validate_prototype_field_labels(docs_root) -> list:
+    """VAL-DOC-009 prototype half: per-field-name agreement, not a word search.
+
+    For each of the three field groups the owning screen must carry every field
+    name twice: once in its ``screen-catalog.json`` entry and once inside its
+    own source region in ``screens.js``. Renaming a field in either place (for
+    example 起始编码 → 起始编号) turns this red.
+    """
+    root = Path(docs_root)
+    catalog_path = root / PROTOTYPE_CATALOG_REL
+    screens_path = root / PROTOTYPE_SCREENS_JS_REL
+    errors = []
+    if not catalog_path.is_file():
+        errors.append("%s: prototype screen catalog is missing" % PROTOTYPE_CATALOG_REL)
+    if not screens_path.is_file():
+        errors.append("%s: prototype screen source is missing" % PROTOTYPE_SCREENS_JS_REL)
+    if errors:
+        return errors
+
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    by_id = {screen.get("id"): screen for screen in catalog.get("screens", [])}
+    screens_js = screens_path.read_text(encoding="utf-8")
+
+    for screen_id, group_name in PROTOTYPE_FIELD_SCREENS:
+        entry = by_id.get(screen_id)
+        if entry is None:
+            errors.append(
+                "%s: screen '%s' (%s) is not registered"
+                % (PROTOTYPE_CATALOG_REL, screen_id, group_name)
+            )
+            continue
+        catalog_text = json.dumps(entry, ensure_ascii=False)
+        region_parts = []
+        for start, end in PROTOTYPE_SCREEN_SPANS[screen_id]:
+            try:
+                region_parts.append(
+                    _unique_span(screens_js, start, end, PROTOTYPE_SCREENS_JS_REL)
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+        region = "\n".join(region_parts)
+        for name in prototype_field_group_names()[screen_id]:
+            if name not in catalog_text:
+                errors.append(
+                    "%s: screen '%s' does not name the %s field '%s'"
+                    % (PROTOTYPE_CATALOG_REL, screen_id, group_name, name)
+                )
+            if name not in region:
+                errors.append(
+                    "%s: screen '%s' (%s) does not label the field '%s'"
+                    % (PROTOTYPE_SCREENS_JS_REL, screen_id, group_name, name)
+                )
+    return errors
+
+
+def validate_field_group_consistency(documents: dict, docs_root=None) -> list:
+    """VAL-DOC-009: the defining site, the referencing site and the prototype agree.
+
+    ``docs_root`` enables the prototype half (``screen-catalog.json`` plus the
+    owning screen's region of ``screens.js``); without it only the document half
+    runs, which keeps the in-memory negative controls focused. The real-tree
+    test always passes the repository's docs root.
     """
     errors = []
     data_path = AREA_FILE_OF["DATA"]
@@ -1584,6 +1766,9 @@ def validate_field_group_consistency(documents: dict) -> list:
                 "%s: the material-list column names never appear together as the header %s"
                 % (delv_path, " | ".join(BOM_COLUMNS))
             )
+
+    if docs_root is not None:
+        errors.extend(validate_prototype_field_labels(docs_root))
     return errors
 
 
@@ -1607,10 +1792,14 @@ def find_bom_header(text: str):
 # keeps the document from regressing to "3 个 V-1001 实例", a state that
 # REQ-DATA-001 (same-type uniqueness) and DR-004 (错误, blocking) forbid.
 
-BOM_ROW_KEY_PHRASE = "位号是材料清单的行键"
+BOM_ROW_KEY_PHRASE = "材料清单的行键是位号主数据使用的复合键"
 BOM_ROW_KEY_TYPES = ("设备", "阀门", "仪表")
 BOM_INHERITED_TAG_TYPES = ("管件",)
 BOM_LENGTH_TYPES = ("管线",)
+# The row key is the composite key the master data uses, not a bare 位号: 50
+# allows a 管线 L-1001 and an 仪表回路 L-1001 to coexist, and DR-004 only counts
+# same-type repeats. Every token below is therefore about the type-scoped key.
+BOM_COMPOSITE_KEY_PHRASE = "(类型编码,位号)"
 BOM_ROW_IDENTITY_TOKENS = [
     BOM_INVARIANT_PHRASE,
     BOM_ROW_KEY_PHRASE,
@@ -1620,17 +1809,38 @@ BOM_ROW_IDENTITY_TOKENS = [
     "DR-004",
     "不冲突",
 ]
+# REQ-DELV-001 owns the aggregation key. These are the phrases its acceptance
+# criteria must carry, so restoring the rejected "3 个 V-1001 实例聚合为 1 行"
+# wording fails even while the prose above it still mentions 类型编码.
+BOM_AGGREGATION_ENTRY = "REQ-DELV-001"
+BOM_AGGREGATION_ENTRY_TOKENS = [BOM_COMPOSITE_KEY_PHRASE, "各占 1 行", "不同"]
+# The disabled-uniqueness switch must not change the aggregation grain.
+BOM_DISABLED_UNIQUENESS_TOKEN = "位号唯一校验"
 
 
-def bom_rows(table) -> list:
-    """Parse a standard BOM table into ``{序号, 类型, 位号, 名称, 数量, 单位}`` maps."""
+def bom_rows(table, errors=None) -> list:
+    """Parse a standard BOM table into ``{序号, 类型, 位号, 名称, 数量, 单位}`` maps.
+
+    A row with fewer cells than the six standard columns is a defect, not
+    something to skip: the previous ``continue`` made a malformed sample table
+    look legal. Pass ``errors`` to collect the message; without it the defect
+    raises ``ValueError`` so no caller can silently lose a row.
+    """
     header = [_plain_cell(cell) for cell in table["header"]]
     if any(name not in header for name in BOM_COLUMNS):
         return []
     index = {name: header.index(name) for name in BOM_COLUMNS}
     rows = []
-    for row in table["rows"]:
+    for offset, row in enumerate(table["rows"]):
         if len(row) < len(BOM_COLUMNS):
+            line = table["line"] + 2 + offset
+            message = (
+                "line %d: material-list row has %d cells; expected %d (%s)"
+                % (line, len(row), len(BOM_COLUMNS), " | ".join(BOM_COLUMNS))
+            )
+            if errors is None:
+                raise ValueError(message)
+            errors.append(message)
             continue
         rows.append({name: _plain_cell(row[index[name]]) for name in BOM_COLUMNS})
     return rows
@@ -1643,13 +1853,23 @@ def _bom_quantity(value):
         return None
 
 
-def validate_bom_rows(rows, path: str = None) -> list:
-    """Check the one-位号-one-row invariant over parsed BOM rows.
+def bom_row_key(row) -> tuple:
+    """The composite row key ``(类型编码, 位号)`` for one parsed BOM row."""
+    return (
+        str(row.get("类型") or "").strip(),
+        str(row.get("位号") or "").strip(),
+    )
 
-    Two-sided by construction: a 设备/阀门/仪表 row whose 数量 exceeds 1 is an
-    error (two instances cannot share one 位号), while a 管件 row inheriting a host
-    位号 may carry several instances. ``rows`` maps use the six standard columns;
-    序号 defaults to the row position when absent.
+
+def validate_bom_rows(rows, path: str = None) -> list:
+    """Check the one-row-per-composite-key invariant over parsed BOM rows.
+
+    Two-sided by construction. The duplicate check is keyed by
+    ``(类型编码, 位号)``: 50-data-and-rule-engine.md lets a 设备 and a 阀门 carry
+    the same 位号 because they are different types, so keying on 位号 alone would
+    reject a legal project state. Within one type a repeat is still an error,
+    and a 设备/阀门/仪表 row whose 数量 exceeds 1 is an error as well, while a
+    管件 row inheriting a host 位号 may carry several instances.
     """
     path = path or AREA_FILE_OF["DELV"]
     errors = []
@@ -1662,13 +1882,17 @@ def validate_bom_rows(rows, path: str = None) -> list:
         if not tag:
             errors.append("%s: %s has no 位号" % (path, label))
             continue
-        if tag in seen:
+        if not kind:
+            errors.append("%s: %s has no 类型编码; the row key is (类型编码, 位号)" % (path, label))
+            continue
+        key = bom_row_key(row)
+        if key in seen:
             errors.append(
-                "%s: %s repeats the 位号 of row %s; one 位号 occupies at most one row"
-                % (path, label, seen[tag])
+                "%s: %s repeats the (类型编码, 位号) of row %s; one composite key "
+                "occupies at most one row" % (path, label, seen[key])
             )
             continue
-        seen[tag] = sequence
+        seen[key] = sequence
         quantity = _bom_quantity(row.get("数量"))
         if quantity is None:
             errors.append(
@@ -1696,6 +1920,27 @@ def validate_bom_rows(rows, path: str = None) -> list:
     return errors
 
 
+def _aggregation_entry_errors(text: str, path: str) -> list:
+    """REQ-DELV-001's own acceptance criteria must state the type-scoped key."""
+    for entry in split_entries(text):
+        if entry["id"] != BOM_AGGREGATION_ENTRY:
+            continue
+        fields = parse_entry_fields(entry["body"])
+        criteria = _squash(fields.get("验收标准", ""))
+        errors = []
+        for token in BOM_AGGREGATION_ENTRY_TOKENS:
+            if _squash(token) not in criteria:
+                errors.append(
+                    "%s: %s 验收标准 does not state '%s'; the row key is %s"
+                    % (path, BOM_AGGREGATION_ENTRY, token, BOM_COMPOSITE_KEY_PHRASE)
+                )
+        return errors
+    return [
+        "%s: %s is not defined; the material-list aggregation key has no owner"
+        % (path, BOM_AGGREGATION_ENTRY)
+    ]
+
+
 def validate_bom_row_identity(text: str, path: str = None) -> list:
     """The 材料清单聚合 section states the row-key ruling and its example obeys it."""
     path = path or AREA_FILE_OF["DELV"]
@@ -1707,10 +1952,22 @@ def validate_bom_row_identity(text: str, path: str = None) -> list:
             errors.append(
                 "%s: 材料清单聚合 does not state '%s'" % (path, token)
             )
+    if _squash(BOM_COMPOSITE_KEY_PHRASE) not in squashed:
+        errors.append(
+            "%s: 材料清单聚合 does not state the composite row key %s"
+            % (path, BOM_COMPOSITE_KEY_PHRASE)
+        )
+    if _squash(BOM_DISABLED_UNIQUENESS_TOKEN) not in squashed:
+        errors.append(
+            "%s: 材料清单聚合 does not state what happens when %s is off"
+            % (path, BOM_DISABLED_UNIQUENESS_TOKEN)
+        )
+    errors.extend(_aggregation_entry_errors(text, path))
     table = find_bom_header(section)
     if table is None:
         return errors  # the header itself is checked by validate_deliverable_coverage
-    errors.extend(validate_bom_rows(bom_rows(table), path))
+    rows = bom_rows(table, errors)
+    errors.extend(validate_bom_rows(rows, path))
     return errors
 
 

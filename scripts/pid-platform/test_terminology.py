@@ -6,6 +6,8 @@ hand-written expectation that could drift from disk.
 """
 from __future__ import annotations
 
+import shutil
+
 import pytest
 
 from conftest import DOCS
@@ -30,6 +32,7 @@ from requirements_contract import (
     TAG_RULE_FIELDS_IN_DATA_DOC,
     load_documents,
     validate_field_group_consistency,
+    validate_prototype_field_labels,
 )
 
 GLOSSARY = DOCS / "glossary.md"
@@ -439,9 +442,10 @@ def test_terminology_validator_rejects_blank_alias_and_thin_definition():
 
 
 # ---------------------------------------------------------------------------
-# VAL-DOC-009, document half: the reference documents reuse the defining
-# document's field names verbatim. The prototype halves (DOM labels and
-# screen-catalog.json) belong to the prototype milestones.
+# VAL-DOC-009: the definition site, the referencing site, the prototype DOM
+# labels and screen-catalog.json must agree field by field. The document half
+# runs on an in-memory map; the prototype half reads the real tree, because a
+# field name that survives only in an unrelated screen must not count.
 # ---------------------------------------------------------------------------
 
 DATA_DOC_PATH = "requirements/50-data-and-rule-engine.md"
@@ -461,15 +465,97 @@ def _field_group_documents() -> dict:
     return {DATA_DOC_PATH: data, DELIVERABLE_DOC_PATH: "# 交付\n\n" + bom}
 
 
+@pytest.fixture()
+def prototype_copy(tmp_path):
+    """A writable copy of the prototype subtree, for the negative controls."""
+    source = DOCS / "prototype"
+    assert source.is_dir(), "missing prototype subtree: " + str(source)
+    target = tmp_path / "prototype"
+    shutil.copytree(source, target)
+    return tmp_path
+
+
+def _mutate(root, relative: str, old: str, new: str) -> None:
+    """Replace one literal in a copied prototype file and prove it changed."""
+    path = root / relative
+    text = path.read_text(encoding="utf-8")
+    assert old in text, "the control anchor %r is absent from %s" % (old, relative)
+    updated = text.replace(old, new)
+    assert updated != text, "the control changed nothing in " + relative
+    path.write_text(updated, encoding="utf-8")
+
+
 def test_terminology_field_groups_agree_across_the_delivered_documents():
-    """VAL-DOC-009: tag-rule and BOM field names match their defining documents."""
-    errors = validate_field_group_consistency(load_documents(DOCS))
+    """VAL-DOC-009: documents and both prototype surfaces agree field by field."""
+    errors = validate_field_group_consistency(load_documents(DOCS), DOCS)
     assert errors == [], "field-name drift: %s" % errors
 
 
 def test_terminology_field_group_control_accepts_the_synthetic_pair():
     """Positive control: the synthetic pair reuses every name verbatim."""
     assert validate_field_group_consistency(_field_group_documents()) == []
+
+
+def test_terminology_prototype_field_labels_match_the_catalog(prototype_copy):
+    """Positive control: an unmodified copy of the prototype passes the check."""
+    assert validate_prototype_field_labels(prototype_copy) == []
+
+
+def test_terminology_prototype_label_guard_rejects_a_renamed_screens_js_field(prototype_copy):
+    """Negative control: 起始编码 → 起始编号 throughout the tag-rules screen turns red.
+
+    The rename is applied to every occurrence in the file, because the guard
+    asserts the field name is present in the owning screen's region; leaving
+    one copy behind would be the "the word occurs somewhere" weakness this
+    check exists to avoid.
+    """
+    _mutate(
+        prototype_copy,
+        "prototype/assets/screens.js",
+        "起始编码",
+        "起始编号",
+    )
+    errors = validate_prototype_field_labels(prototype_copy)
+    assert any("起始编码" in error and "tag-rules" in error for error in errors), errors
+
+
+def test_terminology_prototype_label_guard_rejects_a_renamed_catalog_field(prototype_copy):
+    """Negative control: the same rename in screen-catalog.json turns red."""
+    _mutate(
+        prototype_copy,
+        "prototype/specs/screen-catalog.json",
+        "起始编码",
+        "起始编号",
+    )
+    errors = validate_prototype_field_labels(prototype_copy)
+    assert any(
+        "screen-catalog.json" in error and "起始编码" in error for error in errors
+    ), errors
+
+
+def test_terminology_prototype_label_guard_rejects_a_renamed_bom_column(prototype_copy):
+    """Negative control: renaming 数量 throughout the bom screen turns red."""
+    _mutate(
+        prototype_copy,
+        "prototype/assets/screens.js",
+        '"数量"',
+        '"件数"',
+    )
+    errors = validate_prototype_field_labels(prototype_copy)
+    assert any("bom" in error and "'数量'" in error for error in errors), errors
+
+
+def test_terminology_prototype_label_guard_rejects_a_renamed_permission_field(prototype_copy):
+    """Negative control: renaming 拒绝 in the permissions matrix turns red."""
+    assert validate_prototype_field_labels(prototype_copy) == [], "control must start green"
+    _mutate(
+        prototype_copy,
+        "prototype/assets/screens.js",
+        "拒绝",
+        "禁止",
+    )
+    errors = validate_prototype_field_labels(prototype_copy)
+    assert any("permissions" in error and "'拒绝'" in error for error in errors), errors
 
 
 def test_terminology_validator_rejects_a_tag_rule_field_synonym_in_the_data_document():
