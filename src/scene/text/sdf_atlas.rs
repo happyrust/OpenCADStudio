@@ -146,6 +146,11 @@ pub struct AtlasEntry {
     pub plane_max: [f32; 2],
     /// Glyph advance width (9-unit space).
     pub advance: f32,
+    /// Half-width of the pen band a stroke glyph was baked with (glyph
+    /// units); 0 for filled glyphs and bold ones. The shader draws a stroke
+    /// glyph wider than a pixel as a one-pixel centreline, as stroke fonts
+    /// carry no width of their own.
+    pub pen: f32,
 }
 
 /// A glyph's vector geometry recovered for CPU export (PDF / print), where the
@@ -219,6 +224,7 @@ struct BakedTile {
     plane_min: [f32; 2],
     plane_max: [f32; 2],
     advance: f32,
+    pen: f32,
 }
 
 /// Side of the reserved solid (all-255) block at the atlas corner.
@@ -302,7 +308,11 @@ impl GlyphAtlas {
         let entry = face
             .glyph(ch)
             .and_then(|g| bake_glyph(&g, pen_half))
-            .and_then(|tile| self.pack(tile));
+            .and_then(|tile| self.pack(tile))
+            .map(|entry| AtlasEntry {
+                pen: if bold { 0.0 } else { entry.pen },
+                ..entry
+            });
         self.entries.insert(key, entry);
         entry
     }
@@ -430,6 +440,7 @@ impl GlyphAtlas {
             plane_min: tile.plane_min,
             plane_max: tile.plane_max,
             advance: tile.advance,
+            pen: tile.pen,
         })
     }
 }
@@ -682,6 +693,7 @@ fn bake_glyph(g: &Glyph, pen_half: f32) -> Option<BakedTile> {
         plane_min,
         plane_max,
         advance: g.advance,
+        pen: if filled { 0.0 } else { pen_half },
     })
 }
 

@@ -200,6 +200,8 @@ pub enum PlotFlag {
     HidePaperspace,
     /// Write the dialog into the layout when a plot is sent.
     SaveToLayout,
+    /// Open the written file in the system viewer.
+    OpenWhenDone,
 }
 
 /// The page setups of another drawing, offered for import (`PSETUPIN`).
@@ -513,6 +515,9 @@ pub struct PlotDialogState {
     /// The file `to_file` writes. Meaningless while `to_file` is false, and
     /// kept then, so switching back from a printer finds it where it was.
     pub file_format: PlotFileFormat,
+    /// A file plot opens in the system viewer once written.
+    #[serde(default)]
+    pub open_when_done: bool,
     pub paper: String,
     #[serde(skip)]
     pub paper_width_mm: f64,
@@ -633,6 +638,7 @@ impl Default for PlotDialogState {
             // Web defaults to PDF output: it has no system printers.
             to_file: cfg!(target_arch = "wasm32"),
             file_format: PlotFileFormat::Pdf,
+            open_when_done: false,
             paper: paper_catalog::default_paper().canonical.to_string(),
             paper_width_mm: 297.0,
             paper_height_mm: 210.0,
@@ -1495,7 +1501,15 @@ pub fn view_window(
     .align_y(iced::Center)
     .width(Length::Fill);
     let printer_controls: Element<'_, Message> = if to_file {
-        Space::new().height(0).into()
+        if cfg!(target_arch = "wasm32") {
+            Space::new().height(0).into()
+        } else {
+            checkbox(s.open_when_done)
+                .label(crate::tr!("plot", "open-when-done"))
+                .text_size(12)
+                .on_toggle(|_| Message::PlotDlg(PlotDlgMsg::Flag(PlotFlag::OpenWhenDone)))
+                .into()
+        }
     } else {
         row![
             field_row(t!("Copies"), &s.copies, PlotDlgMsg::Copies, 60),

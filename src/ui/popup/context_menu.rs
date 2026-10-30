@@ -88,6 +88,8 @@ pub enum MenuAction {
     Command(String),
     /// One-shot "Mid Between 2 Points" snap override.
     Mtp,
+    /// One-shot base point and offset modifier.
+    From,
     /// One-shot object snap override for the next pick.
     SnapOverride(SnapType),
     /// Next pick ignores object snaps.
@@ -380,6 +382,8 @@ pub enum MenuContext {
         selection_in_group: bool,
         /// Exactly one hatch is selected: its edit row is offered.
         single_hatch: bool,
+        /// Exactly one multileader is selected: its leader rows are offered.
+        single_mleader: bool,
         selected_constraint: Option<ConstraintId>,
         isolation_active: bool,
         /// Recently run commands, newest first.
@@ -405,6 +409,7 @@ pub fn build_context_menu(ctx: &MenuContext, open_submenu: Option<SubmenuId>) ->
             has_selection,
             selection_in_group,
             single_hatch,
+            single_mleader,
             selected_constraint,
             isolation_active,
             recent_cmds,
@@ -416,6 +421,7 @@ pub fn build_context_menu(ctx: &MenuContext, open_submenu: Option<SubmenuId>) ->
             *has_selection,
             *selection_in_group,
             *single_hatch,
+            *single_mleader,
             *selected_constraint,
             *isolation_active,
             recent_cmds,
@@ -523,7 +529,7 @@ fn recent_input_submenu(items: Vec<MenuItem>, open_submenu: Option<SubmenuId>) -
 }
 
 /// Snap Overrides ▸: one-shot object snaps for the next pick, in the
-/// grouping (M2P, then the edge snaps, the curve snaps, the relation snaps,
+/// grouping (M2P / FROM, then the edge snaps, the curve snaps, the relation snaps,
 /// None) plus the settings dialog.
 fn snap_override_items() -> Vec<MenuItem> {
     let snap = |label: &str, t: SnapType| {
@@ -531,6 +537,8 @@ fn snap_override_items() -> Vec<MenuItem> {
     };
     vec![
         MenuItem::new(t!("Mid Between 2 Points").into_owned(), MenuAction::Mtp).icon(MenuIcon::Mtp),
+        MenuItem::new(t!("From").into_owned(), MenuAction::From)
+            .icon(MenuIcon::Chrome(crate::ui::icons::from_icon())),
         snap("Endpoint", SnapType::Endpoint),
         snap("Midpoint", SnapType::Midpoint),
         snap("Intersection", SnapType::Intersection),
@@ -580,6 +588,7 @@ fn idle_rows(
     has_selection: bool,
     selection_in_group: bool,
     single_hatch: bool,
+    single_mleader: bool,
     selected_constraint: Option<ConstraintId>,
     isolation_active: bool,
     recent_cmds: &[String],
@@ -669,6 +678,16 @@ fn idle_rows(
             rows.push(MenuRow::Item(cmd(
                 t!("Edit Hatch").into_owned(),
                 "HATCHEDIT",
+            )));
+        }
+        if single_mleader {
+            rows.push(MenuRow::Item(cmd(
+                t!("Add Leader").into_owned(),
+                "AIMLEADEREDITADD",
+            )));
+            rows.push(MenuRow::Item(cmd(
+                t!("Remove Leader").into_owned(),
+                "AIMLEADEREDITREMOVE",
             )));
         }
         rows.push(MenuRow::Item(
@@ -1006,6 +1025,7 @@ mod tests {
         let menu = build_context_menu(&ctx, Some(SubmenuId::SnapOverrides));
         let acts = actions(&menu);
         assert!(acts.contains(&MenuAction::Mtp));
+        assert!(acts.contains(&MenuAction::From));
         for &(t, _, _) in crate::snap::ALL_SNAP_MODES {
             assert!(acts.contains(&MenuAction::SnapOverride(t)), "missing {t:?}");
         }
@@ -1026,6 +1046,7 @@ mod tests {
             has_selection,
             selection_in_group: false,
             single_hatch: false,
+            single_mleader: false,
             selected_constraint: None,
             isolation_active: false,
             recent_cmds: vec!["LINE".into(), "CIRCLE".into()],

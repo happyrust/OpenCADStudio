@@ -100,8 +100,25 @@ impl OpenCADStudio {
                 self.refresh_properties();
             }
 
+            "SELECTSIMILAR SETTINGS" | "SELECTSIMILAR SE" => {
+                self.select_similar_settings = Some(self.select_similar_mode);
+                self.active_modal = Some(crate::app::ModalKind::SelectSimilarSettings);
+                self.reset_modal_geometry();
+            }
+            "SELECTSIMILAR" | "SELSIM" if self.tabs[i].scene.selected.is_empty() => {
+                use crate::modules::draw::select::SelectObjectsCommand;
+                let command = SelectObjectsCommand::with_settings(
+                    "SELECTSIMILAR",
+                    "SELECTSIMILAR",
+                    "Select objects or [SEttings]:",
+                    || crate::command::CmdResult::Dispatch("SELECTSIMILAR SETTINGS".to_string()),
+                );
+                self.command_line.push_info(&command.prompt());
+                self.command_line.set_step_options(command.options());
+                self.tabs[i].active_cmd = Some(Box::new(command));
+            }
             "SELECTSIMILAR" | "SELSIM" => {
-                let added = self.tabs[i].scene.select_similar();
+                let added = self.tabs[i].scene.select_similar(self.select_similar_mode);
                 self.command_line
                     .push_output(crate::tf!("Select Similar: {} added.", added).as_ref());
                 self.refresh_properties();
@@ -905,6 +922,17 @@ impl OpenCADStudio {
 
             "DATAEXTRACTION" | "EATTEXT" | "ATTEXT" => {
                 self.open_data_extraction();
+            }
+
+            // -DATAEXTRACTION: run a saved extraction from the command line.
+            "-DATAEXTRACTION" => {
+                let command = crate::modules::annotate::data_extract::TemplateCommand;
+                self.command_line.push_info(&command.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(command));
+            }
+            cmd if cmd.starts_with("-DATAEXTRACTION _RUN ") => {
+                let path = cmd.trim_start_matches("-DATAEXTRACTION _RUN ").trim().to_string();
+                self.run_extraction_template(&path);
             }
 
             // ── Find / Replace ────────────────────────────────────────────────

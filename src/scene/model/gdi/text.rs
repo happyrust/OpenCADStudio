@@ -18,7 +18,7 @@ fn face_ratios(family: &str) -> (f32, f32) {
     sysfont::with_face_data(family, |data, index| {
         let face = ttf_parser::Face::parse(data, index).ok()?;
         let upem = face.units_per_em() as f32;
-        let cap = ttf_glyph::cap_height_units(&face) / upem;
+        let cap = ttf_glyph::capital_units(&face) / upem;
         let asc = face.ascender() as f32 / upem;
         Some((cap, asc.max(0.5)))
     })

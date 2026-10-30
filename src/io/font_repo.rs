@@ -36,6 +36,30 @@ pub fn set_fonts_folder(folder: Option<PathBuf>) {
     *FONTS_FOLDER.write().unwrap_or_else(|e| e.into_inner()) = folder;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+static SUPPORT_FOLDER: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// A folder of the user's own support files — hatch patterns, linetypes,
+/// fonts and shape files — searched beside the built-in locations, so one
+/// folder (on a flash drive, say) carries them from machine to machine.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn support_folder() -> Option<PathBuf> {
+    SUPPORT_FOLDER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn support_folder() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_support_folder(folder: Option<PathBuf>) {
+    *SUPPORT_FOLDER.write().unwrap_or_else(|e| e.into_inner()) = folder;
+}
+
 /// Local store for fonts downloaded from the community repository. Text
 /// resolution searches here after the drawing folder.
 #[cfg(not(target_arch = "wasm32"))]
@@ -99,9 +123,13 @@ pub fn missing_shx_fonts(doc: &Document) -> Vec<String> {
         // The primary font and the big font (Asian double-byte glyphs) are
         // both plain .shx files the style depends on.
         for file in [style.font_file.trim(), style.big_font_file.trim()] {
+            // A font with a built-in stroke equivalent (romans, simplex, txt...)
+            // already draws as it should; only one that would fall back to an
+            // unrelated face is worth a download.
             if file.is_empty()
                 || !file.to_ascii_lowercase().ends_with(".shx")
                 || crate::io::linetypes::is_bundled_shape_file(file)
+                || crate::scene::text::lff::is_builtin(file)
             {
                 continue;
             }
@@ -124,17 +152,18 @@ pub fn missing_shx_fonts(doc: &Document) -> Vec<String> {
 /// case-insensitively by file name.
 pub fn local_font_file(name: &str) -> Option<PathBuf> {
     let file = name.rsplit(['/', '\\']).next()?;
-    let dir = fonts_dir()?;
-    let direct = dir.join(file);
-    if direct.is_file() {
-        return Some(direct);
-    }
     let lower = file.to_ascii_lowercase();
-    std::fs::read_dir(&dir)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .find(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase() == lower)
-        .map(|entry| entry.path())
+    fonts_dir().into_iter().chain(support_folder()).find_map(|dir| {
+        let direct = dir.join(file);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        std::fs::read_dir(&dir)
+            .ok()?
+            .filter_map(|entry| entry.ok())
+            .find(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase() == lower)
+            .map(|entry| entry.path())
+    })
 }
 
 /// List the community folder through the GitHub contents API.
@@ -327,6 +356,9 @@ mod tests {
         let _ = doc.text_styles.add(mk("B", "missing1.SHX"));
         let _ = doc.text_styles.add(mk("C", "exists.shx"));
         doc.source_path = Some(dir.join("drawing.dwg").to_string_lossy().into_owned());
+        // Fonts with a built-in stroke equivalent are not missing (#2156).
+        let _ = doc.text_styles.add(mk("D", "romans.shx"));
+        let _ = doc.text_styles.add(mk("E", "SIMPLEX.SHX"));
         let missing = missing_shx_fonts(&doc);
         assert_eq!(missing, vec!["MISSING1.shx".to_string()]);
         let _ = std::fs::remove_file(dir.join("exists.shx"));

@@ -174,6 +174,14 @@ impl super::OpenCADStudio {
             self.open_attdef_edit(target);
             return iced::Task::none();
         }
+        // A text that is one field, as FIELD makes it, edits that field.
+        if matches!(
+            self.tabs[i].scene.document.get_entity(target),
+            Some(EntityType::MText(_) | EntityType::Text(_))
+        ) && self.open_field_edit(target)
+        {
+            return iced::Task::none();
+        }
         // Snapshot what we need before borrowing `self` mutably to open.
         let Some(entity) = self.tabs[i].scene.document.get_entity(target) else {
             return iced::Task::none();
@@ -332,7 +340,7 @@ impl super::OpenCADStudio {
             {
                 self.tabs[i].scene.document.header.text_height = paper_height;
             }
-            let handle = self.commit_entity_handle(plane.place_entity(EntityType::Text(t)));
+            let handle = self.commit_new_text(plane.place_entity(EntityType::Text(t)));
             if annotative {
                 let scale = self.tabs[i].scene.creation_annotation_scale_handle();
                 if let (Some(handle), Some(scale)) = (handle, scale) {

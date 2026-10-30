@@ -1587,6 +1587,7 @@ fn block_parameter_leader_and_crossing_box_select_then_delete() {
         iced::Point::new(box_bounds.x, box_bounds.y),
         iced::Point::new(box_bounds.x + box_bounds.width, box_bounds.y + box_bounds.height),
         true,
+        false,
     ));
     assert_eq!(app.tabs[i].selected_authoring, Some(handle));
 
@@ -5470,14 +5471,14 @@ fn block_grip_cycling_ctrl_edges_use_saved_order_during_classic_insertion() {
     let _=app.dispatch_command("BCLOSE");
     let _=app.dispatch_command("-INSERT");
     feed(&mut app,"EDIT_ME");
-    let _=app.update(Message::SetModifiers { shift:false,ctrl:true });
+    let _=app.update(Message::SetModifiers { shift:false,ctrl:true,alt:false });
     let prompt=app.tabs[i].active_cmd.as_ref().unwrap().prompt();
     assert!(prompt.contains("(2/3)"),"{prompt}");
-    let _=app.update(Message::SetModifiers { shift:false,ctrl:true });
+    let _=app.update(Message::SetModifiers { shift:false,ctrl:true,alt:false });
     assert_eq!(app.tabs[i].active_cmd.as_ref().unwrap().prompt(),prompt);
-    let _=app.update(Message::SetModifiers { shift:false,ctrl:false });
+    let _=app.update(Message::SetModifiers { shift:false,ctrl:false,alt:false });
     assert_eq!(app.tabs[i].active_cmd.as_ref().unwrap().prompt(),prompt);
-    let _=app.update(Message::SetModifiers { shift:false,ctrl:true });
+    let _=app.update(Message::SetModifiers { shift:false,ctrl:true,alt:false });
     assert!(app.tabs[i].active_cmd.as_ref().unwrap().prompt().contains("(3/3)"));
     feed(&mut app,"100,200");
     for _ in 0..3 { let _=app.feed_command(crate::command::StepInput::Enter); }
@@ -6396,6 +6397,8 @@ fn block_alignment_runtime_grip_events_preview_history_and_native_roundtrips() {
             app.tabs[i].scene.bump_geometry();
             app.tabs[i].scene.selection.borrow_mut().view.vp_size = (1000., 800.);
             app.tabs[i].scene.camera.borrow_mut().fit_to_bounds_f64(DVec3::new(-20., -30., 0.), DVec3::new(50., 30., 0.), 1.25);
+            // The destination is a point along the line, not one of its ends.
+            app.snapper.enabled.insert(crate::snap::SnapType::Nearest);
             let select = |app: &mut OpenCADStudio| {
                 app.tabs[i].scene.select_entity(insert, true);
                 app.tabs[i].selected_handle = Some(insert);

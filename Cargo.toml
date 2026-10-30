@@ -47,10 +47,10 @@ env_logger = "0.11"
 # Log facade, already in the tree via wgpu/iced. Native writes through the
 # env_logger above; the web build installs its own logger.
 log = "0.4"
-codec = { package = "opencaddocument", git = "https://github.com/HakanSeven12/opencaddocument.git", rev = "43df003", features = ["serde"] }
-kernel = { package = "opencadkernel", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "d821c35", features = ["acis", "offset"] }
-kernel-constraints = { package = "opencadkernel-constraints", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "d821c35" }
-graph = { package = "opencadgraph", git = "https://github.com/HakanSeven12/opencadgraph.git", rev = "edd9fb8" }
+codec = { package = "opencaddocument", git = "https://github.com/HakanSeven12/opencaddocument.git", rev = "52fa133", features = ["serde"] }
+kernel = { package = "opencadkernel", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "64a5d0e", features = ["acis", "offset"] }
+kernel-constraints = { package = "opencadkernel-constraints", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "64a5d0e" }
+graph = { package = "opencadgraph", git = "https://github.com/HakanSeven12/opencadgraph.git", rev = "5e4dc20" }
 # Line-number patterns of the P&ID rules (io::pid_pipes); already in the tree
 # via env_logger's env_filter.
 regex = "1"
@@ -347,6 +347,10 @@ name = "model_space_handle_lookup"
 harness = false
 
 [[bench]]
+name = "dimension_association_refresh"
+harness = false
+
+[[bench]]
 name = "parametric_presolve_fixpoint"
 harness = false
 
@@ -356,6 +360,42 @@ harness = false
 
 [[bench]]
 name = "tds_material_groups"
+harness = false
+
+[[bench]]
+name = "associative_refresh_dedup"
+harness = false
+
+[[bench]]
+name = "centerline_refresh_scan"
+harness = false
+
+[[bench]]
+name = "navigation_selection_bounds"
+harness = false
+
+[[bench]]
+name = "paper_viewport_hidden_handles"
+harness = false
+
+[[bench]]
+name = "i18n_label_render"
+harness = false
+
+[[bench]]
+name = "dependency_index_rebuild"
+harness = false
+
+[[bench]]
+name = "mesh_export"
+harness = false
+
+[[bench]]
+name = "hatch_pattern_segments"
+harness = false
+
+[[bench]]
+name = "scene_pick_micro"
 harness = false
 
 [[test]]

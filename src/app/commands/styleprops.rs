@@ -10,7 +10,7 @@ impl OpenCADStudio {
                     .unwrap_or(cmd)
                     .split_whitespace()
                     .next(),
-                Some("PERSPECTIVE" | "GRIDMODE" | "GRIDUNIT" | "QPMODE")
+                Some("PERSPECTIVE" | "GRIDMODE" | "GRIDUNIT" | "QPMODE" | "QPLOCATION")
             ) =>
             {
                 let mut words = cmd.strip_prefix("SETVAR ").unwrap_or(cmd).splitn(2, ' ');
@@ -24,6 +24,7 @@ impl OpenCADStudio {
                     }
                     "GRIDMODE" => (self.show_grid as i32).to_string(),
                     "QPMODE" => (self.quick_properties as i32).to_string(),
+                    "QPLOCATION" => (self.quick_properties_float as i32).to_string(),
                     _ => format!("{},{}", self.grid_spacing_x, self.grid_spacing_y),
                 };
                 let Some(value) = value else {
@@ -46,6 +47,12 @@ impl OpenCADStudio {
                     ("QPMODE", "0" | "1" | "2") => {
                         if (value != "0") != self.quick_properties {
                             return Some(Task::done(Message::ToggleQuickProperties));
+                        }
+                    }
+                    ("QPLOCATION", "0" | "1") => {
+                        if (value == "1") != self.quick_properties_float {
+                            self.quick_properties_float = value == "1";
+                            self.persist_settings_if_changed();
                         }
                     }
                     ("GRIDUNIT", _) => {
@@ -1242,6 +1249,8 @@ impl OpenCADStudio {
                     | "TRIMEXTENDMODE"
                     | "PELLIPSE"
                     | "SELECTIONCYCLING"
+                    | "OSNAPZ"
+                    | "SELECTSIMILARMODE"
                     | "UCSDETECT"
                     | "SURFACEASSOCIATIVITY"
                     | "DGNIMPORTMODE"
@@ -1295,6 +1304,7 @@ impl OpenCADStudio {
                     | "SELECTIONAREAOPACITY"
                     | "SELECTIONEFFECT"
                     | "SELECTIONEFFECTCOLOR"
+                    | "VSEDGECOLOR"
                     | "WINDOWSAREACOLOR"
                     | "WINDOWAREACOLOR"
                     | "CROSSINGAREACOLOR"
@@ -1879,6 +1889,62 @@ impl OpenCADStudio {
                             Some(None) => {
                                 self.command_line
                                     .push_error(crate::t!("Requires 0 or 1 only.").as_ref());
+                                self.command_line.push_output(&prompt);
+                                self.pending_setvar = Some(name.clone());
+                            }
+                            None => {
+                                self.command_line.push_output(&prompt);
+                                self.pending_setvar = Some(name.clone());
+                            }
+                        }
+                        return Some(self.finish_dispatch(cmd));
+                    }
+                    if name == "SELECTSIMILARMODE" {
+                        let current = self.select_similar_mode;
+                        let prompt = format!("Enter new value for SELECTSIMILARMODE <{current}>:");
+                        match value
+                            .as_deref()
+                            .map(|v| v.trim().parse::<u16>().ok().filter(|v| *v <= 255))
+                        {
+                            Some(Some(mode)) => {
+                                if self.select_similar_mode != mode {
+                                    self.select_similar_mode = mode;
+                                    self.persist_settings_if_changed();
+                                }
+                            }
+                            Some(None) => {
+                                let (min, max) = (0, 255);
+                                self.command_line.push_error(&crate::tf!(
+                                    "Requires an integer between {min} and {max}."
+                                ));
+                                self.command_line.push_output(&prompt);
+                                self.pending_setvar = Some(name.clone());
+                            }
+                            None => {
+                                self.command_line.push_output(&prompt);
+                                self.pending_setvar = Some(name.clone());
+                            }
+                        }
+                        return Some(self.finish_dispatch(cmd));
+                    }
+                    if name == "OSNAPZ" {
+                        let current = i16::from(self.osnap_z);
+                        let prompt = format!("Enter new value for OSNAPZ <{current}>:");
+                        match value
+                            .as_deref()
+                            .map(|v| v.trim().parse::<i16>().ok().filter(|v| (0..=1).contains(v)))
+                        {
+                            Some(Some(mode)) => {
+                                if self.osnap_z != (mode != 0) {
+                                    self.osnap_z = mode != 0;
+                                    self.persist_settings_if_changed();
+                                }
+                            }
+                            Some(None) => {
+                                let (min, max) = (0, 1);
+                                self.command_line.push_error(&crate::tf!(
+                                    "Requires an integer between {min} and {max}."
+                                ));
                                 self.command_line.push_output(&prompt);
                                 self.pending_setvar = Some(name.clone());
                             }
@@ -2789,6 +2855,34 @@ impl OpenCADStudio {
                                     )),
                                 }
                             }
+                            // An index, a colour name or R,G,B; BLACK (or 0)
+                            // goes back to the default black edges.
+                            "VSEDGECOLOR" => {
+                                let shown = |rgb: Option<[u8; 3]>| match rgb {
+                                    Some([r, g, b]) => format!("{r},{g},{b}"),
+                                    None => "BLACK".to_string(),
+                                };
+                                match &value {
+                                    Some(v) => match parse_edge_color(v) {
+                                        Some(rgb) => {
+                                            self.model_space.edge_color = rgb;
+                                            self.sync_model_space_theme(false);
+                                            Ok((format!("VSEDGECOLOR = {}", shown(rgb)), true))
+                                        }
+                                        None => Err(
+                                            "SETVAR: a colour index, name or R,G,B required."
+                                                .into(),
+                                        ),
+                                    },
+                                    None => Ok((
+                                        format!(
+                                            "VSEDGECOLOR = {}",
+                                            shown(self.model_space.edge_color)
+                                        ),
+                                        false,
+                                    )),
+                                }
+                            }
                             "WINDOWSAREACOLOR" | "WINDOWAREACOLOR" => {
                                 match &value {
                                     Some(v) => match v.parse::<u8>() {
@@ -3617,6 +3711,7 @@ impl OpenCADStudio {
                                         | "SELECTIONAREAOPACITY"
                                         | "SELECTIONEFFECT"
                                         | "SELECTIONEFFECTCOLOR"
+                                        | "VSEDGECOLOR"
                                         | "WINDOWSAREACOLOR"
                                         | "WINDOWAREACOLOR"
                                         | "CROSSINGAREACOLOR"
@@ -3865,7 +3960,8 @@ impl OpenCADStudio {
             // Bare RENAME prompts step by step (type → old → new); the argument
             // form below both handles a fully-typed line and is the target the
             // stepped front-end dispatches to.
-            "RENAME" | "-RENAME" => {
+            "RENAME" => self.open_rename_dialog(),
+            "-RENAME" => {
                 use crate::command::RenameCommand;
                 let c = RenameCommand::new();
                 self.command_line.push_info(&c.prompt());
@@ -3884,97 +3980,7 @@ impl OpenCADStudio {
                         crate::t!("Usage: RENAME <type> <old> <new>  (types: LAYER BLOCK STYLE DIMSTYLE LINETYPE UCS VIEW)").as_ref()
                     );
                 } else {
-                    // Snapshot BEFORE mutating (undo must restore the old
-                    // name); dropped again if nothing was renamed.
-                    let block = type_str == "BLOCK";
-                    let label = if block {
-                        format!("Rename block {old_name} to {new_name}")
-                    } else {
-                        "RENAME".to_string()
-                    };
-                    self.push_undo_snapshot(i, label);
-                    let known = matches!(
-                        type_str.as_str(),
-                        "LAYER"
-                            | "BLOCK"
-                            | "STYLE"
-                            | "TEXTSTYLE"
-                            | "DIMSTYLE"
-                            | "LINETYPE"
-                            | "LT"
-                            | "UCS"
-                            | "VIEW"
-                    );
-                    // The block path's refusal text comes from the shared
-                    // service, so the command line, the palette, the plugin
-                    // API and the control op all word it the same way.
-                    let mut block_error: Option<String> = None;
-                    let ok = if block {
-                        let open_edits: Vec<codec::Handle> = self.tabs[i]
-                            .block_edits
-                            .iter()
-                            .map(|session| session.br_handle)
-                            .collect();
-                        // Re-keys the record, syncs the Block marker and every
-                        // INSERT reference; refuses anonymous/xref sources,
-                        // protected records and invalid/taken names.
-                        match crate::scene::block_service::rename(
-                            &mut self.tabs[i].scene,
-                            &old_name,
-                            &new_name,
-                            &open_edits,
-                        ) {
-                            Ok(_) => true,
-                            Err(error) => {
-                                block_error = Some(error.to_string());
-                                false
-                            }
-                        }
-                    } else if type_str == "LAYER" {
-                        self.tabs[i].rename_layer(&old_name, &new_name)
-                    } else if known {
-                        rename_symbol(
-                            &mut self.tabs[i].scene.document,
-                            &type_str,
-                            &old_name,
-                            &new_name,
-                        )
-                    } else {
-                        false
-                    };
-                    if ok {
-                        if type_str != "LAYER" {
-                            self.tabs[i].scene.bump_geometry_no_blocks();
-                        }
-                        if type_str == "UCS" {
-                            self.tabs[i].scene.bump_ucs_epoch();
-                            if let Some(active) = self.tabs[i].active_ucs.as_mut() {
-                                if active.name.eq_ignore_ascii_case(&old_name) {
-                                    active.name = new_name.clone();
-                                    self.tabs[i].persist_active_ucs();
-                                }
-                            }
-                        }
-                        self.tabs[i].dirty = true;
-                        if type_str == "LAYER" {
-                            self.refresh_layer_panel();
-                        }
-                        self.command_line.push_output(
-                            crate::tf!("RENAME: '{}' → '{}'.", old_name, new_name).as_ref(),
-                        );
-                    } else {
-                        self.discard_last_undo_entry(i);
-                        if let Some(message) = block_error {
-                            self.command_line.push_error(&message);
-                        } else if !known {
-                            self.command_line.push_error(crate::tf!("RENAME: unknown type '{}'. Use LAYER BLOCK STYLE DIMSTYLE LINETYPE UCS VIEW", type_str).as_ref());
-                        } else {
-                            self.command_line.push_error(crate::tf!(
-                                "RENAME: could not rename '{}' in {} — not found or protected, or '{}' is invalid or taken.",
-                                old_name, type_str, new_name
-                            ).as_ref());
-                        }
-                    }
+                    self.rename_named_object(i, &type_str, &old_name, &new_name);
                 }
             }
 
@@ -4024,6 +4030,9 @@ impl OpenCADStudio {
                 } else {
                     if self.tabs[i].scene.document.dim_styles.contains(&name_arg) {
                         self.tabs[i].scene.document.header.current_dimstyle_name = name_arg.clone();
+                        crate::scene::creation_style::sync_header_dim_vars(
+                            &mut self.tabs[i].scene.document,
+                        );
                         self.tabs[i].dirty = true;
                         self.command_line.push_output(
                             crate::tf!("Active dim style set to \"{name_arg}\"").as_ref(),
@@ -4364,97 +4373,132 @@ impl OpenCADStudio {
                 }
             }
 
-            // ── SCALETEXT — rescale selected Text/MText entities ─────────────────
-            // Usage: SCALETEXT <factor>   e.g. SCALETEXT 2
-            //        SCALETEXT H <height>  set absolute height
-            "SCALETEXT" => {
-                use crate::command::SelectThenValueCommand;
-                let has_sel = !self.tabs[i].scene.selected_entities().is_empty();
-                let c = SelectThenValueCommand::new(
-                    "SCALETEXT",
-                    "SCALETEXT  scale factor (or 'H <height>' for an absolute height):",
-                    has_sel,
-                );
-                self.command_line.push_info(&c.prompt());
-                self.tabs[i].active_cmd = Some(Box::new(c));
-            }
-            cmd if cmd.starts_with("SCALETEXT ") => {
-                let rest = cmd.trim_start_matches("SCALETEXT").trim();
-                let parts: Vec<&str> = rest.split_whitespace().collect();
-                let selected_handles: Vec<codec::Handle> = self.tabs[i]
-                    .scene
-                    .selected_entities()
-                    .iter()
-                    .map(|(h, _)| *h)
-                    .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
-                    .collect();
-                if selected_handles.is_empty() {
-                    self.command_line.push_error(
-                        crate::t!("SCALETEXT: select Text/MText entities first.").as_ref(),
-                    );
-                } else {
-                    let (use_absolute, value) = match (
-                        parts.first().map(|s| s.to_uppercase()).as_deref(),
-                        parts.get(1),
-                    ) {
-                        (Some("H"), Some(v)) => (true, v.parse::<f64>().ok()),
-                        (Some(v), None) => (false, v.parse::<f64>().ok()),
-                        _ => (false, None),
-                    };
-                    if let Some(val) = value {
-                        if val <= 0.0 {
-                            self.command_line.push_error(
-                                crate::t!("SCALETEXT: value must be positive.").as_ref(),
-                            );
-                        } else {
-                            self.push_undo_snapshot(i, "SCALETEXT");
-                            let mut count = 0usize;
-                            for sh in &selected_handles {
-                                for entity in self.tabs[i].scene.document.entities_mut() {
-                                    if entity.common().handle != *sh {
-                                        continue;
-                                    }
-                                    match entity {
-                                        codec::EntityType::Text(t) => {
-                                            t.height =
-                                                if use_absolute { val } else { t.height * val };
-                                            count += 1;
-                                        }
-                                        codec::EntityType::MText(t) => {
-                                            t.height =
-                                                if use_absolute { val } else { t.height * val };
-                                            count += 1;
-                                        }
-                                        _ => {}
-                                    }
-                                    break;
-                                }
-                            }
-                            if count > 0 {
-                                self.tabs[i].dirty = true;
-                                self.command_line.push_output(
-                                    crate::tf!("SCALETEXT: scaled {count} text entity(ies).")
-                                        .as_ref(),
-                                );
-                            } else {
-                                self.command_line.push_error(
-                                    crate::t!("SCALETEXT: no Text/MText in selection.").as_ref(),
-                                );
-                            }
-                        }
-                    } else {
-                        self.command_line.push_info(
-                            crate::t!("Usage: SCALETEXT <factor>  or  SCALETEXT H <height>")
-                                .as_ref(),
-                        );
-                    }
-                }
-            }
-
             _ => return None,
         }
         Some(self.finish_dispatch(cmd))
     }
+}
+
+impl OpenCADStudio {
+    /// Rename a named object of `type_str` (LAYER BLOCK STYLE DIMSTYLE
+    /// LINETYPE UCS VIEW) as one undo step, reporting on the command line.
+    pub(crate) fn rename_named_object(
+        &mut self,
+        i: usize,
+        type_str: &str,
+        old_name: &str,
+        new_name: &str,
+    ) -> bool {
+        let (old_name, new_name) = (old_name.to_string(), new_name.to_string());
+        // Snapshot BEFORE mutating (undo must restore the old
+        // name); dropped again if nothing was renamed.
+        let block = type_str == "BLOCK";
+        let label = if block {
+            format!("Rename block {old_name} to {new_name}")
+        } else {
+            "RENAME".to_string()
+        };
+        self.push_undo_snapshot(i, label);
+        let known = matches!(
+            type_str,
+            "LAYER"
+                | "BLOCK"
+                | "STYLE"
+                | "TEXTSTYLE"
+                | "DIMSTYLE"
+                | "LINETYPE"
+                | "LT"
+                | "UCS"
+                | "VIEW"
+        );
+        // The block path's refusal text comes from the shared
+        // service, so the command line, the palette, the plugin
+        // API and the control op all word it the same way.
+        let mut block_error: Option<String> = None;
+        let ok = if block {
+            let open_edits: Vec<codec::Handle> = self.tabs[i]
+                .block_edits
+                .iter()
+                .map(|session| session.br_handle)
+                .collect();
+            // Re-keys the record, syncs the Block marker and every
+            // INSERT reference; refuses anonymous/xref sources,
+            // protected records and invalid/taken names.
+            match crate::scene::block_service::rename(
+                &mut self.tabs[i].scene,
+                &old_name,
+                &new_name,
+                &open_edits,
+            ) {
+                Ok(_) => true,
+                Err(error) => {
+                    block_error = Some(error.to_string());
+                    false
+                }
+            }
+        } else if type_str == "LAYER" {
+            self.tabs[i].rename_layer(&old_name, &new_name)
+        } else if known {
+            rename_symbol(
+                &mut self.tabs[i].scene.document,
+                &type_str,
+                &old_name,
+                &new_name,
+            )
+        } else {
+            false
+        };
+        if ok {
+            if type_str != "LAYER" {
+                self.tabs[i].scene.bump_geometry_no_blocks();
+            }
+            if type_str == "UCS" {
+                self.tabs[i].scene.bump_ucs_epoch();
+                if let Some(active) = self.tabs[i].active_ucs.as_mut() {
+                    if active.name.eq_ignore_ascii_case(&old_name) {
+                        active.name = new_name.clone();
+                        self.tabs[i].persist_active_ucs();
+                    }
+                }
+            }
+            self.tabs[i].dirty = true;
+            if type_str == "LAYER" {
+                self.refresh_layer_panel();
+            }
+            self.command_line.push_output(
+                crate::tf!("RENAME: '{}' → '{}'.", old_name, new_name).as_ref(),
+            );
+        } else {
+            self.discard_last_undo_entry(i);
+            if let Some(message) = block_error {
+                self.command_line.push_error(&message);
+            } else if !known {
+                self.command_line.push_error(crate::tf!("RENAME: unknown type '{}'. Use LAYER BLOCK STYLE DIMSTYLE LINETYPE UCS VIEW", type_str).as_ref());
+            } else {
+                self.command_line.push_error(crate::tf!(
+                    "RENAME: could not rename '{}' in {} — not found or protected, or '{}' is invalid or taken.",
+                    old_name, type_str, new_name
+                ).as_ref());
+            }
+        }
+        ok
+    }
+}
+
+/// A VSEDGECOLOR value: an index, a colour name or R,G,B, with BLACK (or 0)
+/// for the default black edges (`Some(None)`).
+fn parse_edge_color(value: &str) -> Option<Option<[u8; 3]>> {
+    let value = value.trim().trim_start_matches("RGB:");
+    if value.eq_ignore_ascii_case("BLACK") || value == "0" {
+        return Some(None);
+    }
+    let parts: Vec<Option<u8>> = value.split(',').map(|p| p.trim().parse().ok()).collect();
+    if let [Some(r), Some(g), Some(b)] = parts[..] {
+        return Some(Some([r, g, b]));
+    }
+    crate::ui::window::attman_dialog::parse_color(value)
+        .and_then(crate::ui::color_select::math::color_rgb)
+        .map(|(r, g, b)| Some([r, g, b]))
 }
 
 /// RENAME for the remaining name-keyed symbol tables.

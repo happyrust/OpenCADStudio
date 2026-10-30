@@ -127,6 +127,13 @@ impl OpenCADStudio {
         // The opened document settled (API v9): the post-op boundary
         // announces `DocumentOpened` once for this load.
         self.tabs[i].note_document_loaded();
+        // DXEVAL: an open compares the extraction tables as an open from the
+        // GUI does.
+        let _ = self.evaluate_extraction_tables(
+            i,
+            crate::app::commands::extraction_eval::EVENT_OPEN,
+            None,
+        );
         Ok(())
     }
 
@@ -1214,6 +1221,9 @@ fn audit_ascii_dxf_references(path: &std::path::Path) -> Result<Value, String> {
     let mut pairs = Vec::new();
     let mut version = None;
     let mut variable = None;
+    // Only a record's first 5/105 is its own handle; SORTENTSTABLE stores its
+    // sort handles under 5 as well (#2211).
+    let mut record_has_handle = false;
     for pair in lines.chunks_exact(2) {
         let Ok(code) = pair[0].trim().parse::<i32>() else {
             return Ok(
@@ -1228,8 +1238,12 @@ fn audit_ascii_dxf_references(path: &std::path::Path) -> Result<Value, String> {
             version = Some(value.clone());
             variable = None;
         }
-        if code == 5 || code == 105 {
-            if !declared.insert(value.clone()) {
+        if code == 0 {
+            record_has_handle = false;
+        } else if code == 5 || code == 105 {
+            if !std::mem::replace(&mut record_has_handle, true)
+                && !declared.insert(value.clone())
+            {
                 duplicate.insert(value.clone());
             }
         } else if [330, 340, 350, 360, 390].contains(&code) {
@@ -2406,7 +2420,7 @@ impl OpenCADStudio {
             "document_id": tab.id,
             "source": {
                 "path": tab.current_path,
-                "format": if source_is_dxf { "dxf" } else { "dwg" },
+                "format": source_format(tab.current_path.as_deref(), source_is_dxf),
                 "version": format!("{:?}", document.version),
                 "sha256": source_sha256,
                 "dxf_structure": source_dxf_structure,
@@ -2907,7 +2921,7 @@ mod tests {
             "a start-tab-free app does not announce spurious opens: {log:?}"
         );
     }
-    use crate::app::OpenCADStudio;
+    use crate::app::{Message, OpenCADStudio};
     use serde_json::{json, Value};
 
     #[test]
@@ -3144,6 +3158,24 @@ mod tests {
         let audit = super::audit_ascii_dxf_references(&path).unwrap();
         assert_eq!(audit["ok"], false, "{audit}");
         assert_eq!(audit["dangling_handles"], serde_json::json!(["2"]));
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// SORTENTSTABLE keeps its sort handles under code 5 after its own; they
+    /// are not declared handles (#2211). A record's second own handle still is.
+    #[test]
+    fn raw_dxf_audit_counts_only_a_records_own_handle() {
+        let path = std::env::temp_dir().join(format!("ocs_sortents_{}.dxf", std::process::id()));
+        std::fs::write(
+            &path,
+            "  0\nTEXT\n  5\n2F\n  0\nTEXT\n  5\n30\n  0\nSORTENTSTABLE\n  5\n33\n331\n2F\n  5\n30\n331\n30\n  5\n2F\n",
+        )
+        .unwrap();
+        let audit = super::audit_ascii_dxf_references(&path).unwrap();
+        assert_eq!(audit["duplicate_handles"], serde_json::json!([]), "{audit}");
+        std::fs::write(&path, "  0\nTEXT\n  5\n2F\n  0\nLINE\n  5\n2F\n").unwrap();
+        let audit = super::audit_ascii_dxf_references(&path).unwrap();
+        assert_eq!(audit["duplicate_handles"], serde_json::json!(["2F"]), "{audit}");
         let _ = std::fs::remove_file(path);
     }
 
@@ -5783,6 +5815,166 @@ mod tests {
     }
 
     #[test]
+    fn matchprop_uses_single_preselected_source_for_successive_destinations() {
+        use crate::command::StepInput;
+        use codec::{entities::Line, types::Vector3, EntityType};
+
+        for command in ["MA", "MATCHPROP"] {
+            let mut app = OpenCADStudio::new_for_test();
+            app.automation_op(r#"{"op":"new"}"#);
+            let i = app.active_tab;
+            let handles: Vec<_> = (0..3)
+                .map(|n| {
+                    let mut line = Line::new();
+                    line.start = Vector3::new(n as f64 * 30.0, 0.0, 0.0);
+                    line.end = Vector3::new(n as f64 * 30.0 + 20.0, 10.0, 0.0);
+                    line.common.linetype_scale = if n == 0 { 2.5 } else { 1.0 };
+                    app.tabs[i].scene.add_entity(EntityType::Line(line))
+                })
+                .collect();
+            let source = handles[0];
+            app.tabs[i].scene.select_entity(source, true);
+
+            let _ = app.run_command_line(command);
+            let cmd = app.tabs[i]
+                .active_cmd
+                .as_ref()
+                .expect("MATCHPROP must start");
+            assert!(
+                !cmd.needs_entity_pick(),
+                "preselection must supply the source"
+            );
+            assert!(cmd.is_selection_gathering(), "must ask for destinations");
+            assert!(app.tabs[i].scene.selected.is_empty());
+            assert!(
+                !app.tabs[i].scene.preview_wires.is_empty(),
+                "source must glow"
+            );
+            assert_eq!(
+                app.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(handles[1])
+                    .unwrap()
+                    .common()
+                    .linetype_scale,
+                1.0,
+                "starting the command must not modify destinations"
+            );
+
+            for &destination in &handles[1..] {
+                let _ = app.feed_command(StepInput::SelectionComplete(vec![destination]));
+                assert_eq!(
+                    app.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(destination)
+                        .unwrap()
+                        .common()
+                        .linetype_scale,
+                    2.5,
+                    "destination must take the preselected source's properties"
+                );
+                assert!(
+                    app.tabs[i].active_cmd.is_some(),
+                    "must accept more destinations"
+                );
+            }
+            let _ = app.feed_command(StepInput::Enter);
+            assert!(app.tabs[i].active_cmd.is_none(), "Enter must end MATCHPROP");
+
+            app.automation_op(r#"{"op":"undo"}"#);
+            assert_eq!(
+                app.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(handles[2])
+                    .unwrap()
+                    .common()
+                    .linetype_scale,
+                1.0,
+                "undo must restore the last destination"
+            );
+            app.automation_op(r#"{"op":"redo"}"#);
+            assert_eq!(
+                app.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(handles[2])
+                    .unwrap()
+                    .common()
+                    .linetype_scale,
+                2.5
+            );
+            assert_eq!(
+                app.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(source)
+                    .unwrap()
+                    .common()
+                    .linetype_scale,
+                2.5,
+                "the source must remain unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn matchprop_requests_source_without_a_single_preselected_object() {
+        use crate::command::StepInput;
+        use codec::{entities::Line, EntityType};
+
+        for preselect in [false, true] {
+            let mut app = OpenCADStudio::new_for_test();
+            app.automation_op(r#"{"op":"new"}"#);
+            let i = app.active_tab;
+            let handles: Vec<_> = [2.5, 4.0, 1.0]
+                .into_iter()
+                .map(|scale| {
+                    let mut line = Line::new();
+                    line.common.linetype_scale = scale;
+                    app.tabs[i].scene.add_entity(EntityType::Line(line))
+                })
+                .collect();
+            if preselect {
+                app.tabs[i].scene.select_entities(&handles[..2]);
+            }
+
+            let _ = app.run_command_line("MA");
+            let cmd = app.tabs[i]
+                .active_cmd
+                .as_ref()
+                .expect("MATCHPROP must start");
+            assert!(
+                cmd.needs_entity_pick(),
+                "must ask for an unambiguous source"
+            );
+            assert!(!cmd.is_selection_gathering());
+            assert!(app.tabs[i].scene.selected.is_empty());
+
+            let _ = app.feed_command(StepInput::EntityPick(handles[1], glam::DVec3::ZERO));
+            let _ = app.feed_command(StepInput::SelectionComplete(vec![handles[2]]));
+            assert_eq!(
+                app.tabs[i]
+                    .scene
+                    .document
+                    .get_entity(handles[2])
+                    .unwrap()
+                    .common()
+                    .linetype_scale,
+                4.0,
+                "the explicitly picked source must supply the properties"
+            );
+            let _ = app.feed_command(StepInput::Escape);
+            assert!(
+                app.tabs[i].active_cmd.is_none(),
+                "Escape must end MATCHPROP"
+            );
+        }
+    }
+
+    #[test]
     fn matchprop_matches_text_style_and_height() {
         // MATCHPROP between text objects must carry the text-specific
         // properties (style, height) to TEXT and MTEXT destinations, not just
@@ -6321,6 +6513,147 @@ mod tests {
     }
 
     #[test]
+    fn from_relative_offset_starts_line() {
+        let mut app = from_line_test_app();
+        for token in ["FROM", "10,10", "@5,0"] {
+            from_submit(&mut app, token);
+        }
+        assert!(app.tabs[0].scene.document.entities().next().is_none());
+        assert_eq!(
+            app.tabs[0].active_cmd.as_ref().unwrap().resolved_anchor(),
+            Some(glam::DVec3::new(15.0, 10.0, 0.0))
+        );
+        assert_eq!(app.last_point, Some(glam::DVec3::new(15.0, 10.0, 0.0)));
+        assert!(app.tabs[0].suspended_cmd.is_none());
+    }
+
+    #[test]
+    fn from_polar_offset_starts_line() {
+        let mut app = from_line_test_app();
+        for token in ["_FROM", "0,0", "@10<90"] {
+            from_submit(&mut app, token);
+        }
+        assert!(app.tabs[0].scene.document.entities().next().is_none());
+        let anchor = app.tabs[0]
+            .active_cmd
+            .as_ref()
+            .unwrap()
+            .resolved_anchor()
+            .unwrap();
+        assert!((anchor - glam::DVec3::new(0.0, 10.0, 0.0)).length() < 1e-9);
+    }
+
+    #[test]
+    fn from_direct_distance_starts_line() {
+        for tracked in [false, true] {
+            let mut app = from_line_test_app();
+            for token in ["FROM", "0,0"] {
+                from_submit(&mut app, token);
+            }
+            app.tabs[0].last_cursor_world = glam::DVec3::new(20.0, 0.0, 0.0);
+            if tracked {
+                app.otrack_active = Some((glam::DVec3::splat(100.0), glam::DVec3::Y));
+            }
+            from_submit(&mut app, "7");
+            assert!(app.tabs[0].scene.document.entities().next().is_none());
+            assert_eq!(
+                app.tabs[0].active_cmd.as_ref().unwrap().resolved_anchor(),
+                Some(glam::DVec3::new(7.0, 0.0, 0.0))
+            );
+        }
+    }
+
+    #[test]
+    fn from_escape_offset_restores_parent() {
+        let mut app = from_line_test_app();
+        for previous in [None, Some(glam::DVec3::new(3.0, 4.0, 0.0))] {
+            app.last_point = previous;
+            let prompt = app.tabs[0].active_cmd.as_ref().unwrap().prompt();
+            for token in ["FROM", "10,10"] {
+                from_submit(&mut app, token);
+            }
+            let _ = app.update(Message::CommandEscape);
+            assert_eq!(
+                app.tabs[0].active_cmd.as_ref().map(|c| c.name()),
+                Some("LINE")
+            );
+            assert_eq!(app.tabs[0].active_cmd.as_ref().unwrap().prompt(), prompt);
+            assert!(app.tabs[0]
+                .active_cmd
+                .as_ref()
+                .unwrap()
+                .resolved_anchor()
+                .is_none());
+            assert_eq!(app.last_point, previous);
+            assert!(app.tabs[0].suspended_cmd.is_none());
+            assert!(app.tabs[0].scene.document.entities().next().is_none());
+        }
+    }
+
+    #[test]
+    fn from_script_offset_uses_rotated_ucs() {
+        let mut app = from_line_test_app();
+        let mut ucs = codec::tables::Ucs::new("FROM-test");
+        ucs.origin = codec::types::Vector3::new(100.0, 200.0, 0.0);
+        ucs.x_axis = codec::types::Vector3::new(0.0, 1.0, 0.0);
+        ucs.y_axis = codec::types::Vector3::new(-1.0, 0.0, 0.0);
+        app.tabs[0].active_ucs = Some(ucs);
+        for token in ["_FROM", "0,0", "@5,0"] {
+            let _ = app.feed_active_cmd(token);
+        }
+        assert!(app.tabs[0].scene.document.entities().next().is_none());
+        assert_eq!(
+            app.tabs[0].active_cmd.as_ref().unwrap().resolved_anchor(),
+            Some(glam::DVec3::new(100.0, 205.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn from_cancel_preserves_existing_line_anchor() {
+        for enter in [false, true] {
+            for pick_base in [false, true] {
+                let mut app = from_line_test_app();
+                from_submit(&mut app, "3,4");
+                let prompt = app.tabs[0].active_cmd.as_ref().unwrap().prompt();
+                from_submit(&mut app, "FROM");
+                if pick_base {
+                    from_submit(&mut app, "10,10");
+                }
+                if enter {
+                    from_submit(&mut app, "");
+                } else {
+                    let _ = app.update(Message::CommandEscape);
+                }
+                assert_eq!(
+                    app.tabs[0].active_cmd.as_ref().map(|c| c.name()),
+                    Some("LINE")
+                );
+                assert_eq!(app.tabs[0].active_cmd.as_ref().unwrap().prompt(), prompt);
+                assert_eq!(
+                    app.tabs[0].active_cmd.as_ref().unwrap().resolved_anchor(),
+                    Some(glam::DVec3::new(3.0, 4.0, 0.0))
+                );
+                assert_eq!(app.last_point, Some(glam::DVec3::new(3.0, 4.0, 0.0)));
+                assert!(app.tabs[0].scene.document.entities().next().is_none());
+            }
+        }
+    }
+
+    fn from_submit(app: &mut OpenCADStudio, token: &str) {
+        let _ = app.update(Message::CommandInput(token.to_string()));
+        let _ = app.update(Message::CommandSubmit);
+    }
+
+    fn from_line_test_app() -> OpenCADStudio {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        app.tabs[0].scene.selection.borrow_mut().view.vp_size = (1920.0, 1080.0);
+        app.tabs[0].scene.sync_tiles_from_panes(1920.0, 1080.0);
+        from_submit(&mut app, "LINE");
+        app
+    }
+
+    #[test]
     fn test_snap_override_typed_in_line_command() {
         use crate::app::Message;
         let mut app = OpenCADStudio::new_for_test();
@@ -6574,5 +6907,17 @@ mod tests {
         let query = app.automation_op(r#"{"op":"query","type":"Point"}"#);
         assert_eq!(query["entities"][0]["type"], "Point");
         assert_eq!(query["entities"][0]["display_type"], "Point");
+    }
+}
+
+/// A file's format: "dxf", "dwg", or a converter's lowercase name.
+pub(super) fn source_format(path: Option<&std::path::Path>, source_is_dxf: bool) -> String {
+    let converter = path
+        .and_then(std::path::Path::extension)
+        .and_then(|ext| ocs_save::external_format(&ext.to_string_lossy()));
+    match converter {
+        Some(format) => format.name().to_ascii_lowercase(),
+        None if source_is_dxf => "dxf".to_string(),
+        None => "dwg".to_string(),
     }
 }

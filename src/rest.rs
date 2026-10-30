@@ -69,6 +69,7 @@ const ENVELOPE_OPS: &[&str] = &[
     "entities_create",
     "entities_delete",
     "entities_transform",
+    "node_graph",
     "block_define",
     "block_delete",
     "file_identity",
@@ -728,12 +729,16 @@ pub(crate) fn plan(method: &str, rest: &[&str], request: &HttpRequest) -> Plan {
             }
         }
         ("POST", ["save"]) => {
-            let mut request_json = json!({"op":"save"});
+            let mut fields = json!({});
             if let Some(path) = body["path"].as_str() {
-                request_json["path"] = json!(path);
+                fields["path"] = json!(path);
             }
-            Plan::Run {
-                request: request_json,
+            if let Some(id) = body["document_id"].as_u64() {
+                fields["document_id"] = json!(id);
+            }
+            Plan::Mutate {
+                op: "save".into(),
+                fields,
                 created: 200,
             }
         }
