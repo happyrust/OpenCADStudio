@@ -1402,7 +1402,7 @@ impl Default for UserSettings {
             crosshair_color: None,
             snap_marker_color: None,
             command_text_color: None,
-            lineweight_display_scale: 100,
+            lineweight_display_scale: 50,
             pid_paper_style_scale: default_pid_paper_style_scale(),
             isometric_drafting: false,
             iso_plane: IsoPlane::Left,

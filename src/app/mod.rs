@@ -5617,7 +5617,7 @@ impl OpenCADStudio {
             command_text_color_input: String::new(),
             isolines_awaiting_regen: false,
             snap_angle_input: "0".to_string(),
-            lineweight_display_scale: 100,
+            lineweight_display_scale: 50,
             pid_paper_style_scale: 1.0,
             isometric_drafting: false,
             iso_plane: settings::IsoPlane::Left,
