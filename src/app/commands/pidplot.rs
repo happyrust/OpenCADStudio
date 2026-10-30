@@ -163,6 +163,9 @@ impl OpenCADStudio {
                 receipt.corpus.display()
             )),
         }
+        for note in &receipt.notes {
+            self.command_line.push_info(&format!("PIDPLOT: {note}."));
+        }
         self.command_line.push_output(&format!(
             "PIDPLOT: {} of {} symbol files found in the library.",
             receipt.symbols_found, receipt.symbols_referenced
