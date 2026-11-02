@@ -185,6 +185,10 @@ impl OpenCADStudio {
                 return;
             }
         }
+        if self.active_modal == Some(TableStyle) && std::mem::take(&mut self.tablestyle_parent_table) {
+            self.return_to_table_insert();
+            return;
+        }
         if self.active_modal == Some(Plotstyle) {
             if let Some(baseline) = self.plotstyle_panel_baseline.take() {
                 self.active_plot_style = baseline;
@@ -279,6 +283,8 @@ impl OpenCADStudio {
             Some(AttMan) => self.attman = None,
             Some(BlockEditPicker) => self.block_edit_picker = None,
             Some(Rename) => self.rename_dialog = None,
+            Some(Purge) => self.purge_dialog = None,
+            Some(DrawingProperties) => self.drawing_properties = None,
             Some(SelectSimilarSettings) => self.select_similar_settings = None,
             Some(BlockSaveAs) => self.block_save_as = None,
             Some(BlockVisibility) => self.block_visibility = None,
@@ -489,6 +495,12 @@ impl OpenCADStudio {
         }
         let from_options = self.active_modal == Some(super::ModalKind::Options);
         let mut task = self.update_message(msg);
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            let notices = std::mem::take(&mut tab.scene.center_notices);
+            for notice in notices {
+                self.command_line.push_output(&notice);
+            }
+        }
         // A window opened from Options (shortcuts, aliases, a colour, units,
         // plot, plugins) is its child: closing it comes back to Options.
         if from_options
@@ -603,6 +615,10 @@ impl OpenCADStudio {
             crate::io::drawing_variable(&tab.scene.document, "MLEADERLAYER")
                 .filter(|layer| layer.trim() != ".")
                 .unwrap_or_default();
+        self.ribbon.center_layer = tab.scene.centerline_settings().layer;
+        if self.ribbon.center_layer.trim() == "." {
+            self.ribbon.center_layer.clear();
+        }
     }
 
     fn update_message(&mut self, msg: Message) -> Task<Message> {
@@ -748,6 +764,23 @@ impl OpenCADStudio {
         // and falls through to the command line (the behaviour of commercial solutions).
         if self.context_menu_open() {
             if let Some(task) = self.intercept_context_menu_key(&msg) {
+                return task;
+            }
+        }
+        // An open dynamic-value list owns Escape, Enter and the arrows: without
+        // this they reach the command line or the viewport and dismiss the
+        // selection the list was opened for. A list whose panel is hidden is
+        // not on screen, so it must not keep the guard on.
+        let picker = self.tabs[self.active_tab].properties.open_block_picker;
+        let picker_shown = picker.is_some_and(|(_, quick)| {
+            if quick {
+                self.quick_properties
+            } else {
+                self.dock_panel_visible(crate::ui::dock::PanelId::Properties)
+            }
+        });
+        if picker_shown || self.block_picker_dismissed {
+            if let Some(task) = self.intercept_block_picker_key(&msg) {
                 return task;
             }
         }
@@ -1268,6 +1301,8 @@ impl OpenCADStudio {
             ),
 
             Message::OpenRecent(path) => {
+                // Opened from the application menu, which closes.
+                self.ribbon.close_app_menu();
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     // Recents are read from disk every save → the path may be
@@ -2257,6 +2292,11 @@ impl OpenCADStudio {
             }
 
             Message::TableInsertStyle(value) => self.on_table_insert_style(value),
+            Message::TableInsertManageStyles => {
+                let task = self.update(Message::TableStyleDialogOpen);
+                self.tablestyle_parent_table = true;
+                task
+            }
             Message::TableInsertField(field) => self.on_table_insert_field(field),
             Message::TableInsertApply => self.on_table_insert_apply(),
             Message::DataLinkManagerOpen => {
@@ -2746,18 +2786,83 @@ impl OpenCADStudio {
             Message::SheetSet(message) => self.on_sheet_set(message),
             Message::KeyTip(input) => self.on_keytip(input),
             Message::RibbonSelectTab(idx) => {
-                self.ribbon.select(idx);
+                if self.ribbon.click_tab(idx, iced::time::Instant::now()) {
+                    self.save_config();
+                }
                 Task::none()
             }
-
-            Message::SetRibbonCollapseMode(mode) => {
-                self.ribbon.set_collapse_mode(mode);
+            Message::RibbonMinimize(msg) => {
+                if self.ribbon.on_minimize(msg, iced::time::Instant::now()) {
+                    self.save_config();
+                }
+                Task::none()
+            }
+            Message::RibbonSlideOut(msg) => {
+                if self.ribbon.on_slide_out(msg, iced::time::Instant::now()) {
+                    self.save_config();
+                }
+                Task::none()
+            }
+            Message::RibbonTick => {
+                self.ribbon.tick(iced::time::Instant::now());
+                Task::none()
+            }
+            Message::RibbonSearch(msg) => {
+                let out = self.ribbon.on_search(msg, iced::time::Instant::now());
+                if out.save {
+                    self.save_config();
+                }
+                let mut tasks = Vec::new();
+                if out.focus {
+                    tasks.push(iced::widget::operation::focus(iced::widget::Id::new(
+                        crate::ui::ribbon::SEARCH_INPUT_ID,
+                    )));
+                }
+                if let Some(y) = out.scroll_to {
+                    tasks.push(iced::widget::operation::scroll_to(
+                        crate::ui::ribbon::results_scroll_id(),
+                        iced::widget::scrollable::AbsoluteOffset { x: 0.0, y },
+                    ));
+                }
+                if let Some(run) = out.run {
+                    tasks.push(self.update(run));
+                }
+                Task::batch(tasks)
+            }
+            Message::MenuCommand(line) => {
+                let sweep = self.sync_active_field_if_any();
                 self.ribbon.close_dropdown();
+                // A single word dispatches as a ribbon button does; a line
+                // with answers runs its command and feeds them to its
+                // prompts, leaving the command at its next one.
+                let run = if line.split_whitespace().nth(1).is_some() {
+                    self.run_command_line_streaming(&line, false)
+                } else {
+                    self.dispatch_ribbon_command(&line)
+                };
+                Task::batch([sweep, run])
+            }
+            Message::RibbonReorderPanels { module, titles } => {
+                self.ribbon.reorder_panels(module, &titles);
                 self.save_config();
                 Task::none()
             }
+            Message::RibbonMenu(msg) => {
+                use crate::ui::ribbon::RibbonMenuMsg;
+                let follow = match &msg {
+                    RibbonMenuMsg::ShowMenuBar(shown) => Some(Message::MenuBarChanged(*shown)),
+                    RibbonMenuMsg::ShowRibbon(shown) => Some(Message::RibbonVisibleChanged(*shown)),
+                    _ => None,
+                };
+                if self.ribbon.on_menu(msg) {
+                    self.save_config();
+                }
+                follow.map_or_else(Task::none, Task::done)
+            }
 
             Message::RibbonToolClick { tool_id, event } => {
+                // A tool clicked in a minimized ribbon's popup closes it.
+                self.ribbon.close_popup();
                 let sweep = self.sync_active_field_if_any();
                 Task::batch(vec![sweep, self.on_ribbon_tool_click(tool_id, event)])
             }
@@ -3262,6 +3367,10 @@ impl OpenCADStudio {
                 }
                 self.layout_list_open = false;
                 self.layout_rename_state = None;
+                for tab in &mut self.tabs {
+                    tab.properties.open_block_picker = None;
+                }
+                self.block_picker_dismissed = false;
                 if idx < self.tabs.len() {
                     if idx != self.active_tab {
                         // The attribute editor is tab-scoped; leaving its tab
@@ -3767,6 +3876,14 @@ impl OpenCADStudio {
                 shortcut,
                 extend_selection,
             } => {
+                // ↑/↓ step through the command search's results.
+                if self.ribbon.search_results_open()
+                    && matches!(direction, ArrowKey::Up | ArrowKey::Down)
+                {
+                    let down = matches!(direction, ArrowKey::Down);
+                    let step = crate::ui::ribbon::SearchMsg::Move(down);
+                    return self.update(Message::RibbonSearch(step));
+                }
                 if self.mtext_editor.is_some() {
                     match direction {
                         ArrowKey::Left => self.mtext_caret_move(-1, extend_selection),
@@ -4000,6 +4117,8 @@ impl OpenCADStudio {
             }
 
             Message::Command(cmd) => {
+                // A command picked from the application menu closes it.
+                self.ribbon.close_app_menu();
                 // Close viewport context menu if open.
                 let i = self.active_tab;
                 self.tabs[i].scene.selection.borrow_mut().menu.open_at = None;
@@ -4049,16 +4168,10 @@ impl OpenCADStudio {
                     &source,
                     None,
                 );
-                match self.tabs[i]
+                self.tabs[i]
                     .scene
-                    .set_centerline_setting("CENTERLTYPEFILE", &name)
-                {
-                    Ok(message) => {
-                        self.tabs[i].dirty = true;
-                        self.command_line.push_output(&message);
-                    }
-                    Err(error) => self.command_line.push_error(&error),
-                }
+                    .set_centerline_setting("CENTERLTYPEFILE", &name);
+                self.tabs[i].dirty = true;
                 Task::none()
             }
             #[cfg(target_arch = "wasm32")]
@@ -4621,6 +4734,11 @@ impl OpenCADStudio {
                     crate::tf!("LAYERSTATE: saved \"{name}\" in the drawing.").as_ref(),
                 );
                 Task::none()
+            }
+            Message::RibbonLayerStateRestore(name) => {
+                self.ribbon.close_dropdown();
+                self.layer_state_selected = Some(name);
+                self.update(Message::LayerStateManagerRestore)
             }
             Message::LayerStateManagerRestore => {
                 let i = self.active_tab;
@@ -5703,10 +5821,19 @@ impl OpenCADStudio {
 
             Message::ViewportClick(viewport) => self.on_viewport_click(viewport),
 
+            // The ribbon knows the window's width from the start, not only
+            // after the first resize.
+            Message::WindowOpened(id, w, h) => {
+                if Some(id) == self.main_window {
+                    return self.update(Message::WindowResized(w, h));
+                }
+                Task::none()
+            }
             Message::WindowResized(w, h) => {
                 if is_layout_window_size(w, h) {
                     self.vp_size = ((w - 440.0).max(200.0), h);
                     self.win_size = (w, h);
+                    self.ribbon.set_window_size((w, h));
                 }
                 Task::none()
             }
@@ -5899,6 +6026,60 @@ impl OpenCADStudio {
                 }
                 Task::none()
             }
+            Message::TestVisibilityPick(idx) => {
+                let i = self.active_tab;
+                if let Some(insert) = self.tabs[i].block_test.as_ref().map(|test| test.insert) {
+                    self.apply_visibility_state(insert, idx);
+                    self.finish_pending_history(i);
+                    self.refresh_properties();
+                }
+                Task::none()
+            }
+            Message::TestLookupPick(idx) => {
+                let i = self.active_tab;
+                let Some((insert, baseline)) = self.tabs[i]
+                    .block_test
+                    .as_ref()
+                    .map(|test| (test.insert, test.baseline.clone()))
+                else {
+                    return Task::none();
+                };
+                if self.reject_locked_edit(i, insert) {
+                    return Task::none();
+                }
+                let Some(value) = self
+                    .test_block_widgets(i)
+                    .and_then(|widgets| widgets.lookup)
+                    .and_then(|widget| widget.items.get(idx).cloned())
+                else {
+                    return Task::none();
+                };
+                let result = crate::scene::block_lookup::evaluate_test_choice(
+                    &self.tabs[i].scene.document,
+                    baseline.as_ref(),
+                    insert,
+                    &value,
+                );
+                match result {
+                    Ok(Some(staged)) => {
+                        self.push_undo_snapshot(i, "Lookup value");
+                        self.apply_action_document(i, staged);
+                        self.tabs[i].scene.bump_geometry();
+                        self.tabs[i].dirty = true;
+                        self.finish_pending_history(i);
+                        self.refresh_properties();
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.command_line.push_error(crate::t!(error).as_ref()),
+                }
+                Task::none()
+            }
+            Message::FlipPick(idx) => {
+                if let Some(popup) = self.flip_popup.take() {
+                    self.apply_flip_state(popup, idx == 1);
+                }
+                Task::none()
+            }
 
             Message::GripMenuPick(idx) => self.on_grip_menu_pick(idx),
 
@@ -6030,6 +6211,9 @@ impl OpenCADStudio {
                     return Task::none();
                 }
                 let open = !self.dock_panel_visible(id);
+                // Hiding the panel takes its lists with it; a flag left behind
+                // would keep the keyboard guard swallowing keys.
+                self.tabs[self.active_tab].properties.open_block_picker = None;
                 if self.clean_screen {
                     // Shown over clean screen without changing the panel's
                     // normal state.
@@ -6534,6 +6718,10 @@ impl OpenCADStudio {
             Message::ToggleCleanScreen => {
                 self.clean_screen ^= true;
                 self.clean_screen_properties = false;
+                if self.clean_screen {
+                    // The panel goes with the chrome; its list cannot stay open.
+                    self.tabs[self.active_tab].properties.open_block_picker = None;
+                }
                 Task::none()
             }
             Message::ToggleTransparencyDisplay => {
@@ -6546,6 +6734,9 @@ impl OpenCADStudio {
             }
             Message::ToggleQuickProperties => {
                 self.quick_properties ^= true;
+                // The Quick Properties copy of the row, and its list, go with
+                // the panel.
+                self.tabs[self.active_tab].properties.open_block_picker = None;
                 if self.quick_properties {
                     self.quick_properties_anchor = self.tabs[self.active_tab].last_cursor_screen;
                 }
@@ -7617,7 +7808,10 @@ impl OpenCADStudio {
             // ── Ribbon dropdowns ──────────────────────────────────────────
             Message::ToggleRibbonDropdown(id) => {
                 let mut task = Task::none();
-                if self.tabs[self.active_tab].is_start {
+                // The minimize button's menu works without a drawing.
+                if self.tabs[self.active_tab].is_start
+                    && !crate::ui::ribbon::works_without_drawing(&id)
+                {
                     self.ribbon.close_dropdown();
                 } else {
                     if id == crate::modules::insert::insert_block::GALLERY_ID
@@ -7710,6 +7904,11 @@ impl OpenCADStudio {
                 let value = if layer.is_empty() { ".".to_string() } else { layer };
                 self.dispatch_command(&format!("MLEADERLAYER {value}"))
             }
+            Message::RibbonCenterLayer(layer) => {
+                self.ribbon.close_dropdown();
+                let value = if layer.is_empty() { ".".to_string() } else { layer };
+                self.dispatch_command(&format!("CENTERLAYER {value}"))
+            }
             Message::RibbonTextLayer(layer) => {
                 self.ribbon.close_dropdown();
                 let value = if layer.is_empty() { ".".to_string() } else { layer };
@@ -7721,6 +7920,8 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::DropdownSelectItem { dropdown_id, cmd } => {
+                // A tool picked from a minimized ribbon's popup closes it.
+                self.ribbon.close_popup();
                 if self.tabs[self.active_tab].is_start {
                     self.ribbon.close_dropdown();
                     return Task::none();
@@ -7844,29 +8045,19 @@ impl OpenCADStudio {
                 self.mtext_apply_span_number("height", s);
                 Task::none()
             }
-            Message::MTextRectWidth(width) => {
-                if let Some(ed) = self.mtext_editor.as_mut() {
-                    ed.rect_width = width.max(1e-6);
-                    ed.keep_width = true;
-                }
-                self.rebuild_mtext_preview();
-                Task::none()
-            }
             Message::MTextColorChanged(color) => {
                 self.mtext_apply_color(color);
                 Task::none()
             }
             Message::MTextColorPickerToggle => {
                 if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.menu = None;
                     ed.color_picker_open = !ed.color_picker_open;
                 }
                 Task::none()
             }
             Message::MTextStyle(s) => {
-                if let Some(ed) = self.mtext_editor.as_mut() {
-                    ed.style = s;
-                }
-                self.rebuild_mtext_preview();
+                self.mtext_object_style(s);
                 Task::none()
             }
             Message::MTextFont(f) => {
@@ -7909,8 +8100,82 @@ impl OpenCADStudio {
                 self.mtext_type(&value);
                 Task::none()
             }
+            Message::MTextMenu(menu) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.menu = if ed.menu == menu { None } else { menu };
+                    ed.color_picker_open = false;
+                }
+                Task::none()
+            }
+            Message::MTextList(kind) => {
+                self.mtext_list(kind);
+                Task::none()
+            }
+            Message::MTextTab => {
+                self.mtext_type("\t");
+                Task::none()
+            }
+            Message::MTextLineSpacingInput(value) => {
+                self.mtext_line_spacing_input(value);
+                Task::none()
+            }
+            Message::MTextLineSpacingMode(exact) => {
+                self.mtext_line_spacing_mode(exact);
+                Task::none()
+            }
+            Message::MTextMaskToggle => {
+                self.mtext_mask_toggle();
+                Task::none()
+            }
+            Message::MTextMaskColor(color) => {
+                self.mtext_mask_color(color);
+                Task::none()
+            }
+            Message::MTextMaskScale(value) => {
+                self.mtext_mask_scale(value);
+                Task::none()
+            }
+            Message::MTextDirection(direction) => {
+                self.mtext_direction(direction);
+                Task::none()
+            }
+            Message::MTextFractionOpen => {
+                self.mtext_fraction_open();
+                Task::none()
+            }
+            Message::MTextFractionPart(part, value) => {
+                self.mtext_fraction_part(part, value);
+                Task::none()
+            }
+            Message::MTextFractionKind(kind) => {
+                self.mtext_fraction_kind(kind);
+                Task::none()
+            }
+            Message::MTextFractionInsert => {
+                self.mtext_fraction_insert();
+                Task::none()
+            }
+            Message::MTextRectWidthField(value) => {
+                self.mtext_rect_width_field(value);
+                Task::none()
+            }
+            Message::MTextBoxDrag(width) => {
+                self.mtext_box_drag(width);
+                Task::none()
+            }
+            Message::MTextMenuPick(message) => {
+                if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.menu = None;
+                }
+                self.update(*message)
+            }
+            Message::MTextRotation(value) => {
+                self.mtext_rotation(value);
+                Task::none()
+            }
             Message::MTextAnnotative(value) => {
                 if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.record_undo();
                     ed.annotative = value;
                 }
                 self.rebuild_mtext_preview();
@@ -8002,6 +8267,7 @@ impl OpenCADStudio {
             }
             Message::MTextJustify(ap) => {
                 if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.record_undo();
                     ed.attachment = ap;
                 }
                 self.rebuild_mtext_preview();
@@ -8013,7 +8279,9 @@ impl OpenCADStudio {
             }
             Message::MTextLineSpacing(f) => {
                 if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.record_undo();
                     ed.line_spacing = f;
+                    ed.line_spacing_draft = None;
                 }
                 self.rebuild_mtext_preview();
                 Task::none()
@@ -8054,6 +8322,7 @@ impl OpenCADStudio {
                     3 => self.mtext_select_all(),
                     _ => {
                         if let Some(ed) = self.mtext_editor.as_mut() {
+                            ed.typing_format = Default::default();
                             ed.sel_anchor = off;
                             ed.sel = Some((off, off));
                             ed.caret = off;
@@ -8065,6 +8334,7 @@ impl OpenCADStudio {
             }
             Message::MTextSelTo(off) => {
                 if let Some(ed) = self.mtext_editor.as_mut() {
+                    ed.typing_format = Default::default();
                     let a = ed.sel_anchor;
                     ed.sel = Some((a.min(off), a.max(off)));
                     ed.caret = off;
@@ -8090,6 +8360,10 @@ impl OpenCADStudio {
             }
             Message::MTextOk => {
                 let committed = self.mtext_commit();
+                // A draft that could not be saved stays open with its message.
+                if self.mtext_editor.is_some() {
+                    return Task::none();
+                }
                 self.post_editor_closed(committed)
             }
             Message::MTextApply => {
@@ -8124,7 +8398,14 @@ impl OpenCADStudio {
                     Task::none()
                 } else if !self.clipboard.is_empty() {
                     self.update(Message::Command("PASTECLIP".to_string()))
-                } else if focus == PasteFocus::CommandLine {
+                } else if focus == PasteFocus::CommandLine
+                    && !(self.dyn_capturing()
+                        && self.text_inline.is_none()
+                        && !self.mtext_editor.as_ref().is_some_and(|e| e.show_preview))
+                {
+                    // The command line pasted it natively. While dynamic input
+                    // holds the keystrokes the field is read-only, so the
+                    // text is read here and typed in as rows. (#1883)
                     Task::none()
                 } else {
                     self.read_system_clipboard_for_paste()
@@ -8275,7 +8556,14 @@ impl OpenCADStudio {
             Message::MTextPasteClip(text) => {
                 if let Some(text) = text.filter(|t| !t.is_empty()) {
                     // CR/LF arrive as line breaks; MText keeps "\n", drop "\r".
-                    self.mtext_type(&text.replace('\r', ""));
+                    let text = text.replace('\r', "");
+                    match self.mtext_clipboard.clone() {
+                        // Copied in this editor: paste it with its formatting.
+                        Some((plain, fragment)) if plain.replace('\r', "") == text => {
+                            self.raw_paste_fragment(&fragment)
+                        }
+                        _ => self.mtext_type(&text),
+                    }
                     self.rebuild_mtext_preview();
                 }
                 Task::none()
@@ -8970,13 +9258,49 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::PropBlockCommit(key) => self.commit_block_parameter_property(key, None),
-            Message::PropBlockChoice { key, index } => self.commit_block_parameter_property(key, Some(index)),
+            Message::PropBlockChoice { key, index } => {
+                for tab in &mut self.tabs {
+                    if tab
+                        .properties
+                        .open_block_picker
+                        .is_some_and(|(open, _)| open == key)
+                    {
+                        tab.properties.open_block_picker = None;
+                    }
+                }
+                self.commit_block_parameter_property(key, Some(index))
+            }
+            Message::PropBlockPickerToggle { key, quick } => {
+                let panel = &mut self.tabs[self.active_tab].properties;
+                panel.open_block_picker = if panel.open_block_picker == Some((key, quick)) {
+                    None
+                } else {
+                    Some((key, quick))
+                };
+                self.block_picker_dismissed = false;
+                Task::none()
+            }
+            Message::PropBlockPickerDismiss { key, quick } => {
+                for tab in &mut self.tabs {
+                    if tab
+                        .properties
+                        .open_block_picker
+                        .is_some_and(|open| open == (key, quick))
+                    {
+                        tab.properties.open_block_picker = None;
+                    }
+                }
+                self.block_picker_dismissed = true;
+                Task::none()
+            }
 
 
             Message::PropGroupToggle(key) => {
-                let groups = &mut self.tabs[self.active_tab].properties.expanded_groups;
-                if !groups.remove(&key) {
-                    groups.insert(key);
+                let panel = &mut self.tabs[self.active_tab].properties;
+                // A collapsed group can take the open list's row off screen.
+                panel.open_block_picker = None;
+                if !panel.expanded_groups.remove(&key) {
+                    panel.expanded_groups.insert(key);
                 }
                 Task::none()
             }
@@ -8991,6 +9315,7 @@ impl OpenCADStudio {
                 let sections = self.collapsed_property_sections.clone();
                 for tab in &mut self.tabs {
                     tab.properties.collapsed_sections = sections.clone();
+                    tab.properties.open_block_picker = None;
                 }
                 Task::none()
             }
@@ -9014,6 +9339,16 @@ impl OpenCADStudio {
             }
 
             Message::PropAttrCommit(tag) => self.on_prop_attr_commit(tag),
+
+            Message::PropPluginParamInput { name, value } => {
+                self.tabs[self.active_tab]
+                    .properties
+                    .edit_buf
+                    .insert(crate::ui::properties::plugin_param_edit_key(&name), value);
+                Task::none()
+            }
+
+            Message::PropPluginParamCommit(name) => self.on_prop_plugin_param_commit(name),
 
             Message::PropPointerPressed => {
                 // A press anywhere ends typing in QuickCalc; its own
@@ -10541,6 +10876,18 @@ impl OpenCADStudio {
                 self.persist_settings_if_changed();
                 Task::none()
             }
+            Message::CommandLineFontChanged(family) => {
+                let size = self.command_line.font_size();
+                self.command_line.set_font(&family, size);
+                self.persist_settings_if_changed();
+                Task::none()
+            }
+            Message::CommandLineFontSizeChanged(size) => {
+                let family = self.command_line.font_family().to_owned();
+                self.command_line.set_font(&family, size);
+                self.persist_settings_if_changed();
+                Task::none()
+            }
 
             Message::CommandLineFadeChanged(ms) => {
                 let ms = crate::app::settings::clamp_commandline_fade_ms(ms);
@@ -10879,6 +11226,9 @@ impl OpenCADStudio {
                     Ok(()) => {
                         self.language = language;
                         self.persist_settings_if_changed();
+                        // Ribbon labels are built in the language they were
+                        // made in; rebuild them so no restart is needed.
+                        self.rebuild_ribbon_modules();
                         #[cfg(target_arch = "wasm32")]
                         {
                             let script = crate::scene::text::web_font::preload_language(
@@ -11733,7 +12083,9 @@ impl OpenCADStudio {
             Message::PluginInstalled(Ok(id)) => {
                 self.marketplace_status =
                     crate::tf!("Installed '{id}'. Restart to load it.").into_owned();
-                self.plugin_load_errors.remove(&id);
+                for id in id.split(", ") {
+                    self.plugin_load_errors.remove(id);
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     self.external_plugins = crate::plugin::external::discover();
@@ -12027,6 +12379,8 @@ impl OpenCADStudio {
             }
             Message::BlockEditPickerApply => self.apply_bedit_dialog(),
             Message::Rename(msg) => self.on_rename_dialog(msg),
+            Message::Purge(msg) => self.on_purge_dialog(msg),
+            Message::DwgProps(msg) => self.on_drawing_properties(msg),
             Message::SelectSimilarSettingsToggle(bit) => {
                 if let Some(mode) = self.select_similar_settings.as_mut() {
                     *mode ^= bit;
@@ -13036,22 +13390,30 @@ impl OpenCADStudio {
             Message::TableStyleDialogOpen => {
                 use codec::objects::ObjectType;
                 let i = self.active_tab;
-                self.tablestyle_selected = self.tabs[i]
-                    .scene
-                    .document
+                // The dialog opens on the current style.
+                let document = &self.tabs[i].scene.document;
+                let current = &document.header.current_table_style_name;
+                let names: Vec<&String> = document
                     .objects
                     .values()
-                    .find_map(|o| {
-                        if let ObjectType::TableStyle(s) = o {
-                            Some(s.name.clone())
-                        } else {
-                            None
-                        }
+                    .filter_map(|o| match o {
+                        ObjectType::TableStyle(s) => Some(&s.name),
+                        _ => None,
                     })
-                    .unwrap_or_else(|| "Standard".to_string());
+                    .collect();
+                self.tablestyle_selected = names
+                    .iter()
+                    .find(|name| name.eq_ignore_ascii_case(current))
+                    .or(names.first())
+                    .map_or_else(|| "Standard".to_string(), |name| (*name).clone());
+                self.tablestyle_parent_table = false;
                 self.load_tablestyle_bufs(i);
                 self.active_modal = Some(super::ModalKind::TableStyle);
                 self.style_stage_begin();
+                Task::none()
+            }
+            Message::TableStyleListInUse(on) => {
+                self.tablestyle_in_use_only = on;
                 Task::none()
             }
             Message::TableStyleDialogClose => {

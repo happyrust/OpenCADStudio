@@ -3103,15 +3103,29 @@ impl OpenCADStudio {
                         .and_then(|command| command.cursor_plane())
                         .is_some();
                     if !uses_command_cursor_plane {
-                        // The same ortho/polar resolution as the full path,
-                        // Z axis and kept elevation included.
-                        let drafted = self.last_point.and_then(|base| {
-                            self.drafting_point(i, p, pt, base, view_rot, eye, bounds)
-                        });
-                        match drafted {
-                            Some((point, _)) => pt = point,
-                            None if self.tabs[i].active_ucs.is_none() => pt.z = 0.0,
-                            None => {}
+                        let mut drafted_elevation = false;
+                        if let Some(base) = self.last_point {
+                            // Match the authoritative Ortho/Polar path, including
+                            // elevated drafting planes and the UCS Z direction.
+                            if let Some((point, on_z)) =
+                                self.drafting_point(i, p, pt, base, view_rot, eye, bounds)
+                            {
+                                pt = point;
+                                drafted_elevation = true;
+                                let up = (point - base).dot(self.tabs[i].ucs_xform().axes().3);
+                                if on_z && up != 0.0 {
+                                    self.otrack_active = Some((base, (point - base).normalize()));
+                                    self.otrack_cross = None;
+                                    self.otrack_kind = Some(if up > 0.0 {
+                                        crate::snap::TrackingKind::PlusZ
+                                    } else {
+                                        crate::snap::TrackingKind::MinusZ
+                                    });
+                                }
+                            }
+                        }
+                        if self.tabs[i].active_ucs.is_none() && !drafted_elevation {
+                            pt.z = 0.0;
                         }
                     }
                     pt
@@ -5093,6 +5107,9 @@ impl OpenCADStudio {
         if self.table_popup.take().is_some() {
             return Task::none();
         }
+        if self.flip_popup.take().is_some() {
+            return Task::none();
+        }
         // Same dismiss-on-outside-click for the right-click
         // context menu: its panel is opaque, so a press that
         // reaches here is outside the menu.
@@ -5403,6 +5420,14 @@ impl OpenCADStudio {
                         self.grip_popup = None;
                         return Task::none();
                     }
+                    // A flip parameter's chevron lists its two state labels
+                    // outside the block editor instead of toggling or
+                    // starting a command.
+                    if self.open_flip_popup_at(handle, grip_id, p_full) {
+                        self.grip_hover = None;
+                        self.grip_popup = None;
+                        return Task::none();
+                    }
                     if self.start_test_action_grip(handle, grip_id) {
                         return Task::none();
                     }
@@ -5441,6 +5466,7 @@ impl OpenCADStudio {
                         edit.grab = grabbed.map(|point| point - world);
                     }
                     self.tabs[i].active_grip = Some(edit);
+                    self.grip_engage_press = Some(p);
                     self.grip_hover = None;
                     self.grip_popup = None;
                     self.tabs[i]
@@ -5764,9 +5790,15 @@ impl OpenCADStudio {
                 }
                 return Task::none();
             }
+            // The press that picked the grip up, released within the drag
+            // threshold, was a click however the hand trembled: stay hot
+            // and wait for the placement click.
+            let engaging_click = self.grip_engage_press.take().is_some_and(|press| {
+                let (dx, dy) = (p.x - press.x, p.y - press.y);
+                dx * dx + dy * dy <= 12.0 * 12.0
+            });
             let moved = grip.last_world != grip.origin_world;
-            if is_click && !moved {
-                // Engaging click — stay hot, wait for the placement click.
+            if engaging_click || (is_click && !moved) {
                 return Task::none();
             }
             return self.commit_active_grip_edit();
@@ -8489,6 +8521,7 @@ properties={:.1}ms picked={}",
             (session.br_handle, session.editor_camera.clone())
         };
         self.layout_rename_state = None;
+        self.flip_popup = None;
         self.tabs[i].scene.active_viewport = None;
         self.tabs[i].scene.set_current_layout("Model".to_string());
         self.tabs[i].scene.block_edit_block = Some(br_handle);
@@ -8931,22 +8964,6 @@ properties={:.1}ms picked={}",
         let history_originals = std::mem::take(&mut self.grip_history_originals);
         let dirty_before = self.grip_dirty_before.take().unwrap_or(self.tabs[i].dirty);
         if !handles.is_empty() {
-            if !originals.is_empty() {
-                self.push_entity_group_history(
-                    i,
-                    "GRIP",
-                    originals
-                        .into_iter()
-                        .map(|(handle, entity)| (handle, std::sync::Arc::new(entity)))
-                        .collect(),
-                    history_originals
-                        .into_iter()
-                        .flat_map(|(_, objects)| objects)
-                        .collect(),
-                    dirty_before,
-                );
-                self.tabs[i].dirty = true;
-            }
             self.grip_reference_wires.clear();
             self.grip_text_verts = Vec::new();
             self.grip_text_slide = false;
@@ -8958,9 +8975,65 @@ properties={:.1}ms picked={}",
                 .into_iter()
                 .map(|handle| (handle, crate::scene::ChangeKind::Modified))
                 .collect();
+            // Dimensions that follow the edited shapes update here; record
+            // them so the one undo also brings back their saved pictures.
+            self.tabs[i].scene.begin_undo_recording();
             self.tabs[i]
                 .scene
                 .bump_entities_after_parametric_solve(&changes);
+            let (followers, follower_objects, ..) = self.tabs[i]
+                .scene
+                .take_undo_recording()
+                .map(|recording| recording.into_recorded_images())
+                .unwrap_or_default();
+            // A grip that detaches a centre object says so, as moving it does.
+            for (handle, original) in &originals {
+                let codec::EntityType::Line(line) = original else {
+                    continue;
+                };
+                let data = &line.common.extended_data;
+                let was_associated = codec::entities::CenterMarkAssociation::read(data)
+                    .map(|association| association.associated)
+                    .or_else(|| {
+                        codec::entities::CenterLineAssociation::read(data)
+                            .map(|association| association.associated)
+                    });
+                if was_associated == Some(true) {
+                    if let Some((mark, false)) = self.tabs[i].scene.center_object_state(*handle) {
+                        self.command_line.push_output(&if mark {
+                            crate::tr!("center-cmd", "mark-disassociated")
+                        } else {
+                            crate::tr!("center-cmd", "line-disassociated")
+                        });
+                    }
+                }
+            }
+            if !originals.is_empty() {
+                let mut before: Vec<_> = originals
+                    .into_iter()
+                    .map(|(handle, entity)| (handle, std::sync::Arc::new(entity)))
+                    .collect();
+                for (handle, entity) in followers {
+                    if let Some(entity) = entity {
+                        if !before.iter().any(|(known, _)| *known == handle) {
+                            before.push((handle, entity));
+                        }
+                    }
+                }
+                let mut object_before: Vec<_> = history_originals
+                    .into_iter()
+                    .flat_map(|(_, objects)| objects)
+                    .collect();
+                for (handle, object) in follower_objects {
+                    if let Some(object) = object {
+                        if !object_before.iter().any(|(known, _)| *known == handle) {
+                            object_before.push((handle, object));
+                        }
+                    }
+                }
+                self.push_entity_group_history(i, "GRIP", before, object_before, dirty_before);
+                self.tabs[i].dirty = true;
+            }
         }
         // Placement confirmed — keep the just-added leader.
         self.grip_add_provisional = None;
@@ -9625,6 +9698,74 @@ mod rapid_drawing_tests {
         }
         let second = app.axis_lock_dir.expect("locked to the second axis");
         assert!(second.y.abs() > 0.99, "{second:?}");
+    }
+
+    #[test]
+    fn rapid_drafting_polar_matches_authoritative_point() {
+        for (target, engaged) in [
+            (glam::DVec3::new(40.0, 0.25, 0.0), true),
+            (glam::DVec3::new(40.0, 20.0, 0.0), false),
+        ] {
+            let exercise = |force_full: bool| {
+                let mut app = drawing_app("LINE");
+                let i = app.active_tab;
+                let start = screen(&app, glam::DVec3::ZERO);
+                let _ = app.update(Message::ViewportLeftPressAt(start));
+                app.polar_mode = true;
+                app.polar_increment_deg = 90.0;
+                let first = screen(&app, glam::DVec3::new(20.0, 0.0, 0.0));
+                let _ = app.update(Message::ViewportMove(first));
+                assert!(app.snap_dwell.is_some());
+                if force_full { app.snap_dwell = None; }
+                let at = screen(&app, target);
+                let _ = app.update(Message::ViewportMove(at));
+                assert_eq!(app.last_point, Some(glam::DVec3::ZERO));
+                assert!(app.tabs[i].active_cmd.is_some());
+                if !force_full {
+                    assert!(!app.snap_dwell.as_ref().unwrap().snap_resolved);
+                }
+                app.tabs[i].last_cursor_world
+            };
+            let full = exercise(true);
+            let rapid = exercise(false);
+            assert!(rapid.distance(full) < 0.001, "engaged={engaged}: {rapid:?} != {full:?}");
+            if engaged {
+                assert!(rapid.y.abs() < 0.001);
+            } else {
+                assert!(rapid.distance(target) < 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn rapid_drafting_3d_matches_authoritative_z_axis() {
+        for polar in [false, true] {
+            let exercise = |force_full: bool| {
+                let mut app = drawing_app("LINE");
+                let i = app.active_tab;
+                let _ = app.apply_view_preset("SWISO");
+                let start = screen(&app, glam::DVec3::ZERO);
+                let _ = app.update(Message::ViewportLeftPressAt(start));
+                let anchor = app.last_point.expect("initial LINE point");
+                app.ortho_mode = !polar;
+                app.polar_mode = polar;
+                app.polar_increment_deg = 90.0;
+                let first = screen(&app, glam::DVec3::new(0.0, 0.0, 10.0));
+                let _ = app.update(Message::ViewportMove(first));
+                assert!(app.snap_dwell.is_some());
+                if force_full { app.snap_dwell = None; }
+                let at = screen(&app, glam::DVec3::new(0.0, 0.0, 20.0));
+                let _ = app.update(Message::ViewportMove(at));
+                assert_eq!(app.last_point, Some(anchor));
+                (app.tabs[i].last_cursor_world, app.otrack_kind)
+            };
+            let full = exercise(true);
+            let rapid = exercise(false);
+            assert!(rapid.0.distance(full.0) < 0.001, "polar={polar}: {rapid:?} != {full:?}");
+            assert_eq!(rapid.1, full.1);
+            assert!(rapid.0.distance(glam::DVec3::new(0.0, 0.0, 20.0)) < 0.001);
+            assert_eq!(rapid.1, Some(crate::snap::TrackingKind::PlusZ));
+        }
     }
 
     #[test]

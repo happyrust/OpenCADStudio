@@ -38,7 +38,7 @@ key.
 
 `ocs_render` is the low-friction drawing view. It delegates to the capture
 implementation and frames to extents by default. Use `ocs_capture` for tiles,
-diffs, window capture, and resource delivery. `ocs_read` and `ocs_execute`
+window capture, and resource delivery. `ocs_read` and `ocs_execute`
 remain the full-control surface for advanced operations and explicit envelopes.
 
 A complete drawing and verification flow needs no session or request IDs:
@@ -287,13 +287,11 @@ unconsumed, and the command closed rather than left armed for a second line. Geo
 
 `ocs_capture` defaults to the drawing viewport and a longest edge of 1600 pixels. Set `scope` to `window` for the full interface or change `max_dimension` between 256 and 4096.
 
-With `diff: true`, an unchanged comparison returns metadata only, including
-`diff.changed: false`, the hash and resource URI; it does not resend image or
-resource content blocks, regardless of `delivery`. The initial baseline (also
-after `reset_diff_baseline: true`) still uses the requested image delivery.
-Changed captures retain the requested diff mode, including cropped patches.
-Use `diff: false` or read the returned resource URI to retrieve the full image
-when an unchanged comparison omitted it.
+Every capture delivers its image under the requested `delivery`. The retired
+`diff`, `diff_mode` and `reset_diff_baseline` parameters are refused by name: the
+comparison's baseline moved with the camera and the on-screen command line
+counted as changed pixels, so it was removed rather than repaired. Capture twice
+and compare the two images if you need a visual delta.
 
 Clients using MCP 2026-07-28 can advertise `io.modelcontextprotocol/tasks`. OCS then returns a standard task handle when an operation is still running and accepts `tasks/get`, `tasks/update`, and `tasks/cancel`. Other clients continue to receive the existing operation status and can read it with `ocs_read`.
 
@@ -377,6 +375,8 @@ maps onto these three steps rather than a native op.
 ### Text content and bounds
 
 `query` entities of type `TEXT`/`MTEXT` return the raw stored string in `value` plus a formatting-free rendering in `text` (MTEXT inline codes such as `\A1;` or `\P` are resolved; `%%d`-style TEXT codes become their glyphs). With `detail:"full"`, degenerate-width text bounds are widened with a documented estimate (height × 0.8 × character count) so `bounds`-based region filters stay usable.
+
+Every entity above `summary` detail also carries `constraints` — the constraints referencing it, as `{kind, participants, enabled, conflict, form}` entries, where `conflict` names a constraint the solver flagged (`Redundant` or `Conflicting`) and is `null` otherwise, and `form` is `Dynamic`/`Annotational` for a dimensional constraint's dimension (`null` for a geometric constraint) (see the API spec for the exact shape).
 
 ### Text operations — search, audit and replace
 
@@ -549,7 +549,7 @@ keep working while the client polls.
 
 | Method & path | Purpose |
 |---|---|
-| `GET  /api/v1/ready` | Version, session id, active document id. |
+| `GET  /api/v1/ready` | Version, session id, active document id. Answers `503 {"ready":false,"code":"not_ready"}` while the active document is still the welcome (Start) tab — a drawing named on the command line loads on its own schedule, and its id refuses every drawing command until it is active. Keep polling until 200. |
 | `GET  /api/v1/state` | Full editor state (documents, selection, command, camera). |
 | `GET  /api/v1/capabilities` | Feature/collection advertisement incl. `operations`. |
 | `GET  /api/v1/openapi` | OpenAPI 3 description of this whole surface. |
@@ -572,7 +572,8 @@ keep working while the client polls.
 | `POST /api/v1/layouts` | Create a layout with default page setup → **201**. |
 | `PUT  /api/v1/layouts/{name}/page-setup` | Write a layout's plot configuration (paper, orientation, fit/scale, center, window, plot style). |
 | `POST /api/v1/plot` · `/api/v1/wblock` · `/api/v1/images` | PDF export (`"layout":"all","per_page":true` writes one PDF per layout) · DWG/DXF export (`"template"` bases the new database on a file, `"normalize":true` shifts the export to the origin) · attach picture. |
-| `POST /api/v1/commands` | Run one command line (`{"cmd":"LINE 0,0 10,10"}`). |
+| `POST /api/v1/commands` | Run one command line (`{"cmd":"LINE 0,0 10,10"}`). Send `document_id` when the drawing you mean is not the active one — the route forwards it, and a `run` without it is refused. |
+| `POST /api/v1/capture` | Screenshot the editor window (GUI-hosted channel only) and answer `path`, `width`, `height`, `world_to_pixel_matrix`, `pixel_to_world_matrix` and `annotations[]` (per-entity `handle`, `screen_pixel`, `screen_bounds`, `world_center`; at most 64). `path` is required and must be absolute. |
 | `POST /api/v1/undo` · `/redo` · `/save` | Lifecycle (`/save` to a `*.dwt` path writes the template — DWG bytes). |
 | `GET  /api/v1/layers` · `/header` · `/records?collection=…` | Database reads. |
 | `POST /api/v1/{op}` | Generic passthrough for any automation op. |
@@ -842,6 +843,7 @@ active-document guard — they may address any open document.
 | `osmode` | object-snap bitmask (integer) | ✓ |
 | `pdmode` / `pdsize` | point display mode / size | ✓ |
 | `extmin` / `extmax` | model-space extents `[x,y,z]` | read-only |
+| `constraintstatus` | active space's constraint state: `{scope, constraint_count, enabled_count, dof}` | read-only |
 
 ### `layout_create` / `page_setup_set` — layouts and page setups
 

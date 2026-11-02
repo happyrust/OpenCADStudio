@@ -798,6 +798,8 @@ pub struct UserSettings {
     pub image_frame: i16,
     /// The Attribute Definition dialog's "Specify on-screen" choice.
     pub attdef_on_screen: bool,
+    /// Insert Table / -TABLE column and row settings and insertion behaviour.
+    pub table_insert: crate::modules::annotate::table_cmd::TableDefaults,
     /// Block Definition dialog: base point "Specify On-screen".
     pub block_base_on_screen: bool,
     /// Block Definition dialog: objects "Specify On-screen".
@@ -1039,6 +1041,10 @@ pub struct UserSettings {
     pub commandline_fade_ms: i32,
     /// COMMANDLINEOPACITY: command-line panel opacity in percent (20–100).
     pub command_line_opacity: u8,
+    /// Command line font family; empty uses the interface font.
+    pub command_line_font: String,
+    /// Command line text size in pixels (8–24).
+    pub command_line_font_size: u16,
     /// SNAPUNIT X/Y spacing used by grid snap. 10 matches the Drafting
     /// Settings dialog defaults; older configs without these keys fall
     /// back via `default_snap_spacing`.
@@ -1374,6 +1380,7 @@ impl Default for UserSettings {
             grip_object_limit: DEFAULT_GRIP_OBJECT_LIMIT,
             image_frame: 1,
             attdef_on_screen: true,
+            table_insert: Default::default(),
             block_base_on_screen: false,
             block_objects_on_screen: false,
             block_object_mode: 1,
@@ -1452,6 +1459,8 @@ impl Default for UserSettings {
             cliprompt_lines: 3,
             commandline_fade_ms: 3000,
             command_line_opacity: 80,
+            command_line_font: String::new(),
+            command_line_font_size: 11,
             snap_spacing_x: 10.0,
             snap_spacing_y: 10.0,
             grid_spacing_x: 10.0,

@@ -103,12 +103,20 @@ pub(crate) const RETRYABLE: &[&str] = &[
     "session_changed",
 ];
 
+/// The private session a `--http` listener owns. `new_headless` lands on
+/// the welcome (Start) tab, whose `is_start` flag makes the control gate
+/// refuse `run`/`start`/`input` with `no_document` — the listener
+/// answered `ready` and even cached a document id while every drawing
+/// command was dropped. The legacy `new` op exists for this half-state:
+/// it turns that tab into a real drawing in place.
+fn serve_app(read_only: bool) -> OpenCADStudio {
+    let mut app = OpenCADStudio::new_headless(read_only);
+    let _ = app.automation_op(r#"{"op":"new"}"#);
+    app
+}
+
 pub fn serve(port: u16, read_only: bool) {
-    listen(
-        OpenCADStudio::new_headless(read_only),
-        port,
-        Arc::new(AtomicU16::new(0)),
-    );
+    listen(serve_app(read_only), port, Arc::new(AtomicU16::new(0)));
 }
 
 /// The secret every TCP automation client presents: `OCS_API_TOKEN` when the
@@ -239,9 +247,17 @@ fn listen(mut app: OpenCADStudio, port: u16, bound_port: Arc<AtomicU16>) {
     // threads above, not in the app.
     let mut document_id: Option<u64> = None;
     let mut counter: u64 = 0;
-    for job in incoming {
-        let (status, body) = route(&mut app, &job.request, &mut document_id, &mut counter);
-        let _ = job.reply.send((status, body));
+    // Between requests, plugins' worker threads are still served, as the
+    // window's timer does in the GUI.
+    loop {
+        match incoming.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(job) => {
+                let (status, body) = route(&mut app, &job.request, &mut document_id, &mut counter);
+                let _ = job.reply.send((status, body));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => app.pump_plugin_requests(),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
     }
 }
 
@@ -425,6 +441,22 @@ pub(crate) fn write_response(
     stream.flush()
 }
 
+/// Contract aliases layered onto a read answer. The automation ops answer
+/// with their own field names (`documents[].id`, `entities.count`, and the
+/// `result` wrapper around a capture); the REST contract names the same
+/// values `document_id`, `total` and top-level capture fields. Aliasing here
+/// keeps both spellings present instead of renaming the op output every
+/// other client already reads.
+#[derive(Clone, Copy)]
+pub(crate) enum Alias {
+    /// `documents[]` gains `document_id` beside `id`.
+    Documents,
+    /// The entity count gains `total` beside `count`.
+    Entities,
+    /// The capture `result` fields are hoisted to the top level.
+    Capture,
+}
+
 /// One resolved REST call, shared by the two `--http` transports: this
 /// headless server executes it against its private app, and the GUI-hosted
 /// bridge (`app::control::http_bridge`) forwards the same request into the
@@ -438,6 +470,13 @@ pub(crate) enum Plan {
     /// Run one prebuilt protocol-1 request as-is — reads, and callers that
     /// manage `document_id` themselves (the MCP-style clients).
     Run { request: Value, created: u16 },
+    /// A read whose answer also carries the contract's field spelling (see
+    /// [`Alias`]); everything else behaves like [`Plan::Run`].
+    Aliased {
+        request: Value,
+        created: u16,
+        alias: Alias,
+    },
     /// Run one op through the mutation wrapper: envelope with a request id,
     /// the cached `document_id` when the caller omitted it, one state-refresh
     /// retry after a stale refusal, and the bulky `state` snapshot stripped
@@ -455,8 +494,62 @@ impl Plan {
     pub(crate) fn op(&self) -> Option<&str> {
         match self {
             Plan::Local(..) | Plan::Ready => None,
-            Plan::Run { request, .. } => request["op"].as_str(),
+            Plan::Run { request, .. } | Plan::Aliased { request, .. } => request["op"].as_str(),
             Plan::Mutate { op, .. } => Some(op),
+        }
+    }
+}
+
+/// Wrap a body in the protocol-1 envelope for one op: the caller's
+/// `request_id` wins, an unstamped body gets a serial one — exactly what the
+/// generic `POST /api/v1/{op}` passthrough does, so an op that only exists on
+/// the envelope path (`capture`) reaches it.
+fn stamp_envelope(op: &str, mut body: Value) -> Value {
+    body["op"] = json!(op);
+    body["protocol"] = json!(1);
+    if body["request_id"].as_str().is_none_or(str::is_empty) {
+        let serial = PASSTHROUGH_SERIAL.fetch_add(1, Ordering::Relaxed);
+        body["request_id"] = json!(format!("rest-{serial}"));
+    }
+    body
+}
+
+/// Layer the contract's field spelling onto a read answer (see [`Alias`]).
+/// Values the op did not produce are left alone: an alias never invents a
+/// field out of a failure body.
+pub(crate) fn apply_alias(alias: Alias, response: &mut Value) {
+    match alias {
+        Alias::Documents => {
+            if let Some(documents) = response["documents"].as_array_mut() {
+                for document in documents {
+                    let id = document["id"].clone();
+                    if !id.is_null() {
+                        document["document_id"] = id;
+                    }
+                }
+            }
+        }
+        Alias::Entities => {
+            let count = response["count"].clone();
+            if count.is_u64() {
+                response["total"] = count;
+            }
+        }
+        Alias::Capture => {
+            let hoisted_result = response["result"].clone();
+            let Some(result) = hoisted_result.as_object() else {
+                return;
+            };
+            let hoisted: Vec<(String, Value)> = result
+                .iter()
+                .filter(|(key, _)| key.as_str() != "state")
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            if let Some(object) = response.as_object_mut() {
+                for (key, value) in hoisted {
+                    object.insert(key, value);
+                }
+            }
         }
     }
 }
@@ -473,9 +566,16 @@ pub(crate) fn plan(method: &str, rest: &[&str], request: &HttpRequest) -> Plan {
             request: json!({"op":"capabilities"}),
             created: 200,
         },
-        ("GET", ["state"]) | ("GET", ["documents"]) => Plan::Run {
+        ("GET", ["state"]) => Plan::Run {
             request: json!({"protocol":1,"op":"state"}),
             created: 200,
+        },
+        // Same state read, plus `documents[].document_id` — the spelling the
+        // REST contract (and every validator) reads.
+        ("GET", ["documents"]) => Plan::Aliased {
+            request: json!({"protocol":1,"op":"state"}),
+            created: 200,
+            alias: Alias::Documents,
         },
         ("POST", ["documents"]) => {
             if let Some(template) = body["template"].as_str() {
@@ -579,6 +679,9 @@ pub(crate) fn plan(method: &str, rest: &[&str], request: &HttpRequest) -> Plan {
             if let Some(v) = request.param("layer") {
                 request_json["layer"] = json!(v);
             }
+            if let Some(v) = request.param("xdata_app") {
+                request_json["xdata_app"] = json!(v);
+            }
             if let Some(v) = request.param("detail") {
                 request_json["detail"] = json!(v);
             }
@@ -622,9 +725,10 @@ pub(crate) fn plan(method: &str, rest: &[&str], request: &HttpRequest) -> Plan {
                     }
                 }
             }
-            Plan::Run {
+            Plan::Aliased {
                 request: request_json,
                 created: 200,
+                alias: Alias::Entities,
             }
         }
         ("GET", ["entities", handle]) => Plan::Run {
@@ -717,14 +821,24 @@ pub(crate) fn plan(method: &str, rest: &[&str], request: &HttpRequest) -> Plan {
             fields: body,
             created: 201,
         },
-        ("POST", ["commands"]) => Plan::Run {
-            request: json!({"op":"run","cmd":body["cmd"]}),
-            created: 200,
-        },
+        ("POST", ["commands"]) => {
+            let mut request = json!({"op":"run","cmd":body["cmd"]});
+            if let Some(id) = body["document_id"].as_u64() {
+                request["document_id"] = json!(id);
+            }
+            Plan::Run {
+                request,
+                created: 200,
+            }
+        }
         ("POST", ["undo"]) | ("POST", ["redo"]) => {
             let op = if rest == ["undo"] { "undo" } else { "redo" };
+            let mut request = json!({"op":op});
+            if let Some(id) = body["document_id"].as_u64() {
+                request["document_id"] = json!(id);
+            }
             Plan::Run {
-                request: json!({"op":op}),
+                request,
                 created: 200,
             }
         }
@@ -769,6 +883,17 @@ pub(crate) fn plan(method: &str, rest: &[&str], request: &HttpRequest) -> Plan {
                 created: 200,
             }
         }
+        // `capture` answers through the operation envelope, so its fields
+        // arrive under `result`; the contract reads `path`, `width`,
+        // `height`, `world_to_pixel_matrix` and `annotations` at the top
+        // level, so hoist them. The envelope stamp matches the generic
+        // passthrough: without `protocol` the headless executor would take
+        // the legacy path, where `capture` does not exist.
+        ("POST", ["capture"]) => Plan::Aliased {
+            request: stamp_envelope("capture", body),
+            created: 200,
+            alias: Alias::Capture,
+        },
         ("GET", ["openapi"]) => Plan::Local(
             200,
             serde_json::from_str(include_str!("rest_openapi.json")).unwrap_or(json!({})),
@@ -836,6 +961,34 @@ fn route(
         Plan::Ready => {
             let state = app.automation_op(r#"{"protocol":1,"op":"state"}"#);
             harvest(document_id, &state);
+            // A file opened from the command line loads on the app's own
+            // schedule: until its tab becomes the active document, the
+            // active tab is still the welcome (Start) tab, whose id every
+            // drawing command refuses. Answering `ready` there hands a
+            // client a document id that cannot draw anything, so say
+            // "not yet" and let the caller keep polling.
+            if state["documents"]
+                .as_array()
+                .and_then(|documents| {
+                    documents
+                        .iter()
+                        .find(|document| document["id"] == state["document_id"])
+                })
+                .and_then(|document| document["start"].as_bool())
+                == Some(true)
+            {
+                return (
+                    503,
+                    json!({
+                        "ok": false,
+                        "ready": false,
+                        "code": "not_ready",
+                        "version": state["version"],
+                        "session_id": state["session_id"],
+                        "document_id": state["document_id"],
+                    }),
+                );
+            }
             (
                 200,
                 json!({
@@ -846,6 +999,16 @@ fn route(
                     "document_id": state["document_id"],
                 }),
             )
+        }
+        Plan::Aliased {
+            request,
+            created,
+            alias,
+        } => {
+            let mut response = app.automation_op(&request.to_string());
+            harvest(document_id, &response);
+            apply_alias(alias, &mut response);
+            (map_status(response.clone(), created == 201), response)
         }
         Plan::Run { request, created } => {
             let response = app.automation_op(&request.to_string());
@@ -983,7 +1146,9 @@ mod tests {
         let bound = Arc::new(AtomicU16::new(0));
         let listen_bound = bound.clone();
         std::thread::spawn(move || {
-            listen(OpenCADStudio::new_for_test(), 0, listen_bound);
+            // A real drawing, so `ready` answers 200: the point here is the
+            // stalled connection, not the welcome tab's not-ready refusal.
+            listen(serve_app(true), 0, listen_bound);
         });
         let mut port = 0;
         for _ in 0..50 {
@@ -1038,6 +1203,222 @@ mod tests {
             map_status(json!({"ok": false, "code": "invalid_point"}), false),
             400
         );
+    }
+
+    /// `ready` must not advertise the welcome (Start) tab: that tab answers
+    /// `ready` but every drawing command refuses its id, so a client that
+    /// trusted the answer would see `n1 == n0` on every run. The listener
+    /// says `503 not_ready` until a real drawing is the active document.
+    #[test]
+    fn ready_refuses_the_start_tab_until_a_drawing_is_active() {
+        let mut document_id: Option<u64> = None;
+        let mut counter: u64 = 0;
+        let mut app = OpenCADStudio::new_headless(true);
+        let (status, body) = route(
+            &mut app,
+            &request("GET", "/api/v1/ready", ""),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 503, "{body}");
+        assert_eq!(body["ready"], false, "{body}");
+        assert_eq!(body["code"], "not_ready", "{body}");
+
+        // Once the welcome tab is a real drawing, the same call is ready.
+        let mut app = serve_app(true);
+        let (status, body) = route(
+            &mut app,
+            &request("GET", "/api/v1/ready", ""),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["ready"], true, "{body}");
+    }
+
+    /// `GET /documents` answers the state read, but the contract reads
+    /// `documents[].document_id`; both spellings must be present.
+    #[test]
+    fn documents_carries_document_id_alongside_id() {
+        let mut document_id: Option<u64> = None;
+        let mut counter: u64 = 0;
+        let mut app = serve_app(true);
+        let (status, body) = route(
+            &mut app,
+            &request("GET", "/api/v1/documents", ""),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{body}");
+        let documents = body["documents"].as_array().expect("documents array");
+        assert!(!documents.is_empty(), "{body}");
+        for document in documents {
+            assert_eq!(document["document_id"], document["id"], "{body}");
+        }
+        let ready_id = body["document_id"].as_u64().expect("active document id");
+        assert!(
+            documents
+                .iter()
+                .any(|document| document["document_id"].as_u64() == Some(ready_id)),
+            "{body}"
+        );
+    }
+
+    /// `GET /entities` counts entities under `count`; the contract reads
+    /// `total`, so the route answers both.
+    #[test]
+    fn entities_answers_total_alongside_count() {
+        let mut document_id: Option<u64> = None;
+        let mut counter: u64 = 0;
+        let mut app = serve_app(true);
+        app.automation_op(r#"{"op":"run","cmd":"CIRCLE 0,0 5"}"#);
+        let (status, body) = route(
+            &mut app,
+            &request("GET", "/api/v1/entities", ""),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["total"], body["count"], "{body}");
+        assert_eq!(body["total"], 1, "{body}");
+    }
+
+    /// `POST /capture` answers through the operation envelope, so its fields
+    /// arrive under `result`; the contract reads `path`/`width`/`height`/
+    /// `world_to_pixel_matrix`/`annotations` at the top level.
+    #[test]
+    fn capture_hoists_its_envelope_fields_to_the_top_level() {
+        let plan = plan(
+            "POST",
+            &["capture"],
+            &request(
+                "POST",
+                "/api/v1/capture",
+                r#"{"document_id":2,"annotate":true,"path":"D:\\scratch\\x.png"}"#,
+            ),
+        );
+        let Plan::Aliased { request, alias, .. } = plan else {
+            panic!("POST /capture plans an aliased run")
+        };
+        assert!(matches!(alias, Alias::Capture));
+        assert_eq!(request["op"], "capture");
+        assert_eq!(request["protocol"], 1);
+        assert!(request["request_id"].is_string(), "{request}");
+
+        let mut response = json!({
+            "ok": true,
+            "status": "completed",
+            "result": {
+                "path": "D:\\scratch\\x.png",
+                "width": 1600,
+                "height": 795,
+                "world_to_pixel_matrix": [1.0, 0.0, 0.0, -1.0, 10.0, 20.0],
+                "annotations": [{"handle": "1A", "screen_pixel": [10, 20]}],
+                "state": {"ok": true}
+            }
+        });
+        apply_alias(Alias::Capture, &mut response);
+        assert_eq!(response["path"], "D:\\scratch\\x.png");
+        assert_eq!(response["width"], 1600);
+        assert_eq!(response["world_to_pixel_matrix"].as_array().unwrap().len(), 6);
+        assert_eq!(response["annotations"].as_array().unwrap().len(), 1);
+        assert!(response.get("state").is_none(), "{response}");
+    }
+
+    /// `run` is not a query: the dispatcher refuses it without
+    /// `document_id`, so the convenience route must forward the one the
+    /// caller sent — same handling as undo/redo.
+    #[test]
+    fn commands_run_forwards_document_id() {
+        let Plan::Run { request, .. } = plan(
+            "POST",
+            &["commands"],
+            &request(
+                "POST",
+                "/api/v1/commands",
+                r#"{"cmd":"LINE 0,0 200,200","document_id":2}"#,
+            ),
+        ) else {
+            panic!("POST /commands plans a run request")
+        };
+        assert_eq!(request["op"], "run");
+        assert_eq!(request["cmd"], "LINE 0,0 200,200");
+        assert_eq!(request["document_id"], 2);
+    }
+
+    /// `--http` without a file listens on `serve_app`: `new_headless`
+    /// alone lands on the welcome (Start) tab, whose `is_start` flag makes
+    /// the protocol-1 gate refuse `run` with `no_document` — a client saw
+    /// `ready` answer with a document id while every command was dropped.
+    /// The session `serve()` builds has that tab converted to a real
+    /// drawing, so the identical request draws.
+    #[test]
+    fn headless_session_runs_commands_after_start_tab_conversion() {
+        let mut document_id: Option<u64> = None;
+        let mut counter: u64 = 0;
+        let entities = |app: &mut OpenCADStudio| -> u64 {
+            let summary = app.automation_op(r#"{"op":"entities"}"#);
+            summary["total"].as_u64().unwrap_or(0)
+        };
+
+        // The session before serve()'s conversion: readiness refuses to call
+        // the welcome tab ready, because every drawing command would drop.
+        let mut app = OpenCADStudio::new_headless(true);
+        let (status, ready) = route(
+            &mut app,
+            &request("GET", "/api/v1/ready", ""),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 503, "{ready}");
+        assert_eq!(ready["code"], "not_ready", "{ready}");
+        // The id is still discoverable through the state read, and `run`
+        // against it dies at the Start-tab gate — the half-state the listener
+        // must not advertise.
+        let state = app.automation_op(r#"{"protocol":1,"op":"state"}"#);
+        let doc = state["document_id"].as_u64().expect("a document id exists");
+        let before = entities(&mut app);
+        let (status, body) = route(
+            &mut app,
+            &request(
+                "POST",
+                "/api/v1/run",
+                &format!(r#"{{"document_id":{doc},"op":"run","cmd":"CIRCLE 0,0 5"}}"#),
+            ),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(body["ok"], false, "{body}");
+        assert_eq!(body["code"], "no_document", "{body}");
+        assert_eq!(entities(&mut app), before, "{body}");
+
+        // The session serve() hands to listen(): the same discovery, the
+        // same request — and the circle lands.
+        let mut app = serve_app(true);
+        let (status, ready) = route(
+            &mut app,
+            &request("GET", "/api/v1/ready", ""),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{ready}");
+        let doc = document_id.expect("ready caches the document id");
+        let before = entities(&mut app);
+        let (status, body) = route(
+            &mut app,
+            &request(
+                "POST",
+                "/api/v1/run",
+                &format!(r#"{{"document_id":{doc},"op":"run","cmd":"CIRCLE 0,0 5"}}"#),
+            ),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(body["status"], "completed", "{body}");
+        assert_eq!(entities(&mut app), before + 1, "{body}");
     }
 
     /// The generic `POST /api/v1/{op}` passthrough must reach the protocol-1

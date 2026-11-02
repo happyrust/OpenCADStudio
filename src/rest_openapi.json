@@ -11,7 +11,7 @@
     "/api/v1/ready": {
       "get": {
         "summary": "Server readiness, version and active document id",
-        "responses": {"200": {"description": "Ready"}}
+        "responses": {"200": {"description": "Ready: ok, ready, version, session_id and an integer document_id"}, "503": {"description": "Not ready: the active document is still the welcome (Start) tab, whose id refuses drawing commands. Keep polling."}}
       }
     },
     "/api/v1/state": {
@@ -77,7 +77,8 @@
         "summary": "Query entities (type, layer, detail, offset, limit, fields, handles, bounds, near, contains_point, intersections)",
         "parameters": [
           {"name": "type", "in": "query", "schema": {"type": "string"}},
-          {"name": "layer", "in": "query", "schema": {"type": "string"}},
+          {"name": "layer", "in": "query", "description": "* and ? are wildcards", "schema": {"type": "string"}},
+          {"name": "xdata_app", "in": "query", "description": "Only entities carrying XDATA of this application", "schema": {"type": "string"}},
           {"name": "detail", "in": "query", "schema": {"type": "string", "enum": ["summary", "geometry", "full"]}},
           {"name": "offset", "in": "query", "schema": {"type": "integer"}},
           {"name": "limit", "in": "query", "schema": {"type": "integer"}},
@@ -238,13 +239,39 @@
     },
     "/api/v1/commands": {
       "post": {
-        "summary": "Run one editor command line (e.g. \"LINE 0,0 10,10\")",
+        "summary": "Run one editor command line (e.g. \"LINE 0,0 10,10\"); send document_id when the drawing you mean is not the active one",
         "responses": {"200": {"description": "Command status"}, "400": {"description": "Command failed"}}
       }
     },
-    "/api/v1/undo": {"post": {"summary": "Undo one step", "responses": {"200": {"description": "Undone"}}}},
-    "/api/v1/redo": {"post": {"summary": "Redo one step", "responses": {"200": {"description": "Redone"}}}},
-    "/api/v1/save": {"post": {"summary": "Save the active document ({path} optional once opened); a *.dwt path writes DWG bytes through a scratch file renamed into place", "responses": {"200": {"description": "Saved"}, "400": {"description": "Save failed"}}}},
+    "/api/v1/capture": {
+      "post": {
+        "summary": "Screenshot the editor window (GUI-hosted channel only): answers path, width, height, world_to_pixel_matrix, pixel_to_world_matrix and annotations[]",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "document_id": {"type": "integer"},
+                  "path": {"type": "string", "description": "Absolute PNG path (required)"},
+                  "annotate": {"type": "boolean", "description": "Draw Set-of-Marks badges"},
+                  "scope": {"type": "string", "enum": ["viewport", "window"]},
+                  "max_dimension": {"type": "integer"},
+                  "view": {"type": "string", "enum": ["extents", "selection"]},
+                  "bounds": {"type": "array", "items": {"type": "number"}},
+                  "highlight_handles": {"type": "array", "items": {"type": "string"}},
+                  "focus_handles": {"type": "array", "items": {"type": "string"}}
+                }
+              }
+            }
+          }
+        },
+        "responses": {"200": {"description": "ok, path, width, height, world_to_pixel_matrix[6], pixel_to_world_matrix[6], annotations[] (handle, type, layer, space, screen_pixel, screen_bounds, world_center, selected; at most 64)"}, "409": {"description": "gui_required: no editor window to capture"}}
+      }
+    },
+    "/api/v1/undo": {"post": {"summary": "Undo one step in the active document, or the one named by {document_id}", "responses": {"200": {"description": "Undone"}}}},
+    "/api/v1/redo": {"post": {"summary": "Redo one step in the active document, or the one named by {document_id}", "responses": {"200": {"description": "Redone"}}}},
+    "/api/v1/save": {"post": {"summary": "Save the active document, or the one named by {document_id} ({path} optional once opened); a *.dwt path writes DWG bytes through a scratch file renamed into place", "responses": {"200": {"description": "Saved"}, "400": {"description": "Save failed"}}}},
     "/api/v1/layers": {"get": {"summary": "Layer table", "responses": {"200": {"description": "Layers"}}}},
     "/api/v1/header": {"get": {"summary": "Drawing header summary", "responses": {"200": {"description": "Header"}}}},
     "/api/v1/records": {"get": {"summary": "Database records (collection, type, offset, limit)", "responses": {"200": {"description": "Records"}, "400": {"description": "Invalid query"}}}},

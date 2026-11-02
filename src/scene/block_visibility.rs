@@ -329,6 +329,106 @@ pub fn add_state(
     .flatten()
 }
 
+/// How a new state treats objects the visibility parameter did not govern yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewStateVisibility {
+    Keep,
+    Show,
+    Hide,
+}
+
+impl std::fmt::Display for NewStateVisibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            crate::t!(match self {
+                Self::Keep => "Keep current visibility",
+                Self::Show => "Show all objects",
+                Self::Hide => "Hide all objects",
+            })
+            .as_ref(),
+        )
+    }
+}
+
+/// Every object of `definition`, paired with whether it is currently visible.
+pub fn definition_members(document: &Document, definition: Handle) -> Vec<(Handle, bool)> {
+    document
+        .block_records
+        .iter()
+        .find(|record| record.handle == definition)
+        .map(|record| {
+            record
+                .entity_handles
+                .iter()
+                .map(|&handle| {
+                    let visible = document
+                        .get_entity(handle)
+                        .is_some_and(|entity| !entity.common().invisible);
+                    (handle, visible)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Append state `name`, starting from state `like`. `Show`/`Hide` govern
+/// every member: a member not governed before is shown in the states that
+/// already exist, as it was, and the new state shows all of them or none.
+/// Returns false when the name is taken.
+pub fn append_state(
+    parameter: &mut BlockVisibilityParameter,
+    name: &str,
+    like: usize,
+    mode: NewStateVisibility,
+    members: &[(Handle, bool)],
+) -> bool {
+    if parameter
+        .states
+        .iter()
+        .any(|state| state.name.eq_ignore_ascii_case(name))
+    {
+        return false;
+    }
+    let mut new = parameter.states.get(like).cloned().unwrap_or_default();
+    new.name = name.to_string();
+    if mode != NewStateVisibility::Keep {
+        for &(handle, visible) in members {
+            if parameter.all_blocks.contains(&handle) {
+                continue;
+            }
+            parameter.all_blocks.push(handle);
+            if visible {
+                for old in &mut parameter.states {
+                    old.visible_blocks.push(handle);
+                }
+            }
+        }
+        new.visible_blocks = if mode == NewStateVisibility::Show {
+            parameter.all_blocks.clone()
+        } else {
+            Vec::new()
+        };
+    }
+    parameter.states.push(new);
+    true
+}
+
+/// Add state `name` through the document, with the visibility `mode` asks for.
+pub fn add_state_with(
+    document: &mut Document,
+    definition: Handle,
+    parameter: Handle,
+    name: &str,
+    like: usize,
+    mode: NewStateVisibility,
+) -> Option<usize> {
+    let members = definition_members(document, definition);
+    edit(document, parameter, |parameter| {
+        append_state(parameter, name, like, mode, &members).then(|| parameter.states.len() - 1)
+    })
+    .flatten()
+}
+
 /// Rename state `index`; false when the new name is taken.
 pub fn rename_state(
     document: &mut Document,
@@ -432,6 +532,29 @@ pub fn apply_state(document: &mut Document, parameter: Handle, index: usize) {
             entity.common_mut().invisible = !visible || super::block_construction::is_construction(entity.common());
         }
     }
+}
+
+/// Per-member visibility of state `index`, in definition member order. A
+/// member the parameter does not control stays visible in every state: a
+/// state only hides objects the parameter governs and it does not name.
+pub fn state_visibility(document: &Document, parameter: Handle, index: usize) -> Vec<bool> {
+    let Some(ObjectType::BlockVisibilityParameter(parameter)) = document.objects.get(&parameter)
+    else {
+        return Vec::new();
+    };
+    let Some(state) = parameter.states.get(index) else {
+        return Vec::new();
+    };
+    let Some(definition) = owner_definition(document, parameter.handle) else {
+        return Vec::new();
+    };
+    members(document, definition)
+        .into_iter()
+        .map(|handle| {
+            !parameter.all_blocks.contains(&handle)
+                || state.visible_blocks.contains(&handle)
+        })
+        .collect()
 }
 
 /// The state whose objects are the ones the definition shows now.
@@ -684,6 +807,49 @@ mod tests {
         scene.set_block_visibility_reveal(false);
         assert_eq!(scene.document, before);
         assert!(!scene.visibility_revealed(controlled));
+    }
+
+    /// A member the parameter does not control stays visible in every state;
+    /// only the objects a state names are hidden when it does not list them.
+    #[test]
+    fn a_state_hides_only_the_members_the_parameter_controls() {
+        let mut scene = Scene::new();
+        scene.define_block_raw(
+            "opening",
+            Vector3::ZERO,
+            vec![
+                EntityType::Line(Line::from_coords(0.0, 0.0, 0.0, 1.0, 0.0, 0.0)),
+                EntityType::Line(Line::from_coords(0.0, 1.0, 0.0, 1.0, 1.0, 0.0)),
+                EntityType::Line(Line::from_coords(0.0, 2.0, 0.0, 1.0, 2.0, 0.0)),
+            ],
+        );
+        let definition = scene.document.block_records.get("opening").unwrap().handle;
+        let parameter = create(&mut scene.document, definition, Vector3::ZERO).unwrap();
+        let hidden = add_state(&mut scene.document, parameter, "WindowHidden", 0).unwrap();
+        let frame = members(&scene.document, definition)[1];
+        set_visible(&mut scene.document, parameter, hidden, &[frame], false);
+
+        let handles = members(&scene.document, definition);
+        let shown = state_visibility(&scene.document, parameter, hidden);
+        assert_eq!(
+            shown,
+            vec![true, false, true],
+            "the door and cat are not controlled, so the state leaves them visible"
+        );
+        assert_eq!(state_visibility(&scene.document, parameter, 0), vec![true; 3]);
+
+        apply_state(&mut scene.document, parameter, hidden);
+        let visible = |handle: Handle| {
+            !scene
+                .document
+                .get_entity(handle)
+                .expect("member")
+                .common()
+                .invisible
+        };
+        assert!(visible(handles[0]), "the door stays visible");
+        assert!(!visible(handles[1]), "the window frame is hidden");
+        assert!(visible(handles[2]), "the cat stays visible");
     }
 
     /// A block given visibility states round-trips them, and a reference

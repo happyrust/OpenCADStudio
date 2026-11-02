@@ -449,7 +449,13 @@ pub enum FieldKind {
     /// SheetSet / SheetView: a component picked in a sheet set.
     SheetSetNavigation,
     BlockPlaceholder,
+    /// A custom drawing property: `\AcVar CustomDP.<Name>` (text case).
+    CustomProperty,
 }
+
+/// The pseudo field name of the document custom properties; the property
+/// itself is `FieldDialogState::custom_property`.
+pub const CUSTOM_PROPERTY: &str = "CustomDP";
 
 /// Formula precisions: the current one, then 0 to 8 decimals.
 pub const FORMULA_PRECISIONS: &[&str] = &[
@@ -481,9 +487,9 @@ pub const THOUSANDS_SEPARATORS: &[(&str, Option<char>)] = &[
 /// three is the default and writes none).
 pub const COORDINATES: &[(&str, u8)] = &[("X, Y, Z", 7), ("X, Y", 3), ("X", 1), ("Y", 2), ("Z", 4)];
 
-/// Object properties that are points. Their fields read the property the
-/// way the Properties palette does (`AcObjProp.16.2`), in the current UCS,
-/// as level marks do.
+/// Object properties that are points. A new field reads them the way the
+/// Properties palette does (`AcObjProp.16.2`), in the current UCS, as level
+/// marks do; a field opened from the drawing keeps the evaluator it has.
 pub const POINT_PROPERTIES: &[&str] = &[
     "Center",
     "EndPoint",
@@ -491,6 +497,10 @@ pub const POINT_PROPERTIES: &[&str] = &[
     "Position",
     "StartPoint",
 ];
+
+/// Object properties whose value is text: they take a text case rather than
+/// a number format.
+pub const TEXT_PROPERTIES: &[&str] = &["Color", "EffectiveName", "Layer", "Linetype", "TextString"];
 
 /// The text between the brackets that follow `key` and its digits in a
 /// format picture (`%ct8[100]` → `100`).
@@ -519,6 +529,7 @@ pub fn kind_of(name: &str) -> FieldKind {
         "SheetSet" | "SheetView" => FieldKind::SheetSetNavigation,
         n if SHEET_SET_FIELDS.contains(&n) => FieldKind::SheetSet,
         "BlockPlaceholder" => FieldKind::BlockPlaceholder,
+        CUSTOM_PROPERTY => FieldKind::CustomProperty,
         _ => FieldKind::Text,
     }
 }
@@ -544,6 +555,9 @@ pub struct FieldDialogState {
     pub object: Option<(codec::Handle, String)>,
     pub object_props: Vec<&'static str>,
     pub object_prop: Option<&'static str>,
+    /// Whether the object field opened from the drawing used the versioned
+    /// evaluator (`AcObjProp.16.2`); `None` for a new field.
+    pub object_versioned: Option<bool>,
     pub formula: String,
     /// Indexes into codec FORMULA_FORMATS and FORMULA_PRECISIONS.
     pub formula_format: usize,
@@ -570,6 +584,10 @@ pub struct FieldDialogState {
     /// Index into codec BLOCK_PLACEHOLDER_PROPERTIES.
     pub placeholder_property: usize,
     pub preview: String,
+    /// The drawing's custom property names in stored order (listed under
+    /// Document) and the one chosen.
+    pub custom_properties: Vec<String>,
+    pub custom_property: String,
     /// Sheet set fields: the open set's sheet (flags 2) and set (flags 1)
     /// custom property names, the chosen one, the placeholder type and the
     /// ViewportScale format.
@@ -592,6 +610,25 @@ pub struct FieldDialogState {
 }
 
 impl FieldDialogState {
+    /// The rows of the field list: the category's fields, and under Document
+    /// the drawing's custom properties after them, in stored order.
+    pub fn entries(&self) -> Vec<(String, bool, FieldDialogMsg)> {
+        let mut rows: Vec<(String, bool, FieldDialogMsg)> = fields_of(self.category)
+            .into_iter()
+            .map(|n| (n.to_string(), self.name == n, FieldDialogMsg::Name(n)))
+            .collect();
+        if CATEGORIES.get(self.category).is_some_and(|(c, _)| *c == "Document") {
+            rows.extend(self.custom_properties.iter().map(|property| {
+                (
+                    property.clone(),
+                    self.name == CUSTOM_PROPERTY && self.custom_property == *property,
+                    FieldDialogMsg::CustomProperty(property.clone()),
+                )
+            }));
+        }
+        rows
+    }
+
     pub fn new(target: FieldTarget) -> Self {
         Self {
             target,
@@ -610,6 +647,7 @@ impl FieldDialogState {
             object: None,
             object_props: Vec::new(),
             object_prop: None,
+            object_versioned: None,
             formula: String::new(),
             formula_format: 0,
             formula_precision: 0,
@@ -626,6 +664,8 @@ impl FieldDialogState {
             placeholder_block: None,
             placeholder_property: 7,
             preview: String::new(),
+            custom_properties: Vec::new(),
+            custom_property: String::new(),
             ss_sheet_custom: Vec::new(),
             ss_set_custom: Vec::new(),
             ss_custom: String::new(),
@@ -653,6 +693,12 @@ impl FieldDialogState {
                 vec![],
             ),
             FieldKind::Text => (case(format!("\\AcVar {}", self.name)), vec![]),
+            FieldKind::CustomProperty => (
+                case(crate::entities::field::custom_property_code(
+                    &self.custom_property,
+                )),
+                vec![],
+            ),
             FieldKind::Filename => {
                 let bits = self.file_parts
                     + if self.file_extension && self.file_parts & 2 != 0 {
@@ -767,15 +813,22 @@ impl FieldDialogState {
             },
             FieldKind::Object => match (&self.object, self.object_prop) {
                 (Some((handle, _)), Some(prop)) => {
-                    let evaluator = if POINT_PROPERTIES.contains(&prop) {
+                    let versioned = self
+                        .object_versioned
+                        .unwrap_or_else(|| POINT_PROPERTIES.contains(&prop));
+                    let evaluator = if versioned {
                         "AcObjProp.16.2"
                     } else {
                         "AcObjProp"
                     };
                     let body = format!("\\{evaluator} Object(%<\\_ObjIdx 0>%).{prop}");
-                    match self.number_picture() {
-                        f if f.is_empty() => (body, vec![*handle]),
-                        f => (format!("{body} \\f \"{f}\""), vec![*handle]),
+                    if TEXT_PROPERTIES.contains(&prop) {
+                        (case(body), vec![*handle])
+                    } else {
+                        match self.number_picture() {
+                            f if f.is_empty() => (body, vec![*handle]),
+                            f => (format!("{body} \\f \"{f}\""), vec![*handle]),
+                        }
                     }
                 }
                 _ => ("\\AcObjProp".into(), vec![]),
@@ -850,10 +903,18 @@ impl FieldDialogState {
                 return None;
             }
             self.name = "Object";
+            self.object_versioned = Some(evaluator.starts_with("\\AcObjProp."));
             return Some(property.to_string());
         } else if evaluator == "\\AcDiesel" {
             self.name = "DieselExpression";
             self.diesel = rest.to_string();
+        } else if let Some(property) = evaluator
+            .starts_with("\\AcVar")
+            .then(|| rest.split(" \\f ").next().unwrap_or(rest))
+            .and_then(crate::entities::field::custom_property_name)
+        {
+            self.name = CUSTOM_PROPERTY;
+            self.custom_property = property.to_string();
         } else if evaluator.starts_with("\\AcVar") {
             let variable = rest.split_whitespace().next().unwrap_or("");
             if let Some(name) = fields_of(0)
@@ -992,23 +1053,36 @@ fn indexed_object_ids(formula: &str) -> (String, Vec<codec::Handle>) {
 }
 
 /// The geometric properties a field can show for an object of this type.
+/// Its own properties first, then the ones every object has.
 pub fn object_properties(entity: &codec::EntityType) -> Vec<&'static str> {
     use codec::EntityType as E;
-    match entity {
-        E::Line(_) => vec!["Center", "EndPoint", "Length", "StartPoint"],
-        E::Circle(_) => vec!["Area", "Center", "Circumference", "Diameter", "Radius"],
-        E::Arc(_) => vec!["Center", "Length", "Radius"],
-        E::Ellipse(_) => vec!["Area", "Center"],
-        E::LwPolyline(_) | E::Polyline2D(_) | E::Spline(_) => vec!["Area", "Length"],
-        E::Hatch(_) => vec!["Area"],
-        _ => vec![],
-    }
+    let own: &[&'static str] = match entity {
+        E::Line(_) => &["Center", "EndPoint", "Length", "StartPoint"],
+        E::Circle(_) => &["Area", "Center", "Circumference", "Diameter", "Radius"],
+        E::Arc(_) => &["Center", "Length", "Radius"],
+        E::Ellipse(_) => &["Area", "Center"],
+        E::LwPolyline(_) | E::Polyline2D(_) | E::Spline(_) => &["Area", "Length"],
+        E::Hatch(_) => &["Area"],
+        E::Insert(_) => &[
+            "EffectiveName",
+            "InsertionPoint",
+            "XScaleFactor",
+            "YScaleFactor",
+            "ZScaleFactor",
+        ],
+        E::Text(_) | E::MText(_) => &["InsertionPoint", "TextString"],
+        _ => &[],
+    };
+    let general: [&'static str; 4] = ["Color", "Layer", "Linetype", "LinetypeScale"];
+    own.iter().chain(general.iter()).copied().collect()
 }
 
 #[derive(Debug, Clone)]
 pub enum FieldDialogMsg {
     Category(usize),
     Name(&'static str),
+    /// A custom drawing property of the Document category.
+    CustomProperty(String),
     DateFormat(String),
     DateExample(usize),
     TextCase(usize),
@@ -1168,7 +1242,7 @@ fn format_panel<'a>(state: &'a FieldDialogState) -> Element<'a, Message> {
         ]
         .spacing(8)
         .into(),
-        FieldKind::Text => column![text(t!("Format")).size(12), case_list(state)]
+        FieldKind::Text | FieldKind::CustomProperty => column![text(t!("Format")).size(12), case_list(state)]
             .spacing(8)
             .into(),
         FieldKind::Filename => {
@@ -1585,7 +1659,16 @@ fn format_panel<'a>(state: &'a FieldDialogState) -> Element<'a, Message> {
                     .collect(),
                 180.0,
             ),
-            number_format_rows(state),
+            if state
+                .object_prop
+                .is_some_and(|p| TEXT_PROPERTIES.contains(&p))
+            {
+                column![text(t!("Format")).size(12), case_list(state)]
+                    .spacing(8)
+                    .into()
+            } else {
+                number_format_rows(state)
+            },
         ]
         .spacing(8)
         .into(),
@@ -1735,13 +1818,7 @@ pub fn view<'a>(
             ]
             .spacing(8)
             .align_y(iced::Center),
-            list(
-                fields_of(state.category)
-                    .into_iter()
-                    .map(|n| (n.to_string(), state.name == n, FieldDialogMsg::Name(n)))
-                    .collect(),
-                330.0,
-            ),
+            list(state.entries(), 330.0),
         ]
         .spacing(8),
     );
@@ -1941,10 +2018,52 @@ mod tests {
             "\\AcObjProp Object(%<\\_ObjIdx 0>%).Area \\f \"%lu2%pr2%ds44%th46%ct8[0.0001]%ps[A, m²]\""
         );
 
+        // A text property takes a case instead of a number format.
+        state.object_prop = Some("Layer");
+        state.text_case = 1;
+        assert_eq!(
+            state.code().0,
+            "\\AcObjProp Object(%<\\_ObjIdx 0>%).Layer \\f \"%tc1\""
+        );
+        state.object_prop = Some("Area");
+        state.text_case = 0;
+
         // A factor of one, or one that is not a number, converts nothing.
         for factor in ["1", "abc", ""] {
             state.conversion = factor.into();
             assert!(!state.code().0.contains("%ct"), "{factor}");
         }
+    }
+
+    #[test]
+    fn a_new_point_field_reads_the_current_ucs() {
+        let mut state = FieldDialogState::new(FieldTarget::NewText);
+        state.name = "Object";
+        state.object = Some((codec::Handle::new(0x2A), "Block reference".into()));
+        state.object_prop = Some("InsertionPoint");
+        assert!(state.code().0.starts_with("\\AcObjProp.16.2 "));
+        state.object_prop = Some("XScaleFactor");
+        assert!(state.code().0.starts_with("\\AcObjProp "));
+    }
+
+    #[test]
+    fn a_block_reference_offers_its_own_and_the_general_properties() {
+        use codec::entities::Insert;
+        use codec::types::Vector3;
+        let door = codec::EntityType::Insert(Insert::new("DOOR", Vector3::ZERO));
+        assert_eq!(
+            super::object_properties(&door),
+            [
+                "EffectiveName",
+                "InsertionPoint",
+                "XScaleFactor",
+                "YScaleFactor",
+                "ZScaleFactor",
+                "Color",
+                "Layer",
+                "Linetype",
+                "LinetypeScale",
+            ]
+        );
     }
 }

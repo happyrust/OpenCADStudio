@@ -13,6 +13,8 @@ members = [
     "crates/ocs_web_worker",
     "crates/dwg-thumbnailer",
     "crates/dwg-thumbnailer-win",
+    "crates/ocs_collab",
+    "crates/ocs_collab_server",
 ]
 
 [features]
@@ -47,9 +49,9 @@ env_logger = "0.11"
 # Log facade, already in the tree via wgpu/iced. Native writes through the
 # env_logger above; the web build installs its own logger.
 log = "0.4"
-codec = { package = "opencaddocument", git = "https://github.com/HakanSeven12/opencaddocument.git", rev = "52fa133", features = ["serde"] }
-kernel = { package = "opencadkernel", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "64a5d0e", features = ["acis", "offset"] }
-kernel-constraints = { package = "opencadkernel-constraints", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "64a5d0e" }
+codec = { package = "opencaddocument", git = "https://github.com/HakanSeven12/opencaddocument.git", rev = "d657f94", features = ["serde"] }
+kernel = { package = "opencadkernel", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "3d6c6e8", features = ["acis", "offset"] }
+kernel-constraints = { package = "opencadkernel-constraints", git = "https://github.com/HakanSeven12/opencadkernel.git", rev = "3d6c6e8" }
 graph = { package = "opencadgraph", git = "https://github.com/HakanSeven12/opencadgraph.git", rev = "5e4dc20" }
 # Line-number patterns of the P&ID rules (io::pid_pipes); already in the tree
 # via env_logger's env_filter.
@@ -384,6 +386,10 @@ harness = false
 
 [[bench]]
 name = "dependency_index_rebuild"
+harness = false
+
+[[bench]]
+name = "parametric_display_staging"
 harness = false
 
 [[bench]]

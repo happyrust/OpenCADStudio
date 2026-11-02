@@ -49,11 +49,14 @@ pub enum BlockScalePolicy {
 // blocks and/or free functions). Pure text-move from the original mod.rs.
 #[cfg(test)]
 mod block_base_point_tests;
+#[cfg(test)]
+mod block_definition_handles_tests;
 mod boundary;
 mod camera_ops;
 #[cfg(test)]
 mod reference_only_tests;
 pub use camera_ops::{add_background, copy_background, erase_background};
+pub(crate) mod center_native;
 pub(crate) mod centerline;
 pub(crate) mod centermark;
 pub(crate) mod dimension_assoc;
@@ -65,6 +68,7 @@ mod entity;
 pub use camera_ops::named_view_center;
 pub(crate) use entity::gradient_tint_color;
 pub use entity::CreateBlockOptions;
+pub(crate) use entity::normalize_block_terminators;
 mod group_layer;
 #[cfg(test)]
 mod hatch_boundary;
@@ -2919,6 +2923,9 @@ pub struct Scene {
     /// Centre-mark source → carrier lines. See
     /// [`Self::associative_centerline_source_cache`].
     associative_centermark_source_cache: RefCell<Option<HashMap<Handle, Vec<Handle>>>>,
+    /// Messages for the command line about centre objects an edit just
+    /// detached from their sources; the app prints and clears them.
+    pub(crate) center_notices: Vec<String>,
     /// Conservative association hint: unknown until scanned, then updated from
     /// changed entities. Retaining `true` after deletion only costs an extra scan.
     has_associative_centers: std::cell::Cell<Option<bool>>,
@@ -3360,6 +3367,7 @@ impl Scene {
             associative_hatch_source_cache: RefCell::new(None),
             associative_centerline_source_cache: RefCell::new(None),
             associative_centermark_source_cache: RefCell::new(None),
+            center_notices: Vec::new(),
             parametric_constraints: Vec::new(),
             constraint_name_format: 2,
             dynamic_constraint_display: true,
@@ -4222,6 +4230,32 @@ impl Scene {
             &[],
             true,
             false,
+            None,
+        );
+    }
+
+    /// Apply a newly-created relation. A constraint handler names every
+    /// referenced entity `Modified` before the solve runs, so the delta is
+    /// filtered against the pre-solve copies: only geometry that actually
+    /// moved is published. `pre_move` carries the copies a handler took
+    /// before it nudged geometry onto the relation itself; an empty slice
+    /// makes the copies here, which is right for a handler that wrote none.
+    pub fn bump_entities_after_constraint_added(
+        &mut self,
+        changes: &[(Handle, ChangeKind)],
+        driven_refs: &[parametric_constraints::ParametricRef],
+        retain_size: bool,
+        pre_move: &[(Handle, EntityType)],
+    ) {
+        self.bump_entities_with_solve_policy(
+            changes,
+            driven_refs,
+            retain_size,
+            &[],
+            &[],
+            true,
+            false,
+            Some(pre_move),
         );
     }
 
@@ -4230,23 +4264,26 @@ impl Scene {
         &mut self,
         changes: &[(Handle, ChangeKind)],
     ) {
-        self.bump_entities_with_solve_policy(changes, &[], false, &[], &[], false, false);
+        self.bump_entities_with_solve_policy(changes, &[], false, &[], &[], false, false, None);
     }
 
     /// Refresh display after a restyle that moved no geometry: nothing
     /// associated to these entities is re-resolved or re-solved.
     pub(crate) fn bump_entities_restyled(&mut self, changes: &[(Handle, ChangeKind)]) {
-        self.bump_entities_with_solve_policy(changes, &[], false, &[], &[], false, true);
+        self.bump_entities_with_solve_policy(changes, &[], false, &[], &[], false, true, None);
     }
 
     /// Apply a newly-created ordered relation while temporarily anchoring
     /// its reference side. The anchors guide only this first solve and are
-    /// never added to the persistent constraint graph.
+    /// never added to the persistent constraint graph. `pre_move` carries
+    /// the copies a handler took before it nudged geometry onto the relation
+    /// itself, so the delta still names that geometry.
     pub fn bump_entities_with_initial_parametric_policy(
         &mut self,
         changes: &[(Handle, ChangeKind)],
         fixed_refs: &[parametric_constraints::ParametricRef],
         retain_size: bool,
+        pre_move: &[(Handle, EntityType)],
     ) {
         self.bump_entities_with_solve_policy(
             changes,
@@ -4256,6 +4293,7 @@ impl Scene {
             fixed_refs,
             true,
             false,
+            Some(pre_move),
         );
     }
 
@@ -4274,6 +4312,7 @@ impl Scene {
             transformed_refs,
             true,
             false,
+            None,
         );
     }
 
@@ -4286,7 +4325,30 @@ impl Scene {
         fixed_refs: &[parametric_constraints::ParametricRef],
         solve_parametric: bool,
         appearance_only: bool,
+        report_before: Option<&[(Handle, EntityType)]>,
     ) {
+        // A solve can name an entity it then leaves untouched — a neighbour
+        // that already satisfied the relation, or the datum the solver
+        // anchors. When the caller says its list is speculative, keep the
+        // pre-solve copies so the published delta names only geometry that
+        // actually moved; every refresh below still sees the full list,
+        // because they have to run whether or not the entity ends up
+        // modified.
+        let reported_before: Vec<(Handle, EntityType)> = match report_before {
+            Some(pre_move) => changes
+                .iter()
+                .filter(|(_, kind)| matches!(kind, ChangeKind::Modified))
+                .filter_map(|(handle, _)| {
+                    let snapshot = pre_move
+                        .iter()
+                        .find(|(h, _)| h == handle)
+                        .map(|(_, entity)| entity.clone())
+                        .or_else(|| self.document.get_entity(*handle).cloned())?;
+                    Some((*handle, snapshot))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         if changes.iter().any(|(handle, kind)| {
             matches!(kind, ChangeKind::Removed)
                 || self
@@ -4373,6 +4435,7 @@ impl Scene {
             // same order and see the same accumulated list.
             let mut refreshed_handles: Option<HashSet<Handle>> = None;
             if self.associative_centers_possible(&changes) {
+                self.note_center_disassociations(&changes);
                 let refreshed = self.refresh_associative_centerlines(&changes);
                 Self::absorb_refreshed(&mut changes, &mut refreshed_handles, refreshed);
                 let refreshed = self.refresh_associative_center_marks(&changes);
@@ -4495,7 +4558,34 @@ impl Scene {
                 }
             }
         }
-        self.push_geometry_delta(epoch, changes, false);
+        self.push_geometry_delta(epoch, Self::reported_changes(changes, &reported_before, &self.document), false);
+    }
+
+    /// The delta names what moved. A `Modified` handle whose entity is
+    /// byte-identical to the pre-solve copy is dropped — the solver
+    /// considered it and left it alone — while added and removed handles,
+    /// and anything the refresh pass appended after the snapshot, are
+    /// always named.
+    fn reported_changes(
+        changes: Vec<(Handle, ChangeKind)>,
+        before: &[(Handle, EntityType)],
+        document: &Document,
+    ) -> Vec<(Handle, ChangeKind)> {
+        if before.is_empty() {
+            return changes;
+        }
+        changes
+            .into_iter()
+            .filter(|(handle, kind)| {
+                if !matches!(kind, ChangeKind::Modified) {
+                    return true;
+                }
+                match before.iter().find(|(h, _)| h == handle) {
+                    Some((_, snapshot)) => document.get_entity(*handle) != Some(snapshot),
+                    None => true,
+                }
+            })
+            .collect()
     }
 
     /// Append the handles an associative refresh re-solved, skipping the ones
@@ -9923,6 +10013,26 @@ impl Scene {
             live_section.as_ref(),
         ));
         all
+    }
+
+    /// The planes a live section keeps the positive side of, in model space,
+    /// as `[nx, ny, nz, d]` with `n·p + d >= 0` kept: what point clouds are
+    /// clipped by, as solids are cut.
+    pub(crate) fn live_section_clip_planes(&self) -> Vec<[f64; 4]> {
+        let Some(section) = self.active_live_section(self.model_space_block_handle()) else {
+            return Vec::new();
+        };
+        Self::section_planes(&section.data, section.slice_depth, None)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|plane| {
+                let normal = glam::DVec3::from(plane.normal()?).normalize_or_zero();
+                (normal != glam::DVec3::ZERO).then(|| {
+                    let d = -normal.dot(glam::DVec3::from(plane.origin));
+                    [normal.x, normal.y, normal.z, d]
+                })
+            })
+            .collect()
     }
 
     fn active_live_section(&self, target_block: Handle) -> Option<LiveSection> {

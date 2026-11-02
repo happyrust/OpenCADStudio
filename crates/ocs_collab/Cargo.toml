@@ -1,0 +1,18 @@
+[package]
+name = "ocs_collab"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Shared collaboration protocol and pure logic for the P&ID platform.
+#
+# HARD CONSTRAINT: this crate must stay free of I/O and of any server runtime.
+# The desktop client depends on it, so pulling in tokio/axum would drag the
+# whole async stack into the GUI. Only serde/serde_json/uuid/chrono are allowed
+# here (see mission AGENTS.md, "共享协议 crate").
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }

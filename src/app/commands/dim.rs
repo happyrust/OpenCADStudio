@@ -530,6 +530,14 @@ impl OpenCADStudio {
                 self.open_table_insert();
             }
 
+            "-TABLE" => {
+                self.start_command_line_table();
+            }
+
+            cmd if cmd.starts_with("-TABLE _LINK ") => {
+                self.place_command_line_link_table(&cmd["-TABLE _LINK ".len()..]);
+            }
+
             "TABLEDIT" => {
                 use crate::modules::annotate::table_cmd::TableditCommand;
                 let cmd = TableditCommand::new();
@@ -1564,6 +1572,33 @@ impl OpenCADStudio {
                 self.command_line.push_output(&crate::tf!("{found} found"));
                 self.tabs[i].scene.select_entities(&handles);
                 return Some(self.dispatch_command("DIMREASSOCIATE"));
+            }
+
+            // DIMREGEN: every dimension draws its picture afresh, and the
+            // next save writes the new pictures.
+            "DIMREGEN" => {
+                let handles: Vec<_> = self.tabs[i]
+                    .scene
+                    .document
+                    .entities()
+                    .filter(|entity| {
+                        matches!(entity, codec::EntityType::Dimension(d)
+                            if !d.base().block_name.is_empty())
+                    })
+                    .map(|entity| entity.common().handle)
+                    .collect();
+                if !handles.is_empty() {
+                    self.push_undo_snapshot(i, "DIMREGEN");
+                    for &handle in &handles {
+                        self.tabs[i].scene.invalidate_dim_block_recorded(handle);
+                    }
+                    let changes: Vec<_> = handles
+                        .iter()
+                        .map(|&handle| (handle, crate::scene::ChangeKind::Modified))
+                        .collect();
+                    self.tabs[i].scene.bump_entities(&changes);
+                    self.tabs[i].dirty = true;
+                }
             }
 
             "DIMDISASSOCIATE" | "DIMREASSOCIATE" => {

@@ -15,6 +15,7 @@ mod block_actions;
 mod block_parameter_properties;
 mod block_alignment;
 mod block_feedback;
+mod block_flip;
 mod block_cycle_order;
 mod block_grip_set;
 mod block_construction;
@@ -65,6 +66,8 @@ mod options_session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugin_host;
 mod presspull_ops;
+mod drawing_properties;
+mod purge_dialog;
 mod rename_dialog;
 mod properties;
 mod quick_calc;
@@ -669,6 +672,10 @@ pub(super) struct OpenCADStudio {
     clean_screen: bool,
     /// Properties opened on top of clean screen (Ctrl+1 while it is on).
     clean_screen_properties: bool,
+    /// The dynamic-value list closed itself a moment ago. The overlay reports
+    /// Escape before the global shortcut repeats it, so the repeat is dropped
+    /// instead of clearing the selection the list was opened for.
+    block_picker_dismissed: bool,
     /// Quick Properties: show a compact floating property panel on selection.
     quick_properties: bool,
     /// Canvas-space cursor position where Quick Properties was last opened.
@@ -706,6 +713,10 @@ pub(super) struct OpenCADStudio {
     block_definition_open_editor: Option<String>,
     block_edit_picker: Option<crate::ui::window::block_edit_picker::State>,
     rename_dialog: Option<crate::ui::window::rename::State>,
+    drawing_properties: Option<crate::ui::window::drawing_properties::State>,
+    purge_dialog: Option<crate::ui::window::purge::State>,
+    /// The Purge dialog's choice, for the PURGE it runs.
+    purge_only: Option<purge_dialog::PurgeOnly>,
     /// Select Similar settings being edited.
     select_similar_settings: Option<u16>,
     block_save_as: Option<crate::ui::window::block_save_as::State>,
@@ -968,6 +979,8 @@ pub(super) struct OpenCADStudio {
     pub constraint_form_annotational: bool,
     /// The dimensional constraint DIMCONSTRAINT offers by default: the last one used.
     pub dim_constraint_last: &'static str,
+    /// The geometric constraint GEOMCONSTRAINT offers by default: the last one used.
+    pub geom_constraint_last: &'static str,
     /// Set while a plugin drives the command line (`HostApi::execute_command`).
     /// Dispatching a plugin command from there would call back into the plugin
     /// that is still blocked waiting for this request, so plugin dispatch is
@@ -1070,6 +1083,14 @@ pub(super) struct OpenCADStudio {
     /// (and on cancel), never a history step of their own.
     #[cfg(not(target_arch = "wasm32"))]
     plugin_grip_live_originals: Vec<(codec::Handle, codec::EntityType)>,
+    /// The descriptor-backed grip drag's host state (API v14, additive):
+    /// Some while a drag re-derives its Begin answer's live design per
+    /// coalesced cursor move. Data-only; the machinery lives in the
+    /// native-only drag lifecycle (`update/plugin_grips.rs`). Configured
+    /// out on wasm together with the machinery: the type names the host
+    /// module's wire types, which the wasm build does not compile.
+    #[cfg(not(target_arch = "wasm32"))]
+    plugin_grip_descriptor_drag: Option<crate::plugin::grip_points::DescriptorGripDrag>,
     /// The grip-settle watchdog floor: [`SETTLE_WATCHDOG`] in production;
     /// tests lower it to exercise the strike ledger with millisecond
     /// budgets instead of real seconds.
@@ -1094,6 +1115,8 @@ pub(super) struct OpenCADStudio {
     /// Open dynamic-block visibility-state dropdown.
     visibility_popup: Option<visibility::VisibilityPopup>,
     table_popup: Option<visibility::TablePopup>,
+    /// Open dynamic-block flip-state list on a model-space reference.
+    flip_popup: Option<block_flip::FlipPopup>,
     /// A leader line just added via the "Add Leader" grip menu whose arrow is
     /// being placed (follows the cursor). `(entity handle, new-arrow grip id)`.
     /// Esc before the placement click removes it again.
@@ -1124,6 +1147,10 @@ pub(super) struct OpenCADStudio {
     )>,
     /// Document dirty state before the live grip mutation began.
     grip_dirty_before: Option<bool>,
+    /// Where the press that picked up the active grip went down: released
+    /// near it, the press was a click and the grip stays hot for a second
+    /// click to place it.
+    grip_engage_press: Option<Point>,
     /// Frozen pre-drag wire geometry used only as a visual/reference snapshot.
     ///
     /// It is deliberately NOT added to normal snap candidates: the live entity is
@@ -1552,6 +1579,10 @@ pub(super) struct OpenCADStudio {
     mtext_click_time: Option<Instant>,
     mtext_click_off: usize,
     mtext_click_count: u8,
+    /// The last text copied in the MTEXT editor: its plain text (what the
+    /// system clipboard got) and the same characters as formatted MTEXT, so
+    /// pasting it back keeps superscript, fractions and formatting.
+    mtext_clipboard: Option<(String, String)>,
     /// Pending model-space plot window (x0, y0, x1, y1) in world XY, or None.
     plot_window: Option<(f64, f64, f64, f64)>,
     /// The dialog's plot area for the SVG export in flight, set by the plot
@@ -1788,6 +1819,10 @@ pub(super) struct OpenCADStudio {
     table_insert: crate::ui::window::annotation_data::TableInsertState,
     data_link_manager: crate::ui::window::annotation_data::DataLinkManagerState,
     data_link_parent_table: bool,
+    /// The Table Style dialog was opened from Insert Table and returns there.
+    tablestyle_parent_table: bool,
+    /// The Table Style list shows only the styles in use.
+    tablestyle_in_use_only: bool,
     data_extraction: crate::ui::window::annotation_data::DataExtractionState,
 
     // ── Plot Style Panel ──────────────────────────────────────────────────
@@ -1861,7 +1896,7 @@ pub(super) struct OpenCADStudio {
     // ── Unsaved-changes dialog ────────────────────────────────────────────
     /// Set when the user tries to close a tab or quit while there are unsaved changes.
     pending_close: Option<PendingClose>,
-    pending_block_close: Option<(u64, block_editor::BlockEditContinuation)>,
+    pending_block_close: Option<(u64, block_editor::BlockEditContinuation, usize)>,
     /// Stable document ids waiting to be closed by "Close All" or
     /// "Close All Other Drawings". Dirty drawings pause this queue at the
     /// existing unsaved-changes dialog and resume after Save or Discard.
@@ -2060,19 +2095,24 @@ pub(super) enum PendingConversionSave {
 impl PendingConversionSave {
     /// The name of the converter the held-back save writes with.
     pub(super) fn format_name(&self) -> String {
-        let ext = match self {
+        let (ext, version) = match self {
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(save) => save
-                .path
-                .extension()
-                .map(|ext| ext.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            Self::Native(save) => (
+                save.path
+                    .extension()
+                    .map(|ext| ext.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                save.version,
+            ),
             #[cfg(target_arch = "wasm32")]
-            Self::Web { ext, .. } => ext.clone(),
+            Self::Web { ext, version, .. } => (ext.clone(), *version),
         };
+        // A DWG/DXF loss depends on the target version, so name it too.
         ocs_save::external_format(&ext)
             .map(|format| format.name().to_string())
-            .unwrap_or(ext)
+            .unwrap_or_else(|| {
+                crate::io::format_for_version(version, ext.eq_ignore_ascii_case("dxf"))
+            })
     }
 }
 
@@ -2195,6 +2235,8 @@ pub enum ColorPickTarget {
     PlotStyle,
     /// Selected entities' colour (left properties panel).
     Properties,
+    /// The MTEXT editor's background mask colour.
+    MTextMask,
     /// Selected entities' background colour (hatch / MTEXT background row).
     PropertiesBg,
     /// A named per-entity Properties colour field.
@@ -2871,6 +2913,8 @@ pub enum ModalKind {
     BlockEditChanges,
     BlockEditPicker,
     Rename,
+    Purge,
+    DrawingProperties,
     SelectSimilarSettings,
     BlockSaveAs,
     BlockVisibility,
@@ -3377,6 +3421,9 @@ pub enum Message {
     CommandLineFadeChanged(i32),
     /// Change the command line's panel opacity (COMMANDLINEOPACITY).
     CommandLineOpacityChanged(u8),
+    /// Options › Display: the command line font family ("" = interface font).
+    CommandLineFontChanged(String),
+    CommandLineFontSizeChanged(u16),
     /// Toggle reversing the mouse-wheel zoom direction (ZOOMWHEEL).
     ZoomWheelReversedChanged(bool),
     NavigationStyleChanged(crate::app::settings::NavigationStyle),
@@ -3509,10 +3556,28 @@ pub enum Message {
     SetProjection(bool),
     /// Select a ribbon module tab by index.
     RibbonSelectTab(usize),
+    /// The ribbon's right-click menu.
+    RibbonMenu(crate::ui::ribbon::RibbonMenuMsg),
+    /// A menu-bar entry: its command line, run like a ribbon button's. A
+    /// space separates the answers to the command's prompts, as in a menu
+    /// macro, and no Enter follows the last one.
+    MenuCommand(String),
+    /// The minimize button and the minimized ribbon's popups.
+    RibbonMinimize(crate::ui::ribbon::MinimizeMsg),
+    /// The pointer and pins of the ribbon's slide-outs.
+    RibbonSlideOut(crate::ui::ribbon::SlideOutMsg),
+    /// Time for a ribbon popup or slide-out to open or close.
+    RibbonTick,
+    /// The command search box and its results.
+    RibbonSearch(crate::ui::ribbon::SearchMsg),
+    /// Panels of a ribbon tab dropped in a new order: the shown panels'
+    /// titles, in that order.
+    RibbonReorderPanels {
+        module: &'static str,
+        titles: Vec<String>,
+    },
     /// Ribbon key tips: Alt, typed codes and Esc.
     KeyTip(crate::ui::ribbon::KeyTipInput),
-    /// Change the ribbon tool-panel density (persisted).
-    SetRibbonCollapseMode(crate::ui::ribbon::CollapseMode),
     /// A ribbon tool button was clicked — highlights the tool and dispatches its event.
     RibbonToolClick {
         tool_id: String,
@@ -3608,6 +3673,8 @@ pub enum Message {
     BlockEditPickerSelect(String),
     BlockEditPickerApply,
     Rename(crate::ui::window::rename::RenameMsg),
+    Purge(crate::ui::window::purge::PurgeMsg),
+    DwgProps(crate::ui::window::drawing_properties::DwgPropsMsg),
     /// Select Similar settings: flip one SELECTSIMILARMODE bit.
     SelectSimilarSettingsToggle(u16),
     SelectSimilarSettingsOk,
@@ -3961,6 +4028,8 @@ pub enum Message {
     LayerStateManagerDescription(String),
     LayerStateManagerSave,
     LayerStateManagerRestore,
+    /// Restore a saved layer state picked in the ribbon's layer dropdown.
+    RibbonLayerStateRestore(String),
     LayerStateManagerDelete,
     LayerStateManagerEdit,
     LayerStateEditorMaskToggle(LayerStateProperty),
@@ -4035,6 +4104,12 @@ pub enum Message {
     /// visibility dropdown's items.
     VisibilityPick(usize),
     TableRowPick(usize),
+    /// The Test Block window's visibility widget picked a state.
+    TestVisibilityPick(usize),
+    /// The Test Block window's lookup widget picked a table entry.
+    TestLookupPick(usize),
+    /// User picked a dynamic-block flip state — `0` base, `1` flipped.
+    FlipPick(usize),
     /// Timer pulse while the cursor is dwelling on a grip; drives the
     /// dwell-to-popup transition without requiring further mouse motion.
     GripDwellTick,
@@ -4057,6 +4132,9 @@ pub enum Message {
         build_ms: f64,
     },
     WindowResized(f32, f32),
+    /// A window opened at this size; the main window's sets the layout as
+    /// a resize does.
+    WindowOpened(window::Id, f32, f32),
     /// Enter pressed globally — finalises the active command (no text-input involvement).
     CommandFinalize,
     /// Space pressed globally — a literal space in the MText preview, otherwise
@@ -4428,6 +4506,12 @@ pub enum Message {
     PropBlockInput { key: crate::scene::model::object::BlockParameterKey, value: String },
     PropBlockCommit(crate::scene::model::object::BlockParameterKey),
     PropBlockChoice { key: crate::scene::model::object::BlockParameterKey, index: usize },
+    /// Open or close the dynamic-value list of one row. It carries the surface
+    /// it was clicked on, so the same row's two copies toggle independently.
+    PropBlockPickerToggle { key: crate::scene::model::object::BlockParameterKey, quick: bool },
+    /// The list's overlay dismissed itself: a click outside it, or the same
+    /// Escape whose global shortcut arrives a moment later.
+    PropBlockPickerDismiss { key: crate::scene::model::object::BlockParameterKey, quick: bool },
 
     /// Toggle a collapsed coordinate group ("Position", "Scale", …) open or
     /// closed in the Properties panel, keyed `section:base`.
@@ -4444,6 +4528,14 @@ pub enum Message {
     },
     /// User committed a block-attribute value edit (Enter pressed).
     PropAttrCommit(String),
+    /// User is typing in a plugin class parameter value field (API v14,
+    /// live buffer update), keyed by the declared parameter name.
+    PropPluginParamInput {
+        name: String,
+        value: String,
+    },
+    /// User committed a plugin class parameter value edit (Enter pressed).
+    PropPluginParamCommit(String),
     /// Reports the currently keyboard-focused widget (if any) after a
     /// [`sync_active_field_task`](crate::ui::properties::sync_active_field_task)
     /// sweep, so the update handler can keep the active-row marker reconciled
@@ -4781,8 +4873,6 @@ pub enum Message {
     MTextFmt(mtext_editor::MTextFmt),
     /// Toolbar height field changed.
     MTextHeight(String),
-    /// MText wrapping width changed from the editor slider.
-    MTextRectWidth(f64),
     /// Toolbar text-style dropdown changed.
     MTextStyle(String),
     /// Toolbar font dropdown changed.
@@ -4806,6 +4896,40 @@ pub enum Message {
     MTextInsert(String),
     /// Per-object annotation flag edited from the text toolbar.
     MTextAnnotative(bool),
+    /// The rotation field, in degrees, as typed.
+    MTextRotation(String),
+    /// Open a toolbar menu, or close it (`None`, or its own trigger again).
+    MTextMenu(Option<mtext_editor::EditorMenu>),
+    /// A menu action: the menu closes, then the message runs.
+    MTextMenuPick(Box<Message>),
+    /// Bullets, numbering, or (`None`) plain paragraphs again.
+    MTextList(Option<mtext_editor::ListKind>),
+    /// Insert a tab at the caret.
+    MTextTab,
+    /// The line spacing factor typed in the Paragraph menu.
+    MTextLineSpacingInput(String),
+    /// Line spacing exactly the factor (`true`) or at least it.
+    MTextLineSpacingMode(bool),
+    /// Background mask on or off.
+    MTextMaskToggle,
+    /// Mask colour: the drawing background (`None`) or a colour of its own.
+    MTextMaskColor(Option<AcadColor>),
+    /// The mask's border offset factor, as typed.
+    MTextMaskScale(String),
+    /// The MTEXT's drawing direction.
+    MTextDirection(codec::entities::DrawingDirection),
+    /// Open (or, from its own row, close) the Fraction panel.
+    MTextFractionOpen,
+    /// A Fraction panel field, as typed.
+    MTextFractionPart(mtext_editor::FractionPart, String),
+    /// The Fraction panel's stacking form.
+    MTextFractionKind(codec::entities::mtext_format::StackingType),
+    /// Insert the Fraction panel's fraction.
+    MTextFractionInsert,
+    /// The status bar's box-width field, as typed.
+    MTextRectWidthField(String),
+    /// A ruler drag: the width while it moves, `None` when it ends.
+    MTextBoxDrag(Option<f64>),
     /// Column layout controls.
     MTextColumnMode(String),
     MTextColumnCount(String),
@@ -5100,6 +5224,7 @@ pub enum Message {
     #[allow(dead_code)]
     TableStyleDialogClose,
     TableStyleDialogSelect(String),
+    TableStyleListInUse(bool),
     TableStyleDialogTab(u8),
     TableStyleDialogCompare(String),
     TableStyleDialogNew,
@@ -5343,6 +5468,8 @@ pub enum Message {
     RibbonDimLayer(String),
     /// Annotate > Leaders: MLEADERLAYER picked (empty: Use Current).
     RibbonMLeaderLayer(String),
+    /// Annotate > Centerlines: CENTERLAYER picked (empty: Use Current).
+    RibbonCenterLayer(String),
     /// Result of the ATTACH file picker.
     AttachPickResult(Result<std::path::PathBuf, String>),
     /// An edit in the Attach External Reference dialog.
@@ -5358,6 +5485,8 @@ pub enum Message {
     WblockWriteFinished(String, std::path::PathBuf, Result<(), String>),
     // ── DATAEXTRACTION ────────────────────────────────────────────────────
     TableInsertStyle(String),
+    /// Insert Table's button to the Table Style dialog.
+    TableInsertManageStyles,
     TableInsertField(crate::ui::window::annotation_data::TableInsertField),
     TableInsertApply,
     DataLinkManagerOpen,
@@ -5518,6 +5647,7 @@ impl OpenCADStudio {
             otrack_kind: None,
             clean_screen: false,
             clean_screen_properties: false,
+            block_picker_dismissed: false,
             quick_properties: false,
             quick_properties_anchor: Point::new(12.0, 12.0),
             quick_properties_float: false,
@@ -5534,6 +5664,9 @@ impl OpenCADStudio {
             block_definition_open_editor: None,
             block_edit_picker: None,
             rename_dialog: None,
+            drawing_properties: None,
+            purge_dialog: None,
+            purge_only: None,
             select_similar_settings: None,
             block_save_as: None,
             block_visibility: None,
@@ -5669,6 +5802,7 @@ impl OpenCADStudio {
             constraint_bar_display: 3,
             constraint_form_annotational: false,
             dim_constraint_last: "Aligned",
+            geom_constraint_last: "Coincident",
             suppress_plugin_dispatch: false,
             plugin_request_active: false,
             constraint_bar_mode: 4095,
@@ -5707,6 +5841,8 @@ impl OpenCADStudio {
             #[cfg(not(target_arch = "wasm32"))]
             plugin_grip_live_originals: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
+            plugin_grip_descriptor_drag: None,
+            #[cfg(not(target_arch = "wasm32"))]
             plugin_grip_settle_watchdog: crate::app::update::SETTLE_WATCHDOG,
             #[cfg(not(target_arch = "wasm32"))]
             plugin_grip_settle_strikes: Default::default(),
@@ -5716,6 +5852,7 @@ impl OpenCADStudio {
             grip_pending: None,
             visibility_popup: None,
             table_popup: None,
+            flip_popup: None,
             grip_add_provisional: None,
             grip_preview_handles: Vec::new(),
             hover_dwell: None,
@@ -5724,6 +5861,7 @@ impl OpenCADStudio {
             grip_originals: Vec::new(),
             grip_history_originals: Vec::new(),
             grip_dirty_before: None,
+            grip_engage_press: None,
             grip_reference_wires: Vec::new(),
             grip_text_verts: Vec::new(),
             grip_text_slide: false,
@@ -5900,6 +6038,7 @@ impl OpenCADStudio {
             mtext_click_time: None,
             mtext_click_off: 0,
             mtext_click_count: 0,
+            mtext_clipboard: None,
             plot_window: None,
             svg_export_dialog_area: None,
             plot_paper: crate::io::paper_catalog::default_paper().clone(),
@@ -6010,6 +6149,8 @@ impl OpenCADStudio {
             table_insert: Default::default(),
             data_link_manager: Default::default(),
             data_link_parent_table: false,
+            tablestyle_parent_table: false,
+            tablestyle_in_use_only: false,
             data_extraction: Default::default(),
             layout_manager_rename_buf: String::new(),
             plotstyle_panel_aci: 1,

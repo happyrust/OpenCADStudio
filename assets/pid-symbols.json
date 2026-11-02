@@ -1,0 +1,106 @@
+{
+  "standard": "内置示例标准",
+  "categories": [
+    {
+      "id": "equipment",
+      "label": "设备",
+      "symbols": [
+        {
+          "id": "vessel",
+          "label": "容器",
+          "default_scale": 1.0,
+          "geometry": [
+            {
+              "kind": "polyline",
+              "closed": true,
+              "points": [[-8, -12], [8, -12], [8, 12], [-8, 12]]
+            },
+            { "kind": "text", "value": "V", "at": [0, 0], "height": 2.5 }
+          ],
+          "ports": [
+            { "name": "in1", "at": [0, -12], "type": "equal", "direction": "in" },
+            { "name": "out1", "at": [0, 12], "type": "equal", "direction": "out" }
+          ]
+        },
+        {
+          "id": "pump",
+          "label": "泵",
+          "default_scale": 1.0,
+          "geometry": [
+            { "kind": "circle", "center": [0, 0], "radius": 8.0 },
+            { "kind": "line", "from": [-8, 0], "to": [-14, 0] },
+            { "kind": "line", "from": [8, 0], "to": [14, 0] },
+            { "kind": "text", "value": "P", "at": [0, 0], "height": 2.5 }
+          ],
+          "ports": [
+            { "name": "in1", "at": [-14, 0], "type": "equal", "direction": "in" },
+            { "name": "out1", "at": [14, 0], "type": "equal", "direction": "out" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "valve",
+      "label": "阀门",
+      "symbols": [
+        {
+          "id": "gate_valve",
+          "label": "闸阀",
+          "default_scale": 1.0,
+          "geometry": [
+            {
+              "kind": "polyline",
+              "closed": true,
+              "points": [[-6, -6], [0, 0], [-6, 6]]
+            },
+            {
+              "kind": "polyline",
+              "closed": true,
+              "points": [[6, -6], [0, 0], [6, 6]]
+            },
+            { "kind": "line", "from": [-14, 0], "to": [14, 0] }
+          ],
+          "ports": [
+            { "name": "in1", "at": [-14, 0], "type": "equal", "direction": "in" },
+            { "name": "out1", "at": [14, 0], "type": "equal", "direction": "out" }
+          ]
+        },
+        {
+          "id": "gate_valve_alt",
+          "label": "闸阀（备选）",
+          "default_scale": 1.0,
+          "geometry": [
+            {
+              "kind": "arc",
+              "center": [0, 0],
+              "radius": 8.0,
+              "start_deg": 45.0,
+              "end_deg": 135.0
+            },
+            {
+              "kind": "arc",
+              "center": [0, 0],
+              "radius": 8.0,
+              "start_deg": 225.0,
+              "end_deg": 315.0
+            },
+            { "kind": "line", "from": [-14, 0], "to": [14, 0] }
+          ],
+          "ports": [
+            { "name": "in1", "at": [-14, 0], "type": "equal", "direction": "in" },
+            { "name": "out1", "at": [14, 0], "type": "equal", "direction": "out" }
+          ]
+        }
+      ]
+    }
+  ],
+  "symbol_type_map": [
+    { "symbol": "PID_SYM_equipment_vessel", "types": ["VESSEL"] },
+    { "symbol": "PID_SYM_equipment_pump", "types": ["PUMP"] },
+    {
+      "symbol": "PID_SYM_valve_gate_valve",
+      "types": ["VALVE_GATE", "VALVE_ISOLATION"]
+    },
+    { "symbol": "PID_SYM_valve_gate_valve_alt", "types": ["VALVE_GATE"] }
+  ]
+}

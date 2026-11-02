@@ -181,37 +181,24 @@ impl Scene {
         )
     }
 
-    /// Invalidate a dimension's baked block while capturing every removed
-    /// sub-entity for an active history transaction.
+    /// Invalidate a dimension's baked block inside an edit.
+    ///
+    /// Only the reference goes: the old picture stays a block of its own,
+    /// which an undo (recorded here, or a grip edit's own snapshot) points
+    /// back to, and the next save drops it once nothing names it.
     pub fn invalidate_dim_block_recorded(&mut self, handle: Handle) {
-        if self.is_recording_undo() {
-            let owned: Vec<Handle> = self
-                .document
-                .get_entity(handle)
-                .and_then(|entity| match entity {
-                    EntityType::Dimension(d) => {
-                        let name = d.base().block_name.clone();
-                        self.document.block_records.get(&name).map(|record| {
-                            let mut handles = record.entity_handles.clone();
-                            handles.push(record.block_entity_handle);
-                            handles.push(record.block_end_handle);
-                            handles
-                        })
-                    }
-                    _ => None,
-                })
-                .unwrap_or_default();
-            if let Some(before) = self.document.get_entity_arc(handle) {
-                self.record_undo_before(handle, Some(before));
-            }
-            for owned_handle in owned {
-                if let Some(before) = self.document.get_entity_arc(owned_handle) {
-                    self.record_undo_before(owned_handle, Some(before));
-                }
-            }
-            self.poison_undo_recording();
+        let Some(before) = self.document.get_entity_arc(handle) else {
+            return;
+        };
+        if !matches!(&*before, EntityType::Dimension(d) if !d.base().block_name.is_empty()) {
+            return;
         }
-        crate::modules::draw::modify::explode::invalidate_dim_block(&mut self.document, handle);
+        if self.is_recording_undo() {
+            self.record_undo_before(handle, Some(before));
+        }
+        if let Some(EntityType::Dimension(d)) = self.document.get_entity_mut(handle) {
+            d.base_mut().block_name.clear();
+        }
     }
 
     // ── Modify (transform / copy) ─────────────────────────────────────────
@@ -1134,11 +1121,9 @@ impl Scene {
         let next = self.document.next_handle();
         let br_handle = Handle::new(next);
         let block_handle = Handle::new(next + 1);
-        let end_handle = Handle::new(next + 2);
         let mut br = codec::tables::BlockRecord::new(&new_name);
         br.handle = br_handle;
         br.block_entity_handle = block_handle;
-        br.block_end_handle = end_handle;
         // The DWG writer takes the anonymous bit from the flag alone; without
         // it AutoCAD's audit reports `Invalid anonymous block "*D<n>"`.
         br.flags.anonymous = true;
@@ -1147,12 +1132,6 @@ impl Scene {
         block.common.handle = block_handle;
         block.common.owner_handle = br_handle;
         self.document.add_entity(EntityType::Block(block)).ok()?;
-        let mut block_end = BlockEnd::new();
-        block_end.common.handle = end_handle;
-        block_end.common.owner_handle = br_handle;
-        self.document
-            .add_entity(EntityType::BlockEnd(block_end))
-            .ok()?;
         for sub in subs {
             let mut sub = sub.clone();
             transform_dimension_part(&mut sub, t);
@@ -1165,6 +1144,18 @@ impl Scene {
             sub.common_mut().xdictionary_handle = None;
             self.ensure_image_definition(&mut sub);
             let _ = self.document.add_entity(sub);
+        }
+        // The terminator is allocated after the body so handle order matches
+        // record order inside the definition.
+        let end_handle = self.document.allocate_handle();
+        let mut block_end = BlockEnd::new();
+        block_end.common.handle = end_handle;
+        block_end.common.owner_handle = br_handle;
+        self.document
+            .add_entity(EntityType::BlockEnd(block_end))
+            .ok()?;
+        if let Some(record) = self.document.block_records.get_mut(&new_name) {
+            record.block_end_handle = end_handle;
         }
         Some(new_name)
     }

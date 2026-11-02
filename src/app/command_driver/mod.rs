@@ -683,6 +683,16 @@ impl OpenCADStudio {
             result @ CmdResult::PlaceBlockSingleParameter { .. } => {
                 return self.handle_place_block_single_parameter(result);
             }
+            CmdResult::StartBlockLookupAction { document, definition } => {
+                return self.start_block_lookup_action(document, definition);
+            }
+            CmdResult::OpenBlockLookupTable {
+                document,
+                definition,
+                name,
+            } => {
+                return self.open_lookup_table_from_action(document, definition, name);
+            }
             result @ CmdResult::PlaceBlockOrientationParameter { .. } => {
                 return self.handle_place_block_orientation_parameter(result);
             }
@@ -917,6 +927,15 @@ impl OpenCADStudio {
                 point,
             } => {
                 if let Some(task) = self.handle_reassociate_center_mark(target, source, point) {
+                    return task;
+                }
+            }
+            CmdResult::ReassociateCenterLine {
+                target,
+                first,
+                second,
+            } => {
+                if let Some(task) = self.handle_reassociate_center_line(target, first, second) {
                     return task;
                 }
             }

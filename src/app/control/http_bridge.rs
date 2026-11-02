@@ -132,6 +132,32 @@ fn forward(
         Plan::Ready => {
             let state = transact(sender, json!({"protocol":1,"op":"state"}), wait, stream);
             harvest(document_cache, &state);
+            // A drawing named on the command line finishes loading on the
+            // app's own schedule. Until it becomes the active tab, the
+            // active document is the welcome (Start) tab, and every drawing
+            // command refuses that id — so `ready` must not claim otherwise.
+            if state["documents"]
+                .as_array()
+                .and_then(|documents| {
+                    documents
+                        .iter()
+                        .find(|document| document["id"] == state["document_id"])
+                })
+                .and_then(|document| document["start"].as_bool())
+                == Some(true)
+            {
+                return (
+                    503,
+                    json!({
+                        "ok": false,
+                        "ready": false,
+                        "code": "not_ready",
+                        "version": state["version"],
+                        "session_id": state["session_id"],
+                        "document_id": state["document_id"],
+                    }),
+                );
+            }
             (
                 200,
                 json!({
@@ -141,6 +167,19 @@ fn forward(
                     "session_id": state["session_id"],
                     "document_id": state["document_id"],
                 }),
+            )
+        }
+        Plan::Aliased {
+            request,
+            created,
+            alias,
+        } => {
+            let mut response = transact(sender, prepare(request), wait, stream);
+            harvest(document_cache, &response);
+            rest::apply_alias(alias, &mut response);
+            (
+                rest::map_status(response.clone(), created == 201),
+                response,
             )
         }
         Plan::Run { request, created } => {

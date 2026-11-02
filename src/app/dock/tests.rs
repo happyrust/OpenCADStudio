@@ -1302,7 +1302,7 @@ fn visibility_ribbon_real_controls_disable_enable_and_open_manager() {
         authoring_capture(&app, "visibility-ribbon-enabled");
         app.ribbon
             .set_collapse_mode(crate::ui::ribbon::CollapseMode::Collapsed);
-        let point = find_in_view(&app, "Visibility ▾");
+        let point = find_in_view(&app, "Visibility");
         authoring_click(&mut app, point);
         let messages = {
             let mut simulator = iced_test::Simulator::with_size(
@@ -1385,7 +1385,10 @@ fn distance_parameter_batch_starts_from_actual_palette_rows() {
                 let _ = app.update(Message::CommandSubmit);
                 assert_eq!(app.tabs[i].scene.document, before);
             }
-            let _ = app.update(Message::CommandInput("0.3,0.2".into()));
+            // XY asks for its grip count and labels itself; Linear and Polar
+            // take the label point.
+            let last = if name == "xy" { "1" } else { "0.3,0.2" };
+            let _ = app.update(Message::CommandInput(last.into()));
             let _ = app.update(Message::CommandSubmit);
             let definition = app.tabs[i].active_block_edit_session().unwrap().br_handle;
             let found = crate::scene::block_distance_parameter::parameters(
@@ -1409,7 +1412,7 @@ fn orientation_parameter_batch_starts_from_actual_palette_rows() {
             (
                 "authoring-tool-rotation",
                 "rotation",
-                vec!["0.35,-0.12", "0.65,-0.12", "0.35,0.2"],
+                vec!["0.35,-0.12", "0.65,-0.12", "0.35,0.2", "0.3,0.35", ""],
             ),
             (
                 "authoring-tool-alignment",
@@ -1742,7 +1745,7 @@ fn block_actions_rotate_flip_palette_requires_matching_parameters() {
             authoring_click(&mut app, point);
             assert!(app.tabs[app.active_tab].active_cmd.is_none());
         }
-        let _ = app.run_command_line("BPARAMETER ROTATION 0,0 2 0");
+        let _ = app.run_command_line("BPARAMETER ROTATION 0,0 2 0 5,5");
         let point = authoring_control(&app, "authoring-tool-flip-action");
         authoring_click(&mut app, point);
         assert!(app.tabs[app.active_tab].active_cmd.is_none());
@@ -1788,6 +1791,10 @@ fn lookup_basepoint_palette_and_table_dialog_real_controls() {
             );
             let _ = app.update(Message::CommandInput(point_text.into()));
             let _ = app.update(Message::CommandSubmit);
+            if id == "authoring-tool-lookup" {
+                let _ = app.update(Message::CommandInput(String::new()));
+                let _ = app.update(Message::CommandSubmit);
+            }
         }
         let _ = app.run_command_line("BPARAMETER LINEAR 0,0 1,0 0,0.3");
         authoring_capture(&app, "lookup-basepoint-placed");
