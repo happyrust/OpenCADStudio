@@ -1,4 +1,4 @@
-mod alias;
+pub(crate) mod alias;
 mod automation;
 pub(crate) mod control;
 pub(crate) fn automation_action_names() -> &'static [&'static str] {
@@ -11,6 +11,7 @@ pub use automation::{export_headless, run_batch, serve};
 pub use automation::{list_layouts_headless, plot_svg_headless, PlotSvgRequest};
 mod annotation_data;
 mod extraction_catalog;
+mod array_grips;
 mod block_actions;
 mod block_parameter_properties;
 mod block_alignment;
@@ -58,6 +59,10 @@ mod layers;
 mod measurement;
 mod model_ops;
 mod mtext_editor;
+#[cfg(test)]
+mod mtext_follows_style_tests;
+#[cfg(test)]
+mod mtext_style_from_selection_tests;
 mod navigation;
 #[cfg(test)]
 mod object_isolation_tests;
@@ -80,6 +85,20 @@ mod shortcuts;
 mod startup;
 pub(crate) mod style_ops;
 mod text_inline;
+mod text_style_draft;
+pub(crate) mod text_style_users;
+#[cfg(test)]
+mod text_style_data_tests;
+#[cfg(test)]
+mod text_style_font_picker_tests;
+#[cfg(test)]
+mod text_style_manager_tests;
+#[cfg(test)]
+mod text_style_update_tests;
+#[cfg(test)]
+mod text_style_layout_tests;
+#[cfg(test)]
+mod text_style_ui_tests;
 mod tolerance_dialog;
 mod update;
 pub(crate) use update::style_import::{style_exists as style_import_exists, StyleImportDraft};
@@ -1028,8 +1047,6 @@ pub(super) struct OpenCADStudio {
     pub(crate) block_redefine_mode: u8,
     /// BLOCKNAVIGATE: the Libraries tab's start folder ("." for none).
     pub(crate) block_navigate: String,
-    /// INSNAME: the default block name for -INSERT (session only).
-    pub(crate) insname: String,
     /// Last time block-usage was flushed to disk (debounce per 2.4).
     #[cfg(not(target_arch = "wasm32"))]
     block_usage_last_persist: Option<std::time::Instant>,
@@ -1708,20 +1725,20 @@ pub(super) struct OpenCADStudio {
 
     // ── TextStyle Font Browser ────────────────────────────────────────────
     textstyle_selected: String,
-    textstyle_tab: u8,
+    /// How many texts use each text style (ASCII-lowercase name), counted
+    /// with the selected style's texts.
+    textstyle_counts: rustc_hash::FxHashMap<String, usize>,
+    /// The list shows only the styles in use.
+    textstyle_in_use_only: bool,
+    /// The preview's sample text; empty shows the default.
+    textstyle_sample: String,
     textstyle_compare: String,
-    /// Edit buffer for font file name.
-    textstyle_font: String,
-    /// Edit buffer for width factor.
-    textstyle_width: String,
-    /// Edit buffer for oblique angle (degrees).
-    textstyle_oblique: String,
-    /// Edit buffer for fixed text height (0 = variable).
-    textstyle_height: String,
-    /// Edit buffer for big-font file name.
-    textstyle_bigfont: String,
-    /// Edit buffer for TrueType font name.
-    textstyle_ttf: String,
+    /// Working copy of the selected style; written into the document before
+    /// any list operation and on Apply.
+    textstyle_draft: text_style_draft::TextStyleDraft,
+    textstyle_font_picker: crate::ui::font_picker::FontPickerState,
+    /// The texts using the selected style, for the summary before Apply.
+    textstyle_users: Vec<text_style_users::TextUser>,
 
     // ── Color Scheme ──────────────────────────────────────────────────────
     active_theme: Theme,
@@ -3562,6 +3579,8 @@ pub enum Message {
     /// space separates the answers to the command's prompts, as in a menu
     /// macro, and no Enter follows the last one.
     MenuCommand(String),
+    /// The Quick Access Toolbar's lists and menus.
+    RibbonQat(crate::ui::ribbon::QatMsg),
     /// The minimize button and the minimized ribbon's popups.
     RibbonMinimize(crate::ui::ribbon::MinimizeMsg),
     /// The pointer and pins of the ribbon's slide-outs.
@@ -3576,6 +3595,16 @@ pub enum Message {
         module: &'static str,
         titles: Vec<String>,
     },
+    /// A ribbon panel dropped off the ribbon: it floats with its top-left
+    /// corner at (`x`, `y`).
+    RibbonFloatPanel {
+        module: &'static str,
+        title: String,
+        x: f32,
+        y: f32,
+    },
+    /// A floating ribbon panel: pressed, moved, released.
+    RibbonFloat(crate::ui::ribbon::FloatMsg),
     /// Ribbon key tips: Alt, typed codes and Esc.
     KeyTip(crate::ui::ribbon::KeyTipInput),
     /// A ribbon tool button was clicked — highlights the tool and dispatches its event.
@@ -4875,8 +4904,21 @@ pub enum Message {
     MTextHeight(String),
     /// Toolbar text-style dropdown changed.
     MTextStyle(String),
-    /// Toolbar font dropdown changed.
-    MTextFont(String),
+    /// The toolbar font picker: open, search or pick.
+    MTextFontPicker(crate::ui::font_picker::FontPickerEvent),
+    /// "Reset to style" on a first-row field (font, height, width, oblique).
+    MTextResetToStyle(&'static str),
+    /// Style menu: open the name of a new style from the selection, or from
+    /// its Cancel go back.
+    MTextNewStyleOpen,
+    /// Style menu: the new style's name, as typed.
+    MTextNewStyleName(String),
+    /// Style menu: make the new style from the selection.
+    MTextNewStyleCreate,
+    /// Style menu: update the text's style from the selection.
+    MTextUpdateStyleFromSelection,
+    /// Style menu: open the Text Style Manager on the text's style.
+    MTextStyleManager,
     /// Toolbar oblique-angle field changed.
     MTextOblique(String),
     /// Toolbar width-factor field changed.
@@ -4954,7 +4996,7 @@ pub enum Message {
     /// Toolbar paragraph-alignment change.
     MTextAlign(mtext_editor::ParaAlign),
     /// Toolbar line-spacing change.
-    MTextLineSpacing(f32),
+    MTextLineSpacing(f64),
     /// Switch the editor body between raw code input (`false`) and the
     /// rendered preview (`true`).
     MTextShowPreview(bool),
@@ -5188,7 +5230,10 @@ pub enum Message {
     #[allow(dead_code)]
     TextStyleDialogClose,
     TextStyleDialogSelect(String),
-    TextStyleDialogTab(u8),
+    /// "Styles in use": show only the styles texts use.
+    TextStyleInUseFilter(bool),
+    /// The preview's sample text, as typed.
+    TextStyleSample(String),
     TextStyleDialogCompare(String),
     TextStyleDialogSetCurrent,
     TextStyleDialogNew,
@@ -5214,8 +5259,10 @@ pub enum Message {
     },
     /// Commit edits to the selected text style.
     TextStyleApply,
-    /// Select a font from the built-in font list.
-    TextStyleFontPick(String),
+    /// The font picker: open, search or pick a stroke or TrueType font.
+    TextStyleFont(crate::ui::font_picker::FontPickerEvent),
+    /// Pick the TrueType face: regular, bold, italic or both.
+    TextStyleFaceStyle(crate::ui::font_picker::FaceStyle),
     /// Flip a boolean flag on the selected text style (backward / upside_down /
     /// vertical / annotative), applied immediately.
     TextStyleToggle(&'static str),
@@ -5821,7 +5868,6 @@ impl OpenCADStudio {
             refedit_options: Default::default(),
             block_redefine_mode: 1,
             block_navigate: ".".to_string(),
-            insname: String::new(),
             #[cfg(not(target_arch = "wasm32"))]
             block_usage_last_persist: None,
             awaiting_vports: false,
@@ -6164,14 +6210,13 @@ impl OpenCADStudio {
             style_stage: None,
             style_import: None,
             textstyle_selected: "Standard".to_string(),
-            textstyle_tab: 0,
+            textstyle_counts: Default::default(),
+            textstyle_in_use_only: false,
+            textstyle_sample: String::new(),
             textstyle_compare: String::new(),
-            textstyle_font: String::new(),
-            textstyle_width: "1.0".to_string(),
-            textstyle_oblique: "0.0".to_string(),
-            textstyle_height: "0.0".to_string(),
-            textstyle_bigfont: String::new(),
-            textstyle_ttf: String::new(),
+            textstyle_draft: Default::default(),
+            textstyle_font_picker: Default::default(),
+            textstyle_users: Vec::new(),
             // TableStyle dialog
             tablestyle_selected: "Standard".to_string(),
             tablestyle_tab: 0,

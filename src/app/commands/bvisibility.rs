@@ -435,6 +435,23 @@ impl OpenCADStudio {
                         .push_error(crate::t!("This Parameter Set is not supported yet.").as_ref());
                     return Some(Task::none());
                 };
+                // Starting a row replaces whatever the previous row left
+                // half-done; a follow-up from an earlier run must not fire
+                // against this one's parameter.
+                self.tabs[i].pending_parameter_set_follow_up = None;
+                let already_authored = set.parameter == "VISIBILITY"
+                    && self.tabs[i]
+                        .active_block_edit_session()
+                        .is_some_and(|session| {
+                            visibility::parameter(&self.tabs[i].scene.document, session.br_handle)
+                                .is_some()
+                        });
+                if already_authored {
+                    // A row on a definition that already has the parameter is a
+                    // request to edit it, not a placement that failed: the
+                    // states dialog is where its states are managed.
+                    return Some(self.dispatch_command(set.follow_up));
+                }
                 if let Some(error) = self.parameter_placement_error(set.parameter) {
                     self.command_line.push_error(crate::t!(error).as_ref());
                     return Some(Task::none());
@@ -687,6 +704,28 @@ impl OpenCADStudio {
                 };
                 self.tabs[i].pending_action_pair = Some((parameter, kind, 0));
                 self.start_parameter_pair_action(parameter, kind, 0)
+            }
+            Some("BLOOKUPTABLE") => {
+                // The row asks for its table editor directly: the command of
+                // the same name is the one the action-bar preference refuses,
+                // so routing through it would leave the row inert. It opens the
+                // table of the parameter the row just placed, not whichever one
+                // the definition happens to list first.
+                let definition = self.tabs[i]
+                    .active_block_edit_session()
+                    .map(|session| session.br_handle);
+                let name = definition
+                    .and_then(|definition| {
+                        crate::scene::block_lookup::parameters(
+                            &self.tabs[i].scene.document,
+                            definition,
+                        )
+                        .into_iter()
+                        .find(|(handle, _)| *handle == parameter)
+                        .map(|(_, parameter)| parameter.lookup_name.clone())
+                    })
+                    .unwrap_or_default();
+                self.open_lookup_table(&name)
             }
             Some(command) if command.starts_with("BACTION ") => {
                 self.start_block_action_for_parameter(

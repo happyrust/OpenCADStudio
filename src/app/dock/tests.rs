@@ -1771,6 +1771,66 @@ fn block_actions_rotate_flip_palette_requires_matching_parameters() {
 }
 
 #[test]
+fn block_properties_table_offers_to_discard_and_close_on_an_unusable_cell() {
+    with_stack(|| {
+        use crate::ui::window::block_properties_table::Action as A;
+        let mut app = authoring_app();
+        let _ = app.dispatch_command("BAUTHORPALETTE");
+        let _ = app.run_command_line("BPARAMETER LINEAR 0,0 1,0 0,0.3");
+        let i = app.active_tab;
+        let before = app.tabs[i].scene.document.clone();
+        let history = app.tabs[i].history.undo_stack.len();
+        let _ = app.dispatch_command("BPROPERTIESTABLE");
+        assert!(
+            app.block_properties_table.is_some(),
+            "the dialog is open before the refusal"
+        );
+        let _ = app.update(Message::BlockPropertiesTable(A::Property(0)));
+        let _ = app.update(Message::BlockPropertiesTable(A::AddProperty));
+        let _ = app.update(Message::BlockPropertiesTable(A::AddRow));
+        let _ = app.update(Message::BlockPropertiesTable(A::Cell(0, 0, "wide".into())));
+        let _ = app.update(Message::BlockPropertiesTable(A::Apply));
+        let state = app
+            .block_properties_table
+            .as_ref()
+            .expect("an unusable cell is refused");
+        assert_eq!(
+            state.error.as_deref(),
+            Some("Each cell must be a finite number."),
+            "the refusal says why"
+        );
+        assert!(state.confirm_close, "and offers a way out");
+        assert!(
+            try_find_in_view(&app, "Discard & close").is_some(),
+            "the offer is on screen, not only in the state"
+        );
+        let _ = app.update(Message::BlockPropertiesTable(A::KeepEditing));
+        let state = app
+            .block_properties_table
+            .as_ref()
+            .expect("keeping editing leaves the work in place");
+        assert!(!state.confirm_close, "the offer is gone");
+        assert!(state.error.is_some(), "the diagnosis stays where it was read");
+        assert_eq!(state.rows[0][0], "wide");
+        assert!(
+            try_find_in_view(&app, "Discard & close").is_none(),
+            "and the screen agrees"
+        );
+        let _ = app.update(Message::BlockPropertiesTable(A::Apply));
+        assert!(app
+            .block_properties_table
+            .as_ref()
+            .expect("the refusal offers the way out again")
+            .confirm_close);
+        let _ = app.update(Message::BlockPropertiesTable(A::DiscardClose));
+        assert!(app.block_properties_table.is_none());
+        assert!(app.active_modal.is_none(), "the dialog actually leaves");
+        assert!(app.tabs[i].scene.document == before, "nothing was applied");
+        assert_eq!(app.tabs[i].history.undo_stack.len(), history);
+    });
+}
+
+#[test]
 fn lookup_basepoint_palette_and_table_dialog_real_controls() {
     with_stack(|| {
         use crate::ui::window::{authoring_palettes::Tab, block_lookup::Action as A};
@@ -2021,6 +2081,53 @@ fn authoring_control(app: &OpenCADStudio, id: &'static str) -> iced::Point {
         }
         _ => panic!("{id} not found"),
     }
+}
+
+/// An empty name has to be answered by clicking `OK`: while the button is
+/// disabled for an empty field the dialog's own refusal is unreachable.
+#[test]
+fn block_edit_entry_dialog_answers_an_empty_name_when_ok_is_clicked() {
+    use crate::app::ModalKind;
+    let mut app = OpenCADStudio::new_for_test();
+    app.automation_op(r#"{"op":"new"}"#);
+    let tab = app.active_tab;
+    app.tabs[tab].scene.deselect_all();
+    let _ = app.dispatch_command("BEDIT");
+    assert_eq!(app.active_modal, Some(ModalKind::BlockEditPicker));
+    let _ = app.update(Message::BlockEditPickerName(String::new()));
+    assert!(app.block_edit_picker.as_ref().unwrap().error.is_none());
+    assert!(
+        try_find_in_view(
+            &app,
+            "The name must be at least one character long."
+        )
+        .is_none(),
+        "nothing is said before the button is pressed"
+    );
+    let point = find_in_view(&app, "OK");
+    drive_view(
+        &mut app,
+        point,
+        &[
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)),
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)),
+        ],
+    );
+    assert_eq!(
+        app.block_edit_picker.as_ref().unwrap().error.as_deref(),
+        Some("The name must be at least one character long."),
+        "the click reached the dialog"
+    );
+    assert!(
+        try_find_in_view(
+            &app,
+            "The name must be at least one character long."
+        )
+        .is_some(),
+        "the reason is on screen"
+    );
+    assert_eq!(app.active_modal, Some(ModalKind::BlockEditPicker));
+    assert!(app.tabs[tab].active_block_edit.is_none());
 }
 
 fn authoring_click(app: &mut OpenCADStudio, point: iced::Point) {

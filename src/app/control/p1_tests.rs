@@ -759,6 +759,55 @@ fn wblock_normalize_shifts_the_export_to_the_origin() {
     let q = app.automation_op(r#"{"op":"query","type":"Line","detail":"full"}"#);
     assert_eq!(q["entities"][0]["start"], json!([0.0, 0.0, 0.0]));
     assert_eq!(q["entities"][0]["end"], json!([10.0, 10.0, 0.0]));
+    let header = &app.tabs[app.active_tab].scene.document.header;
+    assert_eq!(
+        header.model_space_extents_min,
+        codec::types::Vector3::new(0.0, 0.0, 0.0)
+    );
+    assert_eq!(
+        header.model_space_extents_max,
+        codec::types::Vector3::new(10.0, 10.0, 0.0)
+    );
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn wblock_export_carries_the_saved_header_values() {
+    let mut app = OpenCADStudio::new_for_test();
+    app.automation_op(r#"{"op":"new"}"#);
+    app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 10,20"}"#);
+    let state = app.automation_op(r#"{"protocol":1,"op":"state"}"#);
+    let doc = state["document_id"].as_u64().unwrap();
+    let handle = app.automation_op(r#"{"op":"query","type":"Line","detail":"summary"}"#)
+        ["entities"][0]["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let out = std::env::temp_dir().join(format!("ocs_wbhdr_{}.dxf", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+    let op = out.to_string_lossy().replace('\\', "\\\\");
+    let r = app.automation_op(&format!(
+        r#"{{"protocol":1,"op":"wblock","request_id":"wh1","document_id":{doc},"path":"{op}","handles":["{handle}"]}}"#
+    ));
+    assert_eq!(r["ok"], true, "{}", r["error"]);
+
+    assert_eq!(
+        app.automation_op(&format!(r#"{{"op":"open","path":"{op}"}}"#))["ok"],
+        true
+    );
+    let header = &app.tabs[app.active_tab].scene.document.header;
+    assert_eq!(header.measurement, 1);
+    assert_eq!(header.insertion_units, 6);
+    assert!(header.create_date_julian > 0.0, "creation stamp");
+    assert!(header.update_date_julian > 0.0, "update stamp");
+    assert_eq!(
+        header.model_space_extents_min,
+        codec::types::Vector3::new(0.0, 0.0, 0.0)
+    );
+    assert_eq!(
+        header.model_space_extents_max,
+        codec::types::Vector3::new(10.0, 20.0, 0.0)
+    );
     let _ = std::fs::remove_file(&out);
 }
 

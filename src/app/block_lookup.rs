@@ -82,7 +82,7 @@ impl OpenCADStudio {
         self.refresh_properties();
         self.command_line.push_output(
             crate::t!(if kind == Kind::Lookup {
-                "Lookup parameter placed. Use BLOOKUPTABLE to edit its property table."
+                "Lookup parameter placed."
             } else {
                 "Basepoint parameter placed."
             })
@@ -202,6 +202,7 @@ impl OpenCADStudio {
             selected_property: None,
             error: None,
             notice: None,
+            confirm_close: false,
         });
         self.active_modal = Some(ModalKind::BlockLookup);
         Task::none()
@@ -209,7 +210,19 @@ impl OpenCADStudio {
     pub(super) fn handle_block_lookup(&mut self, action: Action) -> Task<Message> {
         if !matches!(action, Action::Apply) {
             if let Some(state) = self.block_lookup.as_mut() {
-                state.edit(action);
+                match action {
+                    Action::DiscardClose => {
+                        // Leaving this way is the same as pressing `Cancel`.
+                        self.close_active_modal();
+                        return Task::none();
+                    }
+                    Action::KeepEditing => {
+                        // The diagnosis stays on screen; only the offer goes.
+                        state.confirm_close = false;
+                        return Task::none();
+                    }
+                    _ => state.edit(action),
+                }
             }
             return Task::none();
         }
@@ -259,6 +272,7 @@ impl OpenCADStudio {
         }
         let mut working = tab.scene.document.clone();
         let mut changed = false;
+        let mut refusal = None;
         for draft in &state.drafts {
             if draft.changed() {
                 if let Err(error) = lookup::apply_table(
@@ -267,12 +281,19 @@ impl OpenCADStudio {
                     draft.parameter,
                     draft.edited.clone(),
                 ) {
-                    self.block_lookup.as_mut().unwrap().error =
-                        Some(crate::t!(error.as_str()).into_owned());
-                    return Task::none();
+                    refusal = Some(crate::t!(error.as_str()).into_owned());
+                    break;
                 }
                 changed = true;
             }
+        }
+        if let Some(error) = refusal {
+            let state = self.block_lookup.as_mut().unwrap();
+            state.error = Some(error);
+            // Refusing the table is not a reason to hold the operator inside
+            // the dialog: offer the way out along with the diagnosis.
+            state.confirm_close = true;
+            return Task::none();
         }
         if changed {
             self.push_undo_snapshot(i, "Lookup tables");

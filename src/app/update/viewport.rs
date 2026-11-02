@@ -1233,6 +1233,7 @@ impl OpenCADStudio {
                         && grip.id != crate::app::visibility::TABLE_GRIP_ID
                         && !crate::app::block_actions::is_test_grip(grip.id)
                         && !crate::app::block_authoring_edit::is_editor_grip(grip.id)
+                        && !crate::scene::assoc_array_grips::is_array_grip(grip.id)
                 })
                 .map(|(owner, grip)| GripTarget {
                     handle: owner,
@@ -1260,6 +1261,7 @@ impl OpenCADStudio {
                         && grip.id != crate::app::visibility::TABLE_GRIP_ID
                         && !crate::app::block_actions::is_test_grip(grip.id)
                         && !crate::app::block_authoring_edit::is_editor_grip(grip.id)
+                        && !crate::scene::assoc_array_grips::is_array_grip(grip.id)
                 })
                 .filter(|(_, grip)| (grip.world - world).length_squared() <= epsilon_sq)
                 .map(|(owner, grip)| GripTarget {
@@ -5434,6 +5436,9 @@ impl OpenCADStudio {
                     if self.start_authoring_grip(handle, grip_id) {
                         return Task::none();
                     }
+                    if self.start_array_grip(handle, grip_id) {
+                        return Task::none();
+                    }
                     if self.shift_down {
                         let key = (handle, grip_id);
                         if !self.tabs[i].hot_grips.remove(&key) {
@@ -8074,8 +8079,17 @@ properties={:.1}ms picked={}",
 
     pub(super) fn on_view_cube_snap(&mut self, region: CubeRegion) -> Task<Message> {
         // The cube is oriented in the active UCS, so snap in the UCS frame.
-        let r_ucs = self.tabs[self.active_tab].scene.viewcube_ucs_mat();
-        self.snap_view_region(region, r_ucs)
+        let i = self.active_tab;
+        let r_ucs = self.tabs[i].scene.viewcube_ucs_mat();
+        let task = self.snap_view_region(region, r_ucs);
+        // Alt+click on a face also sets the UCS to that view (#2272).
+        if self.alt_down
+            && matches!(region, CubeRegion::Face(_))
+            && self.tabs[i].active_cmd.is_none()
+        {
+            return task.chain(self.dispatch_command("UCS V"));
+        }
+        task
     }
 
     /// Compass cardinals are world-fixed, so they snap in the world frame
@@ -9074,7 +9088,14 @@ properties={:.1}ms picked={}",
                 if self.tabs[i].scene.update_entity(original.clone()) {
                     restored.push((*handle, crate::scene::ChangeKind::Modified));
                 }
-                self.tabs[i].scene.add_entity_clone(moved);
+                let copy = self.tabs[i].scene.add_entity_clone(moved);
+                // A copied associative array gets its own blocks and action.
+                crate::scene::assoc_array::clone_array_for_copy(
+                    &mut self.tabs[i].scene,
+                    *handle,
+                    copy,
+                    &Default::default(),
+                );
             }
             self.tabs[i]
                 .scene
@@ -11042,10 +11063,10 @@ mod selection_preview_tests {
         );
     }
 
-    /// With the 3D master off, solid corners are invisible even when the
-    /// Vertex mode is configured — and the 2D system must not catch them.
+    /// With the 3D master off, a solid's corner is no 3D Vertex snap, but
+    /// the 2D Endpoint mode still catches it, as on any edge (#2153).
     #[test]
-    fn box_corner_ignores_3d_master_off() {
+    fn box_corner_answers_2d_endpoint_with_3d_master_off() {
         use crate::snap::SnapType;
         use codec::{entities::Solid3D, EntityType};
 
@@ -11053,6 +11074,7 @@ mod selection_preview_tests {
         app.automation_op(r#"{"op":"new"}"#);
         let i = app.active_tab;
         app.snapper.snap_enabled = true;
+        app.snapper.enabled.insert(SnapType::Endpoint);
         app.snapper.snap3d_enabled = false;
         app.snapper.enabled3d.insert(SnapType::Vertex);
         app.snapper.grid_snap_on = false;
@@ -11102,10 +11124,10 @@ mod selection_preview_tests {
             .unwrap();
         let _ = app.on_viewport_move(Point::new(cursor.x, cursor.y));
 
-        assert!(
-            app.tabs[i].snap_result.is_none(),
-            "3D master off must hide solid corners, got {:?}",
-            app.tabs[i].snap_result.map(|s| (s.snap_type, s.world))
+        assert_eq!(
+            app.tabs[i].snap_result.map(|s| s.snap_type),
+            Some(SnapType::Endpoint),
+            "3D master off leaves the corner to the 2D Endpoint mode"
         );
     }
 

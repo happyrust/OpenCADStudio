@@ -1,9 +1,9 @@
 // Draw module — Draw, Modify, Annotation and Layer tools.
 
-mod changelog;
+pub(crate) mod changelog;
 pub mod clipboard;
 pub mod defaults;
-mod donate;
+pub(crate) mod donate;
 pub mod draw;
 pub mod fence;
 pub mod groups;
@@ -12,7 +12,7 @@ pub mod layers;
 pub mod modify;
 mod pid;
 pub mod properties;
-mod report;
+pub(crate) mod report;
 pub mod select;
 pub mod units;
 
@@ -172,6 +172,7 @@ impl CadModule for DrawModule {
                                 make_current::tool(),
                                 layiso::tool(),
                                 laywalk::tool(),
+                                match_layer::copy_to_layer_tool(),
                             ],
                             row3: vec![
                                 layon::tool(),
@@ -179,6 +180,7 @@ impl CadModule for DrawModule {
                                 layulk::tool(),
                                 match_layer::tool(),
                                 layuniso::tool(),
+                                match_layer::laycur_tool(),
                             ],
                         },
                     ],

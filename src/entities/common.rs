@@ -147,6 +147,14 @@ pub fn without_negative_zero(text: String) -> String {
     }
 }
 
+/// A coordinate typed into a dialog field, as a plain decimal at the drawing's
+/// LUPREC. Fields like these are typed straight back, so they print a number
+/// every length parser reads rather than the drawing's formatted length style.
+pub fn coordinate_text(value: f64, precision: i16) -> String {
+    let precision = precision.clamp(0, 8) as usize;
+    without_negative_zero(format!("{:.*}", precision, value))
+}
+
 fn format_signed_length(value: f64) -> String {
     let ctx = unit_context();
     let prec = ctx.luprec.max(0).min(15) as usize;

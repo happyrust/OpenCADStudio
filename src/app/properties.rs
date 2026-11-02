@@ -1103,12 +1103,13 @@ impl OpenCADStudio {
                     for property in &mut custom_properties {
                         property.value = match &property.value {
                             crate::scene::model::object::PropValue::BlockNumber { value, description, .. } => crate::scene::model::object::PropValue::ReadOnlyWithTooltip { value: value.clone(), tooltip: description.clone() },
-                            crate::scene::model::object::PropValue::BlockChoice { selected, options, description, .. } => crate::scene::model::object::PropValue::ReadOnlyWithTooltip { value: options.get(*selected).cloned().unwrap_or_else(|| t!("Custom").into_owned()), tooltip: description.clone() },
+                            crate::scene::model::object::PropValue::BlockChoice { selected, options, description, .. } => crate::scene::model::object::PropValue::ReadOnlyWithTooltip { value: crate::ui::properties::choice_cell_text(options, *selected), tooltip: description.clone() },
                             value => value.clone(),
                         };
                     }
                 }
                 custom_properties.extend(Self::visibility_property(doc, handle));
+                custom_properties.extend(Self::visible_blocks_property(doc, handle));
                 if !custom_properties.is_empty() {
                     sections.push(crate::scene::model::object::PropSection {
                         title: t!("Custom").into_owned(),
@@ -2867,21 +2868,35 @@ filter={:.1} local={:.1} aggregate={:.1} entities={}",
                             ],
                         });
                     }
-                    if let Some((chain_actions, value_sets)) =
+                    if let Some(definition) = self.tabs[i].active_block_edit_session().map(|session| session.br_handle) {
+                        if let Some(current) = crate::scene::block_actions::chain::label(
+                            &self.tabs[i].scene.document, definition, item.handle) {
+                            panel.sections.push(PropSection {
+                                title: crate::t!("Action chain").into_owned(),
+                                props: vec![Property {
+                                    label: crate::t!("Chain to").into_owned(),
+                                    field: "authoring_action_chain",
+                                    value: PropValue::EditText(current),
+                                }],
+                            });
+                        }
+                    }
+                    if let Some((chaining, value_sets)) =
                         self.authoring_parameter_properties(item.handle)
                     {
-                        panel.sections.push(PropSection {
-                            title: crate::t!("Behavior").into_owned(),
-                            props: vec![Property {
-                                label: crate::t!("Chain actions").into_owned(),
-                                field: "authoring_chain_actions_state",
-                                value: PropValue::ReadOnly(if chain_actions {
-                                    crate::t!("Enabled (unsupported)").into_owned()
-                                } else {
-                                    crate::t!("Disabled").into_owned()
-                                }),
-                            }],
-                        });
+                        if let Some(chain_actions) = chaining {
+                            panel.sections.push(PropSection {
+                                title: crate::t!("Behavior").into_owned(),
+                                props: vec![Property {
+                                    label: crate::t!("Chain actions").into_owned(),
+                                    field: "authoring_chain_actions",
+                                    value: PropValue::BoolToggle {
+                                        field: "authoring_chain_actions",
+                                        value: chain_actions,
+                                    },
+                                }],
+                            });
+                        }
                         if !value_sets.is_empty() {
                             let mut props = Vec::new();
                             for (key, label, value_set) in value_sets {
@@ -3363,6 +3378,7 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
         self.refresh_table_grip(wo);
         self.refresh_test_action_grips(wo);
         self.refresh_authoring_grips(wo);
+        self.refresh_array_grips(wo);
     }
 
     /// Enumerate one entity's built-in grips exactly as the selection cache
@@ -3432,10 +3448,9 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                 let anno_scale = annotation_scale_handle
                     .and_then(
                         |handle| match self.tabs[i].scene.document.objects.get(&handle) {
-                            Some(codec::objects::ObjectType::Scale(scale)) => Some(
-                                scale.inverse_factor()
-                                    / self.tabs[i].scene.annotation_scale_unit_factor(),
-                            ),
+                            Some(codec::objects::ObjectType::Scale(scale)) => {
+                                Some(scale.inverse_factor())
+                            }
                             _ => None,
                         },
                     )

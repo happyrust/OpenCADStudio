@@ -305,7 +305,7 @@ fn blocks_reports_unmatched_lookup_rows_as_present_and_unmatched() {
     for label in labels {
         assert!(
             properties.contains_key(&label),
-            "the panel shows Custom for {label}: {res}"
+            "the row stays present even though no value applies to {label}: {res}"
         );
         assert_eq!(properties[&label], serde_json::Value::Null, "{res}");
     }

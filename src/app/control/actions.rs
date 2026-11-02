@@ -469,7 +469,9 @@ impl OpenCADStudio {
             ));
         }
         let path = string(req, "path")?;
-        let document = &self.tabs[self.active_tab].scene.document;
+        // The export is built from the document as a save writes it: the
+        // header's save stamps and the current display form of the geometry.
+        let document = self.tabs[self.active_tab].scene.document_for_save();
         // A template base keeps its tables/styles in the exported file
         // (Catalog §2.1: clone from a .dwt/.dwg template).
         let template_base = match req["template"].as_str().filter(|t| !t.is_empty()) {
@@ -483,10 +485,12 @@ impl OpenCADStudio {
             match &template_base {
                 Some(base) => {
                     let mut base = base.clone();
-                    crate::modules::insert::wblock::extract_block_into(document, block, &mut base)?;
+                    crate::modules::insert::wblock::extract_block_into(
+                        &document, block, &mut base,
+                    )?;
                     Ok(base)
                 }
-                None => crate::modules::insert::wblock::extract_block_to_doc(document, block),
+                None => crate::modules::insert::wblock::extract_block_to_doc(&document, block),
             }
         } else if let Some(listed) = req["handles"].as_array() {
             let handles: Result<Vec<codec::Handle>, Value> = listed
@@ -512,13 +516,16 @@ impl OpenCADStudio {
                 Some(base) => {
                     let mut base = base.clone();
                     crate::modules::insert::wblock::extract_entities_into(
-                        document, &handles?, &mut base,
+                        &document,
+                        &handles?,
+                        &mut base,
                     )?;
                     Ok(base)
                 }
-                None => {
-                    crate::modules::insert::wblock::extract_entities_to_doc(document, &handles?)
-                }
+                None => crate::modules::insert::wblock::extract_entities_to_doc(
+                    &document,
+                    &handles?,
+                ),
             }
         } else {
             return Err(failure(

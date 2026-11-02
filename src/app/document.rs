@@ -206,6 +206,10 @@ pub(super) struct DocumentTab {
     /// "Previous" keyword at any Select objects prompt (#426).
     pub(super) prev_selection: Vec<codec::Handle>,
     pub(super) last_cmd: Option<String>,
+    /// INSNAME: the last block inserted in this drawing, offered as `-INSERT`'s
+    /// default. It belongs to the drawing, so a name remembered here is never
+    /// offered in another one.
+    pub(super) insname: String,
     /// Most recently created path drawable. A fresh LINE/PLINE can accept its
     /// current final endpoint with Enter before the first click.
     pub(super) last_draw_anchor: Option<Handle>,
@@ -844,6 +848,7 @@ impl DocumentTab {
             layiso_state: None,
             layiso_mode: LayisoMode::Off,
             last_cmd: None,
+            insname: String::new(),
             last_draw_anchor: None,
             snap_result: None,
             active_grip: None,

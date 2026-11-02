@@ -418,7 +418,16 @@ impl OpenCADStudio {
         };
         let id = state.document_id;
         let name = state.name.trim().to_string();
-        if name.is_empty() || state.error.is_some() {
+        let refused = state.error.is_some();
+        if name.is_empty() || refused {
+            if name.is_empty() {
+                // `OK` is reachable with an empty field, and silence is not an
+                // answer: say what the field is short of.
+                let state = self.block_edit_picker.as_mut().unwrap();
+                state.error = Some(
+                    crate::t!("The name must be at least one character long.").into_owned(),
+                );
+            }
             return Task::none();
         }
         let Some(i) = self.tabs.iter().position(|tab| tab.id == id) else {
@@ -747,6 +756,10 @@ impl OpenCADStudio {
             }
             self.tabs[i].scene.visibility_states.remove(&definition);
         }
+        // The saved definition advertises attributes because its body holds
+        // them, so an attribute authored here marks the record and erasing the
+        // last one takes the mark off again.
+        crate::scene::Scene::sync_attribute_flag(&mut self.tabs[i].scene.document, &name);
         // The saved definition's terminator belongs after its body. The undo
         // entry below is taken afterwards, so it carries the swap.
         if let Err(error) = self.tabs[i].scene.reterminate_block_definition(&name) {

@@ -393,6 +393,11 @@ fn evaluate_row_context(
     } else {
         super::block_actions::instance::load_frames(document, &mut evaluated, insert, &parameters)?
     };
+    let previous_values = parameters
+        .iter()
+        .filter(|p| !p.flip)
+        .map(|p| (p.handle, super::block_actions::current(&evaluated, p)))
+        .collect();
     let actual = expressions::actual_inputs(document, baseline, definition, insert, &table)?;
     let resolved = expressions::row(baseline.unwrap_or(document), definition, &table, row, &actual, true)?;
     let mut endpoints = std::collections::BTreeMap::new();
@@ -468,6 +473,16 @@ fn evaluate_row_context(
         baseline.unwrap_or(document),
         definition,
         &frames,
+        Some(super::block_actions::RebuildInputs {
+            document: baseline.unwrap_or(document),
+            frames: &frames,
+            values: &previous_values,
+            requested: &parameters
+                .iter()
+                .filter(|p| endpoints.contains_key(&p.id))
+                .map(|p| p.handle)
+                .collect(),
+        }),
     )?;
     let values = parameters
         .iter()
@@ -600,7 +615,12 @@ pub(crate) fn validate(
         let mut key = vec![];
         for (col, property) in table.columns.iter().enumerate() {
             let cell = &table.expressions[row * cols + col];
-            if cell.trim().is_empty() || cell.chars().any(char::is_control) {
+            // An empty cell is the same fault in either table dialog, so it
+            // gets the same message; control characters keep their own.
+            if cell.trim().is_empty() {
+                return Err("Each cell must be a finite number.".into());
+            }
+            if cell.chars().any(char::is_control) {
                 return Err("Complete each cell without control characters.".into());
             }
             if property.lookup_property {

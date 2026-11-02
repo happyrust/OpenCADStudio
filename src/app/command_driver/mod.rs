@@ -208,6 +208,8 @@ impl OpenCADStudio {
                 | CmdResult::SolidSubtract { .. }
                 | CmdResult::SliceEntities { .. }
                 | CmdResult::SliceSurfaceEntities { .. }
+                // An array arrow keeps the array selected for the next arrow.
+                | CmdResult::EditAssocArray { .. }
         );
         let task = self.apply_cmd_result_inner(result);
         let i = self.active_tab;
@@ -969,6 +971,9 @@ impl OpenCADStudio {
             } => {
                 self.handle_distribute_dimensions(base, dimensions, offset);
             }
+            CmdResult::EditAssocArray { insert, changes } => {
+                self.handle_edit_assoc_array(insert, changes);
+            }
             CmdResult::ReplaceEntity(handle, new_entities) => {
                 if let Some(task) = self.handle_replace_entity(handle, new_entities) {
                     return task;
@@ -1046,8 +1051,8 @@ impl OpenCADStudio {
                     return task;
                 }
             }
-            CmdResult::MatchEntityLayer { dest, src } => {
-                self.handle_match_entity_layer(dest, src);
+            CmdResult::MatchEntityLayer { dest, src, copy } => {
+                self.handle_match_entity_layer(dest, src, copy);
             }
             CmdResult::MatchProperties { dest, src } => {
                 if let Some(task) = self.handle_match_properties(dest, src) {

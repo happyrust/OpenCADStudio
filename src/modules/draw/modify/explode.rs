@@ -2025,26 +2025,28 @@ fn explode_dimension(dim: &Dimension, doc: &Document) -> Vec<EntityType> {
             }
             let gap = ((d2.x - d1.x).powi(2) + (d2.y - d1.y).powi(2)).sqrt();
             let outside = !ticks && met.dimasz > 1e-6 && gap < 2.0 * met.dimasz;
-            if outside {
-                // Arrow bodies extend outward (tips still at the origins).
-                result.extend(dim_terminator(d1, -ux, -uy, &met.arrow1, &dim_c));
-                result.extend(dim_terminator(d2, ux, uy, &met.arrow2, &dim_c));
-                if !met.dimsoxd {
-                    let stub = 2.0 * met.dimasz;
+            // Flip Arrow turns an arrowhead to the other side of its line.
+            let (out1, out2) = (outside != base.flip_arrow1, outside != base.flip_arrow2);
+            // Outside, arrow bodies extend outward (tips still at the origins).
+            let (s1, s2) = (if out1 { -1.0 } else { 1.0 }, if out2 { -1.0 } else { 1.0 });
+            result.extend(dim_terminator(d1, ux * s1, uy * s1, &met.arrow1, &dim_c));
+            result.extend(dim_terminator(d2, -ux * s2, -uy * s2, &met.arrow2, &dim_c));
+            if !met.dimsoxd {
+                let stub = 2.0 * met.dimasz;
+                if out1 {
                     result.push(make_seg(
                         &v3(d1.x - ux * stub, d1.y - uy * stub, d1.z),
                         &d1,
                         &dim_c,
                     ));
+                }
+                if out2 {
                     result.push(make_seg(
                         &d2,
                         &v3(d2.x + ux * stub, d2.y + uy * stub, d2.z),
                         &dim_c,
                     ));
                 }
-            } else {
-                result.extend(dim_terminator(d1, ux, uy, &met.arrow1, &dim_c));
-                result.extend(dim_terminator(d2, -ux, -uy, &met.arrow2, &dim_c));
             }
         };
 
@@ -2171,29 +2173,26 @@ fn explode_dimension(dim: &Dimension, doc: &Document) -> Vec<EntityType> {
                 result.push(make_seg(&center, &far_outer, &dim_c));
             }
             let outside = !ticks && met.dimasz > 1e-6 && len < 2.0 * met.dimasz;
-            if outside {
-                result.extend(dim_terminator(edge, ux, uy, &met.arrow1, &dim_c));
-                result.extend(dim_terminator(far, -ux, -uy, &met.arrow2, &dim_c));
-                if !met.dimsoxd {
-                    let stub = 2.0 * met.dimasz;
-                    if !met.dimsd1 {
-                        result.push(make_seg(
-                            &edge,
-                            &v3(edge.x + ux * stub, edge.y + uy * stub, edge.z),
-                            &dim_c,
-                        ));
-                    }
-                    if !met.dimsd2 {
-                        result.push(make_seg(
-                            &far,
-                            &v3(far.x - ux * stub, far.y - uy * stub, far.z),
-                            &dim_c,
-                        ));
-                    }
+            let (out1, out2) = (outside != base.flip_arrow1, outside != base.flip_arrow2);
+            let (s1, s2) = (if out1 { 1.0 } else { -1.0 }, if out2 { 1.0 } else { -1.0 });
+            result.extend(dim_terminator(edge, ux * s1, uy * s1, &met.arrow1, &dim_c));
+            result.extend(dim_terminator(far, -ux * s2, -uy * s2, &met.arrow2, &dim_c));
+            if !met.dimsoxd {
+                let stub = 2.0 * met.dimasz;
+                if out1 && !met.dimsd1 {
+                    result.push(make_seg(
+                        &edge,
+                        &v3(edge.x + ux * stub, edge.y + uy * stub, edge.z),
+                        &dim_c,
+                    ));
                 }
-            } else {
-                result.extend(dim_terminator(edge, -ux, -uy, &met.arrow1, &dim_c));
-                result.extend(dim_terminator(far, ux, uy, &met.arrow2, &dim_c));
+                if out2 && !met.dimsd2 {
+                    result.push(make_seg(
+                        &far,
+                        &v3(far.x - ux * stub, far.y - uy * stub, far.z),
+                        &dim_c,
+                    ));
+                }
             }
             let anchor = dim_text_anchor(base, center, edge);
             let distance_squared = |first: Vector3, second: Vector3| {
@@ -2760,16 +2759,38 @@ mod tests {
         );
     }
 
+    /// The flag, not an empty definition, decides: the same block with one
+    /// line inside explodes when `explodable` is set and stays whole when it
+    /// is cleared.
     #[test]
     fn unexplodable_block_is_not_exploded() {
-        let mut doc = Document::new();
-        let mut block = codec::tables::BlockRecord::new("NO_EXPLODE");
-        block.handle = doc.allocate_handle();
-        block.explodable = false;
-        doc.block_records.add(block).unwrap();
+        fn explode_once(explodable: bool) -> Vec<EntityType> {
+            let mut doc = Document::new();
+            let mut block = codec::tables::BlockRecord::new("NO_EXPLODE");
+            block.handle = doc.allocate_handle();
+            block.explodable = explodable;
+            let child = doc
+                .add_entity(EntityType::Line(codec::entities::Line::from_points(
+                    Vector3::new(0.0, 0.0, 0.0),
+                    Vector3::new(10.0, 0.0, 0.0),
+                )))
+                .unwrap();
+            block.entity_handles.push(child);
+            doc.block_records.add(block).unwrap();
 
-        let insert = codec::entities::Insert::new("NO_EXPLODE", Vector3::new(0.0, 0.0, 0.0));
-        assert!(explode_entity(&EntityType::Insert(insert), &doc).is_empty());
+            let insert = codec::entities::Insert::new("NO_EXPLODE", Vector3::new(0.0, 0.0, 0.0));
+            explode_entity(&EntityType::Insert(insert), &doc)
+        }
+
+        assert_eq!(
+            explode_once(true).len(),
+            1,
+            "the definition holds one line, so an explodable block has something to give"
+        );
+        assert!(
+            explode_once(false).is_empty(),
+            "clearing the flag is what stops the explosion"
+        );
     }
 
     /// A dimension created without a geometry block gets a real `*D` block on

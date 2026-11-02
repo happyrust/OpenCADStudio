@@ -1019,10 +1019,7 @@ impl PropertiesPanel {
                 let key = *key;
                 let quick = self.rendering_quick.get();
                 let open = self.open_block_picker == Some((key, quick));
-                let shown = options
-                    .get(*selected)
-                    .cloned()
-                    .unwrap_or_else(|| t!("Custom").into_owned());
+                let shown = choice_cell_text(options, *selected);
                 let caret = button(
                     container(if open {
                         crate::ui::icons::themed_arrow_up(9.0)
@@ -2582,6 +2579,12 @@ pub fn acad_color_display(c: AcadColor) -> (Color, &'static str) {
     }
 }
 
+/// What a choice cell shows. A choice with nothing selected shows nothing:
+/// the cell must not fall back to a value the table keeps for itself.
+pub(crate) fn choice_cell_text(options: &[String], selected: usize) -> String {
+    options.get(selected).cloned().unwrap_or_default()
+}
+
 fn aci_label(idx: u8) -> &'static str {
     match idx {
         1 => "Red",
@@ -2638,9 +2641,19 @@ fn hint_text_style(theme: &Theme) -> iced::widget::text::Style {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_key_focused, attr_edit_key, build_field_key_map, hatch_pattern_matches,
-        hatch_preview_scale, prop_attr_field_id, prop_geom_field_id, FieldKey,
+        active_key_focused, attr_edit_key, build_field_key_map, choice_cell_text,
+        hatch_pattern_matches, hatch_preview_scale, prop_attr_field_id, prop_geom_field_id,
+        FieldKey,
     };
+
+    /// A lookup that matches no row has no value, and the cell stays empty
+    /// rather than printing one of the table's own names.
+    #[test]
+    fn a_choice_cell_with_nothing_applied_shows_nothing() {
+        let options = vec!["Small".to_string(), "Large".to_string()];
+        assert_eq!(choice_cell_text(&options, usize::MAX), "");
+        assert_eq!(choice_cell_text(&options, 1), "Large");
+    }
 
     /// The list holds values that drive the block's geometry; the rows it
     /// covers must not show through it or the selection band, in any theme.

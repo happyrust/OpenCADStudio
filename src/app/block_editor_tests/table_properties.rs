@@ -382,7 +382,7 @@ fn blocks_reports_an_unmatched_table_row_as_present_and_unmatched() {
     let properties = block["dynamic_properties"].as_object().unwrap();
     assert!(
         properties.contains_key(&label),
-        "the panel shows Custom for this row, so the read model keeps it: {unmatched}"
+        "the row stays present even though no value applies to it: {unmatched}"
     );
     assert_eq!(properties[&label], serde_json::Value::Null, "{unmatched}");
 }
@@ -604,6 +604,30 @@ fn block_table_properties_preserve_both_polar_components_in_either_column_order(
             assert!(frame.end.distance(glam::DVec3::new(0., 15., 0.)) < 1e-8);
         }
     }
+}
+
+#[test]
+fn the_value_list_closes_with_the_reference_it_belongs_to() {
+    let (mut app, _, def, _, _, table) = table_fixture(false);
+    let i = app.active_tab;
+    crate::scene::block_grips::config::set(&mut app.tabs[i].scene.document, def, table, Some(1))
+        .unwrap();
+    app.refresh_properties();
+    app.open_table_popup(iced::Point::new(100., 100.));
+    assert!(
+        app.table_popup.is_some(),
+        "the list opens for the lone selected reference"
+    );
+    let _ = app.automation_op(r#"{"op":"select","clear":true}"#);
+    app.refresh_properties();
+    assert!(
+        app.tabs[i].table_grip.is_none(),
+        "the grip is gone with the selection"
+    );
+    assert!(
+        app.table_popup.is_none(),
+        "the list has nothing to hang from once that reference is not selected"
+    );
 }
 
 #[test]
