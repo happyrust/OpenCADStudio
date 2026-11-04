@@ -396,8 +396,6 @@ fn bench_hit_test_picking(runner: &mut BenchmarkRunner) {
     let mut click_samples = Vec::with_capacity(5);
     // No draw-order overrides: ties between coincident wires resolve by
     // distance alone, as they did before click_hit took the depth map.
-    let draw_depth = Default::default();
-
     let draw_depth = rustc_hash::FxHashMap::default();
     for _ in 0..5 {
         let t0 = Instant::now();

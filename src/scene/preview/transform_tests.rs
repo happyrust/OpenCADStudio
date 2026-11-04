@@ -424,7 +424,7 @@ fn repeated_block_previews_render_at_the_transformed_positions() {
                 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                 rx.recv().unwrap().unwrap();
                 {
-                    let bytes = readback.slice(..).get_mapped_range();
+                    let bytes = readback.slice(..).get_mapped_range().unwrap();
                     for midpoint in [5.0, 25.0, 55.0, 75.0] {
                         let (x, y) = if rotate {
                             (-2.5, midpoint)

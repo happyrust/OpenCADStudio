@@ -57,29 +57,27 @@ fn main() {
         let parse_ms = t_parse.elapsed().as_millis();
 
         let t_purge = Instant::now();
-        let dropped = io::purge_corrupt_entities(&mut doc);
+        io::linetypes::repair_document(&mut doc);
         let purge_ms = t_purge.elapsed().as_millis();
 
         let t_xref = Instant::now();
         let xref_count = match path.parent() {
-            Some(base_dir) => io::xref::resolve_xrefs_with_progress(&mut doc, base_dir, None)
-                .0
-                .len(),
+            Some(base_dir) => io::xref::resolve_xrefs_with_progress(&mut doc, base_dir, None).len(),
             None => 0,
         };
         let xref_ms = t_xref.elapsed().as_millis();
 
         let t_caches = Instant::now();
-        let caches = scene::build_derived_caches_with_progress(&doc, &|_: u16| {}, path.parent());
+        let mut caches = scene::build_derived_caches_with_progress(&doc, &|_: u16| {}, path.parent());
         let caches_ms = t_caches.elapsed().as_millis();
 
         let entities = doc.entity_count();
         let t_prepare = Instant::now();
-        let (_doc, _geometry, prepare) = scene::prepare_open_geometry(doc, &caches, [0.0; 4]);
+        let (_doc, _geometry, prepare) = scene::prepare_open_geometry(doc, &mut caches, [0.0; 4]);
         let prepare_ms = t_prepare.elapsed().as_millis();
 
         println!(
-            "{name} — {entities} entities, {dropped} dropped, {xref_count} xrefs\n  \
+            "{name} — {entities} entities, {xref_count} xrefs\n  \
              parse {parse_ms}ms · purge {purge_ms}ms · xref {xref_ms}ms · caches {caches_ms}ms · \
              prepare {prepare_ms}ms (wires {}ms, index {}ms) · total {}ms",
             prepare.wires_ms,

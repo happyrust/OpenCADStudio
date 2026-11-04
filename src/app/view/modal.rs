@@ -1199,8 +1199,6 @@ impl OpenCADStudio {
                             comparison_sections: comparison_sections.clone(),
                             in_use,
                             in_use_only: self.tablestyle_in_use_only,
-                            hmargin: &self.ts_hmargin,
-                            vmargin: &self.ts_vmargin,
                             description: &self.ts_description,
                             cell: &self.ts_cell,
                             cell_name: &self.ts_cell_name,

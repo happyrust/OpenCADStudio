@@ -71,8 +71,6 @@ pub struct TableStyleView<'a> {
     pub in_use: bool,
     /// The list shows only the styles in use.
     pub in_use_only: bool,
-    pub hmargin: &'a str,
-    pub vmargin: &'a str,
     pub description: &'a str,
     /// The edited cell style and its text buffers.
     pub cell: &'a str,

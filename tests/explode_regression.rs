@@ -111,7 +111,7 @@ fn explode_insert_golden_block_members() {
 }
 
 #[test]
-fn explode_mline_golden_three_lines_per_segment() {
+fn explode_mline_golden_one_line_per_element_per_segment() {
     let doc = Document::new();
     let ml = MLine::from_points(&[
         Vector3::new(0.0, 0.0, 0.0),
@@ -120,7 +120,8 @@ fn explode_mline_golden_three_lines_per_segment() {
         Vector3::new(8.0, 4.0, 0.0),
     ]);
     let pieces = explode_entity(&EntityType::MLine(ml), &doc);
-    assert_eq!(pieces.len(), 9, "3 segments × (spine + 2 offsets)");
+    // The standard style draws two elements and no centre spine (#2538).
+    assert_eq!(pieces.len(), 6, "3 segments × 2 style elements");
     assert!(pieces.iter().all(|p| matches!(p, EntityType::Line(_))));
 }
 
