@@ -2617,7 +2617,6 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "Driving dimensions (library default)" => Some(("properties", "driving-dimensions-library-default")),
         "Driving dimensions (this drawing's instance)" => Some(("properties", "driving-dimensions-instance")),
         "Body extent" => Some(("properties", "body-extent")),
-        "Change to Current Layer" => Some(("layers", "change-to-current-layer")),
         "Copy to Layer" => Some(("layers", "copy-to-layer")),
         "Material" => Some(("properties", "material")),
         "Material Bindings" => Some(("model", "material-bindings")),

@@ -4939,6 +4939,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
     fn select_clear_starts_empty_and_still_applies_the_filter() {
         let mut app = OpenCADStudio::new_for_test();
         let _ = app.automation_op(r#"{"op":"new"}"#);

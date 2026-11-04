@@ -183,8 +183,10 @@ fn line_work_carries_the_width_and_colour_the_drawing_states() {
         unstyled, 0,
         "every entity on the drawing layers should carry a resolved style, got palette {palette:?}"
     );
-    // Widths are hundredths of a millimetre, so 70 is the 0.7mm process
-    // header and 10 the 0.1mm point symbol. Olive #808000 on the heavy lines
+    // Widths are hundredths of a millimetre, snapped onto the plotter's
+    // three pens (`plot_pen_mm`): 17 for everything up to 0.30mm (the 0.1mm
+    // point symbols, the 0.13/0.18mm rules), 34 up to 0.55mm (0.35mm) and
+    // 68 above (the 0.7mm process headers). Olive #808000 on the heavy lines
     // and green #008000 on the thin ones is this drawing's own palette.
     // The 33 blue entities are the eleven marked points three times over:
     // the point record itself plus the two strokes of the glyph its
@@ -198,13 +200,11 @@ fn line_work_carries_the_width_and_colour_the_drawing_states() {
     // which is how SmartPlant's screen draws them. Authored black is
     // stored as ACI-7 so the dark canvas can flip it white.
     let expected: std::collections::BTreeMap<String, usize> = [
-        (" 10 #0000FF", 33),
-        (" 10 ACI-7", 53),
-        (" 13 ACI-7", 21),
-        (" 18 #008000", 4),
-        (" 18 ACI-7", 3),
-        (" 35 ACI-7", 22),
-        (" 70 #808000", 24),
+        (" 17 #0000FF", 33),
+        (" 17 #008000", 4),
+        (" 17 ACI-7", 77),
+        (" 34 ACI-7", 22),
+        (" 68 #808000", 24),
     ]
     .iter()
     .map(|(key, count)| ((*key).to_string(), *count))
@@ -280,10 +280,22 @@ fn the_import_leaves_a_summary_the_app_can_show() {
     let Some((doc, summary)) = import_with_summary("DWG-0201GP06-01.pid") else {
         return;
     };
+    // The synthetic page border stands down when a linked border template
+    // draws the page frame itself (`template.rs`), so it is counted off the
+    // document rather than assumed.
+    let synthetic_border = on_layer(&doc, "PID-FRAME")
+        .filter(|entity| !from_border_template(entity))
+        .count();
+    assert!(synthetic_border <= 1, "at most one synthetic page border");
     assert_eq!(
-        summary.drawn + 1,
+        summary.drawn + summary.template_entities + synthetic_border,
         doc.entities().count(),
-        "drawn plus the page border is everything in the document"
+        "drawn plus the border template plus the page border is everything in the document"
+    );
+    assert_eq!(
+        summary.border_template.is_some(),
+        summary.template_entities > 0,
+        "a border template is named exactly when it drew"
     );
     assert!(summary.decoded > 0, "the fixture has decoded records");
     assert!(
@@ -478,7 +490,7 @@ fn a_cached_strokes_dash_is_its_own_storages_not_its_placements() {
     let metric = vec![3500_i64, 1750];
     for (name, expected, placement_palette) in [
         ("工艺管道及仪表流程-1.pid", 0usize, None),
-        ("DWG-0202GP06-01.pid", 3, Some(" 35 #800000")),
+        ("DWG-0202GP06-01.pid", 3, Some(" 34 #800000")),
         ("D06.pid", 0, None),
         ("DWG-0201GP06-01.pid", 1, None),
     ] {
@@ -964,18 +976,16 @@ fn lettering_names_the_typeface_the_drawing_states() {
             (style.name.clone(), style.true_type_font.clone())
         })
         .collect();
-    // Five typefaces on this sheet, plus the two SimSun styles the linked
-    // border template's labels letter in. The style name is sanitised for
-    // the symbol table -- the space in "Arial Narrow" becomes a hyphen, and
-    // the template's second SimSun entry takes the -2 suffix the style pool
-    // hands duplicates -- while the typeface itself travels verbatim in
-    // `true_type_font`, which is what the renderer matches against the
-    // installed fonts.
+    // Five typefaces on this sheet, plus the SimSun styles the linked border
+    // template's labels letter in when its `.igr` is on disk. The style name
+    // is sanitised for the symbol table -- the space in "Arial Narrow"
+    // becomes a hyphen, and each further SimSun entry of the template takes
+    // the -<n> suffix the style pool hands duplicates -- while the typeface
+    // itself travels verbatim in `true_type_font`, which is what the renderer
+    // matches against the installed fonts.
     let expected_styles: std::collections::BTreeMap<String, String> = [
         ("PID-Arial", "Arial"),
         ("PID-Arial-Narrow", "Arial Narrow"),
-        ("PID-SimSun", "SimSun"),
-        ("PID-SimSun-2", "SimSun"),
         ("PID-SimSun-ExtB", "SimSun-ExtB"),
         ("PID-仿宋", "仿宋"),
         ("PID-宋体", "宋体"),
@@ -983,7 +993,29 @@ fn lettering_names_the_typeface_the_drawing_states() {
     .iter()
     .map(|(name, font)| ((*name).to_string(), (*font).to_string()))
     .collect();
-    assert_eq!(registered, expected_styles);
+    let (own, template): (std::collections::BTreeMap<_, _>, std::collections::BTreeMap<_, _>) =
+        registered
+            .into_iter()
+            .partition(|(name, _)| expected_styles.contains_key(name));
+    assert_eq!(own, expected_styles);
+    let template_drew = doc.entities().any(from_border_template);
+    assert!(
+        template_drew || template.is_empty(),
+        "styles beyond the sheet's own come from the border template: {template:?}"
+    );
+    for (name, font) in &template {
+        let suffix = name.strip_prefix("PID-SimSun").unwrap_or_else(|| {
+            panic!("the border template letters in SimSun, not {name} = {font}")
+        });
+        assert!(
+            font == "SimSun"
+                && (suffix.is_empty()
+                    || suffix
+                        .strip_prefix('-')
+                        .is_some_and(|n| n.parse::<u32>().is_ok())),
+            "{name} = {font} is not a pooled SimSun style"
+        );
+    }
 
     let mut used: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for entity in on_sheet_text(&doc) {
@@ -1333,16 +1365,39 @@ fn the_sheet_border_is_drawn_at_the_page_the_drawing_states() {
         return;
     };
 
-    let borders: Vec<_> = on_layer(&doc, "PID-FRAME").collect();
-    assert_eq!(borders.len(), 1, "one sheet carries one border");
-    let EntityType::LwPolyline(border) = borders[0] else {
-        panic!("the border is a polyline, found {:?}", borders[0]);
-    };
+    // With the linked `.igr` border template on disk the template draws the
+    // frame and the synthetic rectangle stands down; without it the importer
+    // draws the one rectangle itself. Either way the widest polyline on
+    // `PID-FRAME` is the page edge.
+    let frame: Vec<_> = on_layer(&doc, "PID-FRAME").collect();
+    let from_template = frame.iter().filter(|e| from_border_template(e)).count();
+    if from_template == 0 {
+        assert_eq!(frame.len(), 1, "one sheet carries one border");
+    } else {
+        assert_eq!(
+            from_template,
+            frame.len(),
+            "a template that draws the page frame leaves no synthetic border beside it"
+        );
+    }
+    let border = frame
+        .iter()
+        .filter_map(|entity| match entity {
+            EntityType::LwPolyline(polyline) => Some(polyline),
+            _ => None,
+        })
+        .max_by(|a, b| polyline_span(a).total_cmp(&polyline_span(b)))
+        .unwrap_or_else(|| panic!("no polyline on PID-FRAME: {frame:?}"));
+    let first = border.vertices.first().map(|v| v.location);
+    let last = border.vertices.last().map(|v| v.location);
+    let returns_home = border.vertices.len() > 2
+        && first.zip(last).is_some_and(|(a, b)| a.x == b.x && a.y == b.y);
     assert!(
-        border.is_closed,
+        border.is_closed || returns_home,
         "an open border does not read as a sheet edge"
     );
-    assert_eq!(border.vertices.len(), 4, "a sheet is a rectangle");
+    let corners = border.vertices.len() - usize::from(!border.is_closed && returns_home);
+    assert_eq!(corners, 4, "a sheet is a rectangle");
 
     let xs: Vec<f64> = border.vertices.iter().map(|v| v.location.x).collect();
     let ys: Vec<f64> = border.vertices.iter().map(|v| v.location.y).collect();
@@ -1351,13 +1406,19 @@ fn the_sheet_border_is_drawn_at_the_page_the_drawing_states() {
     let width = xs.iter().copied().fold(f64::MIN, f64::max) - min_x;
     let height = ys.iter().copied().fold(f64::MIN, f64::max) - min_y;
 
+    // The template's coordinates come through its own projection, which
+    // leaves a few hundred-thousandths of float noise at the origin.
+    let origin_tolerance = if from_template == 0 { 1.0e-9 } else { 1.0e-3 };
     assert!(
-        min_x.abs() < 1.0e-9 && min_y.abs() < 1.0e-9,
+        min_x.abs() < origin_tolerance && min_y.abs() < origin_tolerance,
         "the page starts at the origin, this one at ({min_x}, {min_y})"
     );
-    // DWG-0201 is an A2 whose own frame measures 594.3 x 420.3mm.
+    // DWG-0201 is an A2 whose own frame measures 594.3 x 420.3mm. The
+    // template's frame is its own nominal 594 x 420, within the 2mm the
+    // overlay accepts as the same page.
+    let tolerance = if from_template == 0 { 0.1 } else { 2.0 };
     assert!(
-        (width - 594.3).abs() < 0.1 && (height - 420.3).abs() < 0.1,
+        (width - 594.3).abs() < tolerance && (height - 420.3).abs() < tolerance,
         "border is {width:.1} x {height:.1}mm, the drawing states 594.3 x 420.3"
     );
 
@@ -1376,6 +1437,33 @@ fn the_sheet_border_is_drawn_at_the_page_the_drawing_states() {
 /// whose insertion point a misparse nudged past the edge is still part of the
 /// drawing; a coordinate a page-width away is not.
 const SHEET_MARGIN_MM: f64 = 100.0;
+
+/// Whether the entity is the linked border template's drafting, which names
+/// its `.igr` in a `template=` value of its own XDATA record.
+fn from_border_template(entity: &EntityType) -> bool {
+    entity
+        .common()
+        .extended_data
+        .records()
+        .iter()
+        .flat_map(|record| record.values.iter())
+        .any(|value| {
+            matches!(value, codec::xdata::XDataValue::String(text) if text.starts_with("template="))
+        })
+}
+
+/// The diagonal of a polyline's bounding box, to pick the page edge out of
+/// the frame's drafting.
+fn polyline_span(polyline: &codec::entities::LwPolyline) -> f64 {
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for vertex in &polyline.vertices {
+        min_x = min_x.min(vertex.location.x);
+        min_y = min_y.min(vertex.location.y);
+        max_x = max_x.max(vertex.location.x);
+        max_y = max_y.max(vertex.location.y);
+    }
+    (max_x - min_x).hypot(max_y - min_y)
+}
 
 fn geometry_extremes(entity: &EntityType) -> Vec<(f64, f64)> {
     match entity {
@@ -1780,13 +1868,22 @@ fn a_role_switch_reaches_every_sheet_layer_and_is_all_a_layerless_entity_answers
     );
     assert_eq!(dark(&doc), hidden_objects + text - text_already_dark);
 
+    // One synthetic border, or the linked border template's drafting when
+    // its `.igr` is on disk -- importer-drawn either way.
     let frame: Vec<_> = of_role(&doc, "frame").collect();
-    assert_eq!(frame.len(), 1);
+    let frames = frame.len();
+    assert!(frames >= 1, "the sheet has a frame");
     assert!(
-        pid_value(frame[0], "sheet_layer").is_none(),
+        frames == 1 || frame.iter().all(|entity| from_border_template(entity)),
+        "more than one frame entity only when the border template drew them"
+    );
+    assert!(
+        frame
+            .iter()
+            .all(|entity| pid_value(entity, "sheet_layer").is_none()),
         "the frame is the importer's own"
     );
-    assert!(!frame[0].common().invisible);
+    assert!(frame.iter().all(|entity| !entity.common().invisible));
     let links = of_role(&doc, "connectivity").count();
     assert_eq!(links, 25);
     assert!(of_role(&doc, "connectivity").all(|entity| pid_value(entity, "sheet_layer").is_none()));
@@ -1794,7 +1891,7 @@ fn a_role_switch_reaches_every_sheet_layer_and_is_all_a_layerless_entity_answers
     filter.set_role("frame", false);
     filter.set_role("connectivity", false);
     filter.store(&mut doc);
-    assert_eq!(filter.apply(&mut doc), 1 + links);
+    assert_eq!(filter.apply(&mut doc), frames + links);
     assert!(of_role(&doc, "frame").all(|entity| entity.common().invisible));
     assert!(of_role(&doc, "connectivity").all(|entity| entity.common().invisible));
     assert_eq!(
@@ -1806,7 +1903,7 @@ fn a_role_switch_reaches_every_sheet_layer_and_is_all_a_layerless_entity_answers
     filter.set_role("frame", true);
     filter.set_role("connectivity", true);
     filter.store(&mut doc);
-    assert_eq!(filter.apply(&mut doc), text - text_already_dark + 1 + links);
+    assert_eq!(filter.apply(&mut doc), text - text_already_dark + frames + links);
     assert_eq!(dark(&doc), hidden_objects);
 }
 
@@ -2762,20 +2859,20 @@ fn a_symbol_body_draws_in_the_style_its_placement_names() {
     );
     let expected: std::collections::BTreeMap<String, usize> = [
         // 3 instrument placements: LG / LT gauges and the DCS access box.
-        (" 18 #008000", 9),
+        (" 17 #008000", 9),
         // 5 annotation placements: Drawing Description, Item Note & Label
         // x3, Line2 -- of which only Line2's hairline is drawn, the four
         // labels' anchor crosses (two strokes each) being left undrawn as
         // SmartPlant's screen leaves them (plan 2026-10-10, label anchors).
         // Annotation black is stored as the contrast colour, ACI-7.
-        (" 35 ACI-7", 1),
+        (" 34 ACI-7", 1),
         // 7 equipment placements: the vessel, three Flanged Nozzles, one
         // with blind, Manway-Large, Gauge Hatch.
-        (" 35 #800000", 25),
+        (" 34 #800000", 25),
         // 5 piping placements: Cap, jinchuzhan2, Ball Valve Type 2, flame
         // arrester breather valve, Off-Unit -- whose `.sym`-cyan strokes
         // are among these, olive on screen and olive here.
-        (" 35 #808000", 38),
+        (" 34 #808000", 38),
     ]
     .iter()
     .map(|(key, count)| ((*key).to_string(), *count))
@@ -2825,8 +2922,8 @@ fn the_vessel_draws_in_its_placements_maroon_not_its_syms_black() {
         );
         assert_eq!(
             line.common.line_weight,
-            codec::types::LineWeight::Value(35),
-            "a vessel shell stroke should weigh 0.35mm: {line:?}"
+            codec::types::LineWeight::Value(34),
+            "a vessel shell stroke should weigh 0.35mm, the medium pen: {line:?}"
         );
     }
     assert_eq!(shell, 2, "DWG-0201's vessel has two 101.03mm shell runs");
@@ -3415,7 +3512,16 @@ fn a_placement_states_its_extent_and_a_parametric_one_its_library_defaults() {
             let extent = pid_value(entity, "extent");
             let driving = pid_value(entity, "driving");
             let instance = pid_value(entity, "instance");
-            if role == "symbol" || role == "symbol-label" {
+            // A placement's solid fill (`shape_boundary`) is one of the
+            // entities it drew and so carries its measures; a sheet fill
+            // has none to carry.
+            if role == "fill" && extent.is_some() {
+                let extent = extent.unwrap_or_default();
+                assert!(
+                    is_extent(&extent),
+                    "{name}: extent={extent} is not <W>x<H> to two places"
+                );
+            } else if role == "symbol" || role == "symbol-label" {
                 placements += 1;
                 let extent = extent
                     .unwrap_or_else(|| panic!("{name}: a role={role} entity states no extent="));
@@ -3769,7 +3875,7 @@ fn a_placement_draws_the_body_the_drawing_carries_and_skips_its_hidden_layers() 
     if let Some(doc) = import("DWG-0201GP06-01.pid") {
         let expected: Vec<(String, String)> = [
             ("Ball Valve Type 2", "8.89x3.81"),
-            ("Cap", "1.91x3.84"),
+            ("Cap", "1.90x3.84"),
             ("Flanged Nozzle", "3.81x2.54"),
             ("Flanged Nozzle", "3.81x2.54"),
             ("Flanged Nozzle", "3.81x2.54"),
@@ -4145,15 +4251,18 @@ fn paper_style_scale_scales_dash_patterns_and_the_stated_line_weights() {
         14,
         "fourteen equipment-table rules, got {grid:?}"
     );
+    // Scaled widths still land on the three pens: 0.13 mm × 5/3 = 0.217 mm
+    // is the thin pen, and 0.18 mm × 5/3 sits a float hair past the 0.30 mm
+    // boundary, which makes it the medium one.
     assert_eq!(
-        grid.get(&22).copied(),
+        grid.get(&17).copied(),
         Some(11),
-        "0.13 mm × 5/3 rounds to 22 hundredths; got {grid:?}"
+        "0.13 mm × 5/3 is the thin pen; got {grid:?}"
     );
     assert_eq!(
-        grid.get(&30).copied(),
+        grid.get(&34).copied(),
         Some(3),
-        "0.18 mm × 5/3 is 30 hundredths; got {grid:?}"
+        "0.18 mm × 5/3 is the medium pen; got {grid:?}"
     );
 
     let mut pipes = 0usize;
@@ -4164,8 +4273,8 @@ fn paper_style_scale_scales_dash_patterns_and_the_stated_line_weights() {
         pipes += 1;
         assert_eq!(
             entity.common().line_weight,
-            codec::types::LineWeight::Value(117),
-            "0.70 mm × 5/3 rounds to 117 hundredths"
+            codec::types::LineWeight::Value(68),
+            "0.70 mm × 5/3 is the heavy pen"
         );
     }
     assert_eq!(pipes, 24, "the 0.70 mm process headers");

@@ -316,24 +316,9 @@ pub(super) fn legacy_page_ops(
             // explicit true colour and plots as drawn (#1621); only a pure
             // white there is an unresolved colour 7.
             if !color_overridden && (wire.aci != 0 || [r, g, b] == [1.0; 3]) {
-                // Upstream 2026-09-29, with the shared emitter: an authored
-                // white (not colour 7) plots as drawn, like on screen.
-                let is_light = r > 0.80
-                    && g > 0.80
-                    && b > 0.80
-                    && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
-                let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
-                let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
-                if is_light || is_yellow {
-                    r = 0.0;
-                    g = 0.0;
-                    b = 0.0;
-                } else if is_cyan {
-                    // Viewport border: print as dark blue.
-                    r = 0.0;
-                    g = 0.15;
-                    b = 0.50;
-                }
+                // Upstream #1926 (2026-10-20), with the shared emitter: only
+                // colour 7 turns black; yellow and cyan plot as drawn.
+                [r, g, b] = adapt_to_paper([r, g, b]);
             }
             [r, g, b] = plotted_color([r, g, b], a, screening, options);
 
@@ -775,7 +760,7 @@ fn emit_wire_fills(
             }
         }
         if !color_overridden {
-            [r, g, b] = adapt_text_color([r, g, b]);
+            [r, g, b] = adapt_to_paper([r, g, b]);
         }
         [r, g, b] = plotted_color([r, g, b], a, screening, options);
         ops.push(Op::SetFillColor {
@@ -924,21 +909,8 @@ fn emit_hatch(
         // adaptation -- colour 7 plots black on paper, as in AutoCAD. The
         // original excluded `hatch.aci == 7 && Solid` here (upstream #618).
         // Changed in the same commit as the shared emitter, per the header.
-        let is_light = r > 0.80
-            && g > 0.80
-            && b > 0.80
-            && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
-        let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
-        let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
-        if is_light || is_yellow {
-            r = 0.0;
-            g = 0.0;
-            b = 0.0;
-        } else if is_cyan {
-            r = 0.0;
-            g = 0.15;
-            b = 0.50;
-        }
+        // Upstream #1926: only colour 7 turns black.
+        [r, g, b] = adapt_to_paper([r, g, b]);
     }
     [r, g, b] = plotted_color([r, g, b], a, screening, options);
     // `boundary` holds f32 offsets from the f64 `world_origin`, so resolve the
@@ -991,7 +963,7 @@ fn emit_hatch(
                 [r, g, b]
             } else {
                 plotted_color(
-                    adapt_text_color([color2[0], color2[1], color2[2]]),
+                    adapt_to_paper([color2[0], color2[1], color2[2]]),
                     color2[3],
                     screening,
                     options,
@@ -1103,21 +1075,18 @@ fn glyph_world_xy(v: &crate::scene::pipeline::text_gpu::TextVertex) -> [f64; 2] 
     ]
 }
 
-/// Adapt a text colour to the white sheet, mirroring the wire/hatch passes:
-/// near-white / near-yellow (colour-7-on-white) → black, near-cyan → dark blue.
-fn adapt_text_color([r, g, b]: [f32; 3]) -> [f32; 3] {
+/// Adapt a screen colour to the white sheet, shared by every plot pass: only
+/// near-white (colour 7) turns black. Every other colour, yellow and cyan
+/// included, plots as drawn. (#1926)
+fn adapt_to_paper([r, g, b]: [f32; 3]) -> [f32; 3] {
     // Upstream 2026-09-29, with the shared emitter: an authored white (not
     // colour 7) plots as drawn, like on screen.
     let is_light = r > 0.80
         && g > 0.80
         && b > 0.80
         && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
-    let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
-    let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
-    if is_light || is_yellow {
+    if is_light {
         [0.0, 0.0, 0.0]
-    } else if is_cyan {
-        [0.0, 0.15, 0.50]
     } else {
         [r, g, b]
     }
@@ -1202,7 +1171,7 @@ fn emit_text(
             // as in the wire pass — else a monochrome.ctb plot plots the lines
             // black and leaves the text on its screen colour.
             let rgb = ctb_color.unwrap_or_else(|| {
-                adapt_text_color([quad[0].color[0], quad[0].color[1], quad[0].color[2]])
+                adapt_to_paper([quad[0].color[0], quad[0].color[1], quad[0].color[2]])
             });
             let [r, g, b] = plotted_color(rgb, a, screening, options);
 

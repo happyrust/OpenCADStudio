@@ -801,28 +801,12 @@ pub fn emit_plot_content<S: PlotSink>(
                     }
                 }
             }
-            // Near-white and near-yellow (viewport active border) → dark grey for print
-            // (only when no CTB override was applied).
+            // Colour 7 plots black on the white sheet (only when no CTB
+            // override was applied).
             // `aci == 0` is an explicit true colour and plots as drawn, like the
             // hatch pass (#1621); only a pure white there is an unresolved colour 7.
             if !color_overridden && (wire.aci != 0 || [r, g, b] == [1.0; 3]) {
-                // An authored white (not colour 7) plots as drawn, like on screen.
-                let is_light = r > 0.80
-                    && g > 0.80
-                    && b > 0.80
-                    && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
-                let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
-                let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
-                if is_light || is_yellow {
-                    r = 0.0;
-                    g = 0.0;
-                    b = 0.0;
-                } else if is_cyan {
-                    // Viewport border: print as dark blue.
-                    r = 0.0;
-                    g = 0.15;
-                    b = 0.50;
-                }
+                [r, g, b] = adapt_to_paper([r, g, b]);
             }
             [r, g, b] = plotted_color([r, g, b], a, screening, options);
 
@@ -1532,7 +1516,7 @@ fn emit_wire_fills<S: PlotSink>(
                 }
             }
             if !color_overridden {
-                [r, g, b] = adapt_text_color([r, g, b]);
+                [r, g, b] = adapt_to_paper([r, g, b]);
             }
         }
         [r, g, b] = plotted_color([r, g, b], a, screening, options);
@@ -1794,8 +1778,7 @@ fn emit_hatch<S: PlotSink>(
     }
     // Adapt hatch fills to the white sheet, mirroring the wire pass: colours
     // arrive adapted to the (dark) screen background, so a white/ACI-7 fill
-    // would vanish white-on-white on paper. Force near-white/near-yellow → black
-    // and near-cyan → dark blue for a readable white-sheet result.
+    // would vanish white-on-white on paper, so near-white turns black.
     // Genuine colours are untouched; WIPEOUTS keep their paper-white mask.
     // An ACI-7 solid fill is no exception (it was one from 2026-08-01 to
     // 2026-09-10, upstream #618 "match the viewport"): colour 7 is the
@@ -1834,22 +1817,7 @@ fn emit_hatch<S: PlotSink>(
         // indexed colours meant for the dark screen are adapted. (#1417)
         && hatch.aci != 0
     {
-        // An authored white (not colour 7) plots as drawn, like on screen.
-        let is_light = r > 0.80
-            && g > 0.80
-            && b > 0.80
-            && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
-        let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
-        let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
-        if is_light || is_yellow {
-            r = 0.0;
-            g = 0.0;
-            b = 0.0;
-        } else if is_cyan {
-            r = 0.0;
-            g = 0.15;
-            b = 0.50;
-        }
+        [r, g, b] = adapt_to_paper([r, g, b]);
     }
     [r, g, b] = plotted_color([r, g, b], a, screening, options);
     // `boundary` holds f32 offsets from the f64 `world_origin`, so resolve the
@@ -1893,7 +1861,7 @@ fn emit_hatch<S: PlotSink>(
                 [r, g, b]
             } else {
                 plotted_color(
-                    adapt_text_color([color2[0], color2[1], color2[2]]),
+                    adapt_to_paper([color2[0], color2[1], color2[2]]),
                     color2[3],
                     screening,
                     options,
@@ -1986,20 +1954,17 @@ fn glyph_world_xy(v: &crate::scene::pipeline::text_gpu::TextVertex) -> [f64; 2] 
     ]
 }
 
-/// Adapt a text colour to the white sheet, mirroring the wire/hatch passes:
-/// near-white / near-yellow (colour-7-on-white) → black, near-cyan → dark blue.
-fn adapt_text_color([r, g, b]: [f32; 3]) -> [f32; 3] {
+/// Adapt a screen colour to the white sheet, shared by every plot pass: only
+/// near-white (colour 7) turns black. Every other colour, yellow and cyan
+/// included, plots as drawn. (#1926)
+fn adapt_to_paper([r, g, b]: [f32; 3]) -> [f32; 3] {
     // An authored white (not colour 7) plots as drawn, like on screen.
     let is_light = r > 0.80
         && g > 0.80
         && b > 0.80
         && !crate::scene::convert::tess_util::is_authored_white([r, g, b]);
-    let is_yellow = r > 0.80 && g > 0.70 && b < 0.30;
-    let is_cyan = r < 0.30 && g > 0.70 && b > 0.70;
-    if is_light || is_yellow {
+    if is_light {
         [0.0, 0.0, 0.0]
-    } else if is_cyan {
-        [0.0, 0.15, 0.50]
     } else {
         [r, g, b]
     }
@@ -2093,7 +2058,7 @@ fn emit_text<S: PlotSink>(
             // as in the wire pass — else a monochrome.ctb plot plots the lines
             // black and leaves the text on its screen colour.
             let rgb = ctb_color.unwrap_or_else(|| {
-                adapt_text_color([quad[0].color[0], quad[0].color[1], quad[0].color[2]])
+                adapt_to_paper([quad[0].color[0], quad[0].color[1], quad[0].color[2]])
             });
             let [r, g, b] = plotted_color(rgb, a, screening, options);
 

@@ -662,7 +662,7 @@ impl DockState {
     /// Docked width for `id`, clamped to sane bounds.
     ///
     /// The two bounds are not peers. `DOCK_MIN_W` is a floor — below it a
-    /// panel cannot render its own chrome — while the 0.45-of-window share is
+    /// panel cannot render its own chrome — while the 0.75-of-window share is
     /// only a courtesy cap that keeps a panel from eating the drawing area.
     /// So the share may lower the ceiling but never push it under the floor:
     /// in a window too narrow to honour both, the panel keeps its floor and
@@ -1507,8 +1507,8 @@ mod tests {
         let mut state = DockState::default();
         state.ensure_settings();
         state.panels.get_mut(&PanelId::Properties).unwrap().width = 500.0;
-        // 0.45 of 300px is 135px, under the floor.
-        assert_eq!(state.width(PanelId::Properties, 300.0), DOCK_MIN_W);
+        // 0.75 of 240px is 180px, under the floor.
+        assert_eq!(state.width(PanelId::Properties, 240.0), DOCK_MIN_W);
     }
 
     #[test]
