@@ -12,10 +12,14 @@
 //! - [`consumer`] compiles on **all** targets and pours an [`E3dSceneBatch`] into
 //!   `Document` proxies plus `Scene` meshes and centreline wires. It does not
 //!   link `e3d-model`.
+//! - [`open`] is the native file-open entry: it drives producer + consumer for a
+//!   standalone `.rvm` and hands back a document plus mesh pools.
 
 pub mod consumer;
 pub mod contract;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod open;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod producer;
 
@@ -24,3 +28,5 @@ pub use contract::{
     CanonicalShapeKey, CentrelineKind, CompactTriMesh, E3dBatchManifest, E3dCentrelineRecord,
     E3dInstanceRecord, E3dLedgerSummary, E3dSceneBatch, GeometryIdKey, MeshKey,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use open::{load_rvm, load_rvm_bytes, RvmOpen};

@@ -330,18 +330,33 @@ struct AclLookup {
 
 fn lookup_acl(request: &PermissionRequest<'_>) -> AclLookup {
     let permission = request.operation.acl_permission();
-    let mut path = Vec::new();
-    let mut cursor = Some(request.node_id.to_owned());
-    let mut inherited = false;
-    let mut guard = 0usize;
 
+    // Step 1: collect the whole ancestor chain from the target node upwards,
+    // then flip it to root → target. This is the node's position in the tree
+    // and does not depend on which level ends up deciding.
+    let mut chain = Vec::new();
+    let mut cursor = Some(request.node_id.to_owned());
+    let mut guard = 0usize;
     while let Some(node_id) = cursor {
         guard += 1;
         if guard > 64 {
             break;
         }
-        path.push(node_id.clone());
-        let node = match request.nodes.iter().find(|node| node.node_id == node_id) {
+        chain.push(node_id.clone());
+        cursor = request
+            .nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .and_then(|node| node.parent_id.clone());
+    }
+    chain.reverse();
+
+    // Step 2: walk the same chain back from the target node, so the nearest
+    // configured ancestor wins. `inherited` is true once we leave the target.
+    let mut inherited = false;
+    let mut deciding: Option<(bool, String)> = None;
+    for node_id in chain.iter().rev() {
+        let node = match request.nodes.iter().find(|node| node.node_id == *node_id) {
             Some(node) => node,
             None => break,
         };
@@ -356,16 +371,20 @@ fn lookup_acl(request: &PermissionRequest<'_>) -> AclLookup {
             .iter()
             .find(|entry| entry.subject == request.role.as_str() && entry.permission == permission);
         if let Some(row) = user_row.or(role_row) {
-            return AclLookup {
-                decision: Some((row.allowed, node_id.clone(), path, inherited)),
-            };
+            deciding = Some((row.allowed, node_id.clone()));
+            break;
         }
 
-        cursor = node.parent_id.clone();
         inherited = true;
     }
 
-    AclLookup { decision: None }
+    // Step 3: the path is always the full chain; only the deciding id varies.
+    match deciding {
+        Some((allowed, deciding_node_id)) => AclLookup {
+            decision: Some((allowed, deciding_node_id, chain, inherited)),
+        },
+        None => AclLookup { decision: None },
+    }
 }
 
 /// Runs the chain: role → PBS ACL → drawing state.
@@ -452,13 +471,26 @@ mod tests {
 
     #[test]
     fn role_matrix_all_40_cells_are_decided() {
-        for role in Role::ALL {
-            for operation in Operation::ALL {
-                let allowed = role_allows(role, operation);
-                // Every cell is a decision; the matrix has no "unknown" state.
-                assert!(
-                    allowed || !allowed,
-                    "cell {role:?}/{operation:?} must be decided"
+        // Rows follow `Role::ALL`, columns follow `Operation::ALL`.
+        // 系统管理员 / 项目管理员 / 工艺设计人员 / 校对人员 / 只读查看者
+        const MATRIX: [[bool; 8]; 5] = [
+            // 查看 编辑 导出 删除 发布 授权 规则 主数据
+            [true, true, true, true, true, true, true, true],
+            [true, true, true, true, true, true, true, false],
+            [true, true, true, false, false, false, true, false],
+            [true, false, true, false, false, false, true, false],
+            [true, false, false, false, false, false, true, false],
+        ];
+
+        for (role_index, role) in Role::ALL.into_iter().enumerate() {
+            for (operation_index, operation) in Operation::ALL.into_iter().enumerate() {
+                let expected = MATRIX[role_index][operation_index];
+                assert_eq!(
+                    role_allows(role, operation),
+                    expected,
+                    "cell {role:?} ({}) / {operation:?} ({}) must be {expected}",
+                    role.as_str(),
+                    operation.as_str()
                 );
             }
         }
@@ -525,10 +557,40 @@ mod tests {
         assert_eq!(decision.effective_node_id.as_deref(), Some("n-unit-a"));
         assert_eq!(
             decision.effective_node_path,
-            vec!["n-cell-a1", "n-unit-a"],
-            "path must start at the target node and stop at the deciding one"
+            vec!["n-plant", "n-unit-a", "n-cell-a1"],
+            "path is the full root-to-target chain; the deciding node is separate"
         );
         assert!(decision.inherited, "the deciding node is an ancestor");
+    }
+
+    #[test]
+    fn acl_path_is_complete_when_the_target_node_decides() {
+        let nodes = vec![
+            node("n-plant", None, vec![]),
+            node("n-unit-a", Some("n-plant"), vec![]),
+            node(
+                "n-cell-a1",
+                Some("n-unit-a"),
+                vec![allow_row("u1", AclPermission::Edit)],
+            ),
+        ];
+        let request = PermissionRequest {
+            user_id: "u1",
+            role: Role::ProcessDesigner,
+            operation: Operation::EditDrawing,
+            drawing_state: DrawingState::Collaborative,
+            node_id: "n-cell-a1",
+            nodes: &nodes,
+        };
+        let decision = decide(&request);
+        assert!(decision.allowed, "the target node allows edit: {decision:?}");
+        assert_eq!(decision.effective_node_id.as_deref(), Some("n-cell-a1"));
+        assert_eq!(
+            decision.effective_node_path,
+            vec!["n-plant", "n-unit-a", "n-cell-a1"],
+            "path stays the full root-to-target chain when the target decides"
+        );
+        assert!(!decision.inherited, "the deciding node is the target itself");
     }
 
     #[test]

@@ -25,6 +25,16 @@ fn owner_of(doc: &Document) -> Handle {
     doc.header.model_space_block_handle
 }
 
+/// 一个占位实体：位号生成只关心 `PidAuthor` XDATA，不关心几何。
+fn line() -> codec::EntityType {
+    use codec::entities::Line;
+    use codec::types::Vector3;
+    codec::EntityType::Line(Line::from_points(
+        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(10.0, 0.0, 0.0),
+    ))
+}
+
 // ── VAL-SEM-015 ───────────────────────────────────────────────────────────
 
 /// VAL-SEM-015：祖先链自底向上含自身；子类型按编码字典序；上溯必达根、无环。
@@ -325,6 +335,26 @@ fn type_lib_child_inherits_unoverridden_rules() {
         .expect("单根库应当构造成功");
     assert_eq!(bare.resolve_tag_rule("EQUIPMENT"), None);
     assert_eq!(bare.resolve_color_rule("EQUIPMENT"), None);
+
+    // 契约要求：对 VESSEL 生成 2 个实例，位号依次为 P-1001、P-1002。
+    let mut doc = Document::new();
+    let mut tags = Vec::new();
+    for _ in 0..2 {
+        let handle = doc.add_entity(line()).expect("实体应当能加入模型空间");
+        let view = crate::pid::tag_engine::generate(&lib, &doc, "VESSEL", &BTreeMap::new())
+            .expect("VESSEL 位号生成应当成功");
+        crate::pid::persist::PidAuthor {
+            type_code: "VESSEL".to_string(),
+            tag: view.tag.clone(),
+            tag_source: view.tag_source.clone(),
+            tag_status: view.tag_status.clone(),
+            props: "{}".to_string(),
+            ..Default::default()
+        }
+        .store(&mut doc, handle);
+        tags.push(view.tag);
+    }
+    assert_eq!(tags, ["P-1001", "P-1002"], "VESSEL 位号序列实际为 {tags:?}");
 }
 
 // ── VAL-SEM-019 ───────────────────────────────────────────────────────────
@@ -365,6 +395,39 @@ fn type_lib_child_override_wins_and_is_scoped() {
         .resolve_color_rule("VESSEL")
         .expect("VESSEL 应当继承颜色规则");
     assert_eq!(vessel_color, ("红".to_string(), "EQUIPMENT".to_string()));
+
+    // 契约要求：VESSEL×2 → V-1、V-2；PUMP×1 → P-1001。
+    let mut doc = Document::new();
+    let mut vessel_tags = Vec::new();
+    for _ in 0..2 {
+        let handle = doc.add_entity(line()).expect("实体应当能加入模型空间");
+        let view = crate::pid::tag_engine::generate(&lib, &doc, "VESSEL", &BTreeMap::new())
+            .expect("VESSEL 位号生成应当成功");
+        crate::pid::persist::PidAuthor {
+            type_code: "VESSEL".to_string(),
+            tag: view.tag.clone(),
+            tag_source: view.tag_source.clone(),
+            tag_status: view.tag_status.clone(),
+            props: "{}".to_string(),
+            ..Default::default()
+        }
+        .store(&mut doc, handle);
+        vessel_tags.push(view.tag);
+    }
+    let handle = doc.add_entity(line()).expect("实体应当能加入模型空间");
+    let pump_view = crate::pid::tag_engine::generate(&lib, &doc, "PUMP", &BTreeMap::new())
+        .expect("PUMP 位号生成应当成功");
+    crate::pid::persist::PidAuthor {
+        type_code: "PUMP".to_string(),
+        tag: pump_view.tag.clone(),
+        tag_source: pump_view.tag_source.clone(),
+        tag_status: pump_view.tag_status.clone(),
+        props: "{}".to_string(),
+        ..Default::default()
+    }
+    .store(&mut doc, handle);
+    assert_eq!(vessel_tags, ["V-1", "V-2"], "VESSEL 位号序列实际为 {vessel_tags:?}");
+    assert_eq!(pump_view.tag, "P-1001", "PUMP 位号实际为 {}", pump_view.tag);
 }
 
 // ── 落盘与数据形状 ────────────────────────────────────────────────────────
@@ -455,11 +518,33 @@ fn a_large_library_is_chunked_on_utf8_boundaries() {
         .xrecord(owner_of(&doc), XRECORD_KEY)
         .expect("应当写入记录");
     assert!(record.entries.len() > 1, "应当切成多块");
-    for entry in &record.entries {
+
+    // 统一到 graph_data 布局后，前两条是 kind= / key= 前缀，数据条目是
+    // part=<n>:<片段>。只校验数据条目的正文长度。
+    let data_entries: Vec<_> = record
+        .entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .value
+                .as_string()
+                .is_some_and(|text| text.starts_with("part="))
+        })
+        .collect();
+    assert!(
+        data_entries.len() > 1,
+        "大库应当切成多条 part= 条目，实际 {} 条",
+        data_entries.len()
+    );
+    for entry in &data_entries {
         assert_eq!(entry.code, CHUNK_CODE);
         match &entry.value {
             XRecordValue::String(text) => {
-                assert!(text.len() <= CHUNK_BYTES, "单块 {} 字节超上限", text.len());
+                assert!(
+                    text.len() <= CHUNK_BYTES + 16,
+                    "单块 {} 字节超上限",
+                    text.len()
+                );
                 assert!(std::str::from_utf8(text.as_bytes()).is_ok());
             }
             other => panic!("块应当是字符串，实际 {other:?}"),
@@ -485,7 +570,7 @@ fn storing_twice_replaces_the_record_content() {
     assert_eq!(
         doc.xrecord(owner_of(&doc), XRECORD_KEY)
             .map(|record| record.entries.len()),
-        Some(1),
-        "小库内容不应残留"
+        Some(crate::pid::graph_data::DATA_PREFIX_ENTRIES + 1),
+        "小库内容不应残留：应当恰有 kind=/key= 两条前缀加一条数据"
     );
 }

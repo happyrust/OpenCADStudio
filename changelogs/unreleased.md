@@ -10,11 +10,15 @@
 
 ### 🚀 New Features
 
+* **AVEVA RVM Import:** Open a standalone `.rvm` file from the file dialog. Geometry items arrive as read-only proxies carrying their `RefNo` / noun / name, shared canonical boxes and cylinders are uploaded once and instanced, and structural centrelines (including dashed broken tubes) come in on the `E3D_CENTRELINE` / `E3D_INVALID_TUBI` layers.
 * **Chained Actions:** Chain a parameter's actions in the named order from the Actions tab, with the chained action named when it is authored and resolved through its evaluation graph node.
 * **Parameter Value Evaluation:** A written parameter value moves the reference it was set on.
 
 ### 🐛 Bug Fixes
 
+* **RVM Facets:** Triangulate a facet polygon in its own plane so inner contours (bolt holes, plate openings) are punched out instead of filled in, and wind the triangles to the polygon's own normal.
+* **RVM Spheres:** Draw a `Sphere` primitive instead of dropping it silently.
+* **RVM Nouns:** Take a named element's engineering noun from its nearest ancestor and fold the long-form nouns (`FTUBE`, `ELBOW`, `VALVE`, …) onto the short ones, so imported items land on the right discipline layer.
 * **Attribute Insertion:** Give inserted references the attributes their definitions declare, and fill a bare reference from its definition.
 * **Attribute Copies:** Keep a reference's own identity when it is copied.
 * **Attributed Marker:** Make the attributed marker follow the definition body.

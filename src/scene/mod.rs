@@ -52,6 +52,8 @@ pub enum BlockScalePolicy {
 mod block_base_point_tests;
 #[cfg(test)]
 mod block_definition_handles_tests;
+#[cfg(test)]
+mod e3d_ingest_tests;
 mod boundary;
 mod camera_ops;
 #[cfg(test)]
@@ -1560,7 +1562,7 @@ pub(crate) fn sanitized_table_name(raw: &str, fallback: &str) -> String {
 
 /// Pre-built entity caches returned by [`build_derived_caches`].
 /// Produced in the file-load background task so the UI thread only assigns.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DerivedCaches {
     pub read_stats: Option<codec::ReadStats>,
     pub source_sha256: Option<String>,
@@ -1587,6 +1589,10 @@ pub struct DerivedCaches {
     /// `open_path_with_phase`; surfaced in the open-complete breakdown log so
     /// open-time regressions are visible.
     pub timings: OpenTimings,
+    /// Handles an `.rvm` open created (`io::e3d::ingest_batch`). Empty for every
+    /// other format. Installed on `Scene::e3d_index` so the next E3D batch can
+    /// erase this source instead of duplicating it.
+    pub e3d_index: crate::io::e3d::E3dIngestIndex,
 }
 
 /// Wall-clock breakdown of the file-open phases, in milliseconds.
@@ -1886,6 +1892,7 @@ fn build_derived_caches_impl(
         xrefs: Vec::new(),
         prepared_geometry: None,
         timings: OpenTimings::default(),
+        e3d_index: crate::io::e3d::E3dIngestIndex::default(),
     }
 }
 
@@ -10806,7 +10813,10 @@ impl Scene {
         let Some(c) = self.document.get_entity(handle).map(|e| e.common()) else {
             return false;
         };
-        if self.display_entity_invisible(c) {
+        // An E3D geometry-item proxy is an invisible POINT whose only job is to
+        // carry `E3D_SEMANTICS` and an instance transform; the shared mesh it
+        // anchors still has to draw, so the DXF invisible flag does not apply.
+        if self.display_entity_invisible(c) && !is_e3d_geometry_proxy(c) {
             return false;
         }
         !self.layer_hidden(&c.layer)
@@ -17647,6 +17657,18 @@ pub(crate) fn is_locked_point_cloud(entity: &EntityType) -> bool {
         EntityType::Extended(extended)
             if matches!(&extended.data, codec::entities::ExtendedEntityData::PointCloudEx(data) if data.locked)
     )
+}
+
+/// True for the invisible `POINT` proxies an E3D ingest drops at every
+/// **Geometry Item** (`io::e3d::consumer`). They carry `E3D_SEMANTICS` and own
+/// the instance transform that places a shared mesh, so the DXF invisible flag
+/// hides the point alone and must not drop the mesh hanging off the same
+/// handle.
+pub(crate) fn is_e3d_geometry_proxy(common: &codec::entities::EntityCommon) -> bool {
+    common
+        .extended_data
+        .get_record(crate::io::E3D_SEMANTICS_XDATA_APP)
+        .is_some()
 }
 
 #[cfg(test)]

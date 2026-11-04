@@ -76,6 +76,7 @@ impl Case {
                 wipeouts: self.wipeouts.clone(),
                 images: Vec::new(),
                 group_splits: self.group_splits,
+                entity_layers: Default::default(),
             },
             paper_w: self.paper.0 as f64,
             paper_h: self.paper.1 as f64,

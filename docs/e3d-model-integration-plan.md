@@ -147,3 +147,33 @@
    - 按 `Noun` 映射工程 PBR 材质（低金属度、适度粗糙度，与管道厂区视觉规范对齐），选中态联动高亮，中心线/虚线继续由原生层借 Reversed-Z 深度缓冲合成。
 2. **验收标准**：
    - `cargo run --features bevy3d` 下百万面级 E3D 区域流畅漫游，近距观察远离原点（\(>1\text{ km}\)）的法兰/管件无顶点抖动，选中高亮与虚线断管叠加准确。
+
+---
+
+## 4. 实现进度（2026-11-02）
+
+代码现状，按阶段对照：
+
+| 阶段 | 状态 | 说明 |
+| --- | --- | --- |
+| Phase 0 依赖挂载 | ✅ | `e3d-model` / `e3d-io` / `e3d-attlib` 挂在 native 分支；`cargo check --lib` 与 `cargo check --lib --target wasm32-unknown-unknown` 均通过 |
+| Phase 1 契约 + 生产者 | ✅ 基本完成 | `contract.rs` / `producer.rs` 落地；`.rvm` 的 noun 继承、Sphere 球体、面片内孔三角化已补齐；缺 `increment_update` 封装 |
+| Phase 2 消费器 + 渲染 | 🟡 部分完成 | 代理实体、共享网格、中心线可用；`.rvm` 打开入口已接入（`io::e3d::open` + `read_rvm_path` + `open_rvm_attempt`）；属性面板、Dabacon 工程目录入口未做 |
+| Phase 3 HTTP + Web | ❌ | `src/rest.rs` 无 `/api/v1/e3d/*`，`web_client.rs` / `gen_model_adapter.rs` 不存在 |
+| Phase 4 增量刷新 | ❌ | `apply_incremental_batch` 直接返回 `Err`；工程树面板不存在 |
+| Phase 5 BevyBridge M2 | ❌ | `bevy_bridge.rs` 仍为 M1 POC |
+
+已修的关键缺陷：
+
+1. **E3D 实体渲染不出来**。消费器把代理实体标为 `invisible`，而 `Scene::mesh_models` 的可见性门 `mesh_entity_visible` 会连带丢弃挂在同一 handle 上的 `MeshLodSet`。现由 `scene::is_e3d_geometry_proxy`（按 `E3D_SEMANTICS` XDATA 判定）豁免，回归测试在 `src/scene/e3d_ingest_tests.rs`。
+2. **`.rvm` 打不开**。`read_file_attempt` 没有 `rvm` 分支；现补 `read_rvm_path`（headless）与 `open_rvm_attempt`（GUI，带网格池），并加入文件对话框过滤器。
+3. **RVM 构件全落 `E3D_OTHER`**。命名元素（`/C-OR-1R345-C`）本身没有 noun，原来直接返回 `"E3D"` 兜底；现沿 `RvmMember::parent` 上溯取最近祖先的 noun，并把 `FTUBE`/`ELBOW`/`VALVE` 等全称折叠成短 noun。
+4. **RVM 面片内孔被填死**。原来只对 `contours[0]` 扇形三角化；现投影到多边形平面用 `kernel::geom2d::triangulate_rings` 打洞，并按 Newell 法线修正绕向。
+5. **RVM `Sphere` 静默丢失**。`build_rvm_analytic_mesh` 补上球体分支。
+
+仍未解决：
+
+- `e3d-attlib` 只声明依赖、零引用，工程属性（材质、等级、保温）取不到。
+- `E3dIngestIndex::centreline_wires` 写入后无读者（中心线实际走普通线框路径）。
+- `world_aabb` 在 `f32` 里存毫米大坐标，仅用于粗剔除；真正的高低位拆分只做在实例平移上。
+- 计划文档里 `E3dInstanceRecord::color_hint` / `local_aabb_mm` 与 `MeshKey::Catalogue` 三个字段未实现（简化合理，文档未同步）。

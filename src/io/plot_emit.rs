@@ -922,6 +922,21 @@ pub fn emit_plot_content<S: PlotSink>(
             };
             let stationed = !dash_arr.is_empty() && !stations.is_empty();
             if stationed {
+                // Match the screen's short-run policy. A sub-period aligned
+                // run is solid, even when clipping left its stations in a gap.
+                // Start-phased and longer continuous runs keep their phase.
+                let aligned_stations;
+                let stations = if wire.pattern[0] > 0.0 && wire.pattern[1] < 0.0 {
+                    let (mut distances, _, total) =
+                        crate::scene::pipeline::wire_gpu::wire_distances(wire);
+                    if total > 0.0 && total <= wire.pattern_length {
+                        distances.fill(0.0);
+                    }
+                    aligned_stations = distances;
+                    aligned_stations.as_slice()
+                } else {
+                    stations
+                };
                 if last_dash.as_ref().is_none_or(|dash| !dash.is_empty()) {
                     sink.emit(PlotOp::Dash {
                         lengths: Vec::new(),

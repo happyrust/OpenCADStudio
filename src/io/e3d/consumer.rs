@@ -515,6 +515,7 @@ mod tests {
             None,
             None,
             false,
+            &rustc_hash::FxHashSet::default(),
         );
         wires.iter().map(|wire| wire.pattern_length).sum()
     }

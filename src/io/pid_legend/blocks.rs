@@ -400,7 +400,7 @@ mod tests {
         let mut mtext = MText::new();
         mtext.value = "XV-0301\\P防爆电动平板闸阀".to_string();
         mtext.insertion_point = Vector3::new(3.0, 4.0, 0.0);
-        let read = lettering_value(&EntityType::MText(mtext)).unwrap();
+        let read = lettering_value(&EntityType::MText(Box::new(mtext))).unwrap();
         assert_eq!(
             (read.value.as_str(), read.at),
             ("XV-0301 防爆电动平板闸阀", (3.0, 4.0))

@@ -5,11 +5,14 @@
 
 pub mod bus;
 pub mod http;
+pub mod perm;
 pub mod store;
+pub mod ws;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-use ocs_collab::SessionConfig;
+use ocs_collab::{OccupancyTable, ServerMessage, SessionConfig, SessionRegistry};
 
 pub use bus::Bus;
 pub use store::Store;
@@ -23,6 +26,21 @@ pub struct AppState {
     pub db_path: String,
     pub bus: Arc<Bus>,
     pub session_config: SessionConfig,
+    /// Live session registry — the in-memory authority mirrored into the
+    /// `sessions` table. Behind a tokio mutex because handlers await while
+    /// deciding.
+    pub sessions: Arc<tokio::sync::Mutex<SessionRegistry>>,
+    /// Live tag-occupancy table — the in-memory authority mirrored into the
+    /// `claims` table.
+    pub occupancy: Arc<tokio::sync::Mutex<OccupancyTable>>,
+    /// Per-drawing revision counter used only when `store` is `None`. With a
+    /// database, `drawings.revision` is authoritative; without one, ops still
+    /// need a monotonically increasing revision for `STALE_BASE_REVISION`
+    /// checking to keep working.
+    pub revisions: Arc<Mutex<HashMap<String, i64>>>,
+    /// Per-session unicast channel, used for messages that must not reach the
+    /// rest of the drawing room (targeted errors).
+    pub direct: Arc<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<ServerMessage>>>>,
     pub version: &'static str,
 }
 
@@ -39,6 +57,10 @@ impl AppState {
             db_path: db_path.into(),
             bus: Arc::new(Bus::default()),
             session_config,
+            sessions: Arc::new(tokio::sync::Mutex::new(SessionRegistry::new(session_config))),
+            occupancy: Arc::new(tokio::sync::Mutex::new(OccupancyTable::new())),
+            revisions: Arc::new(Mutex::new(HashMap::new())),
+            direct: Arc::new(Mutex::new(HashMap::new())),
             version: env!("CARGO_PKG_VERSION"),
         }
     }

@@ -13,7 +13,7 @@ use e3d_model::elmodl::{GeneratedElement, GeometryId};
 use e3d_model::mesh::TriMesh;
 use e3d_model::pipeline::{generate_subtree_with_cache, GenerationOutcome, Report};
 use e3d_model::primitive_instance::{canonical_primitive_mesh, PrimitiveMeshKey};
-use e3d_model::rvm_read::{Primitive as RvmPrimitive, RvmFile};
+use e3d_model::rvm_read::{Primitive as RvmPrimitive, RvmFile, RvmMember};
 use e3d_model::transform::dmat4_to_affine4x3;
 use glam::{DMat4, DVec3};
 
@@ -141,7 +141,7 @@ fn produce_from_rvm(source_label: &str, rvm: &RvmFile) -> Result<E3dSceneBatch, 
     let mut centrelines = Vec::new();
 
     for (member_index, member) in rvm.members.iter().enumerate() {
-        let noun = infer_noun_from_rvm_name(&member.name);
+        let noun = infer_noun_from_rvm_name(rvm, member);
         for (geom_index, geom) in member.geometries.iter().enumerate() {
             let geometry_id = GeometryIdKey::RvmPrimitive {
                 member_index,
@@ -441,16 +441,53 @@ pub fn summarize_report(report: &Report) -> E3dLedgerSummary {
     }
 }
 
-fn infer_noun_from_rvm_name(name: &str) -> String {
-    let trimmed = name.trim();
-    if trimmed.starts_with('/') {
-        return "E3D".to_string();
+/// Engineering noun for one `CNTB` member.
+///
+/// A named element (`/C-OR-1R345-C`) carries no noun of its own, so the noun
+/// comes from the nearest ancestor that has one; an unnamed element spells its
+/// noun out in full (`FTUBE 1 of BRANCH /C-OR-1R345-C`), which
+/// [`normalize_rvm_noun`] folds back to the short E3D noun the discipline
+/// layers key on.
+fn infer_noun_from_rvm_name(rvm: &RvmFile, member: &RvmMember) -> String {
+    let mut cursor = Some(member);
+    while let Some(current) = cursor {
+        let trimmed = current.name.trim();
+        if !trimmed.starts_with('/') {
+            if let Some(first) = trimmed.split_whitespace().next() {
+                return normalize_rvm_noun(first);
+            }
+        }
+        cursor = current.parent.and_then(|index| rvm.members.get(index));
     }
-    trimmed
-        .split_whitespace()
-        .next()
-        .unwrap_or("RVM")
-        .to_ascii_uppercase()
+    "RVM".to_string()
+}
+
+/// Map the long-form nouns an `.rvm` spells out onto the short E3D nouns that
+/// `consumer::discipline_layer` routes to a discipline layer.
+fn normalize_rvm_noun(raw: &str) -> String {
+    let upper = raw.trim().to_ascii_uppercase();
+    let short = match upper.as_str() {
+        "BRANCH" | "PIPE" | "PIPING" => "PIPE",
+        "TUBE" | "FTUBE" | "PIPE_COMPONENT" => "TUBI",
+        "ELBOW" | "BEND" => "ELBO",
+        "FLANGE" => "FLAN",
+        "VALVE" => "VALV",
+        "GASKET" => "GASK",
+        "REDUCER" => "REDU",
+        "TEE" | "OLET" => "TEE",
+        "WELD" => "WELD",
+        "ATTACHMENT" => "ATTA",
+        "NOZZLE" => "NOZZ",
+        "EQUIPMENT" => "EQUI",
+        "SUB_EQUIPMENT" => "SUBE",
+        "STRUCTURE" | "SECTION" => "SCTN",
+        "PANEL" => "PANE",
+        "WALL" => "WALL",
+        "GENSEC" => "GENSEC",
+        "DUCT" | "HVAC" => "DUCT",
+        other => other,
+    };
+    short.to_string()
 }
 
 fn triangulate_rvm_polygons(
@@ -465,13 +502,169 @@ fn triangulate_rvm_polygons(
         if outer.vertices.len() < 3 {
             continue;
         }
+        // RVM facet polygons may carry inner contours (a bolted flange's bolt
+        // holes, a plate's openings). Fan-triangulating the outer ring alone
+        // fills them in and self-intersects on any concave outline, so project
+        // every contour onto the polygon plane and let the 2D even-odd
+        // tessellator punch the holes out.
+        let (poly_vertices, poly_indices) = triangulate_polygon_contours(&poly.contours);
+        if poly_indices.len() < 3 {
+            continue;
+        }
         let base = vertices.len() as u32;
-        vertices.extend_from_slice(&outer.vertices);
-        for i in 1..(outer.vertices.len() as u32 - 1) {
-            indices.extend_from_slice(&[base, base + i, base + i + 1]);
+        vertices.extend(poly_vertices);
+        indices.extend(poly_indices.into_iter().map(|index| base + index));
+    }
+    (vertices, indices)
+}
+
+/// Triangulate one RVM polygon (outer ring plus optional holes) in its own
+/// plane. Falls back to a fan over the outer ring when the projection is
+/// degenerate, so a bad facet still yields something rather than vanishing.
+fn triangulate_polygon_contours(
+    contours: &[e3d_model::rvm_read::Contour],
+) -> (Vec<[f64; 3]>, Vec<u32>) {
+    let outer = &contours[0];
+    let Some(normal) = polygon_normal(&outer.vertices) else {
+        return fan_triangulate(&outer.vertices);
+    };
+    let origin = outer.vertices[0];
+    let (u, v) = plane_basis(normal);
+
+    let mut rings: Vec<Vec<[f64; 2]>> = Vec::with_capacity(contours.len());
+    for contour in contours {
+        if contour.vertices.len() < 3 {
+            continue;
+        }
+        let ring = contour
+            .vertices
+            .iter()
+            .map(|point| {
+                let offset = [point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]];
+                [dot3(offset, u), dot3(offset, v)]
+            })
+            .collect();
+        rings.push(ring);
+    }
+    if rings.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let (points, triangles) = kernel::geom2d::triangulate_rings(&rings);
+    if triangles.is_empty() {
+        return fan_triangulate(&outer.vertices);
+    }
+    // The tessellator returns its own (de-duplicated, re-wound) point list in
+    // the plane, so rebuild the 3D vertices from the basis rather than assuming
+    // a 1:1 correspondence with the input contours.
+    let vertices: Vec<[f64; 3]> = points
+        .iter()
+        .map(|[x, y]| {
+            [
+                origin[0] + u[0] * x + v[0] * y,
+                origin[1] + u[1] * x + v[1] * y,
+                origin[2] + u[2] * x + v[2] * y,
+            ]
+        })
+        .collect();
+    let mut indices = Vec::with_capacity(triangles.len() * 3);
+    for triangle in triangles {
+        for index in triangle {
+            indices.push(index as u32);
+        }
+    }
+    if winding_is_inverted(&vertices, &indices, normal) {
+        for triangle in indices.chunks_exact_mut(3) {
+            triangle.swap(1, 2);
         }
     }
     (vertices, indices)
+}
+
+/// True when the tessellator's triangle winding faces away from `normal`.
+fn winding_is_inverted(vertices: &[[f64; 3]], indices: &[u32], normal: [f64; 3]) -> bool {
+    let mut accumulated = [0.0f64; 3];
+    for triangle in indices.chunks_exact(3) {
+        let (Some(a), Some(b), Some(c)) = (
+            vertices.get(triangle[0] as usize),
+            vertices.get(triangle[1] as usize),
+            vertices.get(triangle[2] as usize),
+        ) else {
+            continue;
+        };
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let face = cross3(ab, ac);
+        accumulated[0] += face[0];
+        accumulated[1] += face[1];
+        accumulated[2] += face[2];
+    }
+    dot3(accumulated, normal) < 0.0
+}
+
+fn fan_triangulate(ring: &[[f64; 3]]) -> (Vec<[f64; 3]>, Vec<u32>) {
+    if ring.len() < 3 {
+        return (Vec::new(), Vec::new());
+    }
+    let mut indices = Vec::with_capacity((ring.len() - 2) * 3);
+    for i in 1..(ring.len() as u32 - 1) {
+        indices.extend_from_slice(&[0, i, i + 1]);
+    }
+    (ring.to_vec(), indices)
+}
+
+/// Newell's method: robust polygon normal for a non-planar or slightly bent
+/// ring, which facet data frequently is.
+fn polygon_normal(points: &[[f64; 3]]) -> Option<[f64; 3]> {
+    if points.len() < 3 {
+        return None;
+    }
+    let mut normal = [0.0f64; 3];
+    for i in 0..points.len() {
+        let current = points[i];
+        let next = points[(i + 1) % points.len()];
+        normal[0] += (current[1] - next[1]) * (current[2] + next[2]);
+        normal[1] += (current[2] - next[2]) * (current[0] + next[0]);
+        normal[2] += (current[0] - next[0]) * (current[1] + next[1]);
+    }
+    let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+    if !length.is_finite() || length < 1e-12 {
+        return None;
+    }
+    Some([normal[0] / length, normal[1] / length, normal[2] / length])
+}
+
+/// Two unit vectors spanning the plane whose normal is `normal`.
+fn plane_basis(normal: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let seed = if normal[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let u = normalize3(cross3(seed, normal));
+    let v = cross3(normal, u);
+    (u, v)
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn normalize3(v: [f64; 3]) -> [f64; 3] {
+    let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if !length.is_finite() || length < 1e-12 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [v[0] / length, v[1] / length, v[2] / length]
+    }
 }
 
 fn build_rvm_analytic_mesh(prim: &RvmPrimitive) -> Option<CompactTriMesh> {
@@ -493,6 +686,14 @@ fn build_rvm_analytic_mesh(prim: &RvmPrimitive) -> Option<CompactTriMesh> {
         }
         RvmPrimitive::Snout([rb, rt, h, ox, oy, _bsx, _bsy, _tsx, _tsy]) => {
             e3d_model::solid::snout_solid(*rb * 2.0, *rt * 2.0, *h, *ox, *oy).ok()?
+        }
+        RvmPrimitive::Sphere([radius]) if *radius > 0.0 => {
+            // `unit_sphere_solid` is a unit-radius body; the caller's radius is a
+            // uniform scale, matching how catalogue spheres place themselves.
+            let segments = e3d_model::solid::cylinder_segments(*radius);
+            e3d_model::solid::unit_sphere_solid(segments)
+                .ok()?
+                .scale(*radius, *radius, *radius)
         }
         _ => return None,
     };
@@ -582,6 +783,8 @@ mod tests {
                 negatives_applied: 0,
                 negatives_skipped: Vec::new(),
                 notes: Vec::new(),
+                joint_cuts_explained: Default::default(),
+                own_ngms_cuts: Default::default(),
             }
         };
 
@@ -597,6 +800,9 @@ mod tests {
                 make_el(RefNo::new(100, 4), "PANE", booled_2, w4, None),
             ],
             report,
+            bodyless: Default::default(),
+            marks: Default::default(),
+            point_sets: Default::default(),
             visited: vec![
                 RefNo::new(100, 1),
                 RefNo::new(100, 2),
@@ -624,5 +830,145 @@ mod tests {
             batch.manifest.upserted[2].mesh_key,
             batch.manifest.upserted[3].mesh_key
         );
+    }
+
+    fn member(name: &str, parent: Option<usize>) -> RvmMember {
+        RvmMember {
+            name: name.to_string(),
+            path: format!("/{name}"),
+            parent,
+            translation_mm: [0.0; 3],
+            material: 0,
+            geometries: Vec::new(),
+        }
+    }
+
+    fn rvm(members: Vec<RvmMember>) -> RvmFile {
+        RvmFile {
+            header: Default::default(),
+            members,
+        }
+    }
+
+    #[test]
+    fn named_rvm_members_inherit_the_nearest_ancestor_noun() {
+        // A named element carries no noun of its own (`/C-OR-1R345-C`), so it
+        // must take the noun of the nearest ancestor that spells one out.
+        let file = rvm(vec![
+            member("BRANCH 1 of ZONE /Z1", None),
+            member("/C-OR-1R345-C", Some(0)),
+            member("/C-OR-1R345-C/1", Some(1)),
+        ]);
+        assert_eq!(infer_noun_from_rvm_name(&file, &file.members[0]), "PIPE");
+        assert_eq!(infer_noun_from_rvm_name(&file, &file.members[1]), "PIPE");
+        assert_eq!(infer_noun_from_rvm_name(&file, &file.members[2]), "PIPE");
+    }
+
+    #[test]
+    fn long_form_rvm_nouns_fold_onto_discipline_short_names() {
+        assert_eq!(normalize_rvm_noun("FTUBE"), "TUBI");
+        assert_eq!(normalize_rvm_noun("ELBOW"), "ELBO");
+        assert_eq!(normalize_rvm_noun("VALVE"), "VALV");
+        assert_eq!(normalize_rvm_noun("NOZZLE"), "NOZZ");
+        assert_eq!(normalize_rvm_noun("DUCT"), "DUCT");
+        // Unknown nouns pass through so the operator still sees what E3D wrote.
+        assert_eq!(normalize_rvm_noun("WIDGET"), "WIDGET");
+    }
+
+    #[test]
+    fn a_member_with_no_noun_anywhere_falls_back_to_rvm() {
+        let file = rvm(vec![member("/A", None), member("/A/B", Some(0))]);
+        assert_eq!(infer_noun_from_rvm_name(&file, &file.members[1]), "RVM");
+    }
+
+    fn contour(points: &[[f64; 3]]) -> e3d_model::rvm_read::Contour {
+        e3d_model::rvm_read::Contour {
+            vertices: points.to_vec(),
+            normals: vec![[0.0, 0.0, 1.0]; points.len()],
+        }
+    }
+
+    #[test]
+    fn a_facet_hole_is_punched_out_instead_of_filled() {
+        // 100 x 100 plate in z = 0 with a 40 x 40 hole in the middle. The fan
+        // over the outer ring alone would cover the hole with 2 triangles; the
+        // contour tessellator must emit more than that and skip the interior.
+        let outer = contour(&[
+            [0.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0],
+            [100.0, 100.0, 0.0],
+            [0.0, 100.0, 0.0],
+        ]);
+        let hole = contour(&[
+            [30.0, 30.0, 0.0],
+            [70.0, 30.0, 0.0],
+            [70.0, 70.0, 0.0],
+            [30.0, 70.0, 0.0],
+        ]);
+        let (vertices, indices) = triangulate_polygon_contours(&[outer, hole]);
+        assert!(indices.len() / 3 > 2, "hole must add triangles");
+
+        // Total triangle area must equal the plate minus the hole.
+        let mut area = 0.0;
+        for triangle in indices.chunks_exact(3) {
+            let a = vertices[triangle[0] as usize];
+            let b = vertices[triangle[1] as usize];
+            let c = vertices[triangle[2] as usize];
+            let ab = [b[0] - a[0], b[1] - a[1]];
+            let ac = [c[0] - a[0], c[1] - a[1]];
+            area += (ab[0] * ac[1] - ab[1] * ac[0]).abs() * 0.5;
+        }
+        assert!(
+            (area - (100.0 * 100.0 - 40.0 * 40.0)).abs() < 1e-6,
+            "area = {area}"
+        );
+    }
+
+    #[test]
+    fn facet_winding_follows_the_polygon_normal() {
+        let outer = contour(&[
+            [0.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0],
+            [100.0, 100.0, 0.0],
+            [0.0, 100.0, 0.0],
+        ]);
+        let (vertices, indices) = triangulate_polygon_contours(&[outer]);
+        let mut accumulated = [0.0f64; 3];
+        for triangle in indices.chunks_exact(3) {
+            let a = vertices[triangle[0] as usize];
+            let b = vertices[triangle[1] as usize];
+            let c = vertices[triangle[2] as usize];
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let face = cross3(ab, ac);
+            accumulated[0] += face[0];
+            accumulated[1] += face[1];
+            accumulated[2] += face[2];
+        }
+        assert!(
+            accumulated[2] > 0.0,
+            "winding must face +Z, got {accumulated:?}"
+        );
+    }
+
+    #[test]
+    fn a_degenerate_facet_falls_back_to_a_fan() {
+        // Three collinear points have no usable normal; the fallback keeps the
+        // facet rather than dropping it.
+        let ring = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        let (vertices, indices) = fan_triangulate(&ring);
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn an_rvm_sphere_produces_a_closed_mesh() {
+        let mesh = build_rvm_analytic_mesh(&RvmPrimitive::Sphere([50.0])).expect("sphere mesh");
+        assert!(mesh.triangle_count() > 0);
+        // A unit sphere scaled to r = 50 spans [-50, 50] on every axis.
+        for axis in 0..3 {
+            assert!((mesh.local_aabb_mm[0][axis] + 50.0).abs() < 1.0, "{axis}");
+            assert!((mesh.local_aabb_mm[1][axis] - 50.0).abs() < 1.0, "{axis}");
+        }
     }
 }

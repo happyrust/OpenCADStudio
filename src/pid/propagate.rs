@@ -699,26 +699,16 @@ mod tests {
         );
         assert_eq!(display_of(&conflicted), DUPLICATED_DISPLAY);
 
-        // 保存门禁：拒绝保存，且不产生新文件。
-        let dir = std::env::temp_dir().join("pid-propagate-gate");
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let target = dir.join("gate-target.dwg");
-        let backup = dir.join("gate-target.dwg.bak");
-        let _ = std::fs::remove_file(&target);
-        std::fs::write(&backup, b"existing backup").expect("backup written");
-
+        // 保存门禁：返回 Err 与契约错误码。
+        //
+        // 这里**只**断言语义层能证伪的部分。原实现另有两条断言
+        // （`!target.exists()` / `backup.exists()`）恒真不可证伪 —— 唯一写
+        // target 的动作在 `if outcome.is_ok()` 分支内，而本用例要求它是
+        // `Err`，所以该分支永不执行。真实的保存副作用验证见
+        // VAL-SEM-039（M5，`gate_save` 接入真实保存包装后）。
         let outcome = gate_save(&doc);
-        if outcome.is_ok() {
-            // 门禁通过才允许写盘；本用例要求它不通过，所以这里绝不落文件。
-            std::fs::write(&target, b"should not happen").expect("write");
-        }
         let error = outcome.expect_err("duplicated tag must block save");
         assert_eq!(error.code(), "TAG_DUPLICATED_BLOCKS_SAVE");
-        assert!(!target.exists(), "gate must not create a new file");
-        assert!(backup.exists(), "the pre-existing .bak must survive");
-
-        let _ = std::fs::remove_file(&backup);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── 辅助行为 ─────────────────────────────────────────────────────────

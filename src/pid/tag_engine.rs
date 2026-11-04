@@ -431,7 +431,23 @@ fn parse_props(props_json: &str) -> BTreeMap<String, String> {
     if props_json.trim().is_empty() {
         return BTreeMap::new();
     }
-    serde_json::from_str::<BTreeMap<String, String>>(props_json).unwrap_or_default()
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(props_json) else {
+        return BTreeMap::new();
+    };
+    let Some(object) = value.as_object() else {
+        return BTreeMap::new();
+    };
+    object
+        .iter()
+        .filter(|(key, _)| key.as_str() != "__overrides")
+        .map(|(key, value)| {
+            let text = match value {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            (key.clone(), text)
+        })
+        .collect()
 }
 
 // ── 公开入口 ─────────────────────────────────────────────────────────────
@@ -1232,5 +1248,31 @@ mod tests {
     fn value_type_is_reachable_from_engine_tests() {
         // 保证类型库模块的导出可用（避免 unused import 警告）。
         assert_eq!(ValueType::Text.name(), "文本");
+    }
+
+    // ── parse_props 对覆盖标记的容忍 ─────────────────────────────────────────
+
+    /// 覆盖标记 `__overrides` 是字符串数组，不得让整条 `props` 解析失败。
+    #[test]
+    fn parse_props_excludes_overrides_marker() {
+        let parsed = parse_props(r#"{"公称直径":"DN50","管道等级":"B2C","__overrides":["管道等级"]}"#);
+        assert_eq!(
+            parsed,
+            props(&[("公称直径", "DN50"), ("管道等级", "B2C")]),
+            "覆盖标记应当被排除，实际 {parsed:?}"
+        );
+        assert!(
+            !parsed.contains_key("__overrides"),
+            "解析结果不得含 __overrides 键"
+        );
+    }
+
+    /// 非字符串标量按 `to_string()` 归一，不得让整条 `props` 解析失败。
+    #[test]
+    fn parse_props_normalises_non_string_scalars() {
+        let parsed = parse_props(r#"{"a":"1","b":2,"c":true}"#);
+        assert_eq!(parsed.get("a").map(String::as_str), Some("1"));
+        assert_eq!(parsed.get("b").map(String::as_str), Some("2"), "整数 2 应当归一成 \"2\"");
+        assert_eq!(parsed.get("c").map(String::as_str), Some("true"));
     }
 }

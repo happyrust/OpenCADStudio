@@ -51,19 +51,36 @@ impl OccupancyTable {
     }
 
     /// All live claims (expired ones are pruned first).
+    ///
+    /// Left as-is on purpose: the pruned rows are dropped silently here. No
+    /// caller exists today, and the two paths that *do* matter (`claim` and
+    /// `for_drawing`) report what they expired so the socket layer can
+    /// broadcast `claim_released`. Anything that starts using `entries` and
+    /// needs that broadcast must switch to the tuple-returning shape.
     pub fn entries(&mut self, now: i64) -> &[Occupancy] {
         self.expire(now);
         &self.claims
     }
 
     /// Claims on one drawing, for the `welcome` payload.
-    pub fn for_drawing(&mut self, drawing_id: &str, now: i64) -> Vec<Occupancy> {
-        self.expire(now);
-        self.claims
+    ///
+    /// Returns `(active_on_drawing, expired_anywhere)`. The expired half is
+    /// whatever `expire(now)` reclaimed during this call — the caller owes the
+    /// room a `claim_released` for each of them, otherwise a listing request
+    /// would swallow the expiry notification the sweep would have sent.
+    pub fn for_drawing(
+        &mut self,
+        drawing_id: &str,
+        now: i64,
+    ) -> (Vec<Occupancy>, Vec<Occupancy>) {
+        let expired = self.expire(now);
+        let active = self
+            .claims
             .iter()
             .filter(|claim| claim.drawing_id == drawing_id)
             .cloned()
-            .collect()
+            .collect();
+        (active, expired)
     }
 
     pub fn get(&self, tag: &str) -> Option<&Occupancy> {
@@ -74,6 +91,12 @@ impl OccupancyTable {
     ///
     /// An expired claim is discarded first, so a stale owner never blocks a
     /// new request. Re-claiming a tag you already own refreshes the expiry.
+    ///
+    /// Returns `(outcome, expired)`: the second element is whatever
+    /// `expire(now)` reclaimed while serving this request. The caller owes the
+    /// room a `claim_released { reason: expired }` for each of them — dropping
+    /// them here is exactly how a claim request used to swallow the expiry
+    /// notification the sweep would otherwise have sent.
     pub fn claim(
         &mut self,
         tag: &str,
@@ -82,15 +105,18 @@ impl OccupancyTable {
         user_id: &str,
         now: i64,
         ttl: i64,
-    ) -> ClaimOutcome {
-        self.expire(now);
+    ) -> (ClaimOutcome, Vec<Occupancy>) {
+        let expired = self.expire(now);
 
         if let Some(existing) = self.claims.iter().find(|claim| claim.tag == tag) {
             if existing.session_id != session_id {
-                return ClaimOutcome::Denied {
-                    holder: existing.session_id.clone(),
-                    expires_at: existing.expires_at,
-                };
+                return (
+                    ClaimOutcome::Denied {
+                        holder: existing.session_id.clone(),
+                        expires_at: existing.expires_at,
+                    },
+                    expired,
+                );
             }
         }
 
@@ -105,7 +131,7 @@ impl OccupancyTable {
             Some(slot) => *slot = claim.clone(),
             None => self.claims.push(claim.clone()),
         }
-        ClaimOutcome::Granted(claim)
+        (ClaimOutcome::Granted(claim), expired)
     }
 
     /// Drops a claim the session owns.
@@ -178,7 +204,7 @@ mod tests {
     #[test]
     fn first_claim_is_granted_and_visible() {
         let mut table = OccupancyTable::new();
-        let outcome = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let (outcome, _) = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
         match outcome {
             ClaimOutcome::Granted(claim) => {
                 assert_eq!(claim.tag, "V-1001");
@@ -192,8 +218,8 @@ mod tests {
     #[test]
     fn second_claimant_is_denied_with_holder_and_expiry() {
         let mut table = OccupancyTable::new();
-        table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
-        let outcome = table.claim("V-1001", "PID-1101", "s-2", "u2", 1_010, 300);
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let (outcome, _) = table.claim("V-1001", "PID-1101", "s-2", "u2", 1_010, 300);
         assert_eq!(
             outcome,
             ClaimOutcome::Denied {
@@ -211,8 +237,8 @@ mod tests {
     #[test]
     fn re_claiming_your_own_tag_refreshes_the_expiry() {
         let mut table = OccupancyTable::new();
-        table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
-        let outcome = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_100, 300);
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let (outcome, _) = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_100, 300);
         match outcome {
             ClaimOutcome::Granted(claim) => assert_eq!(claim.expires_at, 1_400),
             other => panic!("expected granted, got {other:?}"),
@@ -223,10 +249,10 @@ mod tests {
     #[test]
     fn release_frees_the_tag_for_the_next_claimant() {
         let mut table = OccupancyTable::new();
-        table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
         assert_eq!(table.release("V-1001", "s-1"), ReleaseOutcome::Released);
         assert!(matches!(
-            table.claim("V-1001", "PID-1101", "s-2", "u2", 1_005, 300),
+            table.claim("V-1001", "PID-1101", "s-2", "u2", 1_005, 300).0,
             ClaimOutcome::Granted(_)
         ));
     }
@@ -234,7 +260,7 @@ mod tests {
     #[test]
     fn release_by_a_non_owner_is_rejected() {
         let mut table = OccupancyTable::new();
-        table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
         assert_eq!(table.release("V-1001", "s-2"), ReleaseOutcome::NotHeld);
         assert_eq!(
             table.get("V-1001").map(|c| c.session_id.as_str()),
@@ -245,12 +271,12 @@ mod tests {
     #[test]
     fn ttl_expiry_releases_the_tag_and_reports_it() {
         let mut table = OccupancyTable::new();
-        table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
         let expired = table.expire(1_300);
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].tag, "V-1001");
         assert!(matches!(
-            table.claim("V-1001", "PID-1101", "s-2", "u2", 1_301, 300),
+            table.claim("V-1001", "PID-1101", "s-2", "u2", 1_301, 300).0,
             ClaimOutcome::Granted(_)
         ));
     }
@@ -258,8 +284,8 @@ mod tests {
     #[test]
     fn claim_after_expiry_succeeds_without_an_explicit_sweep() {
         let mut table = OccupancyTable::new();
-        table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
-        let outcome = table.claim("V-1001", "PID-1101", "s-2", "u2", 1_400, 300);
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let (outcome, _) = table.claim("V-1001", "PID-1101", "s-2", "u2", 1_400, 300);
         assert!(
             matches!(outcome, ClaimOutcome::Granted(_)),
             "an expired claim must not block: {outcome:?}"
@@ -269,9 +295,9 @@ mod tests {
     #[test]
     fn expiring_a_session_drops_all_of_its_claims() {
         let mut table = OccupancyTable::new();
-        table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
-        table.claim("V-1002", "PID-1101", "s-1", "u1", 1_000, 300);
-        table.claim("V-1003", "PID-1101", "s-2", "u2", 1_000, 300);
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let _ = table.claim("V-1002", "PID-1101", "s-1", "u1", 1_000, 300);
+        let _ = table.claim("V-1003", "PID-1101", "s-2", "u2", 1_000, 300);
         let dropped = table.release_session("s-1");
         assert_eq!(dropped.len(), 2);
         assert_eq!(table.len(), 1);
@@ -281,9 +307,9 @@ mod tests {
     #[test]
     fn claims_are_filtered_by_drawing_for_welcome() {
         let mut table = OccupancyTable::new();
-        table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
-        table.claim("P-2001", "PID-1102", "s-3", "u3", 1_000, 300);
-        let on_drawing = table.for_drawing("PID-1101", 1_010);
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let _ = table.claim("P-2001", "PID-1102", "s-3", "u3", 1_000, 300);
+        let (on_drawing, _) = table.for_drawing("PID-1101", 1_010);
         assert_eq!(on_drawing.len(), 1);
         assert_eq!(on_drawing[0].tag, "V-1001");
     }
@@ -291,8 +317,35 @@ mod tests {
     #[test]
     fn expired_claims_are_hidden_from_drawing_listings() {
         let mut table = OccupancyTable::new();
-        table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
-        assert!(table.for_drawing("PID-1101", 1_500).is_empty());
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        assert!(table.for_drawing("PID-1101", 1_500).0.is_empty());
+    }
+
+    #[test]
+    fn claim_returns_the_entries_it_expired() {
+        let mut table = OccupancyTable::new();
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        // 1_400 is past V-1001's 1_300 expiry, so serving the V-1002 request
+        // reclaims V-1001; the caller must learn about it to broadcast.
+        let (outcome, expired) = table.claim("V-1002", "PID-1101", "s-2", "u2", 1_400, 300);
+        assert!(
+            matches!(outcome, ClaimOutcome::Granted(_)),
+            "the new tag is free: {outcome:?}"
+        );
+        assert_eq!(expired.len(), 1, "the reclaim must be reported: {expired:?}");
+        assert_eq!(expired[0].tag, "V-1001");
+        assert_eq!(expired[0].session_id, "s-1");
+        assert_eq!(expired[0].expires_at, 1_300);
+    }
+
+    #[test]
+    fn for_drawing_returns_the_entries_it_expired() {
+        let mut table = OccupancyTable::new();
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let (active, expired) = table.for_drawing("PID-1101", 1_500);
+        assert!(active.is_empty(), "expired rows must not be listed: {active:?}");
+        assert_eq!(expired.len(), 1, "the reclaim must be reported: {expired:?}");
+        assert_eq!(expired[0].tag, "V-1001");
     }
 
     #[test]

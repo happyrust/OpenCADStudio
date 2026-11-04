@@ -1,5 +1,5 @@
 {
-  "_comment": "P&ID 类型库默认数据（src/pid/type_lib.rs 以 include_str! 编译内置）。types 是类型树：恰好一个 parent 为 null 的根（EQUIPMENT），其余类型沿 parent 上溯必达根且无环。groups 是属性分组，组的顺序与组内 fields 的顺序都是展示顺序，同一字段不得出现在同一类型的两个分组里（违反时构造返回 TYPE_LIB_FIELD_DUPLICATED）。elements 是数据要素，value_type 只接受 文本/数值/枚举/引用/布尔 五个中文值，options 只对 枚举 有意义。tag_rule 是位号规则八字段：name 格式名称 / pattern 自动编码（{序号} 是自增段占位符）/ start 起始编码 / step 增量 / pad 后缀递增（序号补零宽度，0 = 不补零）/ level 层级选择（约定 GLOBAL|TYPE|PARENT|SHEET，null 等同 GLOBAL）/ join 拼接字段 / unique 唯一校验；生成逻辑由 pid-tag-gen 实现，本 feature 不含。tag_rule 与 color_rule 为 null 表示本类型不覆盖、沿 parent 上溯继承最近一个非 null 的定义，解析结果同时给出生效来源类型编码。默认数据里只有根 EQUIPMENT 定义规则，三个子类型都不覆盖，以便继承语义（VAL-SEM-018 / VAL-SEM-019）在任何使用内置库的地方都成立。",
+  "_comment": "P&ID 类型库默认数据（src/pid/type_lib.rs 以 include_str! 编译内置）。types 是类型树：恰好一个 parent 为 null 的根（EQUIPMENT），其余类型沿 parent 上溯必达根且无环。groups 是属性分组，组的顺序与组内 fields 的顺序都是展示顺序，同一字段不得出现在同一类型的两个分组里（违反时构造返回 TYPE_LIB_FIELD_DUPLICATED）。elements 是数据要素，value_type 只接受 文本/数值/枚举/引用/布尔 五个中文值，options 只对 枚举 有意义。tag_rule 是位号规则字段：name 格式名称 / auto_code 自动编码（缺省 true，false 时位号为空）/ pattern 位号格式（{序号} 是自增段占位符）/ start 起始编码 / step 增量 / suffix_increment 后缀递增 / level 层级选择（取值 当前类型依次递增 / 父类型递增，null 取默认）/ join 拼接字段（单个属性名，null 表示不拼接）/ unique 唯一校验 / pad 序号补零宽度（0 = 不补零）；生成逻辑由 pid-tag-gen 实现，本 feature 不含。tag_rule 与 color_rule 为 null 表示本类型不覆盖、沿 parent 上溯继承最近一个非 null 的定义，解析结果同时给出生效来源类型编码。默认数据里只有根 EQUIPMENT 定义规则，三个子类型都不覆盖，以便继承语义（VAL-SEM-018 / VAL-SEM-019）在任何使用内置库的地方都成立。",
   "types": [
     {
       "type_code": "EQUIPMENT",
@@ -18,13 +18,15 @@
       ],
       "tag_rule": {
         "name": "设备位号",
+        "auto_code": true,
         "pattern": "P-{序号}",
         "start": 1001,
         "step": 1,
-        "pad": 0,
+        "suffix_increment": false,
         "level": null,
-        "join": [],
-        "unique": true
+        "join": null,
+        "unique": true,
+        "pad": 0
       },
       "color_rule": "红"
     },

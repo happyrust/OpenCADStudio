@@ -12,11 +12,11 @@
 //! 来源类型编码**一起返回 —— 属性面板要显示「这条规则继承自 EQUIPMENT」。
 //!
 //! 落盘走模型空间 block record 扩展字典里的 XRecord `PID_AUTHOR_TYPE_LIB`，
-//! 内容是整库 JSON 按 2000 字节切块的多条 `String` entry（DXF 单条字符串
-//! 有长度上限，块按 UTF-8 边界切，读回按顺序拼接）。整 key 重写，不逐条
-//! 增删；库为空则删掉这条记录，不留空记录。
+//! 布局与 [`super::graph_data`] 一致：`kind=` / `key=` 两条前缀后跟数据
+//! 条目，超长条目切成 `part=<n>:` 分片。两个写方共用同一 key，必须同一
+//! 布局才能互读。整 key 重写，不逐条增删；库为空则删掉记录，不留空记录。
 
-pub use super::tag_rule::TagRule;
+pub use super::tag_rule::{HierarchyMode, TagRule};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -31,11 +31,13 @@ pub const XRECORD_KEY: &str = "PID_AUTHOR_TYPE_LIB";
 /// 编译内置的默认类型库（`assets/pid-types.json`）。
 const DEFAULT_TYPE_LIB_JSON: &str = include_str!("../../assets/pid-types.json");
 
-/// 一条 XRecord `String` entry 承载的最大字节数。DXF 的 255 字符上限对
-/// UTF-8 中文更紧，取 2000 字节并按 UTF-8 边界切块，远在两种上限之内。
+/// 一条数据条目正文承载的最大字节数，与 `graph_data::split_text` 的分片
+/// 阈值同口径。统一布局后仅供测试断言引用。
+#[cfg(test)]
 const CHUNK_BYTES: usize = 2000;
 
 /// 承载库内容的 entry 组码（DXF 1 = 任意字符串）。
+#[cfg(test)]
 const CHUNK_CODE: i32 = 1;
 
 // ── 数据要素 ─────────────────────────────────────────────────────────────
@@ -514,41 +516,24 @@ impl TypeLib {
 
     /// 把库写进 `doc` 的模型空间 block record 扩展字典，key 为
     /// [`XRECORD_KEY`]。整 key 重写；库为空则删掉记录。
+    ///
+    /// 布局统一为 [`super::graph_data`]：`kind=` / `key=` 前缀 + 一条数据
+    /// 条目（超长则 `part=<n>:` 分片）。`graph_data::store` 与 `dwg_roundtrip`
+    /// 写的是同一 key，必须同一布局才能互读。
     pub fn store(&self, doc: &mut Document) {
-        let owner = owner(doc);
         if self.is_empty() {
-            remove_xrecord(doc, owner);
+            crate::pid::graph_data::store(doc, XRECORD_KEY, &[]);
             return;
         }
-        let json = self.to_json();
-        doc.ensure_xrecord(owner, XRECORD_KEY);
-        if let Some(record) = doc.xrecord_mut(owner, XRECORD_KEY) {
-            record.entries.clear();
-            for chunk in chunk_json(&json) {
-                record.entries.push(codec::objects::XRecordEntry::string(
-                    CHUNK_CODE,
-                    chunk,
-                ));
-            }
-        }
+        let value = serde_json::to_value(self).expect("TypeLib 必须可序列化");
+        crate::pid::graph_data::store(doc, XRECORD_KEY, &[value]);
     }
 
     /// 从 `doc` 读回库；没有记录、或记录内容不是合法库，返回 `None`。
     pub fn load(doc: &Document) -> Option<Self> {
-        let record = doc.xrecord(owner(doc), XRECORD_KEY)?;
-        let mut json = String::new();
-        for entry in &record.entries {
-            if entry.code != CHUNK_CODE {
-                continue;
-            }
-            if let codec::objects::XRecordValue::String(text) = &entry.value {
-                json.push_str(text);
-            }
-        }
-        if json.is_empty() {
-            return None;
-        }
-        Self::from_json(&json).ok()
+        let items = crate::pid::graph_data::load(doc, XRECORD_KEY)?;
+        let first = items.into_iter().next()?;
+        serde_json::from_value::<Self>(first).ok()
     }
 
     /// 删掉落盘的库记录，保留扩展字典本身。
@@ -584,22 +569,6 @@ impl<'de> Deserialize<'de> for TypeLib {
 /// 记录的所有者：模型空间 block record，每张图恰有一个。
 fn owner(doc: &Document) -> Handle {
     doc.header.model_space_block_handle
-}
-
-/// 按 UTF-8 边界把 JSON 切成不超过 [`CHUNK_BYTES`] 的块。
-fn chunk_json(json: &str) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    for ch in json.chars() {
-        if current.len() + ch.len_utf8() > CHUNK_BYTES {
-            chunks.push(std::mem::take(&mut current));
-        }
-        current.push(ch);
-    }
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-    chunks
 }
 
 /// 从 `owner` 的扩展字典里删掉 [`XRECORD_KEY`] 这条记录。字典本身留着：

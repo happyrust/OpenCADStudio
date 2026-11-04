@@ -8,6 +8,11 @@
 //!   stderr, never silently pick another port (VAL-SRV-026);
 //! * a database that cannot be opened does not abort the process — the server
 //!   still listens so `GET /health` can report 503 (VAL-SRV-002).
+//!
+//! The order of those two steps is load-bearing: the port is bound *before* the
+//! database is opened. `build_state` clears the ephemeral session and claim
+//! rows, so opening first would let a start that is about to fail on a taken
+//! port erase the state of the instance already serving on it.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -140,9 +145,12 @@ async fn main() -> ExitCode {
         }
     };
 
-    let state = Arc::new(build_state(&cli));
-    let app = http::router(state);
-
+    // Bind **before** the database is opened. `build_state` calls
+    // `clear_ephemeral`, which drops every session and claim row in the shared
+    // database; opening the store first would therefore let a start that is
+    // about to fail on a taken port wipe the sessions of the instance that is
+    // already serving on it. Ordering is the fix — the cleanup itself stays,
+    // because a restarted server must not honour pre-restart `session_id`s.
     let addr = SocketAddr::from(([127, 0, 0, 1], cli.port));
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => listener,
@@ -153,6 +161,9 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    let state = Arc::new(build_state(&cli));
+    let app = http::router(state);
 
     println!(
         "[ocs_collab_server] v{} 监听 http://{addr}（heartbeat_timeout={}s, claim_ttl={}s）",
@@ -166,9 +177,12 @@ async fn main() -> ExitCode {
         println!("[ocs_collab_server] 收到中断，正在退出");
     };
 
-    if let Err(err) = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await
+    if let Err(err) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
     {
         eprintln!("[ocs_collab_server] 服务异常退出：{err}");
         return ExitCode::FAILURE;

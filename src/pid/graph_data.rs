@@ -702,4 +702,84 @@ mod tests {
             "图级数据必须还在"
         );
     }
+
+    // ── 与 type_lib 的跨布局往返 ─────────────────────────────────────────
+
+    /// `graph_data::store` 写 + `TypeLib::load` 读：必须往返相等。
+    #[test]
+    fn type_lib_reads_what_graph_data_wrote() {
+        use crate::pid::type_lib::{TypeLib, TypeNode};
+        let lib = TypeLib::new(vec![
+            TypeNode::new("EQUIPMENT", None::<String>).with_label("设备"),
+            TypeNode::new("VESSEL", Some("EQUIPMENT")).with_label("容器"),
+        ])
+        .expect("夹具库应当构造成功");
+        let value = serde_json::to_value(&lib).expect("TypeLib 必须可序列化");
+
+        let mut doc = Document::new();
+        store(&mut doc, PID_AUTHOR_TYPE_LIB, &[value]);
+
+        let loaded = TypeLib::load(&doc).expect("graph_data 写的库应当能被 TypeLib 读回");
+        assert_eq!(loaded, lib, "跨布局读回应当与原始库相等");
+    }
+
+    /// `TypeLib::store` 写 + `graph_data::load` 读：必须往返相等。
+    #[test]
+    fn graph_data_reads_what_type_lib_wrote() {
+        use crate::pid::type_lib::TypeLib;
+        let lib = TypeLib::embedded();
+        let mut doc = Document::new();
+        lib.store(&mut doc);
+
+        let items =
+            load(&doc, PID_AUTHOR_TYPE_LIB).expect("TypeLib 写的记录应当能被 graph_data 读回");
+        assert_eq!(
+            items.len(),
+            1,
+            "库应当恰有一条数据条目，实际 {}",
+            items.len()
+        );
+        let parsed: TypeLib = serde_json::from_value(items.into_iter().next().expect("至少一条"))
+            .expect("条目应当能解析成 TypeLib");
+        assert_eq!(parsed, lib, "反向跨布局读回应当与原始库相等");
+    }
+
+    /// 大库（>2000 字节）在统一布局下仍分片，且跨布局读回一致。
+    #[test]
+    fn a_large_type_lib_survives_the_unified_layout() {
+        use crate::pid::type_lib::{DataElement, TypeLib, TypeNode};
+        let mut equipment = TypeNode::new("EQUIPMENT", None::<String>).with_label("设备");
+        for index in 0..200 {
+            equipment = equipment.with_element(DataElement::enumeration(
+                format!("CODE{index:03}"),
+                format!("要素{index:03}"),
+                ["碳钢", "不锈钢", "铸铁"],
+            ));
+        }
+        let lib = TypeLib::new(vec![equipment]).expect("大库应当构造成功");
+        assert!(
+            serde_json::to_string(&lib).expect("可序列化").len() > MAX_TEXT_BYTES,
+            "夹具应当超过单条上限"
+        );
+
+        let mut doc = Document::new();
+        lib.store(&mut doc);
+        let record = doc
+            .xrecord(doc.header.model_space_block_handle, PID_AUTHOR_TYPE_LIB)
+            .expect("应当写入记录");
+        assert!(
+            record.entries.len() > DATA_PREFIX_ENTRIES + 1,
+            "大库应当切成多条 part= 条目，实际 {} 条",
+            record.entries.len()
+        );
+
+        assert_eq!(TypeLib::load(&doc).expect("分片写读应当一致"), lib);
+        let items = load(&doc, PID_AUTHOR_TYPE_LIB).expect("graph_data 也应能读回");
+        assert_eq!(
+            items.len(),
+            1,
+            "分片应当拼回一条数据条目，实际 {}",
+            items.len()
+        );
+    }
 }

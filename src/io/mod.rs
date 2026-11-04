@@ -244,7 +244,8 @@ pub async fn pick_open_path() -> Option<(PathBuf, u64)> {
         .add_filter(
             crate::t!("CAD Files").as_ref(),
             &[
-                "dwg", "dxf", "dwt", "pid", "bak", "sv$", "DWG", "DXF", "DWT", "PID", "BAK",
+                "dwg", "dxf", "dwt", "pid", "rvm", "bak", "sv$", "DWG", "DXF", "DWT", "PID",
+                "RVM", "BAK",
             ],
         )
         .add_filter(crate::t!("DWG Files").as_ref(), &["dwg", "DWG"])
@@ -254,6 +255,10 @@ pub async fn pick_open_path() -> Option<(PathBuf, u64)> {
             &["dwt", "DWT"],
         )
         .add_filter(crate::t!("Smart P&ID Files").as_ref(), &["pid", "PID"])
+        .add_filter(
+            crate::t!("AVEVA RVM Files").as_ref(),
+            &["rvm", "RVM"],
+        )
         .add_filter(
             crate::t!("Backup / Autosave").as_ref(),
             &["bak", "sv$", "BAK"],
@@ -445,6 +450,108 @@ impl From<String> for OpenAttemptFailure {
     }
 }
 
+/// Open a standalone AVEVA `.rvm`.
+///
+/// Runs the same background thread and phase markers as a drawing open, but the
+/// work is `io::e3d::load_rvm`: parse the primitive stream, ingest it into a
+/// throwaway `Scene`, and hand back the document plus the shared mesh pools the
+/// ingest built. `build_derived_caches` is deliberately skipped — the document
+/// holds no DWG solids, and re-running it would only re-tessellate the
+/// centrelines `ingest_batch` already added.
+#[cfg(not(target_arch = "wasm32"))]
+fn open_rvm_attempt(
+    path: &Path,
+    progress: &Arc<OpenProgressState>,
+    model_bg: [f32; 4],
+) -> Result<(Document, DerivedCaches), OpenAttemptFailure> {
+    use iced::time::Instant;
+    progress.set(crate::app::OPEN_PHASE_PARSING, 200, 0, 1000);
+    let t_parse = Instant::now();
+    let opened = crate::io::e3d::load_rvm(path).map_err(|message| OpenAttemptFailure {
+        message: format!("\"{}\" could not be read as an AVEVA RVM: {message}", path.display()),
+        read_stats: None,
+        recoverable: false,
+    })?;
+    let parse_ms = t_parse.elapsed().as_millis() as u32;
+    let entities = opened.document.entities().count();
+    progress.set(crate::app::OPEN_PHASE_CACHING, 7400, 1000, 10000);
+
+    let mut caches = crate::scene::DerivedCaches {
+        e3d_index: opened.index,
+        ..Default::default()
+    };
+    let mut document = opened.document;
+    document.source_path = Some(path.to_string_lossy().into_owned());
+    caches.meshes = opened.meshes;
+    caches.block_meshes = opened.block_meshes;
+    caches.read_stats = Some(codec::ReadStats {
+        source_format: None,
+        record_stream_read: true,
+        stream_completed: true,
+        source_records: entities,
+        decoded_source_records: entities,
+        output_entities: entities,
+        ..Default::default()
+    });
+    caches.timings = crate::scene::OpenTimings {
+        parse_ms,
+        ..Default::default()
+    };
+    // `build_derived_caches` is what normally fills these; an RVM has no raster
+    // or hatch sources, and the camera should frame what was just poured.
+    let (extent, center) = rvm_extent(&document);
+    caches.local_extent_max = extent;
+    caches.local_center = center;
+    let _ = model_bg;
+    progress.set(crate::app::OPEN_PHASE_FINALIZING, 9950, 1, 1);
+    Ok((document, caches))
+}
+
+/// Coarse world XY extent of an ingested `.rvm`, in the same shape
+/// `build_derived_caches` reports so the initial view frames the model.
+#[cfg(not(target_arch = "wasm32"))]
+fn rvm_extent(document: &Document) -> (f32, [f64; 2]) {
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for entity in document.entities() {
+        if let Some([x, y, _]) = entity_anchor(entity) {
+            if x.is_finite() && y.is_finite() {
+                min[0] = min[0].min(x);
+                min[1] = min[1].min(y);
+                max[0] = max[0].max(x);
+                max[1] = max[1].max(y);
+            }
+        }
+    }
+    if !min[0].is_finite() || !min[1].is_finite() {
+        return (1.0, [0.0, 0.0]);
+    }
+    let center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+    let extent = ((max[0] - min[0]).max(max[1] - min[1]) * 0.5).max(1.0);
+    (extent as f32, center)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn entity_anchor(entity: &codec::EntityType) -> Option<[f64; 3]> {
+    use codec::EntityType;
+    match entity {
+        EntityType::Point(point) => Some([
+            point.location.x,
+            point.location.y,
+            point.location.z,
+        ]),
+        EntityType::Line(line) => Some([
+            (line.start.x + line.end.x) * 0.5,
+            (line.start.y + line.end.y) * 0.5,
+            (line.start.z + line.end.z) * 0.5,
+        ]),
+        EntityType::Polyline3D(polyline) => polyline.vertices.first().map(|vertex| {
+            [vertex.position.x, vertex.position.y, vertex.position.z]
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 async fn open_path_with_phase_attempt(
     path: PathBuf,
@@ -468,6 +575,12 @@ async fn open_path_with_phase_attempt(
             let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 (|| -> Result<_, OpenAttemptFailure> {
                     use iced::time::Instant;
+                    if path2
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("rvm"))
+                    {
+                        return open_rvm_attempt(&path2, &progress2, model_bg);
+                    }
                     progress2.set(crate::app::OPEN_PHASE_PARSING, 200, 0, 1000);
                     let t_parse = Instant::now();
                     let parser_progress = {
@@ -1334,6 +1447,8 @@ fn read_file_attempt(
         "dxf" => read_dxf_path(path, failsafe),
         #[cfg(not(target_arch = "wasm32"))]
         "pid" => read_pid_path(path, pid_paper_style_scale),
+        #[cfg(not(target_arch = "wasm32"))]
+        "rvm" => read_rvm_path(path),
         other => match ocs_save::external_format(other) {
             Some(format) => std::fs::read(path)
                 .map_err(|e| ReaderFailure::terminal(e.to_string()))
@@ -1345,6 +1460,33 @@ fn read_file_attempt(
             ))),
         },
     }
+}
+
+/// Read a standalone AVEVA `.rvm` into a drawing.
+///
+/// A `.rvm` is a primitive stream, not a drawing, so what comes back is the
+/// **lightweight proxy layer**: one invisible `POINT` per geometry item
+/// carrying `E3D_SEMANTICS`, plus centreline lines/polylines on the
+/// `E3D_CENTRELINE` / `E3D_INVALID_TUBI` layers. The shared triangle meshes are
+/// *not* part of a `Document` — the GUI open path builds them alongside
+/// (`open_rvm_with_phase`); a headless caller of [`load_file`] gets the
+/// semantic and centreline layer only.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_rvm_path(path: &Path) -> Result<codec::ReadOutcome, ReaderFailure> {
+    let opened = crate::io::e3d::load_rvm(path).map_err(ReaderFailure::terminal)?;
+    let entities = opened.document.entities().count();
+    let stats = codec::ReadStats {
+        // Neither DWG nor DXF, which keeps the DXF-only repairs in
+        // `finalize_loaded_outcome` off it.
+        source_format: None,
+        record_stream_read: true,
+        stream_completed: true,
+        source_records: entities,
+        decoded_source_records: entities,
+        output_entities: entities,
+        ..Default::default()
+    };
+    Ok(codec::ReadOutcome::new(opened.document, stats))
 }
 
 #[cfg(not(target_arch = "wasm32"))]

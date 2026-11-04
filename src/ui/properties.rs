@@ -1125,7 +1125,7 @@ impl PropertiesPanel {
                 if *editable {
                     self.render_plugin_param_row(name, value)
                 } else {
-                    render_ro_row(label, value)
+                    render_ro_row(label, value, panel_width)
                 }
             }
             PropValue::EntityLink {

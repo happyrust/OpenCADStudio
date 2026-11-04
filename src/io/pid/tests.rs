@@ -772,6 +772,7 @@ fn a_bodys_arc_is_drawn_as_the_counter_clockwise_arc_over_the_same_points() {
         radius: 0.03559,
         start_angle: 3.0 * FRAC_PI_2,
         end_angle: FRAC_PI_2,
+        clockwise: false,
     };
     let midpoint = |arc: &codec::entities::Arc| {
         let sweep = (arc.end_angle - arc.start_angle).rem_euclid(2.0 * PI);
@@ -838,6 +839,7 @@ fn a_half_turn_cap_within_one_ulp_of_pi_keeps_its_clockwise_half() {
         radius: 0.02691,
         start_angle: 3.141592653589794,
         end_angle: 0.0,
+        clockwise: false,
     };
     let Some(EntityType::Arc(arc)) = shape_primitive(&head, None, &placement, &HashMap::new())
     else {
@@ -905,6 +907,8 @@ fn symbol_text_letters_at_its_own_style_and_anchor() {
         rgb: Some([0, 0, 0]),
         alignment: Some(TextAlignment::Left),
         line_spacing: Some(1.0),
+        run_style_id: Default::default(),
+        spans: Default::default(),
         font_name: Some("Arial".to_string()),
     };
     let font_styles: HashMap<String, String> = [("Arial".to_string(), "PID-Arial".to_string())]
@@ -990,6 +994,8 @@ fn mirrored_placement_lettering_stays_readable() {
         rgb: Some([0, 0, 0]),
         alignment: Some(TextAlignment::Left),
         line_spacing: Some(1.0),
+        run_style_id: Default::default(),
+        spans: Default::default(),
         font_name: None,
     };
     let primitive = SymbolPrimitive::Text {
