@@ -472,13 +472,18 @@ impl OpenCADStudio {
     }
 
     /// Whether a popup a pallet opened is showing: a colour dropdown in the
-    /// Layer Manager or Properties, or the Select Color window.
+    /// Layer Manager or Properties, one of the Properties lists, or the
+    /// Select Color window.
     fn dock_popup_open(&self) -> bool {
         let tab = &self.tabs[self.active_tab];
         tab.layers.color_picker_row.is_some()
             || tab.properties.color_picker_open
             || tab.properties.bg_color_picker_open
             || tab.properties.open_color_field.is_some()
+            || tab.properties.hatch_pattern_picker_open
+            || tab.properties.edit_choice_open
+            || tab.properties.open_block_picker.is_some()
+            || tab.properties.open_choice.is_some()
             || self.color_picker.is_some()
     }
 
@@ -506,13 +511,17 @@ impl OpenCADStudio {
         use crate::ui::dock::{DockDrag, PanelId};
         let mut task = iced::Task::none();
         if open
-            && id == PanelId::AuthoringPalettes
+            && matches!(id, PanelId::AuthoringPalettes | PanelId::ParametersManager)
             && self.tabs[self.active_tab]
                 .active_block_edit_session()
                 .is_none()
         {
-            self.command_line
-                .push_error(crate::t!("Open the Block Editor to use Authoring Palettes.").as_ref());
+            let tool = if id == PanelId::ParametersManager {
+                "Open the Block Editor to use the Parameters Manager."
+            } else {
+                "Open the Block Editor to use Authoring Palettes."
+            };
+            self.command_line.push_error(crate::t!(tool).as_ref());
             return task;
         }
         if open {
@@ -538,9 +547,13 @@ impl OpenCADStudio {
                         }
                         self.show_pid_legend_list = true;
                     }
+                    PanelId::ParametersManager => {
+                        self.show_parameters_manager = true;
+                        self.dock_open_at_default(id);
+                        self.save_config();
+                    }
                     PanelId::AuthoringPalettes => {
                         self.show_authoring_palettes = true;
-                        self.ribbon.show_authoring_palettes = true;
                         self.dock_open_at_default(id);
                         self.save_config();
                     }
@@ -587,7 +600,27 @@ impl OpenCADStudio {
             PanelId::PidLegend => self.show_pid_legend_list = false,
             PanelId::AuthoringPalettes => {
                 self.show_authoring_palettes = false;
-                self.ribbon.show_authoring_palettes = false;
+            }
+            PanelId::ParametersManager => {
+                // Closing the pane moves the click off an open cell, which is how
+                // every other route out of a cell applies what was typed. A cell
+                // left on another definition is not this pane's to apply, so it
+                // goes with the pane instead of printing a refusal.
+                let i = self.active_tab;
+                let cell_of_this_session = self.tabs[i]
+                    .parameters_panel
+                    .editing
+                    .as_ref()
+                    .is_some_and(|edit| {
+                        self.tabs[i]
+                            .active_block_edit_session()
+                            .is_some_and(|session| session.br_handle == edit.definition)
+                    });
+                if cell_of_this_session {
+                    let _ = self.commit_parameters_manager(false);
+                }
+                self.show_parameters_manager = false;
+                self.tabs[i].parameters_panel = Default::default();
             }
             PanelId::ExternalReferences => self.show_external_references = false,
             PanelId::Browser => self.show_browser = false,
@@ -607,6 +640,7 @@ impl OpenCADStudio {
                 // A hidden panel must not leave its list behind to keep the
                 // keyboard guard swallowing keys.
                 self.tabs[self.active_tab].properties.open_block_picker = None;
+                self.tabs[self.active_tab].properties.open_choice = None;
             }
             PanelId::Layers => {
                 self.show_layers = false;
@@ -691,6 +725,12 @@ impl OpenCADStudio {
             PanelId::Properties => self.show_properties,
             PanelId::BlockPalette => self.show_block_palette,
             PanelId::PidLegend => self.show_pid_legend_list,
+            PanelId::ParametersManager => {
+                self.show_parameters_manager
+                    && self.tabs[self.active_tab]
+                        .active_block_edit_session()
+                        .is_some()
+            }
             PanelId::AuthoringPalettes => {
                 self.show_authoring_palettes
                     && self.tabs[self.active_tab]

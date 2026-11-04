@@ -2513,7 +2513,7 @@ common =
     .sectionplane-specify-through-point = SECTIONPLANE  Specify through point:
     .setbylayer-no-properties-required-changes = SETBYLAYER: no properties required changes.
     .setbylayer-reset-entity-entities-to-bylayer = SETBYLAYER: reset __ocs_fmt_0__ entity/entities to ByLayer.
-    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
+    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION QUAD QUADWIDTH QUADCOMMANDLAUNCH CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
     .shell-supports-rectangular-boxes-circular-cylinders-and-spheres = SHELL supports rectangular boxes, circular cylinders, and spheres.
     .shell-solid-updated = SHELL: solid updated.
     .splinedit-fit-data-add-delete-move-purge-tangents-exit-exit = SPLINEDIT  Fit data [Add/Delete/Move/Purge/Tangents/eXit] <eXit>:
@@ -3592,6 +3592,9 @@ layers =
     .layiso-isolated-layer-s = LAYISO: изолирани __ocs_fmt_0__ слой/слоя.
     .layuniso-no-layers-were-isolated-by-layiso = LAYUNISO: няма слоеве, изолирани с LAYISO.
     .laymatch-select-objects-to-change-layer = LAYMATCH  Избери обекти за смяна на слой:
+    .copytolayer-base = Specify base point or [Displacement/eXit] <eXit>:
+    .copytolayer-second = Specify second point of displacement or <use first point as displacement>:
+    .copytolayer-displacement = Specify displacement <0.0000,0.0000,0.0000>:
     .copytolayer-select-objects-to-copy = COPYTOLAYER  Изберете обекти за копиране:
     .copytolayer-select-an-object-on-the-destination-layer = COPYTOLAYER  Изберете обект в целевия слой:
     .laymatch-select-source-object-to-match-layer-f = LAYMATCH  Избери изходен обект, от който да се вземе слоят:
@@ -3613,6 +3616,7 @@ layers =
     .layer-s-frozen = Слой(еве) замразени.
     .layer-s-locked = Слой(еве) заключени.
     .layer-s-turned-off = Слой(еве) изключени.
+    .layoff-select-object-on-layer-undo = LAYOFF  Изберете обект от слоя за изключване или [Undo]:
     .layer-s-unlocked = Слой(еве) отключени.
     .layers = Слоеве: __ocs_fmt_0__
     .lock = Заключи
@@ -3995,6 +3999,84 @@ annotate =
     .text-specify-rotation-angle = TEXT  Посочи ъгъл на завъртане <__ocs_fmt_0__>:
     .text-specify-second-endpoint = TEXT  { common.specify }: { common.endpoint-2 }:
     .tolerance-specify-insertion-point = TOLERANCE  Посочи точка на вмъкване:
+    .tcell-row-above =
+        Вмъкване на ред
+        отгоре
+    .tcell-row-below =
+        Вмъкване на ред
+        отдолу
+    .tcell-delete-rows =
+        Изтриване
+        на редове
+    .tcell-col-left =
+        Вмъкване на колона
+        вляво
+    .tcell-col-right =
+        Вмъкване на колона
+        вдясно
+    .tcell-delete-cols =
+        Изтриване
+        на колони
+    .tcell-merge =
+        Обединяване
+        на клетки
+    .tcell-unmerge =
+        Разделяне
+        на клетки
+    .tcell-lock =
+        Заключване
+        на клетки
+    .tcell-edit =
+        Редактиране
+        на текст
+    .tcell-match =
+        Съпоставяне
+        на клетка
+    .tcell-borders =
+        Рамки
+        на клетки
+    .tcell-format =
+        Формат
+        на данни
+    .tcell-block =
+        Вмъкване
+        на блок
+    .tcell-field =
+        Вмъкване
+        на поле
+    .tcell-contents =
+        Управление на
+        съдържанието
+    .tcell-link =
+        Свързване
+        на клетка
+    .tcell-download =
+        Изтегляне
+        от източник
+    .tcell-row-style = Стил на ред
+    .tcell-column-style = Стил на колона
+    .tcell-width = Ширина на клетка
+    .tcell-height = Височина на клетка
+    .tcell-border-color = Цвят на рамка
+    .tcell-border-lineweight = Дебелина на линия на рамка
+    .tcell-border-linetype = Тип линия на рамка
+    .tcell-locking = Заключване на клетка
+    .tcell-data-link = Връзка с данни на клетка
+    .tcell-select-destination = Изберете целева клетка:
+    .tcell-select-cell = Изберете клетка от таблица:
+    .tcell-range-first = Изберете първия ъгъл на диапазона от клетки:
+    .tcell-range-second = Изберете втория ъгъл на диапазона от клетки:
+    .tcell-align-prompt = Въведете подравняване на клетка [TL/TC/TR/ML/MC/MR/BL/BC/BR]:
+    .tcell-format-prompt = Въведете формат на данни [Angle/Currency/Date/Decimal/General/Percentage/Point/Text/Whole]:
+    .tcell-block-prompt = Въведете име на блок или [?]:
+    .tcell-formula-prompt = Въведете формула [Sum/Average/Count/Cell/Equation]:
+    .tcell-by-row-column = По ред/колона
+    .tcell-unlocked = Отключено
+    .tcell-content-locked = Заключено съдържание
+    .tcell-format-locked = Заключен формат
+    .tcell-content-format-locked = Заключени съдържание и формат
+    .tcell-not-linked = Несвързана
+    .tcell-invalid-cell = Невалидна клетка.
 
 insert =
     .pastespec-specify-insertion-point = PASTESPEC  Задайте точка на вмъкване:
@@ -4607,6 +4689,7 @@ insert =
     .field-help = Inserts a field: text that updates from the drawing, the date or another source.
     .field-average = Average
     .field-sum = Sum
+    .field-insert = Insert Field
     .field-object-name = Object name
     .field-block-placeholder = Block placeholder
     .field-block-editor-only = Only accessible in the block editor
@@ -5513,6 +5596,9 @@ properties =
     .fit-tolerance = Толеранс на побиране
     .fit-smooth-title-case = Побиране/Изглаждане
     .fit-smooth-sentence-case = Побиране/изглаждане
+    .fit-curve-fit = Curve fit
+    .fit-quadratic = Quadratic
+    .fit-cubic = Cubic
     .fixed-elevation-range = Фиксиран диапазон на кота
     .flag = Флаг
     .flags = Флагове
@@ -5580,6 +5666,7 @@ properties =
     .left-to-right = Отляво надясно
     .legacy-entity = Стар обект
     .less = По-малко
+    .transparency-color = Transparency Color
 
     .level-of-smoothness = Ниво на изглаждане
     .light-gray = Светлосиво
@@ -6605,6 +6692,7 @@ dimstyle =
     .move-text-outside-first = Първо премести текста навън
     .period = Точка
     .space = Интервал
+    .separator-none = (Няма)
     .surveyors-units = Геодезически единици
 
 style-manager =
@@ -6647,6 +6735,14 @@ style-manager =
     .inside-blocks = __ocs_fmt_0__ от тях са в __ocs_fmt_1__ дефиниции на блокове.
     .used-by-one-text = използван от 1 текст
     .used-by-texts = използван от __ocs_fmt_0__ текста
+    .property-change = __ocs_fmt_0__: __ocs_fmt_1__ → __ocs_fmt_2__.
+    .property-change-other = Other stored settings of the style change.
+    .annotative-change-note = Existing texts keep their own setting; new texts take this one.
+    .style-redraw-one = 1 text that uses the style is redrawn; formatting set inside MTEXT stays.
+    .style-redraw-many = __ocs_fmt_0__ texts that use the style are redrawn; formatting set inside MTEXT stays.
+    .apply-count-one = 1 style, 1 property
+    .apply-count-one-style = 1 style, __ocs_fmt_0__ properties
+    .apply-count-many = __ocs_fmt_0__ styles, __ocs_fmt_1__ properties
     .import-styles = Импортиране на стилове
     .select-drawing-to-import-styles-from = Изберете чертеж, от който да се импортират стилове
     .select-the-styles-to-import = Изберете стиловете за импортиране
@@ -6945,6 +7041,7 @@ selection-report =
     .found-duplicate-total = __ocs_fmt_0__ found (__ocs_fmt_1__ duplicate), __ocs_fmt_2__ total
     .found-removed-total = __ocs_fmt_0__ found, __ocs_fmt_1__ removed, __ocs_fmt_2__ total
     .invalid-window = Invalid window specification.
+    .no-object = No object found
 
 block-def =
     .name-too-short = The name must be at least one character long.
@@ -7215,6 +7312,7 @@ dgn-import =
     .dgn-import = DGN Import
     .import-dgn-file = Import DGN File
     .import-wmf = Импортиране на WMF
+    .import-svg = Импортиране на SVG
     .help-dgn = Imports a DGN model as drawing objects: levels as layers, cells as blocks.
     .help-import = Imports a file of the chosen format with the format's importer.
     .blank = Filename cannot be blank
@@ -8157,3 +8255,332 @@ array-grips = Брой елементи
 block-chain =
     .label = Верижни действия
     .cycle = Веригата от действия на блока съдържа цикъл.
+
+block-action-bars =
+    .requires-session = BACTIONBAR изисква активна сесия в редактора на блокове.
+    .enable-display = Задайте BACTIONBARMODE на 1, за да се показват лентите с действия.
+    .parameters-changed = Списъкът с параметри е променен; стартирайте BACTIONBAR отново.
+    .display-updated = Показването на лентите с действия е обновено.
+    .prompt-mode = BACTIONBAR  [Show/Hide/Reset]:
+    .prompt-selected = BACTIONBAR  Изберете параметър, въведете името му или [All] <Избран>:
+    .prompt-all = BACTIONBAR  Изберете параметър, въведете името му или [All] <All>:
+    .choose-mode = Изберете Show, Hide или Reset.
+    .unique-parameter = Въведете уникално име на параметър, посочете крайната му точка или изберете All.
+    .enter-parameter = Въведете име на параметър или изберете All.
+    .pick-endpoint = Посочете крайна точка на параметър или изберете All.
+
+block-construction =
+    .requires-session = BCONSTRUCTION е налична само в редактора на блокове.
+    .choose-operation = Изберете Convert, Revert, Show или Hide.
+    .stale-session = Сесията на редактора на блокове за помощната геометрия вече не е активна.
+    .changed-count = Променени геометрични обекти: __ocs_fmt_0__.
+    .prompt-selection = BCONSTRUCTION  Изберете геометрия или [Convert/Revert/Show/Hide]:
+    .prompt-operation = BCONSTRUCTION  Изберете [Convert/Revert] <Convert> или натиснете Enter за прилагане на избраната операция:
+    .revert = Възстановяване
+    .history = Редактиране на помощна геометрия
+    .unsupported-record = Този запис за помощна геометрия има неподдържана версия или стойност.
+    .open-definition = Отворете дефиниция на блок, преди да редактирате помощна геометрия.
+    .missing-object = Избран обект от помощната геометрия вече не е наличен.
+    .active-geometry = Изберете геометрия в активната дефиниция на блок.
+    .locked-layer = Помощната геометрия не може да се променя в заключен слой.
+    .revert-layer = Изберете съществуващ отключен слой за възстановената геометрия.
+
+block-authoring-history =
+    .alignment-type = Тип подравняване
+    .action-override = Редактиране на заместване на действие на блок
+    .action-chain = Редактиране на верига от действия на блок
+    .action-base = Редактиране на базова точка на действие на блок
+    .parameter-chain = BEDIT Свързване на действия на параметър
+    .value-set = BEDIT Набор от стойности на параметър
+    .parameter-metadata = Редактиране на метаданни на параметър на блок
+    .authoring-grip = Манипулатор за създаване на блок
+
+block-operation-history =
+    .reset-references = Нулиране на препратки към блок
+    .associate-action = Свързване на действие на блок
+    .action-selection = Набор за избор на действие
+    .test-parameter = Параметър на тестов блок
+    .reference-parameter = Параметър на препратка към блок
+    .align-reference = Подравняване на препратка към блок
+    .insertion-grip-order = Промяна на реда на манипулаторите за вмъкване
+    .move-grip = Преместване на собствен манипулатор на блок
+    .configure-grips = Настройване на манипулатори на параметри на блок
+    .lookup-tables = Таблици за справка
+    .hyperlink = Хипервръзка на блок
+    .properties = Свойства на блок
+    .properties-table = Таблица със свойства на блок
+    .visibility-state = Състояние на видимост
+    .visibility-states = Състояния на видимост
+
+block-formatted-history =
+    .action = Действие { $label }
+    .parameter = Параметър { $label }
+    .edit-block = Редактиране на блок { $label }
+    .save-block = Записване на блок като { $label }
+    .delete-block = Изтриване на блок { $label }
+
+block-history-kinds =
+    .flip = Обръщане
+    .polar-stretch = Полярно разтягане
+    .basepoint = Базова точка
+    .lookup = Справка
+
+block-action-properties =
+    .base-point = Базова точка на действие
+    .overrides = Замествания на действие
+    .multiplier = Коефициент на разстояние
+    .angle-offset = Отместване на ъгъл (градуси)
+    .chain = Верига от действия
+    .chain-to = Свързване към
+
+block-parameter-properties =
+    .show-properties = Показване в свойства
+    .parameter-name = Име на параметър
+    .grip-count = Брой манипулатори
+    .dependent-base = Зависима базова точка
+    .offset-x = Отместване на базата X
+    .offset-y = Отместване на базата Y
+    .base-grip = Позиция на базов манипулатор
+    .end-grip = Позиция на краен манипулатор
+    .x-grip = Позиция на манипулатор X
+    .y-grip = Позиция на манипулатор Y
+
+block-value-set =
+    .use-min = Използване на минимум за { $label }
+    .use-max = Използване на максимум за { $label }
+    .use-increment = Използване на стъпка за { $label }
+    .use-list = Използване на списък с допустими стойности за { $label }
+    .min = Минимум за { $label }
+    .max = Максимум за { $label }
+    .increment = Стъпка за { $label }
+    .values = Допустими стойности за { $label }
+    .title = Набор от стойности
+    .x-distance = Разстояние X
+    .y-distance = Разстояние Y
+
+table-style-cells =
+    .tbl-start-from-style = Започване от стил на таблица
+    .tbl-extra-columns = Допълнителни колони
+    .tbl-extra-rows = Допълнителни редове
+    .tbl-keep-from-template = Запазване от началната таблица:
+    .tbl-keep-label-text = Текст в клетки за етикети
+    .tbl-keep-data-text = Текст в клетки с данни
+    .tbl-keep-overrides = Заменяния на стил на клетка
+    .tbl-keep-links = Връзки с данни
+    .tbl-keep-fields = Полета
+    .tbl-keep-formulas = Формули
+    .tbl-extra-whole = Допълнителните редове и колони трябва да са цели числа.
+    .from-style-insertion = __ocs_arg_n__  Посочете точка на вмъкване или [Style/Rows/Columns/Options]:
+    .from-style-name = __ocs_arg_n__  Въведете име на стил на таблица или [?] <__ocs_arg_style__>:
+    .from-style-rows = __ocs_arg_n__  Въведете брой допълнителни редове <__ocs_arg_rows__>:
+    .from-style-columns = __ocs_arg_n__  Въведете брой допълнителни колони <__ocs_arg_columns__>:
+    .from-style-options = __ocs_arg_n__  Въведете опция за вмъкване [Label text/Data text/Formulas/fIelds/data liNks/Blocks/cell style Overrides] <exit>:
+    .from-style-option = __ocs_arg_n__  Включване на __ocs_arg_what__ във вмъкнатата таблица? [Yes/No] <__ocs_arg_current__>:
+    .label-text = текст на етикети
+    .data-text = текст на данни
+    .formulas = формули
+    .fields = полета
+    .data-links = връзки с данни
+    .blocks = блокове
+    .cell-style-overrides = заменяния на стил на клетка
+    .style-name-header = Име на стил на таблица
+    .no-starting-table = Стилът на таблица не съдържа таблица.
+    .select-table = Изберете таблица:
+    .not-a-table = Обектът не е таблица.
+    .cell-style-exists = Вече съществува стил на клетка с това име.
+    .cell-style-in-use = Стилът на клетка се използва и не може да бъде изтрит.
+    .template-size = __ocs_arg_rows__ реда × __ocs_arg_columns__ колони
+    .cell-properties = Свойства на клетка
+    .cell-text = Текст на клетка
+    .cell-borders = Рамки на клетки
+    .cell-styles = Стилове на клетки
+    .label = Етикет
+    .margins = Отстъпи
+    .merge-on-create = Обединяване на клетки при създаване на ред/колона
+    .new-from-this = Нов от този
+    .new-name = Ново име
+    .real-number = Реално число
+    .whole-number = Цяло число
+    .select-table-button = Избор на таблица…
+    .starting-table = Начална таблица
+    .table-direction = Посока на таблица
+
+table-cells =
+    .borders-title = Рамки на клетки
+    .contents-title = Съдържание на клетка
+    .line = Линия
+    .lineweight = Дебелина на линия
+    .linetype = Тип линия
+    .color = Цвят
+    .double = Двойна линия
+    .spacing = Разстояние
+    .apply-to = Прилагане към
+    .all = Всички
+    .outside = Външни
+    .inside = Вътрешни
+    .none = Без
+    .top = Горна
+    .bottom = Долна
+    .left = Лява
+    .right = Дясна
+    .inside-horizontal = Вътрешни хоризонтални
+    .inside-vertical = Вътрешни вертикални
+    .contents = Съдържание
+    .empty = Клетката е празна.
+    .move-up = Преместване нагоре
+    .move-down = Преместване надолу
+    .delete = Изтриване
+    .layout = Подредба
+    .flow = Поток
+    .stack-horizontal = Подредени хоризонтално
+    .stack-vertical = Подредени вертикално
+    .content-spacing = Разстояние
+    .block-item = Блок: { $name }
+    .text-item = Текст: { $text }
+    .text-content = Текст на клетка от таблица
+    .borders-help = Задава дебелината на линия, типа линия и цвета на рамките на избраните клетки; изберете страните, към които се прилагат.
+    .contents-help = Подрежда, премахва и разполага съдържанието на избраната клетка.
+    .block-title = Блок на клетка
+    .format-title = Формат на данни на клетка
+    .block = Блок
+    .block-name = Име
+    .browse = Преглед...
+    .block-path = Път
+    .placement = Разположение
+    .alignment = Подравняване на клетка
+    .scale = Мащаб
+    .autofit = Автоматично побиране
+    .rotation = Ъгъл на завъртане
+    .format = Формат
+    .current-precision = Текуща точност
+    .precision = Точност
+    .symbol = Символ
+    .append-symbol = Добавяне на символа отзад
+    .negative-parens = Отрицателни в скоби
+    .list-separator = Разделител на списък
+    .date-format = Формат на дата
+    .no-format-settings = Този тип данни няма настройки за формат.
+    .data-type = Тип данни
+    .format-settings = Формат
+    .currency = Валута
+    .decimal-number = Десетично число
+    .percentage = Процент
+    .whole-number = Цяло число
+    .grads = Гради
+    .sample-text = примерен текст
+    .block-help = Поставя блок в избраните клетки: позиция, мащаб (или побиране в клетката) и завъртане.
+    .format-help = Задава типа данни и формата, с които се четат стойностите на избраните клетки.
+    .additional-format = Допълнителен формат
+    .conversion = Коефициент на преобразуване
+    .prefix = Префикс
+    .suffix = Суфикс
+    .decimal-separator = Десетичен разделител
+    .thousands-separator = Разделител на хиляди
+    .space = Интервал
+    .separator-none = (Няма)
+    .zero-leading = Водещи нули
+    .zero-trailing = Крайни нули
+    .zero-feet = 0 фута
+    .zero-inches = 0 инча
+    .warning-title = Типът данни не съвпада
+    .warning-heading = Тези клетки съдържат стойности, които не са от избрания тип данни.
+    .warning-note = Преобразуването чете всяка стойност като новия тип; стойност, която не може да се прочете, се изчиства. Отказ оставя клетките непроменени.
+    .warning-ok = Преобразуване
+    .warning-cancel = Отказ
+    .entry-title = Cell Value Does Not Match
+    .entry-heading = The typed value is not of this cell's data type.
+    .entry-type = Change the cell's data type
+    .entry-type-note = The cell takes the data type of the typed value and the value goes in.
+    .entry-value = Edit the value
+    .entry-value-note = The value goes back into the cell's editor to be corrected.
+
+parameters-manager =
+    .action-parameters = Параметри на действия
+    .filter = Име*
+    .search = Търсене на параметър
+    .order = Ред
+    .polar = Полярен
+    .visibility = Видимост
+    .variable = Променлива
+    .footer = Всички: показани са { $shown } от { $total } параметъра
+
+parameters-manager-feedback =
+    .no-number = Този ред няма число за редактиране.
+    .no-flag = Този ред няма флаг за видимост за промяна.
+    .finite-number = Задайте крайна числова стойност на параметъра.
+    .stale-session = Сесията на редактора на блокове вече не е активна.
+    .positive-length = Задайте положителна дължина на параметъра.
+    .no-direction = Посоката на параметъра не е налична.
+    .history = Редактиране в диспечера на параметри
+
+block-action-targets =
+    .prompt = BACTIONSET  Изберете обекти или въведете Parameter и име на параметър, след което натиснете Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .create-prompt = BACTION  Изберете обекти или въведете Parameter и име на параметър, след което натиснете Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .unique-point = Въведете уникално име на параметър.
+    .empty = Действието се нуждае от поне една цел.
+    .invalid = Изберете поддържани цели в този блок.
+    .stale = Действието или сесията на редактора на блокове е променена; стартирайте BACTIONSET отново.
+    .create-stale = Действието или сесията на редактора на блокове е променена; стартирайте BACTION отново.
+
+revcloud-cmd =
+    .header = Minimum arc length: { $min }   Maximum arc length: { $max }   Style: { $style }   Type: { $kind }
+    .style-normal = Normal
+    .style-calligraphy = Calligraphy
+    .type-rectangular = Rectangular
+    .type-polygonal = Polygonal
+    .type-freehand = Freehand
+    .first-corner = REVCLOUD  Specify first corner point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .start-point = REVCLOUD  Specify start point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .first-point = REVCLOUD  Specify first point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .opposite = REVCLOUD  Specify opposite corner:
+    .next = REVCLOUD  Specify next point:
+    .next-undo = REVCLOUD  Specify next point or [Undo]:
+    .guide = REVCLOUD  Guide crosshairs along cloud path...
+    .arc = REVCLOUD  Specify approximate length of arc <{ $length }>:
+    .second = REVCLOUD  Specify second point:
+    .second-point = Specify second point:
+    .style = REVCLOUD  Select arc style [Normal/Calligraphy] <{ $style }>:
+    .object = REVCLOUD  Select object:
+    .reverse = REVCLOUD  Reverse direction [Yes/No] <No>:
+    .modify-select = REVCLOUD  Select polyline to modify:
+    .modify-first = REVCLOUD  Specify next point or [First point]:
+    .modify-start = REVCLOUD  Specify a start point:
+    .modify-side = REVCLOUD  Pick a side to erase:
+    .invalid-shape = Invalid shape to create revision cloud.
+    .finished = Revision cloud finished.
+    .unable = Unable to convert object, must be a polyline, spline, or circle.
+    .positive = Value must be positive and nonzero.
+    .numeric = Requires numeric distance or two points.
+    .keyword = Invalid option keyword.
+    .var-mode = Requires an integer between 0 and 2.
+    .var-onoff = Requires 0 or 1 only, or option keyword.
+
+wipeout-cmd =
+    .select-polyline = WIPEOUT  Select a closed polyline:
+    .polyline-invalid = The polyline must be closed and made up of only line segments.
+    .erase-polyline = WIPEOUT  Erase polyline? [Yes/No] <No>:
+    .frames = WIPEOUT  Enter mode [ON/OFF/Display but not plot] <{ $current }>:
+    .frame-on = ON
+    .frame-off = OFF
+    .frame-display = Display but not plot
+    .keyword = Invalid option keyword.
+    .point-or-keyword = 2D point or option keyword required.
+
+quad-menu =
+    .label = QUAD
+    .menu = Quad Cursor Menu
+    .pill-tip =
+        Quad cursor menu
+        Click to toggle on/off
+    .options-tip =
+        Quad display options
+        Click to choose
+    .show = Show the Quad cursor menu (Shift+F12, QUAD)
+    .on-hover = Hover an object: offer its commands
+    .on-select = A selection offers its shared commands
+    .on-void = Right-click in the void: creation commands
+    .suppress-hover = Suppress the hover quad while a selection exists
+    .hover-delay = Hover delay
+    .width = Quad width
+    .launch = Right-click over an object launches its default command directly (QUADCOMMANDLAUNCH)
+    .about = The Quad cursor menu appears at the cursor: default commands for what it points at, recent and creation commands otherwise (QUAD, QUADWIDTH).

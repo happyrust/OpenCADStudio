@@ -461,6 +461,8 @@ pub enum ParagraphAlign {
 pub enum InlineColor {
     Aci(u8),
     True([f32; 3]),
+    /// `\C256;`: the entity's layer colour.
+    ByLayer,
 }
 
 /// Tab-stop alignment kind (from `\pt<L|C|R><pos>` entries). `Center` / `Right`
@@ -712,6 +714,7 @@ pub fn adapt_mtext_paragraphs(
         }
         match p.color {
             Some(MTextColor::Index(n)) => Some(InlineColor::Aci(n.min(255) as u8)),
+            Some(MTextColor::ByLayer) => Some(InlineColor::ByLayer),
             _ => None,
         }
     }
@@ -1359,6 +1362,7 @@ pub fn wrap_paragraph(
     entity_h: f32,
     base_wf: f32,
     base_font: &str,
+    break_long_words: bool,
 ) -> Vec<Vec<LayoutAtom>> {
     if rect_w <= 0.0 {
         return vec![atoms];
@@ -1373,6 +1377,49 @@ pub fn wrap_paragraph(
     let mut after_align_tab = false;
     let line_start_x = |idx: usize| if idx == 0 { indent_first } else { indent_left };
     let line_max_w = |idx: usize| (rect_w - indent_right - line_start_x(idx)).max(0.0);
+    // A word wider than a whole line breaks between its characters: each
+    // piece fills a line, the last one carries on (measured: a table cell's
+    // "$1234.5678" reads "$1234.5" over "7").
+    let ink = |atom: &LayoutAtom| {
+        atom_width(atom, entity_h, base_wf, base_font)
+            - trailing_letter_gap(atom, entity_h, base_wf, base_font)
+    };
+    let full_w = line_max_w(1);
+    let atoms: Vec<LayoutAtom> = atoms
+        .into_iter()
+        .flat_map(|atom| {
+            let AtomKind::Word(text) = &atom.kind else {
+                return vec![atom];
+            };
+            if !break_long_words
+                || full_w <= 0.0
+                || ink(&atom) <= full_w
+                || text.chars().count() < 2
+            {
+                return vec![atom];
+            }
+            let chars: Vec<char> = text.chars().collect();
+            let mut pieces = Vec::new();
+            let mut start = 0;
+            while start < chars.len() {
+                let mut end = start + 1;
+                while end < chars.len() {
+                    let mut probe = atom.clone();
+                    probe.kind = AtomKind::Word(chars[start..=end].iter().collect());
+                    if ink(&probe) > full_w {
+                        break;
+                    }
+                    end += 1;
+                }
+                let mut piece = atom.clone();
+                piece.kind = AtomKind::Word(chars[start..end].iter().collect());
+                piece.char_offset = atom.char_offset + start;
+                pieces.push(piece);
+                start = end;
+            }
+            pieces
+        })
+        .collect();
 
     for atom in atoms {
         match &atom.kind {
@@ -1467,8 +1514,13 @@ fn inline_aci(state: &RunState) -> Option<u8> {
     }
 }
 
-pub fn resolve_inline_color(c: &InlineColor) -> Option<[f32; 3]> {
+/// `layer` is the entity's layer colour, which `\C256;` asks for; without it
+/// such a run keeps the entity colour.
+pub fn resolve_inline_color(c: &InlineColor, layer: Option<&InlineColor>) -> Option<[f32; 3]> {
     match c {
+        InlineColor::ByLayer => layer
+            .filter(|l| **l != InlineColor::ByLayer)
+            .and_then(|l| resolve_inline_color(l, None)),
         InlineColor::Aci(idx) => aci_to_rgb(*idx).map(|(r, g, b)| {
             let rgb = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
             if *idx == 7 {
@@ -1609,9 +1661,15 @@ pub struct MTextRenderOpts<'a> {
     /// one world-space box per visible character (used by the MText editor's
     /// click-to-select preview). Off in the hot render path.
     pub want_glyph_boxes: bool,
+    /// Break a word wider than the box between its characters, as a table
+    /// cell does; MTEXT lets such a word run past its box.
+    pub break_long_words: bool,
     /// The entity's column layout. `Default` (count 0) = a single column, which
     /// is what everything except a multi-column MTEXT wants.
     pub columns: MTextColumns,
+    /// The entity's layer colour, for runs coloured `\C256;` (ByLayer).
+    /// `None` leaves them in the entity colour.
+    pub layer_color: Option<InlineColor>,
 }
 
 /// An MTEXT's column layout, flattened from its `column_data`.
@@ -1908,6 +1966,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
             entity_h,
             base_wf,
             &base_font_name,
+            opts.break_long_words,
         );
         let n_wrapped = wrapped.len();
         for (idx, atoms) in wrapped.into_iter().enumerate() {
@@ -2505,7 +2564,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                         // own single-glyph run so the SDF path draws it at its
                         // cell origin; 1.4×height is the classic vertical cell
                         // advance.
-                        let color = atom.state.color.as_ref().and_then(resolve_inline_color);
+                        let color = atom.state.color.as_ref().and_then(|c| resolve_inline_color(c, opts.layer_color.as_ref()));
                         let cell = run_h * 1.4;
                         // Word wrap, vertically: a word that would overrun the
                         // column limit moves WHOLE to the next column (the
@@ -2606,7 +2665,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                         2 => line_max_h - run_h,
                         _ => 0.0,
                     };
-                    let color = atom.state.color.as_ref().and_then(resolve_inline_color);
+                    let color = atom.state.color.as_ref().and_then(|c| resolve_inline_color(c, opts.layer_color.as_ref()));
 
                     let lx = cursor_x;
                     let ly = valign_dy;
@@ -2800,7 +2859,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                     let oblique = base_oblique + atom.state.oblique_rad;
                     let font_name = resolve_font(&atom.state, &base_font_name);
                     let tracking = atom.state.tracking;
-                    let color = atom.state.color.as_ref().and_then(resolve_inline_color);
+                    let color = atom.state.color.as_ref().and_then(|c| resolve_inline_color(c, opts.layer_color.as_ref()));
                     let valign_dy = match atom.state.valign {
                         1 => (line_max_h - run_h) * 0.5,
                         2 => line_max_h - run_h,
@@ -3016,7 +3075,7 @@ pub fn layout_mtext(opts: &MTextRenderOpts) -> MTextLayout {
                             2 => line_max_h - run_h,
                             _ => 0.0,
                         };
-                        let color = atom.state.color.as_ref().and_then(resolve_inline_color);
+                        let color = atom.state.color.as_ref().and_then(|c| resolve_inline_color(c, opts.layer_color.as_ref()));
                         let lx = cursor_x;
                         let ly = valign_dy;
                         let origin: [f64; 2] = [
@@ -3208,6 +3267,7 @@ mod tests {
     fn bottom_and_middle_attachments_follow_the_ink() {
         let layout = |value: &str, v_anchor| {
             layout_mtext(&MTextRenderOpts {
+                layer_color: None,
                 columns: Default::default(),
                 value,
                 insertion: [0.0, 0.0, 0.0],
@@ -3222,6 +3282,7 @@ mod tests {
                 rectangle_height: 0.0,
                 vertical_text: false,
                 want_glyph_boxes: false,
+                break_long_words: false,
             })
         };
 
@@ -3254,6 +3315,7 @@ mod tests {
         assert_eq!(resolve_font(&state, base), base);
 
         let layout = layout_mtext(&MTextRenderOpts {
+            layer_color: None,
             columns: Default::default(),
             value: "{\\f__definitely_not_an_installed_font__|b0|i0|c0|p34;Storage Units}",
             insertion: [0.0, 0.0, 0.0],
@@ -3268,6 +3330,7 @@ mod tests {
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: false,
+            break_long_words: false,
         });
 
         assert!(
@@ -3279,6 +3342,7 @@ mod tests {
     #[test]
     fn block_style_font_name_from_ttf_file_renders_mtext() {
         let layout = layout_mtext(&MTextRenderOpts {
+            layer_color: None,
             columns: Default::default(),
             value: "FERRAGAMO",
             insertion: [0.0, 0.0, 0.0],
@@ -3293,6 +3357,7 @@ mod tests {
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: false,
+            break_long_words: false,
         });
 
         assert!(
@@ -3304,6 +3369,7 @@ mod tests {
     #[test]
     fn explicit_column_break_is_not_balanced_twice() {
         let layout = layout_mtext(&MTextRenderOpts {
+            layer_color: None,
             columns: MTextColumns {
                 count: 3,
                 width: 10.0,
@@ -3324,6 +3390,7 @@ mod tests {
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: false,
+            break_long_words: false,
         });
 
         let origin_x = |text: &str| {
@@ -3494,6 +3561,7 @@ mod v_anchor_tests {
             is_vertical: false,
         };
         layout_mtext(&MTextRenderOpts {
+            layer_color: None,
             columns: Default::default(),
             value,
             insertion: [0.0, 0.0, 0.0],
@@ -3508,6 +3576,7 @@ mod v_anchor_tests {
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: true,
+            break_long_words: false,
         })
     }
 
@@ -3559,6 +3628,7 @@ mod v_anchor_tests {
             is_vertical: true,
         };
         let layout = layout_mtext(&MTextRenderOpts {
+            layer_color: None,
             columns: Default::default(),
             value: "ab c",
             insertion: [0.0, 0.0, 0.0],
@@ -3573,6 +3643,7 @@ mod v_anchor_tests {
             rectangle_height: 0.0,
             vertical_text: true,
             want_glyph_boxes: true,
+            break_long_words: false,
         });
         let mut boxes: Vec<_> = layout.glyph_boxes.iter().collect();
         boxes.sort_by_key(|b| b.vis);
@@ -3680,6 +3751,7 @@ mod v_anchor_tests {
         // to stay one unbreakable word: a single line overshooting the box.
         let value = "本工程之各種平面圖均須相互配合如有不符或須更正處均按工程慣例施工至完整並請於估價前提出";
         let opts = MTextRenderOpts {
+            layer_color: None,
             columns: Default::default(),
             value,
             insertion: [0.0, 0.0, 0.0],
@@ -3694,6 +3766,7 @@ mod v_anchor_tests {
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: true,
+            break_long_words: false,
         };
         let layout = layout_mtext(&opts);
         assert!(
@@ -3724,6 +3797,7 @@ mod v_anchor_tests {
             is_vertical: false,
         };
         let layout = layout_mtext(&MTextRenderOpts {
+            layer_color: None,
             columns: Default::default(),
             value: "\\pi-36,l36,t36;1.\tAAA BBB CCC DDD EEE FFF GGG HHH III JJJ",
             insertion: [0.0, 0.0, 0.0],
@@ -3738,6 +3812,7 @@ mod v_anchor_tests {
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: false,
+            break_long_words: false,
         });
         let first = &layout.strokes[1];
         let wrapped = layout
@@ -3797,6 +3872,7 @@ mod v_anchor_tests {
         };
 
         let opts = MTextRenderOpts {
+            layer_color: None,
             columns: Default::default(),
             value: "بسم الله الرحمن الرحيم",
             insertion: [0.0, 0.0, 0.0],
@@ -3811,6 +3887,7 @@ mod v_anchor_tests {
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: true,
+            break_long_words: false,
         };
 
         let layout = layout_mtext(&opts);
@@ -3841,6 +3918,7 @@ mod v_anchor_tests {
 
         // Test mixed multilingual string in wrapped box (rect_w = 200.0)
         let opts_mixed = MTextRenderOpts {
+            layer_color: None,
             columns: Default::default(),
             value: "یہ اردو ہے۔ مرحبا! שלום שנה 2026 is here!",
             insertion: [0.0, 0.0, 0.0],
@@ -3855,6 +3933,7 @@ mod v_anchor_tests {
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: true,
+            break_long_words: false,
         };
         let layout_mixed = layout_mtext(&opts_mixed);
         assert!(!layout_mixed.strokes.is_empty());
@@ -3873,6 +3952,7 @@ mod v_anchor_tests {
 
         // Test single Arabic word "ميل"
         let opts_mayl = MTextRenderOpts {
+            layer_color: None,
             columns: Default::default(),
             value: "ميل",
             insertion: [0.0, 0.0, 0.0],
@@ -3887,6 +3967,7 @@ mod v_anchor_tests {
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: true,
+            break_long_words: false,
         };
         let layout_mayl = layout_mtext(&opts_mayl);
         assert_eq!(layout_mayl.strokes.len(), 1);

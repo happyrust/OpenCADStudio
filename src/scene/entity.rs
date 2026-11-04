@@ -310,32 +310,42 @@ impl Scene {
             return;
         }
         let name = insert.block_name.clone();
-        let base = crate::scene::render_graph::block_base_point(document, &name);
-        let place = crate::scene::render_graph::insert_transform_with_base(insert, base);
-        let definitions: Vec<codec::entities::AttributeDefinition> = document
-            .entities_in_block(&name)
-            .filter_map(|entity| match entity {
-                EntityType::AttributeDefinition(definition) => Some(definition.clone()),
-                _ => None,
-            })
-            .collect();
-        if definitions.is_empty() {
+        let attributes = Self::attributes_from_definitions(document, insert, |_| None);
+        if attributes.is_empty() {
             return;
         }
         Self::sync_attribute_flag(document, &name);
-        let attributes: Vec<codec::entities::AttributeEntity> = definitions
-            .iter()
-            .map(|definition| {
-                let mut attribute =
-                    codec::entities::AttributeEntity::from_definition(definition, None);
-                codec::Entity::apply_transform(&mut attribute, &place);
-                attribute
-            })
-            .collect();
         let Some(EntityType::Insert(insert)) = document.get_entity_mut(insert_handle) else {
             return;
         };
         insert.attributes = attributes;
+    }
+
+    /// The attributes `insert` gets from its block's definitions, placed by
+    /// the reference. `value` answers each definition; `None` keeps its
+    /// default value.
+    pub(crate) fn attributes_from_definitions(
+        document: &codec::Document,
+        insert: &codec::entities::Insert,
+        mut value: impl FnMut(&codec::entities::AttributeDefinition) -> Option<String>,
+    ) -> Vec<codec::entities::AttributeEntity> {
+        let name = &insert.block_name;
+        let base = crate::scene::render_graph::block_base_point(document, name);
+        let place = crate::scene::render_graph::insert_transform_with_base(insert, base);
+        document
+            .entities_in_block(name)
+            .filter_map(|entity| match entity {
+                EntityType::AttributeDefinition(definition) => {
+                    let mut attribute = codec::entities::AttributeEntity::from_definition(
+                        definition,
+                        value(definition),
+                    );
+                    codec::Entity::apply_transform(&mut attribute, &place);
+                    Some(attribute)
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// Give the attributes a reference arrives with their own identity. Whoever
@@ -636,9 +646,25 @@ impl Scene {
             return false;
         };
         let block_marker = br.block_entity_handle;
+        let record = br.handle;
         br.name = new.to_string();
         if self.document.block_records.add(br).is_err() {
             return false;
+        }
+        // Every reader resolves the definition's authored name through this
+        // XData first, so its name slot must not keep spelling the old name.
+        if let Some(mut authored) = self
+            .document
+            .object_xdata(record)
+            .and_then(|xdata| xdata.get_record(super::block_authoring::TRUE_NAME))
+            .cloned()
+        {
+            if let Some(name) = authored.values.iter_mut().find(|value| {
+                matches!(value, codec::xdata::XDataValue::String(text) if !text.trim().is_empty())
+            }) {
+                *name = codec::xdata::XDataValue::String(new.to_string());
+            }
+            self.document.set_object_xdata_record(record, authored);
         }
         // Keep the Block marker entity's name in sync (used on DXF/DWG save).
         if let Some(EntityType::Block(b)) = self.document.get_entity_mut(block_marker) {
@@ -924,6 +950,30 @@ impl Scene {
     }
 
     pub fn restore_solid_models(&mut self, handles: &[Handle]) {
+        /// The box around a body's surface, from a coarse tessellation.
+        fn body_box(body: &kernel::brep::Body) -> Option<([f64; 3], [f64; 3])> {
+            let tolerance = kernel::brep::mesh::TessellationTolerance::new(0.5, 1e-3);
+            let mesh = kernel::brep::mesh::tessellate(body, tolerance).mesh;
+            let mut points = mesh.positions.iter().copied();
+            let first = points.next()?;
+            Some(points.fold((first, first), |(lo, hi), p| {
+                (
+                    [lo[0].min(p[0]), lo[1].min(p[1]), lo[2].min(p[2])],
+                    [hi[0].max(p[0]), hi[1].max(p[1]), hi[2].max(p[2])],
+                )
+            }))
+        }
+        /// Whether two bodies fill the same box, to a hundredth of its size
+        /// (the coarse tessellation cuts curved sides differently).
+        fn same_place(a: &kernel::brep::Body, b: &kernel::brep::Body) -> bool {
+            let (Some((alo, ahi)), Some((blo, bhi))) = (body_box(a), body_box(b)) else {
+                return true;
+            };
+            let size = (0..3).map(|k| ahi[k] - alo[k]).fold(0.0_f64, f64::max);
+            let slack = size * 1e-2 + 1e-9;
+            (0..3).all(|k| (alo[k] - blo[k]).abs() <= slack && (ahi[k] - bhi[k]).abs() <= slack)
+        }
+
         let bodies: Vec<(Handle, kernel::brep::Body)> = handles
             .iter()
             .filter(|handle| !self.solid_models.contains_key(handle))
@@ -950,7 +1000,15 @@ impl Scene {
                 let body = if tree.as_ref().is_some_and(|tree| tree.has_boolean()) {
                     stored().or_else(rebuilt)
                 } else {
-                    rebuilt().or_else(stored)
+                    match (rebuilt(), stored()) {
+                        // A history that no longer matches the saved body
+                        // (moved by a path that left it behind) would cut or
+                        // join the solid where it is not drawn.
+                        (Some(rebuilt), Some(stored)) if !same_place(&rebuilt, &stored) => {
+                            Some(stored)
+                        }
+                        (rebuilt, stored) => rebuilt.or(stored),
+                    }
                 }?;
                 Some((handle, body))
             })
@@ -1078,11 +1136,14 @@ impl Scene {
         [r, g, b, alpha]
     }
 
+    /// The definitions an operator can place by name. Generated records
+    /// (`*U`, `*D`, …) are not definitions anybody authored, so listing them
+    /// would advertise a block nobody made.
     pub fn custom_block_names(&self) -> Vec<String> {
         self.document
             .block_records
             .iter()
-            .filter(|br| !br.is_standard() && !br.is_layout())
+            .filter(|br| !br.is_standard() && !br.is_layout() && !br.is_anonymous())
             .map(|br| br.name.clone())
             .collect()
     }
@@ -2067,6 +2128,29 @@ impl Scene {
         viewport: Option<Handle>,
         tint_selected: bool,
     ) -> Vec<HatchModel> {
+        self.synced_hatch_models_hosted(
+            target_block,
+            frozen,
+            annotation_scale_handle,
+            all_visible,
+            viewport,
+            tint_selected,
+        )
+        .0
+    }
+
+    /// `synced_hatch_models` plus, for every model, the top-level reference
+    /// that draws it (`Handle::NULL` for a fill drawn directly), index for
+    /// index.
+    pub(super) fn synced_hatch_models_hosted(
+        &self,
+        target_block: Handle,
+        frozen: Option<&rustc_hash::FxHashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
+        viewport: Option<Handle>,
+        tint_selected: bool,
+    ) -> (Vec<HatchModel>, Vec<Handle>) {
         // synced_hatch_models is cached on geometry_epoch and the GPU
         // upload is keyed on geometry_epoch only (see render.rs — hatch
         // buffers are "static"). Don't view-cull here; the per-frame
@@ -2120,7 +2204,9 @@ impl Scene {
 
         // Background for adapting block-child hatch colours at the leaf (#221).
         // Instanced/owned hatch leaves are produced by the shared scene graph.
-        models.extend(self.instanced_hatch_models(
+        let mut hosts = vec![Handle::NULL; models.len()];
+        for (host, model) in self.instanced_hatch_models_hosted_for_document(
+            &self.document,
             target_block,
             hatch_bg,
             tint_selected,
@@ -2128,12 +2214,47 @@ impl Scene {
             annotation_scale_handle,
             all_visible,
             viewport,
-        ));
+            None,
+            false,
+            false,
+        ) {
+            hosts.push(host);
+            models.push(model);
+        }
 
         // Wide polyline bands remain on the wire path, including inside block
         // instances; the graph does not reclassify them as hatch fills.
 
-        models
+        (models, hosts)
+    }
+
+    /// Fresh fills for just the given INSERTs (as `synced_hatch_models`
+    /// would produce them), each with its host reference.
+    pub(super) fn hatch_models_for_hosts(
+        &self,
+        target_block: Handle,
+        hosts: &rustc_hash::FxHashSet<Handle>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
+    ) -> Vec<(Handle, HatchModel)> {
+        let hatch_bg = if self.current_layout != "Model" {
+            self.paper_bg_color
+        } else {
+            self.bg_color
+        };
+        self.instanced_hatch_models_hosted_for_document(
+            &self.document,
+            target_block,
+            hatch_bg,
+            false,
+            None,
+            annotation_scale_handle,
+            all_visible,
+            None,
+            Some(hosts),
+            false,
+            false,
+        )
     }
 
     /// Materialize hatch leaves reached through visible scene containers in
@@ -2303,6 +2424,40 @@ impl Scene {
         include_preview_hidden: bool,
         plot_only: bool,
     ) -> Vec<HatchModel> {
+        self.instanced_hatch_models_hosted_for_document(
+            document,
+            layout_block,
+            hatch_bg,
+            tint_selected,
+            frozen,
+            annotation_scale_handle,
+            all_visible,
+            viewport,
+            targets,
+            include_preview_hidden,
+            plot_only,
+        )
+        .into_iter()
+        .map(|(_, model)| model)
+        .collect()
+    }
+
+    /// The same models, each paired with the top-level reference that draws
+    /// it, so a later edit of one reference can replace just its fills.
+    pub(super) fn instanced_hatch_models_hosted_for_document(
+        &self,
+        document: &Document,
+        layout_block: Handle,
+        hatch_bg: [f32; 4],
+        tint_selected: bool,
+        frozen: Option<&rustc_hash::FxHashSet<Handle>>,
+        annotation_scale_handle: Option<Handle>,
+        all_visible: bool,
+        viewport: Option<Handle>,
+        targets: Option<&rustc_hash::FxHashSet<Handle>>,
+        include_preview_hidden: bool,
+        plot_only: bool,
+    ) -> Vec<(Handle, HatchModel)> {
         let constraint_display = (!plot_only && self.constraint_shading_active() && self.block_edit_block == Some(layout_block))
             .then(|| (self.block_constraint_report(layout_block), self.constraint_palette()));
         let depth_map = self.draw_depth_map();
@@ -2495,7 +2650,7 @@ impl Scene {
                     source_id,
                     translation: [matrix[0][3], matrix[1][3], matrix[2][3]],
                 });
-                models.push(model);
+                models.push((context.root_handle, model));
             },
         );
         models
@@ -2574,6 +2729,11 @@ impl Scene {
                 let EntityType::Wipeout(source) = entity else {
                     return;
                 };
+                // Show image, Show clipped and Background transparency: the
+                // mask hides what is behind only when shown, clipped and opaque.
+                if !crate::entities::raster_image::wipeout_masks(source) {
+                    return;
+                }
                 let mut wipeout = source.clone();
                 if context.is_instanced() {
                     wipeout.insertion_point = context.transform.apply(source.insertion_point);

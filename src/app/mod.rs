@@ -14,6 +14,9 @@ mod extraction_catalog;
 mod array_grips;
 mod block_actions;
 mod block_parameter_properties;
+mod insert_attributes;
+#[cfg(test)]
+mod insert_attributes_tests;
 mod block_alignment;
 mod block_feedback;
 mod block_flip;
@@ -42,7 +45,11 @@ pub(crate) use command_driver::{
     copy_to_clipboard_kernel, define_block_raw_doc, paste_entities_kernel, PasteSpace,
 };
 pub(crate) mod commands;
+#[cfg(test)]
+mod dim_constraint_value_tests;
 pub(crate) mod dim_viewport;
+#[cfg(test)]
+mod dimension_convert_tests;
 #[cfg(test)]
 mod dimension_preview_tests;
 mod dock;
@@ -52,6 +59,7 @@ pub(crate) mod expr_eval;
 mod find_replace;
 pub(crate) mod helpers;
 mod history;
+mod layer_filters;
 mod layer_walk;
 #[cfg(test)]
 mod layer_walk_tests;
@@ -99,15 +107,24 @@ mod text_style_update_tests;
 mod text_style_layout_tests;
 #[cfg(test)]
 mod text_style_ui_tests;
+#[cfg(test)]
+mod text_style_pending_tests;
 mod tolerance_dialog;
 mod update;
 pub(crate) use update::style_import::{style_exists as style_import_exists, StyleImportDraft};
+#[cfg(test)]
+mod table_content_tests;
 mod view;
 #[cfg(test)]
 mod viewport_dimension_tests;
 mod visibility;
 
 pub use style_ops::StyleKind;
+
+/// The Quad display-option message. Defined in `update/context_menu.rs` next
+/// to the quad glue and re-exported so the whole crate reaches it as
+/// `crate::QuadOptionMsg` (Options window, status-bar popup).
+pub use update::context_menu::QuadOptionMsg;
 
 /// Re-exported `pub` (not `pub(crate)`) so the `cargo bench` harness
 /// (`benches/`, an external crate) can measure the real grip-budget helper as
@@ -160,6 +177,23 @@ pub struct HoverDwell {
     pub point: iced::Point,
     pub tile_size: (f32, f32),
     pub tab: usize,
+}
+
+/// What the last executed settled-rollover pick saw, so a re-armed tick can
+/// tell that a repeat would run identically and skip the O(N) sweep
+/// (docs/quad-menu.md §3.4). `point` is tile-local like [`HoverDwell::point`];
+/// the move count disqualifies any cursor move since — including one away
+/// and back — and the epoch / generation / user-pref tokens disqualify a
+/// scene, camera or pick-relevant preference change without a move.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QuadDwellPick {
+    pub tab: usize,
+    pub point: iced::Point,
+    pub move_seq: u64,
+    pub geometry_epoch: u64,
+    pub camera_generation: u64,
+    pub selection_preview: u8,
+    pub pick_box: i32,
 }
 
 /// Cursor dwell awaiting a deferred object-snap pass while a command is
@@ -605,6 +639,22 @@ pub(crate) fn delobj_deletes_auxiliary(value: i16, creates_surface: bool) -> boo
     value == 2 || (value == 3 && !creates_surface)
 }
 
+/// Screenshot `window`, or `None` when it has no area. A minimized window
+/// has a 0x0 surface, and iced's renderer panics reading one back ("buffer
+/// slices can not be empty"), so its size is asked first.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn screenshot_if_drawn(
+    window: iced::window::Id,
+) -> Task<Option<iced::window::Screenshot>> {
+    iced::window::size(window).then(move |size| {
+        if size.width <= 0.0 || size.height <= 0.0 {
+            Task::done(None)
+        } else {
+            iced::window::screenshot(window).map(Some)
+        }
+    })
+}
+
 pub(super) struct OpenCADStudio {
     start: Instant,
     control: control::State,
@@ -646,6 +696,9 @@ pub(super) struct OpenCADStudio {
     /// rather than an individual document tab, so the same view preference is
     /// used by every currently open drawing/project.
     collapsed_property_sections: rustc_hash::FxHashSet<String>,
+    /// Named layer filters (LAYERFILTER). A view over the layer table, so it is
+    /// kept with the app rather than written to the drawing.
+    layer_filters: Vec<layer_filters::LayerFilter>,
     /// Which Start-page section is shown when the page is too narrow for all
     /// three side by side and falls back to a tab bar.
     start_section: StartSection,
@@ -691,9 +744,9 @@ pub(super) struct OpenCADStudio {
     clean_screen: bool,
     /// Properties opened on top of clean screen (Ctrl+1 while it is on).
     clean_screen_properties: bool,
-    /// The dynamic-value list closed itself a moment ago. The overlay reports
-    /// Escape before the global shortcut repeats it, so the repeat is dropped
-    /// instead of clearing the selection the list was opened for.
+    /// A property list closed itself a moment ago. The overlay reports Escape
+    /// before the global shortcut repeats it, so the repeat is dropped instead
+    /// of clearing the selection the list was opened for.
     block_picker_dismissed: bool,
     /// Quick Properties: show a compact floating property panel on selection.
     quick_properties: bool,
@@ -753,10 +806,13 @@ pub(super) struct OpenCADStudio {
     /// ATTDEF dialog and Edit Attribute Definition dialog; `None` while closed.
     attdef_dialog: Option<crate::ui::window::attdef_dialog::AttdefDialogState>,
     attdef_edit: Option<crate::ui::window::attdef_dialog::AttdefEditState>,
+    insert_attr_dialog: Option<crate::ui::window::insert_attr_dialog::InsertAttrState>,
     /// Block Attribute Manager working copy; `None` while it is closed.
     attman: Option<crate::ui::window::attman_dialog::AttManState>,
     /// Field dialog working copy; `None` while closed.
     field_dialog: Option<crate::ui::window::field_dialog::FieldDialogState>,
+    /// The Formula dialog kept while Insert Field has another one open.
+    field_formula_parent: Option<crate::ui::window::field_dialog::FieldDialogState>,
     point_cloud_color_map: Option<crate::ui::window::pdf_dialogs::PointCloudColorMapState>,
     pc_section: Option<crate::ui::window::pdf_dialogs::PcSectionState>,
     /// -VIEW sEttings Background dialog.
@@ -769,6 +825,25 @@ pub(super) struct OpenCADStudio {
     pdf_password: Option<crate::ui::window::pdf_password_dialog::PdfPasswordState>,
     /// The Inspection Dimension window.
     dim_inspect_dialog: Option<crate::ui::window::dim_inspect_dialog::DimInspectState>,
+    /// The picked table cells' Cell Borders window.
+    table_cell_borders: Option<crate::ui::window::table_cell_dialog::CellBordersState>,
+    /// The picked table cell's Cell Contents window.
+    table_cell_contents: Option<crate::ui::window::table_cell_dialog::CellContentsState>,
+    /// The picked table cells' Cell Block window.
+    table_cell_block: Option<crate::ui::window::table_cell_dialog::CellBlockState>,
+    /// The picked table cells' Cell Data Format window.
+    table_cell_format: Option<crate::ui::window::table_cell_dialog::CellFormatState>,
+    /// A data format waiting on the invalid data type warning, and the
+    /// cells whose values read as no such type.
+    table_cell_warning: Option<(crate::ui::window::table_cell_dialog::CellFormatState, Vec<String>)>,
+    /// A value typed into a cell that waits on the data type question.
+    table_cell_entry: Option<commands::table_cells::CellEntry>,
+    /// The next cell step puts its value in without the data type question
+    /// (the type was just changed to fit it).
+    table_cell_entry_typed: bool,
+    /// The Data Link Manager was opened by Link Cell: its link feeds the
+    /// picked cells when it closes.
+    data_link_cell_target: bool,
     pdf_shx_dialog: Option<crate::ui::window::pdf_shx_dialog::ShxSettingsState>,
     underlay_layers: Option<crate::ui::window::pdf_dialogs::UnderlayLayersState>,
     pdf_import_settings: Option<crate::modules::insert::pdf_import::PdfImportSettings>,
@@ -895,6 +970,55 @@ pub(super) struct OpenCADStudio {
     right_click_mode: settings::RightClickMode,
     /// Time-sensitive right-click hold threshold, ms (SHORTCUTMENUDURATION).
     right_click_hold_ms: i32,
+    // ── Quad cursor menu ───────────────────────────────────────────────────
+    // The persisted `UserSettings::quad*` fields are mirrored here like
+    // `right_click_mode` above (startup restore + save-snapshot in
+    // `update/file.rs` write both sides), so the update paths, the Options
+    // window and the status bar read plain `self.quad*` fields.
+    /// Whether the Quad cursor menu exists at all (F12, status-bar field).
+    quad: bool,
+    /// QUADDISPLAY bit: hovering an entity offers its default command quad.
+    quad_on_hover: bool,
+    /// QUADDISPLAY bit: a selection set offers its common commands.
+    quad_on_select: bool,
+    /// QUADDISPLAY bit: a targetless right-click opens the No Selection quad.
+    quad_on_right_click: bool,
+    /// QUADDISPLAY bit: hovering offers the quad only while nothing is
+    /// selected.
+    quad_suppress_hover_when_selection: bool,
+    /// QUADWIDTH: columns the expanded quad lays out (2..=12).
+    quad_width: u8,
+    /// QUADCOMMANDLAUNCH: a right-click over an entity launches its default
+    /// command directly.
+    quad_command_launch: bool,
+    /// Milliseconds the cursor must rest on an entity before the hover quad
+    /// opens (0..=2000).
+    quad_hover_delay_ms: u64,
+    /// The panels the open quad currently shows — the pure model built by
+    /// `quad_panels_for_target` when the quad opened. Cleared on close.
+    pub quad_panels: Vec<crate::ui::popup::quad_menu::QuadPanel>,
+    /// When the qualifying hover dwell began while the quad is closed
+    /// (`None` = not dwelling). The settled rollover pick arms and reads it.
+    pub quad_hover_since: Option<std::time::Instant>,
+    /// The last settled-rollover pick the quad's hover dwell ran: its
+    /// cursor point, the move sequence that had armed the dwell, and the
+    /// cheap scene tokens the pick reads. While the quad dwell is counting
+    /// and none of these changed, the dwell tick skips the O(N) pick and
+    /// only re-arms itself (docs/quad-menu.md §3.4).
+    pub(crate) quad_dwell_pick: Option<QuadDwellPick>,
+    /// Monotonic count of hover-dwell arming moves: any cursor move since
+    /// the recorded pick (including moving away and back to the same
+    /// point) invalidates the pick-skip above.
+    hover_move_seq: u64,
+    /// Per-entity-type-key most-recently-used commands launched *from the
+    /// quad* (and the global list for the No Selection quad). One shared
+    /// instance for every tab — the memory follows the user, not the file.
+    pub quad_mru: crate::ui::popup::quad_menu::QuadMru,
+    /// Target classification captured when the quad last opened. The pick
+    /// routes hover-vs-selection dispatch semantics against it, so movement
+    /// of the live hover highlight between open and pick cannot change what
+    /// a pick does.
+    quad_open_target: Option<crate::ui::popup::quad_menu::QuadTarget>,
     /// Selected-object count past which grips stop being generated
     /// (GRIPOBJLIMIT, 0..=32767; 0 = no limit).
     grip_object_limit: i32,
@@ -993,6 +1117,10 @@ pub(super) struct OpenCADStudio {
     auto_constrain_angle_input: String,
     pub constraint_solve_mode: bool,
     pub constraint_infer: bool,
+    /// How many `apply_cmd_result` frames are on the stack. A handler that
+    /// applies a follow-up result must not clear or drain the report its
+    /// caller is still filling.
+    result_depth: u32,
     pub constraint_bar_display: i16,
     /// DCFORM: new dimensional constraints use the annotational form.
     pub constraint_form_annotational: bool,
@@ -1222,6 +1350,7 @@ pub(super) struct OpenCADStudio {
     pub(crate) pid_legend_exceptions_open: bool,
     /// Authoring palette preference, visible only in a Block Editor session.
     show_authoring_palettes: bool,
+    show_parameters_manager: bool,
     authoring_palette_tab: crate::ui::window::authoring_palettes::Tab,
     /// Node graph overlay over the viewport.
     pub(crate) show_node_graph: bool,
@@ -1687,27 +1816,25 @@ pub(super) struct OpenCADStudio {
     tablestyle_selected: String,
     tablestyle_tab: u8,
     tablestyle_compare: String,
-    /// Edit buffers for the table style's general margins.
-    ts_hmargin: String,
-    ts_vmargin: String,
     /// General table-style description buffer.
     ts_description: String,
-    /// Per-cell edit buffers, indexed 0=Data, 1=Header, 2=Title.
-    /// Table cell colour field (row class, "textcolor"/"fillcolor") whose
-    /// expanded palette is open.
-    ts_color_open: Option<(u8, &'static str)>,
-    ts_cell_textstyle: [String; 3],
-    ts_cell_height: [String; 3],
-    ts_cell_textcolor: [String; 3],
-    ts_cell_fillcolor: [String; 3],
-    ts_cell_datatype: [String; 3],
-    ts_cell_unittype: [String; 3],
-    ts_cell_format: [String; 3],
-    /// Per-cell, per-border numeric buffers ([cell][border], border order:
-    /// 0=left 1=right 2=top 3=bottom 4=horizontal-inside 5=vertical-inside).
-    ts_border_lw: [[String; 6]; 3],
-    ts_border_color: [[String; 6]; 3],
-    ts_border_spacing: [[String; 6]; 3],
+    /// The cell style being edited ("_DATA", "_HEADER", "_TITLE" or a
+    /// user cell style).
+    ts_cell: String,
+    /// Text buffers of the edited cell style: name (new / rename), text
+    /// height, text angle, margins and format.
+    ts_cell_name: String,
+    ts_cell_height: String,
+    ts_cell_angle: String,
+    ts_cell_hmargin: String,
+    ts_cell_vmargin: String,
+    ts_cell_format: String,
+    /// Double-line spacing buffers of its six edges (top, inside
+    /// horizontal, bottom, left, inside vertical, right).
+    ts_edge_spacing: [String; 6],
+    /// Colour field ("textcolor" / "fillcolor") whose expanded palette is
+    /// open.
+    ts_color_open: Option<&'static str>,
 
     // ── Shared style-manager inline rename ────────────────────────────────
     /// Original name of the style currently being renamed inline (double-click
@@ -1737,8 +1864,10 @@ pub(super) struct OpenCADStudio {
     /// any list operation and on Apply.
     textstyle_draft: text_style_draft::TextStyleDraft,
     textstyle_font_picker: crate::ui::font_picker::FontPickerState,
-    /// The texts using the selected style, for the summary before Apply.
-    textstyle_users: Vec<text_style_users::TextUser>,
+    /// The texts of every text style (ASCII-lowercase name), for "Where
+    /// used" and the summary before Apply. Texts do not change while the
+    /// manager is open; Apply walks the drawing again.
+    textstyle_users: rustc_hash::FxHashMap<String, Vec<text_style_users::TextUser>>,
 
     // ── Color Scheme ──────────────────────────────────────────────────────
     active_theme: Theme,
@@ -2247,7 +2376,7 @@ pub enum ColorPickTarget {
     GraphicAttributesSolid,
     DimStyle(DsField),
     MLeader(&'static str),
-    Table(u8, &'static str),
+    Table(&'static str),
     /// Plot-style colour override for the currently selected ACI entry.
     PlotStyle,
     /// Selected entities' colour (left properties panel).
@@ -2260,6 +2389,8 @@ pub enum ColorPickTarget {
     PropertiesField(String),
     /// Current creation colour (ribbon).
     Ribbon,
+    /// The ribbon's displayed layer, independent of Layer Manager selection.
+    RibbonLayer(String),
     /// A layer's colour, by layer name.
     Layer(String),
     /// A layer's colour override in one layout viewport.
@@ -2897,6 +3028,13 @@ pub enum ModalKind {
     RefEdit,
     PdfPassword,
     DimInspect,
+    TableCellBorders,
+    TableCellContents,
+    TableCellBlock,
+    TableCellFormat,
+    TableCellWarning,
+    /// A value typed into a cell that is not of the cell's data type.
+    TableCellEntry,
     PdfShxSettings,
     UnderlayLayers,
     PdfImportSettings,
@@ -2909,6 +3047,7 @@ pub enum ModalKind {
     GeometricTolerance,
     AttDef,
     AttDefEdit,
+    InsertAttributes,
     /// Block Attribute Manager (BATTMAN / ATTMAN).
     AttMan,
     CountInvalidArea,
@@ -3698,6 +3837,18 @@ pub enum Message {
     BlockVisibility(crate::ui::window::block_visibility::Action),
     BlockLookup(crate::ui::window::block_lookup::Action),
     BlockPropertiesTable(crate::ui::window::block_properties_table::Action),
+    // ── Parameters Manager ──────────────────────────────────────────────
+    /// The operator clicked a row's numeric cell: the field opens on that row.
+    ParametersManagerEdit(String, crate::ui::window::parameters_manager::Cell),
+    ParametersManagerInput(String),
+    ParametersManagerFilter(String),
+    ParametersManagerSearch(String),
+    ParametersManagerCommit,
+    /// The widget focused after a click while a manager cell is open. A click
+    /// off the field commits what was typed, as Enter does.
+    ParametersManagerFocus(Option<iced::widget::Id>),
+    /// The row's Show cell, which is the parameter's own visibility flag.
+    ParametersManagerShow(String),
     BlockEditPickerName(String),
     BlockEditPickerSelect(String),
     BlockEditPickerApply,
@@ -4477,6 +4628,10 @@ pub enum Message {
     LayerManagerFilterChanged(String),
     /// User changed the active color in the Properties toolbar.
     RibbonColorChanged(AcadColor),
+    RibbonLayerColorChanged {
+        layer: String,
+        color: AcadColor,
+    },
     /// Toggle the full ACI palette inside the ribbon color picker.
     RibbonColorPaletteToggle,
     /// User changed the active linetype in the Properties toolbar.
@@ -4524,6 +4679,19 @@ pub enum Message {
     PropGeomChoiceChanged {
         field: &'static str,
         value: String,
+    },
+    /// Open or close one generic choice row's list. It carries the surface it
+    /// was clicked on, so the docked panel and Quick Properties each keep
+    /// their own open state.
+    PropChoiceToggle {
+        field: &'static str,
+        quick: bool,
+    },
+    /// The list dismissed itself: the overlay's Escape or a click outside; the
+    /// global shortcut repeats the same Escape a moment later.
+    PropChoiceDismiss {
+        field: &'static str,
+        quick: bool,
     },
     /// User is typing in an editable geometry field (live buffer update).
     PropGeomInput {
@@ -4927,6 +5095,7 @@ pub enum Message {
     MTextCharSpace(String),
     /// Undo / redo editor text and inline-format operations.
     MTextUndo,
+    MTextInsertField,
     MTextRedo,
     /// Convert the selected numerator/separator/denominator to a stacked run.
     MTextStack,
@@ -5032,6 +5201,13 @@ pub enum Message {
     ContextMenuSubmenuToggle(crate::ui::popup::context_menu::SubmenuId),
     /// Keyboard navigation inside the open context menu.
     ContextMenuNavigate(ContextMenuNav),
+    // ── Quad cursor menu ──────────────────────────────────────────────────
+    /// A quad cursor menu interaction (toggle / expand / tab / pick / close)
+    /// from the overlay or the keyboard while the quad is open.
+    Quad(crate::ui::popup::quad_menu::QuadMsg),
+    /// A Quad display-option change (Options window, the status-bar popup,
+    /// or `SETVAR`'s mapping). Carries the new value.
+    QuadOption(crate::QuadOptionMsg),
     /// Begin an interactive reference-object pick to move the current
     /// selection above (`true`) or below (`false`) the picked object.
     DrawOrderPickRef(bool),
@@ -5283,50 +5459,44 @@ pub enum Message {
     /// Toggle a boolean flag (title_suppressed / header_suppressed / flow) on
     /// the selected table style.
     TableStyleToggle(&'static str),
-    /// Update a general edit buffer (hmargin / vmargin).
+    /// Update a general edit buffer (description).
     TableStyleEdit {
         field: &'static str,
         value: String,
     },
     /// Write the general edit buffers back into the selected table style.
     TableStyleApply,
-    /// Update a per-cell edit buffer (row 0=Data,1=Header,2=Title).
+    /// Edit the named cell style.
+    TableStyleCellSelect(String),
+    /// Add a cell style (named by the name buffer) copying the edited one.
+    TableStyleCellNew,
+    /// Rename the edited user cell style to the name buffer.
+    TableStyleCellRename,
+    /// Delete the edited user cell style.
+    TableStyleCellDelete,
+    /// A field of the edited cell style: a text buffer ("name", "height",
+    /// "angle", "hmargin", "vmargin", "format") or a choice ("align",
+    /// "class", "datatype", "textstyle", "textcolor", "fillcolor",
+    /// "merge").
     TableStyleCellEdit {
-        row: u8,
         field: &'static str,
         value: String,
     },
-    /// Toggle the expanded colour palette for a table cell colour field.
-    TableColorMore(u8, &'static str),
-    /// Toggle background fill on a cell style.
-    TableStyleCellToggleFill(u8),
-    /// Set the alignment of a cell style from the dropdown.
-    TableStyleCellSetAlign {
-        row: u8,
+    /// A field ("visible", "lw", "linetype", "color", "double",
+    /// "spacing") of one edge of the edited cell style.
+    TableStyleEdgeEdit {
+        edge: u8,
+        field: &'static str,
         value: String,
     },
-    /// Write a cell's edit buffers back into the selected table style.
-    TableStyleCellApply(u8),
+    /// Toggle the expanded colour palette of a cell colour field.
+    TableColorMore(&'static str),
     /// Set the table flow direction from the dropdown.
     TableStyleSetFlow(String),
-    /// Update a per-cell, per-border numeric edit buffer.
-    TableStyleBorderEdit {
-        cell: u8,
-        border: u8,
-        field: &'static str,
-        value: String,
-    },
-    /// Set a border's line type (Single / Double).
-    TableStyleBorderSetType {
-        cell: u8,
-        border: u8,
-        value: String,
-    },
-    /// Toggle a border's visibility.
-    TableStyleBorderToggleInvisible {
-        cell: u8,
-        border: u8,
-    },
+    /// Pick a table in the drawing as the style's starting table.
+    TableStyleTemplatePick,
+    /// Drop the style's starting table.
+    TableStyleTemplateRemove,
     // ── MLineStyle Dialog ─────────────────────────────────────────────────
     MlStyleDialogOpen,
     #[allow(dead_code)]
@@ -5459,6 +5629,7 @@ pub enum Message {
     /// An edit in one of the PDF dialogs.
     PdfDialog(crate::ui::window::pdf_dialogs::PdfDialogMsg),
     AttdefDialog(crate::ui::window::attdef_dialog::AttdefDialogMsg),
+    InsertAttrDialog(crate::ui::window::insert_attr_dialog::InsertAttrMsg),
     /// Block Attribute Manager edits.
     AttMan(crate::ui::window::attman_dialog::AttManMsg),
     FieldDialog(crate::ui::window::field_dialog::FieldDialogMsg),
@@ -5468,6 +5639,8 @@ pub enum Message {
     PdfPassword(crate::ui::window::pdf_password_dialog::PdfPasswordMsg),
     /// An edit in the Inspection Dimension window.
     DimInspect(crate::ui::window::dim_inspect_dialog::DimInspectMsg),
+    /// An edit in a picked table cell window (Cell Borders, Cell Contents).
+    TableCellDialog(crate::ui::window::table_cell_dialog::TableCellDialogMsg),
     HyperlinkDialog(crate::ui::window::hyperlink_dialog::HyperlinkMsg),
     /// Check Spelling window.
     Spell(crate::ui::window::spell_dialog::SpellMsg),
@@ -5633,7 +5806,9 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn new() -> Self {
+        crate::sys::startup_times::mark("App::new: begin");
         let config = config::AppConfig::load();
+        crate::sys::startup_times::mark("App::new: config loaded");
         if let Err(error) = crate::i18n::set_language(config.settings.language) {
             eprintln!("Unable to apply saved UI language: {error}");
         }
@@ -5663,6 +5838,7 @@ impl OpenCADStudio {
             discussions: Vec::new(),
             discussions_loading: false,
             collapsed_property_sections: rustc_hash::FxHashSet::default(),
+            layer_filters: Vec::new(),
             start_section: StartSection::default(),
             start_action_w: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
             history_content: iced::widget::text_editor::Content::new(),
@@ -5727,9 +5903,11 @@ impl OpenCADStudio {
             pdf_attach: None,
             point_cloud_attach: None,
             attdef_dialog: None,
+            insert_attr_dialog: None,
             attman: None,
             attdef_edit: None,
             field_dialog: None,
+            field_formula_parent: None,
             point_cloud_color_map: None,
             pc_section: None,
             view_background: None,
@@ -5737,6 +5915,14 @@ impl OpenCADStudio {
             refedit_dialog: None,
             pdf_password: None,
             dim_inspect_dialog: None,
+            table_cell_borders: None,
+            table_cell_contents: None,
+            table_cell_block: None,
+            table_cell_format: None,
+            table_cell_warning: None,
+            table_cell_entry: None,
+            table_cell_entry_typed: false,
+            data_link_cell_target: false,
             pdf_shx_dialog: None,
             underlay_layers: None,
             pdf_import_settings: None,
@@ -5786,6 +5972,22 @@ impl OpenCADStudio {
             double_click_block_attedit: true,
             right_click_mode: settings::RightClickMode::ShortcutMenu,
             right_click_hold_ms: 250,
+            // Quad cursor menu defaults mirror `UserSettings::default()`; a
+            // restored config overwrites these in `apply_settings`.
+            quad: false,
+            quad_on_hover: true,
+            quad_on_select: true,
+            quad_on_right_click: true,
+            quad_suppress_hover_when_selection: true,
+            quad_width: crate::ui::popup::quad_menu::QUAD_WIDTH_DEFAULT,
+            quad_command_launch: false,
+            quad_hover_delay_ms: 300,
+            quad_panels: Vec::new(),
+            quad_hover_since: None,
+            quad_dwell_pick: None,
+            hover_move_seq: 0,
+            quad_mru: crate::ui::popup::quad_menu::QuadMru::new(),
+            quad_open_target: None,
             grip_object_limit: settings::DEFAULT_GRIP_OBJECT_LIMIT,
             ncopy_bind: false,
             cursor_type: settings::CursorType::Crosshair,
@@ -5846,6 +6048,7 @@ impl OpenCADStudio {
             auto_constrain_angle_input: "1".to_string(),
             constraint_solve_mode: true,
             constraint_infer: false,
+            result_depth: 0,
             constraint_bar_display: 3,
             constraint_form_annotational: false,
             dim_constraint_last: "Aligned",
@@ -5928,6 +6131,7 @@ impl OpenCADStudio {
             pid_legend_filter: Default::default(),
             pid_legend_exceptions_open: false,
             show_authoring_palettes: false,
+            show_parameters_manager: false,
             authoring_palette_tab: Default::default(),
             show_node_graph: false,
             property_target_override: None,
@@ -6216,25 +6420,21 @@ impl OpenCADStudio {
             textstyle_compare: String::new(),
             textstyle_draft: Default::default(),
             textstyle_font_picker: Default::default(),
-            textstyle_users: Vec::new(),
+            textstyle_users: Default::default(),
             // TableStyle dialog
             tablestyle_selected: "Standard".to_string(),
             tablestyle_tab: 0,
             tablestyle_compare: String::new(),
-            ts_hmargin: "1.5".to_string(),
-            ts_vmargin: "1.5".to_string(),
             ts_description: String::new(),
+            ts_cell: codec::objects::DATA_CELL_STYLE.to_string(),
+            ts_cell_name: String::new(),
+            ts_cell_height: String::new(),
+            ts_cell_angle: String::new(),
+            ts_cell_hmargin: String::new(),
+            ts_cell_vmargin: String::new(),
+            ts_cell_format: String::new(),
+            ts_edge_spacing: Default::default(),
             ts_color_open: None,
-            ts_cell_textstyle: Default::default(),
-            ts_cell_height: Default::default(),
-            ts_cell_textcolor: Default::default(),
-            ts_cell_fillcolor: Default::default(),
-            ts_cell_datatype: Default::default(),
-            ts_cell_unittype: Default::default(),
-            ts_cell_format: Default::default(),
-            ts_border_lw: Default::default(),
-            ts_border_color: Default::default(),
-            ts_border_spacing: Default::default(),
             // MLineStyle dialog
             mlstyle_selected: "Standard".to_string(),
             mlstyle_tab: 0,
@@ -6347,20 +6547,24 @@ impl OpenCADStudio {
             ds_dimtolj: "1".to_string(),
             ds_dimtzin: "0".to_string(),
         };
+        crate::sys::startup_times::mark("App::new: struct built");
         // Restore the consolidated user config (settings.json) into live state
         // so preferences, recents, status-bar layout, ribbon density and print
         // options survive across sessions (issue #68). `last_saved_config` is
         // seeded below so the first change — not the boot — triggers a write.
         app.apply_config(config);
+        crate::sys::startup_times::mark("App::new: apply_config done");
         // Load command aliases from ocad.pgp (writes the shipped default file
         // on first launch). The hide-set keeps aliases out of autocomplete while
         // their target command still shows.
         app.command_aliases = alias::load_aliases();
         app.command_line.command_aliases = app.command_aliases.clone();
+        crate::sys::startup_times::mark("App::new: aliases loaded");
         // Load external plugin packages from the plugins folder once, then fold
         // their ribbon tabs into the ribbon. Skipped under test/wasm.
         #[cfg(all(not(target_arch = "wasm32"), not(test)))]
         {
+            crate::sys::startup_times::mark("App::new: loading external plugins");
             for (id, res) in crate::plugin::external::load_at_startup(&mut app) {
                 if let Err(e) = res {
                     app.command_line
@@ -6368,9 +6572,11 @@ impl OpenCADStudio {
                     app.plugin_load_errors.insert(id, e);
                 }
             }
+            crate::sys::startup_times::mark("App::new: external plugins loaded");
             app.loaded_plugin_ids = crate::plugin::external::loaded_ids().into_iter().collect();
             app.rebuild_ribbon_modules();
         }
+        crate::sys::startup_times::mark("App::new: done");
         app.last_saved_config = Some(app.current_config());
         app.sync_ribbon_layers();
         app
@@ -6438,7 +6644,9 @@ impl OpenCADStudio {
         // File association is no longer re-registered on every launch. It is set
         // up once via the first-launch prompt below (when the user hasn't been
         // asked yet) and afterwards managed entirely by the FILEASSOC command.
+        crate::sys::startup_times::mark("boot: begin");
         let state = Self::new();
+        crate::sys::startup_times::mark("boot: App constructed");
         let (id, open_task) = window::open(window::Settings {
             maximized: true,
             icon: build_window_icon().and_then(|rgba| window::icon::from_rgba(rgba, 32, 32).ok()),
@@ -6694,7 +6902,9 @@ use std::path::PathBuf;
 pub fn run() -> iced::Result {
     // UI text follows the desktop's interface font: generic sans-serif, iced's
     // default font, is remapped to it before the first window opens.
+    crate::sys::startup_times::mark("run: entry");
     crate::sys::ui_font::apply(crate::sys::ui_font::detect().as_ref());
+    crate::sys::startup_times::mark("run: ui_font applied");
     iced::daemon(
         OpenCADStudio::boot,
         OpenCADStudio::update,

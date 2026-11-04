@@ -20,8 +20,8 @@ impl Kind {
     pub(crate) fn parse(text: &str) -> Option<Self> {
         match text.to_ascii_uppercase().as_str() {
             "LINEAR" | "L" => Some(Self::Linear),
-            "POLAR" | "PO" => Some(Self::Polar),
-            "XY" => Some(Self::XY),
+            "POLAR" | "PO" | "P" => Some(Self::Polar),
+            "XY" | "X" => Some(Self::XY),
             _ => None,
         }
     }
@@ -57,6 +57,36 @@ fn graph_handle(document: &Document, definition: Handle) -> Option<Handle> {
         ObjectType::Dictionary(dictionary) => dictionary.get("ACAD_ENHANCEDBLOCK"),
         _ => None,
     }
+}
+
+fn label_names(document: &Document, definition: Handle) -> Vec<String> {
+    let mut names = parameters(document, definition)
+        .into_iter()
+        .flat_map(|p| p.labels)
+        .collect::<Vec<_>>();
+    names.extend(
+        super::block_orientation_parameter::parameters(document, definition)
+            .into_iter()
+            .map(|p| p.label),
+    );
+    names
+}
+
+fn unique_label(names: &[String], prefix: &str) -> String {
+    (1..)
+        .map(|n| format!("{prefix}{n}"))
+        .find(|name| names.iter().all(|old| !old.eq_ignore_ascii_case(name)))
+        .unwrap()
+}
+
+/// The next free distance and angle label names, the defaults a Polar
+/// placement prompt shows for its label questions.
+pub(crate) fn next_polar_labels(document: &Document, definition: Handle) -> [String; 2] {
+    let names = label_names(document, definition);
+    [
+        unique_label(&names, "Distance"),
+        unique_label(&names, "Angle"),
+    ]
 }
 
 pub(crate) fn parameters(document: &Document, definition: Handle) -> Vec<Parameter<'_>> {
@@ -179,21 +209,8 @@ pub(crate) fn create(
     if let Some(error) = points_error(kind, base, end, label) {
         return Err(error);
     }
-    let mut names = parameters(document, definition)
-        .into_iter()
-        .flat_map(|p| p.labels)
-        .collect::<Vec<_>>();
-    names.extend(
-        super::block_orientation_parameter::parameters(document, definition)
-            .into_iter()
-            .map(|p| p.label),
-    );
-    let unique = |prefix: &str| {
-        (1..)
-            .map(|n| format!("{prefix}{n}"))
-            .find(|name| names.iter().all(|old| !old.eq_ignore_ascii_case(name)))
-            .unwrap()
-    };
+    let names = label_names(document, definition);
+    let unique = |prefix: &str| unique_label(&names, prefix);
     let distance_name = unique("Distance");
     let angle_name = unique("Angle");
     let x_label = unique("DistanceX");
@@ -201,6 +218,11 @@ pub(crate) fn create(
     let values = match kind {
         Kind::XY => [end.x - base.x, end.y - base.y],
         _ => offsets(kind, base, end, label),
+    };
+    let parameter_name = if kind == Kind::Polar {
+        super::block_authoring::metadata::next_parameter_name(document, definition, kind.name())?
+    } else {
+        kind.name().to_owned()
     };
     let (graph, slots) = authoring::prepare(document, definition)?;
     let (class, cpp) = kind.class();
@@ -227,7 +249,7 @@ pub(crate) fn create(
     };
     let native = BlockTwoPointParameter {
         parameter: BlockParameter {
-            element: element(0, kind.name()),
+            element: element(0, &parameter_name),
             show_properties: true,
             chain_actions: false,
         },

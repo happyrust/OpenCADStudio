@@ -56,6 +56,16 @@ pub(crate) fn parameters(
 pub(crate) fn placement_error(document: &Document, definition: Handle) -> Option<&'static str> {
     authoring::graph(document, definition).err()
 }
+pub(crate) fn next_name(document: &Document, definition: Handle) -> String {
+    let names = parameters(document, definition)
+        .iter()
+        .map(|(_, p)| p.lookup_name.clone())
+        .collect::<Vec<_>>();
+    (1..)
+        .map(|n| format!("Lookup{n}"))
+        .find(|s| names.iter().all(|n| !n.eq_ignore_ascii_case(s)))
+        .unwrap()
+}
 pub(crate) fn create(
     document: &mut Document,
     definition: Handle,
@@ -67,14 +77,7 @@ pub(crate) fn create(
     {
         return Err("Specify a finite parameter location.");
     }
-    let names = parameters(document, definition)
-        .iter()
-        .map(|(_, p)| p.lookup_name.clone())
-        .collect::<Vec<_>>();
-    let name = (1..)
-        .map(|n| format!("Lookup{n}"))
-        .find(|s| names.iter().all(|n| !n.eq_ignore_ascii_case(s)))
-        .unwrap();
+    let name = next_name(document, definition);
     let (graph, slots) = authoring::prepare(document, definition)?;
     register_classes(
         document,
@@ -468,7 +471,7 @@ fn evaluate_row_context(
     if !changed {
         return Ok(None);
     }
-    super::block_actions::rebuild_framed(
+    let resolved_frames = super::block_actions::rebuild_framed(
         &mut evaluated,
         baseline.unwrap_or(document),
         definition,
@@ -491,7 +494,11 @@ fn evaluate_row_context(
     let mut result =
         super::block_actions::instance::materialize(document, insert, definition, &evaluated)?;
     for (parameter, value) in parameters.into_iter().zip(values) {
-        super::block_actions::instance::save(&mut result, insert, &parameter, value)?;
+        if let Some(frame) = resolved_frames.get(&parameter.handle) {
+            super::block_actions::instance::save_frame(&mut result, insert, &parameter, *frame)?;
+        } else {
+            super::block_actions::instance::save(&mut result, insert, &parameter, value)?;
+        }
     }
     if reference_row_context(&result, baseline, insert, definition, &table) != Some(row) {
         return Err("The Lookup row values do not satisfy the parameter value sets.");

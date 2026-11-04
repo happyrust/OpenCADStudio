@@ -131,7 +131,7 @@ fn test_block_widget_picker<'a>(
 ) -> Element<'a, Message> {
     let labels = widget.items.clone();
     container(
-        iced::widget::pick_list(
+        crate::ui::dropdown_list::pick_list(
             widget.current,
             (0..widget.items.len()).collect::<Vec<_>>(),
             move |idx: &usize| labels.get(*idx).cloned().unwrap_or_default(),
@@ -284,7 +284,7 @@ mod viewcube;
 use controls::{dyn_component_value, viewport_controls};
 use overlay::{
     mtext_editor_overlay, position_canvas_overlay, position_canvas_overlay_near_cursor,
-    qselect_overlay, text_inline_overlay, viewport_context_menu_overlay,
+    qselect_overlay, text_inline_overlay, viewport_context_menu_overlay, viewport_quad_overlay,
 };
 use viewcube::{viewcube_nav_controls, viewcube_ucs_picker, UCS_PICKER_W};
 
@@ -480,6 +480,7 @@ fn named_visual_style(
 impl OpenCADStudio {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn view(&self, window_id: window::Id) -> Element<'_, Message> {
+        crate::sys::startup_times::view_tick();
         // ── Floating panel windows ─────────────────────────────────────────
         // All dialogs are in-canvas modals now (Plan B); view_main stacks the
         // active one. `window_id` is unused — there is only the main window.
@@ -1339,7 +1340,8 @@ bg={bg_ms:.1}ms n={view_count}"
                                 project(parameter.definition_label_point)?,
                                 parameter.position_name.clone(),
                                 vp_bounds,
-                                tab.selected_authoring == Some(handle),
+                                tab.selected_authoring == Some(handle)
+                                    || tab.active_cmd.as_ref().is_some_and(|command| command.selection_marker_selected(handle)),
                             ))
                         })
                         .collect()
@@ -1506,7 +1508,8 @@ bg={bg_ms:.1}ms n={view_count}"
                             })
                             .collect::<Option<Vec<_>>>()?;
                         Some(crate::ui::overlay::AuthoringDimension {
-                            selected: tab.selected_authoring == Some(handle),
+                            selected: tab.selected_authoring == Some(handle)
+                                || tab.active_cmd.as_ref().is_some_and(|command| command.selection_marker_selected(handle)),
                             is_action: action_handles.contains(&handle),
                             lines,
                             base_grips: graphic
@@ -2456,11 +2459,15 @@ bg={bg_ms:.1}ms n={view_count}"
                             ))),
                     )
                     .padding(2);
-                    viewport_stack = viewport_stack.push(position_canvas_overlay_near_cursor(
-                        popup.anchor,
-                        command_line_inset(self),
-                        panel.into(),
-                    ));
+                    let (cw, ch) = tab.scene.selection.borrow().view.vp_size;
+                    let bounds = tab.scene.active_model_tile_bounds(cw, ch);
+                    if let Some(anchor) = self.table_popup_anchor(i, bounds) {
+                        viewport_stack = viewport_stack.push(position_canvas_overlay_near_cursor(
+                            anchor,
+                            command_line_inset(self),
+                            panel.into(),
+                        ));
+                    }
                 }
             }
 
@@ -2471,6 +2478,16 @@ bg={bg_ms:.1}ms n={view_count}"
             // are ever needed together.
             let selection_tools = if tab.is_start {
                 None
+            } else if tab.scene.table_cells_handle().is_some() {
+                {
+                    let tools = crate::ui::ribbon::table_cell_tools();
+                    // Rows and columns, merging and locking, formats, inserts,
+                    // linked data and the cell's text, two to a row.
+                    crate::ui::side_toolbar::view_grid(
+                        &[&tools[..6], &tools[6..9], &tools[9..13], &tools[13..17], &tools[17..]],
+                        2,
+                    )
+                }
             } else if self.ribbon.xref_context() {
                 crate::ui::side_toolbar::view(&crate::ui::ribbon::xref_tools())
             } else if let Some(shown) = self.ribbon.point_cloud_context() {
@@ -2557,7 +2574,12 @@ bg={bg_ms:.1}ms n={view_count}"
             // Quick Properties: stay near the selection cursor, flipping around
             // it as needed to remain inside the visible drawing area.
             // Floating (QPLOCATION 1): where it was last dragged.
-            if self.quick_properties && !tab.is_start {
+            // It steps aside once a command runs or something is typed (#2458).
+            if self.quick_properties
+                && !tab.is_start
+                && tab.active_cmd.is_none()
+                && self.command_line.input.is_empty()
+            {
                 if let Some(panel) = tab.properties.quick_view() {
                     viewport_stack = viewport_stack.push(if self.quick_properties_float {
                         overlay::position_canvas_overlay_clamped(
@@ -2726,11 +2748,36 @@ bg={bg_ms:.1}ms n={view_count}"
                 }
             }
 
+            // Quad cursor menu — the selection-boundary popup state's quad
+            // sibling of the context menu. Its card is pushed after the
+            // context-menu panel so, while both would somehow be open, the
+            // quad card covers the menu (docs/quad-menu.md §3.5); the push
+            // above stays keyed to `open_at` and must not change.
+            if !tab.is_start {
+                let quad = tab.scene.selection.borrow().menu.quad.clone();
+                if let Some(quad) = quad {
+                    if self
+                        .quad_panels
+                        .first()
+                        .is_some_and(|panel| !panel.items.is_empty())
+                    {
+                        viewport_stack = viewport_stack.push(viewport_quad_overlay(
+                            &quad,
+                            &self.quad_panels,
+                            self.quad_width as usize,
+                            command_line_inset,
+                        ));
+                    }
+                }
+            }
+
             // In-place MText editor (toolbar + text area), anchored at the
             // insertion-point click.
             if !tab.is_start {
                 let canvas = tab.scene.selection.borrow().view.vp_size;
-                if let Some(ed) = &self.mtext_editor {
+                // The editor's modal would swallow the clicks of a pick that
+                // the Field dialog started from it, so it waits meanwhile.
+                if let Some(ed) = self.mtext_editor.as_ref().filter(|_| tab.active_cmd.is_none()) {
                     let styles: Vec<String> = tab
                         .scene
                         .document
@@ -3474,6 +3521,7 @@ impl OpenCADStudio {
         let hatch_pattern_keys = if self.tabs[self.active_tab]
             .properties
             .hatch_pattern_picker_open
+            || self.graphic_attributes.hatch_editor.is_some()
         {
             event::listen_with(hatch_pattern_key_event)
         } else {
@@ -3642,6 +3690,7 @@ impl OpenCADStudio {
                         if !has_printable_text
                             && status == Status::Captured
                             && matches!(arrow, Some(ArrowKey::Up | ArrowKey::Down))
+                            && !crate::ui::dropdown_list::take_dropdown_arrow_captured()
                         {
                             return Some(Message::CommandLineArrowProbe {
                                 direction: arrow?,
@@ -3662,6 +3711,12 @@ impl OpenCADStudio {
                             }
                         }
                         let shortcut = shortcut_key_name(&key, modifiers)?;
+                        if shortcut == "ESCAPE"
+                            && status == Status::Captured
+                            && crate::ui::dropdown_list::take_dropdown_escape_captured()
+                        {
+                            return None;
+                        }
                         if status == Status::Ignored
                             || crate::app::shortcuts::is_global_key(&shortcut)
                         {

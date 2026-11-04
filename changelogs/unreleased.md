@@ -11,6 +11,8 @@
 ### 🚀 New Features
 
 * **AVEVA RVM Import:** Open a standalone `.rvm` file from the file dialog. Geometry items arrive as read-only proxies carrying their `RefNo` / noun / name, shared canonical boxes and cylinders are uploaded once and instanced, and structural centrelines (including dashed broken tubes) come in on the `E3D_CENTRELINE` / `E3D_INVALID_TUBI` layers.
+* **Quad Cursor Menu:** A context-aware command menu at the cursor with panels per entity type, hover dwell, right-click moments, keyboard picking (`Enter`, `1-9`, `Tab`), and `QUAD`/`QUADWIDTH`/`QUADCOMMANDLAUNCH` sysvars. Off by default; opted into via `SHIFT+F12`, the status-bar QUAD pill, or Options → Quad Cursor Menu.
+* **Plugin Quad Surface (API v15):** Plugins register entity-type-bound quad panels with custom icons; command tiles dispatch host-side, callback tiles notify the owning plugin with the quad target.
 * **Chained Actions:** Chain a parameter's actions in the named order from the Actions tab, with the chained action named when it is authored and resolved through its evaluation graph node.
 * **Parameter Value Evaluation:** A written parameter value moves the reference it was set on.
 

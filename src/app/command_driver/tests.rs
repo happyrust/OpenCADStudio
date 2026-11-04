@@ -1680,7 +1680,7 @@ mod bedit_characterization_tests {
         let line = app.tabs[tab]
             .scene
             .document
-            .add_entity(EntityType::Line(Line::from_points(
+            .add_entity(codec::EntityType::Line(Line::from_points(
                 Vector3::ZERO,
                 Vector3::new(1.0, 0.0, 0.0),
             )))
@@ -2106,6 +2106,9 @@ mod block_base_point_tests {
         let mut app = OpenCADStudio::new_for_test();
         let _ = app.automation_op(r#"{"op":"new"}"#);
         let i = app.active_tab;
+        // These tests follow the prompt chain, so the insertion form that
+        // answers it in one go has to stay out of the way.
+        app.tabs[i].scene.document.header.attribute_dialog = false;
         // Block "ATTREQ_BP": base (10,5,0); LINE (10,5)-(30,5); ATTDEF TAG1 at
         // (12,8). Rendering convention (see scene::block_base_point_tests): the
         // ATTDEF lands at (100,100) + Rot(30)*Scale(2)*((12,8) - (10,5))
@@ -2187,6 +2190,7 @@ mod block_base_point_tests {
         let mut app = OpenCADStudio::new_for_test();
         let _ = app.automation_op(r#"{"op":"new"}"#);
         let i = app.active_tab;
+        app.tabs[i].scene.document.header.attribute_dialog = false;
         app.tabs[i].scene.define_block_raw(
             "ATTREQ_ID",
             Vector3::ZERO,
@@ -2662,5 +2666,747 @@ mod sweep_path_end_tests {
             .entities()
             .any(|entity| matches!(entity, codec::EntityType::Solid3D(_)));
         assert!(swept, "the sweep from the picked end makes a solid");
+    }
+}
+
+#[cfg(test)]
+mod copytolayer_tests {
+    use super::super::*;
+    use codec::entities::{Circle, Line};
+    use codec::types::Vector3;
+    use glam::DVec3;
+
+    fn fixture() -> (OpenCADStudio, Handle, Handle) {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let scene = &mut app.tabs[app.active_tab].scene;
+        scene
+            .document
+            .layers
+            .add(codec::tables::Layer::new("RED"))
+            .unwrap();
+        scene
+            .document
+            .layers
+            .add(codec::tables::Layer::new("BLUE"))
+            .unwrap();
+        let mut circle = Circle::from_coords(1.0, 2.0, 0.0, 2.0);
+        circle.common.layer = "RED".into();
+        let source = scene.add_entity(codec::EntityType::Circle(circle));
+        let mut line = Line::from_points(Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0));
+        line.common.layer = "BLUE".into();
+        let dest = scene.add_entity(codec::EntityType::Line(line));
+        (app, source, dest)
+    }
+
+    // Like viewport picks / boxes: selection accumulates, and the command receives
+    // the WHOLE scene selection, never just the handle picked this time.
+    fn pick(app: &mut OpenCADStudio, handles: &[Handle]) {
+        let scene = &mut app.tabs[app.active_tab].scene;
+        for h in handles {
+            scene.select_entity(*h, false);
+        }
+        selection_changed(app);
+    }
+
+    fn selection_changed(app: &mut OpenCADStudio) {
+        let handles = app.tabs[app.active_tab]
+            .scene
+            .selected_entities()
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect();
+        feed(app, StepInput::SelectionComplete(handles));
+    }
+
+    fn feed(app: &mut OpenCADStudio, input: StepInput) {
+        let _ = app.feed_command(input);
+        // Match update(): close history at every GUI message boundary unless
+        // the running command groups it across the copy / placement steps.
+        app.finish_all_pending_history();
+    }
+
+    fn type_token(app: &mut OpenCADStudio, text: &str) {
+        let _ = app.feed_active_cmd(text);
+        app.finish_all_pending_history();
+    }
+
+    fn copies(app: &OpenCADStudio, originals: &[Handle]) -> Vec<Handle> {
+        app.tabs[app.active_tab]
+            .scene
+            .document
+            .entities()
+            .map(|e| e.common().handle)
+            .filter(|h| !originals.contains(h))
+            .collect()
+    }
+
+    fn assert_circle(app: &OpenCADStudio, h: Handle, layer: &str, offset: DVec3) {
+        let e = app.tabs[app.active_tab]
+            .scene
+            .document
+            .get_entity(h)
+            .unwrap();
+        assert_eq!(
+            e.common().layer,
+            layer,
+            "destination layer must come from the phase-2 pick"
+        );
+        let codec::EntityType::Circle(c) = e else {
+            panic!("expected circle")
+        };
+        assert_eq!(
+            (c.center.x, c.center.y, c.center.z),
+            (1.0 + offset.x, 2.0 + offset.y, offset.z)
+        );
+    }
+
+    fn ready() -> (OpenCADStudio, Handle, Handle, Handle) {
+        let (mut app, src, dest) = fixture();
+        pick(&mut app, &[src]);
+        let _ = app.dispatch_command("COPYTOLAYER");
+        assert!(app.tabs[app.active_tab].scene.selected.is_empty());
+        pick(&mut app, &[dest]);
+        let copied = copies(&app, &[src, dest]);
+        assert_eq!(copied.len(), 1);
+        assert_circle(&app, copied[0], "BLUE", DVec3::ZERO);
+        assert!(
+            app.tabs[app.active_tab].active_cmd.is_some(),
+            "copies must exist at the base point prompt"
+        );
+        (app, src, dest, copied[0])
+    }
+
+    #[test]
+    fn copytolayer_destination_after_accumulated_gui_selection() {
+        let (mut app, src, dest) = fixture();
+        let _ = app.dispatch_command("COPYTOLAYER");
+        pick(&mut app, &[src]);
+        feed(&mut app, StepInput::Enter);
+        pick(&mut app, &[dest]);
+        let copied = copies(&app, &[src, dest]);
+        assert_eq!(copied.len(), 1);
+        assert_circle(&app, copied[0], "BLUE", DVec3::ZERO);
+        assert_circle(&app, src, "RED", DVec3::ZERO);
+    }
+
+    #[test]
+    fn laymatch_destination_after_accumulated_gui_selection() {
+        let (mut app, src, dest) = fixture();
+        let _ = app.dispatch_command("LAYMATCH");
+        pick(&mut app, &[src]);
+        feed(&mut app, StepInput::Enter);
+        pick(&mut app, &[dest]);
+        assert_circle(&app, src, "BLUE", DVec3::ZERO);
+        assert!(copies(&app, &[src, dest]).is_empty());
+        assert!(app.tabs[app.active_tab].active_cmd.is_none());
+    }
+
+    #[test]
+    fn copytolayer_and_laymatch_gather_picks_and_box_until_enter() {
+        for name in ["COPYTOLAYER", "LAYMATCH"] {
+            let (mut app, src, dest) = fixture();
+            let scene = &mut app.tabs[app.active_tab].scene;
+            let extra: Vec<_> = (0..3)
+                .map(|n| {
+                    scene.add_entity(codec::EntityType::Circle(Circle::from_coords(
+                        20.0 + n as f64,
+                        0.0,
+                        0.0,
+                        1.0,
+                    )))
+                })
+                .collect();
+            let _ = app.dispatch_command(name);
+            let prompt = app.tabs[app.active_tab]
+                .active_cmd
+                .as_ref()
+                .unwrap()
+                .prompt();
+            pick(&mut app, &[src]);
+            pick(&mut app, &extra[..1]);
+            pick(&mut app, &extra[1..]); // A window selecting two more objects.
+            assert_eq!(
+                app.tabs[app.active_tab]
+                    .active_cmd
+                    .as_ref()
+                    .unwrap()
+                    .prompt(),
+                prompt,
+                "several picks must stay at the objects prompt until Enter"
+            );
+            assert_eq!(
+                copies(&app, &[src, dest]).len(),
+                3,
+                "no copies before Enter / destination"
+            );
+            // A removal must replace the command's cached set, not be unioned into it.
+            app.tabs[app.active_tab].scene.deselect_entity(extra[2]);
+            selection_changed(&mut app);
+            feed(&mut app, StepInput::Enter);
+            assert!(app.tabs[app.active_tab].scene.selected.is_empty());
+            pick(&mut app, &[dest]);
+            let all_originals = [src, dest, extra[0], extra[1], extra[2]];
+            if name == "COPYTOLAYER" {
+                assert_eq!(copies(&app, &all_originals).len(), 3);
+                assert_circle(&app, src, "RED", DVec3::ZERO);
+            } else {
+                for h in [src, extra[0], extra[1]] {
+                    assert_eq!(
+                        app.tabs[app.active_tab]
+                            .scene
+                            .document
+                            .get_entity(h)
+                            .unwrap()
+                            .common()
+                            .layer,
+                        "BLUE"
+                    );
+                }
+                assert_eq!(
+                    app.tabs[app.active_tab]
+                        .scene
+                        .document
+                        .get_entity(extra[2])
+                        .unwrap()
+                        .common()
+                        .layer,
+                    "0"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn copytolayer_and_laymatch_empty_selection_enter_cancels() {
+        for name in ["COPYTOLAYER", "LAYMATCH"] {
+            let (mut app, src, _) = fixture();
+            let _ = app.dispatch_command(name);
+            pick(&mut app, &[src]);
+            app.tabs[app.active_tab].scene.deselect_all();
+            selection_changed(&mut app);
+            feed(&mut app, StepInput::Enter);
+            assert!(
+                app.tabs[app.active_tab].active_cmd.is_none(),
+                "empty selection must cancel"
+            );
+            assert!(app.tabs[app.active_tab].history.undo_stack.is_empty());
+        }
+    }
+
+    #[test]
+    fn copytolayer_preselection_and_exit_keep_copies_in_place() {
+        for exit in ["", "X", "eXit", "Esc"] {
+            let (mut app, src, dest, copy) = ready();
+            if exit == "Esc" {
+                feed(&mut app, StepInput::Escape);
+            } else {
+                type_token(&mut app, exit);
+            }
+            assert!(app.tabs[app.active_tab].active_cmd.is_none());
+            assert_circle(&app, copy, "BLUE", DVec3::ZERO);
+            assert_circle(&app, src, "RED", DVec3::ZERO);
+            assert_eq!(app.tabs[app.active_tab].history.undo_stack.len(), 1);
+            app.undo_active_tab();
+            assert!(copies(&app, &[src, dest]).is_empty());
+            assert_circle(&app, src, "RED", DVec3::ZERO);
+        }
+        let (mut app, src, dest) = fixture();
+        pick(&mut app, &[src]);
+        let _ = app.dispatch_command("LAYMATCH");
+        pick(&mut app, &[dest]);
+        assert_circle(&app, src, "BLUE", DVec3::ZERO);
+    }
+
+    #[test]
+    fn copytolayer_base_second_point_preview_move_and_one_undo() {
+        let (mut app, src, dest, copy) = ready();
+        let i = app.active_tab;
+        let originals: Vec<_> = [src, dest]
+            .iter()
+            .map(|h| {
+                serde_json::to_value(app.tabs[i].scene.document.get_entity(*h).unwrap()).unwrap()
+            })
+            .collect();
+        feed(&mut app, StepInput::Point(DVec3::new(2.0, 3.0, 0.0)));
+        let cmd = app.tabs[i].active_cmd.as_mut().unwrap();
+        assert_eq!(cmd.preview_hidden_handles(), &[copy]);
+        let preview = cmd.on_preview_wires(DVec3::new(7.0, 9.0, 0.0));
+        assert!(preview.len() > 1, "copied geometry plus COPY rubber band");
+        feed(&mut app, StepInput::Point(DVec3::new(7.0, 9.0, 0.0)));
+        assert_circle(&app, copy, "BLUE", DVec3::new(5.0, 6.0, 0.0));
+        assert!(app.tabs[i].active_cmd.is_none());
+        assert_eq!(
+            app.tabs[i].history.undo_stack.len(),
+            1,
+            "copy + layer + move is one undo"
+        );
+        for (n, h) in [src, dest].iter().enumerate() {
+            assert_eq!(
+                serde_json::to_value(app.tabs[i].scene.document.get_entity(*h).unwrap()).unwrap(),
+                originals[n]
+            );
+        }
+        app.undo_active_tab();
+        assert!(copies(&app, &[src, dest]).is_empty());
+        for (n, h) in [src, dest].iter().enumerate() {
+            assert_eq!(
+                serde_json::to_value(app.tabs[i].scene.document.get_entity(*h).unwrap()).unwrap(),
+                originals[n]
+            );
+        }
+        app.redo_active_tab();
+        assert_circle(&app, copy, "BLUE", DVec3::new(5.0, 6.0, 0.0));
+    }
+
+    #[test]
+    fn copytolayer_displacement_coordinates_and_default() {
+        for (text, delta) in [
+            ("3,4", DVec3::new(3.0, 4.0, 0.0)),
+            ("3,4,5", DVec3::new(3.0, 4.0, 5.0)),
+            ("", DVec3::ZERO),
+        ] {
+            let (mut app, src, _, copy) = ready();
+            type_token(&mut app, "D");
+            type_token(&mut app, text);
+            assert!(app.tabs[app.active_tab].active_cmd.is_none());
+            assert_circle(&app, copy, "BLUE", delta);
+            assert_circle(&app, src, "RED", DVec3::ZERO);
+            assert_eq!(app.tabs[app.active_tab].history.undo_stack.len(), 1);
+        }
+    }
+
+    #[test]
+    fn copytolayer_second_point_enter_uses_first_point_as_displacement() {
+        let (mut app, src, _, copy) = ready();
+        feed(&mut app, StepInput::Point(DVec3::new(3.0, 4.0, 5.0)));
+        feed(&mut app, StepInput::Enter);
+        assert!(app.tabs[app.active_tab].active_cmd.is_none());
+        assert_circle(&app, copy, "BLUE", DVec3::new(3.0, 4.0, 5.0));
+        assert_circle(&app, src, "RED", DVec3::ZERO);
+        assert_eq!(app.tabs[app.active_tab].history.undo_stack.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod selection_history_tests {
+    use super::super::*;
+    use crate::app::OpenCADStudio;
+    use crate::command::StepInput;
+    use codec::entities::Line;
+    use codec::types::Vector3;
+
+    fn three_lines() -> (OpenCADStudio, Vec<codec::Handle>) {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let handles = (0..3)
+            .map(|n| {
+                app.tabs[i]
+                    .scene
+                    .add_entity(codec::EntityType::Line(Line::from_points(
+                        Vector3::new(n as f64 * 10.0, 0.0, 0.0),
+                        Vector3::new(n as f64 * 10.0 + 5.0, 0.0, 0.0),
+                    )))
+            })
+            .collect();
+        (app, handles)
+    }
+
+    fn selected(app: &OpenCADStudio) -> Vec<codec::Handle> {
+        app.tabs[app.active_tab]
+            .scene
+            .selected_entities()
+            .into_iter()
+            .map(|(h, _)| h)
+            .collect()
+    }
+
+    fn pick(app: &mut OpenCADStudio, handle: codec::Handle) {
+        let i = app.active_tab;
+        app.tabs[i].scene.select_entity(handle, false);
+        let current = selected(app);
+        let _ = app.feed_command(StepInput::SelectionComplete(current));
+    }
+
+    #[test]
+    fn select_command_commits_the_picked_set() {
+        let (mut app, h) = three_lines();
+        let _ = app.run_command_line("SELECT");
+        let i = app.active_tab;
+        assert!(
+            app.tabs[i]
+                .active_cmd
+                .as_ref()
+                .is_some_and(|c| c.is_selection_gathering()),
+            "SELECT must gather objects"
+        );
+        pick(&mut app, h[1]);
+        let _ = app.feed_command(StepInput::Enter);
+
+        assert_eq!(selected(&app), vec![h[1]]);
+        assert!(app.tabs[app.active_tab].active_cmd.is_none());
+    }
+
+    #[test]
+    fn select_previous_restores_the_set_before_select() {
+        let (mut app, h) = three_lines();
+        let i = app.active_tab;
+        app.tabs[i].scene.select_entity(h[0], false);
+
+        let _ = app.run_command_line("SELECT");
+        app.tabs[i].scene.deselect_all();
+        pick(&mut app, h[1]);
+        let _ = app.feed_command(StepInput::Enter);
+        assert_eq!(selected(&app), vec![h[1]]);
+
+        let _ = app.run_command_line("SELECTPREVIOUS");
+        assert_eq!(selected(&app), vec![h[0]]);
+    }
+
+    #[test]
+    fn select_previous_without_a_previous_set_keeps_the_selection() {
+        let (mut app, h) = three_lines();
+        let i = app.active_tab;
+        app.tabs[i].scene.select_entity(h[2], false);
+        let _ = app.run_command_line("SELECTPREVIOUS");
+        assert_eq!(selected(&app), vec![h[2]]);
+    }
+}
+
+#[cfg(test)]
+mod dash_layer_properties_tests {
+    use super::super::*;
+    use crate::app::OpenCADStudio;
+
+    fn app_with_layer() -> OpenCADStudio {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let _ = app.run_command_line("-LAYER NEW WALLS");
+        app
+    }
+
+    fn layer(app: &OpenCADStudio) -> &codec::tables::Layer {
+        app.tabs[app.active_tab]
+            .scene
+            .document
+            .layers
+            .get("WALLS")
+            .expect("WALLS layer")
+    }
+
+    #[test]
+    fn dash_layer_sets_transparency_and_description() {
+        let mut app = app_with_layer();
+        let _ = app.run_command_line("-LAYER TR 50 WALLS");
+        let _ = app.run_command_line("-LAYER D walls WALLS");
+
+        assert_eq!(
+            layer(&app).transparency,
+            codec::types::Transparency::from_percent(0.5)
+        );
+        assert_eq!(layer(&app).description, "walls");
+    }
+
+    #[test]
+    fn dash_layer_plot_flag_is_visible_in_the_layer_list() {
+        let mut app = app_with_layer();
+        let _ = app.run_command_line("-LAYER PLOT NOPLOT WALLS");
+        assert!(!layer(&app).is_plottable);
+
+        let listed = app.automation_op(r#"{"op":"layers"}"#);
+        let walls = listed["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["name"] == "WALLS")
+            .expect("WALLS listed");
+        assert_eq!(walls["plottable"], false);
+        assert_eq!(walls["transparency"], 0);
+        assert_eq!(walls["description"], "");
+    }
+}
+
+#[cfg(test)]
+mod attedit_dash_tests {
+    use super::super::*;
+    use crate::app::OpenCADStudio;
+    use codec::entities::{AttributeEntity, Insert};
+    use codec::types::Vector3;
+
+    fn inserts_with_title() -> (OpenCADStudio, Vec<codec::Handle>) {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let handles = (0..3)
+            .map(|n| {
+                let mut insert =
+                    Insert::new("TITLEBLOCK", Vector3::new(n as f64 * 50.0, 0.0, 0.0));
+                insert
+                    .attributes
+                    .push(AttributeEntity::new("TITLE".into(), "old".into()));
+                app.tabs[i]
+                    .scene
+                    .add_entity(codec::EntityType::Insert(insert))
+            })
+            .collect();
+        (app, handles)
+    }
+
+    fn attribute(app: &OpenCADStudio, handle: codec::Handle) -> (String, String) {
+        let entity = app.tabs[app.active_tab]
+            .scene
+            .document
+            .get_entity(handle)
+            .expect("insert");
+        let codec::EntityType::Insert(insert) = entity else {
+            panic!("not an insert");
+        };
+        let attr = insert.attributes.first().expect("attribute");
+        (attr.tag.clone(), attr.get_value().to_string())
+    }
+
+    #[test]
+    fn dash_attedit_accepts_a_handle_argument() {
+        let (mut app, handles) = inserts_with_title();
+        let line = format!("-ATTEDIT {:X} TITLE new", handles[1].value());
+        let _ = app.run_command_line(&line);
+
+        assert_eq!(attribute(&app, handles[1]), ("TITLE".into(), "new".into()));
+        assert_eq!(attribute(&app, handles[0]), ("TITLE".into(), "old".into()));
+    }
+
+    #[test]
+    fn dash_attedit_prompts_when_nothing_is_selected() {
+        let (mut app, _) = inserts_with_title();
+        let _ = app.run_command_line("-ATTEDIT");
+
+        let i = app.active_tab;
+        let command = app.tabs[i]
+            .active_cmd
+            .as_ref()
+            .expect("ATTEDIT must ask for a reference");
+        assert!(
+            command.prompt().contains("Select block"),
+            "prompt was {}",
+            command.prompt()
+        );
+    }
+
+    #[test]
+    fn dash_attedit_renames_a_tag_across_every_reference() {
+        let (mut app, handles) = inserts_with_title();
+        let _ = app.run_command_line("-ATTEDIT RENAME TITLE SHEET");
+
+        for handle in handles {
+            assert_eq!(attribute(&app, handle), ("SHEET".into(), "old".into()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod layer_filter_tests {
+    use super::super::*;
+    use crate::app::OpenCADStudio;
+
+    fn app_with_layers() -> OpenCADStudio {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        for (name, color) in [("DIMS-A", 1), ("DIMS-B", 7), ("WALLS", 1)] {
+            let _ = app.run_command_line(&format!("-LAYER NEW {name}"));
+            let _ = app.run_command_line(&format!("-LAYER COLOR {color} {name}"));
+        }
+        app
+    }
+
+    fn matching(app: &OpenCADStudio, filter: &str) -> Vec<String> {
+        let filter = app
+            .layer_filters
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case(filter))
+            .expect("filter");
+        let mut names: Vec<String> = app.tabs[app.active_tab]
+            .scene
+            .document
+            .layers
+            .iter()
+            .filter(|layer| filter.matches(layer))
+            .map(|layer| layer.name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn headless_run_reaches_the_filter_command() {
+        let mut app = app_with_layers();
+        let reply = app.automation_op(r#"{"op":"run","cmd":"LAYERFILTER NEW DIMS DIMS*"}"#);
+        println!("DBG reply={reply}");
+        assert_eq!(matching(&app, "DIMS"), ["DIMS-A", "DIMS-B"]);
+    }
+
+    #[test]
+    fn name_wildcard_filter_selects_the_discipline() {
+        let mut app = app_with_layers();
+        let _ = app.run_command_line("LAYERFILTER NEW DIMS DIMS*");
+        assert_eq!(matching(&app, "DIMS"), ["DIMS-A", "DIMS-B"]);
+    }
+
+    #[test]
+    fn colour_predicate_narrows_the_filter_result() {
+        let mut app = app_with_layers();
+        let _ = app.run_command_line("LAYERFILTER NEW DIMS DIMS*");
+        let _ = app.run_command_line("LAYERFILTER SET DIMS COLOR 1");
+        assert_eq!(matching(&app, "DIMS"), ["DIMS-A"]);
+    }
+
+    #[test]
+    fn apply_turns_off_every_layer_in_the_filter() {
+        let mut app = app_with_layers();
+        let _ = app.run_command_line("LAYERFILTER NEW DIMS DIMS*");
+        let _ = app.run_command_line("LAYERFILTER APPLY DIMS OFF");
+
+        let layers = &app.tabs[app.active_tab].scene.document.layers;
+        assert!(layers.get("DIMS-A").unwrap().is_off());
+        assert!(layers.get("DIMS-B").unwrap().is_off());
+        assert!(!layers.get("WALLS").unwrap().is_off());
+    }
+
+    #[test]
+    fn dash_layer_accepts_a_filter_as_its_name_list() {
+        let mut app = app_with_layers();
+        let _ = app.run_command_line("LAYERFILTER NEW DIMS DIMS*");
+        let _ = app.run_command_line("-LAYER OFF FILTER:DIMS");
+
+        let layers = &app.tabs[app.active_tab].scene.document.layers;
+        assert!(layers.get("DIMS-A").unwrap().is_off());
+        assert!(layers.get("DIMS-B").unwrap().is_off());
+        assert!(!layers.get("WALLS").unwrap().is_off());
+    }
+}
+
+#[cfg(test)]
+mod dim_update_regen_tests {
+    use super::super::*;
+    use crate::app::OpenCADStudio;
+    use crate::entities::dimension::as_dimension;
+    use codec::entities::Dimension;
+    use codec::entities::Line;
+    use codec::types::Vector3;
+
+    /// A line with a linear dimension associated to its two ends.
+    fn app_with_associative_dimension() -> (OpenCADStudio, codec::Handle, codec::Handle) {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let line = app.tabs[i].scene.add_entity(codec::EntityType::Line(
+            Line::from_points(Vector3::ZERO, Vector3::new(40.0, 0.0, 0.0)),
+        ));
+        let dimension = app.tabs[i].scene.add_entity(
+            crate::modules::annotate::linear_dim::linear_dimension_entity(
+                glam::DVec3::ZERO,
+                glam::DVec3::new(40.0, 0.0, 0.0),
+                glam::DVec3::new(20.0, 10.0, 0.0),
+                glam::DVec3::X,
+                None,
+            ),
+        );
+        app.tabs[i]
+            .scene
+            .attach_dimension_association(dimension, vec![Some(line), Some(line)]);
+        (app, line, dimension)
+    }
+
+    fn last_output(app: &OpenCADStudio) -> String {
+        app.command_line
+            .history
+            .iter()
+            .rev()
+            .find(|entry| matches!(entry.kind, crate::ui::command_line::EntryKind::Output))
+            .map(|entry| entry.text.clone())
+            .unwrap_or_default()
+    }
+
+    fn all_output(app: &OpenCADStudio) -> String {
+        app.command_line
+            .history
+            .iter()
+            .filter(|entry| matches!(entry.kind, crate::ui::command_line::EntryKind::Output))
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn dimregen_solves_the_dimension_after_an_external_geometry_change() {
+        let (mut app, line, dimension) = app_with_associative_dimension();
+        let i = app.active_tab;
+        if let Some(codec::EntityType::Line(line)) =
+            app.tabs[i].scene.document.get_entity_mut(line)
+        {
+            line.start = Vector3::new(10.0, 0.0, 0.0);
+            line.end = Vector3::new(60.0, 0.0, 0.0);
+        }
+
+        let _ = app.run_command_line("DIMREGEN");
+
+        let dimension = as_dimension(
+            app.tabs[i]
+                .scene
+                .document
+                .get_entity(dimension)
+                .expect("dimension"),
+        )
+        .expect("dimension");
+        let Dimension::Linear(linear) = dimension else {
+            panic!("linear dimension");
+        };
+        assert!((linear.first_point.x - 10.0).abs() < 1e-9, "{linear:?}");
+        assert!((linear.second_point.x - 60.0).abs() < 1e-9, "{linear:?}");
+        assert!((linear.base.actual_measurement - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dimupdate_pushes_the_current_style_onto_the_selection() {
+        let (mut app, _, dimension) = app_with_associative_dimension();
+        let i = app.active_tab;
+        let mut style = codec::tables::DimStyle::new("TALL");
+        style.dimtxt = 5.0;
+        let _ = app.tabs[i].scene.document.dim_styles.add(style);
+        app.tabs[i].scene.document.header.current_dimstyle_name = "TALL".into();
+
+        app.tabs[i].scene.select_entity(dimension, false);
+        let _ = app.run_command_line("DIMUPDATE");
+
+        let dimension = as_dimension(
+            app.tabs[i]
+                .scene
+                .document
+                .get_entity(dimension)
+                .expect("dimension"),
+        )
+        .expect("dimension");
+        assert_eq!(dimension.base().style_name, "TALL");
+        assert!(
+            last_output(&app).contains("applied 'TALL'"),
+            "{}",
+            last_output(&app)
+        );
+    }
+
+    #[test]
+    fn dimregen_reports_a_broken_association_instead_of_skipping_it() {
+        let (mut app, line, _) = app_with_associative_dimension();
+        let i = app.active_tab;
+        app.tabs[i].scene.document.remove_entity(line);
+
+        let _ = app.run_command_line("DIMREGEN");
+
+        let output = all_output(&app);
+        assert!(output.contains("1 broken"), "{output}");
+        assert!(
+            output.contains("no longer resolves"),
+            "a broken reference must be named: {output}"
+        );
     }
 }

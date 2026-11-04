@@ -82,6 +82,30 @@ fn perf_message_label(msg: &Message) -> &'static str {
     }
 }
 
+/// Capture only the enum variant for slow PERF "other" messages. A bounded
+/// fmt sink aborts before formatting potentially huge payloads (documents,
+/// clipboard data, etc.), so diagnostics never clone an entire message.
+fn perf_variant_name(msg: &Message) -> String {
+    struct VariantPrefix(String);
+    impl std::fmt::Write for VariantPrefix {
+        fn write_str(&mut self, part: &str) -> std::fmt::Result {
+            for character in part.chars() {
+                if matches!(character, '(' | '{')
+                    || character.is_whitespace()
+                    || self.0.len() >= 72
+                {
+                    return Err(std::fmt::Error);
+                }
+                self.0.push(character);
+            }
+            Ok(())
+        }
+    }
+    let mut prefix = VariantPrefix(String::with_capacity(32));
+    let _ = std::fmt::write(&mut prefix, format_args!("{msg:?}"));
+    prefix.0
+}
+
 const VIEWCUBE_HIT_SIZE: f32 = VIEWCUBE_DRAW_PX;
 
 fn format_size(bytes: u64) -> String {
@@ -115,7 +139,7 @@ fn reorder_insertion_index(from: usize, to: usize, after: bool, len: usize) -> O
 mod block_ops_tests;
 pub(super) mod blocks_palette;
 mod command;
-mod context_menu;
+pub(crate) mod context_menu;
 mod dialog;
 mod dynamic;
 pub(in crate::app) mod file;
@@ -316,6 +340,10 @@ impl OpenCADStudio {
                 }
             }
             // OK or ✕ dismisses this map; the next one follows.
+            // Cancel or ✕ leaves the cells as they were.
+            Some(TableCellWarning) => self.table_cell_warning = None,
+            // Cancel drops the typed value; the cell keeps its value and type.
+            Some(TableCellEntry) => self.table_cell_entry = None,
             Some(TdsMissingMap) => {
                 if !self.import_dialogs.tds_maps.is_empty() {
                     self.import_dialogs.tds_maps.remove(0);
@@ -476,10 +504,18 @@ impl OpenCADStudio {
     }
 
     pub fn update(&mut self, msg: Message) -> Task<Message> {
+        crate::sys::startup_times::update_tick();
         // Whatever makes another document active (switching, opening,
         // creating or closing a tab), the contextual ribbon tab follows that
         // document's selection.
         let before = self.tabs.get(self.active_tab).map(|tab| tab.id);
+        // A cursor position does not change drawing-wide ribbon variables.
+        // Keep FRAME/UOSNAP/ATTMODE sync for edits, input and tab changes,
+        // not for every mouse packet in a dense scene.
+        let pointer_motion = matches!(
+            &msg,
+            Message::ViewportMove(_) | Message::PaneMove(_, _) | Message::CursorMoved(..)
+        );
         // Pickers offer the catalog linetypes the drawing lacks; the one
         // picked is loaded before it is assigned.
         if let Message::LayerLinetypeSet(name)
@@ -536,7 +572,9 @@ impl OpenCADStudio {
         if self.tabs.get(self.active_tab).map(|tab| tab.id) != before {
             self.sync_underlay_tab();
         }
-        self.sync_frame_dropdown();
+        if !pointer_motion {
+            self.sync_frame_dropdown();
+        }
         let block_editing = self
             .tabs
             .get(self.active_tab)
@@ -552,6 +590,12 @@ impl OpenCADStudio {
             self.ribbon.set_block_testing(false);
             self.ribbon.set_block_editing(block_editing);
         }
+        // The ribbon light follows the pane that is actually rendered, so a
+        // session ending, a clean screen or another tab closes the light with it.
+        self.ribbon.show_parameters_manager =
+            self.dock_panel_visible(crate::ui::dock::PanelId::ParametersManager);
+        self.ribbon.show_authoring_palettes =
+            self.dock_panel_visible(crate::ui::dock::PanelId::AuthoringPalettes);
         task
     }
 
@@ -631,6 +675,8 @@ impl OpenCADStudio {
         self.control_observe_user_message(&msg);
         let perf_started = crate::perf::enabled().then(Instant::now);
         let perf_label = perf_message_label(&msg);
+        let perf_other_variant = (perf_started.is_some() && perf_label == "other")
+            .then(|| perf_variant_name(&msg));
         // Keep the stable tab id because dispatch may switch or close tabs.
         let perf_edit_before = perf_started.map(|started| {
             let tab = &self.tabs[self.active_tab];
@@ -742,6 +788,14 @@ impl OpenCADStudio {
             {
                 return self.apply_block_save_as_dialog();
             }
+            if self.active_modal == Some(super::ModalKind::InsertAttributes)
+                && (matches!(msg, Message::CommandFinalize)
+                    || matches!(&msg, Message::ShortcutPressed(key) if key.rsplit('+').next() == Some("ENTER") || key.rsplit('+').next() == Some("RETURN")))
+            {
+                return self.update(Message::InsertAttrDialog(
+                    crate::ui::window::insert_attr_dialog::InsertAttrMsg::Ok,
+                ));
+            }
             if self.active_modal == Some(super::ModalKind::WriteBlock) {
                 if matches!(msg, Message::CommandFinalize)
                     || matches!(&msg, Message::ShortcutPressed(key) if key.rsplit('+').next() == Some("ENTER") || key.rsplit('+').next() == Some("RETURN"))
@@ -768,20 +822,31 @@ impl OpenCADStudio {
                 return task;
             }
         }
-        // An open dynamic-value list owns Escape, Enter and the arrows: without
+        // The open quad cursor menu owns the keyboard the same way: Escape
+        // closes it, Enter picks the primary item, Tab cycles its panels and
+        // the digits 1–9 pick them; any other key closes it and falls
+        // through to the command line.
+        if self.quad_open() {
+            if let Some(task) = self.intercept_quad_key(&msg) {
+                return task;
+            }
+        }
+        // An open property list owns Escape, Enter and the arrows: without
         // this they reach the command line or the viewport and dismiss the
         // selection the list was opened for. A list whose panel is hidden is
         // not on screen, so it must not keep the guard on.
-        let picker = self.tabs[self.active_tab].properties.open_block_picker;
-        let picker_shown = picker.is_some_and(|(_, quick)| {
+        let panel = &self.tabs[self.active_tab].properties;
+        let shown = |quick: bool| {
             if quick {
                 self.quick_properties
             } else {
                 self.dock_panel_visible(crate::ui::dock::PanelId::Properties)
             }
-        });
+        };
+        let picker_shown = panel.open_block_picker.is_some_and(|(_, quick)| shown(quick))
+            || panel.open_choice.is_some_and(|(_, quick)| shown(quick));
         if picker_shown || self.block_picker_dismissed {
-            if let Some(task) = self.intercept_block_picker_key(&msg) {
+            if let Some(task) = self.intercept_property_list_key(&msg) {
                 return task;
             }
         }
@@ -799,6 +864,7 @@ impl OpenCADStudio {
         #[cfg(not(target_arch = "wasm32"))]
         let command_before = active_command(self);
         let task = self.update_inner(msg);
+        let perf_dispatch_ms = crate::perf::elapsed_ms(perf_started);
         #[cfg(not(target_arch = "wasm32"))]
         {
             let command_after = active_command(self);
@@ -858,6 +924,16 @@ impl OpenCADStudio {
             })
             .unwrap_or_default();
         self.command_line.set_step_options(opts);
+        // The status bar's QUAD field mirrors the live quad display flags —
+        // the bar has no other path to the app's settings, and one message
+        // arriving is one chance too many to render a stale pill.
+        self.status_bar.quad = crate::ui::popup::quad_status::QuadStatusFlags {
+            on: self.quad,
+            on_hover: self.quad_on_hover,
+            on_select: self.quad_on_select,
+            on_right_click: self.quad_on_right_click,
+            suppress_hover_when_selection: self.quad_suppress_hover_when_selection,
+        };
         // Persist UI preferences whenever a toggle changes them (issue #68).
         self.persist_settings_if_changed();
         // The block panel watches the drawing's block list and rebuilds its
@@ -924,7 +1000,21 @@ impl OpenCADStudio {
             crate::perf::note_update_time(elapsed_us);
             let elapsed_ms = elapsed_us as f64 / 1000.0;
             if elapsed_ms >= 5.0 {
-                crate::perf_record!("[perf] update {:>7.1}ms message={perf_label}", elapsed_ms,);
+                if let Some(variant) = perf_other_variant.as_deref() {
+                    crate::perf_record!(
+                        "[perf] update {:>7.1}ms message={perf_label} variant={variant} dispatch={:.2}ms settle={:.2}ms",
+                        elapsed_ms,
+                        perf_dispatch_ms,
+                        (elapsed_ms - perf_dispatch_ms).max(0.0),
+                    );
+                } else {
+                    crate::perf_record!(
+                        "[perf] update {:>7.1}ms message={perf_label} dispatch={:.2}ms settle={:.2}ms",
+                        elapsed_ms,
+                        perf_dispatch_ms,
+                        (elapsed_ms - perf_dispatch_ms).max(0.0),
+                    );
+                }
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -1173,22 +1263,21 @@ impl OpenCADStudio {
                 self.reap_plugin_grips();
                 crate::plugin::external::with_manager(|mgr| {
                     for line in mgr.drain_io() {
+                        let prefixed =
+                            format!("[{} {}] {}", line.plugin_id, line.source, line.text);
+                        // Every line reaches the host's stderr (the gui.log),
+                        // which a headless or automation session can read;
+                        // the runner's own trace stays off the command line.
+                        eprintln!("{prefixed}");
                         if line.text.starts_with("[runner]")
                             || line.text.starts_with("[plugin] ")
                             || line.text.starts_with("[python-repl]")
                         {
                             continue;
                         }
-                        let prefixed =
-                            format!("[{} {}] {}", line.plugin_id, line.source, line.text);
-                        match line.source {
-                            ocs_plugin_api::process::IoStream::Stderr => {
-                                self.command_line.push_error(&prefixed);
-                            }
-                            _ => {
-                                self.command_line.push_output(&prefixed);
-                            }
-                        }
+                        // A plugin's stderr is its ordinary trace, not an
+                        // error; real failures come through push_error.
+                        self.command_line.push_output(&prefixed);
                     }
                 });
                 Task::none()
@@ -1497,7 +1586,7 @@ impl OpenCADStudio {
                     .selection
                     .borrow_mut()
                     .menu
-                    .open_at = None;
+                    .close();
                 // Same guard as typed MTP/M2P: point step, not entity pick.
                 let i = self.active_tab;
                 let allowed = self.tabs[i].active_cmd.as_ref().is_some_and(|c| {
@@ -1538,6 +1627,16 @@ impl OpenCADStudio {
                     .unwrap_or_default();
                 if ext == "scr" {
                     return self.dispatch_command(&format!("SCRIPT \"{}\"", path.display()));
+                }
+                if matches!(ext.as_str(), "svg" | "svgz") {
+                    return self.dispatch_command(&format!("_SVGINFILE {}", path.display()));
+                }
+                // A picture is attached as IMAGEATTACH attaches it.
+                if matches!(
+                    ext.as_str(),
+                    "png" | "jpg" | "jpeg" | "bmp" | "tif" | "tiff" | "webp" | "gif"
+                ) {
+                    return self.update(Message::ImagePickResult(crate::io::image_file_size(path)));
                 }
                 if !matches!(ext.as_str(), "dwg" | "dxf" | "bak" | "sv$")
                     && ocs_save::external_format(&ext).is_none()
@@ -2772,11 +2871,13 @@ impl OpenCADStudio {
             Message::PdfDialog(message) => self.update_pdf_dialog(message),
             Message::ImportDialog(message) => self.update_import_dialog(message),
             Message::AttdefDialog(message) => self.on_attdef_dialog(message),
+            Message::InsertAttrDialog(message) => self.on_insert_attr_dialog(message),
             Message::AttMan(message) => self.on_attman(message),
             Message::FieldDialog(message) => self.on_field_dialog(message),
             Message::RefEditDialog(message) => self.update_refedit_dialog(message),
             Message::PdfPassword(message) => self.update_pdf_password(message),
             Message::DimInspect(message) => self.update_dim_inspect(message),
+            Message::TableCellDialog(message) => self.update_table_cell_dialog(message),
             Message::HyperlinkDialog(message) => self.update_hyperlink_dialog(message),
             Message::Spell(message) => self.update_spell(message),
             Message::PdfShxDialog(message) => self.update_pdf_shx_dialog(message),
@@ -2852,7 +2953,7 @@ impl OpenCADStudio {
                 // drawing's context menu and the Isolate menu close.
                 self.ribbon.close_app_menu();
                 let i = self.active_tab;
-                self.tabs[i].scene.selection.borrow_mut().menu.open_at = None;
+                self.tabs[i].scene.selection.borrow_mut().menu.close();
                 self.isolate_popup_open = false;
                 // A single word dispatches as a ribbon button does; a line
                 // with answers runs its command and feeds them to its
@@ -3360,6 +3461,10 @@ impl OpenCADStudio {
             Message::TabNew => {
                 // Preserve the outgoing drawing's Ortho / running OSNAP.
                 self.stamp_header_sysvars(self.active_tab);
+                // The quad does not survive the switch to the fresh
+                // drawing either (same TabSwitch rule): its window state
+                // is per-tab while the panels are app-global.
+                self.close_quad();
                 self.tab_counter += 1;
                 let new_tab = super::document::DocumentTab::new_drawing(self.tab_counter);
                 self.tabs.push(new_tab);
@@ -3403,6 +3508,7 @@ impl OpenCADStudio {
                 self.layout_rename_state = None;
                 for tab in &mut self.tabs {
                     tab.properties.open_block_picker = None;
+                    tab.properties.open_choice = None;
                 }
                 self.block_picker_dismissed = false;
                 if idx < self.tabs.len() {
@@ -3410,6 +3516,15 @@ impl OpenCADStudio {
                         // The attribute editor is tab-scoped; leaving its tab
                         // drops it (its handle is that document's, not this one's).
                         self.cancel_attr_editor();
+                        // The quad is cursor UI: like the legacy menu on the
+                        // disrupted transitions, it does not ride a tab
+                        // switch (its per-tab window state rides
+                        // app-global panels, so leaving it open would let a
+                        // pick re-target the outgoing drawing's handles).
+                        self.close_quad();
+                        // The Block Properties Table list is tab-scoped for the
+                        // same reason: it names an insert of the outgoing drawing.
+                        self.table_popup = None;
                         // Persist the outgoing drawing's Ortho / running OSNAP
                         // before leaving it, so switching back restores them.
                         let prev = self.active_tab;
@@ -3716,6 +3831,9 @@ impl OpenCADStudio {
             }
 
             Message::DynTabNext => {
+                if let Some(task) = self.table_cell_tab(true) {
+                    return task;
+                }
                 if self.command_line.has_contextual_suggestions()
                     && self.command_line.autocomplete_next()
                 {
@@ -3734,6 +3852,9 @@ impl OpenCADStudio {
             }
 
             Message::DynTabPrev => {
+                if let Some(task) = self.table_cell_tab(false) {
+                    return task;
+                }
                 if self.command_line.has_contextual_suggestions() {
                     self.command_line.autocomplete_prev();
                 }
@@ -3760,6 +3881,7 @@ impl OpenCADStudio {
                 if self.tabs[self.active_tab]
                     .properties
                     .hatch_pattern_picker_open
+                    || self.graphic_attributes.hatch_editor.is_some()
                 {
                     return self.update(Message::PropHatchPatternNavigate(-2));
                 }
@@ -3792,6 +3914,7 @@ impl OpenCADStudio {
                 if self.tabs[self.active_tab]
                     .properties
                     .hatch_pattern_picker_open
+                    || self.graphic_attributes.hatch_editor.is_some()
                 {
                     return self.update(Message::PropHatchPatternNavigate(2));
                 }
@@ -4155,7 +4278,7 @@ impl OpenCADStudio {
                 self.ribbon.close_app_menu();
                 // Close viewport context menu if open.
                 let i = self.active_tab;
-                self.tabs[i].scene.selection.borrow_mut().menu.open_at = None;
+                self.tabs[i].scene.selection.borrow_mut().menu.close();
                 // Any command also dismisses the Isolate action menu.
                 self.isolate_popup_open = false;
                 // "Pick window" (PLOTWINDOW) from Page Setup needs the backdrop
@@ -5712,7 +5835,7 @@ impl OpenCADStudio {
                 let Some(p) = sel.input.last_move_pos else {
                     return Task::none();
                 };
-                sel.menu.open_at = None;
+                sel.menu.close();
                 sel.input.right_down = true;
                 sel.input.right_press_pos = Some(p);
                 sel.input.right_press_time = Some(iced::time::Instant::now());
@@ -5760,6 +5883,23 @@ impl OpenCADStudio {
                     drop(sel);
                     return self.update(Message::CommandFinalize);
                 }
+                // The Quad cursor menu, when it exists, owns the right-click
+                // like commercial solutions do (docs/quad-menu.md §3.4): the
+                // hovered default command launches, the Selection quad
+                // replaces the legacy menu on a selection, the No Selection
+                // quad appears in the void — and the legacy path below
+                // answers everything else (a command running keeps it
+                // entirely).
+                drop(sel);
+                if self.quad && self.tabs[i].active_cmd.is_none() {
+                    // The takeover needs the press duration the time-sensitive
+                    // modes use below: a quick click launches, a hold opens
+                    // the No Selection quad (docs/quad-menu.md §3.4).
+                    if let Some(task) = self.quad_right_click_takeover(click_pos, held_ms) {
+                        return task;
+                    }
+                }
+                let mut sel = self.tabs[i].scene.selection.borrow_mut();
                 // A right-click. What it does is the user's choice (Options →
                 // User Preferences, SHORTCUTMENU in commercial solutions):
                 //  • Shortcut menu — always open the context menu, whose
@@ -6248,6 +6388,7 @@ impl OpenCADStudio {
                 // Hiding the panel takes its lists with it; a flag left behind
                 // would keep the keyboard guard swallowing keys.
                 self.tabs[self.active_tab].properties.open_block_picker = None;
+                self.tabs[self.active_tab].properties.open_choice = None;
                 if self.clean_screen {
                     // Shown over clean screen without changing the panel's
                     // normal state.
@@ -6755,6 +6896,7 @@ impl OpenCADStudio {
                 if self.clean_screen {
                     // The panel goes with the chrome; its list cannot stay open.
                     self.tabs[self.active_tab].properties.open_block_picker = None;
+                    self.tabs[self.active_tab].properties.open_choice = None;
                 }
                 Task::none()
             }
@@ -6771,6 +6913,7 @@ impl OpenCADStudio {
                 // The Quick Properties copy of the row, and its list, go with
                 // the panel.
                 self.tabs[self.active_tab].properties.open_block_picker = None;
+                self.tabs[self.active_tab].properties.open_choice = None;
                 if self.quick_properties {
                     self.quick_properties_anchor = self.tabs[self.active_tab].last_cursor_screen;
                 }
@@ -7864,6 +8007,12 @@ impl OpenCADStudio {
                         == crate::ui::ribbon::widgets::LAYER_COMBO_ID
                     {
                         self.refresh_layer_panel();
+                        // Refreshing the table restores creation defaults;
+                        // the combo must still show the selected object's layer.
+                        self.sync_ribbon_from_selection();
+                        if self.ribbon.open_dropdown.as_deref() != Some(id.as_str()) {
+                            self.ribbon.layer_filter.clear();
+                        }
                     }
                     self.ribbon.toggle_dropdown(&id);
                     // Typing goes straight to the layer list's search box.
@@ -7990,7 +8139,7 @@ impl OpenCADStudio {
                     return Task::none();
                 }
                 let i = self.active_tab;
-                self.tabs[i].scene.selection.borrow_mut().menu.open_at = None;
+                self.tabs[i].scene.selection.borrow_mut().menu.close();
                 // A selected constraint-glyph pill takes Delete before entity
                 // erase — the two selections are mutually exclusive (see
                 // `Scene::selected_constraint`).
@@ -8107,6 +8256,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::MTextFontPicker(event) => {
+                let is_toggle = matches!(event, crate::ui::font_picker::FontPickerEvent::Toggle);
                 let doc = &self.tabs[self.active_tab].scene.document;
                 let picked = self
                     .mtext_editor
@@ -8118,6 +8268,16 @@ impl OpenCADStudio {
                         self.mtext_apply_font(&font)
                     }
                     None => {}
+                }
+                if is_toggle
+                    && self
+                        .mtext_editor
+                        .as_ref()
+                        .is_some_and(|ed| ed.font_picker.open)
+                {
+                    return iced::widget::operation::focus(iced::widget::Id::new(
+                        crate::ui::font_picker::FONT_PICKER_SEARCH_ID,
+                    ));
                 }
                 Task::none()
             }
@@ -8176,6 +8336,10 @@ impl OpenCADStudio {
             }
             Message::MTextRedo => {
                 self.mtext_redo();
+                Task::none()
+            }
+            Message::MTextInsertField => {
+                self.mtext_insert_field_open();
                 Task::none()
             }
             Message::MTextStack => {
@@ -8440,6 +8604,7 @@ impl OpenCADStudio {
                 if self.tabs[self.active_tab]
                     .properties
                     .hatch_pattern_picker_open
+                    || self.graphic_attributes.hatch_editor.is_some()
                 {
                     return self.update(Message::PropHatchPatternNavigate(d as i8));
                 }
@@ -8681,9 +8846,15 @@ impl OpenCADStudio {
             Message::ContextMenuSubmenuToggle(id) => self.on_context_menu_submenu_toggle(id),
             Message::ContextMenuNavigate(nav) => self.on_context_menu_navigate(nav),
 
+            // Quad cursor menu interactions and display options
+            // (docs/quad-menu.md); the glue lives next to the context-menu
+            // router it mirrors.
+            Message::Quad(quad) => self.on_quad_msg(quad),
+            Message::QuadOption(option) => self.on_quad_option(option),
+
             Message::DrawOrderPickRef(above) => {
                 let i = self.active_tab;
-                self.tabs[i].scene.selection.borrow_mut().menu.open_at = None;
+                self.tabs[i].scene.selection.borrow_mut().menu.close();
                 let to_move: Vec<_> = self.tabs[i].scene.selected.iter().cloned().collect();
                 if to_move.is_empty() {
                     self.command_line
@@ -8699,7 +8870,7 @@ impl OpenCADStudio {
 
             Message::SelectSimilar => {
                 let i = self.active_tab;
-                self.tabs[i].scene.selection.borrow_mut().menu.open_at = None;
+                self.tabs[i].scene.selection.borrow_mut().menu.close();
                 let added = self.tabs[i].scene.select_similar(self.select_similar_mode);
                 self.command_line
                     .push_output(crate::tf!("Select Similar: {} added.", added).as_ref());
@@ -8709,7 +8880,7 @@ impl OpenCADStudio {
 
             Message::InvertSelection => {
                 let i = self.active_tab;
-                self.tabs[i].scene.selection.borrow_mut().menu.open_at = None;
+                self.tabs[i].scene.selection.borrow_mut().menu.close();
                 let count = self.tabs[i].scene.invert_selection();
                 self.command_line.push_output(
                     crate::tf!("Invert Selection: {} object(s) selected.", count).as_ref(),
@@ -8979,6 +9150,9 @@ impl OpenCADStudio {
             Message::RibbonLayerChanged(layer) => self.on_ribbon_layer_changed(layer),
 
             Message::RibbonColorChanged(color) => self.on_ribbon_color_changed(color),
+            Message::RibbonLayerColorChanged { layer, color } => {
+                self.set_ribbon_layer_color(&layer, color, None)
+            }
             Message::RibbonColorPaletteToggle => {
                 self.ribbon.prop_color_palette_open ^= true;
                 Task::none()
@@ -9030,6 +9204,24 @@ impl OpenCADStudio {
             Message::PropFieldLwChanged { field, value } => {
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
+                if field == "tbl_cell_border_lw" {
+                    let cells = self.picked_cell_positions(i);
+                    self.apply_property_op(i, "TABLE CELL BORDER", &handles, |app, handle| {
+                        use crate::entities::table::TableCellBordersExt;
+                        if let Some(codec::EntityType::Table(table)) =
+                            app.tabs[i].scene.document.get_entity_mut(handle)
+                        {
+                            for &(row, column) in &cells {
+                                table.edit_cell_borders(row, column, |border| {
+                                    border.line_weight = value;
+                                    codec::entities::table::BorderPropertyFlags::LINE_WEIGHT
+                                });
+                            }
+                            table.block_record_handle = None;
+                        }
+                    });
+                    return Task::none();
+                }
                 self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
                     if let Some(codec::EntityType::MultiLeader(leader)) =
                         app.tabs[i].scene.document.get_entity_mut(handle)
@@ -9078,22 +9270,23 @@ impl OpenCADStudio {
 
             Message::PropHatchPatternPickerToggle(current) => {
                 let panel = &mut self.tabs[self.active_tab].properties;
-                panel.hatch_pattern_picker_open = !panel.hatch_pattern_picker_open;
-                if panel.hatch_pattern_picker_open {
-                    panel.color_picker_open = false;
-                    panel.open_color_field = None;
-                    panel.edit_choice_open = false;
+                let opening = !panel.hatch_pattern_picker_open;
+                if opening {
+                    panel.close_popups();
                     panel.hatch_pattern_focus = crate::ui::properties::filtered_hatch_patterns("")
                         .iter()
                         .position(|entry| entry.name.eq_ignore_ascii_case(&current))
                         .unwrap_or(0);
+                }
+                panel.hatch_pattern_picker_open = opening;
+                if opening {
+                    self.block_picker_dismissed = false;
                     return iced::widget::operation::focus(iced::widget::Id::new(
                         "hatch-pattern-search",
                     ));
-                } else {
-                    panel.hatch_pattern_search.clear();
-                    panel.hatch_pattern_focus = 0;
                 }
+                panel.hatch_pattern_search.clear();
+                panel.hatch_pattern_focus = 0;
                 Task::none()
             }
 
@@ -9116,6 +9309,14 @@ impl OpenCADStudio {
             }
 
             Message::PropHatchPatternNavigate(delta) => {
+                if let Some(editor) = self.graphic_attributes.hatch_editor.as_mut() {
+                    let len = crate::ui::properties::filtered_hatch_patterns(&editor.search).len();
+                    if len > 0 {
+                        editor.focus = (editor.focus as isize + delta as isize)
+                            .rem_euclid(len as isize) as usize;
+                    }
+                    return Task::none();
+                }
                 let panel = &mut self.tabs[self.active_tab].properties;
                 let len =
                     crate::ui::properties::filtered_hatch_patterns(&panel.hatch_pattern_search)
@@ -9156,6 +9357,12 @@ impl OpenCADStudio {
                 }
                 let i = self.active_tab;
                 let handles = self.property_target_handles(i);
+                if crate::app::properties::field_moves_geometry(field) && self.any_entity_is_fixed(i, &handles)
+                {
+                    self.command_line
+                        .push_error(crate::app::properties::HELD_BY_FIXED);
+                    return Task::none();
+                }
                 if !handles.is_empty() {
                     self.apply_property_op(i, "CHPROP", &handles, |app, handle| {
                         match field {
@@ -9303,7 +9510,9 @@ impl OpenCADStudio {
                 let n = if handles.len() == 1 {
                     match self.tabs[i].scene.document.get_entity(handles[0]) {
                         Some(codec::EntityType::LwPolyline(p)) => p.vertices.len(),
-                        Some(codec::EntityType::Polyline2D(p)) => p.vertices.len(),
+                        Some(codec::EntityType::Polyline2D(p)) => {
+                            crate::entities::polyline::polyline2d_frame_indices(p).len()
+                        }
                         Some(codec::EntityType::PolygonMesh(p)) => p.vertices.len(),
                         Some(codec::EntityType::Face3D(face)) => {
                             if face.is_triangle() {
@@ -9336,7 +9545,45 @@ impl OpenCADStudio {
             }
 
             Message::PropGeomChoiceChanged { field, value } => {
+                // Picking a row closes the list it came from, whichever panel
+                // rendered it.
+                for tab in &mut self.tabs {
+                    if tab
+                        .properties
+                        .open_choice
+                        .is_some_and(|(open, _)| open == field)
+                    {
+                        tab.properties.open_choice = None;
+                    }
+                }
                 self.on_prop_geom_choice_changed(field, value)
+            }
+
+            Message::PropChoiceToggle { field, quick } => {
+                let panel = &mut self.tabs[self.active_tab].properties;
+                let opening = panel.open_choice != Some((field, quick));
+                if opening {
+                    // One list at a time: another list left open behind this
+                    // row would stack two overlays.
+                    panel.close_popups();
+                }
+                panel.open_choice = if opening { Some((field, quick)) } else { None };
+                self.block_picker_dismissed = false;
+                Task::none()
+            }
+
+            Message::PropChoiceDismiss { field, quick } => {
+                for tab in &mut self.tabs {
+                    if tab
+                        .properties
+                        .open_choice
+                        .is_some_and(|open| open == (field, quick))
+                    {
+                        tab.properties.open_choice = None;
+                    }
+                }
+                self.block_picker_dismissed = true;
+                Task::none()
             }
 
             Message::PropGeomInput { field, value } => {
@@ -9369,11 +9616,12 @@ impl OpenCADStudio {
             }
             Message::PropBlockPickerToggle { key, quick } => {
                 let panel = &mut self.tabs[self.active_tab].properties;
-                panel.open_block_picker = if panel.open_block_picker == Some((key, quick)) {
-                    None
+                if panel.open_block_picker == Some((key, quick)) {
+                    panel.open_block_picker = None;
                 } else {
-                    Some((key, quick))
-                };
+                    panel.close_popups();
+                    panel.open_block_picker = Some((key, quick));
+                }
                 self.block_picker_dismissed = false;
                 Task::none()
             }
@@ -9391,11 +9639,11 @@ impl OpenCADStudio {
                 Task::none()
             }
 
-
             Message::PropGroupToggle(key) => {
                 let panel = &mut self.tabs[self.active_tab].properties;
                 // A collapsed group can take the open list's row off screen.
                 panel.open_block_picker = None;
+                panel.open_choice = None;
                 if !panel.expanded_groups.remove(&key) {
                     panel.expanded_groups.insert(key);
                 }
@@ -9413,16 +9661,40 @@ impl OpenCADStudio {
                 for tab in &mut self.tabs {
                     tab.properties.collapsed_sections = sections.clone();
                     tab.properties.open_block_picker = None;
+                    tab.properties.open_choice = None;
                 }
                 Task::none()
             }
 
             Message::PropEditChoiceToggle => {
                 let panel = &mut self.tabs[self.active_tab].properties;
-                panel.edit_choice_open = !panel.edit_choice_open;
-                if panel.edit_choice_open {
-                    panel.hatch_pattern_picker_open = false;
-                    panel.hatch_pattern_search.clear();
+                let opening = !panel.edit_choice_open;
+                if opening {
+                    panel.close_popups();
+                }
+                panel.edit_choice_open = opening;
+                if opening {
+                    self.block_picker_dismissed = false;
+                    let active_edit_choice = panel.active_field.as_ref().and_then(|k| match k {
+                        crate::ui::properties::FieldKey::Geom(f) => Some(*f),
+                        _ => None,
+                    });
+                    let field_to_focus = active_edit_choice.or_else(|| {
+                        panel.sections.iter().find_map(|sec| {
+                            sec.props.iter().find_map(|p| {
+                                matches!(
+                                    p.value,
+                                    crate::scene::model::object::PropValue::EditChoice { .. }
+                                )
+                                .then_some(p.field)
+                            })
+                        })
+                    });
+                    if let Some(field) = field_to_focus {
+                        return iced::widget::operation::focus(
+                            crate::ui::properties::prop_geom_field_id(field),
+                        );
+                    }
                 }
                 Task::none()
             }
@@ -9460,6 +9732,12 @@ impl OpenCADStudio {
                     rename_blur = Task::batch([
                         rename_blur,
                         crate::ui::properties::focused_widget_task(Message::StyleRenameFocus),
+                    ]);
+                }
+                if self.tabs[self.active_tab].parameters_panel.editing.is_some() {
+                    rename_blur = Task::batch([
+                        rename_blur,
+                        crate::ui::properties::focused_widget_task(Message::ParametersManagerFocus),
                     ]);
                 }
                 if !self.dock_panel_visible(crate::ui::dock::PanelId::Properties)
@@ -9517,20 +9795,28 @@ impl OpenCADStudio {
             }
 
             Message::PropColorPickerToggle => {
-                let i = self.active_tab;
-                self.tabs[i].properties.color_picker_open =
-                    !self.tabs[i].properties.color_picker_open;
-                if self.tabs[i].properties.color_picker_open {
-                    self.tabs[i].properties.hatch_pattern_picker_open = false;
-                    self.tabs[i].properties.hatch_pattern_search.clear();
+                let panel = &mut self.tabs[self.active_tab].properties;
+                let opening = !panel.color_picker_open;
+                if opening {
+                    panel.close_popups();
+                }
+                panel.color_picker_open = opening;
+                if opening {
+                    self.block_picker_dismissed = false;
                 }
                 Task::none()
             }
 
             Message::PropBgColorPickerToggle => {
-                let i = self.active_tab;
-                self.tabs[i].properties.bg_color_picker_open =
-                    !self.tabs[i].properties.bg_color_picker_open;
+                let panel = &mut self.tabs[self.active_tab].properties;
+                let opening = !panel.bg_color_picker_open;
+                if opening {
+                    panel.close_popups();
+                }
+                panel.bg_color_picker_open = opening;
+                if opening {
+                    self.block_picker_dismissed = false;
+                }
                 Task::none()
             }
 
@@ -9560,11 +9846,13 @@ impl OpenCADStudio {
             Message::PropColorFieldToggle(field) => {
                 let i = self.active_tab;
                 let p = &mut self.tabs[i].properties;
-                p.open_color_field = if p.open_color_field.as_deref() == Some(field.as_str()) {
-                    None
+                if p.open_color_field.as_deref() == Some(field.as_str()) {
+                    p.open_color_field = None;
                 } else {
-                    Some(field)
-                };
+                    p.close_popups();
+                    p.open_color_field = Some(field);
+                    self.block_picker_dismissed = false;
+                }
                 Task::none()
             }
 
@@ -9699,7 +9987,7 @@ impl OpenCADStudio {
                     field.as_str(),
                     "tbl_cell_content_color" | "tbl_cell_background_color"
                 ) {
-                    let cell_index = self.tabs[i].properties.prop_vertex;
+                    let cells = self.picked_cell_positions(i);
                     if !handles.is_empty() {
                         self.apply_property_op(i, "TABLE CELL COLOR", &handles, |app, handle| {
                             let Some(codec::EntityType::Table(table)) =
@@ -9707,20 +9995,14 @@ impl OpenCADStudio {
                             else {
                                 return;
                             };
-                            let columns = table.column_count();
-                            if columns == 0 {
-                                return;
-                            }
-                            if let Some(cell) = table.cell_mut(
-                                cell_index / columns,
-                                cell_index % columns,
-                            ) {
+                            for &(row, column) in &cells {
+                            if let Some(cell) = table.cell_mut(row, column) {
                                 use codec::entities::table::CellStateFlags;
                                 if cell.state.intersects(
                                     CellStateFlags::FORMAT_LOCKED
                                         | CellStateFlags::FORMAT_READ_ONLY,
                                 ) {
-                                    return;
+                                    continue;
                                 }
                                 let style = cell.style.get_or_insert_with(Default::default);
                                 if field == "tbl_cell_content_color" {
@@ -9735,6 +10017,7 @@ impl OpenCADStudio {
                                         codec::entities::table::CellStylePropertyFlags::BACKGROUND_COLOR,
                                     );
                                 }
+                            }
                             }
                             table.block_record_handle = None;
                         });
@@ -11423,6 +11706,11 @@ impl OpenCADStudio {
                         Task::none()
                     };
                 }
+                if self.active_modal == Some(super::ModalKind::InsertAttributes) {
+                    self.cancel_insert_attr_dialog();
+                    self.close_active_modal();
+                    return Task::none();
+                }
                 if self.active_modal == Some(super::ModalKind::RefEdit) {
                     self.refedit_dialog = None;
                 }
@@ -12422,6 +12710,92 @@ impl OpenCADStudio {
             Message::BlockVisibility(action) => self.handle_block_visibility(action),
             Message::BlockLookup(action) => self.handle_block_lookup(action),
             Message::BlockPropertiesTable(action) => self.handle_block_properties_table(action),
+            Message::ParametersManagerEdit(name, cell) => {
+                // Whichever order the click's two messages arrive in, the number
+                // typed in the cell that was open goes to the parameter it was
+                // opened on before this click moves the field somewhere else.
+                let _ = self.commit_parameters_manager(false);
+                let i = self.active_tab;
+                let Some(definition) = self
+                    .tabs[i]
+                    .active_block_edit_session()
+                    .map(|session| session.br_handle)
+                else {
+                    self.clear_parameters_manager_cell(i);
+                    return Task::none();
+                };
+                let rows = crate::scene::block_parameters_manager::rows(
+                    &self.tabs[i].scene.document,
+                    definition,
+                );
+                let Some(row) = rows
+                    .iter()
+                    .find(|row| row.numeric && row.name.eq_ignore_ascii_case(&name))
+                else {
+                    // Nothing to open here, so nothing stays open: a cell left on
+                    // another row would take whatever is typed next.
+                    self.clear_parameters_manager_cell(i);
+                    return Task::none();
+                };
+                let target = crate::scene::block_parameters_manager::target_of(
+                    &self.tabs[i].scene.document,
+                    definition,
+                    &row.name,
+                );
+                let Some((parameter, Some(component))) = target else {
+                    self.clear_parameters_manager_cell(i);
+                    return Task::none();
+                };
+                let name = row.name.clone();
+                let panel = &mut self.tabs[i].parameters_panel;
+                panel.editing = Some(crate::ui::window::parameters_manager::Edit {
+                    definition,
+                    parameter,
+                    component,
+                    name,
+                    cell,
+                });
+                panel.edit_buf.clear();
+                iced::widget::operation::focus(
+                    crate::ui::window::parameters_manager::edit_input_id(),
+                )
+            }
+            Message::ParametersManagerInput(value) => {
+                let panel = &mut self.tabs[self.active_tab].parameters_panel;
+                if panel.editing.is_some() {
+                    panel.edit_buf = value;
+                }
+                Task::none()
+            }
+            // The two fields narrow the list and the footer's count; they write
+            // no parameter.
+            Message::ParametersManagerFilter(value) => {
+                self.tabs[self.active_tab].parameters_panel.filter = value;
+                Task::none()
+            }
+            Message::ParametersManagerSearch(value) => {
+                self.tabs[self.active_tab].parameters_panel.search = value;
+                Task::none()
+            }
+            Message::ParametersManagerCommit => self.commit_parameters_manager(true),
+            Message::ParametersManagerShow(name) => {
+                let _ = self.commit_parameters_manager(false);
+                self.toggle_parameters_manager_show(&name)
+            }
+            // A click moved focus off the open cell: keep what was typed, as
+            // Enter would. An untouched field stays open.
+            Message::ParametersManagerFocus(focused) => {
+                let commit = {
+                    let panel = &self.tabs[self.active_tab].parameters_panel;
+                    !panel.edit_buf.trim().is_empty()
+                        && focused
+                            != Some(crate::ui::window::parameters_manager::edit_input_id())
+                };
+                if commit {
+                    return self.commit_parameters_manager(false);
+                }
+                Task::none()
+            }
             Message::BlockEditPickerName(name) => {
                 if let Some(state) = self.block_edit_picker.as_mut() {
                     state.name = name.clone();
@@ -12651,7 +13025,7 @@ impl OpenCADStudio {
             }
             Message::UpdateNoticeOpenRelease => {
                 let open =
-                    crate::sys::open_url(crate::io::update_check::RELEASES_PAGE, self.main_window);
+                    crate::sys::open_url(crate::io::update_check::DOWNLOAD_PAGE, self.main_window);
                 self.close_active_modal();
                 open
             }
@@ -13454,6 +13828,7 @@ impl OpenCADStudio {
                 if self.selected_textstyle_is_read_only() {
                     return Task::none();
                 }
+                let is_toggle = matches!(event, crate::ui::font_picker::FontPickerEvent::Toggle);
                 let doc = &self.tabs[self.active_tab].scene.document;
                 match self.textstyle_font_picker.update(event, doc, false) {
                     // A stroke font replaces the system font, which would
@@ -13463,6 +13838,11 @@ impl OpenCADStudio {
                         self.textstyle_draft.pick_system_font(family)
                     }
                     Some(FontChoice::StyleDefault) | None => {}
+                }
+                if is_toggle && self.textstyle_font_picker.open {
+                    return iced::widget::operation::focus(iced::widget::Id::new(
+                        crate::ui::font_picker::FONT_PICKER_SEARCH_ID,
+                    ));
                 }
                 Task::none()
             }
@@ -13508,9 +13888,6 @@ impl OpenCADStudio {
                 Task::none()
             }
             Message::TableStyleDialogSelect(name) => {
-                for row in 0..3 {
-                    let _ = self.on_table_style_cell_apply(row);
-                }
                 self.stage_tablestyle_bufs();
                 self.tablestyle_selected = name;
                 let i = self.active_tab;
@@ -13527,19 +13904,13 @@ impl OpenCADStudio {
             }
 
             Message::TableStyleEdit { field, value } => {
-                match field {
-                    "hmargin" => self.ts_hmargin = value,
-                    "vmargin" => self.ts_vmargin = value,
-                    "description" => self.ts_description = value,
-                    _ => {}
+                if field == "description" {
+                    self.ts_description = value;
                 }
                 Task::none()
             }
 
             Message::TableStyleApply => {
-                for row in 0..3 {
-                    let _ = self.on_table_style_cell_apply(row);
-                }
                 self.stage_tablestyle_bufs();
                 self.style_stage_commit();
                 Task::none()
@@ -13553,118 +13924,38 @@ impl OpenCADStudio {
                         "Up" => TableFlowDirection::Up,
                         _ => TableFlowDirection::Down,
                     };
+                    s.sync_rows_from_cell_styles();
                 }
                 Task::none()
             }
 
-            Message::TableColorMore(row, field) => {
-                self.ts_color_open = if self.ts_color_open == Some((row, field)) {
+            Message::TableColorMore(field) => {
+                self.ts_color_open = if self.ts_color_open == Some(field) {
                     None
                 } else {
-                    Some((row, field))
+                    Some(field)
                 };
                 Task::none()
             }
-            Message::TableStyleCellEdit { row, field, value } => {
+            Message::TableStyleCellSelect(name) => {
+                self.ts_cell = name;
                 self.ts_color_open = None;
-                let r = row as usize;
-                if r < 3 {
-                    match field {
-                        "textstyle" => self.ts_cell_textstyle[r] = value,
-                        "height" => self.ts_cell_height[r] = value,
-                        "textcolor" => self.ts_cell_textcolor[r] = value,
-                        "fillcolor" => self.ts_cell_fillcolor[r] = value,
-                        "datatype" => self.ts_cell_datatype[r] = value,
-                        "unittype" => self.ts_cell_unittype[r] = value,
-                        "format" => self.ts_cell_format[r] = value,
-                        _ => {}
-                    }
-                }
-                Task::none()
-            }
-
-            Message::TableStyleBorderEdit {
-                cell,
-                border,
-                field,
-                value,
-            } => {
-                let (c, b) = (cell as usize, border as usize);
-                if c < 3 && b < 6 {
-                    match field {
-                        "lw" => self.ts_border_lw[c][b] = value,
-                        "color" => self.ts_border_color[c][b] = value,
-                        "spacing" => self.ts_border_spacing[c][b] = value,
-                        _ => {}
-                    }
-                }
-                Task::none()
-            }
-
-            Message::TableStyleBorderSetType {
-                cell,
-                border,
-                value,
-            } => {
-                use codec::objects::TableBorderType;
                 let i = self.active_tab;
-                if let Some(s) = self.tablestyle_mut(i) {
-                    if let Some(bd) =
-                        Self::ts_cell_of(s, cell).and_then(|c| Self::ts_border_of(c, border))
-                    {
-                        bd.border_type = match value.as_str() {
-                            "Double" => TableBorderType::Double,
-                            _ => TableBorderType::Single,
-                        };
-                    }
-                }
+                self.load_tablestyle_bufs(i);
                 Task::none()
             }
-
-            Message::TableStyleBorderToggleInvisible { cell, border } => {
-                let i = self.active_tab;
-                if let Some(s) = self.tablestyle_mut(i) {
-                    if let Some(bd) =
-                        Self::ts_cell_of(s, cell).and_then(|c| Self::ts_border_of(c, border))
-                    {
-                        bd.is_invisible = !bd.is_invisible;
-                    }
-                }
-                Task::none()
+            Message::TableStyleCellNew => self.on_table_cell_style_new(),
+            Message::TableStyleCellRename => self.on_table_cell_style_rename(),
+            Message::TableStyleCellDelete => self.on_table_cell_style_delete(),
+            Message::TableStyleCellEdit { field, value } => {
+                self.ts_color_open = None;
+                self.on_table_cell_style_edit(field, value)
             }
-
-            Message::TableStyleCellToggleFill(row) => {
-                let i = self.active_tab;
-                if let Some(s) = self.tablestyle_mut(i) {
-                    if let Some(c) = Self::ts_cell_of(s, row) {
-                        c.fill_enabled = !c.fill_enabled;
-                    }
-                }
-                Task::none()
+            Message::TableStyleEdgeEdit { edge, field, value } => {
+                self.on_table_cell_edge_edit(edge, field, value)
             }
-
-            Message::TableStyleCellSetAlign { row, value } => {
-                use codec::objects::CellAlignment;
-                let i = self.active_tab;
-                if let Some(s) = self.tablestyle_mut(i) {
-                    if let Some(c) = Self::ts_cell_of(s, row) {
-                        c.alignment = match value.as_str() {
-                            "TopLeft" => CellAlignment::TopLeft,
-                            "TopCenter" => CellAlignment::TopCenter,
-                            "TopRight" => CellAlignment::TopRight,
-                            "MiddleLeft" => CellAlignment::MiddleLeft,
-                            "MiddleRight" => CellAlignment::MiddleRight,
-                            "BottomLeft" => CellAlignment::BottomLeft,
-                            "BottomCenter" => CellAlignment::BottomCenter,
-                            "BottomRight" => CellAlignment::BottomRight,
-                            _ => CellAlignment::MiddleCenter,
-                        };
-                    }
-                }
-                Task::none()
-            }
-
-            Message::TableStyleCellApply(row) => self.on_table_style_cell_apply(row),
+            Message::TableStyleTemplatePick => self.on_table_style_template_pick(),
+            Message::TableStyleTemplateRemove => self.on_table_style_template_remove(),
 
             Message::TableStyleToggle(field) => {
                 use codec::objects::ObjectType;
@@ -14193,7 +14484,8 @@ impl OpenCADStudio {
             crate::app::ColorPickTarget::Ribbon => {
                 return (color, false, self.ribbon.active_color_name());
             }
-            crate::app::ColorPickTarget::Layer(layer) => {
+            crate::app::ColorPickTarget::Layer(layer)
+            | crate::app::ColorPickTarget::RibbonLayer(layer) => {
                 let name = document
                     .layers
                     .get(layer)
@@ -14240,6 +14532,7 @@ impl OpenCADStudio {
                     entity.as_entity().layer()
                 }),
             crate::app::ColorPickTarget::Ribbon => self.tabs[i].active_layer.as_str(),
+            crate::app::ColorPickTarget::RibbonLayer(layer) => layer.as_str(),
             _ => return None,
         };
         document.layers.get(layer).map(|layer| layer.color)
@@ -14287,16 +14580,48 @@ impl OpenCADStudio {
         name: Option<&str>,
     ) -> Task<Message> {
         let i = self.active_tab;
+        let names = self.selected_layer_names(i);
+        self.set_layer_colors(&names, color, name)
+    }
+
+    pub(super) fn set_ribbon_layer_color(
+        &mut self,
+        layer: &str,
+        color: codec::types::Color,
+        name: Option<&str>,
+    ) -> Task<Message> {
+        if !matches!(
+            color,
+            codec::types::Color::Index(1..=255) | codec::types::Color::Rgb { .. }
+        ) || !self.tabs[self.active_tab]
+            .scene
+            .document
+            .layers
+            .contains(layer)
+        {
+            return Task::none();
+        }
+        self.ribbon.close_dropdown();
+        self.note_recent_color(color);
+        self.set_layer_colors(&[layer.to_owned()], color, name)
+    }
+
+    fn set_layer_colors(
+        &mut self,
+        names: &[String],
+        color: codec::types::Color,
+        name: Option<&str>,
+    ) -> Task<Message> {
+        let i = self.active_tab;
         // Layers keep the book and the colour name apart.
         let (book_name, color_name) = match name.map(|name| name.split_once('$')) {
             Some(Some((book, name))) => (Some(book), Some(name)),
             Some(None) => (None, name),
             None => (None, None),
         };
-        let names = self.selected_layer_names(i);
         if !names.is_empty() {
-            let undo = self.begin_layer_undo(i, "LAYER COLOR", &names);
-            for name in &names {
+            let undo = self.begin_layer_undo(i, "LAYER COLOR", names);
+            for name in names {
                 if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
                     dl.color = color;
                     dl.color_name = color_name.map(str::to_string);
@@ -14315,7 +14640,7 @@ impl OpenCADStudio {
             // ByLayer color is baked into the cached wires at
             // tessellation time, so bump the geometry epoch to
             // invalidate the wire cache and repaint with the new color.
-            self.tabs[i].scene.invalidate_layer_dependencies(&names);
+            self.tabs[i].scene.invalidate_layer_dependencies(names);
             self.tabs[i].layers.color_picker_row = None;
             self.tabs[i].layers.color_full_palette = false;
             self.sync_ribbon_layers();
@@ -14389,26 +14714,19 @@ impl OpenCADStudio {
         }
     }
 
-    /// Write the table-style editor buffers (margins / description) into the
+    /// Write the table-style editor buffer (description) into the
     /// selected style (staged, no commit), so edits survive switching as well
     /// as Apply.
     fn stage_tablestyle_bufs(&mut self) {
         use codec::objects::ObjectType;
         let i = self.active_tab;
         let name = self.tablestyle_selected.clone();
-        let h: Option<f64> = self.ts_hmargin.trim().parse().ok();
-        let v: Option<f64> = self.ts_vmargin.trim().parse().ok();
         let desc = self.ts_description.clone();
         for obj in self.tabs[i].scene.document.objects.values_mut() {
             if let ObjectType::TableStyle(s) = obj {
-                if s.name == name {
-                    if let Some(h) = h {
-                        s.horizontal_margin = h;
-                    }
-                    if let Some(v) = v {
-                        s.vertical_margin = v;
-                    }
+                if s.name == name && s.description != desc {
                     s.description = desc.clone();
+                    s.raw_dxf_codes = None;
                 }
             }
         }
@@ -14775,9 +15093,12 @@ mod free_text_entry_tests {
     #[test]
     fn cell_edit_empty_enter_ends_edit_without_wiping() {
         let (mut app, handle) = app_with_cell_command("Keep me");
+        // Enter moves the editor to the cell below; on the last row it ends.
         let _ = app.update(Message::CommandSubmit);
         assert_eq!(cell_text(&app, handle), "Keep me");
-        assert!(app.tabs[0].active_cmd.is_none(), "Enter ends the edit");
+        assert!(app.tabs[0].active_cmd.is_some(), "Enter moves down a row");
+        let _ = app.update(Message::CommandSubmit);
+        assert!(app.tabs[0].active_cmd.is_none(), "Enter on the last row ends the edit");
     }
 
     #[test]

@@ -219,6 +219,15 @@ impl OpenCADStudio {
         // editor holds a document-local handle into one tab, so drop it
         // now rather than risk it applying to a different tab's document.
         self.cancel_attr_editor();
+        // The Block Properties Table list names an insert of the tab being
+        // closed, so it goes with that tab.
+        self.table_popup = None;
+        // The insertion attribute form parks a placement on the tab it belongs
+        // to, so a closed tab has to take the form — and the placement — with it.
+        if self.active_modal == Some(crate::app::ModalKind::InsertAttributes) {
+            self.cancel_insert_attr_dialog();
+            self.close_active_modal();
+        }
         if self.tabs.get(idx).map_or(false, |t| t.dirty) {
             self.pending_close = Some(crate::app::PendingClose::Tab(self.tabs[idx].id));
             return self.open_unsaved_dialog_window();
@@ -254,6 +263,12 @@ impl OpenCADStudio {
         #[cfg(target_arch = "wasm32")]
         if let Some(closing_id) = closing_tab_id {
             crate::io::fs_access::drop_handle(closing_id);
+        }
+        // The drawing is gone, and the positions it had placed are not the
+        // next drawing's: forget them with the tab.
+        if let Some(closing_id) = closing_tab_id {
+            crate::modules::draw::draw::attdef::session().forget_place_of(closing_id);
+            crate::modules::annotate::text::forget_place_of(closing_id);
         }
         // Only-tab case: when the lone non-start tab closes, fall
         // back to the Start tab if it exists; otherwise spawn a
@@ -501,6 +516,10 @@ impl OpenCADStudio {
         // dropdown so the dispatched command's new prompt is
         // immediately visible on the overlay.
         self.command_line.close_history();
+        // A table cell's editor: Enter writes the cell and moves down.
+        if let Some(task) = self.table_cell_enter() {
+            return task;
+        }
         if self.awaiting_fill_close_answer() {
             let input = std::mem::take(&mut self.command_line.input);
             return self.on_graphic_fill_close_input(&input);
@@ -1454,7 +1473,7 @@ impl OpenCADStudio {
         {
             let mut sel = self.tabs[i_e].scene.selection.borrow_mut();
             if sel.menu.open_at.is_some() {
-                sel.menu.open_at = None;
+                sel.menu.close();
                 return Task::none();
             }
         }
@@ -1488,12 +1507,12 @@ impl OpenCADStudio {
             if let Some(r) = result {
                 return self.apply_cmd_result(r);
             }
-        } else if self.tabs[i].scene.active_viewport.is_some() {
-            // ESC while in MSPACE → exit back to paper space.
-            return Task::done(Message::ExitViewport);
         } else {
+            // In a viewport's model space Esc deselects too and the viewport
+            // stays active: PSPACE, or a double-click outside it, leaves it.
             self.tabs[i].selected_authoring = None;
             self.tabs[i].scene.deselect_all();
+            self.tabs[i].last_crossing_window = None;
             self.refresh_properties();
             self.tabs[i].scene.set_box_hover_highlights(&[]);
             let mut sel = self.tabs[i].scene.selection.borrow_mut();
@@ -2395,7 +2414,7 @@ impl OpenCADStudio {
 
     pub(super) fn on_qselect_open(&mut self) -> Task<Message> {
         let i = self.active_tab;
-        self.tabs[i].scene.selection.borrow_mut().menu.open_at = None;
+        self.tabs[i].scene.selection.borrow_mut().menu.close();
         let remembered = self.qselect_settings.clone();
         let scope = remembered
             .as_ref()
@@ -2788,6 +2807,14 @@ impl OpenCADStudio {
             return Task::none();
         }
         let handles = self.property_target_handles(i);
+        if crate::app::properties::field_moves_geometry(field)
+            && self.any_entity_is_fixed(i, &handles)
+        {
+            self.command_line
+                .push_error(crate::app::properties::HELD_BY_FIXED);
+            self.tabs[i].properties.edit_choice_open = false;
+            return Task::none();
+        }
         // The Annotative Yes/No list drives the per-object annotative toggle
         // (MTEXT's own flag, the annotation context for the rest).
         if field == "annotative" {
@@ -3232,6 +3259,34 @@ impl OpenCADStudio {
                 self.tabs[i].properties.edit_choice_open = false;
                 return Task::none();
             }
+            if field == "tbl_cell_border_lt" {
+                let linetype = self.tabs[i]
+                    .scene
+                    .document
+                    .line_types
+                    .iter()
+                    .find(|lt| lt.name.eq_ignore_ascii_case(value.trim()))
+                    .map(|lt| lt.handle);
+                let cells = self.picked_cell_positions(i);
+                if linetype.is_some() {
+                    self.apply_property_op(i, "TABLE CELL BORDER", &handles, |app, handle| {
+                        use crate::entities::table::TableCellBordersExt;
+                        if let Some(codec::EntityType::Table(table)) =
+                            app.tabs[i].scene.document.get_entity_mut(handle)
+                        {
+                            for &(row, column) in &cells {
+                                table.edit_cell_borders(row, column, |border| {
+                                    border.line_type_handle = linetype;
+                                    codec::entities::table::BorderPropertyFlags::LINE_TYPE
+                                });
+                            }
+                            table.block_record_handle = None;
+                        }
+                    });
+                }
+                self.tabs[i].properties.edit_choice_open = false;
+                return Task::none();
+            }
             if field == "tbl_style_handle" {
                 let style_handle =
                     self.tabs[i]
@@ -3552,22 +3607,67 @@ impl OpenCADStudio {
                     .get(&value)
                     .map(|br| br.name.clone());
                 if let Some(canon) = canon {
-                    let mut changes = Vec::new();
-                    for &handle in &handles {
-                        if self.tabs[i].scene.is_layer_locked(handle) {
-                            continue;
-                        }
-                        if let Some(codec::EntityType::Insert(ins)) =
-                            self.tabs[i].scene.document.get_entity_mut(handle)
-                        {
-                            if ins.block_name != canon {
-                                ins.block_name = canon.clone();
-                                changes.push((handle, crate::scene::ChangeKind::Modified));
+                    let to = self.tabs[i]
+                        .scene
+                        .document
+                        .block_records
+                        .get(&canon)
+                        .map(|record| record.handle);
+                    if let Some(to) = to {
+                        let mut planned = Vec::new();
+                        for &handle in &handles {
+                            if self.tabs[i].scene.is_layer_locked(handle) {
+                                continue;
+                            }
+                            let Some((from, differs)) = self.tabs[i]
+                                .scene
+                                .document
+                                .get_entity(handle)
+                                .and_then(|entity| match entity {
+                                    codec::EntityType::Insert(ins) => {
+                                        let record = self.tabs[i]
+                                            .scene
+                                            .document
+                                            .block_records
+                                            .get(&ins.block_name)?;
+                                        // Compare what the row shows: an
+                                        // evaluated copy already names this
+                                        // definition, so re-picking it asks
+                                        // for no change.
+                                        let effective =
+                                            crate::app::control::block_ops::resolve_effective_block(
+                                                &self.tabs[i].scene.document,
+                                                ins,
+                                            )
+                                            .1;
+                                        Some((record.handle, effective != Some(to)))
+                                    }
+                                    _ => None,
+                                })
+                            else {
+                                continue;
+                            };
+                            if differs {
+                                planned.push((handle, from));
                             }
                         }
-                    }
-                    if !changes.is_empty() {
-                        self.tabs[i].scene.bump_entities(&changes);
+                        if !planned.is_empty() {
+                            let mut changes = Vec::new();
+                            for (handle, from) in planned {
+                                // An evaluated copy must stop resolving
+                                // through its old definition before it takes
+                                // the new name.
+                                crate::app::control::block_ops::detach_representation(
+                                    &mut self.tabs[i].scene.document,
+                                    handle,
+                                );
+                                self.tabs[i]
+                                    .scene
+                                    .repoint_representation(handle, from, to, &canon);
+                                changes.push((handle, crate::scene::ChangeKind::Modified));
+                            }
+                            self.tabs[i].scene.bump_entities(&changes);
+                        }
                     }
                 }
             } else if field == "plot_style" {
@@ -4129,6 +4229,17 @@ impl OpenCADStudio {
         let i = self.active_tab;
         self.tabs[i].properties.active_field = None;
         let handles = self.property_target_handles(i);
+        if crate::app::properties::field_moves_geometry(field)
+            && self.any_entity_is_fixed(i, &handles)
+        {
+            self.tabs[i]
+                .properties
+                .edit_buf
+                .remove(&crate::ui::properties::FieldKey::Geom(field));
+            self.command_line
+                .push_error(crate::app::properties::HELD_BY_FIXED);
+            return Task::none();
+        }
         if field.starts_with("assoc_array_") {
             self.on_assoc_array_field_commit(i, field, &handles);
             return Task::none();
@@ -4579,6 +4690,18 @@ impl OpenCADStudio {
                         }
                     }
                 }
+                // A cloud's Arc Length is REVCLOUD's arc length from now on.
+                if field == "revcloud_arc_length" {
+                    if let Ok(length) = val.trim().parse::<f64>() {
+                        if length.is_finite() && length > 0.0 {
+                            crate::io::set_drawing_variable(
+                                &mut self.tabs[i].scene.document,
+                                crate::entities::revcloud::ARC_LENGTH_VARIABLE,
+                                &format!("{length:.6}"),
+                            );
+                        }
+                    }
+                }
                 if field.starts_with("tbl_") {
                     for &handle in &handles {
                         if let Some(codec::EntityType::Table(table)) =
@@ -4625,9 +4748,9 @@ impl OpenCADStudio {
 
     /// Properties-panel Name commit for block references. A `new` matching an
     /// existing regular block re-points the selected inserts to it; otherwise
-    /// the definition the (single-block) selection references is renamed and
-    /// every insert of it follows. Anonymous/xref definitions never get here —
-    /// their Name row stays read-only.
+    /// the definition the selection references is renamed and every insert of
+    /// it follows, including a reference showing an evaluated copy of it.
+    /// Anonymous/xref definitions are refused.
     fn apply_block_name_commit(&mut self, i: usize, handles: &[codec::Handle], new: &str) {
         if new.is_empty() {
             return;
@@ -4642,48 +4765,109 @@ impl OpenCADStudio {
             .map(|br| {
                 (
                     br.name.clone(),
+                    br.handle,
                     br.is_anonymous() || br.flags.is_xref || br.name.contains('|'),
                 )
             });
-        if let Some((canon, protected)) = target {
+        if let Some((canon, to, protected)) = target {
             if protected {
                 return;
             }
-            let mut changes = Vec::new();
+            let mut planned = Vec::new();
             for &handle in handles {
                 if self.tabs[i].scene.is_layer_locked(handle) {
                     continue;
                 }
-                if let Some(codec::EntityType::Insert(ins)) =
-                    self.tabs[i].scene.document.get_entity_mut(handle)
-                {
-                    if ins.block_name != canon {
-                        ins.block_name = canon.clone();
-                        changes.push((handle, crate::scene::ChangeKind::Modified));
-                    }
+                let Some((from, differs)) =
+                    self.tabs[i].scene.document.get_entity(handle).and_then(
+                        |entity| match entity {
+                            codec::EntityType::Insert(ins) => {
+                                let record = self.tabs[i]
+                                    .scene
+                                    .document
+                                    .block_records
+                                    .get(&ins.block_name)?;
+                                // An evaluated copy already carries the
+                                // definition's name in this row.
+                                let effective =
+                                    crate::app::control::block_ops::resolve_effective_block(
+                                        &self.tabs[i].scene.document,
+                                        ins,
+                                    )
+                                    .1;
+                                Some((record.handle, effective != Some(to)))
+                            }
+                            _ => None,
+                        },
+                    )
+                else {
+                    continue;
+                };
+                if differs {
+                    planned.push((handle, from));
                 }
             }
-            if !changes.is_empty() {
+            if !planned.is_empty() {
+                let mut changes = Vec::new();
+                for (handle, from) in planned {
+                    // An evaluated copy must stop resolving through its old
+                    // definition before it takes the new name.
+                    crate::app::control::block_ops::detach_representation(
+                        &mut self.tabs[i].scene.document,
+                        handle,
+                    );
+                    self.tabs[i]
+                        .scene
+                        .repoint_representation(handle, from, to, &canon);
+                    changes.push((handle, crate::scene::ChangeKind::Modified));
+                }
                 self.tabs[i].scene.bump_entities(&changes);
             }
             return;
         }
         // New name → rename. Only when every selected insert references the
         // same definition; a mixed selection makes the rename target ambiguous.
-        let mut old: Option<String> = None;
+        let mut old: Option<Option<codec::Handle>> = None;
         for &handle in handles {
             if let Some(codec::EntityType::Insert(ins)) =
                 self.tabs[i].scene.document.get_entity(handle)
             {
-                match &old {
-                    None => old = Some(ins.block_name.clone()),
-                    Some(o) if o.eq_ignore_ascii_case(&ins.block_name) => {}
+                let (name, definition, _) = crate::app::control::block_ops::resolve_effective_block(
+                    &self.tabs[i].scene.document,
+                    ins,
+                );
+                let definition = definition.or_else(|| {
+                    self.tabs[i]
+                        .scene
+                        .document
+                        .block_records
+                        .get(&name)
+                        .map(|record| record.handle)
+                });
+                match old {
+                    None => old = Some(definition),
+                    Some(current) if current == definition => {}
                     _ => return,
                 }
             }
         }
-        if let Some(old) = old {
-            self.tabs[i].scene.rename_block(&old, new);
+        let Some(Some(old)) = old else {
+            return;
+        };
+        let Some(old) = self.tabs[i]
+            .scene
+            .document
+            .block_records
+            .iter()
+            .find(|record| record.handle == old)
+            .map(|record| record.name.clone())
+        else {
+            return;
+        };
+        self.push_undo_snapshot(i, "BLOCK RENAME");
+        if !self.tabs[i].scene.rename_block(&old, new) {
+            self.command_line
+                .push_error(crate::tf!("Could not rename block \"{old}\" to \"{new}\".").as_ref());
         }
     }
 
@@ -5334,6 +5518,118 @@ mod layer_name_target_tests {
     use crate::app::{Message, OpenCADStudio};
     use crate::ui::window::layers::LayerSortCol;
 
+    #[test]
+    fn ribbon_layer_color_changes_only_named_layer_and_supports_undo() {
+        use codec::types::Color;
+        let mut app = app_with_zulu_alpha();
+        let i = app.active_tab;
+        let _ = app.update(Message::LayerSelect("ALPHA".into()));
+        let selected = app.tabs[i].layers.selected_multi.clone();
+        let alpha = app.tabs[i]
+            .scene
+            .document
+            .layers
+            .get("ALPHA")
+            .unwrap()
+            .color;
+        let old = app.tabs[i].scene.document.layers.get("ZULU").unwrap().color;
+        let creation = app.tabs[i].scene.document.header.current_entity_color;
+        let mut line = codec::entities::Line::new();
+        line.common.color = Color::Index(2);
+        line.common.layer = "ZULU".into();
+        let handle = app.tabs[i].scene.add_entity(codec::EntityType::Line(line));
+        app.tabs[i].scene.select_entity(handle, true);
+        let epoch = app.tabs[i].scene.geometry_epoch;
+        let _ = app.update(Message::RibbonLayerColorChanged {
+            layer: "ZULU".into(),
+            color: Color::Index(1),
+        });
+        assert_eq!(
+            app.tabs[i].scene.document.layers.get("ZULU").unwrap().color,
+            Color::Index(1)
+        );
+        assert_eq!(
+            app.tabs[i]
+                .scene
+                .document
+                .layers
+                .get("ALPHA")
+                .unwrap()
+                .color,
+            alpha
+        );
+        assert_eq!(app.tabs[i].layers.selected_multi, selected);
+        assert_eq!(
+            app.tabs[i]
+                .scene
+                .document
+                .get_entity(handle)
+                .unwrap()
+                .common()
+                .color,
+            Color::Index(2)
+        );
+        assert_eq!(
+            app.tabs[i].scene.document.header.current_entity_color,
+            creation
+        );
+        assert!(app.tabs[i].scene.geometry_epoch > epoch);
+        assert_eq!(app.tabs[i].recent_colors.first(), Some(&Color::Index(1)));
+        app.undo_active_tab();
+        assert_eq!(
+            app.tabs[i].scene.document.layers.get("ZULU").unwrap().color,
+            old
+        );
+        app.redo_active_tab();
+        assert_eq!(
+            app.tabs[i].scene.document.layers.get("ZULU").unwrap().color,
+            Color::Index(1)
+        );
+        let history = app.tabs[i].history.undo_stack.len();
+        let _ = app.update(Message::RibbonLayerColorChanged {
+            layer: "missing".into(),
+            color: Color::Index(3),
+        });
+        let _ = app.update(Message::RibbonLayerColorChanged {
+            layer: "ZULU".into(),
+            color: Color::ByLayer,
+        });
+        assert_eq!(app.tabs[i].history.undo_stack.len(), history);
+        let _ = app.update(Message::OpenColorWindow(
+            crate::app::ColorPickTarget::RibbonLayer("ZULU".into()),
+            Color::Index(1),
+        ));
+        let _ = app.update(Message::ColorWindowPick(
+            Color::Rgb {
+                r: 12,
+                g: 34,
+                b: 56,
+            },
+            Some("TEST$Color".into()),
+        ));
+        let layer = app.tabs[i].scene.document.layers.get("ZULU").unwrap();
+        assert_eq!(
+            layer.color,
+            Color::Rgb {
+                r: 12,
+                g: 34,
+                b: 56
+            }
+        );
+        assert_eq!(layer.book_name.as_deref(), Some("TEST"));
+        assert_eq!(layer.color_name.as_deref(), Some("Color"));
+        assert_eq!(
+            app.tabs[i]
+                .scene
+                .document
+                .layers
+                .get("ALPHA")
+                .unwrap()
+                .color,
+            alpha
+        );
+    }
+
     fn rename_layer(app: &mut OpenCADStudio, old_name: &str, new_name: &str) {
         let i = app.active_tab;
         assert!(
@@ -5645,53 +5941,11 @@ mod tablestyle_buffer_tests {
     fn table_new_reloads_cell_buffers() {
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
-        app.ts_cell_textstyle[0] = "STALE_SENTINEL".to_string();
+        app.ts_cell_height = "STALE_SENTINEL".to_string();
         let _ = app.style_new(StyleKind::Table);
         assert_ne!(
-            app.ts_cell_textstyle[0], "STALE_SENTINEL",
+            app.ts_cell_height, "STALE_SENTINEL",
             "buffers must reload from the fresh style"
-        );
-    }
-
-    #[test]
-    fn table_cell_unknown_text_style_is_rejected() {
-        let mut app = OpenCADStudio::new_for_test();
-        app.automation_op(r#"{"op":"new"}"#);
-        let i = app.active_tab;
-        let style_name = app.tabs[i]
-            .scene
-            .document
-            .objects
-            .values()
-            .find_map(|o| match o {
-                codec::objects::ObjectType::TableStyle(s) => Some(s.name.clone()),
-                _ => None,
-            })
-            .expect("fresh doc ships a table style");
-        app.tablestyle_selected = style_name.clone();
-        app.ts_cell_textstyle[0] = "NOPE".to_string();
-        let before = app.command_line.history.len();
-        let _ = app.on_table_style_cell_apply(0);
-        let cell_name = app.tabs[i]
-            .scene
-            .document
-            .objects
-            .values()
-            .find_map(|o| match o {
-                codec::objects::ObjectType::TableStyle(s) if s.name == style_name => {
-                    Some(s.data_row_style.text_style_name.clone())
-                }
-                _ => None,
-            })
-            .unwrap();
-        assert_ne!(cell_name, "NOPE", "dangling name must not persist");
-        assert_eq!(
-            app.ts_cell_textstyle[0], "NOPE",
-            "rejected text stays in the buffer for correction"
-        );
-        assert!(
-            app.command_line.history.len() > before,
-            "rejection must say something"
         );
     }
 }
@@ -5780,6 +6034,148 @@ mod tab_close_tests {
             app.tabs.len(),
             2,
             "stale close must not remove another tab or panic"
+        );
+    }
+
+    /// A closing drawing takes its remembered ATTDEF placement with it: the
+    /// coordinates belong to the drawing that placed them.
+    #[test]
+    fn closing_a_tab_drops_the_place_it_remembered() {
+        let mut app = three_tabs();
+        let i = app
+            .tabs
+            .iter()
+            .position(|tab| !tab.is_start)
+            .expect("a drawing tab, not the fixed start page");
+        let id = app.tabs[i].id;
+        crate::modules::draw::draw::attdef::session().set_place(id, &Default::default());
+        assert!(
+            crate::modules::draw::draw::attdef::session().last_in(id).is_some(),
+            "the drawing remembered a place"
+        );
+
+        let _ = app.update(Message::TabClose(id));
+
+        assert!(
+            crate::modules::draw::draw::attdef::session()
+                .last_in(id)
+                .is_none(),
+            "the place belonged to the drawing that just closed"
+        );
+    }
+
+    /// Discarding through the unsaved prompt is a close as much as clicking
+    /// the × is: the discarded drawing's remembered place goes with it, and a
+    /// drawing that stayed open keeps its own.
+    #[test]
+    fn discarding_a_dirty_tab_drops_the_place_it_remembered() {
+        let mut app = three_tabs();
+        let kept_id = app.tabs[1].id;
+        let closed_id = app.tabs[2].id;
+        crate::modules::draw::draw::attdef::session().set_place(kept_id, &Default::default());
+        crate::modules::draw::draw::attdef::session().set_place(closed_id, &Default::default());
+        assert!(
+            crate::modules::draw::draw::attdef::session()
+                .last_in(closed_id)
+                .is_some(),
+            "the drawing remembered a place"
+        );
+        app.tabs[2].dirty = true;
+
+        let _ = app.update(Message::TabClose(closed_id));
+        assert!(
+            app.pending_close.is_some(),
+            "closing a dirty drawing opens the unsaved prompt"
+        );
+        let _ = app.update(Message::UnsavedDialogDiscard);
+
+        assert!(
+            app.tabs.iter().all(|t| t.id != closed_id),
+            "the discarded drawing is gone"
+        );
+        assert!(
+            crate::modules::draw::draw::attdef::session()
+                .last_in(closed_id)
+                .is_none(),
+            "and the place it remembered went with it"
+        );
+        assert!(
+            crate::modules::draw::draw::attdef::session()
+                .last_in(kept_id)
+                .is_some(),
+            "the drawing still open keeps its own place"
+        );
+    }
+
+    /// A text line is remembered the same way an attribute placement is: the
+    /// next TEXT in the drawing continues below it, so closing the drawing has
+    /// to take the line with it.
+    #[test]
+    fn closing_a_tab_drops_the_line_it_remembered() {
+        let mut app = three_tabs();
+        let i = app
+            .tabs
+            .iter()
+            .position(|tab| !tab.is_start)
+            .expect("a drawing tab, not the fixed start page");
+        let id = app.tabs[i].id;
+        crate::modules::annotate::text::session().set_place(id, &Default::default());
+        assert!(
+            crate::modules::annotate::text::session()
+                .last_in(id)
+                .is_some(),
+            "the drawing remembered a line"
+        );
+
+        let _ = app.update(Message::TabClose(id));
+
+        assert!(
+            crate::modules::annotate::text::session()
+                .last_in(id)
+                .is_none(),
+            "the line belonged to the drawing that just closed"
+        );
+    }
+
+    /// Discarding a dirty drawing ends it just as closing does, so its line
+    /// goes too — while the drawings still open keep theirs.
+    #[test]
+    fn discarding_a_dirty_tab_drops_the_line_it_remembered() {
+        let mut app = three_tabs();
+        let kept_id = app.tabs[1].id;
+        let closed_id = app.tabs[2].id;
+        crate::modules::annotate::text::session().set_place(kept_id, &Default::default());
+        crate::modules::annotate::text::session().set_place(closed_id, &Default::default());
+        assert!(
+            crate::modules::annotate::text::session()
+                .last_in(closed_id)
+                .is_some(),
+            "the drawing remembered a line"
+        );
+        app.tabs[2].dirty = true;
+
+        let _ = app.update(Message::TabClose(closed_id));
+        assert!(
+            app.pending_close.is_some(),
+            "closing a dirty drawing opens the unsaved prompt"
+        );
+        let _ = app.update(Message::UnsavedDialogDiscard);
+
+        assert!(
+            app.tabs.iter().all(|t| t.id != closed_id),
+            "the discarded drawing is gone"
+        );
+        assert!(
+            crate::modules::annotate::text::session()
+                .last_in(closed_id)
+                .is_none(),
+            "the discarded drawing's line went with it"
+        );
+        assert!(
+            crate::modules::annotate::text::session()
+                .last_in(kept_id)
+                .is_some(),
+            "the drawing still open keeps its own line"
         );
     }
 

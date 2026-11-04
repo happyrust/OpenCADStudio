@@ -2513,7 +2513,7 @@ common =
     .sectionplane-specify-through-point = SECTIONPLANE  Specify through point:
     .setbylayer-no-properties-required-changes = SETBYLAYER: no properties required changes.
     .setbylayer-reset-entity-entities-to-bylayer = SETBYLAYER: reset __ocs_fmt_0__ entity/entities to ByLayer.
-    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
+    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION QUAD QUADWIDTH QUADCOMMANDLAUNCH CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
     .shell-supports-rectangular-boxes-circular-cylinders-and-spheres = SHELL supports rectangular boxes, circular cylinders, and spheres.
     .shell-solid-updated = SHELL: solid updated.
     .splinedit-fit-data-add-delete-move-purge-tangents-exit-exit = SPLINEDIT  Fit data [Add/Delete/Move/Purge/Tangents/eXit] <eXit>:
@@ -3592,6 +3592,9 @@ layers =
     .layiso-isolated-layer-s = LAYISO: eristetyt __ocs_fmt_0__-kerrokset.
     .layuniso-no-layers-were-isolated-by-layiso = LAYUNISO: LAYISO ei ole eristänyt yhtään tasoa.
     .laymatch-select-objects-to-change-layer = LAYMATCH Valitse objektit, joita haluat vaihtaa:
+    .copytolayer-base = Specify base point or [Displacement/eXit] <eXit>:
+    .copytolayer-second = Specify second point of displacement or <use first point as displacement>:
+    .copytolayer-displacement = Specify displacement <0.0000,0.0000,0.0000>:
     .copytolayer-select-objects-to-copy = COPYTOLAYER  Valitse kopioitavat objektit:
     .copytolayer-select-an-object-on-the-destination-layer = COPYTOLAYER  Valitse objekti kohdetasolta:
     .laymatch-select-source-object-to-match-layer-f = LAYMATCH Valitse lähdeobjekti, josta taso vastaa:
@@ -3613,6 +3616,7 @@ layers =
     .layer-s-frozen = Kerros(t) jäädytetty.
     .layer-s-locked = Taso(t) lukittu.
     .layer-s-turned-off = Tasot pois päältä.
+    .layoff-select-object-on-layer-undo = LAYOFF  Valitse objekti tasolta, joka sammutetaan, tai [Undo]:
     .layer-s-unlocked = Taso(t) avattu.
     .layers = Kerrokset: __ocs_fmt_0__
     .lock = Lukko
@@ -3995,6 +3999,84 @@ annotate =
     .text-specify-rotation-angle = TEXT  Määritä kiertokulma <__ocs_fmt_0__>:
     .text-specify-second-endpoint = TEXT  { common.specify }: { common.endpoint-2 }:
     .tolerance-specify-insertion-point = TOLERANCE Määritä lisäyskohta:
+    .tcell-row-above =
+        Lisää rivi
+        yläpuolelle
+    .tcell-row-below =
+        Lisää rivi
+        alapuolelle
+    .tcell-delete-rows =
+        Poista
+        rivit
+    .tcell-col-left =
+        Lisää sarake
+        vasemmalle
+    .tcell-col-right =
+        Lisää sarake
+        oikealle
+    .tcell-delete-cols =
+        Poista
+        sarakkeet
+    .tcell-merge =
+        Yhdistä
+        solut
+    .tcell-unmerge =
+        Pura
+        yhdistäminen
+    .tcell-lock =
+        Solun
+        lukitus
+    .tcell-edit =
+        Muokkaa
+        tekstiä
+    .tcell-match =
+        Täsmää
+        solu
+    .tcell-borders =
+        Solun
+        reunat
+    .tcell-format =
+        Tietojen
+        muoto
+    .tcell-block =
+        Lisää
+        lohko
+    .tcell-field =
+        Lisää
+        kenttä
+    .tcell-contents =
+        Hallitse solun
+        sisältöä
+    .tcell-link =
+        Linkitä
+        solu
+    .tcell-download =
+        Lataa
+        lähteestä
+    .tcell-row-style = Rivityyli
+    .tcell-column-style = Saraketyyli
+    .tcell-width = Solun leveys
+    .tcell-height = Solun korkeus
+    .tcell-border-color = Reunan väri
+    .tcell-border-lineweight = Reunan viivanpaksuus
+    .tcell-border-linetype = Reunan viivatyyppi
+    .tcell-locking = Solun lukitus
+    .tcell-data-link = Solun tietolinkki
+    .tcell-select-destination = Valitse kohdesolu:
+    .tcell-select-cell = Valitse taulukon solu:
+    .tcell-range-first = Valitse solualueen ensimmäinen kulma:
+    .tcell-range-second = Valitse solualueen toinen kulma:
+    .tcell-align-prompt = Anna solun tasaus [TL/TC/TR/ML/MC/MR/BL/BC/BR]:
+    .tcell-format-prompt = Anna tietomuoto [Angle/Currency/Date/Decimal/General/Percentage/Point/Text/Whole]:
+    .tcell-block-prompt = Anna lohkon nimi tai [?]:
+    .tcell-formula-prompt = Anna kaava [Sum/Average/Count/Cell/Equation]:
+    .tcell-by-row-column = Riveittäin/sarakkeittain
+    .tcell-unlocked = Lukitsematon
+    .tcell-content-locked = Sisältö lukittu
+    .tcell-format-locked = Muotoilu lukittu
+    .tcell-content-format-locked = Sisältö ja muotoilu lukittu
+    .tcell-not-linked = Ei linkitetty
+    .tcell-invalid-cell = Virheellinen solu.
 
 insert =
     .pastespec-specify-insertion-point = PASTESPEC  Määritä lisäyspiste:
@@ -4607,6 +4689,7 @@ insert =
     .field-help = Inserts a field: text that updates from the drawing, the date or another source.
     .field-average = Average
     .field-sum = Sum
+    .field-insert = Insert Field
     .field-object-name = Object name
     .field-block-placeholder = Block placeholder
     .field-block-editor-only = Only accessible in the block editor
@@ -5513,6 +5596,9 @@ properties =
     .fit-tolerance = Sopivuustoleranssi
     .fit-smooth-title-case = Istuva/sileä
     .fit-smooth-sentence-case = Istuva/sileä
+    .fit-curve-fit = Curve fit
+    .fit-quadratic = Quadratic
+    .fit-cubic = Cubic
     .fixed-elevation-range = Kiinteä korkeusalue
     .flag = Lippu
     .flags = Liput
@@ -5899,6 +5985,7 @@ properties =
     .wizard-flag = Velhon lippu
     .x-scale = X vaaka
     .zero = Nolla
+    .transparency-color = Transparency Color
 
     .model-text-height = { common.model-uppercase } · { common.text-height-sentence-case }
     .insert-unit-scale-is-outside-the-supported-range = INSERT-yksikkökerroin on tuetun alueen ulkopuolella.
@@ -6602,6 +6689,7 @@ dimstyle =
     .move-text-outside-first = Siirrä teksti ensin ulos
     .period = Kausi
     .space = Välilyönti
+    .separator-none = (Ei mitään)
     .surveyors-units = Maanmittausyksiköt
 
 style-manager =
@@ -6644,6 +6732,14 @@ style-manager =
     .inside-blocks = __ocs_fmt_0__ niistä __ocs_fmt_1__ lohkomäärittelyssä.
     .used-by-one-text = 1 teksti käyttää
     .used-by-texts = __ocs_fmt_0__ tekstiä käyttää
+    .property-change = __ocs_fmt_0__: __ocs_fmt_1__ → __ocs_fmt_2__.
+    .property-change-other = Other stored settings of the style change.
+    .annotative-change-note = Existing texts keep their own setting; new texts take this one.
+    .style-redraw-one = 1 text that uses the style is redrawn; formatting set inside MTEXT stays.
+    .style-redraw-many = __ocs_fmt_0__ texts that use the style are redrawn; formatting set inside MTEXT stays.
+    .apply-count-one = 1 style, 1 property
+    .apply-count-one-style = 1 style, __ocs_fmt_0__ properties
+    .apply-count-many = __ocs_fmt_0__ styles, __ocs_fmt_1__ properties
     .import-styles = Tuo tyylejä
     .select-drawing-to-import-styles-from = Valitse piirustus, josta tyylit tuodaan
     .select-the-styles-to-import = Valitse tuotavat tyylit
@@ -6942,6 +7038,7 @@ selection-report =
     .found-duplicate-total = __ocs_fmt_0__ found (__ocs_fmt_1__ duplicate), __ocs_fmt_2__ total
     .found-removed-total = __ocs_fmt_0__ found, __ocs_fmt_1__ removed, __ocs_fmt_2__ total
     .invalid-window = Invalid window specification.
+    .no-object = No object found
 
 block-def =
     .name-too-short = The name must be at least one character long.
@@ -7212,6 +7309,7 @@ dgn-import =
     .dgn-import = DGN Import
     .import-dgn-file = Import DGN File
     .import-wmf = Tuo WMF
+    .import-svg = Tuo SVG
     .help-dgn = Imports a DGN model as drawing objects: levels as layers, cells as blocks.
     .help-import = Imports a file of the chosen format with the format's importer.
     .blank = Filename cannot be blank
@@ -8154,3 +8252,332 @@ array-grips = Kohteiden määrä
 block-chain =
     .label = Ketjuta toiminnot
     .cycle = Lohkon toimintoketjussa on silmukka.
+
+block-action-bars =
+    .requires-session = BACTIONBAR edellyttää aktiivista lohkoeditorin istuntoa.
+    .enable-display = Näytä toimintopalkit asettamalla BACTIONBARMODE arvoksi 1.
+    .parameters-changed = Parametriluettelo on muuttunut; käynnistä BACTIONBAR uudelleen.
+    .display-updated = Toimintopalkkien näyttö on päivitetty.
+    .prompt-mode = BACTIONBAR  [Show/Hide/Reset]:
+    .prompt-selected = BACTIONBAR  Valitse parametri, anna sen nimi tai [All] <Valittu>:
+    .prompt-all = BACTIONBAR  Valitse parametri, anna sen nimi tai [All] <All>:
+    .choose-mode = Valitse Show, Hide tai Reset.
+    .unique-parameter = Anna yksilöllinen parametrin nimi, valitse sen päätepiste tai valitse All.
+    .enter-parameter = Anna parametrin nimi tai valitse All.
+    .pick-endpoint = Valitse parametrin päätepiste tai All.
+
+block-construction =
+    .requires-session = BCONSTRUCTION on käytettävissä vain lohkoeditorissa.
+    .choose-operation = Valitse Convert, Revert, Show tai Hide.
+    .stale-session = Apugeometrian lohkoeditorin istunto ei ole enää aktiivinen.
+    .changed-count = __ocs_fmt_0__ geometriaobjektia muutettu.
+    .prompt-selection = BCONSTRUCTION  Valitse geometria tai [Convert/Revert/Show/Hide]:
+    .prompt-operation = BCONSTRUCTION  Valitse [Convert/Revert] <Convert> tai käytä valittua toimintoa painamalla Enter:
+    .revert = Palauta
+    .history = Muokkaa apugeometriaa
+    .unsupported-record = Tämän apugeometriatietueen versiota tai arvoa ei tueta.
+    .open-definition = Avaa lohkomääritys ennen apugeometrian muokkaamista.
+    .missing-object = Valittu apugeometriaobjekti ei ole enää käytettävissä.
+    .active-geometry = Valitse geometria aktiivisesta lohkomäärityksestä.
+    .locked-layer = Apugeometriaa ei voi muuttaa lukitulla tasolla.
+    .revert-layer = Valitse palautettavalle geometrialle olemassa oleva lukitsematon taso.
+
+block-authoring-history =
+    .alignment-type = Kohdistustyyppi
+    .action-override = Muokkaa lohkotoiminnon ohitusta
+    .action-chain = Muokkaa lohkotoimintojen ketjua
+    .action-base = Muokkaa lohkotoiminnon peruspistettä
+    .parameter-chain = BEDIT Ketjuta parametrin toiminnot
+    .value-set = BEDIT Parametrin arvojoukko
+    .parameter-metadata = Muokkaa lohkoparametrin metatietoja
+    .authoring-grip = Lohkon luontikahva
+
+block-operation-history =
+    .reset-references = Palauta lohkoviitteet
+    .associate-action = Liitä lohkotoiminto
+    .action-selection = Toiminnon valintajoukko
+    .test-parameter = Testilohkon parametri
+    .reference-parameter = Lohkoviitteen parametri
+    .align-reference = Kohdista lohkoviite
+    .insertion-grip-order = Muuta lisäyskahvojen järjestystä
+    .move-grip = Siirrä natiivia lohkokahvaa
+    .configure-grips = Määritä lohkoparametrien kahvat
+    .lookup-tables = Hakutaulukot
+    .hyperlink = Lohkon hyperlinkki
+    .properties = Lohkon ominaisuudet
+    .properties-table = Lohkon ominaisuustaulukko
+    .visibility-state = Näkyvyystila
+    .visibility-states = Näkyvyystilat
+
+block-formatted-history =
+    .action = Toiminto { $label }
+    .parameter = Parametri { $label }
+    .edit-block = Muokkaa lohkoa { $label }
+    .save-block = Tallenna lohko nimellä { $label }
+    .delete-block = Poista lohko { $label }
+
+block-history-kinds =
+    .flip = Käännä
+    .polar-stretch = Polaarinen venytys
+    .basepoint = Peruspiste
+    .lookup = Haku
+
+block-action-properties =
+    .base-point = Toiminnon peruspiste
+    .overrides = Toiminnon ohitukset
+    .multiplier = Etäisyyskerroin
+    .angle-offset = Kulman siirtymä (astetta)
+    .chain = Toimintoketju
+    .chain-to = Ketjuta kohteeseen
+
+block-parameter-properties =
+    .show-properties = Näytä ominaisuuksissa
+    .parameter-name = Parametrin nimi
+    .grip-count = Kahvojen määrä
+    .dependent-base = Riippuvainen peruspiste
+    .offset-x = Perussiirtymä X
+    .offset-y = Perussiirtymä Y
+    .base-grip = Peruskahvan sijainti
+    .end-grip = Päätekahvan sijainti
+    .x-grip = X-kahvan sijainti
+    .y-grip = Y-kahvan sijainti
+
+block-value-set =
+    .use-min = Käytä arvolle { $label } minimiä
+    .use-max = Käytä arvolle { $label } maksimia
+    .use-increment = Käytä arvolle { $label } askelta
+    .use-list = Käytä arvolle { $label } sallittujen arvojen luetteloa
+    .min = Arvon { $label } minimi
+    .max = Arvon { $label } maksimi
+    .increment = Arvon { $label } askel
+    .values = Arvon { $label } sallitut arvot
+    .title = Arvojoukko
+    .x-distance = X-etäisyys
+    .y-distance = Y-etäisyys
+
+table-style-cells =
+    .tbl-start-from-style = Aloita taulukkotyylistä
+    .tbl-extra-columns = Lisäsarakkeet
+    .tbl-extra-rows = Lisärivit
+    .tbl-keep-from-template = Säilytä aloitustaulukosta:
+    .tbl-keep-label-text = Otsikkosolujen teksti
+    .tbl-keep-data-text = Tietosolujen teksti
+    .tbl-keep-overrides = Solutyylin ohitukset
+    .tbl-keep-links = Tietolinkit
+    .tbl-keep-fields = Kentät
+    .tbl-keep-formulas = Kaavat
+    .tbl-extra-whole = Lisärivien ja -sarakkeiden määrän on oltava kokonaisluku.
+    .from-style-insertion = __ocs_arg_n__  Määritä lisäyspiste tai [Style/Rows/Columns/Options]:
+    .from-style-name = __ocs_arg_n__  Anna taulukkotyylin nimi tai [?] <__ocs_arg_style__>:
+    .from-style-rows = __ocs_arg_n__  Anna lisärivien määrä <__ocs_arg_rows__>:
+    .from-style-columns = __ocs_arg_n__  Anna lisäsarakkeiden määrä <__ocs_arg_columns__>:
+    .from-style-options = __ocs_arg_n__  Anna lisäysvalinta [Label text/Data text/Formulas/fIelds/data liNks/Blocks/cell style Overrides] <exit>:
+    .from-style-option = __ocs_arg_n__  Sisällytetäänkö __ocs_arg_what__ lisättyyn taulukkoon? [Yes/No] <__ocs_arg_current__>:
+    .label-text = otsikkoteksti
+    .data-text = tietoteksti
+    .formulas = kaavat
+    .fields = kentät
+    .data-links = tietolinkit
+    .blocks = lohkot
+    .cell-style-overrides = solutyylin ohitukset
+    .style-name-header = Taulukkotyylin nimi
+    .no-starting-table = Taulukkotyyli ei sisällä taulukkoa.
+    .select-table = Valitse taulukko:
+    .not-a-table = Objekti ei ole taulukko.
+    .cell-style-exists = Samanniminen solutyyli on jo olemassa.
+    .cell-style-in-use = Solutyyli on käytössä, eikä sitä voi poistaa.
+    .template-size = __ocs_arg_rows__ riviä × __ocs_arg_columns__ saraketta
+    .cell-properties = Solun ominaisuudet
+    .cell-text = Solun teksti
+    .cell-borders = Solun reunat
+    .cell-styles = Solutyylit
+    .label = Otsikko
+    .margins = Marginaalit
+    .merge-on-create = Yhdistä solut rivejä/sarakkeita luotaessa
+    .new-from-this = Uusi tästä
+    .new-name = Uusi nimi
+    .real-number = Reaaliluku
+    .whole-number = Kokonaisluku
+    .select-table-button = Valitse taulukko…
+    .starting-table = Aloitustaulukko
+    .table-direction = Taulukon suunta
+
+table-cells =
+    .borders-title = Solun reunat
+    .contents-title = Solun sisältö
+    .line = Viiva
+    .lineweight = Viivanpaksuus
+    .linetype = Viivatyyppi
+    .color = Väri
+    .double = Kaksoisviiva
+    .spacing = Väli
+    .apply-to = Käytä kohteeseen
+    .all = Kaikki
+    .outside = Ulkoreunat
+    .inside = Sisäreunat
+    .none = Ei mitään
+    .top = Ylä
+    .bottom = Ala
+    .left = Vasen
+    .right = Oikea
+    .inside-horizontal = Sisä vaaka
+    .inside-vertical = Sisä pysty
+    .contents = Sisältö
+    .empty = Solu on tyhjä.
+    .move-up = Siirrä ylös
+    .move-down = Siirrä alas
+    .delete = Poista
+    .layout = Asettelu
+    .flow = Rivitys
+    .stack-horizontal = Pinottu vaakasuunnassa
+    .stack-vertical = Pinottu pystysuunnassa
+    .content-spacing = Väli
+    .block-item = Lohko: { $name }
+    .text-item = Teksti: { $text }
+    .text-content = Taulukon solun teksti
+    .borders-help = Asettaa valittujen solujen reunojen viivanpaksuuden, viivatyypin ja värin; valitse reunat, joihin ne tulevat.
+    .contents-help = Järjestää, poistaa ja asettelee valitun solun sisällön.
+    .block-title = Solun lohko
+    .format-title = Solun tietomuoto
+    .block = Lohko
+    .block-name = Nimi
+    .browse = Selaa...
+    .block-path = Polku
+    .placement = Sijoitus
+    .alignment = Solun tasaus
+    .scale = Mittakaava
+    .autofit = Automaattinen sovitus
+    .rotation = Kiertokulma
+    .format = Muoto
+    .current-precision = Nykyinen tarkkuus
+    .precision = Tarkkuus
+    .symbol = Symboli
+    .append-symbol = Lisää symboli loppuun
+    .negative-parens = Negatiiviset sulkeissa
+    .list-separator = Luettelon erotin
+    .date-format = Päivämäärän muoto
+    .no-format-settings = Tällä tietotyypillä ei ole muotoiluasetuksia.
+    .data-type = Tietotyyppi
+    .format-settings = Muoto
+    .currency = Valuutta
+    .decimal-number = Desimaaliluku
+    .percentage = Prosentti
+    .whole-number = Kokonaisluku
+    .grads = Goonit
+    .sample-text = esimerkkiteksti
+    .block-help = Lisää lohkon valittuihin soluihin: sen sijainnin, mittakaavan (tai soluun sovituksen) ja kierron.
+    .format-help = Asettaa tietotyypin ja muodon, jolla valittujen solujen arvot luetaan.
+    .additional-format = Lisämuotoilu
+    .conversion = Muuntokerroin
+    .prefix = Etuliite
+    .suffix = Jälkiliite
+    .decimal-separator = Desimaalierotin
+    .thousands-separator = Tuhaterotin
+    .space = Välilyönti
+    .separator-none = (Ei mitään)
+    .zero-leading = Alkunollat
+    .zero-trailing = Loppunollat
+    .zero-feet = 0 jalkaa
+    .zero-inches = 0 tuumaa
+    .warning-title = Tietotyyppi ei täsmää
+    .warning-heading = Näissä soluissa on arvoja, jotka eivät ole valittua tietotyyppiä.
+    .warning-note = Muunnos lukee jokaisen arvon uutena tyyppinä; arvo, jota ei voi lukea, tyhjennetään. Peruuta jättää solut ennalleen.
+    .warning-ok = Muunna
+    .warning-cancel = Peruuta
+    .entry-title = Cell Value Does Not Match
+    .entry-heading = The typed value is not of this cell's data type.
+    .entry-type = Change the cell's data type
+    .entry-type-note = The cell takes the data type of the typed value and the value goes in.
+    .entry-value = Edit the value
+    .entry-value-note = The value goes back into the cell's editor to be corrected.
+
+parameters-manager =
+    .action-parameters = Toimintoparametrit
+    .filter = Nimi*
+    .search = Etsi parametria
+    .order = Järjestys
+    .polar = Polaarinen
+    .visibility = Näkyvyys
+    .variable = Muuttuja
+    .footer = Kaikki: { $shown } / { $total } parametria näytetään
+
+parameters-manager-feedback =
+    .no-number = Tällä rivillä ei ole muokattavaa lukua.
+    .no-flag = Tällä rivillä ei ole muutettavaa näkyvyysasetusta.
+    .finite-number = Anna äärellinen numeerinen parametrin arvo.
+    .stale-session = Lohkoeditorin istunto ei ole enää aktiivinen.
+    .positive-length = Anna positiivinen parametrin pituus.
+    .no-direction = Parametrin suunta ei ole käytettävissä.
+    .history = Parametrien hallinnan muokkaus
+
+block-action-targets =
+    .prompt = BACTIONSET  Valitse objekteja tai kirjoita Parameter ja parametrin nimi ja paina Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .create-prompt = BACTION  Valitse objekteja tai kirjoita Parameter ja parametrin nimi ja paina Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .unique-point = Anna yksilöllinen parametrin nimi.
+    .empty = Toiminto tarvitsee vähintään yhden kohteen.
+    .invalid = Valitse tuettuja kohteita tästä lohkosta.
+    .stale = Toiminto tai lohkoeditorin istunto on muuttunut; käynnistä BACTIONSET uudelleen.
+    .create-stale = Toiminto tai lohkoeditorin istunto on muuttunut; käynnistä BACTION uudelleen.
+
+revcloud-cmd =
+    .header = Minimum arc length: { $min }   Maximum arc length: { $max }   Style: { $style }   Type: { $kind }
+    .style-normal = Normal
+    .style-calligraphy = Calligraphy
+    .type-rectangular = Rectangular
+    .type-polygonal = Polygonal
+    .type-freehand = Freehand
+    .first-corner = REVCLOUD  Specify first corner point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .start-point = REVCLOUD  Specify start point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .first-point = REVCLOUD  Specify first point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .opposite = REVCLOUD  Specify opposite corner:
+    .next = REVCLOUD  Specify next point:
+    .next-undo = REVCLOUD  Specify next point or [Undo]:
+    .guide = REVCLOUD  Guide crosshairs along cloud path...
+    .arc = REVCLOUD  Specify approximate length of arc <{ $length }>:
+    .second = REVCLOUD  Specify second point:
+    .second-point = Specify second point:
+    .style = REVCLOUD  Select arc style [Normal/Calligraphy] <{ $style }>:
+    .object = REVCLOUD  Select object:
+    .reverse = REVCLOUD  Reverse direction [Yes/No] <No>:
+    .modify-select = REVCLOUD  Select polyline to modify:
+    .modify-first = REVCLOUD  Specify next point or [First point]:
+    .modify-start = REVCLOUD  Specify a start point:
+    .modify-side = REVCLOUD  Pick a side to erase:
+    .invalid-shape = Invalid shape to create revision cloud.
+    .finished = Revision cloud finished.
+    .unable = Unable to convert object, must be a polyline, spline, or circle.
+    .positive = Value must be positive and nonzero.
+    .numeric = Requires numeric distance or two points.
+    .keyword = Invalid option keyword.
+    .var-mode = Requires an integer between 0 and 2.
+    .var-onoff = Requires 0 or 1 only, or option keyword.
+
+wipeout-cmd =
+    .select-polyline = WIPEOUT  Select a closed polyline:
+    .polyline-invalid = The polyline must be closed and made up of only line segments.
+    .erase-polyline = WIPEOUT  Erase polyline? [Yes/No] <No>:
+    .frames = WIPEOUT  Enter mode [ON/OFF/Display but not plot] <{ $current }>:
+    .frame-on = ON
+    .frame-off = OFF
+    .frame-display = Display but not plot
+    .keyword = Invalid option keyword.
+    .point-or-keyword = 2D point or option keyword required.
+
+quad-menu =
+    .label = QUAD
+    .menu = Quad Cursor Menu
+    .pill-tip =
+        Quad cursor menu
+        Click to toggle on/off
+    .options-tip =
+        Quad display options
+        Click to choose
+    .show = Show the Quad cursor menu (Shift+F12, QUAD)
+    .on-hover = Hover an object: offer its commands
+    .on-select = A selection offers its shared commands
+    .on-void = Right-click in the void: creation commands
+    .suppress-hover = Suppress the hover quad while a selection exists
+    .hover-delay = Hover delay
+    .width = Quad width
+    .launch = Right-click over an object launches its default command directly (QUADCOMMANDLAUNCH)
+    .about = The Quad cursor menu appears at the cursor: default commands for what it points at, recent and creation commands otherwise (QUAD, QUADWIDTH).

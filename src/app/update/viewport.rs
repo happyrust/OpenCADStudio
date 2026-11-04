@@ -425,6 +425,19 @@ fn over_ucs_icon(p: Point, h: &crate::ui::overlay::UcsIconHit) -> bool {
 }
 
 impl OpenCADStudio {
+    fn select_command_marker_region(&mut self, i: usize, edit_cam: &Option<crate::scene::view::camera::Camera>, bounds: iced::Rectangle, polygon: &[Point], crossing: bool, replace: bool, geometry_hit: bool) -> bool {
+        let (view, eye) = match edit_cam {
+            Some(camera) => (camera.view_proj_rte(bounds), camera.eye()),
+            None => { let camera = self.tabs[i].scene.camera.borrow(); (camera.view_proj_rte(bounds), camera.eye()) }
+        };
+        let context = crate::command::PointPickContext { view, eye, bounds, aperture_px: crate::ui::overlay::pick_box_aperture_px(self.pick_box) };
+        let remove = self.shift_down || self.select_remove_mode;
+        let tab = &mut self.tabs[i];
+        let names = tab.active_cmd.as_mut().map(|command| command.on_selection_marker_region(&tab.scene, polygon, context, crossing, remove, replace, geometry_hit)).unwrap_or_default();
+        for name in &names { self.command_line.push_info(&format!("{} {}", if remove { "−" } else { "+" }, name)); }
+        !names.is_empty()
+    }
+
     fn active_construction_ray(
         &self,
         tab: usize,
@@ -619,7 +632,7 @@ impl OpenCADStudio {
         let step = (self.polar_mode && drafting).then_some(self.polar_increment_deg);
         let (_, (ucs_x, ucs_y, _)) = self.drafting_grid_basis(tab);
 
-        let mut hit = self.snapper.otrack_snap(
+        let mut hit = self.snapper.otrack_snap_stable(
             track_cursor,
             view_rot,
             eye,
@@ -630,6 +643,7 @@ impl OpenCADStudio {
             self.ortho_mode && !self.shift_down && drafting,
             ucs_x.as_dvec3(),
             ucs_y.as_dvec3(),
+            self.otrack_active,
         )?;
 
         if let Some(intersection) = intersection {
@@ -1671,6 +1685,8 @@ impl OpenCADStudio {
             return Task::none();
         }
         let i = self.active_tab;
+        let perf_move = crate::perf::enabled();
+        let move_started = Instant::now();
         self.tabs[i].measurement.live_visible = true;
         self.tabs[i].scene.selection.borrow_mut().input.pointer_away = false;
         self.nav_pointer_moved(i, p);
@@ -1700,8 +1716,7 @@ impl OpenCADStudio {
             command.set_ctrl(self.ctrl_down);
             command.set_shift(self.shift_down);
         }
-        let perf_move = crate::perf::enabled();
-        let move_started = Instant::now();
+        let pre_grip_ms = crate::perf::elapsed_ms(perf_move.then_some(move_started));
 
         // UCS icon grip drag: map the cursor onto the UCS plane and
         // slide the origin / rotate the axis. Short-circuits pan & snap.
@@ -1739,6 +1754,7 @@ impl OpenCADStudio {
             VIEWCUBE_PX,
         ));
 
+        let grip_hover_started = perf_move.then(Instant::now);
         let navigating = self.tabs[i].scene.selection.borrow().input.middle_down;
         if navigating {
             self.clear_navigation_hover(i);
@@ -1757,6 +1773,7 @@ impl OpenCADStudio {
                     .unwrap_or(false);
         }
 
+        let grip_hover_ms = crate::perf::elapsed_ms(grip_hover_started);
         let mut sel = self.tabs[i].scene.selection.borrow_mut();
         sel.input.last_move_pos = Some(p);
 
@@ -2048,6 +2065,7 @@ impl OpenCADStudio {
             y: p_full.y - tile_b.y,
         };
         let vp_size = (tile_b.width, tile_b.height);
+        self.drag_table_cells(i, p, tile_b, &edit_cam);
 
         // ── Custom plugin-grip drag (API v11) ────────────────────────────
         // The plugin's preview is the only live feedback: no host ghost, no
@@ -2182,11 +2200,21 @@ impl OpenCADStudio {
             // Initialize once: constraint solves may add neighbors to this gesture.
             // Wire entities use the overlay; solid meshes stay visible and move live.
             if self.grip_preview_handles.is_empty() {
+                let init_started = crate::perf::enabled().then(Instant::now);
+                let init_mark = |stage: &str| {
+                    if let Some(started) = init_started {
+                        crate::perf_record!(
+                            "[perf] grip-init {stage}={:.1}ms",
+                            started.elapsed().as_secs_f64() * 1000.0
+                        );
+                    }
+                };
                 let preview_handles = self.tabs[i].scene.parametric_connected_handles(
                     self.tabs[i].current_parametric_scope(),
                     &edited_handles,
                     true,
                 );
+                init_mark("connected-handles");
                 if self.grip_dirty_before.is_none() {
                     self.grip_dirty_before = Some(self.tabs[i].dirty);
                 }
@@ -2207,6 +2235,7 @@ impl OpenCADStudio {
                         .collect();
                 }
                 self.capture_grip_history_originals(i, &edited_handles);
+                init_mark("history-originals");
                 for &handle in &preview_handles {
                     if !self.tabs[i].scene.meshes.contains_key(&handle) {
                         self.tabs[i].scene.preview_hidden.insert(handle);
@@ -2219,6 +2248,7 @@ impl OpenCADStudio {
                 self.tabs[i]
                     .scene
                     .bump_entities_after_parametric_solve(&changes);
+                init_mark("bump-after-solve");
                 self.grip_preview_handles = preview_handles;
                 // Snapshot the entity's glyph quads once so each move can
                 // slide the already-shaped text rather than re-shaping it
@@ -2230,6 +2260,7 @@ impl OpenCADStudio {
                 let snap = self.tabs[i]
                     .scene
                     .wire_models_for(&self.grip_preview_handles);
+                init_mark("wire-models-for");
 
                 // Preserve the exact geometry from the instant the grip drag began.
                 // This snapshot is visual/reference-only: do NOT append it to
@@ -2306,7 +2337,7 @@ impl OpenCADStudio {
             // The frozen grip-reference geometry deliberately stays out, so it cannot
             // pull the edited point back onto its old shape.
             self.sync_osnap_z_plane(i);
-            let snap_hit = self.snapper.snap(
+            let snap_hit = self.snapper.snap_stable(
                 raw,
                 p,
                 &snap_candidates,
@@ -2316,6 +2347,7 @@ impl OpenCADStudio {
                 go,
                 gr,
                 construction_ray,
+                self.tabs[i].snap_result,
             );
 
             // The frozen pre-drag geometry gets a SECOND snap pass, limited to
@@ -2908,7 +2940,7 @@ impl OpenCADStudio {
             );
             let (go, gr) = self.drafting_grid_basis(i);
             self.sync_osnap_z_plane(i);
-            let snap_hit = self.snapper.snap(
+            let snap_hit = self.snapper.snap_stable(
                 cursor_world,
                 p,
                 &snap_candidates,
@@ -2918,6 +2950,7 @@ impl OpenCADStudio {
                 go,
                 gr,
                 None,
+                self.tabs[i].snap_result,
             );
             self.tabs[i].snap_result = snap_hit;
             self.tabs[i].last_cursor_world = snap_hit.map(|hit| hit.world).unwrap_or(cursor_world);
@@ -2943,6 +2976,10 @@ impl OpenCADStudio {
             if self.tabs[i].scene.last_tess_wires.get() < crate::app::HOVER_DWELL_DENSE_WIRES {
                 self.tabs[i].scene.set_hover_highlight(None);
             }
+            // A cursor move is the strongest "the pick's inputs changed"
+            // signal for the quad dwell poll: bump the move count first so
+            // the recorded (or pending) settled pick is disqualified.
+            self.hover_move_seq += 1;
             self.hover_dwell = Some(crate::app::HoverDwell {
                 last_move_at: Instant::now(),
                 point: p,
@@ -2954,6 +2991,12 @@ impl OpenCADStudio {
             self.tabs[i].scene.set_hover_highlight(None);
             self.hover_dwell = None;
         }
+        // The quad cursor menu's hover dwell (docs/quad-menu.md §3.4) rides
+        // the same settled-rollover machinery: a move restarts nothing on its
+        // own clock (the set-hover step sees the live rollover highlight), a
+        // quad already open closes once the cursor drifts or leaves the
+        // entity. `rest_ms = 0`: the cursor only just moved.
+        self.quad_hover_step(i, p, 0);
 
         // Throttle: while a plain point pick is active and the cursor is still
         // settling, defer continuous / pairwise snap modes to SnapDwellTick.
@@ -3049,7 +3092,21 @@ impl OpenCADStudio {
                 let evaluation_started = crate::perf::enabled().then(Instant::now);
                 let snap =
                     self.snapper
-                        .snap_discrete_preview(p, &snap_candidates, view_rot, eye, bounds);
+                        .snap_discrete_preview_stable(
+                            p, &snap_candidates, view_rot, eye, bounds,
+                            self.tabs[i].snap_result,
+                        );
+                // Feed live point candidates into the OTRACK acquisition
+                // timer even while the expensive full snap pass is deferred.
+                // Previously the 250ms clock often started only after the
+                // stationary dwell tick, so a truly still cursor could not
+                // acquire a point without extra mouse movements.
+                if self.snapper.tracking_active() {
+                    self.snapper.update_otrack_dwell(
+                        snap, &snap_candidates, view_rot, eye, bounds,
+                        Instant::now(),
+                    );
+                }
                 if crate::perf::enabled() {
                     let evaluation_ms = crate::perf::elapsed_ms(evaluation_started);
                     let feature_count = snap_candidates
@@ -3095,6 +3152,12 @@ impl OpenCADStudio {
                 None
             };
             let snap = crate::snap::merge_snap(snap, original_snap, p);
+            // An unsampled move far off the dwelt point still ends that dwell.
+            if !run_discrete_preview && self.snapper.tracking_active() {
+                let wires = self.tabs[i].scene.hit_test_wires();
+                self.snapper
+                    .note_unsampled_move(p, wires.as_slice(), view_rot, eye, bounds, Instant::now());
+            }
             let world = match snap {
                 Some(hit) => hit.world,
                 None => {
@@ -3151,26 +3214,12 @@ impl OpenCADStudio {
                 // the full snap pass still waits for the normal dwell tick.
                 self.refresh_active_cmd_preview(i);
             }
-            // Fast previews are not stable OTRACK observations. Start its
-            // acquisition timer only after movement settles, not while a
-            // cursor brushes a candidate or leaves an old candidate behind.
-            // Remaining within the acquisition aperture preserves the acquired
-            // latch so stationary ticks do not toggle or restart repeatedly;
-            // genuine departure resets the latch so returning can reacquire.
-            let within_aperture = self.snapper.last_snap_world.is_some_and(|target| {
-                snap.as_ref()
-                    .is_some_and(|hit| (hit.world - target).length() < 0.001)
-            });
-            if within_aperture {
-                if !self.snapper.dwell_acquired {
-                    self.snapper.last_snap_world = None;
-                    self.snapper.dwell_since = None;
-                }
-            } else {
-                self.snapper.dwell_acquired = false;
-                self.snapper.last_snap_world = None;
-                self.snapper.dwell_since = None;
-            }
+            // The fast indexed preview above now updates OTRACK's acquisition
+            // clock from real, current geometry. Do NOT erase that clock here:
+            // resetting dwell_since on every pointer movement made acquisition
+            // impossible until the user stopped and triggered extra ticks.
+            // A sampled absence / change is handled by update_otrack_dwell;
+            // unsampled frames keep the last verified observation untouched.
             // Re-arm the dwell — tick fires SNAP_DWELL_MS after the last move.
             if let Some(dwell) = self.snap_dwell.as_mut() {
                 dwell.last_move_at = Instant::now();
@@ -3377,7 +3426,7 @@ impl OpenCADStudio {
                 let additional_rays =
                     tracking_probe.map(|track| [(track.base, track.base + track.dir)]);
 
-                self.snapper.snap_with_additional_construction_rays(
+                self.snapper.snap_with_additional_construction_rays_stable(
                     snap_cursor,
                     p,
                     &snap_candidates,
@@ -3388,6 +3437,7 @@ impl OpenCADStudio {
                     gr,
                     construction_ray,
                     additional_rays.as_ref().map_or(&[], |rays| rays.as_slice()),
+                    self.tabs[i].snap_result,
                 )
             };
             // Restore discrete snap targets from STRETCH's original snapshot
@@ -4245,16 +4295,18 @@ impl OpenCADStudio {
 
         self.sync_dyn_fields();
         let move_ms = move_started.elapsed().as_secs_f64() * 1000.0;
-        if perf_move
-            && (self.tabs[i].active_cmd.is_some() || self.tabs[i].scene.active_viewport.is_some())
-            && move_ms >= 16.7
-        {
+        if perf_move && move_ms >= 10.0 {
             let mode = if self.tabs[i].active_cmd.is_some() {
                 "command"
-            } else {
+            } else if self.tabs[i].scene.active_viewport.is_some() {
                 "MSPACE"
+            } else {
+                "idle"
             };
-            crate::perf_record!("[perf] pointer-move mode={mode:<7} {:>7.1}ms", move_ms,);
+            crate::perf_record!(
+                "[perf] pointer-move mode={mode:<7} {:>7.1}ms pre_grip={pre_grip_ms:.2}ms grip_hover={grip_hover_ms:.2}ms",
+                move_ms,
+            );
         }
         Task::none()
     }
@@ -4956,6 +5008,35 @@ impl OpenCADStudio {
         bounds: iced::Rectangle,
         edit_cam: &Option<crate::scene::view::camera::Camera>,
     ) -> bool {
+        self.object_under(i, p, bounds, edit_cam)
+            .is_some_and(|handle| self.tabs[i].scene.selected.contains(&handle))
+    }
+
+    /// The table cell under `p` (clear of the grid lines by `margin`), unless
+    /// another object drawn over the table is under it.
+    fn table_cell_under(
+        &self,
+        i: usize,
+        p: Point,
+        bounds: iced::Rectangle,
+        edit_cam: &Option<crate::scene::view::camera::Camera>,
+        margin: f64,
+    ) -> Option<(Handle, (usize, usize))> {
+        let world = self.cursor_model_point(i, edit_cam, p, bounds);
+        let (table, cell) = self.tabs[i].scene.table_cell_pick(world, margin)?;
+        self.object_under(i, p, bounds, edit_cam)
+            .is_none_or(|handle| handle == table)
+            .then_some((table, cell))
+    }
+
+    /// The topmost object drawn under `p`.
+    fn object_under(
+        &self,
+        i: usize,
+        p: Point,
+        bounds: iced::Rectangle,
+        edit_cam: &Option<crate::scene::view::camera::Camera>,
+    ) -> Option<Handle> {
         let started = crate::perf::enabled().then(Instant::now);
         let (view_rot, eye, wires) = self.pick_view(i, edit_cam, bounds);
         let aperture = crate::ui::overlay::pick_box_aperture_px(self.pick_box);
@@ -4983,18 +5064,77 @@ impl OpenCADStudio {
             aperture,
             &scene.draw_depth_map(),
         )
-        .and_then(Scene::handle_from_wire_name)
-        .is_some_and(|handle| scene.selected.contains(&handle));
+        .and_then(Scene::handle_from_wire_name);
         let hit_ms = crate::perf::elapsed_ms(hit_started);
         let total_ms = crate::perf::elapsed_ms(started);
         if total_ms >= 1.0 {
             crate::perf_record!(
-                "[perf] selected-drag-probe total={total_ms:.1}ms candidates={candidate_ms:.1}ms hit={hit_ms:.1}ms wires={} candidates_count={} selected_hit={hit}",
+                "[perf] object-under-probe total={total_ms:.1}ms candidates={candidate_ms:.1}ms hit={hit_ms:.1}ms wires={} candidates_count={} hit={hit:?}",
                 wire_count,
                 candidates.len(),
             );
         }
         hit
+    }
+
+    /// A press-drag that starts inside a table cell picks the cells from
+    /// there to the one under the cursor as it moves — the picked range is
+    /// the only feedback (no selection window or lasso is drawn).
+    fn drag_table_cells(
+        &mut self,
+        i: usize,
+        p: Point,
+        tile: iced::Rectangle,
+        edit_cam: &Option<crate::scene::view::camera::Camera>,
+    ) {
+        if self.tabs[i].active_cmd.is_some() {
+            return;
+        }
+        let press = {
+            let sel = self.tabs[i].scene.selection.borrow();
+            (sel.input.left_down && sel.input.left_dragging)
+                .then_some(sel.input.left_press_pos)
+                .flatten()
+        };
+        let Some(press) = press else {
+            return;
+        };
+        let bounds = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: tile.width,
+            height: tile.height,
+        };
+        let press = Point::new(press.x - tile.x, press.y - tile.y);
+        let Some((table, anchor)) = self.table_cell_under(i, press, bounds, edit_cam, 0.0) else {
+            return;
+        };
+        let here = self.cursor_model_point(i, edit_cam, p, bounds);
+        let end = self.tabs[i]
+            .scene
+            .table_cell_pick(here, 0.0)
+            .filter(|(hit, _)| *hit == table)
+            .map(|(_, end)| end)
+            .or_else(|| {
+                self.tabs[i]
+                    .scene
+                    .table_cells
+                    .filter(|cells| cells.table == table)
+                    .map(|cells| cells.end)
+            })
+            .unwrap_or(anchor);
+        let cells = crate::scene::TableCellSelection { table, anchor, end };
+        {
+            let mut sel = self.tabs[i].scene.selection.borrow_mut();
+            sel.gesture.poly_active = false;
+            sel.gesture.poly_points.clear();
+            sel.gesture.box_anchor = None;
+            sel.gesture.box_current = None;
+        }
+        if self.tabs[i].scene.table_cells != Some(cells) {
+            self.tabs[i].scene.select_table_cells(cells);
+            self.refresh_properties();
+        }
     }
 
     /// Once a press on a selected object has moved far enough, MOVE (COPY
@@ -5041,12 +5181,8 @@ impl OpenCADStudio {
     /// Capture the button event without doing the expensive hover/snap pass.
     /// Point commands immediately invoke the release path, which resolves
     /// snapping once using this exact screen position.
-    pub(super) fn set_cursor_for_press(&mut self, position: Point) {
-        let i = self.active_tab;
-        if let Some(command) = self.tabs[i].active_cmd.as_mut() {
-            command.set_ctrl(self.ctrl_down);
-            command.set_shift(self.shift_down);
-        }
+    /// The drawing point under the screen `position` in tab `i`.
+    pub(in crate::app) fn cursor_world_at(&mut self, i: usize, position: Point) -> glam::DVec3 {
         let canvas_size = self.tabs[i].scene.selection.borrow().view.vp_size;
         let frame = self.tabs[i].scene.viewport_edit_frame(canvas_size);
         let tile = frame.as_ref().map(|(_, rect)| *rect).unwrap_or_else(|| {
@@ -5057,7 +5193,16 @@ impl OpenCADStudio {
         let camera = frame.map(|(camera, _)| camera);
         let local = Point::new(position.x - tile.x, position.y - tile.y);
         let bounds = iced::Rectangle::with_size(iced::Size::new(tile.width, tile.height));
-        self.tabs[i].last_cursor_world = self.cursor_model_point(i, &camera, local, bounds);
+        self.cursor_model_point(i, &camera, local, bounds)
+    }
+
+    pub(super) fn set_cursor_for_press(&mut self, position: Point) {
+        let i = self.active_tab;
+        if let Some(command) = self.tabs[i].active_cmd.as_mut() {
+            command.set_ctrl(self.ctrl_down);
+            command.set_shift(self.shift_down);
+        }
+        self.tabs[i].last_cursor_world = self.cursor_world_at(i, position);
         self.tabs[i].last_cursor_screen = position;
         self.tabs[i]
             .scene
@@ -5417,7 +5562,7 @@ impl OpenCADStudio {
                         return Task::none();
                     }
                     if grip_id == crate::app::visibility::TABLE_GRIP_ID {
-                        self.open_table_popup(p);
+                        self.open_table_popup();
                         self.grip_hover = None;
                         self.grip_popup = None;
                         return Task::none();
@@ -5653,6 +5798,8 @@ impl OpenCADStudio {
         self.drag_move = (self.tabs[i].active_cmd.is_none()
             && !self.shift_down
             && !self.tabs[i].scene.selected.is_empty()
+            // A press inside a table cell drags out a cell range instead.
+            && self.table_cell_under(i, p, bounds, &edit_cam, 0.0).is_none()
             && self.selected_object_under(i, p, bounds, &edit_cam))
         .then_some((self.tabs[i].last_cursor_world, false));
         let mut sel = self.tabs[i].scene.selection.borrow_mut();
@@ -5879,9 +6026,16 @@ impl OpenCADStudio {
                 height: vh,
             };
 
-            // Hover may still describe an earlier pointer position while
-            // snap is deferred. Only the snap computed for this click may
-            // supply tangent metadata or decide whether DUCS applies.
+            // Keep the visible discrete candidate only as a ranking hint for
+            // this click. The snap engine MUST rediscover it from the actual
+            // clicked geometry; we never commit a stale cached coordinate.
+            // Results on the tab are canvas-space, while the snap engine
+            // receives tile-local pixels.
+            let visible_before_click = self.tabs[i].snap_result.filter(|hit| {
+                let dx = hit.screen.x - p_full.x;
+                let dy = hit.screen.y - p_full.y;
+                dx * dx + dy * dy <= self.snapper.osnap_radius_px.powi(2)
+            });
             self.tabs[i].snap_result = None;
             let snapped;
             let tangent_obj_at_click;
@@ -5989,7 +6143,7 @@ impl OpenCADStudio {
                     let additional_rays =
                         tracking_probe.map(|track| [(track.base, track.base + track.dir)]);
 
-                    self.snapper.snap_with_additional_construction_rays(
+                    self.snapper.snap_with_additional_construction_rays_stable(
                         snap_cursor,
                         p,
                         &snap_candidates,
@@ -6000,6 +6154,7 @@ impl OpenCADStudio {
                         gr,
                         construction_ray,
                         additional_rays.as_ref().map_or(&[], |rays| rays.as_slice()),
+                        visible_before_click,
                     )
                 };
                 // Paper-space snapping through layout viewports. Mirrors
@@ -6729,7 +6884,7 @@ impl OpenCADStudio {
             return Task::none();
         }
 
-        let (is_down2, is_dragging, box_anchor, box_crossing, _vp_size, poly_drag) = {
+        let (is_down2, is_dragging, box_anchor, box_crossing, _vp_size, poly_drag, poly_crossing) = {
             let sel = self.tabs[i].scene.selection.borrow();
             (
                 sel.input.left_down,
@@ -6738,6 +6893,7 @@ impl OpenCADStudio {
                 sel.gesture.box_crossing,
                 sel.view.vp_size,
                 sel.gesture.poly_active,
+                sel.gesture.poly_crossing,
             )
         };
 
@@ -6789,7 +6945,20 @@ impl OpenCADStudio {
                             [world.x, world.y]
                         })
                         .collect::<Vec<_>>();
-                    Some((fence, None))
+                    let (min, max) = fence.iter().fold(
+                        (
+                            [f64::INFINITY, f64::INFINITY],
+                            [f64::NEG_INFINITY, f64::NEG_INFINITY],
+                        ),
+                        |(mut min, mut max), point| {
+                            min[0] = min[0].min(point[0]);
+                            min[1] = min[1].min(point[1]);
+                            max[0] = max[0].max(point[0]);
+                            max[1] = max[1].max(point[1]);
+                            (min, max)
+                        },
+                    );
+                    Some((fence, Some((min, max))))
                 } else if let Some(anchor) = box_anchor {
                     let points = [
                         anchor,
@@ -6825,7 +6994,7 @@ impl OpenCADStudio {
 
                 if let Some((fence, window)) = drag_geometry {
                     if self.tabs[i].active_cmd.is_none() {
-                        self.tabs[i].last_crossing_window = window.filter(|_| box_crossing);
+                        self.tabs[i].last_crossing_window = window.filter(|_| if poly_drag { poly_crossing } else { box_crossing });
                     }
                     let result = self.tabs[i].active_cmd.as_mut().and_then(|command| {
                         command.set_shift(self.shift_down);
@@ -6850,7 +7019,25 @@ impl OpenCADStudio {
                     }
                 }
 
-                if !poly_drag {
+                // A drag that starts inside a table cell picks the cells
+                // from there to the one under the release.
+                let cell_drag = box_anchor
+                    .filter(|_| self.tabs[i].active_cmd.is_none())
+                    .and_then(|a| {
+                        let end = self.cursor_model_point(i, &edit_cam, p, bounds);
+                        let (table, anchor) = self.table_cell_under(i, a, bounds, &edit_cam, 0.0)?;
+                        let (end_table, end) = self.tabs[i].scene.table_cell_pick(end, 0.0)?;
+                        (end_table == table).then_some(crate::scene::TableCellSelection {
+                            table,
+                            anchor,
+                            end,
+                        })
+                    });
+                if let Some(cells) = cell_drag {
+                    self.tabs[i].scene.select_table_cells(cells);
+                    self.refresh_properties();
+                    selection_just_completed = true;
+                } else if !poly_drag {
                     // PICKDRAG 1 (#226): the press-drag spanned a
                     // rectangle through the box machinery — complete
                     // it here on release.
@@ -6861,6 +7048,8 @@ impl OpenCADStudio {
                         // The drag gesture applies the selection filter as the click one does.
                         handles.retain(|&h| self.tabs[i].scene.passes_selection_filter(h));
                         self.filter_handles_reject_locked(i, &mut handles);
+                        let polygon = [a, Point::new(p.x, a.y), p, Point::new(a.x, p.y)];
+                        let marker_hit = is_gathering && self.select_command_marker_region(i, &edit_cam, bounds, &polygon, crossing, !selection_pick_add, !handles.is_empty());
                         let cand_ms = timing.candidates;
                         // Box/lasso accumulates like individual picks
                         // (issue #83): a plain box adds to the current
@@ -6872,7 +7061,7 @@ impl OpenCADStudio {
                         if self.shift_down || self.select_remove_mode {
                             self.tabs[i].scene.deselect_entities(&handles);
                         } else {
-                            if !selection_pick_add && !handles.is_empty() {
+                            if !selection_pick_add && (!handles.is_empty() || marker_hit) {
                                 self.tabs[i].scene.deselect_all();
                             }
                             self.tabs[i].scene.select_entities(&handles);
@@ -6921,6 +7110,7 @@ properties={:.1}ms picked={}",
                     );
                     handles.retain(|&h| self.tabs[i].scene.passes_selection_filter(h));
                     self.filter_handles_reject_locked(i, &mut handles);
+                    let marker_hit = is_gathering && self.select_command_marker_region(i, &edit_cam, bounds, &poly_pts, crossing, !selection_pick_add, !handles.is_empty());
                     // Accumulate like the box path (issue #83): plain
                     // lasso adds, Shift+lasso removes. An empty lasso
                     // leaves the current selection untouched so a stray
@@ -6935,7 +7125,7 @@ properties={:.1}ms picked={}",
                         // PICKADD 0 (#226): a plain marquee REPLACES
                         // the selection (empty results still leave it
                         // alone, matching the box rule).
-                        if !selection_pick_add && !handles.is_empty() {
+                        if !selection_pick_add && (!handles.is_empty() || marker_hit) {
                             self.tabs[i].scene.deselect_all();
                         }
                         self.tabs[i].scene.select_entities(&handles);
@@ -6953,6 +7143,34 @@ properties={:.1}ms picked={}",
                 sel.gesture.box_current = None;
             } else {
                 if box_anchor.is_none() {
+                    if is_gathering && is_click {
+                        let (view, eye) = match &edit_cam {
+                            Some(camera) => (camera.view_proj_rte(bounds), camera.eye()),
+                            None => {
+                                let camera = self.tabs[i].scene.camera.borrow();
+                                (camera.view_proj_rte(bounds), camera.eye())
+                            }
+                        };
+                        let context = crate::command::PointPickContext {
+                            view, eye, bounds,
+                            aperture_px: crate::ui::overlay::pick_box_aperture_px(self.pick_box),
+                        };
+                        let remove = self.shift_down || self.select_remove_mode;
+                        let tab = &mut self.tabs[i];
+                        let hit = tab.active_cmd.as_mut().and_then(|command|
+                            command.on_selection_marker_click(&tab.scene, p, context, remove, !selection_pick_add));
+                        if let Some(name) = hit {
+                            tab.scene.selection.borrow_mut().clear_left_selection_gesture();
+                            if !remove && !selection_pick_add {
+                                tab.scene.deselect_all();
+                            }
+                            self.command_line.push_info(&format!("{} {}", if remove { "−" } else { "+" }, name));
+                            if !remove && !selection_pick_add {
+                                return self.feed_command(crate::command::StepInput::SelectionComplete(Vec::new()));
+                            }
+                            return Task::none();
+                        }
+                    }
                     // A parametric-constraint glyph draws above its geometry
                     // and takes click priority over the entity beneath it.
                     let glyph_hit = (self.tabs[i].scene.current_layout == "Model")
@@ -6974,7 +7192,63 @@ properties={:.1}ms picked={}",
                         self.refresh_properties();
                         selection_just_completed = true;
                     }
-                    if glyph_hit.is_none() {
+                    // A click inside a table cell (clear of its grid lines)
+                    // picks the cell; Shift+click stretches the picked range.
+                    let mut cell_hit = false;
+                    if glyph_hit.is_none() && self.tabs[i].active_cmd.is_none() {
+                        let click_world = self.cursor_model_point(i, &edit_cam, p, bounds);
+                        let aperture = crate::ui::overlay::pick_box_aperture_px(self.pick_box);
+                        let edge = self.cursor_model_point(
+                            i,
+                            &edit_cam,
+                            iced::Point::new(p.x + aperture, p.y),
+                            bounds,
+                        );
+                        let margin = (edge - click_world).length();
+                        if let Some((table, cell)) =
+                            self.table_cell_under(i, p, bounds, &edit_cam, margin)
+                        {
+                            // A quick press-move-release across cells picks the
+                            // range between them.
+                            let released = self.tabs[i]
+                                .scene
+                                .selection
+                                .borrow()
+                                .input
+                                .last_move_pos
+                                .map(|last| iced::Point::new(last.x - tile_off.x, last.y - tile_off.y));
+                            let end = released
+                                .map(|last| self.cursor_model_point(i, &edit_cam, last, bounds))
+                                .and_then(|world| self.tabs[i].scene.table_cell_pick(world, 0.0))
+                                .filter(|(end_table, end)| *end_table == table && *end != cell)
+                                .map(|(_, end)| end);
+                            let cells = match self.tabs[i]
+                                .scene
+                                .table_cells
+                                .filter(|c| self.shift_down && c.table == table)
+                            {
+                                _ if end.is_some() => crate::scene::TableCellSelection {
+                                    table,
+                                    anchor: cell,
+                                    end: end.unwrap_or(cell),
+                                },
+                                Some(c) => crate::scene::TableCellSelection {
+                                    end: cell,
+                                    ..c
+                                },
+                                None => crate::scene::TableCellSelection {
+                                    table,
+                                    anchor: cell,
+                                    end: cell,
+                                },
+                            };
+                            self.tabs[i].scene.select_table_cells(cells);
+                            self.refresh_properties();
+                            selection_just_completed = true;
+                            cell_hit = true;
+                        }
+                    }
+                    if glyph_hit.is_none() && !cell_hit {
                         let (view_rot, eye, all_wires) = self.pick_view(i, &edit_cam, bounds);
                         let click_world = self.cursor_model_point(i, &edit_cam, p, bounds);
                         let t_arm = crate::perf::enabled().then(Instant::now);
@@ -7145,6 +7419,12 @@ properties={:.1}ms picked={}",
                                             self.tabs[i].scene.deselect_entity(handle);
                                         }
                                     } else {
+                                        if !selection_pick_add {
+                                            if let Some(command) = self.tabs[i].active_cmd.as_mut() {
+                                                command.clear_selection_markers();
+                                            }
+                                            self.tabs[i].last_crossing_window = None;
+                                        }
                                         self.tabs[i]
                                             .scene
                                             .select_entity(handle, !selection_pick_add);
@@ -7162,7 +7442,11 @@ properties={:.1}ms picked={}",
                                 // PICKADD 0 (#226): OS convention — the
                                 // empty click also drops the selection.
                                 if !selection_pick_add && !self.shift_down {
+                                    if let Some(command) = self.tabs[i].active_cmd.as_mut() {
+                                        command.clear_selection_markers();
+                                    }
                                     self.tabs[i].scene.deselect_all();
+                                    self.tabs[i].last_crossing_window = None;
                                     self.refresh_properties();
                                 }
                                 // Pin the anchor to the world point under it
@@ -7247,6 +7531,15 @@ was_selected={}",
                     }
 
                     let crossing = box_crossing;
+                    if self.tabs[i].active_cmd.is_none() {
+                        if !self.shift_down && !self.select_remove_mode {
+                            self.tabs[i].last_crossing_window = if crossing {
+                                Some((command_min, command_max))
+                            } else {
+                                None
+                            };
+                        }
+                    }
                     let (mut handles, timing) =
                         self.box_selection_handles(i, &edit_cam, bounds, a, p, crossing);
                     let (cand_ms, hit_ms) = (timing.candidates, timing.hit);
@@ -7256,6 +7549,8 @@ was_selected={}",
                     // Selection filter: keep only allowed types.
                     handles.retain(|&h| self.tabs[i].scene.passes_selection_filter(h));
                     self.filter_handles_reject_locked(i, &mut handles);
+                    let polygon = [a, Point::new(p.x, a.y), p, Point::new(a.x, p.y)];
+                    let marker_hit = is_gathering && self.select_command_marker_region(i, &edit_cam, bounds, &polygon, crossing, !selection_pick_add, !handles.is_empty());
                     let filter_ms = t_filter.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
                     let t_apply = crate::perf::enabled().then(Instant::now);
                     // Accumulate (issue #83): a plain box adds to the
@@ -7270,7 +7565,7 @@ was_selected={}",
                     if self.shift_down || self.select_remove_mode {
                         self.tabs[i].scene.deselect_entities(&handles);
                     } else {
-                        if !selection_pick_add && !handles.is_empty() {
+                        if !selection_pick_add && (!handles.is_empty() || marker_hit) {
                             self.tabs[i].scene.deselect_all();
                         }
                         self.tabs[i].scene.select_entities(&handles);
@@ -7353,170 +7648,8 @@ properties={:.1}ms picked={}",
                     width: vw,
                     height: vh,
                 };
-                let (view_rot, eye) = {
-                    let c = self.tabs[i].scene.camera.borrow();
-                    (c.view_proj_rte(bounds), c.eye())
-                };
-                let all_wires = self.tabs[i].scene.hit_test_wires();
-                let click_world = self.cursor_model_point(i, &edit_cam, p, bounds);
-                let click_candidates = self.tabs[i].scene.interaction_pick_candidates_near(
-                    all_wires,
-                    click_world,
-                    view_rot,
-                    eye,
-                    bounds,
-                    crate::ui::overlay::pick_box_aperture_px(self.pick_box) * 2.0,
-                );
-                let candidate_handles = self.tabs[i]
-                    .scene
-                    .interaction_candidate_handles(&click_candidates);
-                // Resolve the double-clicked object the way a single click
-                // picks it — its wire, then a hatch by its fill (a hatch has
-                // no boundary wire), then a block's hatch (its INSERT), or
-                // for a block/solid with no wire under the cursor its shaded
-                // body, which maps to the parent INSERT.
-                let hit = scene::pick::hit_test::click_hit(
-                    p,
-                    &click_candidates,
-                    view_rot,
-                    eye,
-                    bounds,
-                    self.tabs[i].scene.document.header.lineweight_display,
-                    crate::ui::overlay::pick_box_aperture_px(self.pick_box),
-                    &self.tabs[i].scene.draw_depth_map(),
-                )
-                .and_then(|s| Scene::handle_from_wire_name(s))
-                .or_else(|| {
-                    let hatches = self.tabs[i]
-                        .scene
-                        .visible_hatches_for_click(candidate_handles.as_ref());
-                    scene::pick::hit_test::click_hit_hatch(
-                        p,
-                        &hatches,
-                        view_rot,
-                        eye,
-                        bounds,
-                        candidate_handles.as_ref(),
-                    )
-                })
-                .or_else(|| {
-                    scene::pick::hit_test::click_hit_insert_hatch(
-                        p,
-                        self.tabs[i].scene.insert_hatches_for_click().as_ref(),
-                        view_rot,
-                        eye,
-                        bounds,
-                        candidate_handles.as_ref(),
-                    )
-                })
-                .or_else(|| {
-                    self.tabs[i].scene.solid_edge_click_hit(
-                        p,
-                        view_rot,
-                        eye,
-                        bounds,
-                        candidate_handles.as_ref(),
-                        crate::ui::overlay::pick_box_aperture_px(self.pick_box),
-                    )
-                });
-                if let Some(handle) = hit {
-                    // Locked layer: double-click must not open any editor
-                    // (text / attribute / in-place block edit).
-                    if let Some(layer) = self.tabs[i].scene.locked_layer_name(handle) {
-                        self.command_line.push_info(
-                            crate::tf!(
-                            "Object is on locked layer \"{layer}\" — unlock the layer to edit it."
-                        )
-                            .as_ref(),
-                        );
-                        return Task::none();
-                    }
-                    // Table double-click: shared TABLEDIT editor setup. A
-                    // grid miss returns NoCell and falls through to the
-                    // other text/entity editors below; an editable cell or
-                    // a locked cell (indicator armed, no editor) ends the
-                    // double-click handling here.
-                    if self.begin_table_cell_edit(i, handle, click_world)
-                        != crate::modules::annotate::table_cmd::TableCellEditStart::NoCell
-                    {
-                        return Task::none();
-                    }
-                    // A constraint dimension edits its parameter from the
-                    // command line, standing in for the reference's in-place
-                    // value editor.
-                    if let Some(prompt) = self.dynamic_dimension_value_command(i, handle) {
-                        use crate::command::CadCommand;
-                        self.command_line.push_info(&prompt.prompt());
-                        self.tabs[i].active_cmd = Some(Box::new(prompt));
-                        return Task::none();
-                    }
-                    // Any text-bearing entity opens its in-place editor
-                    // (plain box or rich MText editor, per type). A
-                    // Leader resolves to the entity it annotates.
-                    let is_editable_text = self.tabs[i]
-                        .scene
-                        .document
-                        .get_entity(handle)
-                        .is_some_and(|e| {
-                            crate::app::text_inline::read_text_field(e).is_some()
-                                || matches!(e, AcadEntityType::Leader(_))
-                        });
-                    if is_editable_text {
-                        return self.begin_text_edit(handle);
-                    }
-                    // A hatch starts HATCHEDIT on itself; selected, the
-                    // command skips its pick. (The reference program's
-                    // default double-click action for a hatch is Quick
-                    // Properties, but Properties already follows a single
-                    // click here, so the double-click edits.)
-                    if matches!(
-                        self.tabs[i].scene.document.get_entity(handle),
-                        Some(AcadEntityType::Hatch(_))
-                    ) {
-                        self.tabs[i].scene.deselect_all();
-                        self.tabs[i].scene.select_entity(handle, true);
-                        self.tabs[i].selected_handle = Some(handle);
-                        self.refresh_properties();
-                        return self.dispatch_command("HATCHEDIT");
-                    }
-                    // Double-clicking a block with attributes opens the
-                    // attribute editor (edit its values). For blocks without
-                    // attributes, Options > Drawing chooses BEDIT (default)
-                    // or in-place REFEDIT. (#136, #192, #261)
-                    let insert_has_attrs = matches!(
-                        self.tabs[i].scene.document.get_entity(handle),
-                        Some(AcadEntityType::Insert(ins)) if !ins.attributes.is_empty()
-                    );
-                    if insert_has_attrs
-                        && self.double_click_block_attedit
-                        && self.tabs[i].active_block_edit.is_none()
-                    {
-                        return Task::done(Message::AttrEditorOpen(handle));
-                    }
-                    let is_insert = matches!(
-                        self.tabs[i].scene.document.get_entity(handle),
-                        Some(AcadEntityType::Insert(_))
-                    );
-                    if is_insert && self.tabs[i].refedit_session.is_none() {
-                        if self.block_editor_preferences.locked && !self.double_click_block_refedit
-                        {
-                            self.tabs[i].scene.deselect_all();
-                            self.tabs[i].scene.select_entity(handle, true);
-                            self.tabs[i].selected_handle = Some(handle);
-                            self.refresh_properties();
-                            return self.dock_set_open(crate::ui::dock::PanelId::Properties, true);
-                        }
-                        let command = if self.double_click_block_refedit {
-                            "REFEDIT_BEGIN"
-                        } else {
-                            "BEDIT_BEGIN"
-                        };
-                        return Task::done(Message::Command(format!(
-                            "{}:{}",
-                            command,
-                            handle.value()
-                        )));
-                    }
+                if let Some(task) = self.double_click_edit(i, p, &edit_cam, bounds) {
+                    return task;
                 }
             }
         }
@@ -7551,6 +7684,23 @@ properties={:.1}ms picked={}",
                     height: vh,
                 };
 
+                // An object with an editor takes the double-click before the
+                // viewport it lies in, as in model space: a paper-space
+                // object, or in an active viewport a model object, picked
+                // through that viewport's view.
+                let edit_bounds = match edit_cam {
+                    Some(_) => iced::Rectangle {
+                        x: 0.0,
+                        y: 0.0,
+                        width: tile_vw,
+                        height: tile_vh,
+                    },
+                    None => bounds,
+                };
+                if let Some(task) = self.double_click_edit(i, p, &edit_cam, edit_bounds) {
+                    return task;
+                }
+
                 let (view_rot, eye) = {
                     let c = self.tabs[i].scene.camera.borrow();
                     (c.view_proj_rte(bounds), c.eye())
@@ -7579,35 +7729,8 @@ properties={:.1}ms picked={}",
                 )
                 .and_then(|s| Scene::handle_from_wire_name(s));
 
-                // In paper space, text editing takes precedence over entering MSPACE.
-                // This mirrors the model-space double-click behaviour.
-                if let Some(handle) = raw_wire_hit {
-                    let is_editable_text = self.tabs[i]
-                        .scene
-                        .document
-                        .get_entity(handle)
-                        .is_some_and(|entity| {
-                            crate::app::text_inline::read_text_field(entity).is_some()
-                                || matches!(entity, AcadEntityType::Leader(_))
-                        });
-
-                    if is_editable_text {
-                        if let Some(layer) = self.tabs[i].scene.locked_layer_name(handle) {
-                            self.command_line.push_info(
-                                crate::tf!(
-                                    "Object is on locked layer \"{layer}\" — unlock the layer to edit it."
-                                )
-                                .as_ref(),
-                            );
-                            return Task::none();
-                        }
-
-                        return self.begin_text_edit(handle);
-                    }
-                }
-
-                // If the double-click was not on editable text, keep the existing
-                // paper-space behaviour and try to enter the clicked viewport.
+                // Nothing with an editor was double-clicked: enter the
+                // clicked viewport.
                 let wire_hit: Option<codec::Handle> = raw_wire_hit.and_then(|h| {
                     if let Some(AcadEntityType::Viewport(vp)) =
                         self.tabs[i].scene.document.get_entity(h)
@@ -7661,6 +7784,186 @@ properties={:.1}ms picked={}",
         }
 
         Task::none()
+    }
+
+    /// What a double-click on an object opens: a table cell, a constraint
+    /// value, a text editor, HATCHEDIT, the attribute editor, or BEDIT /
+    /// REFEDIT for a block. `None` when nothing under the cursor has an
+    /// editor. Shared by model space, paper space and a viewport's model
+    /// space, which picks through the viewport's own view.
+    fn double_click_edit(
+        &mut self,
+        i: usize,
+        p: Point,
+        edit_cam: &Option<crate::scene::view::camera::Camera>,
+        bounds: iced::Rectangle,
+    ) -> Option<Task<Message>> {
+        let (view_rot, eye, all_wires) = self.pick_view(i, edit_cam, bounds);
+        let click_world = self.cursor_model_point(i, edit_cam, p, bounds);
+        let click_candidates = self.tabs[i].scene.interaction_pick_candidates_near(
+            all_wires,
+            click_world,
+            view_rot,
+            eye,
+            bounds,
+            crate::ui::overlay::pick_box_aperture_px(self.pick_box) * 2.0,
+        );
+        let candidate_handles = self.tabs[i]
+            .scene
+            .interaction_candidate_handles(&click_candidates);
+        // Resolve the double-clicked object the way a single click
+        // picks it — its wire, then a hatch by its fill (a hatch has
+        // no boundary wire), then a block's hatch (its INSERT), or
+        // for a block/solid with no wire under the cursor its shaded
+        // body, which maps to the parent INSERT.
+        let hit = scene::pick::hit_test::click_hit(
+            p,
+            &click_candidates,
+            view_rot,
+            eye,
+            bounds,
+            self.tabs[i].scene.document.header.lineweight_display,
+            crate::ui::overlay::pick_box_aperture_px(self.pick_box),
+            &self.tabs[i].scene.draw_depth_map(),
+        )
+        .and_then(|s| Scene::handle_from_wire_name(s))
+        .or_else(|| {
+            let hatches = self.tabs[i]
+                .scene
+                .visible_hatches_for_click(candidate_handles.as_ref());
+            scene::pick::hit_test::click_hit_hatch(
+                p,
+                &hatches,
+                view_rot,
+                eye,
+                bounds,
+                candidate_handles.as_ref(),
+            )
+        })
+        .or_else(|| {
+            scene::pick::hit_test::click_hit_insert_hatch(
+                p,
+                self.tabs[i].scene.insert_hatches_for_click().as_ref(),
+                view_rot,
+                eye,
+                bounds,
+                candidate_handles.as_ref(),
+            )
+        })
+        .or_else(|| {
+            self.tabs[i].scene.solid_edge_click_hit(
+                p,
+                view_rot,
+                eye,
+                bounds,
+                candidate_handles.as_ref(),
+                crate::ui::overlay::pick_box_aperture_px(self.pick_box),
+            )
+        })
+        // Inside an empty table cell nothing is drawn to hit: the
+        // cell under the cursor takes the double-click.
+        .or_else(|| {
+            self.tabs[i]
+                .scene
+                .table_cell_pick(click_world, 0.0)
+                .map(|(table, _)| table)
+        });
+        let handle = hit?;
+        // Locked layer: double-click must not open any editor
+        // (text / attribute / in-place block edit).
+        if let Some(layer) = self.tabs[i].scene.locked_layer_name(handle) {
+            self.command_line.push_info(
+                crate::tf!("Object is on locked layer \"{layer}\" — unlock the layer to edit it.")
+                    .as_ref(),
+            );
+            return Some(Task::none());
+        }
+        // Table double-click: shared TABLEDIT editor setup. A
+        // grid miss returns NoCell and falls through to the
+        // other text/entity editors below; an editable cell or
+        // a locked cell (indicator armed, no editor) ends the
+        // double-click handling here.
+        if self.begin_table_cell_edit(i, handle, click_world)
+            != crate::modules::annotate::table_cmd::TableCellEditStart::NoCell
+        {
+            return Some(Task::none());
+        }
+        // A constraint dimension edits its parameter from the
+        // command line, standing in for the reference's in-place
+        // value editor.
+        if let Some(prompt) = self.dynamic_dimension_value_command(i, handle) {
+            use crate::command::CadCommand;
+            self.command_line.push_info(&prompt.prompt());
+            self.tabs[i].active_cmd = Some(Box::new(prompt));
+            return Some(Task::none());
+        }
+        // Any text-bearing entity opens its in-place editor
+        // (plain box or rich MText editor, per type). A
+        // Leader resolves to the entity it annotates.
+        let is_editable_text = self.tabs[i]
+            .scene
+            .document
+            .get_entity(handle)
+            .is_some_and(|e| {
+                crate::app::text_inline::read_text_field(e).is_some()
+                    || matches!(e, AcadEntityType::Leader(_))
+            });
+        if is_editable_text {
+            return Some(self.begin_text_edit(handle));
+        }
+        // A hatch starts HATCHEDIT on itself; selected, the
+        // command skips its pick. (The reference program's
+        // default double-click action for a hatch is Quick
+        // Properties, but Properties already follows a single
+        // click here, so the double-click edits.)
+        if matches!(
+            self.tabs[i].scene.document.get_entity(handle),
+            Some(AcadEntityType::Hatch(_))
+        ) {
+            self.tabs[i].scene.deselect_all();
+            self.tabs[i].scene.select_entity(handle, true);
+            self.tabs[i].selected_handle = Some(handle);
+            self.refresh_properties();
+            return Some(self.dispatch_command("HATCHEDIT"));
+        }
+        // Double-clicking a block with attributes opens the
+        // attribute editor (edit its values). For blocks without
+        // attributes, Options > Drawing chooses BEDIT (default)
+        // or in-place REFEDIT. (#136, #192, #261)
+        let insert_has_attrs = matches!(
+            self.tabs[i].scene.document.get_entity(handle),
+            Some(AcadEntityType::Insert(ins)) if !ins.attributes.is_empty()
+        );
+        if insert_has_attrs
+            && self.double_click_block_attedit
+            && self.tabs[i].active_block_edit.is_none()
+        {
+            return Some(Task::done(Message::AttrEditorOpen(handle)));
+        }
+        let is_insert = matches!(
+            self.tabs[i].scene.document.get_entity(handle),
+            Some(AcadEntityType::Insert(_))
+        );
+        if is_insert && self.tabs[i].refedit_session.is_none() {
+            if self.block_editor_preferences.locked && !self.double_click_block_refedit {
+                self.tabs[i].scene.deselect_all();
+                self.tabs[i].scene.select_entity(handle, true);
+                self.tabs[i].selected_handle = Some(handle);
+                self.refresh_properties();
+                return Some(self.dock_set_open(crate::ui::dock::PanelId::Properties, true));
+            }
+            let command = if self.double_click_block_refedit {
+                "REFEDIT_BEGIN"
+            } else {
+                "BEDIT_BEGIN"
+            };
+            return Some(Task::done(Message::Command(format!(
+                "{}:{}",
+                command,
+                handle.value()
+            ))));
+        }
+        None
     }
 
     /// Remove cursor-derived highlights and cancel a queued rollover pick before
@@ -8180,6 +8483,43 @@ properties={:.1}ms picked={}",
             self.hover_dwell = None;
             return Task::none();
         }
+        // While the quad's own hover dwell is counting with no quad open
+        // (its configured delay is beyond the rollover's), re-running the
+        // whole settled pick below would repeat identically: none of its
+        // inputs moved since the last completed pick. Skip the O(N) sweep
+        // and only drive the quad step / re-arm (docs/quad-menu.md §3.4) —
+        // the sweep re-runs as soon as the cursor (move count) or a scene /
+        // camera pick token changed.
+        if self.quad_hover_counting() && self.tabs[i].active_cmd.is_none() {
+            let unchanged = self.quad_dwell_pick.as_ref().is_some_and(|pick| {
+                pick.tab == i
+                    && pick.point == dwell.point
+                    && pick.move_seq == self.hover_move_seq
+                    && pick.geometry_epoch == self.tabs[i].scene.geometry_epoch
+                    && pick.camera_generation == self.tabs[i].scene.camera_generation
+                    && pick.selection_preview == self.model_space.selection_preview
+                    && pick.pick_box == self.pick_box
+            });
+            if unchanged {
+                let rest = dwell.last_move_at.elapsed().as_millis() as u64;
+                self.quad_hover_step(i, dwell.point, rest);
+                // The settled pick's re-arm discipline when it leaves the
+                // dwell counting, applied here too: keep polling at the
+                // rollover cadence until the quad opened or the rest
+                // disqualified (a further move re-arms from the move).
+                if self.quad_hover_counting() {
+                    self.hover_dwell = Some(crate::app::HoverDwell {
+                        last_move_at: Instant::now(),
+                        point: dwell.point,
+                        tile_size: dwell.tile_size,
+                        tab: dwell.tab,
+                    });
+                } else {
+                    self.hover_dwell = None;
+                }
+                return Task::none();
+            }
+        }
         self.push_ucs_to_cmd(i);
         if let Some(command) = self.tabs[i].active_cmd.as_mut() {
             command.set_ctrl(self.ctrl_down);
@@ -8380,7 +8720,43 @@ properties={:.1}ms picked={}",
         } else {
             self.tabs[i].scene.set_hover_highlight(None);
         }
-        self.hover_dwell = None;
+        // Record what this settled pick saw so this tick's quad poll can
+        // skip an identical repetition while the cursor rests (see the skip
+        // gate at the top; the tokens are the pick's own inputs).
+        self.quad_dwell_pick = Some(crate::app::QuadDwellPick {
+            tab: i,
+            point: p,
+            move_seq: self.hover_move_seq,
+            geometry_epoch: self.tabs[i].scene.geometry_epoch,
+            camera_generation: self.tabs[i].scene.camera_generation,
+            selection_preview: self.model_space.selection_preview,
+            pick_box: self.pick_box,
+        });
+        // The quad cursor menu's hover dwell (docs/quad-menu.md §3.4) feeds
+        // off this authoritative settled pick: `rest_ms` is how long the
+        // cursor has been resting, so a dwell that already crossed the
+        // configured delay opens the quad at once. While the quad's own
+        // delay is still counting, the tick re-arms itself — a cursor that
+        // rests forever generates no move events, and without the re-arm a
+        // delay beyond this tick would never be crossed.
+        self.quad_hover_step(
+            i,
+            p,
+            dwell.last_move_at.elapsed().as_millis() as u64,
+        );
+        if self.quad_hover_counting() {
+            // Restart the dwell clock so polling happens at the original
+            // rollover cadence (a tick every HOVER_DWELL_MS), not every
+            // frame; a cancellation on the next move re-arms from the move.
+            self.hover_dwell = Some(crate::app::HoverDwell {
+                last_move_at: Instant::now(),
+                point: dwell.point,
+                tile_size: dwell.tile_size,
+                tab: dwell.tab,
+            });
+        } else {
+            self.hover_dwell = None;
+        }
         let hover_ms = hover_started.elapsed().as_secs_f64() * 1000.0;
         if perf && hover_ms >= 5.0 {
             crate::perf_record!(
@@ -8989,6 +9365,36 @@ properties={:.1}ms picked={}",
                 .into_iter()
                 .map(|handle| (handle, crate::scene::ChangeKind::Modified))
                 .collect();
+            let rebuilds_table = changes.iter().any(|(handle, _)| {
+                matches!(self.tabs[i].scene.document.get_entity(*handle),
+                    Some(codec::EntityType::Table(table)) if table.block_record_handle.is_none())
+            });
+            if rebuilds_table {
+                // Picture rebuilds replace block members, possibly adding a
+                // private block. Record structure and removed/added entities,
+                // starting with the drag originals, as one history entry.
+                let mut edited = Vec::new();
+                for (handle, original) in &originals {
+                    if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(*handle) {
+                        edited.push((*handle, std::mem::replace(entity, original.clone())));
+                    }
+                }
+                let mut edited_objects = Vec::new();
+                for (handle, original) in history_originals.iter().flat_map(|(_, objects)| objects)
+                {
+                    if let Some(object) = self.tabs[i].scene.document.objects.get_mut(handle) {
+                        edited_objects.push((*handle, std::mem::replace(object, original.clone())));
+                    }
+                }
+                self.tabs[i].dirty = dirty_before;
+                self.push_undo_snapshot(i, "GRIP");
+                for (handle, entity) in edited {
+                    *self.tabs[i].scene.document.get_entity_mut(handle).unwrap() = entity;
+                }
+                for (handle, object) in edited_objects {
+                    self.tabs[i].scene.document.objects.insert(handle, object);
+                }
+            }
             // Dimensions that follow the edited shapes update here; record
             // them so the one undo also brings back their saved pictures.
             self.tabs[i].scene.begin_undo_recording();
@@ -9045,7 +9451,12 @@ properties={:.1}ms picked={}",
                         }
                     }
                 }
-                self.push_entity_group_history(i, "GRIP", before, object_before, dirty_before);
+                if rebuilds_table {
+                    self.tabs[i].dirty = true;
+                    self.finish_pending_history(i);
+                } else {
+                    self.push_entity_group_history(i, "GRIP", before, object_before, dirty_before);
+                }
                 self.tabs[i].dirty = true;
             }
         }
@@ -9116,6 +9527,9 @@ properties={:.1}ms picked={}",
         Task::none()
     }
 }
+
+#[cfg(test)]
+mod table_grip_picture_tests;
 
 #[cfg(test)]
 mod hatch_double_click_tests {
@@ -10910,6 +11324,75 @@ mod selection_preview_tests {
         assert!(
             !rollover_hits(2),
             "only the in-command bit: the idle rollover stays off",
+        );
+    }
+
+    /// The quad's own dwell poll (docs/quad-menu.md §3.4): with the quad's
+    /// delay beyond the rollover cadence, the re-armed `HoverDwellTick`s
+    /// must not re-run the full O(N) settled pick while cursor and scene
+    /// rest — and must re-run it once the cursor moved again, even away and
+    /// back to the same point.
+    #[test]
+    fn quad_hover_poll_skips_the_settled_pick_while_resting() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        app.tabs[i].scene.selection.borrow_mut().view.vp_size = (800.0, 600.0);
+        let _ = app.run_command_line("LINE 0,0 10,10");
+        let _ = app.run_command_line("ZOOM EXTENTS");
+        app.quad = true;
+        app.quad_hover_delay_ms = 700; // past HOVER_DWELL_MS: the poll continues
+        app.hover_dwell = Some(HoverDwell {
+            last_move_at: Instant::now()
+                - std::time::Duration::from_millis(HOVER_DWELL_MS as u64 + 1),
+            point: iced::Point::new(400.0, 300.0),
+            tile_size: (800.0, 600.0),
+            tab: i,
+        });
+        // The first tick picks (the line under the cursor is highlighted)
+        // and arms the quad dwell — rest 501 < 700, so the quad is waiting.
+        let _ = app.on_hover_dwell_tick();
+        assert!(
+            app.tabs[i].scene.hover_highlight.is_some(),
+            "the first settled pick ran and highlighted the line"
+        );
+        assert!(
+            app.quad_hover_counting(),
+            "the quad dwell is still counting"
+        );
+        assert!(app.quad_dwell_pick.is_some(), "the settled pick is recorded");
+
+        // A repeat with nothing changed must not re-pick: a highlight
+        // dropped by hand stays dropped (a re-pick would restore it), and
+        // the disqualified counting dwell tears down like the settled tail.
+        app.tabs[i].scene.set_hover_highlight(None);
+        app.hover_dwell.as_mut().unwrap().last_move_at = Instant::now()
+            - std::time::Duration::from_millis(HOVER_DWELL_MS as u64 + 1);
+        let _ = app.on_hover_dwell_tick();
+        assert!(
+            app.tabs[i].scene.hover_highlight.is_none(),
+            "the resting poll skipped the settled pick"
+        );
+        assert!(
+            app.quad_hover_since.is_none(),
+            "the skipped tick disqualified the counting dwell with the highlight"
+        );
+
+        // A cursor move back onto the same point (the move count changed)
+        // re-runs the pick: the line is highlighted again.
+        app.quad_hover_since = Some(std::time::Instant::now());
+        app.hover_move_seq += 1;
+        app.hover_dwell = Some(HoverDwell {
+            last_move_at: Instant::now()
+                - std::time::Duration::from_millis(HOVER_DWELL_MS as u64 + 1),
+            point: iced::Point::new(400.0, 300.0),
+            tile_size: (800.0, 600.0),
+            tab: i,
+        });
+        let _ = app.on_hover_dwell_tick();
+        assert!(
+            app.tabs[i].scene.hover_highlight.is_some(),
+            "a moved cursor re-runs the settled pick"
         );
     }
 

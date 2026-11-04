@@ -2500,7 +2500,7 @@ common =
     .sectionplane-specify-through-point = SECTIONPLANE  Chỉ định điểm đi qua:
     .setbylayer-no-properties-required-changes = SETBYLAYER: không cần thay đổi thuộc tính nào.
     .setbylayer-reset-entity-entities-to-bylayer = SETBYLAYER: đã đặt lại __ocs_fmt_0__ đối tượng về ByLayer.
-    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE ((chỉ đọc))
+    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION QUAD QUADWIDTH QUADCOMMANDLAUNCH CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE ((chỉ đọc))
     .shell-supports-rectangular-boxes-circular-cylinders-and-spheres = SHELL hỗ trợ các hộp hình chữ nhật, hình trụ tròn và hình cầu.
     .shell-solid-updated = SHELL: đã cập nhật khối rắn.
     .splinedit-fit-data-add-delete-move-purge-tangents-exit-exit = SPLINEDIT  Điểm khớp [Thêm/Xóa/Di chuyển/Purge/Tiếp tuyến/eXit] <eXit>:
@@ -3582,6 +3582,9 @@ layers =
     .layiso-isolated-layer-s = LAYISO: đã cô lập __ocs_fmt_0__ lớp.
     .layuniso-no-layers-were-isolated-by-layiso = LAYUNISO: không có lớp nào được cô lập bằng LAYISO.
     .laymatch-select-objects-to-change-layer = LAYMATCH Chọn đối tượng cần thay đổi lớp:
+    .copytolayer-base = Specify base point or [Displacement/eXit] <eXit>:
+    .copytolayer-second = Specify second point of displacement or <use first point as displacement>:
+    .copytolayer-displacement = Specify displacement <0.0000,0.0000,0.0000>:
     .copytolayer-select-objects-to-copy = COPYTOLAYER  Chọn đối tượng cần sao chép:
     .copytolayer-select-an-object-on-the-destination-layer = COPYTOLAYER  Chọn một đối tượng trên lớp đích:
     .laymatch-select-source-object-to-match-layer-f = LAYMATCH  Chọn đối tượng nguồn để lấy lớp:
@@ -3603,6 +3606,7 @@ layers =
     .layer-s-frozen = (Các) lớp bị đóng băng.
     .layer-s-locked = (Các) lớp đã bị khóa.
     .layer-s-turned-off = (Các) lớp đã tắt.
+    .layoff-select-object-on-layer-undo = LAYOFF  Chọn một đối tượng trên lớp cần tắt hoặc [Undo]:
     .layer-s-unlocked = (Các) lớp đã được mở khóa.
     .layers = Lớp: __ocs_fmt_0__
     .lock = Khóa
@@ -3980,6 +3984,84 @@ annotate =
     .text-specify-rotation-angle = TEXT Chỉ định góc quay <__ocs_fmt_0__>:
     .text-specify-second-endpoint = TEXT Chỉ định điểm cuối thứ hai:
     .tolerance-specify-insertion-point = TOLERANCE Xác định điểm chèn:
+    .tcell-row-above =
+        Chèn hàng
+        phía trên
+    .tcell-row-below =
+        Chèn hàng
+        phía dưới
+    .tcell-delete-rows =
+        Xóa
+        hàng
+    .tcell-col-left =
+        Chèn cột
+        bên trái
+    .tcell-col-right =
+        Chèn cột
+        bên phải
+    .tcell-delete-cols =
+        Xóa
+        cột
+    .tcell-merge =
+        Gộp
+        ô
+    .tcell-unmerge =
+        Tách
+        ô
+    .tcell-lock =
+        Khóa
+        ô
+    .tcell-edit =
+        Sửa
+        văn bản
+    .tcell-match =
+        Khớp
+        ô
+    .tcell-borders =
+        Viền
+        ô
+    .tcell-format =
+        Định dạng
+        dữ liệu
+    .tcell-block =
+        Chèn
+        khối
+    .tcell-field =
+        Chèn
+        trường
+    .tcell-contents =
+        Quản lý
+        nội dung ô
+    .tcell-link =
+        Liên kết
+        ô
+    .tcell-download =
+        Tải xuống
+        từ nguồn
+    .tcell-row-style = Kiểu hàng
+    .tcell-column-style = Kiểu cột
+    .tcell-width = Chiều rộng ô
+    .tcell-height = Chiều cao ô
+    .tcell-border-color = Màu viền
+    .tcell-border-lineweight = Độ dày nét viền
+    .tcell-border-linetype = Kiểu đường viền
+    .tcell-locking = Khóa ô
+    .tcell-data-link = Liên kết dữ liệu ô
+    .tcell-select-destination = Chọn ô đích:
+    .tcell-select-cell = Chọn ô bảng:
+    .tcell-range-first = Chọn góc thứ nhất của vùng ô bảng:
+    .tcell-range-second = Chọn góc thứ hai của vùng ô bảng:
+    .tcell-align-prompt = Nhập căn chỉnh ô [TL/TC/TR/ML/MC/MR/BL/BC/BR]:
+    .tcell-format-prompt = Nhập định dạng dữ liệu [Angle/Currency/Date/Decimal/General/Percentage/Point/Text/Whole]:
+    .tcell-block-prompt = Nhập tên khối hoặc [?]:
+    .tcell-formula-prompt = Nhập công thức [Sum/Average/Count/Cell/Equation]:
+    .tcell-by-row-column = Theo hàng/cột
+    .tcell-unlocked = Không khóa
+    .tcell-content-locked = Khóa nội dung
+    .tcell-format-locked = Khóa định dạng
+    .tcell-content-format-locked = Khóa nội dung và định dạng
+    .tcell-not-linked = Chưa liên kết
+    .tcell-invalid-cell = Ô không hợp lệ.
 
 insert =
     .pastespec-specify-insertion-point = PASTESPEC Chỉ định điểm chèn:
@@ -4592,6 +4674,7 @@ insert =
     .field-help = Chèn một trường: văn bản cập nhật từ bản vẽ, ngày tháng hoặc nguồn khác.
     .field-average = Trung bình
     .field-sum = Tổng
+    .field-insert = Chèn trường
     .field-object-name = Tên đối tượng
     .field-block-placeholder = Chỗ giữ chỗ của khối
     .field-block-editor-only = Chỉ có thể truy cập trong trình chỉnh sửa khối
@@ -5495,6 +5578,9 @@ properties =
     .fit-tolerance-sentence-case = Dung sai khớp
     .fit-smooth-title-case = Khớp/Làm trơn
     .fit-smooth-sentence-case = Khớp/làm trơn
+    .fit-curve-fit = Curve fit
+    .fit-quadratic = Quadratic
+    .fit-cubic = Cubic
     .fixed-elevation-range = Phạm vi độ cao cố định
     .flag = Cờ
     .flags = Cờ
@@ -5886,6 +5972,7 @@ properties =
     .wizard-flag = Cờ trình hướng dẫn
     .x-scale = Tỷ lệ X
     .zero = Số không
+    .transparency-color = Transparency Color
 
     .model-text-height = Chiều cao chữ trong mô hình
     .insert-unit-scale-is-outside-the-supported-range = Tỷ lệ đơn vị INSERT nằm ngoài phạm vi được hỗ trợ.
@@ -6577,6 +6664,7 @@ dimstyle =
     .move-text-outside-first = Di chuyển văn bản ra bên ngoài trước
     .period = Dấu chấm
     .space = Dấu cách
+    .separator-none = (Không có)
     .surveyors-units = Các đơn vị khảo sát
 
 style-manager =
@@ -6619,6 +6707,14 @@ style-manager =
     .inside-blocks = __ocs_fmt_0__ trong số đó nằm trong __ocs_fmt_1__ định nghĩa khối.
     .used-by-one-text = được 1 chữ dùng
     .used-by-texts = được __ocs_fmt_0__ chữ dùng
+    .property-change = __ocs_fmt_0__: __ocs_fmt_1__ → __ocs_fmt_2__.
+    .property-change-other = Other stored settings of the style change.
+    .annotative-change-note = Existing texts keep their own setting; new texts take this one.
+    .style-redraw-one = 1 text that uses the style is redrawn; formatting set inside MTEXT stays.
+    .style-redraw-many = __ocs_fmt_0__ texts that use the style are redrawn; formatting set inside MTEXT stays.
+    .apply-count-one = 1 style, 1 property
+    .apply-count-one-style = 1 style, __ocs_fmt_0__ properties
+    .apply-count-many = __ocs_fmt_0__ styles, __ocs_fmt_1__ properties
     .import-styles = Nhập kiểu
     .select-drawing-to-import-styles-from = Chọn bản vẽ để nhập kiểu
     .select-the-styles-to-import = Chọn các kiểu cần nhập
@@ -6917,6 +7013,7 @@ selection-report =
     .found-duplicate-total = Tìm thấy __ocs_fmt_0__ (__ocs_fmt_1__ trùng), tổng __ocs_fmt_2__
     .found-removed-total = Tìm thấy __ocs_fmt_0__, đã bỏ __ocs_fmt_1__, tổng __ocs_fmt_2__
     .invalid-window = Invalid window specification.
+    .no-object = No object found
 
 block-def =
     .name-too-short = Tên phải dài ít nhất một ký tự.
@@ -7187,6 +7284,7 @@ dgn-import =
     .dgn-import = Nhập DGN
     .import-dgn-file = Nhập tệp DGN
     .import-wmf = Nhập WMF
+    .import-svg = Nhập SVG
     .help-dgn = Nhập mô hình DGN thành các đối tượng bản vẽ: level thành lớp, cell thành khối.
     .help-import = Nhập một tệp thuộc định dạng đã chọn bằng trình nhập của định dạng đó.
     .blank = Tên tệp không được để trống
@@ -8119,3 +8217,332 @@ array-grips = Số mục
 block-chain =
     .label = Hành động nối tiếp
     .cycle = Chuỗi hành động của khối chứa vòng lặp.
+
+block-action-bars =
+    .requires-session = BACTIONBAR yêu cầu một phiên trình chỉnh sửa khối đang hoạt động.
+    .enable-display = Đặt BACTIONBARMODE thành 1 để hiển thị các thanh hành động.
+    .parameters-changed = Danh sách tham số đã thay đổi; hãy khởi động lại BACTIONBAR.
+    .display-updated = Đã cập nhật hiển thị thanh hành động.
+    .prompt-mode = BACTIONBAR  [Show/Hide/Reset]:
+    .prompt-selected = BACTIONBAR  Chọn tham số, nhập tên hoặc [All] <Đã chọn>:
+    .prompt-all = BACTIONBAR  Chọn tham số, nhập tên hoặc [All] <All>:
+    .choose-mode = Chọn Show, Hide hoặc Reset.
+    .unique-parameter = Nhập tên tham số duy nhất, chọn điểm cuối của nó hoặc chọn All.
+    .enter-parameter = Nhập tên tham số hoặc chọn All.
+    .pick-endpoint = Chọn điểm cuối tham số hoặc chọn All.
+
+block-construction =
+    .requires-session = BCONSTRUCTION chỉ khả dụng trong trình chỉnh sửa khối.
+    .choose-operation = Chọn Convert, Revert, Show hoặc Hide.
+    .stale-session = Phiên trình chỉnh sửa khối của hình học dựng không còn hoạt động.
+    .changed-count = Đã thay đổi __ocs_fmt_0__ đối tượng hình học.
+    .prompt-selection = BCONSTRUCTION  Chọn hình học hoặc [Convert/Revert/Show/Hide]:
+    .prompt-operation = BCONSTRUCTION  Chọn [Convert/Revert] <Convert>, hoặc nhấn Enter để áp dụng thao tác đã chọn:
+    .revert = Hoàn nguyên
+    .history = Chỉnh sửa hình học dựng
+    .unsupported-record = Bản ghi hình học dựng này có phiên bản hoặc giá trị không được hỗ trợ.
+    .open-definition = Mở định nghĩa khối trước khi chỉnh sửa hình học dựng.
+    .missing-object = Một đối tượng hình học dựng đã chọn không còn khả dụng.
+    .active-geometry = Chọn hình học trong định nghĩa khối đang hoạt động.
+    .locked-layer = Không thể thay đổi hình học dựng trên lớp bị khóa.
+    .revert-layer = Chọn một lớp hiện có không bị khóa cho hình học được hoàn nguyên.
+
+block-authoring-history =
+    .alignment-type = Kiểu căn chỉnh
+    .action-override = Chỉnh sửa ghi đè hành động khối
+    .action-chain = Chỉnh sửa chuỗi hành động khối
+    .action-base = Chỉnh sửa điểm gốc hành động khối
+    .parameter-chain = BEDIT Nối chuỗi hành động tham số
+    .value-set = BEDIT Tập giá trị tham số
+    .parameter-metadata = Chỉnh sửa siêu dữ liệu tham số khối
+    .authoring-grip = Điểm nắm tạo khối
+
+block-operation-history =
+    .reset-references = Đặt lại tham chiếu khối
+    .associate-action = Liên kết hành động khối
+    .action-selection = Tập lựa chọn hành động
+    .test-parameter = Tham số khối thử nghiệm
+    .reference-parameter = Tham số tham chiếu khối
+    .align-reference = Căn chỉnh tham chiếu khối
+    .insertion-grip-order = Đổi thứ tự điểm nắm chèn
+    .move-grip = Di chuyển điểm nắm gốc của khối
+    .configure-grips = Cấu hình điểm nắm tham số khối
+    .lookup-tables = Bảng tra cứu
+    .hyperlink = Siêu liên kết khối
+    .properties = Thuộc tính khối
+    .properties-table = Bảng thuộc tính khối
+    .visibility-state = Trạng thái hiển thị
+    .visibility-states = Các trạng thái hiển thị
+
+block-formatted-history =
+    .action = Hành động { $label }
+    .parameter = Tham số { $label }
+    .edit-block = Chỉnh sửa khối { $label }
+    .save-block = Lưu khối thành { $label }
+    .delete-block = Xóa khối { $label }
+
+block-history-kinds =
+    .flip = Lật
+    .polar-stretch = Kéo giãn cực
+    .basepoint = Điểm gốc
+    .lookup = Tra cứu
+
+block-action-properties =
+    .base-point = Điểm gốc hành động
+    .overrides = Ghi đè hành động
+    .multiplier = Hệ số khoảng cách
+    .angle-offset = Độ lệch góc (độ)
+    .chain = Chuỗi hành động
+    .chain-to = Nối với
+
+block-parameter-properties =
+    .show-properties = Hiển thị trong thuộc tính
+    .parameter-name = Tên tham số
+    .grip-count = Số điểm nắm
+    .dependent-base = Điểm gốc phụ thuộc
+    .offset-x = Độ lệch gốc X
+    .offset-y = Độ lệch gốc Y
+    .base-grip = Vị trí điểm nắm gốc
+    .end-grip = Vị trí điểm nắm cuối
+    .x-grip = Vị trí điểm nắm X
+    .y-grip = Vị trí điểm nắm Y
+
+block-value-set =
+    .use-min = Dùng giá trị tối thiểu của { $label }
+    .use-max = Dùng giá trị tối đa của { $label }
+    .use-increment = Dùng bước tăng của { $label }
+    .use-list = Dùng danh sách giá trị cho phép của { $label }
+    .min = Giá trị tối thiểu của { $label }
+    .max = Giá trị tối đa của { $label }
+    .increment = Bước tăng của { $label }
+    .values = Giá trị cho phép của { $label }
+    .title = Tập giá trị
+    .x-distance = Khoảng cách X
+    .y-distance = Khoảng cách Y
+
+table-style-cells =
+    .tbl-start-from-style = Bắt đầu từ kiểu bảng
+    .tbl-extra-columns = Cột bổ sung
+    .tbl-extra-rows = Hàng bổ sung
+    .tbl-keep-from-template = Giữ lại từ bảng ban đầu:
+    .tbl-keep-label-text = Văn bản ô nhãn
+    .tbl-keep-data-text = Văn bản ô dữ liệu
+    .tbl-keep-overrides = Ghi đè kiểu ô
+    .tbl-keep-links = Liên kết dữ liệu
+    .tbl-keep-fields = Trường
+    .tbl-keep-formulas = Công thức
+    .tbl-extra-whole = Số hàng và cột bổ sung phải là số nguyên.
+    .from-style-insertion = __ocs_arg_n__  Chỉ định điểm chèn hoặc [Style/Rows/Columns/Options]:
+    .from-style-name = __ocs_arg_n__  Nhập tên kiểu bảng hoặc [?] <__ocs_arg_style__>:
+    .from-style-rows = __ocs_arg_n__  Nhập số hàng bổ sung <__ocs_arg_rows__>:
+    .from-style-columns = __ocs_arg_n__  Nhập số cột bổ sung <__ocs_arg_columns__>:
+    .from-style-options = __ocs_arg_n__  Nhập tùy chọn chèn [Label text/Data text/Formulas/fIelds/data liNks/Blocks/cell style Overrides] <exit>:
+    .from-style-option = __ocs_arg_n__  Đưa __ocs_arg_what__ vào bảng được chèn? [Yes/No] <__ocs_arg_current__>:
+    .label-text = văn bản nhãn
+    .data-text = văn bản dữ liệu
+    .formulas = công thức
+    .fields = trường
+    .data-links = liên kết dữ liệu
+    .blocks = khối
+    .cell-style-overrides = ghi đè kiểu ô
+    .style-name-header = Tên kiểu bảng
+    .no-starting-table = Kiểu bảng không chứa bảng nào.
+    .select-table = Chọn một bảng:
+    .not-a-table = Đối tượng không phải là bảng.
+    .cell-style-exists = Đã tồn tại kiểu ô có tên này.
+    .cell-style-in-use = Kiểu ô đang được sử dụng và không thể xóa.
+    .template-size = __ocs_arg_rows__ hàng × __ocs_arg_columns__ cột
+    .cell-properties = Thuộc tính ô
+    .cell-text = Văn bản ô
+    .cell-borders = Viền ô
+    .cell-styles = Kiểu ô
+    .label = Nhãn
+    .margins = Lề
+    .merge-on-create = Gộp ô khi tạo hàng/cột
+    .new-from-this = Tạo mới từ kiểu này
+    .new-name = Tên mới
+    .real-number = Số thực
+    .whole-number = Số nguyên
+    .select-table-button = Chọn bảng…
+    .starting-table = Bảng ban đầu
+    .table-direction = Hướng bảng
+
+table-cells =
+    .borders-title = Viền ô
+    .contents-title = Nội dung ô
+    .line = Đường
+    .lineweight = Độ dày nét
+    .linetype = Kiểu đường
+    .color = Màu sắc
+    .double = Đường đôi
+    .spacing = Khoảng cách
+    .apply-to = Áp dụng cho
+    .all = Tất cả
+    .outside = Bên ngoài
+    .inside = Bên trong
+    .none = Không có
+    .top = Trên
+    .bottom = Dưới
+    .left = Trái
+    .right = Phải
+    .inside-horizontal = Bên trong ngang
+    .inside-vertical = Bên trong dọc
+    .contents = Nội dung
+    .empty = Ô trống.
+    .move-up = Lên
+    .move-down = Xuống
+    .delete = Xóa
+    .layout = Bố trí
+    .flow = Liền mạch
+    .stack-horizontal = Xếp theo chiều ngang
+    .stack-vertical = Xếp theo chiều dọc
+    .content-spacing = Khoảng cách
+    .block-item = Khối: { $name }
+    .text-item = Văn bản: { $text }
+    .text-content = Văn bản ô bảng
+    .borders-help = Đặt độ dày nét, kiểu đường và màu của viền các ô đã chọn; chọn các cạnh áp dụng.
+    .contents-help = Sắp xếp, xóa và bố trí nội dung của ô đã chọn.
+    .block-title = Khối trong ô
+    .format-title = Định dạng dữ liệu ô
+    .block = Khối
+    .block-name = Tên
+    .browse = Duyệt...
+    .block-path = Đường dẫn
+    .placement = Vị trí
+    .alignment = Căn chỉnh ô
+    .scale = Tỷ lệ
+    .autofit = Tự động khớp
+    .rotation = Góc xoay
+    .format = Định dạng
+    .current-precision = Độ chính xác hiện tại
+    .precision = Độ chính xác
+    .symbol = Ký hiệu
+    .append-symbol = Ký hiệu ở cuối
+    .negative-parens = Số âm trong ngoặc đơn
+    .list-separator = Dấu phân cách danh sách
+    .date-format = Định dạng ngày
+    .no-format-settings = Kiểu dữ liệu này không có thiết lập định dạng.
+    .data-type = Kiểu dữ liệu
+    .format-settings = Định dạng
+    .currency = Tiền tệ
+    .decimal-number = Số thập phân
+    .percentage = Phần trăm
+    .whole-number = Số nguyên
+    .grads = Grad
+    .sample-text = văn bản mẫu
+    .block-help = Đặt một khối vào các ô đã chọn: vị trí, tỷ lệ (hoặc vừa khít ô) và góc xoay của khối.
+    .format-help = Đặt kiểu dữ liệu và định dạng dùng để đọc giá trị của các ô đã chọn.
+    .additional-format = Định dạng bổ sung
+    .conversion = Hệ số chuyển đổi
+    .prefix = Tiền tố
+    .suffix = Hậu tố
+    .decimal-separator = Dấu phân cách thập phân
+    .thousands-separator = Dấu phân cách hàng nghìn
+    .space = Dấu cách
+    .separator-none = (Không có)
+    .zero-leading = Số 0 ở đầu
+    .zero-trailing = Số 0 ở cuối
+    .zero-feet = 0 feet
+    .zero-inches = 0 inch
+    .warning-title = Kiểu dữ liệu không khớp
+    .warning-heading = Các ô này chứa giá trị không thuộc kiểu dữ liệu đã chọn.
+    .warning-note = Chuyển đổi sẽ đọc từng giá trị theo kiểu mới; giá trị không đọc được theo kiểu đó sẽ bị xóa. Hủy bỏ giữ nguyên các ô.
+    .warning-ok = Chuyển đổi
+    .warning-cancel = Hủy bỏ
+    .entry-title = Cell Value Does Not Match
+    .entry-heading = The typed value is not of this cell's data type.
+    .entry-type = Change the cell's data type
+    .entry-type-note = The cell takes the data type of the typed value and the value goes in.
+    .entry-value = Edit the value
+    .entry-value-note = The value goes back into the cell's editor to be corrected.
+
+parameters-manager =
+    .action-parameters = Tham số hành động
+    .filter = Tên*
+    .search = Tìm tham số
+    .order = Thứ tự
+    .polar = Cực
+    .visibility = Hiển thị
+    .variable = Biến
+    .footer = Tất cả: hiển thị { $shown } trong { $total } tham số
+
+parameters-manager-feedback =
+    .no-number = Hàng này không có số để chỉnh sửa.
+    .no-flag = Hàng này không có cờ hiển thị để thay đổi.
+    .finite-number = Chỉ định giá trị số hữu hạn cho tham số.
+    .stale-session = Phiên trình chỉnh sửa khối không còn hoạt động.
+    .positive-length = Chỉ định chiều dài tham số dương.
+    .no-direction = Không có hướng tham số.
+    .history = Chỉnh sửa trình quản lý tham số
+
+block-action-targets =
+    .prompt = BACTIONSET  Chọn đối tượng hoặc nhập Parameter rồi nhập tên tham số, sau đó nhấn Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .create-prompt = BACTION  Chọn đối tượng hoặc nhập Parameter rồi nhập tên tham số, sau đó nhấn Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .unique-point = Nhập tên tham số duy nhất.
+    .empty = Một hành động cần ít nhất một mục tiêu.
+    .invalid = Chọn các mục tiêu được hỗ trợ thuộc khối này.
+    .stale = Hành động hoặc phiên trình chỉnh sửa khối đã thay đổi; hãy chạy lại BACTIONSET.
+    .create-stale = Hành động hoặc phiên trình chỉnh sửa khối đã thay đổi; hãy chạy lại BACTION.
+
+revcloud-cmd =
+    .header = Minimum arc length: { $min }   Maximum arc length: { $max }   Style: { $style }   Type: { $kind }
+    .style-normal = Normal
+    .style-calligraphy = Calligraphy
+    .type-rectangular = Rectangular
+    .type-polygonal = Polygonal
+    .type-freehand = Freehand
+    .first-corner = REVCLOUD  Specify first corner point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .start-point = REVCLOUD  Specify start point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .first-point = REVCLOUD  Specify first point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .opposite = REVCLOUD  Specify opposite corner:
+    .next = REVCLOUD  Specify next point:
+    .next-undo = REVCLOUD  Specify next point or [Undo]:
+    .guide = REVCLOUD  Guide crosshairs along cloud path...
+    .arc = REVCLOUD  Specify approximate length of arc <{ $length }>:
+    .second = REVCLOUD  Specify second point:
+    .second-point = Specify second point:
+    .style = REVCLOUD  Select arc style [Normal/Calligraphy] <{ $style }>:
+    .object = REVCLOUD  Select object:
+    .reverse = REVCLOUD  Reverse direction [Yes/No] <No>:
+    .modify-select = REVCLOUD  Select polyline to modify:
+    .modify-first = REVCLOUD  Specify next point or [First point]:
+    .modify-start = REVCLOUD  Specify a start point:
+    .modify-side = REVCLOUD  Pick a side to erase:
+    .invalid-shape = Invalid shape to create revision cloud.
+    .finished = Revision cloud finished.
+    .unable = Unable to convert object, must be a polyline, spline, or circle.
+    .positive = Value must be positive and nonzero.
+    .numeric = Requires numeric distance or two points.
+    .keyword = Invalid option keyword.
+    .var-mode = Requires an integer between 0 and 2.
+    .var-onoff = Requires 0 or 1 only, or option keyword.
+
+wipeout-cmd =
+    .select-polyline = WIPEOUT  Select a closed polyline:
+    .polyline-invalid = The polyline must be closed and made up of only line segments.
+    .erase-polyline = WIPEOUT  Erase polyline? [Yes/No] <No>:
+    .frames = WIPEOUT  Enter mode [ON/OFF/Display but not plot] <{ $current }>:
+    .frame-on = ON
+    .frame-off = OFF
+    .frame-display = Display but not plot
+    .keyword = Invalid option keyword.
+    .point-or-keyword = 2D point or option keyword required.
+
+quad-menu =
+    .label = QUAD
+    .menu = Quad Cursor Menu
+    .pill-tip =
+        Quad cursor menu
+        Click to toggle on/off
+    .options-tip =
+        Quad display options
+        Click to choose
+    .show = Show the Quad cursor menu (Shift+F12, QUAD)
+    .on-hover = Hover an object: offer its commands
+    .on-select = A selection offers its shared commands
+    .on-void = Right-click in the void: creation commands
+    .suppress-hover = Suppress the hover quad while a selection exists
+    .hover-delay = Hover delay
+    .width = Quad width
+    .launch = Right-click over an object launches its default command directly (QUADCOMMANDLAUNCH)
+    .about = The Quad cursor menu appears at the cursor: default commands for what it points at, recent and creation commands otherwise (QUAD, QUADWIDTH).

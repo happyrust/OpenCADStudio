@@ -21,6 +21,23 @@ pub(crate) struct PidGroupHighlight {
 
 mod block_parameter;
 
+#[cfg(test)]
+mod transform_tests;
+
+/// Preview transforms edit world-space points directly. Resolve cached block
+/// copies once when taking the snapshot, then detach their translation-only
+/// GPU identities so transformed references cannot be regrouped at old offsets.
+fn transform_preview_wires(wires: Vec<WireModel>) -> Vec<WireModel> {
+    let mut wires = match crate::scene::model::instance_model::expand_stubs(&wires) {
+        std::borrow::Cow::Owned(expanded) => expanded,
+        std::borrow::Cow::Borrowed(_) => wires,
+    };
+    for wire in &mut wires {
+        wire.render_instance = None;
+    }
+    wires
+}
+
 impl Scene {
     // ── P&ID tag-group highlight ──────────────────────────────────────────
 
@@ -507,7 +524,7 @@ impl Scene {
     }
 
     pub fn wire_models_for(&self, handles: &[codec::Handle]) -> Vec<WireModel> {
-        handles
+        let wires = handles
             .iter()
             .flat_map(|h| {
                 match self.document.get_entity(*h) {
@@ -521,7 +538,8 @@ impl Scene {
                     None => Vec::new(),
                 }
             })
-            .collect()
+            .collect();
+        transform_preview_wires(wires)
     }
 
     /// Current candidate geometry for a hot grip. Solid-history candidates
@@ -585,7 +603,7 @@ impl Scene {
                 plain.extend(self.tessellate_one(e));
             }
         }
-        (plain, texts)
+        (transform_preview_wires(plain), texts)
     }
 
     /// Boundary wire for edit previews and selected hatches.
@@ -724,11 +742,14 @@ impl Scene {
 
     /// Build wire models for an arbitrary slice of entities (e.g. clipboard contents).
     /// Entities need not be in the document — they are tessellated directly.
+    /// Resolve cached block copies before consumers transform or count their
+    /// points, just like the handle-based edit preview snapshots.
     pub fn wires_for_entities(&self, entities: &[codec::EntityType]) -> Vec<WireModel> {
-        entities
+        let wires = entities
             .iter()
             .flat_map(|e| self.tessellate_one(e))
-            .collect()
+            .collect();
+        transform_preview_wires(wires)
     }
 
     pub fn set_interim_wire(&mut self, w: WireModel) {
@@ -758,7 +779,7 @@ impl Scene {
             }
             out.extend(self.tessellate_one(e));
         }
-        out
+        transform_preview_wires(out)
     }
 }
 
@@ -789,5 +810,148 @@ mod tests {
     fn block_preview_wires_empty_for_unknown_block() {
         let s = Scene::new();
         assert!(s.block_preview_wires("Nope").is_empty());
+    }
+}
+
+/// Label band colours of a table whose cells are picked (grey band, the
+/// picked rows and columns in amber) and of a selected table (selection
+/// blue); label text and band edges.
+const INDICATOR_BAND: [f32; 4] = [173.0 / 255.0, 173.0 / 255.0, 173.0 / 255.0, 1.0];
+const INDICATOR_PICKED: [f32; 4] = [1.0, 213.0 / 255.0, 141.0 / 255.0, 1.0];
+const INDICATOR_SELECTED: [f32; 4] = [117.0 / 255.0, 147.0 / 255.0, 208.0 / 255.0, 1.0];
+const INDICATOR_TEXT: [f32; 4] = [0.04, 0.04, 0.04, 1.0];
+const INDICATOR_EDGE: [f32; 4] = [235.0 / 255.0, 235.0 / 255.0, 235.0 / 255.0, 1.0];
+
+impl Scene {
+    /// Row and column labels round every selected table, and the picked
+    /// range's outline in the table whose cells are picked. Screen only.
+    pub(super) fn table_indicator_overlay(
+        &self,
+        pixel: f64,
+    ) -> (Vec<WireModel>, Vec<HatchModel>) {
+        let mut wires = Vec::new();
+        let mut hatches = Vec::new();
+        let picked = self.table_cells_handle();
+        for &handle in &self.selected_order {
+            let Some(EntityType::Table(table)) = self.document.get_entity(handle) else {
+                continue;
+            };
+            if self.entity_temporarily_hidden(handle) {
+                continue;
+            }
+            let range = (picked == Some(handle))
+                .then(|| self.table_cells.map(|cells| cells.range()))
+                .flatten();
+            let Some(indicator) =
+                crate::entities::table::table_indicator(table, &self.document, range)
+            else {
+                continue;
+            };
+            let cell_mode = picked == Some(handle);
+            for (corners, on) in &indicator.boxes {
+                let color = match (cell_mode, on) {
+                    (false, _) => INDICATOR_SELECTED,
+                    (true, true) => INDICATOR_PICKED,
+                    (true, false) => INDICATOR_BAND,
+                };
+                if let Some(model) = Self::indicator_box(corners, color) {
+                    hatches.push(model);
+                }
+            }
+            let name = handle.value().to_string();
+            let mut edges = Vec::new();
+            for [a, b] in &indicator.lines {
+                if !edges.is_empty() {
+                    edges.push([f32::NAN; 3]);
+                }
+                edges.push(a.to_array());
+                edges.push(b.to_array());
+            }
+            let edge_color = if cell_mode { INDICATOR_EDGE } else { self.selection_color };
+            let mut edge_wire = WireModel::solid(name.clone(), edges, edge_color, false);
+            edge_wire.plot_visible = false;
+            edge_wire.text_verts = Self::indicator_text(&indicator);
+            wires.push(edge_wire);
+            for corners in &indicator.outlines {
+                // A band inside each edge of the range: a quarter of the
+                // label text height wide, never thinner than 4 pixels.
+                let width = (0.25 * indicator.text_height as f64).max(4.0 * pixel) as f32;
+                let centre = (corners[0] + corners[2]) * 0.5;
+                for k in 0..4 {
+                    let (a, b) = (corners[k], corners[(k + 1) % 4]);
+                    let mut inward = glam::Vec3::Z.cross((b - a).normalize_or_zero());
+                    if inward.dot(centre - a) < 0.0 {
+                        inward = -inward;
+                    }
+                    let inward = inward * width;
+                    let band = [a, b, b + inward, a + inward];
+                    if let Some(model) = Self::indicator_box(&band, INDICATOR_PICKED) {
+                        hatches.push(model);
+                    }
+                }
+            }
+        }
+        (wires, hatches)
+    }
+
+    fn indicator_box(corners: &[glam::Vec3; 4], color: [f32; 4]) -> Option<HatchModel> {
+        let ring: Vec<[f64; 2]> = corners.iter().map(|c| [c.x as f64, c.y as f64]).collect();
+        let mut model = Self::area_preview_hatch(&[ring], false)?;
+        model.name = "TABLE_INDICATOR".into();
+        model.color = color;
+        Some(model)
+    }
+
+    fn indicator_text(
+        indicator: &crate::entities::table::TableIndicator,
+    ) -> Vec<crate::scene::pipeline::text_gpu::TextVertex> {
+        use crate::entities::text_support::{layout_mtext, MTextRenderOpts, MTextVAnchor};
+        let mut verts = Vec::new();
+        let Ok(mut atlas) = crate::scene::text::sdf_atlas::text_atlas().lock() else {
+            return verts;
+        };
+        for (text, center) in &indicator.labels {
+            let layout = layout_mtext(&MTextRenderOpts {
+                layer_color: None,
+                columns: Default::default(),
+                value: text,
+                insertion: [center.x as f64, center.y as f64, center.z as f64],
+                height: indicator.text_height,
+                rect_w: 0.0,
+                rotation: indicator.rotation,
+                style: &indicator.style,
+                attach_h_anchor: 0.5,
+                v_anchor: MTextVAnchor::Middle,
+                line_spacing_factor: 1.0,
+                exact_line_spacing: false,
+                rectangle_height: 0.0,
+                vertical_text: false,
+                want_glyph_boxes: false,
+                break_long_words: false,
+            });
+            for stroke in &layout.strokes {
+                let Some(run) = &stroke.run else { continue };
+                let (quads, _) = crate::scene::text::glyph_quads::layout_glyph_quads(
+                    &mut atlas,
+                    run.height,
+                    run.rotation,
+                    run.width_factor,
+                    run.oblique,
+                    run.tracking,
+                    &run.font,
+                    run.bold,
+                    &run.text,
+                );
+                crate::scene::pipeline::text_gpu::push_glyph_vertices(
+                    &mut verts,
+                    &quads,
+                    [stroke.origin[0], stroke.origin[1], center.z as f64],
+                    1.0,
+                    INDICATOR_TEXT,
+                    0.0,
+                );
+            }
+        }
+        verts
     }
 }

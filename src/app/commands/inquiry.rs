@@ -31,6 +31,11 @@ impl OpenCADStudio {
                 .push_info(crate::t!("Select objects").as_ref());
             return;
         }
+        if self.any_entity_is_fixed(i, &handles) {
+            self.command_line
+                .push_error(crate::app::properties::HELD_BY_FIXED);
+            return;
+        }
 
         let bounds: Vec<_> = self.tabs[i]
             .scene
@@ -100,6 +105,36 @@ impl OpenCADStudio {
                 self.tabs[i].scene.deselect_all();
                 self.command_line
                     .push_output(crate::t!("Deselected.").as_ref());
+                self.refresh_properties();
+            }
+
+            // SELECT gathers objects and keeps them as the selection when
+            // Enter commits. The private apply step only reports the count;
+            // the relaunch that runs it has already put the set in place.
+            "SELECT" | "PSELECT" => {
+                use crate::modules::draw::select::SelectObjectsCommand;
+                let command = SelectObjectsCommand::plain("SELECT", "_SELECT_KEEP");
+                self.command_line.push_info(&command.prompt());
+                self.command_line.set_step_options(command.options());
+                self.tabs[i].active_cmd = Some(Box::new(command));
+            }
+            "_SELECT_KEEP" => {
+                let count = self.tabs[i].scene.selected_entities().len();
+                self.command_line.push_output(
+                    crate::tf!("SELECT: {} object(s) selected.", count).as_ref(),
+                );
+                self.refresh_properties();
+                return Some(self.unfocus_widgets());
+            }
+            "SELECTPREVIOUS" => {
+                match self.tabs[i].scene.select_previous() {
+                    Some(count) => self.command_line.push_output(
+                        crate::tf!("SELECTPREVIOUS: {} object(s) selected.", count).as_ref(),
+                    ),
+                    None => self.command_line.push_error(
+                        crate::t!("SELECTPREVIOUS: no previous selection.").as_ref(),
+                    ),
+                }
                 self.refresh_properties();
             }
 

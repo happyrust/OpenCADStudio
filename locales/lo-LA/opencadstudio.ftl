@@ -2514,7 +2514,7 @@ common =
     .sectionplane-specify-through-point = SECTIONPLANE  ກຳນົດຈຸດທີ່ຜ່ານ:
     .setbylayer-no-properties-required-changes = SETBYLAYER: ບໍ່ມີຄຸນສົມບັດໃດທີ່ຕ້ອງປ່ຽນແປງ.
     .setbylayer-reset-entity-entities-to-bylayer = SETBYLAYER: ຕັ້ງຄ່າ __ocs_fmt_0__ ອົງປະກອບຄືນເປັນ ByLayer.
-    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (ອ່ານໄດ້ເທົ່ານັ້ນ)
+    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION QUAD QUADWIDTH QUADCOMMANDLAUNCH CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (ອ່ານໄດ້ເທົ່ານັ້ນ)
     .shell-supports-rectangular-boxes-circular-cylinders-and-spheres = SHELL ຮອງຮັບກ່ອງສີ່ຫຼ່ຽມ, ຮູບທໍ່ກົມ, ແລະ ໜ່ວຍມົນ.
     .shell-solid-updated = SHELL: ອັບເດດວັດຖຸແຂງແລ້ວ.
     .splinedit-fit-data-add-delete-move-purge-tangents-exit-exit = SPLINEDIT  ຂໍ້ມູນ Fit [Add/Delete/Move/Purge/Tangents/eXit] <eXit>:
@@ -3594,6 +3594,9 @@ layers =
     .layiso-isolated-layer-s = LAYISO: ແຍກສະແດງແລ້ວ __ocs_fmt_0__ ຊັ້ນງານ.
     .layuniso-no-layers-were-isolated-by-layiso = LAYUNISO: ບໍ່ມີຊັ້ນໃດຖືກແຍກດ້ວຍ LAYISO.
     .laymatch-select-objects-to-change-layer = LAYMATCH  ເລືອກວັດຖຸທີ່ຈະປ່ຽນຊັ້ນງານ:
+    .copytolayer-base = Specify base point or [Displacement/eXit] <eXit>:
+    .copytolayer-second = Specify second point of displacement or <use first point as displacement>:
+    .copytolayer-displacement = Specify displacement <0.0000,0.0000,0.0000>:
     .copytolayer-select-objects-to-copy = COPYTOLAYER  ເລືອກວັດຖຸທີ່ຈະສຳເນົາ:
     .copytolayer-select-an-object-on-the-destination-layer = COPYTOLAYER  ເລືອກວັດຖຸໃນເລເຢີປາຍທາງ:
     .laymatch-select-source-object-to-match-layer-f = LAYMATCH  ເລືອກວັດຖຸຕົ້ນສະບັບເພື່ອໃຫ້ກົງກັບຊັ້ນງານຈາກ:
@@ -3615,6 +3618,7 @@ layers =
     .layer-s-frozen = ແຊ່ແຂງຊັ້ນງານແລ້ວ.
     .layer-s-locked = ລັອກຊັ້ນງານແລ້ວ.
     .layer-s-turned-off = ປິດຊັ້ນງານແລ້ວ.
+    .layoff-select-object-on-layer-undo = LAYOFF  ເລືອກວັດຖຸຢູ່ໃນເລເຍີທີ່ຈະປິດ ຫຼື [Undo]:
     .layer-s-unlocked = ປົດລັອກຊັ້ນງານແລ້ວ.
     .layers = ຊັ້ນງານ: __ocs_fmt_0__
     .lock = ລັອກ
@@ -3997,6 +4001,84 @@ annotate =
     .text-specify-rotation-angle = TEXT  ກໍານົດມຸມໝູນ <__ocs_fmt_0__>:
     .text-specify-second-endpoint = TEXT  ກໍານົດຈຸດປາຍທີສອງ:
     .tolerance-specify-insertion-point = TOLERANCE  ກໍານົດຈຸດແຊກ:
+    .tcell-row-above =
+        ແຊກແຖວ
+        ດ້ານເທິງ
+    .tcell-row-below =
+        ແຊກແຖວ
+        ດ້ານລຸ່ມ
+    .tcell-delete-rows =
+        ລຶບ
+        ແຖວ
+    .tcell-col-left =
+        ແຊກຖັນ
+        ດ້ານຊ້າຍ
+    .tcell-col-right =
+        ແຊກຖັນ
+        ດ້ານຂວາ
+    .tcell-delete-cols =
+        ລຶບ
+        ຖັນ
+    .tcell-merge =
+        ຮວມ
+        ຫ້ອງ
+    .tcell-unmerge =
+        ຍົກເລີກ
+        ການຮວມ
+    .tcell-lock =
+        ລັອກ
+        ຫ້ອງ
+    .tcell-edit =
+        ແກ້ໄຂ
+        ຂໍ້ຄວາມ
+    .tcell-match =
+        ຈັບຄູ່
+        ຫ້ອງ
+    .tcell-borders =
+        ເສັ້ນຂອບ
+        ຫ້ອງ
+    .tcell-format =
+        ຮູບແບບ
+        ຂໍ້ມູນ
+    .tcell-block =
+        ແຊກ
+        ບລັອກ
+    .tcell-field =
+        ແຊກ
+        ຟີລດ໌
+    .tcell-contents =
+        ຈັດການເນື້ອໃນ
+        ຫ້ອງ
+    .tcell-link =
+        ລິ້ງ
+        ຫ້ອງ
+    .tcell-download =
+        ດາວໂຫຼດ
+        ຈາກແຫຼ່ງ
+    .tcell-row-style = ຮູບແບບແຖວ
+    .tcell-column-style = ຮູບແບບຖັນ
+    .tcell-width = ຄວາມກວ້າງຫ້ອງ
+    .tcell-height = ຄວາມສູງຫ້ອງ
+    .tcell-border-color = ສີເສັ້ນຂອບ
+    .tcell-border-lineweight = ຄວາມໜາເສັ້ນຂອບ
+    .tcell-border-linetype = ປະເພດເສັ້ນຂອບ
+    .tcell-locking = ການລັອກຫ້ອງ
+    .tcell-data-link = ລິ້ງຂໍ້ມູນຫ້ອງ
+    .tcell-select-destination = ເລືອກຫ້ອງປາຍທາງ:
+    .tcell-select-cell = ເລືອກຫ້ອງຕາຕະລາງ:
+    .tcell-range-first = ເລືອກມຸມທຳອິດຂອງຂອບເຂດຫ້ອງຕາຕະລາງ:
+    .tcell-range-second = ເລືອກມຸມທີສອງຂອງຂອບເຂດຫ້ອງຕາຕະລາງ:
+    .tcell-align-prompt = ປ້ອນການຈັດແນວຫ້ອງ [TL/TC/TR/ML/MC/MR/BL/BC/BR]:
+    .tcell-format-prompt = ປ້ອນຮູບແບບຂໍ້ມູນ [Angle/Currency/Date/Decimal/General/Percentage/Point/Text/Whole]:
+    .tcell-block-prompt = ປ້ອນຊື່ບລັອກ ຫຼື [?]:
+    .tcell-formula-prompt = ປ້ອນສູດຄິດໄລ່ [Sum/Average/Count/Cell/Equation]:
+    .tcell-by-row-column = ຕາມແຖວ/ຖັນ
+    .tcell-unlocked = ບໍ່ໄດ້ລັອກ
+    .tcell-content-locked = ລັອກເນື້ອໃນ
+    .tcell-format-locked = ລັອກຮູບແບບ
+    .tcell-content-format-locked = ລັອກເນື້ອໃນ ແລະ ຮູບແບບ
+    .tcell-not-linked = ບໍ່ໄດ້ລິ້ງ
+    .tcell-invalid-cell = ຫ້ອງບໍ່ຖືກຕ້ອງ.
 
 insert =
     .pastespec-specify-insertion-point = PASTESPEC  ກຳນົດຈຸດແຊກ:
@@ -4609,6 +4691,7 @@ insert =
     .field-help = ແຊກຟິວ: ຂໍ້ຄວາມທີ່ອັບເດດຈາກຮູບແຕ້ມ, ວັນທີ ຫຼື ແຫຼ່ງຂໍ້ມູນອື່ນໆ.
     .field-average = ຄ່າສະເລ່ຍ
     .field-sum = ຜົນລວມ
+    .field-insert = Insert Field
     .field-object-name = ຊື່ວັດຖຸ
     .field-block-placeholder = ຕົວຍຶດຕໍາແໜ່ງບລັອກ
     .field-block-editor-only = ເຂົ້າເຖິງໄດ້ສະເພາະໃນຕົວແກ້ໄຂບລັອກເທົ່ານັ້ນ
@@ -5512,6 +5595,9 @@ properties =
     .fit-tolerance-sentence-case = ຄວາມຄາດເຄື່ອນພໍດີ
     .fit-smooth-title-case = ພໍດີ/ລຽບນຽນ
     .fit-smooth-sentence-case = ພໍດີ/ລຽບນຽນ
+    .fit-curve-fit = Curve fit
+    .fit-quadratic = Quadratic
+    .fit-cubic = Cubic
     .fixed-elevation-range = ໄລຍະລະດັບຄວາມສູງຄົງທີ່
     .flag = ທຸງເຄື່ອງໝາຍ
     .flags = ທຸງເຄື່ອງໝາຍຕ່າງໆ
@@ -5911,6 +5997,7 @@ properties =
     .wizard-flag = ທຸງເຄື່ອງໝາຍຕົວຊ່ວຍສ້າງ
     .x-scale = ມາດຕາສ່ວນ X
     .zero = ສູນ
+    .transparency-color = Transparency Color
 
     .model-text-height = ຄວາມສູງຂໍ້ຄວາມໂມເດວ
     .insert-unit-scale-is-outside-the-supported-range = ມາດຕາສ່ວນຫົວໜ່ວຍ INSERT ຢູ່ນອກຂອບເຂດທີ່ຮອງຮັບ.
@@ -6606,6 +6693,7 @@ dimstyle =
     .move-text-outside-first = ຍ້າຍຂໍ້ຄວາມອອກດ້ານນອກກ່ອນ
     .period = ຈຸດຈ້ຳ (Period)
     .space = ຍະຫວ່າງ
+    .separator-none = (ບໍ່ມີ)
     .surveyors-units = ຫົວໜ່ວຍການສຳຫຼວດ
 
 style-manager =
@@ -6648,6 +6736,14 @@ style-manager =
     .inside-blocks = __ocs_fmt_0__ ໃນນັ້ນຢູ່ໃນນິຍາມບລັອກ __ocs_fmt_1__ ອັນ.
     .used-by-one-text = ໃຊ້ໂດຍຂໍ້ຄວາມ 1 ອັນ
     .used-by-texts = ໃຊ້ໂດຍຂໍ້ຄວາມ __ocs_fmt_0__ ອັນ
+    .property-change = __ocs_fmt_0__: __ocs_fmt_1__ → __ocs_fmt_2__.
+    .property-change-other = Other stored settings of the style change.
+    .annotative-change-note = Existing texts keep their own setting; new texts take this one.
+    .style-redraw-one = 1 text that uses the style is redrawn; formatting set inside MTEXT stays.
+    .style-redraw-many = __ocs_fmt_0__ texts that use the style are redrawn; formatting set inside MTEXT stays.
+    .apply-count-one = 1 style, 1 property
+    .apply-count-one-style = 1 style, __ocs_fmt_0__ properties
+    .apply-count-many = __ocs_fmt_0__ styles, __ocs_fmt_1__ properties
     .import-styles = ນຳເຂົ້າຮູບແບບ
     .select-drawing-to-import-styles-from = ເລືອກແບບແຕ້ມທີ່ຈະນຳເຂົ້າຮູບແບບ
     .select-the-styles-to-import = ເລືອກຮູບແບບທີ່ຈະນຳເຂົ້າ
@@ -6946,6 +7042,7 @@ selection-report =
     .found-duplicate-total = __ocs_fmt_0__ found (__ocs_fmt_1__ duplicate), __ocs_fmt_2__ total
     .found-removed-total = __ocs_fmt_0__ found, __ocs_fmt_1__ removed, __ocs_fmt_2__ total
     .invalid-window = Invalid window specification.
+    .no-object = No object found
 
 block-def =
     .name-too-short = The name must be at least one character long.
@@ -7216,6 +7313,7 @@ dgn-import =
     .dgn-import = DGN Import
     .import-dgn-file = Import DGN File
     .import-wmf = ນຳເຂົ້າ WMF
+    .import-svg = ນຳເຂົ້າ SVG
     .help-dgn = Imports a DGN model as drawing objects: levels as layers, cells as blocks.
     .help-import = Imports a file of the chosen format with the format's importer.
     .blank = Filename cannot be blank
@@ -8148,3 +8246,332 @@ array-grips = ຈຳນວນລາຍການ
 block-chain =
     .label = ການກະທຳຕໍ່ເນື່ອງ
     .cycle = ລຳດັບການກະທຳຂອງບລັອກມີວົງຈອນ.
+
+block-action-bars =
+    .requires-session = BACTIONBAR ຕ້ອງການເຊດຊັນທີ່ເປີດໃຊ້ຢູ່ໃນຕົວແກ້ໄຂບລັອກ.
+    .enable-display = ຕັ້ງ BACTIONBARMODE ເປັນ 1 ເພື່ອສະແດງແຖບການກະທຳ.
+    .parameters-changed = ລາຍການພາຣາມິເຕີປ່ຽນແປງແລ້ວ; ເລີ່ມ BACTIONBAR ໃໝ່.
+    .display-updated = ອັບເດດການສະແດງແຖບການກະທຳແລ້ວ.
+    .prompt-mode = BACTIONBAR  [Show/Hide/Reset]:
+    .prompt-selected = BACTIONBAR  ເລືອກພາຣາມິເຕີ, ປ້ອນຊື່ຂອງມັນ ຫຼື [All] <ທີ່ເລືອກ>:
+    .prompt-all = BACTIONBAR  ເລືອກພາຣາມິເຕີ, ປ້ອນຊື່ຂອງມັນ ຫຼື [All] <All>:
+    .choose-mode = ເລືອກ Show, Hide ຫຼື Reset.
+    .unique-parameter = ປ້ອນຊື່ພາຣາມິເຕີທີ່ບໍ່ຊ້ຳກັນ, ເລືອກຈຸດປາຍຂອງມັນ ຫຼື ເລືອກ All.
+    .enter-parameter = ປ້ອນຊື່ພາຣາມິເຕີ ຫຼື ເລືອກ All.
+    .pick-endpoint = ເລືອກຈຸດປາຍພາຣາມິເຕີ ຫຼື ເລືອກ All.
+
+block-construction =
+    .requires-session = BCONSTRUCTION ໃຊ້ໄດ້ໃນຕົວແກ້ໄຂບລັອກເທົ່ານັ້ນ.
+    .choose-operation = ເລືອກ Convert, Revert, Show ຫຼື Hide.
+    .stale-session = ເຊດຊັນຕົວແກ້ໄຂບລັອກຂອງເລຂາຄະນິດຊ່ວຍບໍ່ເປີດໃຊ້ແລ້ວ.
+    .changed-count = ປ່ຽນແປງວັດຖຸເລຂາຄະນິດ __ocs_fmt_0__ ລາຍການແລ້ວ.
+    .prompt-selection = BCONSTRUCTION  ເລືອກເລຂາຄະນິດ ຫຼື [Convert/Revert/Show/Hide]:
+    .prompt-operation = BCONSTRUCTION  ເລືອກ [Convert/Revert] <Convert> ຫຼື ກົດ Enter ເພື່ອໃຊ້ການດຳເນີນການທີ່ເລືອກ:
+    .revert = ຄືນຄ່າ
+    .history = ແກ້ໄຂເລຂາຄະນິດຊ່ວຍ
+    .unsupported-record = ບັນທຶກເລຂາຄະນິດຊ່ວຍນີ້ມີລຸ້ນ ຫຼື ຄ່າທີ່ບໍ່ຮອງຮັບ.
+    .open-definition = ເປີດນິຍາມບລັອກກ່ອນແກ້ໄຂເລຂາຄະນິດຊ່ວຍ.
+    .missing-object = ວັດຖຸເລຂາຄະນິດຊ່ວຍທີ່ເລືອກໃຊ້ບໍ່ໄດ້ແລ້ວ.
+    .active-geometry = ເລືອກເລຂາຄະນິດໃນນິຍາມບລັອກທີ່ເປີດໃຊ້.
+    .locked-layer = ບໍ່ສາມາດປ່ຽນເລຂາຄະນິດຊ່ວຍໃນຊັ້ນທີ່ລັອກໄດ້.
+    .revert-layer = ເລືອກຊັ້ນທີ່ມີຢູ່ ແລະ ບໍ່ລັອກສຳລັບເລຂາຄະນິດທີ່ຄືນຄ່າ.
+
+block-authoring-history =
+    .alignment-type = ປະເພດການຈັດແນວ
+    .action-override = ແກ້ໄຂການກຳນົດຄ່າແທນການກະທຳບລັອກ
+    .action-chain = ແກ້ໄຂລຳດັບການກະທຳບລັອກ
+    .action-base = ແກ້ໄຂຈຸດຖານການກະທຳບລັອກ
+    .parameter-chain = BEDIT ເຊື່ອມຕໍ່ການກະທຳພາຣາມິເຕີ
+    .value-set = BEDIT ຊຸດຄ່າພາຣາມິເຕີ
+    .parameter-metadata = ແກ້ໄຂຂໍ້ມູນກຳກັບພາຣາມິເຕີບລັອກ
+    .authoring-grip = ຈຸດຈັບສຳລັບສ້າງບລັອກ
+
+block-operation-history =
+    .reset-references = ຄືນຄ່າການອ້າງອີງບລັອກ
+    .associate-action = ເຊື່ອມໂຍງການກະທຳບລັອກ
+    .action-selection = ຊຸດການເລືອກຂອງການກະທຳ
+    .test-parameter = ພາຣາມິເຕີບລັອກທົດສອບ
+    .reference-parameter = ພາຣາມິເຕີການອ້າງອີງບລັອກ
+    .align-reference = ຈັດແນວການອ້າງອີງບລັອກ
+    .insertion-grip-order = ປ່ຽນລຳດັບຈຸດຈັບການແຊກ
+    .move-grip = ຍ້າຍຈຸດຈັບບລັອກເດີມ
+    .configure-grips = ຕັ້ງຄ່າຈຸດຈັບພາຣາມິເຕີບລັອກ
+    .lookup-tables = ຕາຕະລາງຄົ້ນຫາ
+    .hyperlink = ລິ້ງຂອງບລັອກ
+    .properties = ຄຸນສົມບັດບລັອກ
+    .properties-table = ຕາຕະລາງຄຸນສົມບັດບລັອກ
+    .visibility-state = ສະຖານະການເບິ່ງເຫັນ
+    .visibility-states = ລາຍການສະຖານະການເບິ່ງເຫັນ
+
+block-formatted-history =
+    .action = ການກະທຳ { $label }
+    .parameter = ພາຣາມິເຕີ { $label }
+    .edit-block = ແກ້ໄຂບລັອກ { $label }
+    .save-block = ບັນທຶກບລັອກເປັນ { $label }
+    .delete-block = ລຶບບລັອກ { $label }
+
+block-history-kinds =
+    .flip = ປີ້ນ
+    .polar-stretch = ຍືດແບບຂົ້ວ
+    .basepoint = ຈຸດຖານ
+    .lookup = ຄົ້ນຫາ
+
+block-action-properties =
+    .base-point = ຈຸດຖານການກະທຳ
+    .overrides = ຄ່າແທນການກະທຳ
+    .multiplier = ຕົວຄູນໄລຍະຫ່າງ
+    .angle-offset = ມຸມຊົດເຊີຍ (ອົງສາ)
+    .chain = ລຳດັບການກະທຳ
+    .chain-to = ເຊື່ອມຕໍ່ໄປຫາ
+
+block-parameter-properties =
+    .show-properties = ສະແດງໃນຄຸນສົມບັດ
+    .parameter-name = ຊື່ພາຣາມິເຕີ
+    .grip-count = ຈຳນວນຈຸດຈັບ
+    .dependent-base = ຈຸດຖານທີ່ຂຶ້ນກັບຈຸດອື່ນ
+    .offset-x = ໄລຍະຊົດເຊີຍຖານ X
+    .offset-y = ໄລຍະຊົດເຊີຍຖານ Y
+    .base-grip = ຕຳແໜ່ງຈຸດຈັບຖານ
+    .end-grip = ຕຳແໜ່ງຈຸດຈັບປາຍ
+    .x-grip = ຕຳແໜ່ງຈຸດຈັບ X
+    .y-grip = ຕຳແໜ່ງຈຸດຈັບ Y
+
+block-value-set =
+    .use-min = ໃຊ້ຄ່າຕ່ຳສຸດຂອງ { $label }
+    .use-max = ໃຊ້ຄ່າສູງສຸດຂອງ { $label }
+    .use-increment = ໃຊ້ຄ່າເພີ່ມຂອງ { $label }
+    .use-list = ໃຊ້ລາຍການຄ່າທີ່ອະນຸຍາດຂອງ { $label }
+    .min = ຄ່າຕ່ຳສຸດຂອງ { $label }
+    .max = ຄ່າສູງສຸດຂອງ { $label }
+    .increment = ຄ່າເພີ່ມຂອງ { $label }
+    .values = ຄ່າທີ່ອະນຸຍາດຂອງ { $label }
+    .title = ຊຸດຄ່າ
+    .x-distance = ໄລຍະຫ່າງ X
+    .y-distance = ໄລຍະຫ່າງ Y
+
+table-style-cells =
+    .tbl-start-from-style = ເລີ່ມຈາກຮູບແບບຕາຕະລາງ
+    .tbl-extra-columns = ຖັນເພີ່ມເຕີມ
+    .tbl-extra-rows = ແຖວເພີ່ມເຕີມ
+    .tbl-keep-from-template = ເກັບໄວ້ຈາກຕາຕະລາງເລີ່ມຕົ້ນ:
+    .tbl-keep-label-text = ຂໍ້ຄວາມຫ້ອງປ້າຍກຳກັບ
+    .tbl-keep-data-text = ຂໍ້ຄວາມຫ້ອງຂໍ້ມູນ
+    .tbl-keep-overrides = ການແທນທີ່ຮູບແບບຫ້ອງ
+    .tbl-keep-links = ລິ້ງຂໍ້ມູນ
+    .tbl-keep-fields = ຟີລດ໌
+    .tbl-keep-formulas = ສູດຄິດໄລ່
+    .tbl-extra-whole = ແຖວ ແລະ ຖັນເພີ່ມເຕີມຕ້ອງເປັນຈຳນວນເຕັມ.
+    .from-style-insertion = __ocs_arg_n__  ກຳນົດຈຸດແຊກ ຫຼື [Style/Rows/Columns/Options]:
+    .from-style-name = __ocs_arg_n__  ປ້ອນຊື່ຮູບແບບຕາຕະລາງ ຫຼື [?] <__ocs_arg_style__>:
+    .from-style-rows = __ocs_arg_n__  ປ້ອນຈຳນວນແຖວເພີ່ມເຕີມ <__ocs_arg_rows__>:
+    .from-style-columns = __ocs_arg_n__  ປ້ອນຈຳນວນຖັນເພີ່ມເຕີມ <__ocs_arg_columns__>:
+    .from-style-options = __ocs_arg_n__  ປ້ອນຕົວເລືອກການແຊກ [Label text/Data text/Formulas/fIelds/data liNks/Blocks/cell style Overrides] <exit>:
+    .from-style-option = __ocs_arg_n__  ລວມ __ocs_arg_what__ ໃນຕາຕະລາງທີ່ແຊກບໍ? [Yes/No] <__ocs_arg_current__>:
+    .label-text = ຂໍ້ຄວາມປ້າຍກຳກັບ
+    .data-text = ຂໍ້ຄວາມຂໍ້ມູນ
+    .formulas = ສູດຄິດໄລ່
+    .fields = ຟີລດ໌
+    .data-links = ລິ້ງຂໍ້ມູນ
+    .blocks = ບລັອກ
+    .cell-style-overrides = ການແທນທີ່ຮູບແບບຫ້ອງ
+    .style-name-header = ຊື່ຮູບແບບຕາຕະລາງ
+    .no-starting-table = ຮູບແບບຕາຕະລາງບໍ່ມີຕາຕະລາງ.
+    .select-table = ເລືອກຕາຕະລາງ:
+    .not-a-table = ວັດຖຸນີ້ບໍ່ແມ່ນຕາຕະລາງ.
+    .cell-style-exists = ມີຮູບແບບຫ້ອງຊື່ນີ້ຢູ່ແລ້ວ.
+    .cell-style-in-use = ຮູບແບບຫ້ອງກຳລັງຖືກໃຊ້ ແລະ ລຶບບໍ່ໄດ້.
+    .template-size = __ocs_arg_rows__ ແຖວ × __ocs_arg_columns__ ຖັນ
+    .cell-properties = ຄຸນສົມບັດຫ້ອງ
+    .cell-text = ຂໍ້ຄວາມຫ້ອງ
+    .cell-borders = ເສັ້ນຂອບຫ້ອງ
+    .cell-styles = ຮູບແບບຫ້ອງ
+    .label = ປ້າຍກຳກັບ
+    .margins = ໄລຍະຂອບ
+    .merge-on-create = ຮວມຫ້ອງເມື່ອສ້າງແຖວ/ຖັນ
+    .new-from-this = ສ້າງໃໝ່ຈາກອັນນີ້
+    .new-name = ຊື່ໃໝ່
+    .real-number = ຈຳນວນຈິງ
+    .whole-number = ຈຳນວນເຕັມ
+    .select-table-button = ເລືອກຕາຕະລາງ…
+    .starting-table = ຕາຕະລາງເລີ່ມຕົ້ນ
+    .table-direction = ທິດທາງຕາຕະລາງ
+
+table-cells =
+    .borders-title = ເສັ້ນຂອບຫ້ອງ
+    .contents-title = ເນື້ອໃນຫ້ອງ
+    .line = ເສັ້ນ
+    .lineweight = ຄວາມໜາເສັ້ນ
+    .linetype = ປະເພດເສັ້ນ
+    .color = ສີ
+    .double = ເສັ້ນຄູ່
+    .spacing = ໄລຍະຫ່າງ
+    .apply-to = ນຳໃຊ້ກັບ
+    .all = ທັງໝົດ
+    .outside = ດ້ານນອກ
+    .inside = ດ້ານໃນ
+    .none = ບໍ່ມີ
+    .top = ເທິງ
+    .bottom = ລຸ່ມ
+    .left = ຊ້າຍ
+    .right = ຂວາ
+    .inside-horizontal = ດ້ານໃນລວງນອນ
+    .inside-vertical = ດ້ານໃນລວງຕັ້ງ
+    .contents = ເນື້ອໃນ
+    .empty = ຫ້ອງນີ້ຫວ່າງເປົ່າ.
+    .move-up = ຍ້າຍຂຶ້ນ
+    .move-down = ຍ້າຍລົງ
+    .delete = ລຶບ
+    .layout = ການຈັດວາງ
+    .flow = ໄຫຼຕໍ່ເນື່ອງ
+    .stack-horizontal = ຊ້ອນລວງນອນ
+    .stack-vertical = ຊ້ອນລວງຕັ້ງ
+    .content-spacing = ໄລຍະຫ່າງ
+    .block-item = ບລັອກ: { $name }
+    .text-item = ຂໍ້ຄວາມ: { $text }
+    .text-content = ຂໍ້ຄວາມຫ້ອງຕາຕະລາງ
+    .borders-help = ກຳນົດຄວາມໜາເສັ້ນ, ປະເພດເສັ້ນ ແລະ ສີຂອງເສັ້ນຂອບຫ້ອງທີ່ເລືອກ; ເລືອກຂອບທີ່ຈະນຳໃຊ້.
+    .contents-help = ຈັດລຳດັບ, ລຶບ ແລະ ຈັດວາງເນື້ອໃນຂອງຫ້ອງທີ່ເລືອກ.
+    .block-title = ບລັອກຫ້ອງ
+    .format-title = ຮູບແບບຂໍ້ມູນຫ້ອງ
+    .block = ບລັອກ
+    .block-name = ຊື່
+    .browse = ເລືອກໄຟລ໌...
+    .block-path = ເສັ້ນທາງ
+    .placement = ການວາງ
+    .alignment = ການຈັດແນວຫ້ອງ
+    .scale = ມາດຕາສ່ວນ
+    .autofit = ປັບພໍດີອັດຕະໂນມັດ
+    .rotation = ມຸມໝູນ
+    .format = ຮູບແບບ
+    .current-precision = ຄວາມລະອຽດປັດຈຸບັນ
+    .precision = ຄວາມລະອຽດ
+    .symbol = ສັນຍາລັກ
+    .append-symbol = ຕໍ່ສັນຍາລັກທາງຫຼັງ
+    .negative-parens = ຄ່າລົບໃນວົງເລັບ
+    .list-separator = ຕົວຂັ້ນລາຍການ
+    .date-format = ຮູບແບບວັນທີ
+    .no-format-settings = ປະເພດຂໍ້ມູນນີ້ບໍ່ມີການຕັ້ງຄ່າຮູບແບບ.
+    .data-type = ປະເພດຂໍ້ມູນ
+    .format-settings = ຮູບແບບ
+    .currency = ສະກຸນເງິນ
+    .decimal-number = ຈຳນວນທົດສະນິຍົມ
+    .percentage = ເປີເຊັນ
+    .whole-number = ຈຳນວນເຕັມ
+    .grads = ກຣາດ
+    .sample-text = ຂໍ້ຄວາມຕົວຢ່າງ
+    .block-help = ວາງບລັອກໃນຫ້ອງທີ່ເລືອກ: ຕຳແໜ່ງ, ມາດຕາສ່ວນ (ຫຼື ປັບພໍດີຫ້ອງ) ແລະ ການໝູນ.
+    .format-help = ກຳນົດປະເພດຂໍ້ມູນ ແລະ ຮູບແບບທີ່ໃຊ້ອ່ານຄ່າຂອງຫ້ອງທີ່ເລືອກ.
+    .additional-format = ຮູບແບບເພີ່ມເຕີມ
+    .conversion = ຕົວຄູນການແປງ
+    .prefix = ຄຳນຳໜ້າ
+    .suffix = ຄຳຕໍ່ທ້າຍ
+    .decimal-separator = ຕົວຂັ້ນທົດສະນິຍົມ
+    .thousands-separator = ຕົວຂັ້ນຫຼັກພັນ
+    .space = ຍະຫວ່າງ
+    .separator-none = (ບໍ່ມີ)
+    .zero-leading = ສູນນຳໜ້າ
+    .zero-trailing = ສູນທາງທ້າຍ
+    .zero-feet = 0 ຟຸດ
+    .zero-inches = 0 ນິ້ວ
+    .warning-title = ປະເພດຂໍ້ມູນບໍ່ກົງກັນ
+    .warning-heading = ຫ້ອງເຫຼົ່ານີ້ມີຄ່າທີ່ບໍ່ແມ່ນປະເພດຂໍ້ມູນທີ່ເລືອກ.
+    .warning-note = ການແປງຈະອ່ານແຕ່ລະຄ່າເປັນປະເພດໃໝ່; ຄ່າທີ່ອ່ານບໍ່ໄດ້ຈະຖືກລ້າງ. ຍົກເລີກຈະບໍ່ປ່ຽນແປງຫ້ອງ.
+    .warning-ok = ແປງ
+    .warning-cancel = ຍົກເລີກ
+    .entry-title = Cell Value Does Not Match
+    .entry-heading = The typed value is not of this cell's data type.
+    .entry-type = Change the cell's data type
+    .entry-type-note = The cell takes the data type of the typed value and the value goes in.
+    .entry-value = Edit the value
+    .entry-value-note = The value goes back into the cell's editor to be corrected.
+
+parameters-manager =
+    .action-parameters = ພາຣາມິເຕີການກະທຳ
+    .filter = ຊື່*
+    .search = ຄົ້ນຫາພາຣາມິເຕີ
+    .order = ລຳດັບ
+    .polar = ແບບຂົ້ວ
+    .visibility = ການເບິ່ງເຫັນ
+    .variable = ຕົວແປ
+    .footer = ທັງໝົດ: ສະແດງ { $shown } ຈາກ { $total } ພາຣາມິເຕີ
+
+parameters-manager-feedback =
+    .no-number = ແຖວນີ້ບໍ່ມີຕົວເລກໃຫ້ແກ້ໄຂ.
+    .no-flag = ແຖວນີ້ບໍ່ມີທຸງການເບິ່ງເຫັນໃຫ້ປ່ຽນ.
+    .finite-number = ລະບຸຄ່າຕົວເລກພາຣາມິເຕີທີ່ຈຳກັດ.
+    .stale-session = ເຊດຊັນຕົວແກ້ໄຂບລັອກບໍ່ເປີດໃຊ້ແລ້ວ.
+    .positive-length = ລະບຸຄວາມຍາວພາຣາມິເຕີທີ່ເປັນບວກ.
+    .no-direction = ທິດທາງພາຣາມິເຕີບໍ່ພ້ອມໃຊ້.
+    .history = ແກ້ໄຂຕົວຈັດການພາຣາມິເຕີ
+
+block-action-targets =
+    .prompt = BACTIONSET  ເລືອກວັດຖຸ ຫຼື ພິມ Parameter ຕາມດ້ວຍຊື່ພາຣາມິເຕີ ແລ້ວກົດ Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .create-prompt = BACTION  ເລືອກວັດຖຸ ຫຼື ພິມ Parameter ຕາມດ້ວຍຊື່ພາຣາມິເຕີ ແລ້ວກົດ Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .unique-point = ປ້ອນຊື່ພາຣາມິເຕີທີ່ບໍ່ຊ້ຳ.
+    .empty = ການກະທຳຕ້ອງມີເປົ້າໝາຍຢ່າງໜ້ອຍໜຶ່ງລາຍການ.
+    .invalid = ເລືອກເປົ້າໝາຍທີ່ຮອງຮັບຂອງບລັອກນີ້.
+    .stale = ການກະທຳ ຫຼື ເຊດຊັນຕົວແກ້ໄຂບລັອກປ່ຽນແປງແລ້ວ; ເລີ່ມ BACTIONSET ໃໝ່.
+    .create-stale = ການກະທຳ ຫຼື ເຊດຊັນຕົວແກ້ໄຂບລັອກປ່ຽນແປງແລ້ວ; ເລີ່ມ BACTION ໃໝ່.
+
+revcloud-cmd =
+    .header = Minimum arc length: { $min }   Maximum arc length: { $max }   Style: { $style }   Type: { $kind }
+    .style-normal = Normal
+    .style-calligraphy = Calligraphy
+    .type-rectangular = Rectangular
+    .type-polygonal = Polygonal
+    .type-freehand = Freehand
+    .first-corner = REVCLOUD  Specify first corner point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .start-point = REVCLOUD  Specify start point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .first-point = REVCLOUD  Specify first point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .opposite = REVCLOUD  Specify opposite corner:
+    .next = REVCLOUD  Specify next point:
+    .next-undo = REVCLOUD  Specify next point or [Undo]:
+    .guide = REVCLOUD  Guide crosshairs along cloud path...
+    .arc = REVCLOUD  Specify approximate length of arc <{ $length }>:
+    .second = REVCLOUD  Specify second point:
+    .second-point = Specify second point:
+    .style = REVCLOUD  Select arc style [Normal/Calligraphy] <{ $style }>:
+    .object = REVCLOUD  Select object:
+    .reverse = REVCLOUD  Reverse direction [Yes/No] <No>:
+    .modify-select = REVCLOUD  Select polyline to modify:
+    .modify-first = REVCLOUD  Specify next point or [First point]:
+    .modify-start = REVCLOUD  Specify a start point:
+    .modify-side = REVCLOUD  Pick a side to erase:
+    .invalid-shape = Invalid shape to create revision cloud.
+    .finished = Revision cloud finished.
+    .unable = Unable to convert object, must be a polyline, spline, or circle.
+    .positive = Value must be positive and nonzero.
+    .numeric = Requires numeric distance or two points.
+    .keyword = Invalid option keyword.
+    .var-mode = Requires an integer between 0 and 2.
+    .var-onoff = Requires 0 or 1 only, or option keyword.
+
+wipeout-cmd =
+    .select-polyline = WIPEOUT  Select a closed polyline:
+    .polyline-invalid = The polyline must be closed and made up of only line segments.
+    .erase-polyline = WIPEOUT  Erase polyline? [Yes/No] <No>:
+    .frames = WIPEOUT  Enter mode [ON/OFF/Display but not plot] <{ $current }>:
+    .frame-on = ON
+    .frame-off = OFF
+    .frame-display = Display but not plot
+    .keyword = Invalid option keyword.
+    .point-or-keyword = 2D point or option keyword required.
+
+quad-menu =
+    .label = QUAD
+    .menu = Quad Cursor Menu
+    .pill-tip =
+        Quad cursor menu
+        Click to toggle on/off
+    .options-tip =
+        Quad display options
+        Click to choose
+    .show = Show the Quad cursor menu (Shift+F12, QUAD)
+    .on-hover = Hover an object: offer its commands
+    .on-select = A selection offers its shared commands
+    .on-void = Right-click in the void: creation commands
+    .suppress-hover = Suppress the hover quad while a selection exists
+    .hover-delay = Hover delay
+    .width = Quad width
+    .launch = Right-click over an object launches its default command directly (QUADCOMMANDLAUNCH)
+    .about = The Quad cursor menu appears at the cursor: default commands for what it points at, recent and creation commands otherwise (QUAD, QUADWIDTH).

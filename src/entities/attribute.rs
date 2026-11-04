@@ -251,6 +251,7 @@ fn build_attr_layout(
             is_vertical: false,
         };
         let layout = layout_mtext(&MTextRenderOpts {
+            layer_color: None,
             // Not an MTEXT: text in a fixed box, never columnar.
             columns: Default::default(),
             value: &display_value,
@@ -266,6 +267,7 @@ fn build_attr_layout(
             rectangle_height: 0.0,
             vertical_text: false,
             want_glyph_boxes: cells.is_some(),
+            break_long_words: false,
         });
         if let Some(out) = cells.as_deref_mut() {
             *out = Some((

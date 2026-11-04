@@ -902,6 +902,16 @@ impl OpenCADStudio {
             double_click_block_attedit: self.double_click_block_attedit,
             right_click_mode: self.right_click_mode,
             right_click_hold_ms: self.right_click_hold_ms,
+            quad: self.quad,
+            quad_on_hover: self.quad_on_hover,
+            quad_on_select: self.quad_on_select,
+            quad_on_right_click: self.quad_on_right_click,
+            quad_suppress_hover_when_selection: self.quad_suppress_hover_when_selection,
+            quad_width: crate::app::settings::clamp_quad_width(self.quad_width),
+            quad_command_launch: self.quad_command_launch,
+            quad_hover_delay_ms: crate::app::settings::clamp_quad_hover_delay_ms(
+                self.quad_hover_delay_ms,
+            ),
             grip_object_limit: self.grip_object_limit,
             image_frame: crate::scene::frame::profile_image_mode(),
             attdef_on_screen: crate::modules::draw::draw::attdef::session().on_screen,
@@ -923,6 +933,9 @@ impl OpenCADStudio {
             ole_hide: crate::entities::ole2frame::hide_mode(),
             ole_quality: crate::app::commands::ole_quality(),
             trim_extend_quick: crate::modules::draw::modify::trim::quick_mode(),
+            revcloud_create_mode: crate::entities::revcloud::create_mode(),
+            revcloud_arc_variance: crate::entities::revcloud::arc_variance(),
+            revcloud_grips: crate::entities::revcloud::grips_on(),
             #[cfg(not(target_arch = "wasm32"))]
             fonts_folder: crate::io::font_repo::fonts_folder().map(|p| p.display().to_string()),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1080,6 +1093,15 @@ impl OpenCADStudio {
         self.right_click_mode = s.right_click_mode;
         self.right_click_hold_ms =
             super::super::settings::clamp_right_click_hold_ms(s.right_click_hold_ms);
+        self.quad = s.quad;
+        self.quad_on_hover = s.quad_on_hover;
+        self.quad_on_select = s.quad_on_select;
+        self.quad_on_right_click = s.quad_on_right_click;
+        self.quad_suppress_hover_when_selection = s.quad_suppress_hover_when_selection;
+        self.quad_width = crate::app::settings::clamp_quad_width(s.quad_width);
+        self.quad_command_launch = s.quad_command_launch;
+        self.quad_hover_delay_ms =
+            crate::app::settings::clamp_quad_hover_delay_ms(s.quad_hover_delay_ms);
         self.grip_object_limit = s.grip_object_limit.clamp(0, 32767);
         crate::scene::frame::set_profile_image_mode(s.image_frame);
         crate::modules::draw::draw::attdef::session().on_screen = s.attdef_on_screen;
@@ -1102,6 +1124,9 @@ impl OpenCADStudio {
         crate::entities::ole2frame::set_hide_mode(s.ole_hide);
         crate::app::commands::set_ole_quality(s.ole_quality);
         crate::modules::draw::modify::trim::set_quick_mode(s.trim_extend_quick);
+        crate::entities::revcloud::set_create_mode(s.revcloud_create_mode);
+        crate::entities::revcloud::set_arc_variance(s.revcloud_arc_variance);
+        crate::entities::revcloud::set_grips_on(s.revcloud_grips);
         #[cfg(not(target_arch = "wasm32"))]
         {
             crate::io::font_repo::set_fonts_folder(s.fonts_folder.as_ref().map(Into::into));
@@ -1655,6 +1680,12 @@ impl OpenCADStudio {
         self.shortcut_bindings
             .entry("SHIFT+TAB".to_string())
             .or_insert_with(|| "DYNTABPREV".to_string());
+        // A config saved before the quad cursor menu carried no SHIFT+F12
+        // row; without this backfill `run_shortcut`'s bare-base-key fallback
+        // resolves SHIFT+F12 to F12 (DYNINPUT) and the quad never toggles.
+        self.shortcut_bindings
+            .entry("SHIFT+F12".to_string())
+            .or_insert_with(|| "QUADTOGGLE".to_string());
         self.shortcut_bindings
             .entry(if cfg!(target_os = "macos") { "CMD+R" } else { "CTRL+R" }.to_string())
             .or_insert_with(|| "NEXTVIEWPORT".to_string());
@@ -2102,6 +2133,7 @@ impl OpenCADStudio {
         }
         self.refresh_native_edit_guard_after_save(i, &path, path_changed, destination_lease);
         self.tabs[i].dirty = false;
+        self.tabs[i].scene.note_tables_saved();
         if set_current_path {
             self.tabs[i].recovery_save_as_required = false;
         }
@@ -2187,6 +2219,7 @@ impl OpenCADStudio {
         if self.opening.is_none() {
             return Task::none();
         }
+        let ui_started = iced::time::Instant::now();
         // Web drawings live under bare file names: two tabs sharing a name
         // also share the single browser-stored copy, and the last save
         // silently replaces the other tab's. Warn at open time — the
@@ -2614,6 +2647,13 @@ impl OpenCADStudio {
                 .set(crate::app::OPEN_PHASE_FINALIZING, 10000, 1, 1);
         }
         self.opening.take();
+        // The part of the open that blocks the UI thread, kept apart from the
+        // loader-thread phases so a slow handoff shows up on its own.
+        crate::perf_record!(
+            "[perf] open-ui-thread={}ms entities={}",
+            ui_started.elapsed().as_millis(),
+            entity_count,
+        );
         // The document and its derived caches have settled: the next message
         // boundary announces `DocumentOpened` to native plugins exactly once
         // for this load (API v9).
@@ -2958,6 +2998,7 @@ impl OpenCADStudio {
                         && self.tabs[i].scene.camera_generation == entry.camera_generation;
                     if snapshot_is_current {
                         self.tabs[i].dirty = false;
+                        self.tabs[i].scene.note_tables_saved();
                     }
                 }
                 Err(e) => self.command_line.push_error(
@@ -3450,6 +3491,7 @@ impl OpenCADStudio {
             && self.tabs[i].scene.camera_generation == camera_generation;
         if snapshot_is_current {
             self.tabs[i].dirty = false;
+            self.tabs[i].scene.note_tables_saved();
         }
         // A clean save supersedes any crash-recovery snapshot for this
         // drawing — drop the old key and the new one so stale copies don't
@@ -3866,7 +3908,8 @@ impl OpenCADStudio {
         match capture_window {
             // The screenshot may never come back (a window the compositor
             // does not draw), so it races a short timeout: whichever answers
-            // first runs the save, with or without the picture.
+            // first runs the save, with or without the picture. A minimized
+            // window is not read back at all: the save keeps the old preview.
             Some(window) => {
                 fn finish<F>(
                     slot: &std::sync::Mutex<Option<F>>,
@@ -3891,8 +3934,7 @@ impl OpenCADStudio {
                     let _ = tx.send(());
                 });
                 Task::batch([
-                    iced::window::screenshot(window)
-                        .map(Some)
+                    crate::app::screenshot_if_drawn(window)
                         .then(move |screenshot| finish(&shot_slot, screenshot)),
                     Task::perform(rx, |_| ()).then(move |_| finish(&timeout_slot, None)),
                 ])
@@ -4066,6 +4108,7 @@ impl OpenCADStudio {
                 );
                 if snapshot_is_current {
                     self.tabs[i].dirty = false;
+                    self.tabs[i].scene.note_tables_saved();
                 }
             }
         }
@@ -4237,6 +4280,11 @@ impl OpenCADStudio {
         };
         self.close_active_modal();
         self.pending_close = None;
+        // The drawing on this slot is replaced whole and its identity goes
+        // with it, so the positions it remembered go too: the drawing read
+        // back from disk is not the one that placed them.
+        crate::modules::draw::draw::attdef::session().forget_place_of(conflict.tab_id);
+        crate::modules::annotate::text::forget_place_of(conflict.tab_id);
         self.tab_counter += 1;
         self.tabs[i] = crate::app::document::DocumentTab::new_drawing(self.tab_counter);
         self.active_tab = i;
@@ -11009,5 +11057,184 @@ mod mtext_save_loss_tests {
             );
             assert!(app.pending_conversion_save.is_none(), "{name}");
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod external_change_reload_tests {
+    use crate::app::{
+        Message, OpenCADStudio, PendingExternalChange, SaveContinuation, SavePurpose,
+    };
+
+    /// The file the reload is told to read back, gone whatever the test does
+    /// next — including a failing assert.
+    struct TempFile(std::path::PathBuf);
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// Reloading a drawing that changed outside the app replaces the whole
+    /// tab, and the drawing read back from disk is a different drawing: the
+    /// place the replaced one remembered for its next attribute, and the line
+    /// TEXT would continue below, belong to the document that is gone.
+    #[test]
+    fn reloading_forgets_the_places_the_replaced_drawing_remembered() {
+        let mut app = OpenCADStudio::new_for_test();
+        let reloaded_id = app.push_test_document();
+        let kept_id = app.push_test_document();
+        let i = app
+            .tabs
+            .iter()
+            .position(|tab| tab.id == reloaded_id)
+            .expect("the drawing the reload replaces");
+        crate::modules::draw::draw::attdef::session().set_place(reloaded_id, &Default::default());
+        crate::modules::annotate::text::session().set_place(reloaded_id, &Default::default());
+        crate::modules::draw::draw::attdef::session().set_place(kept_id, &Default::default());
+        assert!(
+            crate::modules::draw::draw::attdef::session()
+                .last_in(reloaded_id)
+                .is_some(),
+            "the drawing about to be reloaded remembered a place"
+        );
+        assert!(
+            crate::modules::annotate::text::session()
+                .last_in(reloaded_id)
+                .is_some(),
+            "and a line to continue below"
+        );
+        assert!(
+            crate::modules::draw::draw::attdef::session()
+                .last_in(kept_id)
+                .is_some(),
+            "the drawing that stays open remembered its own"
+        );
+        let temp = TempFile(
+            std::env::temp_dir().join(format!("open_cad_studio_reload_{reloaded_id}.dxf")),
+        );
+        std::fs::write(&temp.0, b"").expect("the file the reload reads back");
+        app.pending_external_change = Some(PendingExternalChange {
+            tab_id: reloaded_id,
+            path: temp.0.clone(),
+            version: codec::DxfVersion::AC1027,
+            purpose: SavePurpose::Manual,
+            continuation: SaveContinuation::None,
+            set_current_path: true,
+        });
+
+        let _ = app.update(Message::ExternalChangeReload);
+
+        assert_ne!(
+            app.tabs[i].id, reloaded_id,
+            "the reloaded drawing is a fresh tab, not the one that was on disk"
+        );
+        assert!(
+            crate::modules::draw::draw::attdef::session()
+                .last_in(reloaded_id)
+                .is_none(),
+            "the place the replaced drawing remembered went with it"
+        );
+        assert!(
+            crate::modules::annotate::text::session()
+                .last_in(reloaded_id)
+                .is_none(),
+            "and so did the line it remembered"
+        );
+        assert!(
+            app.tabs.iter().any(|tab| tab.id == kept_id),
+            "the other drawing is still open"
+        );
+        assert!(
+            crate::modules::draw::draw::attdef::session()
+                .last_in(kept_id)
+                .is_some(),
+            "and keeps the place it remembered"
+        );
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod minimized_save_tests {
+    use crate::app::{Message, OpenCADStudio, SaveContinuation, SavePurpose};
+    use iced::futures::StreamExt;
+    use iced_runtime::window::Action as WindowAction;
+    use iced_runtime::Action;
+
+    /// A save driven with the window minimized (the MCP bridge saving while
+    /// the window sits in the taskbar) skipped the thumbnail check and read
+    /// a 0x0 window back: iced's renderer panics on that with "buffer slices
+    /// can not be empty" and took the program down. The save now asks the
+    /// window's size first and writes the file without a new preview.
+    #[test]
+    fn a_minimized_window_saves_without_reading_the_screen_back() {
+        let dir = std::env::temp_dir().join(format!(
+            "ocs-minimized-save-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("minimized.dxf");
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs
+            .push(crate::app::document::DocumentTab::new_drawing(1));
+        app.active_tab = app.tabs.len() - 1;
+        app.main_window = Some(iced::window::Id::unique());
+        // A drawn viewport from before the window was minimized.
+        crate::ui::wrap_bar::set_drawn_bounds(
+            crate::app::view::VIEWPORT_CAPTURE_BOUNDS_ID,
+            iced::Rectangle::new(iced::Point::ORIGIN, iced::Size::new(800.0, 600.0)),
+        );
+        app.thumbnail_capture_clean = true;
+        let task = app.queue_native_save(
+            app.active_tab,
+            path.clone(),
+            codec::DxfVersion::AC1027,
+            SavePurpose::Manual,
+            SaveContinuation::None,
+            true,
+            false,
+        );
+
+        let mut asked_size = false;
+        let mut outputs = Vec::new();
+        let mut stream = iced_runtime::task::into_stream(task).expect("the save runs a task");
+        while let Some(action) = iced::futures::executor::block_on(stream.next()) {
+            match action {
+                Action::Window(WindowAction::GetSize(_, reply)) => {
+                    asked_size = true;
+                    let _ = reply.send(iced::Size::ZERO);
+                }
+                Action::Window(WindowAction::Screenshot(..)) => {
+                    panic!("a minimized window was read back for the thumbnail")
+                }
+                Action::Output(message) => outputs.push(message),
+                _ => {}
+            }
+        }
+
+        assert!(
+            asked_size,
+            "the save asks the window's size before capturing"
+        );
+        assert!(outputs
+            .iter()
+            .any(|message| matches!(message, Message::ThumbnailCaptureFinished)));
+        let saved = outputs.into_iter().find_map(|message| match message {
+            Message::SaveFinished(outcome) => Some(outcome),
+            _ => None,
+        });
+        let saved = saved.expect("the save still runs");
+        assert!(
+            saved.result.is_ok(),
+            "save failed: {:?}",
+            saved.result.err()
+        );
+        assert!(saved.refreshed_preview.is_none());
+        assert!(path.is_file());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

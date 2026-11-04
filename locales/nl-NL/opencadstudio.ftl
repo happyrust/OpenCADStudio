@@ -2514,7 +2514,7 @@ common =
     .sectionplane-specify-through-point = SECTIONPLANE  Specify through point:
     .setbylayer-no-properties-required-changes = SETBYLAYER: no properties required changes.
     .setbylayer-reset-entity-entities-to-bylayer = SETBYLAYER: reset __ocs_fmt_0__ entity/entities to ByLayer.
-    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
+    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION QUAD QUADWIDTH QUADCOMMANDLAUNCH CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
     .shell-supports-rectangular-boxes-circular-cylinders-and-spheres = SHELL supports rectangular boxes, circular cylinders, and spheres.
     .shell-solid-updated = SHELL: solid updated.
     .splinedit-fit-data-add-delete-move-purge-tangents-exit-exit = SPLINEDIT  Fit data [Add/Delete/Move/Purge/Tangents/eXit] <eXit>:
@@ -3593,6 +3593,9 @@ layers =
     .layiso-isolated-layer-s = LAYISO: geïsoleerde __ocs_fmt_0__ laag(s).
     .layuniso-no-layers-were-isolated-by-layiso = LAYUNISO: er zijn geen lagen geïsoleerd met LAYISO.
     .laymatch-select-objects-to-change-layer = LAYMATCH Selecteer objecten om van laag te veranderen:
+    .copytolayer-base = Specify base point or [Displacement/eXit] <eXit>:
+    .copytolayer-second = Specify second point of displacement or <use first point as displacement>:
+    .copytolayer-displacement = Specify displacement <0.0000,0.0000,0.0000>:
     .copytolayer-select-objects-to-copy = COPYTOLAYER  Selecteer de te kopiëren objecten:
     .copytolayer-select-an-object-on-the-destination-layer = COPYTOLAYER  Selecteer een object op de doellaag:
     .laymatch-select-source-object-to-match-layer-f = LAYMATCH Selecteer bronobject om de laag van te vergelijken:
@@ -3614,6 +3617,7 @@ layers =
     .layer-s-frozen = Laag(s) bevroren.
     .layer-s-locked = Laag(s) vergrendeld.
     .layer-s-turned-off = Laag(s) uitgeschakeld.
+    .layoff-select-object-on-layer-undo = LAYOFF  Selecteer een object op de laag die uit moet of [Undo]:
     .layer-s-unlocked = Laag(s) ontgrendeld.
     .layers = Lagen: __ocs_fmt_0__
     .lock = Vergrendelen
@@ -3994,6 +3998,84 @@ annotate =
     .dimordinate-enter-dimension-text-blank-measured = DIMORDINATE  Voer maattekst in (leeg = gemeten waarde):
     .dimordinate-specify-text-angle-degrees = DIMORDINATE  Geef de teksthoek op (graden):
     .dimradius-select-arc-circle-or-polyline-arc = DIMRADIUS  Selecteer een boog, cirkel of polylijnboog:
+    .tcell-row-above =
+        Rij invoegen
+        Boven
+    .tcell-row-below =
+        Rij invoegen
+        Onder
+    .tcell-delete-rows =
+        Rijen
+        verwijderen
+    .tcell-col-left =
+        Kolom invoegen
+        Links
+    .tcell-col-right =
+        Kolom invoegen
+        Rechts
+    .tcell-delete-cols =
+        Kolommen
+        verwijderen
+    .tcell-merge =
+        Cellen
+        samenvoegen
+    .tcell-unmerge =
+        Cellen
+        splitsen
+    .tcell-lock =
+        Cel
+        vergrendelen
+    .tcell-edit =
+        Tekst
+        bewerken
+    .tcell-match =
+        Cel
+        afstemmen
+    .tcell-borders =
+        Cel-
+        randen
+    .tcell-format =
+        Gegevens-
+        opmaak
+    .tcell-block =
+        Symbool
+        invoegen
+    .tcell-field =
+        Veld
+        invoegen
+    .tcell-contents =
+        Celinhoud
+        beheren
+    .tcell-link =
+        Cel
+        koppelen
+    .tcell-download =
+        Downloaden
+        van bron
+    .tcell-row-style = Rijstijl
+    .tcell-column-style = Kolomstijl
+    .tcell-width = Celbreedte
+    .tcell-height = Celhoogte
+    .tcell-border-color = Randkleur
+    .tcell-border-lineweight = Lijndikte rand
+    .tcell-border-linetype = Lijntype rand
+    .tcell-locking = Celvergrendeling
+    .tcell-data-link = Gegevenskoppeling cel
+    .tcell-select-destination = Selecteer doelcel:
+    .tcell-select-cell = Selecteer tabelcel:
+    .tcell-range-first = Selecteer eerste hoek van tabelcelbereik:
+    .tcell-range-second = Selecteer tweede hoek van tabelcelbereik:
+    .tcell-align-prompt = Voer celuitlijning in [TL/TC/TR/ML/MC/MR/BL/BC/BR]:
+    .tcell-format-prompt = Voer gegevensopmaak in [Angle/Currency/Date/Decimal/General/Percentage/Point/Text/Whole]:
+    .tcell-block-prompt = Voer symboolnaam in of [?]:
+    .tcell-formula-prompt = Voer een formule in [Sum/Average/Count/Cell/Equation]:
+    .tcell-by-row-column = Per rij/kolom
+    .tcell-unlocked = Ontgrendeld
+    .tcell-content-locked = Inhoud vergrendeld
+    .tcell-format-locked = Opmaak vergrendeld
+    .tcell-content-format-locked = Inhoud en opmaak vergrendeld
+    .tcell-not-linked = Niet gekoppeld
+    .tcell-invalid-cell = Ongeldige cel.
 
 insert =
     .pastespec-specify-insertion-point = PASTESPEC  Geef invoegpunt op:
@@ -4606,6 +4688,7 @@ insert =
     .field-help = Inserts a field: text that updates from the drawing, the date or another source.
     .field-average = Average
     .field-sum = Sum
+    .field-insert = Insert Field
     .field-object-name = Object name
     .field-block-placeholder = Block placeholder
     .field-block-editor-only = Only accessible in the block editor
@@ -5512,6 +5595,9 @@ properties =
     .fit-tolerance = Tolerantie bij passen
     .fit-smooth-title-case = Passend/Smooth
     .fit-smooth-sentence-case = Passend/glad
+    .fit-curve-fit = Curve fit
+    .fit-quadratic = Quadratic
+    .fit-cubic = Cubic
     .fixed-elevation-range = Vaste hoogtebereik
     .flag = Vlag
     .flags = Vlaggen
@@ -5898,6 +5984,7 @@ properties =
     .wizard-flag = Wizard-vlag
     .x-scale = X schaal
     .zero = Nul
+    .transparency-color = Transparency Color
 
     .model-text-height = { common.model-uppercase } · { common.text-height-sentence-case }
     .insert-unit-scale-is-outside-the-supported-range = De eenheidsschaal van INSERT valt buiten het ondersteunde bereik.
@@ -6603,6 +6690,7 @@ dimstyle =
     .move-text-outside-first = Eerst tekst naar buiten verplaatsen
     .period = Punt
     .space = Spatie
+    .separator-none = (Geen)
     .surveyors-units = Landmeeteenheden
 
 style-manager =
@@ -6645,6 +6733,14 @@ style-manager =
     .inside-blocks = __ocs_fmt_0__ daarvan in __ocs_fmt_1__ blokdefinities.
     .used-by-one-text = gebruikt door 1 tekst
     .used-by-texts = gebruikt door __ocs_fmt_0__ teksten
+    .property-change = __ocs_fmt_0__: __ocs_fmt_1__ → __ocs_fmt_2__.
+    .property-change-other = Other stored settings of the style change.
+    .annotative-change-note = Existing texts keep their own setting; new texts take this one.
+    .style-redraw-one = 1 text that uses the style is redrawn; formatting set inside MTEXT stays.
+    .style-redraw-many = __ocs_fmt_0__ texts that use the style are redrawn; formatting set inside MTEXT stays.
+    .apply-count-one = 1 style, 1 property
+    .apply-count-one-style = 1 style, __ocs_fmt_0__ properties
+    .apply-count-many = __ocs_fmt_0__ styles, __ocs_fmt_1__ properties
     .import-styles = Stijlen importeren
     .select-drawing-to-import-styles-from = Tekening selecteren om stijlen uit te importeren
     .select-the-styles-to-import = Selecteer de stijlen die u wilt importeren
@@ -6943,6 +7039,7 @@ selection-report =
     .found-duplicate-total = __ocs_fmt_0__ found (__ocs_fmt_1__ duplicate), __ocs_fmt_2__ total
     .found-removed-total = __ocs_fmt_0__ found, __ocs_fmt_1__ removed, __ocs_fmt_2__ total
     .invalid-window = Invalid window specification.
+    .no-object = No object found
 
 block-def =
     .name-too-short = The name must be at least one character long.
@@ -7213,6 +7310,7 @@ dgn-import =
     .dgn-import = DGN Import
     .import-dgn-file = Import DGN File
     .import-wmf = WMF importeren
+    .import-svg = SVG importeren
     .help-dgn = Imports a DGN model as drawing objects: levels as layers, cells as blocks.
     .help-import = Imports a file of the chosen format with the format's importer.
     .blank = Filename cannot be blank
@@ -8155,3 +8253,332 @@ array-grips = Aantal items
 block-chain =
     .label = Acties koppelen
     .cycle = De actieketen van het blok bevat een cyclus.
+
+block-action-bars =
+    .requires-session = BACTIONBAR vereist een actieve sessie in de blokeditor.
+    .enable-display = Stel BACTIONBARMODE in op 1 om actiebalken weer te geven.
+    .parameters-changed = De parameterlijst is gewijzigd; start BACTIONBAR opnieuw.
+    .display-updated = De weergave van actiebalken is bijgewerkt.
+    .prompt-mode = BACTIONBAR  [Show/Hide/Reset]:
+    .prompt-selected = BACTIONBAR  Selecteer een parameter, voer de naam in of [All] <Geselecteerd>:
+    .prompt-all = BACTIONBAR  Selecteer een parameter, voer de naam in of [All] <All>:
+    .choose-mode = Kies Show, Hide of Reset.
+    .unique-parameter = Voer een unieke parameternaam in, selecteer het eindpunt of kies All.
+    .enter-parameter = Voer een parameternaam in of kies All.
+    .pick-endpoint = Selecteer een parametereindpunt of kies All.
+
+block-construction =
+    .requires-session = BCONSTRUCTION is alleen beschikbaar in de blokeditor.
+    .choose-operation = Kies Convert, Revert, Show of Hide.
+    .stale-session = De blokeditorsessie voor de constructiegeometrie is niet meer actief.
+    .changed-count = __ocs_fmt_0__ geometrieobjecten gewijzigd.
+    .prompt-selection = BCONSTRUCTION  Selecteer geometrie of [Convert/Revert/Show/Hide]:
+    .prompt-operation = BCONSTRUCTION  Kies [Convert/Revert] <Convert>, of druk op Enter om de geselecteerde bewerking toe te passen:
+    .revert = Terugzetten
+    .history = Constructiegeometrie bewerken
+    .unsupported-record = Dit constructierecord heeft een niet-ondersteunde versie of waarde.
+    .open-definition = Open een blokdefinitie voordat u constructiegeometrie bewerkt.
+    .missing-object = Een geselecteerd constructieobject is niet meer beschikbaar.
+    .active-geometry = Selecteer geometrie in de actieve blokdefinitie.
+    .locked-layer = Constructiegeometrie kan niet worden gewijzigd op een vergrendelde laag.
+    .revert-layer = Kies een bestaande ontgrendelde laag voor de teruggezette geometrie.
+
+block-authoring-history =
+    .alignment-type = Uitlijningstype
+    .action-override = Overschrijving van blokactie bewerken
+    .action-chain = Blokactieketen bewerken
+    .action-base = Basispunt van blokactie bewerken
+    .parameter-chain = BEDIT Parameteracties koppelen
+    .value-set = BEDIT Parameterwaardenset
+    .parameter-metadata = Metagegevens van blokparameter bewerken
+    .authoring-grip = Blokontwerpgreep
+
+block-operation-history =
+    .reset-references = Blokverwijzingen herstellen
+    .associate-action = Blokactie koppelen
+    .action-selection = Actieselectieset
+    .test-parameter = Parameter van testblok
+    .reference-parameter = Parameter van blokverwijzing
+    .align-reference = Blokverwijzing uitlijnen
+    .insertion-grip-order = Volgorde van invoeggrepen wijzigen
+    .move-grip = Oorspronkelijke blokgreep verplaatsen
+    .configure-grips = Blokparametergrepen instellen
+    .lookup-tables = Opzoektabellen
+    .hyperlink = Blokhyperlink
+    .properties = Blokeigenschappen
+    .properties-table = Blokeigenschappentabel
+    .visibility-state = Zichtbaarheidsstatus
+    .visibility-states = Zichtbaarheidsstatussen
+
+block-formatted-history =
+    .action = Actie { $label }
+    .parameter = Parameter { $label }
+    .edit-block = Blok { $label } bewerken
+    .save-block = Blok opslaan als { $label }
+    .delete-block = Blok { $label } verwijderen
+
+block-history-kinds =
+    .flip = Omkeren
+    .polar-stretch = Polair uitrekken
+    .basepoint = Basispunt
+    .lookup = Opzoeken
+
+block-action-properties =
+    .base-point = Basispunt van actie
+    .overrides = Actieoverschrijvingen
+    .multiplier = Afstandsfactor
+    .angle-offset = Hoekverschuiving (graden)
+    .chain = Actieketen
+    .chain-to = Koppelen aan
+
+block-parameter-properties =
+    .show-properties = Tonen in eigenschappen
+    .parameter-name = Parameternaam
+    .grip-count = Aantal grepen
+    .dependent-base = Afhankelijk basispunt
+    .offset-x = Basisverschuiving X
+    .offset-y = Basisverschuiving Y
+    .base-grip = Positie basisgreep
+    .end-grip = Positie eindgreep
+    .x-grip = Positie X-greep
+    .y-grip = Positie Y-greep
+
+block-value-set =
+    .use-min = Minimum voor { $label } gebruiken
+    .use-max = Maximum voor { $label } gebruiken
+    .use-increment = Stap voor { $label } gebruiken
+    .use-list = Lijst met toegestane waarden voor { $label } gebruiken
+    .min = Minimum voor { $label }
+    .max = Maximum voor { $label }
+    .increment = Stap voor { $label }
+    .values = Toegestane waarden voor { $label }
+    .title = Waardenset
+    .x-distance = X-afstand
+    .y-distance = Y-afstand
+
+table-style-cells =
+    .tbl-start-from-style = Beginnen vanuit tabelstijl
+    .tbl-extra-columns = Extra kolommen
+    .tbl-extra-rows = Extra rijen
+    .tbl-keep-from-template = Behouden uit de begintabel:
+    .tbl-keep-label-text = Tekst van labelcellen
+    .tbl-keep-data-text = Tekst van gegevenscellen
+    .tbl-keep-overrides = Celstijl-overschrijvingen
+    .tbl-keep-links = Gegevenskoppelingen
+    .tbl-keep-fields = Velden
+    .tbl-keep-formulas = Formules
+    .tbl-extra-whole = Extra rijen en kolommen moeten gehele getallen zijn.
+    .from-style-insertion = __ocs_arg_n__  Geef invoegpunt op of [Style/Rows/Columns/Options]:
+    .from-style-name = __ocs_arg_n__  Voer de naam van een tabelstijl in of [?] <__ocs_arg_style__>:
+    .from-style-rows = __ocs_arg_n__  Voer aantal extra rijen in <__ocs_arg_rows__>:
+    .from-style-columns = __ocs_arg_n__  Voer aantal extra kolommen in <__ocs_arg_columns__>:
+    .from-style-options = __ocs_arg_n__  Voer een invoegoptie in [Label text/Data text/Formulas/fIelds/data liNks/Blocks/cell style Overrides] <exit>:
+    .from-style-option = __ocs_arg_n__  __ocs_arg_what__ opnemen in ingevoegde tabel? [Yes/No] <__ocs_arg_current__>:
+    .label-text = labeltekst
+    .data-text = gegevenstekst
+    .formulas = formules
+    .fields = velden
+    .data-links = gegevenskoppelingen
+    .blocks = symbolen
+    .cell-style-overrides = celstijl-overschrijvingen
+    .style-name-header = Naam tabelstijl
+    .no-starting-table = Tabelstijl bevat geen tabel.
+    .select-table = Selecteer een tabel:
+    .not-a-table = Het object is geen tabel.
+    .cell-style-exists = Er bestaat al een celstijl met deze naam.
+    .cell-style-in-use = De celstijl is in gebruik en kan niet worden verwijderd.
+    .template-size = __ocs_arg_rows__ rijen × __ocs_arg_columns__ kolommen
+    .cell-properties = Celeigenschappen
+    .cell-text = Celtekst
+    .cell-borders = Celranden
+    .cell-styles = Celstijlen
+    .label = Label
+    .margins = Marges
+    .merge-on-create = Cellen samenvoegen bij maken van rij/kolom
+    .new-from-this = Nieuw op basis hiervan
+    .new-name = Nieuwe naam
+    .real-number = Reëel getal
+    .whole-number = Geheel getal
+    .select-table-button = Tabel selecteren…
+    .starting-table = Begintabel
+    .table-direction = Tabelrichting
+
+table-cells =
+    .borders-title = Celranden
+    .contents-title = Celinhoud
+    .line = Lijn
+    .lineweight = Lijndikte
+    .linetype = Lijntype
+    .color = Kleur
+    .double = Dubbele lijn
+    .spacing = Afstand
+    .apply-to = Toepassen op
+    .all = Alle
+    .outside = Buiten
+    .inside = Binnen
+    .none = Geen
+    .top = Boven
+    .bottom = Onder
+    .left = Links
+    .right = Rechts
+    .inside-horizontal = Binnen horizontaal
+    .inside-vertical = Binnen verticaal
+    .contents = Inhoud
+    .empty = De cel is leeg.
+    .move-up = Omhoog
+    .move-down = Omlaag
+    .delete = Verwijderen
+    .layout = Indeling
+    .flow = Doorlopend
+    .stack-horizontal = Horizontaal gestapeld
+    .stack-vertical = Verticaal gestapeld
+    .content-spacing = Afstand
+    .block-item = Symbool: { $name }
+    .text-item = Tekst: { $text }
+    .text-content = Tekst tabelcel
+    .borders-help = Stelt de lijndikte, het lijntype en de kleur van de randen van de gekozen cellen in; kies op welke zijden ze komen.
+    .contents-help = Ordent, verwijdert en schikt de inhoud van de gekozen cel.
+    .block-title = Celsymbool
+    .format-title = Gegevensopmaak cel
+    .block = Symbool
+    .block-name = Naam
+    .browse = Bladeren...
+    .block-path = Pad
+    .placement = Plaatsing
+    .alignment = Celuitlijning
+    .scale = Schaal
+    .autofit = Automatisch passen
+    .rotation = Rotatiehoek
+    .format = Opmaak
+    .current-precision = Huidige precisie
+    .precision = Precisie
+    .symbol = Teken
+    .append-symbol = Teken achteraan
+    .negative-parens = Negatieve waarden tussen haakjes
+    .list-separator = Lijstscheidingsteken
+    .date-format = Datumnotatie
+    .no-format-settings = Dit gegevenstype heeft geen opmaakinstellingen.
+    .data-type = Gegevenstype
+    .format-settings = Opmaak
+    .currency = Valuta
+    .decimal-number = Decimaal getal
+    .percentage = Percentage
+    .whole-number = Geheel getal
+    .grads = Gon
+    .sample-text = voorbeeldtekst
+    .block-help = Plaatst een symbool in de gekozen cellen: de positie, de schaal (of passend in de cel) en de rotatie.
+    .format-help = Stelt het gegevenstype en de opmaak in waarmee de waarden van de gekozen cellen worden gelezen.
+    .additional-format = Aanvullende opmaak
+    .conversion = Conversiefactor
+    .prefix = Voorvoegsel
+    .suffix = Achtervoegsel
+    .decimal-separator = Decimaalscheidingsteken
+    .thousands-separator = Scheidingsteken duizendtallen
+    .space = Spatie
+    .separator-none = (Geen)
+    .zero-leading = Voorloopnullen
+    .zero-trailing = Volgnullen
+    .zero-feet = 0 voet
+    .zero-inches = 0 inch
+    .warning-title = Gegevenstype komt niet overeen
+    .warning-heading = Deze cellen bevatten waarden die niet van het gekozen gegevenstype zijn.
+    .warning-note = Bij converteren wordt elke waarde als het nieuwe type gelezen; een waarde die zo niet gelezen kan worden, wordt gewist. Annuleren laat de cellen ongewijzigd.
+    .warning-ok = Converteren
+    .warning-cancel = Annuleren
+    .entry-title = Cell Value Does Not Match
+    .entry-heading = The typed value is not of this cell's data type.
+    .entry-type = Change the cell's data type
+    .entry-type-note = The cell takes the data type of the typed value and the value goes in.
+    .entry-value = Edit the value
+    .entry-value-note = The value goes back into the cell's editor to be corrected.
+
+parameters-manager =
+    .action-parameters = Actieparameters
+    .filter = Naam*
+    .search = Parameter zoeken
+    .order = Volgorde
+    .polar = Polair
+    .visibility = Zichtbaarheid
+    .variable = Variabele
+    .footer = Alles: { $shown } van { $total } parameters weergegeven
+
+parameters-manager-feedback =
+    .no-number = Deze rij bevat geen getal om te bewerken.
+    .no-flag = Deze rij bevat geen zichtbaarheidsvlag om te wijzigen.
+    .finite-number = Geef een eindige numerieke parameterwaarde op.
+    .stale-session = De blokeditorsessie is niet meer actief.
+    .positive-length = Geef een positieve parameterlengte op.
+    .no-direction = De parameterrichting is niet beschikbaar.
+    .history = Parameterbeheer bewerken
+
+block-action-targets =
+    .prompt = BACTIONSET  Selecteer objecten of typ Parameter gevolgd door een parameternaam en druk op Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .create-prompt = BACTION  Selecteer objecten of typ Parameter gevolgd door een parameternaam en druk op Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .unique-point = Voer een unieke parameternaam in.
+    .empty = Een actie heeft ten minste één doel nodig.
+    .invalid = Selecteer ondersteunde doelen in dit blok.
+    .stale = De actie of blokeditorsessie is gewijzigd; start BACTIONSET opnieuw.
+    .create-stale = De actie of blokeditorsessie is gewijzigd; start BACTION opnieuw.
+
+revcloud-cmd =
+    .header = Minimum arc length: { $min }   Maximum arc length: { $max }   Style: { $style }   Type: { $kind }
+    .style-normal = Normal
+    .style-calligraphy = Calligraphy
+    .type-rectangular = Rectangular
+    .type-polygonal = Polygonal
+    .type-freehand = Freehand
+    .first-corner = REVCLOUD  Specify first corner point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .start-point = REVCLOUD  Specify start point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .first-point = REVCLOUD  Specify first point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .opposite = REVCLOUD  Specify opposite corner:
+    .next = REVCLOUD  Specify next point:
+    .next-undo = REVCLOUD  Specify next point or [Undo]:
+    .guide = REVCLOUD  Guide crosshairs along cloud path...
+    .arc = REVCLOUD  Specify approximate length of arc <{ $length }>:
+    .second = REVCLOUD  Specify second point:
+    .second-point = Specify second point:
+    .style = REVCLOUD  Select arc style [Normal/Calligraphy] <{ $style }>:
+    .object = REVCLOUD  Select object:
+    .reverse = REVCLOUD  Reverse direction [Yes/No] <No>:
+    .modify-select = REVCLOUD  Select polyline to modify:
+    .modify-first = REVCLOUD  Specify next point or [First point]:
+    .modify-start = REVCLOUD  Specify a start point:
+    .modify-side = REVCLOUD  Pick a side to erase:
+    .invalid-shape = Invalid shape to create revision cloud.
+    .finished = Revision cloud finished.
+    .unable = Unable to convert object, must be a polyline, spline, or circle.
+    .positive = Value must be positive and nonzero.
+    .numeric = Requires numeric distance or two points.
+    .keyword = Invalid option keyword.
+    .var-mode = Requires an integer between 0 and 2.
+    .var-onoff = Requires 0 or 1 only, or option keyword.
+
+wipeout-cmd =
+    .select-polyline = WIPEOUT  Select a closed polyline:
+    .polyline-invalid = The polyline must be closed and made up of only line segments.
+    .erase-polyline = WIPEOUT  Erase polyline? [Yes/No] <No>:
+    .frames = WIPEOUT  Enter mode [ON/OFF/Display but not plot] <{ $current }>:
+    .frame-on = ON
+    .frame-off = OFF
+    .frame-display = Display but not plot
+    .keyword = Invalid option keyword.
+    .point-or-keyword = 2D point or option keyword required.
+
+quad-menu =
+    .label = QUAD
+    .menu = Quad Cursor Menu
+    .pill-tip =
+        Quad cursor menu
+        Click to toggle on/off
+    .options-tip =
+        Quad display options
+        Click to choose
+    .show = Show the Quad cursor menu (Shift+F12, QUAD)
+    .on-hover = Hover an object: offer its commands
+    .on-select = A selection offers its shared commands
+    .on-void = Right-click in the void: creation commands
+    .suppress-hover = Suppress the hover quad while a selection exists
+    .hover-delay = Hover delay
+    .width = Quad width
+    .launch = Right-click over an object launches its default command directly (QUADCOMMANDLAUNCH)
+    .about = The Quad cursor menu appears at the cursor: default commands for what it points at, recent and creation commands otherwise (QUAD, QUADWIDTH).

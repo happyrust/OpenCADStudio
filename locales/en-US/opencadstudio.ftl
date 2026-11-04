@@ -2514,7 +2514,7 @@ common =
     .sectionplane-specify-through-point = SECTIONPLANE  Specify through point:
     .setbylayer-no-properties-required-changes = SETBYLAYER: no properties required changes.
     .setbylayer-reset-entity-entities-to-bylayer = SETBYLAYER: reset __ocs_fmt_0__ entity/entities to ByLayer.
-    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
+    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION QUAD QUADWIDTH QUADCOMMANDLAUNCH CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
     .shell-supports-rectangular-boxes-circular-cylinders-and-spheres = SHELL supports rectangular boxes, circular cylinders, and spheres.
     .shell-solid-updated = SHELL: solid updated.
     .splinedit-fit-data-add-delete-move-purge-tangents-exit-exit = SPLINEDIT  Fit data [Add/Delete/Move/Purge/Tangents/eXit] <eXit>:
@@ -3598,6 +3598,9 @@ layers =
     .lock-and-fade = Lock and Fade
     .layuniso-no-layers-were-isolated-by-layiso = LAYUNISO: no layers were isolated by LAYISO.
     .laymatch-select-objects-to-change-layer = LAYMATCH  Select objects to change layer:
+    .copytolayer-base = Specify base point or [Displacement/eXit] <eXit>:
+    .copytolayer-second = Specify second point of displacement or <use first point as displacement>:
+    .copytolayer-displacement = Specify displacement <0.0000,0.0000,0.0000>:
     .copytolayer-select-objects-to-copy = COPYTOLAYER  Select objects to copy:
     .copytolayer-select-an-object-on-the-destination-layer = COPYTOLAYER  Select an object on the destination layer:
     .laymatch-select-source-object-to-match-layer-f = LAYMATCH  Select source object to match layer from:
@@ -3619,6 +3622,7 @@ layers =
     .layer-s-frozen = Layer(s) frozen.
     .layer-s-locked = Layer(s) locked.
     .layer-s-turned-off = Layer(s) turned off.
+    .layoff-select-object-on-layer-undo = LAYOFF  Select an object on the layer to be turned off or [Undo]:
     .layer-s-unlocked = Layer(s) unlocked.
     .layers = Layers: __ocs_fmt_0__
     .lock = Lock
@@ -3755,6 +3759,84 @@ layers =
     .layer-turned-on-so-the-sheet-layer-can-show = Layer __ocs_fmt_0__ turned on so the sheet layer can show
 
 annotate =
+    .tcell-row-above =
+        Insert Row
+        Above
+    .tcell-row-below =
+        Insert Row
+        Below
+    .tcell-delete-rows =
+        Delete
+        Rows
+    .tcell-col-left =
+        Insert Column
+        Left
+    .tcell-col-right =
+        Insert Column
+        Right
+    .tcell-delete-cols =
+        Delete
+        Columns
+    .tcell-merge =
+        Merge
+        Cells
+    .tcell-unmerge =
+        Unmerge
+        Cells
+    .tcell-lock =
+        Cell
+        Locking
+    .tcell-edit =
+        Edit
+        Text
+    .tcell-match =
+        Match
+        Cell
+    .tcell-borders =
+        Cell
+        Borders
+    .tcell-format =
+        Data
+        Format
+    .tcell-block =
+        Insert
+        Block
+    .tcell-field =
+        Insert
+        Field
+    .tcell-contents =
+        Manage Cell
+        Contents
+    .tcell-link =
+        Link
+        Cell
+    .tcell-download =
+        Download
+        from Source
+    .tcell-row-style = Row style
+    .tcell-column-style = Column style
+    .tcell-width = Cell width
+    .tcell-height = Cell height
+    .tcell-border-color = Border color
+    .tcell-border-lineweight = Border lineweight
+    .tcell-border-linetype = Border linetype
+    .tcell-locking = Cell locking
+    .tcell-data-link = Cell data link
+    .tcell-select-destination = Select destination cell:
+    .tcell-select-cell = Select table cell:
+    .tcell-range-first = Select first corner of table cell range:
+    .tcell-range-second = Select second corner of table cell range:
+    .tcell-align-prompt = Enter cell alignment [TL/TC/TR/ML/MC/MR/BL/BC/BR]:
+    .tcell-format-prompt = Enter data format [Angle/Currency/Date/Decimal/General/Percentage/Point/Text/Whole]:
+    .tcell-block-prompt = Enter block name or [?]:
+    .tcell-formula-prompt = Enter a formula [Sum/Average/Count/Cell/Equation]:
+    .tcell-by-row-column = By Row/Column
+    .tcell-unlocked = Unlocked
+    .tcell-content-locked = Content locked
+    .tcell-format-locked = Format locked
+    .tcell-content-format-locked = Content and format locked
+    .tcell-not-linked = Not linked
+    .tcell-invalid-cell = Invalid cell.
     .dimoverride-invalid-override = DIMOVERRIDE: invalid override "__ocs_fmt_0__".
     .dimoverride-no-dimensions = DIMOVERRIDE: no editable dimensions were selected.
     .dimoverride-updated = DIMOVERRIDE: updated __ocs_fmt_0__ dimension(s).
@@ -4609,6 +4691,7 @@ insert =
     .field-help = Inserts a field: text that updates from the drawing, the date or another source.
     .field-average = Average
     .field-sum = Sum
+    .field-insert = Insert Field
     .field-object-name = Object name
     .field-block-placeholder = Block placeholder
     .field-block-editor-only = Only accessible in the block editor
@@ -5310,6 +5393,7 @@ properties =
     .arc-y = Arc Y
     .arc-z = Arc Z
     .arc-length = Arc length
+    .transparency-color = Transparency Color
     .arc-aligned-text = Arc-Aligned Text
     .arrow = Arrow
     .associative = Associative
@@ -5512,6 +5596,9 @@ properties =
     .fit-tolerance-sentence-case = Fit tolerance
     .fit-smooth-title-case = Fit/Smooth
     .fit-smooth-sentence-case = Fit/smooth
+    .fit-curve-fit = Curve fit
+    .fit-quadratic = Quadratic
+    .fit-cubic = Cubic
     .fixed-elevation-range = Fixed Elevation Range
     .flag = Flag
     .flags = Flags
@@ -6606,10 +6693,11 @@ dimstyle =
     .move-text-outside-first = Move text outside first
     .period = Period
     .space = Space
+    .separator-none = (None)
     .surveyors-units = Surveyor's units
 
 style-manager =
-    .use-big-font = Use Big Font
+    .use-big-font = Use SHX Big Font
     .number-field-range = Use digits and a decimal point. Enter a value from __ocs_fmt_0__ to __ocs_fmt_1__.
     .number-field-non-negative = Enter 0 or a positive number.
     .number-field-angle = Must be between __ocs_fmt_0__° and __ocs_fmt_1__°.
@@ -6631,15 +6719,15 @@ style-manager =
     .style-update-in-blocks = Inside block definitions: __ocs_fmt_0__.
     .style-update-keeps-one = 1 text with its own value keeps it.
     .style-update-keeps-many = __ocs_fmt_0__ texts with their own value keep them.
-    .style-update-xref-undo = Texts in external references are not changed. One undo step with the style change.
+    .style-update-xref-undo = Texts in external references do not change. A single Undo reverts every change.
     .rename-hint = Double-click a name to rename it.
     .modified-was = Modified · was __ocs_fmt_0__
-    .height-asked-hint = 0 = the height is asked when the text is placed.
+    .height-asked-hint = 0 = the height is asked for when the text is placed.
     .annotative-paper-hint = On: the height above is the paper height.
     .backward-hint = Backward and Upside down affect single-line text and attributes, not MTEXT.
-    .on-apply = On Apply
+    .on-apply = Apply will change
     .sample-text = Sample text
-    .where-used = Where used
+    .where-used = Texts using this style
     .kind-single-line-text = Single-line text
     .kind-mtext = MTEXT
     .kind-attribute-definitions = Attribute definitions
@@ -6648,6 +6736,14 @@ style-manager =
     .inside-blocks = __ocs_fmt_0__ of them inside __ocs_fmt_1__ block definitions.
     .used-by-one-text = used by 1 text
     .used-by-texts = used by __ocs_fmt_0__ texts
+    .property-change = __ocs_fmt_0__: __ocs_fmt_1__ → __ocs_fmt_2__.
+    .property-change-other = Other stored settings of the style change.
+    .annotative-change-note = Existing texts keep their own setting; new texts take this one.
+    .style-redraw-one = 1 text that uses the style is redrawn; formatting set inside MTEXT stays.
+    .style-redraw-many = __ocs_fmt_0__ texts that use the style are redrawn; formatting set inside MTEXT stays.
+    .apply-count-one = 1 style, 1 property
+    .apply-count-one-style = 1 style, __ocs_fmt_0__ properties
+    .apply-count-many = __ocs_fmt_0__ styles, __ocs_fmt_1__ properties
     .import-styles = Import Styles
     .select-drawing-to-import-styles-from = Select Drawing to Import Styles From
     .select-the-styles-to-import = Select the styles to import
@@ -6660,7 +6756,7 @@ style-manager =
     .always-left-align = Always left align
     .attachment-direction = Attachment direction
     .background-fill-enabled = Background fill enabled
-    .big-font = Big font
+    .big-font = Big Font file
     .block-scale-x = Block scale X
     .block-scale-y = Block scale Y
     .block-scale-z = Block scale Z
@@ -6946,6 +7042,7 @@ selection-report =
     .found-duplicate-total = __ocs_fmt_0__ found (__ocs_fmt_1__ duplicate), __ocs_fmt_2__ total
     .found-removed-total = __ocs_fmt_0__ found, __ocs_fmt_1__ removed, __ocs_fmt_2__ total
     .invalid-window = Invalid window specification.
+    .no-object = No object found
 
 block-def =
     .name-too-short = The name must be at least one character long.
@@ -7216,6 +7313,7 @@ dgn-import =
     .dgn-import = DGN Import
     .import-dgn-file = Import DGN File
     .import-wmf = Import WMF
+    .import-svg = Import SVG
     .help-dgn = Imports a DGN model as drawing objects: levels as layers, cells as blocks.
     .help-import = Imports a file of the chosen format with the format's importer.
     .blank = Filename cannot be blank
@@ -7934,6 +8032,52 @@ table-cmd =
     .lines = Line(s)
     .styles-in-use = Styles in use
 
+table-style-cells =
+    .tbl-start-from-style = Start from table style
+    .tbl-extra-columns = Additional columns
+    .tbl-extra-rows = Additional rows
+    .tbl-keep-from-template = Keep from the starting table:
+    .tbl-keep-label-text = Label cell text
+    .tbl-keep-data-text = Data cell text
+    .tbl-keep-overrides = Cell style overrides
+    .tbl-keep-links = Data links
+    .tbl-keep-fields = Fields
+    .tbl-keep-formulas = Formulas
+    .tbl-extra-whole = Additional rows and columns must be whole numbers.
+    .from-style-insertion = __ocs_arg_n__  Specify insertion point or [Style/Rows/Columns/Options]:
+    .from-style-name = __ocs_arg_n__  Enter the name of a table style or [?] <__ocs_arg_style__>:
+    .from-style-rows = __ocs_arg_n__  Enter number of additional rows <__ocs_arg_rows__>:
+    .from-style-columns = __ocs_arg_n__  Enter number of additional columns <__ocs_arg_columns__>:
+    .from-style-options = __ocs_arg_n__  Enter an insert option [Label text/Data text/Formulas/fIelds/data liNks/Blocks/cell style Overrides] <exit>:
+    .from-style-option = __ocs_arg_n__  Include __ocs_arg_what__ in inserted table? [Yes/No] <__ocs_arg_current__>:
+    .label-text = label text
+    .data-text = data text
+    .formulas = formulas
+    .fields = fields
+    .data-links = data links
+    .blocks = blocks
+    .cell-style-overrides = cell style overrides
+    .style-name-header = Table Style Name
+    .no-starting-table = Table style does not contain a table.
+    .select-table = Select a table:
+    .not-a-table = The object is not a table.
+    .cell-style-exists = A cell style with this name already exists.
+    .cell-style-in-use = The cell style is in use and cannot be deleted.
+    .template-size = __ocs_arg_rows__ rows × __ocs_arg_columns__ columns
+    .cell-properties = Cell Properties
+    .cell-text = Cell Text
+    .cell-borders = Cell Borders
+    .cell-styles = Cell styles
+    .label = Label
+    .margins = Margins
+    .merge-on-create = Merge cells on row/column creation
+    .new-from-this = New from this
+    .new-name = New name
+    .real-number = Real number
+    .whole-number = Whole number
+    .select-table-button = Select table…
+    .starting-table = Starting table
+    .table-direction = Table direction
 center-cmd =
     .mark-select = CENTERMARK  Select circle or arc to add center mark or [Layer]:
     .mark-invalid = Object selected is not a circle or arc.
@@ -8155,6 +8299,287 @@ array-grips = Item count
     .prompt-item-spacing = Specify the distance between items:
     .prompt-item-angle = Specify the angle between items:
     .prompt-radius = Specify radius:
+table-cells =
+    .borders-title = Cell Borders
+    .contents-title = Cell Contents
+    .line = Line
+    .lineweight = Lineweight
+    .linetype = Linetype
+    .color = Color
+    .double = Double line
+    .spacing = Spacing
+    .apply-to = Apply to
+    .all = All
+    .outside = Outside
+    .inside = Inside
+    .none = None
+    .top = Top
+    .bottom = Bottom
+    .left = Left
+    .right = Right
+    .inside-horizontal = Inside horizontal
+    .inside-vertical = Inside vertical
+    .contents = Contents
+    .empty = The cell is empty.
+    .move-up = Move up
+    .move-down = Move down
+    .delete = Delete
+    .layout = Layout
+    .flow = Flow
+    .stack-horizontal = Stacked horizontally
+    .stack-vertical = Stacked vertically
+    .content-spacing = Spacing
+    .block-item = Block: { $name }
+    .text-item = Text: { $text }
+    .text-content = Table Cell Text
+    .borders-help = Sets the lineweight, linetype and color of the borders of the picked cells; choose the edges they go on.
+    .contents-help = Orders, removes and lays out the contents of the picked cell.
+    .block-title = Cell Block
+    .format-title = Cell Data Format
+    .block = Block
+    .block-name = Name
+    .browse = Browse...
+    .block-path = Path
+    .placement = Placement
+    .alignment = Cell alignment
+    .scale = Scale
+    .autofit = AutoFit
+    .rotation = Rotation angle
+    .format = Format
+    .current-precision = Current precision
+    .precision = Precision
+    .symbol = Symbol
+    .append-symbol = Append symbol
+    .negative-parens = Negatives in parentheses
+    .list-separator = List separator
+    .date-format = Date format
+    .no-format-settings = This data type has no format settings.
+    .data-type = Data type
+    .format-settings = Format
+    .currency = Currency
+    .decimal-number = Decimal Number
+    .percentage = Percentage
+    .whole-number = Whole Number
+    .grads = Grads
+    .sample-text = sample text
+    .block-help = Puts a block into the picked cells: where it sits, its scale (or fitted to the cell) and its rotation.
+    .format-help = Sets the data type and format the picked cells' values read with.
+    .additional-format = Additional format
+    .conversion = Conversion factor
+    .prefix = Prefix
+    .suffix = Suffix
+    .decimal-separator = Decimal separator
+    .thousands-separator = Thousands separator
+    .space = Space
+    .separator-none = (None)
+    .zero-leading = Leading zeros
+    .zero-trailing = Trailing zeros
+    .zero-feet = 0 feet
+    .zero-inches = 0 inches
+    .warning-title = Data Type Does Not Match
+    .warning-heading = These cells hold values that are not of the chosen data type.
+    .warning-note = Converting reads each value as the new type; a value that cannot be read as one is cleared. Cancel leaves the cells unchanged.
+    .warning-ok = Convert
+    .warning-cancel = Cancel
+    .entry-title = Cell Value Does Not Match
+    .entry-heading = The typed value is not of this cell's data type.
+    .entry-type = Change the cell's data type
+    .entry-type-note = The cell takes the data type of the typed value and the value goes in.
+    .entry-value = Edit the value
+    .entry-value-note = The value goes back into the cell's editor to be corrected.
 block-chain =
     .label = Chain actions
     .cycle = The block action chain contains a cycle.
+
+block-action-bars =
+    .requires-session = BACTIONBAR requires an active Block Editor session.
+    .enable-display = Set BACTIONBARMODE to 1 to display action bars.
+    .parameters-changed = The parameter list changed; restart BACTIONBAR.
+    .display-updated = Action bar display updated.
+    .prompt-mode = BACTIONBAR  [Show/Hide/Reset]:
+    .prompt-selected = BACTIONBAR  Select a parameter, enter its name or [All] <Selected>:
+    .prompt-all = BACTIONBAR  Select a parameter, enter its name or [All] <All>:
+    .choose-mode = Choose Show, Hide or Reset.
+    .unique-parameter = Enter a unique parameter name, pick its endpoint, or choose All.
+    .enter-parameter = Enter a parameter name or choose All.
+    .pick-endpoint = Pick a parameter endpoint or choose All.
+
+block-construction =
+    .requires-session = BCONSTRUCTION is only available in the Block Editor.
+    .choose-operation = Choose Convert, Revert, Show or Hide.
+    .stale-session = The construction geometry's Block Editor session is no longer active.
+    .changed-count = __ocs_fmt_0__ geometry objects changed.
+    .prompt-selection = BCONSTRUCTION  Select geometry or [Convert/Revert/Show/Hide]:
+    .prompt-operation = BCONSTRUCTION  Choose [Convert/Revert] <Convert>, or press Enter to apply the selected operation:
+    .revert = Revert
+    .history = Edit construction geometry
+    .unsupported-record = This construction record has an unsupported version or value.
+    .open-definition = Open a block definition before editing construction geometry.
+    .missing-object = A selected construction object is no longer available.
+    .active-geometry = Select geometry in the active block definition.
+    .locked-layer = Construction geometry cannot be changed on a locked layer.
+    .revert-layer = Choose an existing unlocked layer for reverted geometry.
+
+block-authoring-history =
+    .alignment-type = Alignment type
+    .action-override = Edit block action override
+    .action-chain = Edit block action chain
+    .action-base = Edit block action base point
+    .parameter-chain = BEDIT Chain parameter actions
+    .value-set = BEDIT Parameter value set
+    .parameter-metadata = Edit block parameter metadata
+    .authoring-grip = Block authoring grip
+
+block-operation-history =
+    .reset-references = Reset block references
+    .associate-action = Associate block action
+    .action-selection = Action selection set
+    .test-parameter = Test block parameter
+    .reference-parameter = Block reference parameter
+    .align-reference = Align block reference
+    .insertion-grip-order = Change insertion grip order
+    .move-grip = Move native block grip
+    .configure-grips = Configure block parameter grips
+    .lookup-tables = Lookup tables
+    .hyperlink = Block hyperlink
+    .properties = Block properties
+    .properties-table = Block Properties Table
+    .visibility-state = Visibility state
+    .visibility-states = Visibility states
+
+block-formatted-history =
+    .action = { $label } action
+    .parameter = { $label } parameter
+    .edit-block = Edit block { $label }
+    .save-block = Save block as { $label }
+    .delete-block = Delete block { $label }
+
+block-history-kinds =
+    .flip = Flip
+    .polar-stretch = Polar Stretch
+    .basepoint = Basepoint
+    .lookup = Lookup
+
+block-action-properties =
+    .base-point = Action base point
+    .overrides = Action overrides
+    .multiplier = Distance multiplier
+    .angle-offset = Angle offset (degrees)
+    .chain = Action chain
+    .chain-to = Chain to
+
+block-parameter-properties =
+    .show-properties = Show in Properties
+    .parameter-name = Parameter name
+    .grip-count = Number of grips
+    .dependent-base = Dependent base point
+    .offset-x = Base offset X
+    .offset-y = Base offset Y
+    .base-grip = Base grip location
+    .end-grip = End grip location
+    .x-grip = X grip location
+    .y-grip = Y grip location
+
+block-value-set =
+    .use-min = Use { $label } minimum
+    .use-max = Use { $label } maximum
+    .use-increment = Use { $label } increment
+    .use-list = Use { $label } allowed-value list
+    .min = { $label } minimum
+    .max = { $label } maximum
+    .increment = { $label } increment
+    .values = { $label } allowed values
+    .title = Value Set
+    .x-distance = X Distance
+    .y-distance = Y Distance
+
+wipeout-cmd =
+    .select-polyline = WIPEOUT  Select a closed polyline:
+    .polyline-invalid = The polyline must be closed and made up of only line segments.
+    .erase-polyline = WIPEOUT  Erase polyline? [Yes/No] <No>:
+    .frames = WIPEOUT  Enter mode [ON/OFF/Display but not plot] <{ $current }>:
+    .frame-on = ON
+    .frame-off = OFF
+    .frame-display = Display but not plot
+    .keyword = Invalid option keyword.
+    .point-or-keyword = 2D point or option keyword required.
+
+revcloud-cmd =
+    .header = Minimum arc length: { $min }   Maximum arc length: { $max }   Style: { $style }   Type: { $kind }
+    .style-normal = Normal
+    .style-calligraphy = Calligraphy
+    .type-rectangular = Rectangular
+    .type-polygonal = Polygonal
+    .type-freehand = Freehand
+    .first-corner = REVCLOUD  Specify first corner point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .start-point = REVCLOUD  Specify start point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .first-point = REVCLOUD  Specify first point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .opposite = REVCLOUD  Specify opposite corner:
+    .next = REVCLOUD  Specify next point:
+    .next-undo = REVCLOUD  Specify next point or [Undo]:
+    .guide = REVCLOUD  Guide crosshairs along cloud path...
+    .arc = REVCLOUD  Specify approximate length of arc <{ $length }>:
+    .second = REVCLOUD  Specify second point:
+    .second-point = Specify second point:
+    .style = REVCLOUD  Select arc style [Normal/Calligraphy] <{ $style }>:
+    .object = REVCLOUD  Select object:
+    .reverse = REVCLOUD  Reverse direction [Yes/No] <No>:
+    .modify-select = REVCLOUD  Select polyline to modify:
+    .modify-first = REVCLOUD  Specify next point or [First point]:
+    .modify-start = REVCLOUD  Specify a start point:
+    .modify-side = REVCLOUD  Pick a side to erase:
+    .invalid-shape = Invalid shape to create revision cloud.
+    .finished = Revision cloud finished.
+    .unable = Unable to convert object, must be a polyline, spline, or circle.
+    .positive = Value must be positive and nonzero.
+    .numeric = Requires numeric distance or two points.
+    .keyword = Invalid option keyword.
+    .var-mode = Requires an integer between 0 and 2.
+    .var-onoff = Requires 0 or 1 only, or option keyword.
+
+parameters-manager =
+    .action-parameters = Action Parameters
+    .filter = Name*
+    .search = Search for parameter
+    .order = Order
+    .polar = Polar
+    .visibility = Visibility
+    .variable = Variable
+    .footer = All: { $shown } of { $total } parameters displayed
+
+parameters-manager-feedback =
+    .no-number = This row has no number to edit.
+    .no-flag = This row has no visibility flag to change.
+    .finite-number = Specify a finite numeric parameter value.
+    .stale-session = The Block Editor session is no longer active.
+    .positive-length = Specify a positive parameter length.
+    .no-direction = The parameter direction is unavailable.
+    .history = Parameters Manager edit
+
+block-action-targets =
+    .prompt = BACTIONSET  Select objects or type Parameter followed by a parameter name, then press Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .create-prompt = BACTION  Select objects or type Parameter followed by a parameter name, then press Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .unique-point = Enter a unique parameter name.
+    .empty = An action needs at least one target.
+    .invalid = Select supported targets belonging to this block.
+    .stale = The action or its Block Editor session changed; restart BACTIONSET.
+    .create-stale = The action or its Block Editor session changed; restart BACTION.
+
+quad-menu =
+    .label = QUAD
+    .menu = Quad Cursor Menu
+    .pill-tip =
+        Quad cursor menu
+        Click to toggle on/off
+    .options-tip =
+        Quad display options
+        Click to choose
+    .show = Show the Quad cursor menu (Shift+F12, QUAD)
+    .on-hover = Hover an object: offer its commands
+    .on-select = A selection offers its shared commands
+    .on-void = Right-click in the void: creation commands
+    .suppress-hover = Suppress the hover quad while a selection exists
+    .hover-delay = Hover delay
+    .width = Quad width
+    .launch = Right-click over an object launches its default command directly (QUADCOMMANDLAUNCH)
+    .about = The Quad cursor menu appears at the cursor: default commands for what it points at, recent and creation commands otherwise (QUAD, QUADWIDTH).

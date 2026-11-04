@@ -833,49 +833,67 @@ impl OpenCADStudio {
             }
 
             "STRETCH" => {
-                // With a prior selection the window only marks which points
-                // move. With none, the crossing window itself selects the
-                // objects — one round instead of a separate object-selection
-                // step (#338); the command emits StretchWindow for the host
-                // to resolve.
+                // With a prior selection the command goes directly to the base point
+                // prompt, as it should behave. If selected by a crossing window, only
+                // vertices within that window stretch (wholly enclosed objects move).
+                // If selected without a crossing window (e.g. clicked or normal window),
+                // the preselected objects move rigidly.
+                // With no selection, the crossing window itself selects the objects (#338).
                 use crate::modules::draw::modify::stretch::StretchCommand;
                 let handles: Vec<_> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .into_iter()
                     .map(|(h, _)| h)
+                    .filter(|h| !self.tabs[i].scene.is_layer_locked(*h))
                     .collect();
                 let wires = if handles.is_empty() {
                     Vec::new()
                 } else {
                     self.tabs[i].scene.wire_models_for(&handles)
                 };
-                // Selected by a crossing window just before: stretch through
-                // that window, no second one asked for (#1068). Every picked
-                // object must touch it, or the selection was changed since.
-                let window = self.tabs[i].last_crossing_window.and_then(|(lo, hi)| {
-                    let touches = |wire: &crate::scene::WireModel| {
-                        let [x0, y0, x1, y1] = wire.aabb.map(f64::from);
-                        x0 <= hi[0] && x1 >= lo[0] && y0 <= hi[1] && y1 >= lo[1]
-                    };
-                    (!handles.is_empty()
-                        && handles.iter().all(|h| {
-                            self.tabs[i]
-                                .scene
-                                .wire_models_for(&[*h])
-                                .iter()
-                                .any(touches)
-                        }))
-                    .then(|| {
-                        (
-                            glam::DVec3::new(lo[0], lo[1], f64::NEG_INFINITY),
-                            glam::DVec3::new(hi[0], hi[1], f64::INFINITY),
-                        )
-                    })
-                });
-                let new_cmd = match window {
-                    Some(window) => StretchCommand::preselected(handles, wires, window),
-                    None => StretchCommand::new(handles, wires),
+
+                let new_cmd = if handles.is_empty() {
+                    StretchCommand::new(handles, wires)
+                } else {
+                    let mut windows = Vec::new();
+                    if let Some((lo, hi)) = self.tabs[i].last_crossing_window {
+                        let min_x = lo[0].min(hi[0]);
+                        let min_y = lo[1].min(hi[1]);
+                        let max_x = lo[0].max(hi[0]);
+                        let max_y = lo[1].max(hi[1]);
+                        let win_min = glam::DVec3::new(min_x, min_y, f64::NEG_INFINITY);
+                        let win_max = glam::DVec3::new(max_x, max_y, f64::INFINITY);
+
+                        let touches = |h: codec::Handle| -> bool {
+                            let entity_wires = self.tabs[i].scene.wire_models_for(&[h]);
+                            entity_wires.iter().any(|wire| {
+                                let [x0, y0, x1, y1] = wire.aabb.map(f64::from);
+                                x0 <= max_x && x1 >= min_x && y0 <= max_y && y1 >= min_y
+                            })
+                        };
+
+                        if handles.iter().any(|h| touches(*h)) {
+                            windows.push((win_min, win_max));
+                            // Any handle that does not touch the crossing window was selected
+                            // outside it (e.g. individually picked), so it moves as a whole.
+                            for h in &handles {
+                                if !touches(*h) {
+                                    let entity_wires = self.tabs[i].scene.wire_models_for(&[*h]);
+                                    for w in &entity_wires {
+                                        let [x0, y0, x1, y1] = w.aabb.map(f64::from);
+                                        if x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite() {
+                                            windows.push((
+                                                glam::DVec3::new(x0 - 1e-4, y0 - 1e-4, f64::NEG_INFINITY),
+                                                glam::DVec3::new(x1 + 1e-4, y1 + 1e-4, f64::INFINITY),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    StretchCommand::preselected_with_windows(handles, wires, windows)
                 };
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
@@ -1281,10 +1299,14 @@ impl OpenCADStudio {
                         let pieces = insert
                             .explode(&children)
                             .into_iter()
+                            // Only what can cut (and nested blocks): text,
+                            // fills and dimensions would only cost memory.
                             .filter(|child| {
-                                !crate::scene::block_construction::is_construction(
-                                    child.common(),
-                                )
+                                (is_trim_boundary_entity(child)
+                                    || matches!(child, codec::EntityType::Insert(_)))
+                                    && !crate::scene::block_construction::is_construction(
+                                        child.common(),
+                                    )
                             })
                             .collect();
                         Some((handle, pieces))
@@ -1393,6 +1415,76 @@ impl OpenCADStudio {
                 self.command_line.push_output(
                     crate::tf!("ARCTEXT: placed {n} character(s) along the arc.").as_ref(),
                 );
+            }
+
+            // Apply the current dimension style to the selected dimensions.
+            // Overrides are cleared by default, as the reference asks; KEEP
+            // leaves them in place.
+            cmd if cmd == "DIMUPDATE" || cmd.starts_with("DIMUPDATE ") => {
+                let argument = cmd
+                    .strip_prefix("DIMUPDATE")
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_uppercase();
+                let keep = matches!(argument.as_str(), "KEEP" | "YES" | "Y");
+                let handles = self.selected_editable_dimensions(i);
+                if self.tabs[i].scene.selected_handles_in_order().is_empty() {
+                    use crate::modules::draw::select::SelectObjectsCommand;
+                    let sel = SelectObjectsCommand::routed("DIMUPDATE", cmd);
+                    self.command_line.push_info(&sel.prompt());
+                    self.tabs[i].active_cmd = Some(Box::new(sel));
+                } else if handles.is_empty() {
+                    self.command_line.push_error(
+                        crate::t!("DIMUPDATE: no editable dimensions were selected.").as_ref(),
+                    );
+                } else {
+                    use crate::entities::dim_override as dov;
+                    let style = self.tabs[i]
+                        .scene
+                        .document
+                        .header
+                        .current_dimstyle_name
+                        .clone();
+                    self.push_undo_snapshot(i, "DIMUPDATE");
+                    let mut updated = 0usize;
+                    let mut current = 0usize;
+                    for handle in &handles {
+                        if !keep {
+                            dov::replace(&mut self.tabs[i].scene.document, *handle, Vec::new());
+                        }
+                        let already = matches!(
+                            self.tabs[i].scene.document.get_entity(*handle),
+                            Some(codec::EntityType::Dimension(dimension))
+                                if dimension.base().style_name.eq_ignore_ascii_case(&style)
+                        );
+                        if let Some(codec::EntityType::Dimension(dimension)) =
+                            self.tabs[i].scene.document.get_entity_mut(*handle)
+                        {
+                            dimension.base_mut().style_name = style.clone();
+                            crate::entities::dimension::reset_automatic_text_position(
+                                dimension.base_mut(),
+                            );
+                        }
+                        self.tabs[i].scene.invalidate_dim_block_recorded(*handle);
+                        if already {
+                            current += 1;
+                        } else {
+                            updated += 1;
+                        }
+                    }
+                    self.tabs[i].dirty = true;
+                    self.refresh_properties();
+                    self.command_line.push_output(
+                        crate::tf!(
+                            "DIMUPDATE: applied '{}' to {} dimension(s), {} already current; overrides {}.",
+                            style,
+                            updated,
+                            current,
+                            if keep { "kept" } else { "cleared" }
+                        )
+                        .as_ref(),
+                    );
+                }
             }
 
             "DIMOVERRIDE" => {
@@ -1574,31 +1666,93 @@ impl OpenCADStudio {
                 return Some(self.dispatch_command("DIMREASSOCIATE"));
             }
 
-            // DIMREGEN: every dimension draws its picture afresh, and the
-            // next save writes the new pictures.
+            // DIMREGEN: solve every association against the current geometry,
+            // drop each generated picture, and report what could not be solved.
             "DIMREGEN" => {
-                let handles: Vec<_> = self.tabs[i]
-                    .scene
-                    .document
-                    .entities()
-                    .filter(|entity| {
-                        matches!(entity, codec::EntityType::Dimension(d)
-                            if !d.base().block_name.is_empty())
-                    })
-                    .map(|entity| entity.common().handle)
-                    .collect();
-                if !handles.is_empty() {
+                use crate::scene::ChangeKind;
+                let (refreshed, broken, pictures, total, associated) = {
+                    let scene = &mut self.tabs[i].scene;
+                    let dimensions: Vec<codec::Handle> = scene
+                        .document
+                        .entities()
+                        .filter_map(|entity| match entity {
+                            codec::EntityType::Dimension(dimension) => {
+                                Some(dimension.base().common.handle)
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    let associated: Vec<codec::Handle> = dimensions
+                        .iter()
+                        .copied()
+                        .filter(|handle| scene.dimension_association(*handle).is_some())
+                        .collect();
+                    // Every entity counts as changed: DIMREGEN is the explicit
+                    // "solve the associations again" pass. Entities live in
+                    // their own table, not in `objects` (which holds the
+                    // association records themselves), so walking objects
+                    // would never match a source handle.
+                    let changes: Vec<(codec::Handle, ChangeKind)> = scene
+                        .document
+                        .entities()
+                        .map(|entity| (entity.common().handle, ChangeKind::Modified))
+                        .collect();
+                    let refreshed = scene.refresh_associative_dimensions(&changes);
+                    let mut broken = Vec::new();
+                    for handle in &associated {
+                        let status = scene.dimension_association_status(*handle);
+                        if status.iter().any(|(_, state)| {
+                            !matches!(state, crate::scene::ReferenceStatus::Resolved)
+                        }) {
+                            broken.push(*handle);
+                        }
+                    }
+                    // Pictures saved with a dimension bypass generated
+                    // rendering, so they are dropped after a resolved solve.
+                    let pictures: Vec<codec::Handle> = scene
+                        .document
+                        .entities()
+                        .filter(|entity| {
+                            matches!(entity, codec::EntityType::Dimension(d)
+                                if !d.base().block_name.is_empty())
+                        })
+                        .map(|entity| entity.common().handle)
+                        .collect();
+                    (
+                        refreshed,
+                        broken,
+                        pictures,
+                        dimensions.len(),
+                        associated.len(),
+                    )
+                };
+                if !refreshed.is_empty() || !pictures.is_empty() {
                     self.push_undo_snapshot(i, "DIMREGEN");
-                    for &handle in &handles {
+                    for &handle in &pictures {
                         self.tabs[i].scene.invalidate_dim_block_recorded(handle);
                     }
-                    let changes: Vec<_> = handles
-                        .iter()
-                        .map(|&handle| (handle, crate::scene::ChangeKind::Modified))
-                        .collect();
-                    self.tabs[i].scene.bump_entities(&changes);
+                    self.tabs[i].scene.bump_entities(&refreshed);
                     self.tabs[i].dirty = true;
                 }
+                self.command_line.push_output(
+                    crate::tf!(
+                        "DIMREGEN: {} updated, {} broken, {} without association.",
+                        refreshed.len(),
+                        broken.len(),
+                        total.saturating_sub(associated)
+                    )
+                    .as_ref(),
+                );
+                for handle in broken {
+                    self.command_line.push_output(
+                        crate::tf!(
+                            "  Dimension {:X} has a reference that no longer resolves.",
+                            handle.value()
+                        )
+                        .as_ref(),
+                    );
+                }
+                self.refresh_properties();
             }
 
             "DIMDISASSOCIATE" | "DIMREASSOCIATE" => {

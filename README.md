@@ -80,6 +80,7 @@ The project is under active development. Keep backups of important production dr
 | BAK / SV$ | Open drawing backups and autosave files |
 | PID / P&ID | Read SmartPlant / Smart P&ID sheets through [`pid-parse`](../pid-parse); recognise DXF symbols, manually group/ungroup misidentified geometry, edit `tagName`, and preserve corrected groups in DXF/DWG and SVG output |
 | OBJ | Import polygon meshes |
+| SVG / SVGZ | Import vector shapes as a block (`SVGIN`, or `IMPORT`) |
 | LandXML | Import `CgPoint` survey points |
 | STL | Export 3D mesh data |
 | STEP AP203 | Export 3D mesh data |

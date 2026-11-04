@@ -2513,7 +2513,7 @@ common =
     .sectionplane-specify-through-point = SECTIONPLANE  Specify through point:
     .setbylayer-no-properties-required-changes = SETBYLAYER: no properties required changes.
     .setbylayer-reset-entity-entities-to-bylayer = SETBYLAYER: reset __ocs_fmt_0__ entity/entities to ByLayer.
-    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
+    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION QUAD QUADWIDTH QUADCOMMANDLAUNCH CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
     .shell-supports-rectangular-boxes-circular-cylinders-and-spheres = SHELL supports rectangular boxes, circular cylinders, and spheres.
     .shell-solid-updated = SHELL: solid updated.
     .splinedit-fit-data-add-delete-move-purge-tangents-exit-exit = SPLINEDIT  Fit data [Add/Delete/Move/Purge/Tangents/eXit] <eXit>:
@@ -3593,6 +3593,9 @@ layers =
     .layiso-isolated-layer-s = LAYISO: απομονώθηκαν __ocs_fmt_0__ επίπεδο(α).
     .layuniso-no-layers-were-isolated-by-layiso = LAYUNISO: δεν απομονώθηκαν επίπεδα με το LAYISO.
     .laymatch-select-objects-to-change-layer = LAYMATCH  Επιλέξτε αντικείμενα για αλλαγή επιπέδου:
+    .copytolayer-base = Specify base point or [Displacement/eXit] <eXit>:
+    .copytolayer-second = Specify second point of displacement or <use first point as displacement>:
+    .copytolayer-displacement = Specify displacement <0.0000,0.0000,0.0000>:
     .copytolayer-select-objects-to-copy = COPYTOLAYER  Επιλέξτε αντικείμενα για αντιγραφή:
     .copytolayer-select-an-object-on-the-destination-layer = COPYTOLAYER  Επιλέξτε ένα αντικείμενο στο επίπεδο προορισμού:
     .laymatch-select-source-object-to-match-layer-f = LAYMATCH  Επιλέξτε αντικείμενο προέλευσης από το οποίο θα ληφθεί το επίπεδο:
@@ -3614,6 +3617,7 @@ layers =
     .layer-s-frozen = Το/τα επίπεδο(α) πάγωσαν.
     .layer-s-locked = Το/τα επίπεδο(α) κλειδώθηκαν.
     .layer-s-turned-off = Το/τα επίπεδο(α) απενεργοποιήθηκαν.
+    .layoff-select-object-on-layer-undo = LAYOFF  Επιλέξτε ένα αντικείμενο στο επίπεδο που θα απενεργοποιηθεί ή [Undo]:
     .layer-s-unlocked = Το/τα επίπεδο(α) ξεκλειδώθηκαν.
     .layers = Επίπεδα: __ocs_fmt_0__
     .lock = Κλείδωμα
@@ -3996,6 +4000,84 @@ annotate =
     .text-specify-rotation-angle = TEXT  Ορίστε γωνία περιστροφής <__ocs_fmt_0__>:
     .text-specify-second-endpoint = TEXT  { common.specify }: { common.endpoint-2 }:
     .tolerance-specify-insertion-point = TOLERANCE  Ορίστε σημείο εισαγωγής:
+    .tcell-row-above =
+        Εισαγωγή γραμμής
+        από πάνω
+    .tcell-row-below =
+        Εισαγωγή γραμμής
+        από κάτω
+    .tcell-delete-rows =
+        Διαγραφή
+        γραμμών
+    .tcell-col-left =
+        Εισαγωγή στήλης
+        αριστερά
+    .tcell-col-right =
+        Εισαγωγή στήλης
+        δεξιά
+    .tcell-delete-cols =
+        Διαγραφή
+        στηλών
+    .tcell-merge =
+        Συγχώνευση
+        κελιών
+    .tcell-unmerge =
+        Κατάργηση
+        συγχώνευσης
+    .tcell-lock =
+        Κλείδωμα
+        κελιού
+    .tcell-edit =
+        Επεξεργασία
+        κειμένου
+    .tcell-match =
+        Αντιστοίχιση
+        κελιού
+    .tcell-borders =
+        Περιγράμματα
+        κελιού
+    .tcell-format =
+        Μορφή
+        δεδομένων
+    .tcell-block =
+        Εισαγωγή
+        μπλοκ
+    .tcell-field =
+        Εισαγωγή
+        πεδίου
+    .tcell-contents =
+        Διαχείριση
+        περιεχομένου κελιού
+    .tcell-link =
+        Σύνδεση
+        κελιού
+    .tcell-download =
+        Λήψη
+        από πηγή
+    .tcell-row-style = Στυλ γραμμής
+    .tcell-column-style = Στυλ στήλης
+    .tcell-width = Πλάτος κελιού
+    .tcell-height = Ύψος κελιού
+    .tcell-border-color = Χρώμα περιγράμματος
+    .tcell-border-lineweight = Πάχος γραμμής περιγράμματος
+    .tcell-border-linetype = Τύπος γραμμής περιγράμματος
+    .tcell-locking = Κλείδωμα κελιού
+    .tcell-data-link = Σύνδεση δεδομένων κελιού
+    .tcell-select-destination = Επιλέξτε κελί προορισμού:
+    .tcell-select-cell = Επιλέξτε κελί πίνακα:
+    .tcell-range-first = Επιλέξτε την πρώτη γωνία της περιοχής κελιών:
+    .tcell-range-second = Επιλέξτε τη δεύτερη γωνία της περιοχής κελιών:
+    .tcell-align-prompt = Εισαγάγετε στοίχιση κελιού [TL/TC/TR/ML/MC/MR/BL/BC/BR]:
+    .tcell-format-prompt = Εισαγάγετε μορφή δεδομένων [Angle/Currency/Date/Decimal/General/Percentage/Point/Text/Whole]:
+    .tcell-block-prompt = Εισαγάγετε όνομα μπλοκ ή [?]:
+    .tcell-formula-prompt = Εισαγάγετε τύπο [Sum/Average/Count/Cell/Equation]:
+    .tcell-by-row-column = Ανά γραμμή/στήλη
+    .tcell-unlocked = Ξεκλείδωτο
+    .tcell-content-locked = Κλειδωμένο περιεχόμενο
+    .tcell-format-locked = Κλειδωμένη μορφή
+    .tcell-content-format-locked = Κλειδωμένο περιεχόμενο και μορφή
+    .tcell-not-linked = Χωρίς σύνδεση
+    .tcell-invalid-cell = Μη έγκυρο κελί.
 
 insert =
     .pastespec-specify-insertion-point = PASTESPEC  Καθορίστε σημείο εισαγωγής:
@@ -4608,6 +4690,7 @@ insert =
     .field-help = Inserts a field: text that updates from the drawing, the date or another source.
     .field-average = Average
     .field-sum = Sum
+    .field-insert = Insert Field
     .field-object-name = Object name
     .field-block-placeholder = Block placeholder
     .field-block-editor-only = Only accessible in the block editor
@@ -5514,6 +5597,9 @@ properties =
     .fit-tolerance-sentence-case = Ανοχή προσαρμογής
     .fit-smooth-title-case = Προσαρμογή/Εξομάλυνση
     .fit-smooth-sentence-case = Προσαρμογή/εξομάλυνση
+    .fit-curve-fit = Curve fit
+    .fit-quadratic = Quadratic
+    .fit-cubic = Cubic
     .fixed-elevation-range = Σταθερό εύρος υψομέτρου
     .flag = Σημαία
     .flags = Σημαίες
@@ -5910,6 +5996,7 @@ properties =
     .wizard-flag = Σημαία οδηγού
     .x-scale = Κλίμακα X
     .zero = Μηδέν
+    .transparency-color = Transparency Color
 
     .model-text-height = { common.model-uppercase } · { common.text-height-sentence-case }
     .insert-unit-scale-is-outside-the-supported-range = Η κλίμακα μονάδας INSERT είναι εκτός του υποστηριζόμενου εύρους.
@@ -6605,6 +6692,7 @@ dimstyle =
     .move-text-outside-first = Μετακίνηση του κειμένου εκτός πρώτα
     .period = Τελεία
     .space = Κενό
+    .separator-none = (Κανένα)
     .surveyors-units = Τοπογραφικές μονάδες
 
 style-manager =
@@ -6647,6 +6735,14 @@ style-manager =
     .inside-blocks = __ocs_fmt_0__ από αυτά σε __ocs_fmt_1__ ορισμούς μπλοκ.
     .used-by-one-text = χρησιμοποιείται από 1 κείμενο
     .used-by-texts = χρησιμοποιείται από __ocs_fmt_0__ κείμενα
+    .property-change = __ocs_fmt_0__: __ocs_fmt_1__ → __ocs_fmt_2__.
+    .property-change-other = Other stored settings of the style change.
+    .annotative-change-note = Existing texts keep their own setting; new texts take this one.
+    .style-redraw-one = 1 text that uses the style is redrawn; formatting set inside MTEXT stays.
+    .style-redraw-many = __ocs_fmt_0__ texts that use the style are redrawn; formatting set inside MTEXT stays.
+    .apply-count-one = 1 style, 1 property
+    .apply-count-one-style = 1 style, __ocs_fmt_0__ properties
+    .apply-count-many = __ocs_fmt_0__ styles, __ocs_fmt_1__ properties
     .import-styles = Εισαγωγή στυλ
     .select-drawing-to-import-styles-from = Επιλέξτε σχέδιο από το οποίο θα εισαχθούν στυλ
     .select-the-styles-to-import = Επιλέξτε τα στυλ για εισαγωγή
@@ -6945,6 +7041,7 @@ selection-report =
     .found-duplicate-total = __ocs_fmt_0__ found (__ocs_fmt_1__ duplicate), __ocs_fmt_2__ total
     .found-removed-total = __ocs_fmt_0__ found, __ocs_fmt_1__ removed, __ocs_fmt_2__ total
     .invalid-window = Invalid window specification.
+    .no-object = No object found
 
 block-def =
     .name-too-short = The name must be at least one character long.
@@ -7215,6 +7312,7 @@ dgn-import =
     .dgn-import = DGN Import
     .import-dgn-file = Import DGN File
     .import-wmf = Εισαγωγή WMF
+    .import-svg = Εισαγωγή SVG
     .help-dgn = Imports a DGN model as drawing objects: levels as layers, cells as blocks.
     .help-import = Imports a file of the chosen format with the format's importer.
     .blank = Filename cannot be blank
@@ -8157,3 +8255,332 @@ array-grips = Πλήθος στοιχείων
 block-chain =
     .label = Αλυσιδωτές ενέργειες
     .cycle = Η αλυσίδα ενεργειών του μπλοκ περιέχει κύκλο.
+
+block-action-bars =
+    .requires-session = Το BACTIONBAR απαιτεί ενεργή συνεδρία στον επεξεργαστή μπλοκ.
+    .enable-display = Ορίστε το BACTIONBARMODE σε 1 για να εμφανίζονται οι γραμμές ενεργειών.
+    .parameters-changed = Η λίστα παραμέτρων άλλαξε· επανεκκινήστε το BACTIONBAR.
+    .display-updated = Η εμφάνιση των γραμμών ενεργειών ενημερώθηκε.
+    .prompt-mode = BACTIONBAR  [Show/Hide/Reset]:
+    .prompt-selected = BACTIONBAR  Επιλέξτε παράμετρο, εισαγάγετε το όνομά της ή [All] <Επιλεγμένη>:
+    .prompt-all = BACTIONBAR  Επιλέξτε παράμετρο, εισαγάγετε το όνομά της ή [All] <All>:
+    .choose-mode = Επιλέξτε Show, Hide ή Reset.
+    .unique-parameter = Εισαγάγετε μοναδικό όνομα παραμέτρου, επιλέξτε το τελικό σημείο της ή επιλέξτε All.
+    .enter-parameter = Εισαγάγετε όνομα παραμέτρου ή επιλέξτε All.
+    .pick-endpoint = Επιλέξτε τελικό σημείο παραμέτρου ή All.
+
+block-construction =
+    .requires-session = Το BCONSTRUCTION είναι διαθέσιμο μόνο στον επεξεργαστή μπλοκ.
+    .choose-operation = Επιλέξτε Convert, Revert, Show ή Hide.
+    .stale-session = Η συνεδρία του επεξεργαστή μπλοκ για τη βοηθητική γεωμετρία δεν είναι πλέον ενεργή.
+    .changed-count = Άλλαξαν __ocs_fmt_0__ γεωμετρικά αντικείμενα.
+    .prompt-selection = BCONSTRUCTION  Επιλέξτε γεωμετρία ή [Convert/Revert/Show/Hide]:
+    .prompt-operation = BCONSTRUCTION  Επιλέξτε [Convert/Revert] <Convert> ή πατήστε Enter για εφαρμογή της επιλεγμένης λειτουργίας:
+    .revert = Επαναφορά
+    .history = Επεξεργασία βοηθητικής γεωμετρίας
+    .unsupported-record = Αυτή η εγγραφή βοηθητικής γεωμετρίας έχει μη υποστηριζόμενη έκδοση ή τιμή.
+    .open-definition = Ανοίξτε έναν ορισμό μπλοκ πριν επεξεργαστείτε βοηθητική γεωμετρία.
+    .missing-object = Ένα επιλεγμένο αντικείμενο βοηθητικής γεωμετρίας δεν είναι πλέον διαθέσιμο.
+    .active-geometry = Επιλέξτε γεωμετρία στον ενεργό ορισμό μπλοκ.
+    .locked-layer = Η βοηθητική γεωμετρία δεν μπορεί να αλλάξει σε κλειδωμένο επίπεδο.
+    .revert-layer = Επιλέξτε υπάρχον ξεκλείδωτο επίπεδο για τη γεωμετρία που επαναφέρεται.
+
+block-authoring-history =
+    .alignment-type = Τύπος ευθυγράμμισης
+    .action-override = Επεξεργασία παράκαμψης ενέργειας μπλοκ
+    .action-chain = Επεξεργασία αλυσίδας ενεργειών μπλοκ
+    .action-base = Επεξεργασία βασικού σημείου ενέργειας μπλοκ
+    .parameter-chain = BEDIT Αλυσίδα ενεργειών παραμέτρου
+    .value-set = BEDIT Σύνολο τιμών παραμέτρου
+    .parameter-metadata = Επεξεργασία μεταδεδομένων παραμέτρου μπλοκ
+    .authoring-grip = Λαβή δημιουργίας μπλοκ
+
+block-operation-history =
+    .reset-references = Επαναφορά αναφορών μπλοκ
+    .associate-action = Συσχέτιση ενέργειας μπλοκ
+    .action-selection = Σύνολο επιλογής ενέργειας
+    .test-parameter = Παράμετρος δοκιμαστικού μπλοκ
+    .reference-parameter = Παράμετρος αναφοράς μπλοκ
+    .align-reference = Ευθυγράμμιση αναφοράς μπλοκ
+    .insertion-grip-order = Αλλαγή σειράς λαβών εισαγωγής
+    .move-grip = Μετακίνηση εγγενούς λαβής μπλοκ
+    .configure-grips = Ρύθμιση λαβών παραμέτρων μπλοκ
+    .lookup-tables = Πίνακες αναζήτησης
+    .hyperlink = Υπερσύνδεσμος μπλοκ
+    .properties = Ιδιότητες μπλοκ
+    .properties-table = Πίνακας ιδιοτήτων μπλοκ
+    .visibility-state = Κατάσταση ορατότητας
+    .visibility-states = Καταστάσεις ορατότητας
+
+block-formatted-history =
+    .action = Ενέργεια { $label }
+    .parameter = Παράμετρος { $label }
+    .edit-block = Επεξεργασία μπλοκ { $label }
+    .save-block = Αποθήκευση μπλοκ ως { $label }
+    .delete-block = Διαγραφή μπλοκ { $label }
+
+block-history-kinds =
+    .flip = Αναστροφή
+    .polar-stretch = Πολική επέκταση
+    .basepoint = Βασικό σημείο
+    .lookup = Αναζήτηση
+
+block-action-properties =
+    .base-point = Βασικό σημείο ενέργειας
+    .overrides = Παρακάμψεις ενέργειας
+    .multiplier = Πολλαπλασιαστής απόστασης
+    .angle-offset = Μετατόπιση γωνίας (μοίρες)
+    .chain = Αλυσίδα ενεργειών
+    .chain-to = Σύνδεση με
+
+block-parameter-properties =
+    .show-properties = Εμφάνιση στις ιδιότητες
+    .parameter-name = Όνομα παραμέτρου
+    .grip-count = Αριθμός λαβών
+    .dependent-base = Εξαρτημένο βασικό σημείο
+    .offset-x = Μετατόπιση βάσης X
+    .offset-y = Μετατόπιση βάσης Y
+    .base-grip = Θέση βασικής λαβής
+    .end-grip = Θέση τελικής λαβής
+    .x-grip = Θέση λαβής X
+    .y-grip = Θέση λαβής Y
+
+block-value-set =
+    .use-min = Χρήση ελάχιστου για { $label }
+    .use-max = Χρήση μέγιστου για { $label }
+    .use-increment = Χρήση βήματος για { $label }
+    .use-list = Χρήση λίστας επιτρεπόμενων τιμών για { $label }
+    .min = Ελάχιστο για { $label }
+    .max = Μέγιστο για { $label }
+    .increment = Βήμα για { $label }
+    .values = Επιτρεπόμενες τιμές για { $label }
+    .title = Σύνολο τιμών
+    .x-distance = Απόσταση X
+    .y-distance = Απόσταση Y
+
+table-style-cells =
+    .tbl-start-from-style = Έναρξη από στυλ πίνακα
+    .tbl-extra-columns = Πρόσθετες στήλες
+    .tbl-extra-rows = Πρόσθετες γραμμές
+    .tbl-keep-from-template = Διατήρηση από τον αρχικό πίνακα:
+    .tbl-keep-label-text = Κείμενο κελιών ετικέτας
+    .tbl-keep-data-text = Κείμενο κελιών δεδομένων
+    .tbl-keep-overrides = Παρακάμψεις στυλ κελιού
+    .tbl-keep-links = Συνδέσεις δεδομένων
+    .tbl-keep-fields = Πεδία
+    .tbl-keep-formulas = Τύποι
+    .tbl-extra-whole = Οι πρόσθετες γραμμές και στήλες πρέπει να είναι ακέραιοι αριθμοί.
+    .from-style-insertion = __ocs_arg_n__  Καθορίστε σημείο εισαγωγής ή [Style/Rows/Columns/Options]:
+    .from-style-name = __ocs_arg_n__  Εισαγάγετε όνομα στυλ πίνακα ή [?] <__ocs_arg_style__>:
+    .from-style-rows = __ocs_arg_n__  Εισαγάγετε πλήθος πρόσθετων γραμμών <__ocs_arg_rows__>:
+    .from-style-columns = __ocs_arg_n__  Εισαγάγετε πλήθος πρόσθετων στηλών <__ocs_arg_columns__>:
+    .from-style-options = __ocs_arg_n__  Εισαγάγετε επιλογή εισαγωγής [Label text/Data text/Formulas/fIelds/data liNks/Blocks/cell style Overrides] <exit>:
+    .from-style-option = __ocs_arg_n__  Συμπερίληψη __ocs_arg_what__ στον εισαγόμενο πίνακα; [Yes/No] <__ocs_arg_current__>:
+    .label-text = κείμενο ετικέτας
+    .data-text = κείμενο δεδομένων
+    .formulas = τύποι
+    .fields = πεδία
+    .data-links = συνδέσεις δεδομένων
+    .blocks = μπλοκ
+    .cell-style-overrides = παρακάμψεις στυλ κελιού
+    .style-name-header = Όνομα στυλ πίνακα
+    .no-starting-table = Το στυλ πίνακα δεν περιέχει πίνακα.
+    .select-table = Επιλέξτε πίνακα:
+    .not-a-table = Το αντικείμενο δεν είναι πίνακας.
+    .cell-style-exists = Υπάρχει ήδη στυλ κελιού με αυτό το όνομα.
+    .cell-style-in-use = Το στυλ κελιού χρησιμοποιείται και δεν μπορεί να διαγραφεί.
+    .template-size = __ocs_arg_rows__ γραμμές × __ocs_arg_columns__ στήλες
+    .cell-properties = Ιδιότητες κελιού
+    .cell-text = Κείμενο κελιού
+    .cell-borders = Περιγράμματα κελιού
+    .cell-styles = Στυλ κελιών
+    .label = Ετικέτα
+    .margins = Περιθώρια
+    .merge-on-create = Συγχώνευση κελιών κατά τη δημιουργία γραμμών/στηλών
+    .new-from-this = Νέο από αυτό
+    .new-name = Νέο όνομα
+    .real-number = Πραγματικός αριθμός
+    .whole-number = Ακέραιος αριθμός
+    .select-table-button = Επιλογή πίνακα…
+    .starting-table = Αρχικός πίνακας
+    .table-direction = Κατεύθυνση πίνακα
+
+table-cells =
+    .borders-title = Περιγράμματα κελιού
+    .contents-title = Περιεχόμενο κελιού
+    .line = Γραμμή
+    .lineweight = Πάχος γραμμής
+    .linetype = Τύπος γραμμής
+    .color = Χρώμα
+    .double = Διπλή γραμμή
+    .spacing = Απόσταση
+    .apply-to = Εφαρμογή σε
+    .all = Όλα
+    .outside = Εξωτερικά
+    .inside = Εσωτερικά
+    .none = Κανένα
+    .top = Πάνω
+    .bottom = Κάτω
+    .left = Αριστερά
+    .right = Δεξιά
+    .inside-horizontal = Εσωτερικά οριζόντια
+    .inside-vertical = Εσωτερικά κατακόρυφα
+    .contents = Περιεχόμενο
+    .empty = Το κελί είναι κενό.
+    .move-up = Μετακίνηση πάνω
+    .move-down = Μετακίνηση κάτω
+    .delete = Διαγραφή
+    .layout = Διάταξη
+    .flow = Ροή
+    .stack-horizontal = Στοίβαξη οριζόντια
+    .stack-vertical = Στοίβαξη κατακόρυφα
+    .content-spacing = Απόσταση
+    .block-item = Μπλοκ: { $name }
+    .text-item = Κείμενο: { $text }
+    .text-content = Κείμενο κελιού πίνακα
+    .borders-help = Ορίζει πάχος γραμμής, τύπο γραμμής και χρώμα στα περιγράμματα των επιλεγμένων κελιών· επιλέξτε τις πλευρές εφαρμογής.
+    .contents-help = Ταξινομεί, αφαιρεί και διατάσσει το περιεχόμενο του επιλεγμένου κελιού.
+    .block-title = Μπλοκ κελιού
+    .format-title = Μορφή δεδομένων κελιού
+    .block = Μπλοκ
+    .block-name = Όνομα
+    .browse = Αναζήτηση...
+    .block-path = Διαδρομή
+    .placement = Τοποθέτηση
+    .alignment = Στοίχιση κελιού
+    .scale = Κλίμακα
+    .autofit = Αυτόματη προσαρμογή
+    .rotation = Γωνία περιστροφής
+    .format = Μορφή
+    .current-precision = Τρέχουσα ακρίβεια
+    .precision = Ακρίβεια
+    .symbol = Σύμβολο
+    .append-symbol = Προσάρτηση συμβόλου
+    .negative-parens = Αρνητικοί σε παρενθέσεις
+    .list-separator = Διαχωριστικό λίστας
+    .date-format = Μορφή ημερομηνίας
+    .no-format-settings = Αυτός ο τύπος δεδομένων δεν έχει ρυθμίσεις μορφής.
+    .data-type = Τύπος δεδομένων
+    .format-settings = Μορφή
+    .currency = Νόμισμα
+    .decimal-number = Δεκαδικός αριθμός
+    .percentage = Ποσοστό
+    .whole-number = Ακέραιος αριθμός
+    .grads = Βαθμοί grad
+    .sample-text = δείγμα κειμένου
+    .block-help = Τοποθετεί μπλοκ στα επιλεγμένα κελιά: θέση, κλίμακα (ή προσαρμογή στο κελί) και περιστροφή.
+    .format-help = Ορίζει τον τύπο δεδομένων και τη μορφή με την οποία διαβάζονται οι τιμές των επιλεγμένων κελιών.
+    .additional-format = Πρόσθετη μορφή
+    .conversion = Συντελεστής μετατροπής
+    .prefix = Πρόθεμα
+    .suffix = Επίθημα
+    .decimal-separator = Δεκαδικό διαχωριστικό
+    .thousands-separator = Διαχωριστικό χιλιάδων
+    .space = Κενό
+    .separator-none = (Κανένα)
+    .zero-leading = Αρχικά μηδενικά
+    .zero-trailing = Τελικά μηδενικά
+    .zero-feet = 0 πόδια
+    .zero-inches = 0 ίντσες
+    .warning-title = Ο τύπος δεδομένων δεν ταιριάζει
+    .warning-heading = Αυτά τα κελιά περιέχουν τιμές που δεν είναι του επιλεγμένου τύπου δεδομένων.
+    .warning-note = Η μετατροπή διαβάζει κάθε τιμή ως τον νέο τύπο· μια τιμή που δεν διαβάζεται διαγράφεται. Το Άκυρο αφήνει τα κελιά αμετάβλητα.
+    .warning-ok = Μετατροπή
+    .warning-cancel = Άκυρο
+    .entry-title = Cell Value Does Not Match
+    .entry-heading = The typed value is not of this cell's data type.
+    .entry-type = Change the cell's data type
+    .entry-type-note = The cell takes the data type of the typed value and the value goes in.
+    .entry-value = Edit the value
+    .entry-value-note = The value goes back into the cell's editor to be corrected.
+
+parameters-manager =
+    .action-parameters = Παράμετροι ενεργειών
+    .filter = Όνομα*
+    .search = Αναζήτηση παραμέτρου
+    .order = Σειρά
+    .polar = Πολικό
+    .visibility = Ορατότητα
+    .variable = Μεταβλητή
+    .footer = Όλα: εμφανίζονται { $shown } από { $total } παράμετροι
+
+parameters-manager-feedback =
+    .no-number = Αυτή η γραμμή δεν έχει αριθμό για επεξεργασία.
+    .no-flag = Αυτή η γραμμή δεν έχει ένδειξη ορατότητας για αλλαγή.
+    .finite-number = Ορίστε πεπερασμένη αριθμητική τιμή παραμέτρου.
+    .stale-session = Η συνεδρία του επεξεργαστή μπλοκ δεν είναι πλέον ενεργή.
+    .positive-length = Ορίστε θετικό μήκος παραμέτρου.
+    .no-direction = Η κατεύθυνση της παραμέτρου δεν είναι διαθέσιμη.
+    .history = Επεξεργασία διαχειριστή παραμέτρων
+
+block-action-targets =
+    .prompt = BACTIONSET  Επιλέξτε αντικείμενα ή πληκτρολογήστε Parameter και όνομα παραμέτρου και πατήστε Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .create-prompt = BACTION  Επιλέξτε αντικείμενα ή πληκτρολογήστε Parameter και όνομα παραμέτρου και πατήστε Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .unique-point = Εισαγάγετε μοναδικό όνομα παραμέτρου.
+    .empty = Η ενέργεια χρειάζεται τουλάχιστον έναν στόχο.
+    .invalid = Επιλέξτε υποστηριζόμενους στόχους που ανήκουν σε αυτό το μπλοκ.
+    .stale = Η ενέργεια ή η συνεδρία επεξεργασίας μπλοκ άλλαξε· επανεκκινήστε το BACTIONSET.
+    .create-stale = Η ενέργεια ή η συνεδρία επεξεργασίας μπλοκ άλλαξε· επανεκκινήστε το BACTION.
+
+revcloud-cmd =
+    .header = Minimum arc length: { $min }   Maximum arc length: { $max }   Style: { $style }   Type: { $kind }
+    .style-normal = Normal
+    .style-calligraphy = Calligraphy
+    .type-rectangular = Rectangular
+    .type-polygonal = Polygonal
+    .type-freehand = Freehand
+    .first-corner = REVCLOUD  Specify first corner point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .start-point = REVCLOUD  Specify start point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .first-point = REVCLOUD  Specify first point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .opposite = REVCLOUD  Specify opposite corner:
+    .next = REVCLOUD  Specify next point:
+    .next-undo = REVCLOUD  Specify next point or [Undo]:
+    .guide = REVCLOUD  Guide crosshairs along cloud path...
+    .arc = REVCLOUD  Specify approximate length of arc <{ $length }>:
+    .second = REVCLOUD  Specify second point:
+    .second-point = Specify second point:
+    .style = REVCLOUD  Select arc style [Normal/Calligraphy] <{ $style }>:
+    .object = REVCLOUD  Select object:
+    .reverse = REVCLOUD  Reverse direction [Yes/No] <No>:
+    .modify-select = REVCLOUD  Select polyline to modify:
+    .modify-first = REVCLOUD  Specify next point or [First point]:
+    .modify-start = REVCLOUD  Specify a start point:
+    .modify-side = REVCLOUD  Pick a side to erase:
+    .invalid-shape = Invalid shape to create revision cloud.
+    .finished = Revision cloud finished.
+    .unable = Unable to convert object, must be a polyline, spline, or circle.
+    .positive = Value must be positive and nonzero.
+    .numeric = Requires numeric distance or two points.
+    .keyword = Invalid option keyword.
+    .var-mode = Requires an integer between 0 and 2.
+    .var-onoff = Requires 0 or 1 only, or option keyword.
+
+wipeout-cmd =
+    .select-polyline = WIPEOUT  Select a closed polyline:
+    .polyline-invalid = The polyline must be closed and made up of only line segments.
+    .erase-polyline = WIPEOUT  Erase polyline? [Yes/No] <No>:
+    .frames = WIPEOUT  Enter mode [ON/OFF/Display but not plot] <{ $current }>:
+    .frame-on = ON
+    .frame-off = OFF
+    .frame-display = Display but not plot
+    .keyword = Invalid option keyword.
+    .point-or-keyword = 2D point or option keyword required.
+
+quad-menu =
+    .label = QUAD
+    .menu = Quad Cursor Menu
+    .pill-tip =
+        Quad cursor menu
+        Click to toggle on/off
+    .options-tip =
+        Quad display options
+        Click to choose
+    .show = Show the Quad cursor menu (Shift+F12, QUAD)
+    .on-hover = Hover an object: offer its commands
+    .on-select = A selection offers its shared commands
+    .on-void = Right-click in the void: creation commands
+    .suppress-hover = Suppress the hover quad while a selection exists
+    .hover-delay = Hover delay
+    .width = Quad width
+    .launch = Right-click over an object launches its default command directly (QUADCOMMANDLAUNCH)
+    .about = The Quad cursor menu appears at the cursor: default commands for what it points at, recent and creation commands otherwise (QUAD, QUADWIDTH).

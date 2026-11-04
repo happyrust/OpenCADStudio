@@ -2513,7 +2513,7 @@ common =
     .sectionplane-specify-through-point = SECTIONPLANE  Specify through point:
     .setbylayer-no-properties-required-changes = SETBYLAYER: no properties required changes.
     .setbylayer-reset-entity-entities-to-bylayer = SETBYLAYER: reset __ocs_fmt_0__ entity/entities to ByLayer.
-    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
+    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION QUAD QUADWIDTH QUADCOMMANDLAUNCH CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
     .shell-supports-rectangular-boxes-circular-cylinders-and-spheres = SHELL supports rectangular boxes, circular cylinders, and spheres.
     .shell-solid-updated = SHELL: solid updated.
     .splinedit-fit-data-add-delete-move-purge-tangents-exit-exit = SPLINEDIT  Fit data [Add/Delete/Move/Purge/Tangents/eXit] <eXit>:
@@ -3592,6 +3592,9 @@ layers =
     .layiso-isolated-layer-s = LAYISO: 격리된 __ocs_fmt_0__ 레이어.
     .layuniso-no-layers-were-isolated-by-layiso = LAYUNISO: LAYISO로 분리된 도면층이 없습니다.
     .laymatch-select-objects-to-change-layer = LAYMATCH 레이어를 변경할 개체를 선택합니다.
+    .copytolayer-base = Specify base point or [Displacement/eXit] <eXit>:
+    .copytolayer-second = Specify second point of displacement or <use first point as displacement>:
+    .copytolayer-displacement = Specify displacement <0.0000,0.0000,0.0000>:
     .copytolayer-select-objects-to-copy = COPYTOLAYER  복사할 객체 선택:
     .copytolayer-select-an-object-on-the-destination-layer = COPYTOLAYER  대상 도면층의 객체 선택:
     .laymatch-select-source-object-to-match-layer-f = LAYMATCH 다음에서 레이어와 일치시킬 소스 객체를 선택하세요.
@@ -3613,6 +3616,7 @@ layers =
     .layer-s-frozen = 레이어가 동결되었습니다.
     .layer-s-locked = 레이어가 잠겨 있습니다.
     .layer-s-turned-off = 레이어가 꺼졌습니다.
+    .layoff-select-object-on-layer-undo = LAYOFF  끌 도면층의 객체 선택 또는 [Undo]:
     .layer-s-unlocked = 레이어가 잠금 해제되었습니다.
     .layers = 레이어: __ocs_fmt_0__
     .lock = 잠금
@@ -3995,6 +3999,84 @@ annotate =
     .text-specify-rotation-angle = TEXT  회전 각도 지정 <__ocs_fmt_0__>:
     .text-specify-second-endpoint = TEXT  { common.specify }: { common.endpoint-2 }:
     .tolerance-specify-insertion-point = TOLERANCE 삽입점 지정:
+    .tcell-row-above =
+        위에
+        행 삽입
+    .tcell-row-below =
+        아래에
+        행 삽입
+    .tcell-delete-rows =
+        행
+        삭제
+    .tcell-col-left =
+        왼쪽에
+        열 삽입
+    .tcell-col-right =
+        오른쪽에
+        열 삽입
+    .tcell-delete-cols =
+        열
+        삭제
+    .tcell-merge =
+        셀
+        병합
+    .tcell-unmerge =
+        셀 병합
+        해제
+    .tcell-lock =
+        셀
+        잠금
+    .tcell-edit =
+        문자
+        편집
+    .tcell-match =
+        셀
+        일치
+    .tcell-borders =
+        셀
+        테두리
+    .tcell-format =
+        데이터
+        형식
+    .tcell-block =
+        블록
+        삽입
+    .tcell-field =
+        필드
+        삽입
+    .tcell-contents =
+        셀 내용
+        관리
+    .tcell-link =
+        셀
+        링크
+    .tcell-download =
+        원본에서
+        다운로드
+    .tcell-row-style = 행 스타일
+    .tcell-column-style = 열 스타일
+    .tcell-width = 셀 너비
+    .tcell-height = 셀 높이
+    .tcell-border-color = 테두리 색상
+    .tcell-border-lineweight = 테두리 선가중치
+    .tcell-border-linetype = 테두리 선종류
+    .tcell-locking = 셀 잠금
+    .tcell-data-link = 셀 데이터 링크
+    .tcell-select-destination = 대상 셀 선택:
+    .tcell-select-cell = 테이블 셀 선택:
+    .tcell-range-first = 테이블 셀 범위의 첫 번째 구석 선택:
+    .tcell-range-second = 테이블 셀 범위의 두 번째 구석 선택:
+    .tcell-align-prompt = 셀 정렬 입력 [TL/TC/TR/ML/MC/MR/BL/BC/BR]:
+    .tcell-format-prompt = 데이터 형식 입력 [Angle/Currency/Date/Decimal/General/Percentage/Point/Text/Whole]:
+    .tcell-block-prompt = 블록 이름 입력 또는 [?]:
+    .tcell-formula-prompt = 수식 입력 [Sum/Average/Count/Cell/Equation]:
+    .tcell-by-row-column = 행/열 기준
+    .tcell-unlocked = 잠금 해제됨
+    .tcell-content-locked = 내용 잠김
+    .tcell-format-locked = 형식 잠김
+    .tcell-content-format-locked = 내용 및 형식 잠김
+    .tcell-not-linked = 링크되지 않음
+    .tcell-invalid-cell = 잘못된 셀입니다.
 
 insert =
     .pastespec-specify-insertion-point = PASTESPEC  삽입점 지정:
@@ -4607,6 +4689,7 @@ insert =
     .field-help = Inserts a field: text that updates from the drawing, the date or another source.
     .field-average = Average
     .field-sum = Sum
+    .field-insert = Insert Field
     .field-object-name = Object name
     .field-block-placeholder = Block placeholder
     .field-block-editor-only = Only accessible in the block editor
@@ -5513,6 +5596,9 @@ properties =
     .fit-tolerance = 맞춤 공차
     .fit-smooth-title-case = 핏/부드러움
     .fit-smooth-sentence-case = 핏/부드러움
+    .fit-curve-fit = Curve fit
+    .fit-quadratic = Quadratic
+    .fit-cubic = Cubic
     .fixed-elevation-range = 고정 고도 범위
     .flag = 깃발
     .flags = 플래그
@@ -5899,6 +5985,7 @@ properties =
     .wizard-flag = 마법사 플래그
     .x-scale = X 스케일
     .zero = 제로
+    .transparency-color = Transparency Color
 
     .model-text-height = { common.model-uppercase } · { common.text-height-sentence-case }
     .insert-unit-scale-is-outside-the-supported-range = INSERT 단위 축척이 지원 범위를 벗어났습니다.
@@ -6604,6 +6691,7 @@ dimstyle =
     .move-text-outside-first = 먼저 텍스트를 외부로 이동하세요.
     .period = 기간
     .space = 스페이스바
+    .separator-none = (없음)
     .surveyors-units = 측량 단위
 
 style-manager =
@@ -6646,6 +6734,14 @@ style-manager =
     .inside-blocks = 그중 __ocs_fmt_0__개는 블록 정의 __ocs_fmt_1__개 안에 있습니다.
     .used-by-one-text = 문자 1개가 사용
     .used-by-texts = 문자 __ocs_fmt_0__개가 사용
+    .property-change = __ocs_fmt_0__: __ocs_fmt_1__ → __ocs_fmt_2__.
+    .property-change-other = Other stored settings of the style change.
+    .annotative-change-note = Existing texts keep their own setting; new texts take this one.
+    .style-redraw-one = 1 text that uses the style is redrawn; formatting set inside MTEXT stays.
+    .style-redraw-many = __ocs_fmt_0__ texts that use the style are redrawn; formatting set inside MTEXT stays.
+    .apply-count-one = 1 style, 1 property
+    .apply-count-one-style = 1 style, __ocs_fmt_0__ properties
+    .apply-count-many = __ocs_fmt_0__ styles, __ocs_fmt_1__ properties
     .import-styles = 스타일 가져오기
     .select-drawing-to-import-styles-from = 스타일을 가져올 도면 선택
     .select-the-styles-to-import = 가져올 스타일을 선택하십시오
@@ -6944,6 +7040,7 @@ selection-report =
     .found-duplicate-total = __ocs_fmt_0__ found (__ocs_fmt_1__ duplicate), __ocs_fmt_2__ total
     .found-removed-total = __ocs_fmt_0__ found, __ocs_fmt_1__ removed, __ocs_fmt_2__ total
     .invalid-window = Invalid window specification.
+    .no-object = No object found
 
 block-def =
     .name-too-short = The name must be at least one character long.
@@ -7214,6 +7311,7 @@ dgn-import =
     .dgn-import = DGN Import
     .import-dgn-file = Import DGN File
     .import-wmf = WMF 가져오기
+    .import-svg = SVG 가져오기
     .help-dgn = Imports a DGN model as drawing objects: levels as layers, cells as blocks.
     .help-import = Imports a file of the chosen format with the format's importer.
     .blank = Filename cannot be blank
@@ -8146,3 +8244,332 @@ array-grips = 항목 수
 block-chain =
     .label = 작업 연계
     .cycle = 블록 작업 연계에 순환이 있습니다.
+
+block-action-bars =
+    .requires-session = BACTIONBAR에는 활성 블록 편집기 세션이 필요합니다.
+    .enable-display = 동작 막대를 표시하려면 BACTIONBARMODE를 1로 설정하십시오.
+    .parameters-changed = 매개변수 목록이 변경되었습니다. BACTIONBAR를 다시 실행하십시오.
+    .display-updated = 동작 막대 표시가 업데이트되었습니다.
+    .prompt-mode = BACTIONBAR  [Show/Hide/Reset]:
+    .prompt-selected = BACTIONBAR  매개변수를 선택하거나 이름 입력 또는 [All] <선택됨>:
+    .prompt-all = BACTIONBAR  매개변수를 선택하거나 이름 입력 또는 [All] <All>:
+    .choose-mode = Show, Hide 또는 Reset을 선택하십시오.
+    .unique-parameter = 고유한 매개변수 이름을 입력하거나 끝점을 선택하거나 All을 선택하십시오.
+    .enter-parameter = 매개변수 이름을 입력하거나 All을 선택하십시오.
+    .pick-endpoint = 매개변수 끝점을 선택하거나 All을 선택하십시오.
+
+block-construction =
+    .requires-session = BCONSTRUCTION은 블록 편집기에서만 사용할 수 있습니다.
+    .choose-operation = Convert, Revert, Show 또는 Hide를 선택하십시오.
+    .stale-session = 구성 형상의 블록 편집기 세션이 더 이상 활성 상태가 아닙니다.
+    .changed-count = 형상 객체 __ocs_fmt_0__개가 변경되었습니다.
+    .prompt-selection = BCONSTRUCTION  형상을 선택하거나 [Convert/Revert/Show/Hide]:
+    .prompt-operation = BCONSTRUCTION  [Convert/Revert] <Convert>를 선택하거나 Enter를 눌러 선택한 작업 적용:
+    .revert = 되돌리기
+    .history = 구성 형상 편집
+    .unsupported-record = 이 구성 레코드의 버전 또는 값은 지원되지 않습니다.
+    .open-definition = 구성 형상을 편집하기 전에 블록 정의를 여십시오.
+    .missing-object = 선택한 구성 객체를 더 이상 사용할 수 없습니다.
+    .active-geometry = 활성 블록 정의에서 형상을 선택하십시오.
+    .locked-layer = 잠긴 도면층의 구성 형상은 변경할 수 없습니다.
+    .revert-layer = 되돌린 형상에 사용할 기존의 잠기지 않은 도면층을 선택하십시오.
+
+block-authoring-history =
+    .alignment-type = 정렬 유형
+    .action-override = 블록 동작 재지정 편집
+    .action-chain = 블록 동작 체인 편집
+    .action-base = 블록 동작 기준점 편집
+    .parameter-chain = BEDIT 매개변수 동작 연결
+    .value-set = BEDIT 매개변수 값 세트
+    .parameter-metadata = 블록 매개변수 메타데이터 편집
+    .authoring-grip = 블록 작성 그립
+
+block-operation-history =
+    .reset-references = 블록 참조 재설정
+    .associate-action = 블록 동작 연관
+    .action-selection = 동작 선택 세트
+    .test-parameter = 테스트 블록 매개변수
+    .reference-parameter = 블록 참조 매개변수
+    .align-reference = 블록 참조 정렬
+    .insertion-grip-order = 삽입 그립 순서 변경
+    .move-grip = 기본 블록 그립 이동
+    .configure-grips = 블록 매개변수 그립 구성
+    .lookup-tables = 조회 테이블
+    .hyperlink = 블록 하이퍼링크
+    .properties = 블록 특성
+    .properties-table = 블록 특성 테이블
+    .visibility-state = 가시성 상태
+    .visibility-states = 가시성 상태 목록
+
+block-formatted-history =
+    .action = { $label } 동작
+    .parameter = { $label } 매개변수
+    .edit-block = 블록 { $label } 편집
+    .save-block = 블록을 { $label } 이름으로 저장
+    .delete-block = 블록 { $label } 삭제
+
+block-history-kinds =
+    .flip = 반전
+    .polar-stretch = 극 신축
+    .basepoint = 기준점
+    .lookup = 조회
+
+block-action-properties =
+    .base-point = 동작 기준점
+    .overrides = 동작 재지정
+    .multiplier = 거리 승수
+    .angle-offset = 각도 간격띄우기 (도)
+    .chain = 동작 체인
+    .chain-to = 연결 대상
+
+block-parameter-properties =
+    .show-properties = 특성에 표시
+    .parameter-name = 매개변수 이름
+    .grip-count = 그립 수
+    .dependent-base = 종속 기준점
+    .offset-x = 기준 간격띄우기 X
+    .offset-y = 기준 간격띄우기 Y
+    .base-grip = 기준 그립 위치
+    .end-grip = 끝 그립 위치
+    .x-grip = X 그립 위치
+    .y-grip = Y 그립 위치
+
+block-value-set =
+    .use-min = { $label } 최소값 사용
+    .use-max = { $label } 최대값 사용
+    .use-increment = { $label } 증분 사용
+    .use-list = { $label } 허용 값 목록 사용
+    .min = { $label } 최소값
+    .max = { $label } 최대값
+    .increment = { $label } 증분
+    .values = { $label } 허용 값
+    .title = 값 세트
+    .x-distance = X 거리
+    .y-distance = Y 거리
+
+table-style-cells =
+    .tbl-start-from-style = 테이블 스타일에서 시작
+    .tbl-extra-columns = 추가 열
+    .tbl-extra-rows = 추가 행
+    .tbl-keep-from-template = 시작 테이블에서 유지할 항목:
+    .tbl-keep-label-text = 레이블 셀 문자
+    .tbl-keep-data-text = 데이터 셀 문자
+    .tbl-keep-overrides = 셀 스타일 재지정
+    .tbl-keep-links = 데이터 링크
+    .tbl-keep-fields = 필드
+    .tbl-keep-formulas = 수식
+    .tbl-extra-whole = 추가 행과 열 수는 정수여야 합니다.
+    .from-style-insertion = __ocs_arg_n__  삽입점 지정 또는 [Style/Rows/Columns/Options]:
+    .from-style-name = __ocs_arg_n__  테이블 스타일 이름 입력 또는 [?] <__ocs_arg_style__>:
+    .from-style-rows = __ocs_arg_n__  추가 행 수 입력 <__ocs_arg_rows__>:
+    .from-style-columns = __ocs_arg_n__  추가 열 수 입력 <__ocs_arg_columns__>:
+    .from-style-options = __ocs_arg_n__  삽입 옵션 입력 [Label text/Data text/Formulas/fIelds/data liNks/Blocks/cell style Overrides] <exit>:
+    .from-style-option = __ocs_arg_n__  삽입된 테이블에 __ocs_arg_what__ 포함? [Yes/No] <__ocs_arg_current__>:
+    .label-text = 레이블 문자
+    .data-text = 데이터 문자
+    .formulas = 수식
+    .fields = 필드
+    .data-links = 데이터 링크
+    .blocks = 블록
+    .cell-style-overrides = 셀 스타일 재지정
+    .style-name-header = 테이블 스타일 이름
+    .no-starting-table = 테이블 스타일에 테이블이 없습니다.
+    .select-table = 테이블 선택:
+    .not-a-table = 객체가 테이블이 아닙니다.
+    .cell-style-exists = 이 이름의 셀 스타일이 이미 있습니다.
+    .cell-style-in-use = 셀 스타일이 사용 중이므로 삭제할 수 없습니다.
+    .template-size = __ocs_arg_rows__행 × __ocs_arg_columns__열
+    .cell-properties = 셀 특성
+    .cell-text = 셀 문자
+    .cell-borders = 셀 테두리
+    .cell-styles = 셀 스타일
+    .label = 레이블
+    .margins = 여백
+    .merge-on-create = 행/열 작성 시 셀 병합
+    .new-from-this = 이것으로 새로 만들기
+    .new-name = 새 이름
+    .real-number = 실수
+    .whole-number = 정수
+    .select-table-button = 테이블 선택…
+    .starting-table = 시작 테이블
+    .table-direction = 테이블 방향
+
+table-cells =
+    .borders-title = 셀 테두리
+    .contents-title = 셀 내용
+    .line = 선
+    .lineweight = 선가중치
+    .linetype = 선종류
+    .color = 색상
+    .double = 이중선
+    .spacing = 간격
+    .apply-to = 적용 대상
+    .all = 모두
+    .outside = 바깥쪽
+    .inside = 안쪽
+    .none = 없음
+    .top = 위
+    .bottom = 아래
+    .left = 왼쪽
+    .right = 오른쪽
+    .inside-horizontal = 안쪽 수평
+    .inside-vertical = 안쪽 수직
+    .contents = 내용
+    .empty = 셀이 비어 있습니다.
+    .move-up = 위로 이동
+    .move-down = 아래로 이동
+    .delete = 삭제
+    .layout = 배치
+    .flow = 흐름
+    .stack-horizontal = 수평으로 쌓기
+    .stack-vertical = 수직으로 쌓기
+    .content-spacing = 간격
+    .block-item = 블록: { $name }
+    .text-item = 문자: { $text }
+    .text-content = 테이블 셀 문자
+    .borders-help = 선택한 셀 테두리의 선가중치, 선종류, 색상을 설정합니다. 적용할 가장자리를 선택하세요.
+    .contents-help = 선택한 셀의 내용을 정렬, 제거 및 배치합니다.
+    .block-title = 셀 블록
+    .format-title = 셀 데이터 형식
+    .block = 블록
+    .block-name = 이름
+    .browse = 찾아보기...
+    .block-path = 경로
+    .placement = 배치
+    .alignment = 셀 정렬
+    .scale = 축척
+    .autofit = 자동 맞춤
+    .rotation = 회전 각도
+    .format = 형식
+    .current-precision = 현재 정밀도
+    .precision = 정밀도
+    .symbol = 기호
+    .append-symbol = 기호를 뒤에 붙이기
+    .negative-parens = 음수를 괄호로 표시
+    .list-separator = 목록 구분 기호
+    .date-format = 날짜 형식
+    .no-format-settings = 이 데이터 유형에는 형식 설정이 없습니다.
+    .data-type = 데이터 유형
+    .format-settings = 형식
+    .currency = 통화
+    .decimal-number = 십진수
+    .percentage = 백분율
+    .whole-number = 정수
+    .grads = 그라드
+    .sample-text = 샘플 문자
+    .block-help = 선택한 셀에 블록을 넣습니다: 위치, 축척(또는 셀에 맞춤) 및 회전.
+    .format-help = 선택한 셀 값을 읽을 데이터 유형과 형식을 설정합니다.
+    .additional-format = 추가 형식
+    .conversion = 변환 계수
+    .prefix = 접두사
+    .suffix = 접미사
+    .decimal-separator = 소수 구분 기호
+    .thousands-separator = 천 단위 구분 기호
+    .space = 공백
+    .separator-none = (없음)
+    .zero-leading = 선행 0
+    .zero-trailing = 후행 0
+    .zero-feet = 0 피트
+    .zero-inches = 0 인치
+    .warning-title = 데이터 유형이 일치하지 않음
+    .warning-heading = 이 셀에는 선택한 데이터 유형이 아닌 값이 있습니다.
+    .warning-note = 변환하면 각 값을 새 유형으로 읽으며, 읽을 수 없는 값은 지워집니다. 취소하면 셀이 변경되지 않습니다.
+    .warning-ok = 변환
+    .warning-cancel = 취소
+    .entry-title = Cell Value Does Not Match
+    .entry-heading = The typed value is not of this cell's data type.
+    .entry-type = Change the cell's data type
+    .entry-type-note = The cell takes the data type of the typed value and the value goes in.
+    .entry-value = Edit the value
+    .entry-value-note = The value goes back into the cell's editor to be corrected.
+
+parameters-manager =
+    .action-parameters = 동작 매개변수
+    .filter = 이름*
+    .search = 매개변수 검색
+    .order = 순서
+    .polar = 극좌표
+    .visibility = 가시성
+    .variable = 변수
+    .footer = 전체: 매개변수 { $total }개 중 { $shown }개 표시
+
+parameters-manager-feedback =
+    .no-number = 이 행에는 편집할 숫자가 없습니다.
+    .no-flag = 이 행에는 변경할 가시성 플래그가 없습니다.
+    .finite-number = 유한한 숫자 매개변수 값을 지정하십시오.
+    .stale-session = 블록 편집기 세션이 더 이상 활성 상태가 아닙니다.
+    .positive-length = 양수 매개변수 길이를 지정하십시오.
+    .no-direction = 매개변수 방향을 사용할 수 없습니다.
+    .history = 매개변수 관리자 편집
+
+block-action-targets =
+    .prompt = BACTIONSET  객체를 선택하거나 Parameter 다음에 매개변수 이름을 입력하고 Enter를 누르세요 (Parameter "…") ({ common.point } / { common.linear }):
+    .create-prompt = BACTION  객체를 선택하거나 Parameter 다음에 매개변수 이름을 입력하고 Enter를 누르세요 (Parameter "…") ({ common.point } / { common.linear }):
+    .unique-point = 고유한 매개변수 이름을 입력하세요.
+    .empty = 동작에는 대상이 하나 이상 필요합니다.
+    .invalid = 이 블록에 속한 지원되는 대상을 선택하십시오.
+    .stale = 동작 또는 블록 편집기 세션이 변경되었습니다. BACTIONSET을 다시 실행하십시오.
+    .create-stale = 동작 또는 블록 편집기 세션이 변경되었습니다. BACTION을 다시 실행하십시오.
+
+revcloud-cmd =
+    .header = Minimum arc length: { $min }   Maximum arc length: { $max }   Style: { $style }   Type: { $kind }
+    .style-normal = Normal
+    .style-calligraphy = Calligraphy
+    .type-rectangular = Rectangular
+    .type-polygonal = Polygonal
+    .type-freehand = Freehand
+    .first-corner = REVCLOUD  Specify first corner point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .start-point = REVCLOUD  Specify start point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .first-point = REVCLOUD  Specify first point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .opposite = REVCLOUD  Specify opposite corner:
+    .next = REVCLOUD  Specify next point:
+    .next-undo = REVCLOUD  Specify next point or [Undo]:
+    .guide = REVCLOUD  Guide crosshairs along cloud path...
+    .arc = REVCLOUD  Specify approximate length of arc <{ $length }>:
+    .second = REVCLOUD  Specify second point:
+    .second-point = Specify second point:
+    .style = REVCLOUD  Select arc style [Normal/Calligraphy] <{ $style }>:
+    .object = REVCLOUD  Select object:
+    .reverse = REVCLOUD  Reverse direction [Yes/No] <No>:
+    .modify-select = REVCLOUD  Select polyline to modify:
+    .modify-first = REVCLOUD  Specify next point or [First point]:
+    .modify-start = REVCLOUD  Specify a start point:
+    .modify-side = REVCLOUD  Pick a side to erase:
+    .invalid-shape = Invalid shape to create revision cloud.
+    .finished = Revision cloud finished.
+    .unable = Unable to convert object, must be a polyline, spline, or circle.
+    .positive = Value must be positive and nonzero.
+    .numeric = Requires numeric distance or two points.
+    .keyword = Invalid option keyword.
+    .var-mode = Requires an integer between 0 and 2.
+    .var-onoff = Requires 0 or 1 only, or option keyword.
+
+wipeout-cmd =
+    .select-polyline = WIPEOUT  Select a closed polyline:
+    .polyline-invalid = The polyline must be closed and made up of only line segments.
+    .erase-polyline = WIPEOUT  Erase polyline? [Yes/No] <No>:
+    .frames = WIPEOUT  Enter mode [ON/OFF/Display but not plot] <{ $current }>:
+    .frame-on = ON
+    .frame-off = OFF
+    .frame-display = Display but not plot
+    .keyword = Invalid option keyword.
+    .point-or-keyword = 2D point or option keyword required.
+
+quad-menu =
+    .label = QUAD
+    .menu = Quad Cursor Menu
+    .pill-tip =
+        Quad cursor menu
+        Click to toggle on/off
+    .options-tip =
+        Quad display options
+        Click to choose
+    .show = Show the Quad cursor menu (Shift+F12, QUAD)
+    .on-hover = Hover an object: offer its commands
+    .on-select = A selection offers its shared commands
+    .on-void = Right-click in the void: creation commands
+    .suppress-hover = Suppress the hover quad while a selection exists
+    .hover-delay = Hover delay
+    .width = Quad width
+    .launch = Right-click over an object launches its default command directly (QUADCOMMANDLAUNCH)
+    .about = The Quad cursor menu appears at the cursor: default commands for what it points at, recent and creation commands otherwise (QUAD, QUADWIDTH).

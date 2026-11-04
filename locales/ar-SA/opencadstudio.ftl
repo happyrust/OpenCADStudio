@@ -2526,7 +2526,7 @@ common =
     .sectionplane-specify-through-point = SECTIONPLANE  Specify through point:
     .setbylayer-no-properties-required-changes = SETBYLAYER: no properties required changes.
     .setbylayer-reset-entity-entities-to-bylayer = SETBYLAYER: reset __ocs_fmt_0__ entity/entities to ByLayer.
-    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
+    .setvar-cetransparency-ltscale-celtscale-pdmode-pdsize-textsize-orthomode-fillmode-mirrtext-frame-imageframe-pdfframe-wipeoutframe-xclipframe-pointcloudclipframe-zoomwheel-zoomfactor-cursorsize-pickbox-cursortype-snapang-textfill-clipromptlines-commandlinefadetime-attreq-attdia-dimassoc-dimcontinuemode-constraintsolvemode-constraintinfer-constraintbardisplay-angbase-angdir-sketchinc-skpoly-sktolerance-donutid-donutod-centerexe-centerlayer-centerltype-centerltscale-centerltypefile-centercrosssize-centercrossgap-centermarkexe-colortheme-selectionarea-selectionareaopacity-selectioneffect-selectioneffectcolor-windowsareacolor-crossingareacolor-selectionpreview-gripsize-gripcolor-griphot-griphover-gripobjlimit-clayer-celtype-textstyle-read-only = SETVAR: CETRANSPARENCY LTSCALE CELTSCALE PDMODE PDSIZE TEXTSIZE ORTHOMODE FILLMODE MIRRTEXT FRAME IMAGEFRAME PDFFRAME WIPEOUTFRAME XCLIPFRAME POINTCLOUDCLIPFRAME ZOOMWHEEL ZOOMFACTOR SHORTCUTMENU SHORTCUTMENUDURATION QUAD QUADWIDTH QUADCOMMANDLAUNCH CURSORSIZE PICKBOX CURSORTYPE SNAPANG TEXTFILL CLIPROMPTLINES COMMANDLINEFADETIME ATTREQ ATTDIA DIMASSOC DIMCONTINUEMODE CONSTRAINTSOLVEMODE CONSTRAINTINFER CONSTRAINTBARDISPLAY ANGBASE ANGDIR SKETCHINC SKPOLY SKTOLERANCE DONUTID DONUTOD CENTEREXE CENTERLAYER CENTERLTYPE CENTERLTSCALE CENTERLTYPEFILE CENTERCROSSSIZE CENTERCROSSGAP CENTERMARKEXE COLORTHEME SELECTIONAREA SELECTIONAREAOPACITY SELECTIONEFFECT SELECTIONEFFECTCOLOR WINDOWSAREACOLOR CROSSINGAREACOLOR SELECTIONPREVIEW GRIPSIZE GRIPCOLOR GRIPHOT GRIPHOVER GRIPOBJLIMIT | CLAYER CELTYPE TEXTSTYLE (read-only)
     .shell-supports-rectangular-boxes-circular-cylinders-and-spheres = SHELL supports rectangular boxes, circular cylinders, and spheres.
     .shell-solid-updated = SHELL: solid updated.
     .splinedit-fit-data-add-delete-move-purge-tangents-exit-exit = SPLINEDIT  Fit data [Add/Delete/Move/Purge/Tangents/eXit] <eXit>:
@@ -3605,6 +3605,9 @@ layers =
     .layiso-isolated-layer-s = LAYISO: عُزلت __ocs_fmt_0__ طبقة.
     .layuniso-no-layers-were-isolated-by-layiso = LAYUNISO: لم يتم عزل أي طبقات بواسطة LAYISO.
     .laymatch-select-objects-to-change-layer = LAYMATCH  حدد الكائنات المراد تغيير طبقتها:
+    .copytolayer-base = Specify base point or [Displacement/eXit] <eXit>:
+    .copytolayer-second = Specify second point of displacement or <use first point as displacement>:
+    .copytolayer-displacement = Specify displacement <0.0000,0.0000,0.0000>:
     .copytolayer-select-objects-to-copy = COPYTOLAYER  حدد الكائنات المراد نسخها:
     .copytolayer-select-an-object-on-the-destination-layer = COPYTOLAYER  حدد كائنًا على الطبقة الهدف:
     .laymatch-select-source-object-to-match-layer-f = LAYMATCH  حدد الكائن المصدر لمطابقة طبقته:
@@ -3626,6 +3629,7 @@ layers =
     .layer-s-frozen = جُمّدت الطبقات.
     .layer-s-locked = قُفلت الطبقات.
     .layer-s-turned-off = أُوقفت الطبقات.
+    .layoff-select-object-on-layer-undo = LAYOFF  حدد كائنًا على الطبقة المراد إيقاف تشغيلها أو [Undo]:
     .layer-s-unlocked = أُلغي قفل الطبقات.
     .layers = الطبقات: __ocs_fmt_0__
     .lock = قفل
@@ -4008,6 +4012,84 @@ annotate =
     .text-specify-rotation-angle = TEXT  حدد زاوية الدوران <__ocs_fmt_0__>:
     .text-specify-second-endpoint = TEXT  { common.specify }: { common.endpoint-2 }:
     .tolerance-specify-insertion-point = TOLERANCE  حدد نقطة الإدراج:
+    .tcell-row-above =
+        إدراج صف
+        أعلى
+    .tcell-row-below =
+        إدراج صف
+        أسفل
+    .tcell-delete-rows =
+        حذف
+        الصفوف
+    .tcell-col-left =
+        إدراج عمود
+        يسارًا
+    .tcell-col-right =
+        إدراج عمود
+        يمينًا
+    .tcell-delete-cols =
+        حذف
+        الأعمدة
+    .tcell-merge =
+        دمج
+        الخلايا
+    .tcell-unmerge =
+        إلغاء دمج
+        الخلايا
+    .tcell-lock =
+        قفل
+        الخلية
+    .tcell-edit =
+        تحرير
+        النص
+    .tcell-match =
+        مطابقة
+        الخلية
+    .tcell-borders =
+        حدود
+        الخلية
+    .tcell-format =
+        تنسيق
+        البيانات
+    .tcell-block =
+        إدراج
+        كتلة
+    .tcell-field =
+        إدراج
+        حقل
+    .tcell-contents =
+        إدارة محتويات
+        الخلية
+    .tcell-link =
+        ربط
+        الخلية
+    .tcell-download =
+        تنزيل
+        من المصدر
+    .tcell-row-style = نمط الصف
+    .tcell-column-style = نمط العمود
+    .tcell-width = عرض الخلية
+    .tcell-height = ارتفاع الخلية
+    .tcell-border-color = لون الحد
+    .tcell-border-lineweight = سمك خط الحد
+    .tcell-border-linetype = نوع خط الحد
+    .tcell-locking = قفل الخلية
+    .tcell-data-link = ارتباط بيانات الخلية
+    .tcell-select-destination = حدد الخلية الوجهة:
+    .tcell-select-cell = حدد خلية الجدول:
+    .tcell-range-first = حدد الزاوية الأولى لنطاق خلايا الجدول:
+    .tcell-range-second = حدد الزاوية الثانية لنطاق خلايا الجدول:
+    .tcell-align-prompt = أدخل محاذاة الخلية [TL/TC/TR/ML/MC/MR/BL/BC/BR]:
+    .tcell-format-prompt = أدخل تنسيق البيانات [Angle/Currency/Date/Decimal/General/Percentage/Point/Text/Whole]:
+    .tcell-block-prompt = أدخل اسم الكتلة أو [?]:
+    .tcell-formula-prompt = أدخل صيغة [Sum/Average/Count/Cell/Equation]:
+    .tcell-by-row-column = حسب الصف/العمود
+    .tcell-unlocked = غير مقفل
+    .tcell-content-locked = المحتوى مقفل
+    .tcell-format-locked = التنسيق مقفل
+    .tcell-content-format-locked = المحتوى والتنسيق مقفلان
+    .tcell-not-linked = غير مرتبط
+    .tcell-invalid-cell = خلية غير صالحة.
 
 insert =
     .pastespec-specify-insertion-point = PASTESPEC  حدد نقطة الإدراج:
@@ -4620,6 +4702,7 @@ insert =
     .field-help = Inserts a field: text that updates from the drawing, the date or another source.
     .field-average = Average
     .field-sum = Sum
+    .field-insert = Insert Field
     .field-object-name = Object name
     .field-block-placeholder = Block placeholder
     .field-block-editor-only = Only accessible in the block editor
@@ -5534,6 +5617,9 @@ properties =
     .fit-tolerance = تفاوت الملاءمة
     .fit-smooth-title-case = ملاءمة/تنعيم
     .fit-smooth-sentence-case = ملاءمة/تنعيم
+    .fit-curve-fit = Curve fit
+    .fit-quadratic = Quadratic
+    .fit-cubic = Cubic
     .fixed-elevation-range = نطاق ارتفاع ثابت
     .flag = علامة
     .flags = العلامات
@@ -5912,6 +5998,7 @@ properties =
     .wizard-flag = علامة المعالج
     .x-scale = مقياس X
     .zero = صفر
+    .transparency-color = Transparency Color
 
     .model-text-height = { common.model-uppercase } · { common.text-height-sentence-case }
     .insert-unit-scale-is-outside-the-supported-range = مقياس وحدة INSERT خارج النطاق المدعوم.
@@ -6617,6 +6704,7 @@ dimstyle =
     .move-text-outside-first = نقل النص إلى الخارج أولًا
     .period = نقطة
     .space = مسافة
+    .separator-none = (بلا)
     .surveyors-units = وحدات المسّاح
 
 style-manager =
@@ -6659,6 +6747,14 @@ style-manager =
     .inside-blocks = __ocs_fmt_0__ منها داخل __ocs_fmt_1__ من تعريفات الكتل.
     .used-by-one-text = مستخدم في نص واحد
     .used-by-texts = مستخدم في __ocs_fmt_0__ من النصوص
+    .property-change = __ocs_fmt_0__: __ocs_fmt_1__ → __ocs_fmt_2__.
+    .property-change-other = Other stored settings of the style change.
+    .annotative-change-note = Existing texts keep their own setting; new texts take this one.
+    .style-redraw-one = 1 text that uses the style is redrawn; formatting set inside MTEXT stays.
+    .style-redraw-many = __ocs_fmt_0__ texts that use the style are redrawn; formatting set inside MTEXT stays.
+    .apply-count-one = 1 style, 1 property
+    .apply-count-one-style = 1 style, __ocs_fmt_0__ properties
+    .apply-count-many = __ocs_fmt_0__ styles, __ocs_fmt_1__ properties
     .import-styles = استيراد الأنماط
     .select-drawing-to-import-styles-from = حدد الرسم الذي تُستورد منه الأنماط
     .select-the-styles-to-import = حدد الأنماط المراد استيرادها
@@ -6957,6 +7053,7 @@ selection-report =
     .found-duplicate-total = __ocs_fmt_0__ found (__ocs_fmt_1__ duplicate), __ocs_fmt_2__ total
     .found-removed-total = __ocs_fmt_0__ found, __ocs_fmt_1__ removed, __ocs_fmt_2__ total
     .invalid-window = Invalid window specification.
+    .no-object = No object found
 
 block-def =
     .name-too-short = The name must be at least one character long.
@@ -7227,6 +7324,7 @@ dgn-import =
     .dgn-import = DGN Import
     .import-dgn-file = Import DGN File
     .import-wmf = استيراد WMF
+    .import-svg = استيراد SVG
     .help-dgn = Imports a DGN model as drawing objects: levels as layers, cells as blocks.
     .help-import = Imports a file of the chosen format with the format's importer.
     .blank = Filename cannot be blank
@@ -8160,3 +8258,332 @@ array-grips = عدد العناصر
 block-chain =
     .label = الإجراءات المتسلسلة
     .cycle = تحتوي سلسلة إجراءات الكتلة على دورة.
+
+block-action-bars =
+    .requires-session = يتطلب BACTIONBAR جلسة نشطة في محرر الكتل.
+    .enable-display = اضبط BACTIONBARMODE على 1 لعرض أشرطة الإجراءات.
+    .parameters-changed = تغيرت قائمة المعلمات؛ أعد تشغيل BACTIONBAR.
+    .display-updated = تم تحديث عرض أشرطة الإجراءات.
+    .prompt-mode = BACTIONBAR  [Show/Hide/Reset]:
+    .prompt-selected = BACTIONBAR  حدد معلمة أو أدخل اسمها أو [All] <المحدد>:
+    .prompt-all = BACTIONBAR  حدد معلمة أو أدخل اسمها أو [All] <All>:
+    .choose-mode = اختر Show أو Hide أو Reset.
+    .unique-parameter = أدخل اسم معلمة فريدًا أو حدد نقطة نهايتها أو اختر All.
+    .enter-parameter = أدخل اسم معلمة أو اختر All.
+    .pick-endpoint = حدد نقطة نهاية معلمة أو اختر All.
+
+block-construction =
+    .requires-session = يتوفر BCONSTRUCTION في محرر الكتل فقط.
+    .choose-operation = اختر Convert أو Revert أو Show أو Hide.
+    .stale-session = لم تعد جلسة محرر الكتل الخاصة بالهندسة الإنشائية نشطة.
+    .changed-count = تم تغيير __ocs_fmt_0__ من الكائنات الهندسية.
+    .prompt-selection = BCONSTRUCTION  حدد عناصر هندسية أو [Convert/Revert/Show/Hide]:
+    .prompt-operation = BCONSTRUCTION  اختر [Convert/Revert] <Convert>، أو اضغط Enter لتطبيق العملية المحددة:
+    .revert = استعادة
+    .history = تحرير الهندسة الإنشائية
+    .unsupported-record = إصدار سجل الهندسة الإنشائية هذا أو قيمته غير مدعوم.
+    .open-definition = افتح تعريف كتلة قبل تحرير الهندسة الإنشائية.
+    .missing-object = لم يعد أحد كائنات الهندسة الإنشائية المحددة متاحًا.
+    .active-geometry = حدد عناصر هندسية في تعريف الكتلة النشط.
+    .locked-layer = لا يمكن تغيير الهندسة الإنشائية على طبقة مقفلة.
+    .revert-layer = اختر طبقة موجودة وغير مقفلة للعناصر الهندسية المستعادة.
+
+block-authoring-history =
+    .alignment-type = نوع المحاذاة
+    .action-override = تحرير تجاوز إجراء الكتلة
+    .action-chain = تحرير سلسلة إجراءات الكتلة
+    .action-base = تحرير نقطة أساس إجراء الكتلة
+    .parameter-chain = BEDIT تسلسل إجراءات المعلمة
+    .value-set = BEDIT مجموعة قيم المعلمة
+    .parameter-metadata = تحرير بيانات معلمة الكتلة الوصفية
+    .authoring-grip = مقبض تأليف الكتلة
+
+block-operation-history =
+    .reset-references = إعادة تعيين مراجع الكتلة
+    .associate-action = ربط إجراء الكتلة
+    .action-selection = مجموعة تحديد الإجراء
+    .test-parameter = معلمة كتلة الاختبار
+    .reference-parameter = معلمة مرجع الكتلة
+    .align-reference = محاذاة مرجع الكتلة
+    .insertion-grip-order = تغيير ترتيب مقابض الإدراج
+    .move-grip = نقل مقبض الكتلة الأصلي
+    .configure-grips = تكوين مقابض معلمات الكتلة
+    .lookup-tables = جداول البحث
+    .hyperlink = ارتباط الكتلة التشعبي
+    .properties = خصائص الكتلة
+    .properties-table = جدول خصائص الكتلة
+    .visibility-state = حالة الرؤية
+    .visibility-states = حالات الرؤية
+
+block-formatted-history =
+    .action = إجراء { $label }
+    .parameter = معلمة { $label }
+    .edit-block = تحرير الكتلة { $label }
+    .save-block = حفظ الكتلة باسم { $label }
+    .delete-block = حذف الكتلة { $label }
+
+block-history-kinds =
+    .flip = قلب
+    .polar-stretch = تمديد قطبي
+    .basepoint = نقطة الأساس
+    .lookup = بحث
+
+block-action-properties =
+    .base-point = نقطة أساس الإجراء
+    .overrides = تجاوزات الإجراء
+    .multiplier = معامل المسافة
+    .angle-offset = إزاحة الزاوية (درجات)
+    .chain = سلسلة الإجراءات
+    .chain-to = الربط بـ
+
+block-parameter-properties =
+    .show-properties = إظهار في الخصائص
+    .parameter-name = اسم المعلمة
+    .grip-count = عدد المقابض
+    .dependent-base = نقطة أساس تابعة
+    .offset-x = إزاحة الأساس X
+    .offset-y = إزاحة الأساس Y
+    .base-grip = موضع مقبض الأساس
+    .end-grip = موضع مقبض النهاية
+    .x-grip = موضع مقبض X
+    .y-grip = موضع مقبض Y
+
+block-value-set =
+    .use-min = استخدام الحد الأدنى لـ { $label }
+    .use-max = استخدام الحد الأقصى لـ { $label }
+    .use-increment = استخدام زيادة { $label }
+    .use-list = استخدام قائمة القيم المسموحة لـ { $label }
+    .min = الحد الأدنى لـ { $label }
+    .max = الحد الأقصى لـ { $label }
+    .increment = زيادة { $label }
+    .values = القيم المسموحة لـ { $label }
+    .title = مجموعة القيم
+    .x-distance = المسافة X
+    .y-distance = المسافة Y
+
+table-style-cells =
+    .tbl-start-from-style = البدء من نمط جدول
+    .tbl-extra-columns = أعمدة إضافية
+    .tbl-extra-rows = صفوف إضافية
+    .tbl-keep-from-template = الاحتفاظ من الجدول الابتدائي:
+    .tbl-keep-label-text = نص خلايا التسمية
+    .tbl-keep-data-text = نص خلايا البيانات
+    .tbl-keep-overrides = تجاوزات نمط الخلية
+    .tbl-keep-links = ارتباطات البيانات
+    .tbl-keep-fields = الحقول
+    .tbl-keep-formulas = الصيغ
+    .tbl-extra-whole = يجب أن تكون الصفوف والأعمدة الإضافية أعدادًا صحيحة.
+    .from-style-insertion = __ocs_arg_n__  حدد نقطة الإدراج أو [Style/Rows/Columns/Options]:
+    .from-style-name = __ocs_arg_n__  أدخل اسم نمط جدول أو [?] <__ocs_arg_style__>:
+    .from-style-rows = __ocs_arg_n__  أدخل عدد الصفوف الإضافية <__ocs_arg_rows__>:
+    .from-style-columns = __ocs_arg_n__  أدخل عدد الأعمدة الإضافية <__ocs_arg_columns__>:
+    .from-style-options = __ocs_arg_n__  أدخل خيار إدراج [Label text/Data text/Formulas/fIelds/data liNks/Blocks/cell style Overrides] <exit>:
+    .from-style-option = __ocs_arg_n__  هل تريد تضمين __ocs_arg_what__ في الجدول المُدرج؟ [Yes/No] <__ocs_arg_current__>:
+    .label-text = نص التسمية
+    .data-text = نص البيانات
+    .formulas = الصيغ
+    .fields = الحقول
+    .data-links = ارتباطات البيانات
+    .blocks = الكتل
+    .cell-style-overrides = تجاوزات نمط الخلية
+    .style-name-header = اسم نمط الجدول
+    .no-starting-table = لا يحتوي نمط الجدول على جدول.
+    .select-table = حدد جدولاً:
+    .not-a-table = الكائن ليس جدولاً.
+    .cell-style-exists = يوجد بالفعل نمط خلية بهذا الاسم.
+    .cell-style-in-use = نمط الخلية قيد الاستخدام ولا يمكن حذفه.
+    .template-size = __ocs_arg_rows__ صفوف × __ocs_arg_columns__ أعمدة
+    .cell-properties = خصائص الخلية
+    .cell-text = نص الخلية
+    .cell-borders = حدود الخلية
+    .cell-styles = أنماط الخلايا
+    .label = تسمية
+    .margins = الهوامش
+    .merge-on-create = دمج الخلايا عند إنشاء صف/عمود
+    .new-from-this = جديد من هذا
+    .new-name = اسم جديد
+    .real-number = عدد حقيقي
+    .whole-number = عدد صحيح
+    .select-table-button = تحديد جدول…
+    .starting-table = الجدول الابتدائي
+    .table-direction = اتجاه الجدول
+
+table-cells =
+    .borders-title = حدود الخلية
+    .contents-title = محتويات الخلية
+    .line = الخط
+    .lineweight = سمك الخط
+    .linetype = نوع الخط
+    .color = اللون
+    .double = خط مزدوج
+    .spacing = التباعد
+    .apply-to = تطبيق على
+    .all = الكل
+    .outside = الخارجية
+    .inside = الداخلية
+    .none = بلا
+    .top = أعلى
+    .bottom = أسفل
+    .left = يسار
+    .right = يمين
+    .inside-horizontal = الداخلية الأفقية
+    .inside-vertical = الداخلية الرأسية
+    .contents = المحتويات
+    .empty = الخلية فارغة.
+    .move-up = نقل لأعلى
+    .move-down = نقل لأسفل
+    .delete = حذف
+    .layout = التخطيط
+    .flow = تدفق
+    .stack-horizontal = مكدسة أفقيًا
+    .stack-vertical = مكدسة رأسيًا
+    .content-spacing = التباعد
+    .block-item = كتلة: { $name }
+    .text-item = نص: { $text }
+    .text-content = نص خلية الجدول
+    .borders-help = يضبط سمك الخط ونوع الخط ولون حدود الخلايا المحددة؛ اختر الحواف التي تُطبق عليها.
+    .contents-help = يرتب محتويات الخلية المحددة ويزيلها وينظم تخطيطها.
+    .block-title = كتلة الخلية
+    .format-title = تنسيق بيانات الخلية
+    .block = كتلة
+    .block-name = الاسم
+    .browse = استعراض...
+    .block-path = المسار
+    .placement = الموضع
+    .alignment = محاذاة الخلية
+    .scale = المقياس
+    .autofit = ملاءمة تلقائية
+    .rotation = زاوية الدوران
+    .format = التنسيق
+    .current-precision = الدقة الحالية
+    .precision = الدقة
+    .symbol = الرمز
+    .append-symbol = إلحاق الرمز
+    .negative-parens = القيم السالبة بين أقواس
+    .list-separator = فاصل القائمة
+    .date-format = تنسيق التاريخ
+    .no-format-settings = لا توجد إعدادات تنسيق لنوع البيانات هذا.
+    .data-type = نوع البيانات
+    .format-settings = التنسيق
+    .currency = العملة
+    .decimal-number = عدد عشري
+    .percentage = نسبة مئوية
+    .whole-number = عدد صحيح
+    .grads = غراد
+    .sample-text = نص نموذجي
+    .block-help = يضع كتلة في الخلايا المحددة: موضعها ومقياسها (أو ملاءمتها للخلية) ودورانها.
+    .format-help = يضبط نوع البيانات والتنسيق اللذين تُقرأ بهما قيم الخلايا المحددة.
+    .additional-format = تنسيق إضافي
+    .conversion = معامل التحويل
+    .prefix = بادئة
+    .suffix = لاحقة
+    .decimal-separator = الفاصل العشري
+    .thousands-separator = فاصل الآلاف
+    .space = مسافة
+    .separator-none = (بلا)
+    .zero-leading = الأصفار البادئة
+    .zero-trailing = الأصفار اللاحقة
+    .zero-feet = 0 قدم
+    .zero-inches = 0 بوصة
+    .warning-title = نوع البيانات غير متطابق
+    .warning-heading = تحتوي هذه الخلايا على قيم ليست من نوع البيانات المختار.
+    .warning-note = يقرأ التحويل كل قيمة بالنوع الجديد، وتُمسح القيمة التي لا يمكن قراءتها. يترك الإلغاء الخلايا دون تغيير.
+    .warning-ok = تحويل
+    .warning-cancel = إلغاء
+    .entry-title = Cell Value Does Not Match
+    .entry-heading = The typed value is not of this cell's data type.
+    .entry-type = Change the cell's data type
+    .entry-type-note = The cell takes the data type of the typed value and the value goes in.
+    .entry-value = Edit the value
+    .entry-value-note = The value goes back into the cell's editor to be corrected.
+
+parameters-manager =
+    .action-parameters = معلمات الإجراءات
+    .filter = الاسم*
+    .search = البحث عن معلمة
+    .order = الترتيب
+    .polar = قطبي
+    .visibility = الرؤية
+    .variable = متغير
+    .footer = الكل: عُرضت { $shown } من { $total } معلمة
+
+parameters-manager-feedback =
+    .no-number = لا يحتوي هذا الصف على رقم قابل للتحرير.
+    .no-flag = لا يحتوي هذا الصف على علامة رؤية قابلة للتغيير.
+    .finite-number = حدد قيمة رقمية محدودة للمعلمة.
+    .stale-session = لم تعد جلسة محرر الكتل نشطة.
+    .positive-length = حدد طولًا موجبًا للمعلمة.
+    .no-direction = اتجاه المعلمة غير متاح.
+    .history = تحرير مدير المعلمات
+
+block-action-targets =
+    .prompt = BACTIONSET  حدد العناصر أو اكتب Parameter متبوعة باسم المعلمة، ثم اضغط Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .create-prompt = BACTION  حدد العناصر أو اكتب Parameter متبوعة باسم المعلمة، ثم اضغط Enter (Parameter "…") ({ common.point } / { common.linear }):
+    .unique-point = أدخل اسم معلمة فريداً.
+    .empty = يحتاج الإجراء إلى هدف واحد على الأقل.
+    .invalid = حدد أهدافًا مدعومة تنتمي إلى هذه الكتلة.
+    .stale = تغير الإجراء أو جلسة محرر الكتل؛ أعد تشغيل BACTIONSET.
+    .create-stale = تغير الإجراء أو جلسة محرر الكتل؛ أعد تشغيل BACTION.
+
+revcloud-cmd =
+    .header = Minimum arc length: { $min }   Maximum arc length: { $max }   Style: { $style }   Type: { $kind }
+    .style-normal = Normal
+    .style-calligraphy = Calligraphy
+    .type-rectangular = Rectangular
+    .type-polygonal = Polygonal
+    .type-freehand = Freehand
+    .first-corner = REVCLOUD  Specify first corner point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .start-point = REVCLOUD  Specify start point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .first-point = REVCLOUD  Specify first point or [Arc length/Object/Rectangular/Polygonal/Freehand/Style/Modify] <Object>:
+    .opposite = REVCLOUD  Specify opposite corner:
+    .next = REVCLOUD  Specify next point:
+    .next-undo = REVCLOUD  Specify next point or [Undo]:
+    .guide = REVCLOUD  Guide crosshairs along cloud path...
+    .arc = REVCLOUD  Specify approximate length of arc <{ $length }>:
+    .second = REVCLOUD  Specify second point:
+    .second-point = Specify second point:
+    .style = REVCLOUD  Select arc style [Normal/Calligraphy] <{ $style }>:
+    .object = REVCLOUD  Select object:
+    .reverse = REVCLOUD  Reverse direction [Yes/No] <No>:
+    .modify-select = REVCLOUD  Select polyline to modify:
+    .modify-first = REVCLOUD  Specify next point or [First point]:
+    .modify-start = REVCLOUD  Specify a start point:
+    .modify-side = REVCLOUD  Pick a side to erase:
+    .invalid-shape = Invalid shape to create revision cloud.
+    .finished = Revision cloud finished.
+    .unable = Unable to convert object, must be a polyline, spline, or circle.
+    .positive = Value must be positive and nonzero.
+    .numeric = Requires numeric distance or two points.
+    .keyword = Invalid option keyword.
+    .var-mode = Requires an integer between 0 and 2.
+    .var-onoff = Requires 0 or 1 only, or option keyword.
+
+wipeout-cmd =
+    .select-polyline = WIPEOUT  Select a closed polyline:
+    .polyline-invalid = The polyline must be closed and made up of only line segments.
+    .erase-polyline = WIPEOUT  Erase polyline? [Yes/No] <No>:
+    .frames = WIPEOUT  Enter mode [ON/OFF/Display but not plot] <{ $current }>:
+    .frame-on = ON
+    .frame-off = OFF
+    .frame-display = Display but not plot
+    .keyword = Invalid option keyword.
+    .point-or-keyword = 2D point or option keyword required.
+
+quad-menu =
+    .label = QUAD
+    .menu = Quad Cursor Menu
+    .pill-tip =
+        Quad cursor menu
+        Click to toggle on/off
+    .options-tip =
+        Quad display options
+        Click to choose
+    .show = Show the Quad cursor menu (Shift+F12, QUAD)
+    .on-hover = Hover an object: offer its commands
+    .on-select = A selection offers its shared commands
+    .on-void = Right-click in the void: creation commands
+    .suppress-hover = Suppress the hover quad while a selection exists
+    .hover-delay = Hover delay
+    .width = Quad width
+    .launch = Right-click over an object launches its default command directly (QUADCOMMANDLAUNCH)
+    .about = The Quad cursor menu appears at the cursor: default commands for what it points at, recent and creation commands otherwise (QUAD, QUADWIDTH).

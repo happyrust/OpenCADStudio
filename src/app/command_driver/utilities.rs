@@ -117,6 +117,27 @@ impl OpenCADStudio {
         let _ = self.on_viewport_exit();
     }
 
+    /// Whether an enabled `Fixed` constraint holds `handle` in the scope being
+    /// edited right now. A Fixed pins the whole curve or one picked point;
+    /// either way the object cannot move freely, so both count.
+    fn entity_is_fixed(&self, i: usize, handle: Handle) -> bool {
+        use crate::scene::parametric_constraints::ConstraintKind;
+        self.tabs[i]
+            .scene
+            .parametric_constraint_set(self.tabs[i].current_parametric_scope())
+            .is_some_and(|set| {
+                set.constraints_touching(handle)
+                    .any(|constraint| constraint.kind == ConstraintKind::Fixed)
+            })
+    }
+
+    /// Whether any of `handles` is held by an enabled `Fixed` constraint.
+    pub(in crate::app) fn any_entity_is_fixed(&self, i: usize, handles: &[Handle]) -> bool {
+        handles
+            .iter()
+            .any(|&handle| self.entity_is_fixed(i, handle))
+    }
+
     pub(in crate::app) fn solve_grip_constraints(
         &mut self,
         i: usize,
@@ -750,7 +771,9 @@ impl OpenCADStudio {
         }
         // Whatever reaches the command ends a typed window still waiting
         // for its opposite corner.
-        self.typed_window_corner = None;
+        if let Some((_, first)) = self.typed_window_corner.take() {
+            self.close_typed_window_box(self.active_tab, first);
+        }
         let gathering = self.report_selection_found(&input);
         // A command that takes associative dimensions only keeps just those:
         // the rest leave the selection and the count of what went is reported,
@@ -1057,6 +1080,19 @@ impl OpenCADStudio {
             || tokens[0].eq_ignore_ascii_case("CAL")
             || tokens[0].eq_ignore_ascii_case("QUICKCALC")
             || tokens[0].eq_ignore_ascii_case("QC")
+            // Bare TABLE opens the Insert Table window; `TABLE INSERTROW 2`
+            // edits the selected table.
+            || tokens[0].eq_ignore_ascii_case("TABLE")
+            // Attribute editing takes a handle and tag/value on one line
+            // (`-ATTEDIT 20A TITLE new`); probing the verb alone would start
+            // the reference pick instead.
+            || tokens[0].eq_ignore_ascii_case("-ATTEDIT")
+            || tokens[0].eq_ignore_ascii_case("ATTEDIT")
+            // LAYERFILTER takes its whole argument list on one line.
+            || tokens[0].eq_ignore_ascii_case("LAYERFILTER")
+            || tokens[0].eq_ignore_ascii_case("-LAYERFILTER")
+            // DIMUPDATE takes its KEEP / CLEAR answer on the same line.
+            || tokens[0].eq_ignore_ascii_case("DIMUPDATE")
         {
             return self.dispatch_command(cmd);
         }
@@ -1307,6 +1343,36 @@ impl OpenCADStudio {
         )
     }
 
+    /// A typed first corner draws its box out to the cursor, as a clicked
+    /// one does; a click then finishes it through the same machinery.
+    fn open_typed_window_box(&mut self, i: usize, corner: glam::DVec3) {
+        let (vw, vh) = {
+            let mut selection = self.tabs[i].scene.selection.borrow_mut();
+            selection.gesture.box_anchor_world = Some(corner);
+            selection.view.vp_size
+        };
+        self.reproject_box_anchor(i, vw, vh);
+        let mut selection = self.tabs[i].scene.selection.borrow_mut();
+        let Some(anchor) = selection.gesture.box_anchor else {
+            return;
+        };
+        let current = selection.input.last_move_pos.unwrap_or(anchor);
+        selection.gesture.box_current = Some(current);
+        if !selection.gesture.box_crossing_locked {
+            selection.gesture.box_crossing = crate::scene::selection_box_crossing(anchor, current);
+        }
+    }
+
+    /// Drops the box a typed corner opened, if it is still that one.
+    pub(in crate::app) fn close_typed_window_box(&mut self, i: usize, corner: glam::DVec3) {
+        let mut selection = self.tabs[i].scene.selection.borrow_mut();
+        if selection.gesture.box_anchor_world == Some(corner) {
+            selection.gesture.box_anchor = None;
+            selection.gesture.box_anchor_world = None;
+            selection.gesture.box_current = None;
+        }
+    }
+
     /// A typed coordinate at an object prompt picks the object under it, as
     /// a click there would: while objects are gathered it adds the object
     /// found there (or, on empty space, starts a window whose opposite
@@ -1324,7 +1390,11 @@ impl OpenCADStudio {
             )
         })?;
         if let Some((pending, first)) = self.typed_window_corner.take() {
-            if gathering && pending == key {
+            // The box a typed corner opened may already be gone: a click
+            // finished it, or Esc dropped it.
+            let still_open =
+                self.tabs[i].scene.selection.borrow().gesture.box_anchor_world == Some(first);
+            if gathering && pending == key && still_open {
                 let Some(second) = self.typed_wcs(i, token) else {
                     // Enter or a word where the opposite corner belongs: the
                     // selection prompt comes back with the corner still open.
@@ -1339,6 +1409,7 @@ impl OpenCADStudio {
                     return Some(Task::none());
                 };
                 self.last_point = Some(second);
+                self.close_typed_window_box(i, first);
                 return Some(self.select_typed_window(first, second));
             }
         }
@@ -1349,11 +1420,17 @@ impl OpenCADStudio {
         let owner = self.tabs[i]
             .current_parametric_scope()
             .owner_handle(&self.tabs[i].scene.document);
-        let found = entity_at_typed_point(&self.tabs[i].scene.document, owner, wcs);
+        // A typed point off the screen finds nothing, as a click there could
+        // not: the object prompt then reads it as empty space.
+        let found = self
+            .typed_point_in_view(i, wcs)
+            .then(|| entity_at_typed_point(&self.tabs[i].scene.document, owner, wcs))
+            .flatten();
         if gathering {
             self.last_point = Some(wcs);
             let Some(handle) = found else {
                 self.typed_window_corner = Some((key, wcs));
+                self.open_typed_window_box(i, wcs);
                 self.command_line
                     .push_info(crate::t!("Specify opposite corner:").as_ref());
                 return Some(Task::none());
