@@ -31,6 +31,8 @@ pub mod patterns;
 pub mod pdf_export;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pid;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pid_backup;
 pub mod pid_legend;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pid_pdf;

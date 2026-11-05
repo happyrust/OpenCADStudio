@@ -4013,6 +4013,15 @@ pub enum Message {
     /// PIDPLOT's worker finished: the PDF it wrote, or why it could not.
     #[cfg(not(target_arch = "wasm32"))]
     PidPdfFinished(Result<crate::io::pid_pdf::PidPdfReceipt, String>),
+    /// PIDBACKUPOPEN's source dialog closed: the zip or folder, or `None`.
+    #[cfg(not(target_arch = "wasm32"))]
+    PidBackupSourcePicked(Option<PathBuf>),
+    /// PIDBACKUPOPEN's restore finished.
+    #[cfg(not(target_arch = "wasm32"))]
+    PidBackupRestored(Result<crate::io::pid_backup::Restored, String>),
+    /// PIDBACKUPOPEN's drawing dialog closed: the `.pid` to open, or `None`.
+    #[cfg(not(target_arch = "wasm32"))]
+    PidBackupDrawingPicked(Option<PathBuf>),
     /// Web SCRIPT: the picked .scr file's name and text. `None` = the
     /// browser dialog was cancelled.
     #[cfg(target_arch = "wasm32")]

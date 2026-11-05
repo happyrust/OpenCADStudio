@@ -138,7 +138,7 @@ impl Ribbon {
 }
 
 /// The application menu's commands: icon, label, shortcut and command.
-pub(super) fn commands() -> [(&'static [u8], String, &'static str, &'static str); 7] {
+pub(super) fn commands() -> [(&'static [u8], String, &'static str, &'static str); 8] {
     [
         (
             icons::DOC_NEW,
@@ -151,6 +151,12 @@ pub(super) fn commands() -> [(&'static [u8], String, &'static str, &'static str)
             crate::t!("Open...").into_owned(),
             "Ctrl+O",
             "OPEN",
+        ),
+        (
+            icons::FOLDER_OPEN,
+            crate::t!("Open P&ID Backup...").into_owned(),
+            "",
+            "PIDBACKUPOPEN",
         ),
         (
             icons::SAVE,
@@ -236,6 +242,7 @@ mod tests {
         for command in [
             "QNEW",
             "OPEN",
+            "PIDBACKUPOPEN",
             "QSAVE",
             "SAVEAS",
             "EXPORTPDF",

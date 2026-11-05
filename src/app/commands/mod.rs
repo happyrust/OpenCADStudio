@@ -43,6 +43,7 @@ pub(crate) mod pdf_import;
 mod pdf_password;
 mod pdf_shx_text;
 mod pdf_underlay;
+mod pidbackup;
 mod pidlegend;
 mod pidpalette;
 mod pidplot;
@@ -820,6 +821,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_pidplot(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_pidbackup(cmd, i) {
+            return Some(t);
+        }
         if let Some(t) = self.dispatch_pidpalette(cmd, i) {
             return Some(t);
         }
@@ -911,7 +915,10 @@ pub fn start_allowed(cmd: &str) -> bool {
     // questions from any tab.
     let verb = cmd.split_whitespace().next().unwrap_or("");
     is_spacemouse_command(cmd)
-        || matches!(verb, "OPEN" | "SCRIPT" | "SCR" | "FILEDIA" | "SDI" | "EXIT")
+        || matches!(
+            verb,
+            "OPEN" | "PIDBACKUPOPEN" | "SCRIPT" | "SCR" | "FILEDIA" | "SDI" | "EXIT"
+        )
         || matches!(
             cmd,
             "NEW"
@@ -1429,7 +1436,9 @@ inventory::submit!(crate::command::CommandRegistration {
         // P&ID symbol recognition mark-up (io::pid_legend), selecting a whole
         // pipe line by its coding-rule family, a symbol group by its tag, and
         // making a group a symbol by hand; and the sheet plotted to PDF by
-        // pid-parse's own plotter.
+        // pid-parse's own plotter; and a drawing opened out of a SmartPlant
+        // backup.
+        "PIDBACKUPOPEN",
         "PIDGROUP",
         "PIDINSERT",
         "PIDLEGEND",
