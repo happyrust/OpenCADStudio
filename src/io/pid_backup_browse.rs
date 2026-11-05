@@ -17,7 +17,11 @@
 //!
 //! Matching a row to a file is [`match_drawings`]: a pure function over the
 //! rows and the `.pid` paths, testable without an Oracle dump.
+//!
+//! What a drawing holds -- its model items and their published attributes --
+//! is [`load_items`], read on demand when the panel first expands a drawing.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use pid_parse::backup::{
@@ -26,6 +30,7 @@ use pid_parse::backup::{
 use pid_parse::publish::oracle_exp::{
     backup_path_key, plant_group_path, read_backup_drawings, read_plant_groups, BackupDrawing,
 };
+use pid_parse::publish::pid_load::{load_publish_from_pid, PidPublishDrawing, PidPublishItem};
 
 /// Group the drawings the table does not mention are filed under.
 pub const UNREGISTERED_GROUP: &str = "Unregistered";
@@ -35,6 +40,9 @@ const UNGROUPED: &str = "(ungrouped)";
 
 /// How deep the `Ref` tree is walked before a runaway directory is cut off.
 const REF_SEARCH_DEPTH: usize = 16;
+
+/// The manifest's schema number for reference data (`RefData~4~…`).
+const REFDATA_SCHEMA: u32 = 4;
 
 /// One backup, indexed for the browser panel.
 #[derive(Debug, Clone)]
@@ -87,6 +95,9 @@ pub struct BackupFile {
     pub members: Vec<String>,
     /// The `EXPORT:V…` line for an Oracle `exp` dump.
     pub version_line: Option<String>,
+    /// `true` for an archive `Manifest.txt` names but the backup does not
+    /// carry: the export logged the file as failed and wrote nothing.
+    pub missing: bool,
 }
 
 /// Which of the backup's file families a [`BackupFile`] belongs to.
@@ -319,6 +330,7 @@ fn describe_files(
             size: file_size(&path),
             members: Vec::new(),
             version_line: None,
+            missing: false,
         });
     }
     if let Some(export) = &scan.export {
@@ -333,6 +345,7 @@ fn describe_files(
             size: entry.entry.size,
             members,
             version_line: None,
+            missing: false,
         });
     }
     for plant in &scan.plant_data {
@@ -344,7 +357,16 @@ fn describe_files(
             size: plant.size,
             members,
             version_line: None,
+            missing: false,
         });
+    }
+    if let Some(manifest) = &scan.manifest {
+        let present: Vec<String> = scan
+            .refdata
+            .iter()
+            .map(|entry| entry.entry.file_name.clone())
+            .collect();
+        files.extend(declared_refdata(manifest, &present, warnings));
     }
     for problem in &scan.problems {
         warnings.push(format!(
@@ -354,6 +376,62 @@ fn describe_files(
         ));
     }
     files
+}
+
+/// The `RefData` files the manifest names but the backup does not carry.
+///
+/// A plant export logs a file it could not read as `File<<|>>4<<|>>…<<|>>
+/// Failed to access file.` and writes no archive for it, so the file list
+/// would silently lose a reference file the plant has. Those rows are
+/// listed as [`BackupFile::missing`] with the reason in the warnings.
+fn declared_refdata(
+    manifest: &pid_parse::backup::Manifest,
+    present: &[String],
+    warnings: &mut Vec<String>,
+) -> Vec<BackupFile> {
+    let mut missing = Vec::new();
+    for line in manifest.all("File") {
+        let Some(schema) = line.fields.first().and_then(|field| field.parse::<u32>().ok()) else {
+            continue;
+        };
+        // `4` is the reference-data schema in every backup observed; the
+        // drawings ride in schema `2` (`PlantData~2~…`).
+        if schema != REFDATA_SCHEMA {
+            continue;
+        }
+        let Some(id) = line.fields.get(2).and_then(|field| field.parse::<u32>().ok()) else {
+            continue;
+        };
+        let declared = line.fields.get(6).map(String::as_str).unwrap_or_default();
+        let name = if declared.starts_with("RefData~") {
+            declared.to_string()
+        } else {
+            format!("RefData~{schema}~{id}")
+        };
+        let carried = present.iter().any(|file| {
+            file == &name
+                || file
+                    .strip_suffix(".zip")
+                    .is_some_and(|stem| stem == name)
+        });
+        if carried {
+            continue;
+        }
+        warnings.push(format!(
+            "{} is listed in Manifest.txt but the backup does not carry it ({declared})",
+            name
+        ));
+        missing.push(BackupFile {
+            name,
+            kind: FileKind::RefData,
+            format: String::new(),
+            size: 0,
+            members: Vec::new(),
+            version_line: None,
+            missing: true,
+        });
+    }
+    missing
 }
 
 fn export_file(export: &ExportDumpScan) -> BackupFile {
@@ -374,6 +452,7 @@ fn export_file(export: &ExportDumpScan) -> BackupFile {
         size: export.size,
         members: Vec::new(),
         version_line,
+        missing: false,
     }
 }
 
@@ -639,6 +718,141 @@ fn file_stem(path: &Path) -> String {
     path.file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
+}
+
+/// What one drawing holds: its model items, grouped by `ModelItemType`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DrawingItems {
+    /// The drawing UID (`DrawingNo`) the file states.
+    pub drawing_uid: String,
+    /// The drawing name: the file stem.
+    pub drawing_name: String,
+    /// Groups ordered by type name; items inside a group ordered by UID.
+    pub groups: Vec<ItemGroup>,
+    /// How many items the groups hold together.
+    pub item_count: usize,
+}
+
+/// One `ModelItemType` of a drawing and the items of that type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ItemGroup {
+    /// `ModelItemType`, e.g. `Instrument`.
+    pub item_type: String,
+    /// The items of this type, UID-sorted.
+    pub items: Vec<DrawingItem>,
+}
+
+/// One model item of a drawing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrawingItem {
+    /// The model item UID (`ModelID`).
+    pub uid: String,
+    /// `ModelItemType`, repeated here so an item reads on its own.
+    pub item_type: String,
+    /// The published class, when the file decides it.
+    pub class: Option<String>,
+    /// Published attributes, in the order the file gives them.
+    pub attributes: Vec<ItemAttribute>,
+}
+
+/// One published attribute of a model item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemAttribute {
+    /// The publish interface, e.g. `INamedInstrument`.
+    pub interface: String,
+    /// The attribute, e.g. `MeasuredVariable`.
+    pub name: String,
+    /// The value as the file states it.
+    pub value: String,
+}
+
+/// Read the model items of the `.pid` at `path`, grouped by type.
+///
+/// The panel asks for this the first time a drawing is expanded: a drawing's
+/// attributes are megabytes of compound file the tree must not wait on.
+pub fn load_items(path: &Path) -> Result<DrawingItems, String> {
+    let drawing = load_publish_from_pid(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    Ok(group_items(drawing))
+}
+
+/// [`load_items`] on a worker thread, as [`crate::io::pid_backup::restore`]
+/// does its unpacking.
+pub async fn load_items_in_background(path: PathBuf) -> Result<DrawingItems, String> {
+    let (sender, receiver) = iced::futures::channel::oneshot::channel();
+    std::thread::Builder::new()
+        .name("ocs-pid-backup-items".into())
+        .spawn(move || {
+            let _ = sender.send(load_items(&path));
+        })
+        .map_err(|error| format!("cannot start reading the drawing: {error}"))?;
+    receiver
+        .await
+        .unwrap_or_else(|_| Err("the drawing read stopped before it finished".into()))
+}
+
+/// [`build_index`] on a worker thread: restoring a backup and reading its dump
+/// are tens of megabytes the UI thread must not wait out.
+pub async fn build_index_in_background(
+    source: PathBuf,
+    target: Option<PathBuf>,
+) -> Result<BackupIndex, String> {
+    let (sender, receiver) = iced::futures::channel::oneshot::channel();
+    std::thread::Builder::new()
+        .name("ocs-pid-backup-index".into())
+        .spawn(move || {
+            let _ = sender.send(build_index(&source, target.as_deref()));
+        })
+        .map_err(|error| format!("cannot start indexing the backup: {error}"))?;
+    receiver
+        .await
+        .unwrap_or_else(|_| Err("the backup index stopped before it finished".into()))
+}
+
+/// Group a loaded drawing's items by `ModelItemType`, UID-sorted inside each
+/// group and type-name sorted between them.
+pub fn group_items(drawing: PidPublishDrawing) -> DrawingItems {
+    let (groups, item_count) = group_published_items(drawing.items);
+    DrawingItems {
+        drawing_uid: drawing.drawing_uid,
+        drawing_name: drawing.drawing_name,
+        groups,
+        item_count,
+    }
+}
+
+/// The grouping [`group_items`] does, over the items alone.
+pub fn group_published_items(items: Vec<PidPublishItem>) -> (Vec<ItemGroup>, usize) {
+    let mut by_type: BTreeMap<String, Vec<DrawingItem>> = BTreeMap::new();
+    let mut item_count = 0;
+    for item in items {
+        item_count += 1;
+        by_type
+            .entry(item.model_item_type.clone())
+            .or_default()
+            .push(DrawingItem {
+                uid: item.uid,
+                item_type: item.model_item_type,
+                class: item.class.map(str::to_string),
+                attributes: item
+                    .attributes
+                    .into_iter()
+                    .map(|attribute| ItemAttribute {
+                        interface: attribute.interface.to_string(),
+                        name: attribute.name.to_string(),
+                        value: attribute.value,
+                    })
+                    .collect(),
+            });
+    }
+    let groups = by_type
+        .into_iter()
+        .map(|(item_type, mut items)| {
+            items.sort_by(|left, right| left.uid.cmp(&right.uid));
+            ItemGroup { item_type, items }
+        })
+        .collect();
+    (groups, item_count)
 }
 
 /// Fold the group paths into a tree; a path's segments nest under each other.
@@ -1127,5 +1341,231 @@ mod tests {
         assert_eq!(tree[0].children[0].children[1].drawings, vec![1]);
         assert_eq!(tree[1].name, UNGROUPED);
         assert_eq!(tree[1].drawings, vec![3]);
+    }
+
+    fn published_item(uid: &str, item_type: &str, class: Option<&'static str>) -> PidPublishItem {
+        PidPublishItem {
+            uid: uid.to_string(),
+            model_item_type: item_type.to_string(),
+            class,
+            attributes: vec![pid_parse::publish::pid_load::PidPublishAttribute {
+                interface: "INamedInstrument",
+                name: "MeasuredVariable",
+                value: "T".to_string(),
+                source: pid_parse::publish::pid_load::PidValueSource::NameRule("test"),
+            }],
+        }
+    }
+
+    #[test]
+    fn items_are_grouped_by_model_item_type() {
+        let (groups, count) = group_published_items(vec![
+            published_item("UID-B", "Pipe", None),
+            published_item("UID-A", "Instrument", Some("PIDInstrument")),
+            published_item("UID-C", "Instrument", None),
+        ]);
+
+        assert_eq!(count, 3);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].item_type, "Instrument");
+        assert_eq!(
+            groups[0]
+                .items
+                .iter()
+                .map(|item| item.uid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["UID-A", "UID-C"]
+        );
+        assert_eq!(groups[0].items[0].class.as_deref(), Some("PIDInstrument"));
+        assert_eq!(groups[0].items[1].class, None);
+        assert_eq!(groups[1].item_type, "Pipe");
+        assert_eq!(groups[1].items.len(), 1);
+        // Every item carries its type and its attribute triple.
+        let first = &groups[0].items[0];
+        assert_eq!(first.item_type, "Instrument");
+        assert_eq!(first.attributes.len(), 1);
+        assert_eq!(first.attributes[0].interface, "INamedInstrument");
+        assert_eq!(first.attributes[0].name, "MeasuredVariable");
+        assert_eq!(first.attributes[0].value, "T");
+        // The group counts add up to the item count.
+        assert_eq!(
+            groups.iter().map(|group| group.items.len()).sum::<usize>(),
+            count
+        );
+    }
+
+    #[test]
+    fn a_declared_refdata_the_backup_lacks_is_listed_as_missing() {
+        let root = scratch("declared-refdata");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(
+            backup.join("Manifest.txt"),
+            "Name<<|>>SQPlant\n\
+             File<<|>>4<<|>>1<<|>>681<<|>>20681<<|>>\\\\host\\Ref\\Symbols<<|>>1<<|>>RefData~4~681.zip\n\
+             File<<|>>4<<|>>2<<|>>824<<|>>20824<<|>>\\\\host\\Ref\\Jacket.XML<<|>>2<<|>>Failed to access file.\n",
+        )
+        .unwrap();
+        write_zip(&backup.join("RefData~4~681.zip"), &[("Symbols/valve.sym", b"s")]);
+        let index = build_index(&backup, None).unwrap();
+
+        let refdata: Vec<(&str, bool)> = index
+            .files
+            .iter()
+            .filter(|file| file.kind == FileKind::RefData)
+            .map(|file| (file.name.as_str(), file.missing))
+            .collect();
+        assert_eq!(
+            refdata,
+            vec![("RefData~4~681.zip", false), ("RefData~4~824", true)]
+        );
+        assert!(index
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("RefData~4~824")), "{:?}", index.warnings);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_drawing_without_items_groups_nothing() {
+        let (groups, count) = group_published_items(Vec::new());
+        assert!(groups.is_empty());
+        assert_eq!(count, 0);
+    }
+
+    /// The panel hands both background loaders to `Task::perform`; this pins
+    /// the signatures that call site depends on.
+    #[test]
+    fn both_background_loaders_fit_a_task() {
+        let source = PathBuf::from("backup");
+        let _: iced::Task<Result<BackupIndex, String>> = iced::Task::perform(
+            build_index_in_background(source.clone(), None),
+            std::convert::identity,
+        );
+        let _: iced::Task<Result<DrawingItems, String>> =
+            iced::Task::perform(load_items_in_background(source), std::convert::identity);
+    }
+
+    /// The plant test backup, indexed and read: 53 drawings, an Oracle dump,
+    /// 11 RefData files, 645 Ref files, and the first drawing's items.
+    /// Soft-skips when the backup is not on this machine.
+    #[test]
+    #[ignore = "reads the 74 MB plant dump; run with --ignored"]
+    fn the_plant_test_backup_indexes_and_reads_items() {
+        let backup = Path::new(r"D:\work\plant-code\cad\pid-test-data");
+        if !backup.join("Export.dmp").is_file() {
+            eprintln!("skipped: no plant backup at {}", backup.display());
+            return;
+        }
+        let started = std::time::Instant::now();
+        let index = build_index(backup, None).unwrap();
+        let index_elapsed = started.elapsed();
+
+        assert!(index.read_only);
+        assert_eq!(index.backup_root, backup);
+        assert_eq!(
+            index.manifest.as_ref().and_then(|manifest| manifest.name.as_deref()),
+            Some("SQPlant")
+        );
+        let export = index
+            .files
+            .iter()
+            .find(|file| file.kind == FileKind::ExportDump)
+            .expect("the backup has an Export.dmp");
+        assert!(
+            export.format.starts_with("Oracle exp"),
+            "{}",
+            export.format
+        );
+        assert!(export.version_line.is_some(), "{}", export.format);
+        let refdata: Vec<&BackupFile> = index
+            .files
+            .iter()
+            .filter(|file| file.kind == FileKind::RefData)
+            .collect();
+        // Ten archives on disk plus the one `RefData~4~824` the manifest
+        // declares but the export failed to write.
+        assert_eq!(refdata.len(), 11);
+        assert_eq!(
+            refdata.iter().filter(|file| file.missing).count(),
+            1,
+            "{:?}",
+            refdata
+                .iter()
+                .map(|file| (&file.name, file.missing))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(index.ref_tree.file_count(), 645);
+        assert_eq!(index.warnings.len(), 1, "{:?}", index.warnings);
+        assert!(index.warnings[0].contains("RefData~4~824"), "{:?}", index.warnings);
+
+        assert_eq!(index.drawings.len(), 53);
+        for drawing in &index.drawings {
+            assert!(!drawing.meta.is_empty(), "{} has no metadata", drawing.name);
+            assert!(
+                !drawing.group_path.is_empty(),
+                "{} has no plant group",
+                drawing.name
+            );
+            let path = drawing
+                .pid_path
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} has no file", drawing.name));
+            assert!(path.is_file(), "{} is missing", path.display());
+            // The row's PATH and the restored file line up without the
+            // file-name fallback: `\00\00\name.pid` against `00/00/name.pid`.
+            let row_key = drawing
+                .meta
+                .iter()
+                .find(|(label, _)| label == "PATH")
+                .map(|(_, value)| backup_path_key(value))
+                .expect("every row lists its PATH");
+            let file_key = backup_path_key(
+                &path
+                    .strip_prefix(&index.restored)
+                    .unwrap_or(path)
+                    .to_string_lossy(),
+            );
+            assert_eq!(row_key, file_key, "{} is matched by another rule", drawing.name);
+        }
+
+        let first = index.drawings[0]
+            .pid_path
+            .clone()
+            .expect("the first drawing has a file");
+        let started = std::time::Instant::now();
+        let items = load_items(&first).unwrap();
+        let items_elapsed = started.elapsed();
+        eprintln!(
+            "index: {} drawings, {} warnings in {index_elapsed:?}; load_items {} items in {items_elapsed:?}",
+            index.drawings.len(),
+            index.warnings.len(),
+            items.item_count
+        );
+        assert!(items.item_count > 0, "{}", first.display());
+        assert_eq!(
+            items
+                .groups
+                .iter()
+                .map(|group| group.items.len())
+                .sum::<usize>(),
+            items.item_count
+        );
+        assert!(items
+            .groups
+            .iter()
+            .flat_map(|group| &group.items)
+            .all(|item| !item.uid.is_empty() && !item.item_type.is_empty()));
+        // Not every item type publishes attributes: a run or a pipe point
+        // carries none, while the instruments beside it carry several.
+        assert!(
+            items
+                .groups
+                .iter()
+                .flat_map(|group| &group.items)
+                .any(|item| !item.attributes.is_empty()),
+            "no item of {} has an attribute",
+            first.display()
+        );
     }
 }
