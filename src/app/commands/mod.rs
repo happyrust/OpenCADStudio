@@ -44,6 +44,7 @@ mod pdf_password;
 mod pdf_shx_text;
 mod pdf_underlay;
 mod pidlegend;
+mod pidpalette;
 mod pidplot;
 mod plotvars;
 mod point_cloud;
@@ -819,6 +820,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_pidplot(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_pidpalette(cmd, i) {
+            return Some(t);
+        }
         None
     }
 
@@ -1427,8 +1431,10 @@ inventory::submit!(crate::command::CommandRegistration {
         // making a group a symbol by hand; and the sheet plotted to PDF by
         // pid-parse's own plotter.
         "PIDGROUP",
+        "PIDINSERT",
         "PIDLEGEND",
         "PIDLINE",
+        "PIDPALETTE",
         "PIDPLOT",
         "PIDTAG",
         "PLOT",

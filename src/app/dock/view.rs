@@ -516,6 +516,12 @@ impl OpenCADStudio {
                 width,
                 chrome.auto_collapse,
             ),
+            crate::ui::dock::PanelId::PidPalette => crate::ui::window::pid_palette::view(
+                &self.pid_palette,
+                self.pid_symbols.categories(),
+                width,
+                chrome,
+            ),
             crate::ui::dock::PanelId::ExternalReferences => {
                 self.xref_manager
                     .view(width, chrome, tab.xref_missing, &tab.scene.document)

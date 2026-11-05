@@ -171,6 +171,7 @@ pub(super) const NAMES: &[&str] = &[
     "pc_manager",
     "count_palette",
     "blocks_palette",
+    "pid_palette",
     "pdf_page_select",
     "pc_colormap",
     "pc_section",
@@ -931,6 +932,27 @@ impl OpenCADStudio {
         self.refresh_properties();
         json!({"ok":true,"sections":self.tabs[self.active_tab].properties.sections.iter().map(|s|json!({"title":s.title,"properties":s.props.iter().map(property_json).collect::<Vec<_>>()})).collect::<Vec<_>>()})
     }
+    /// Where the drawn UI widgets are on screen, as `[x, y, width, height]`
+    /// per `PosReport` id, optionally filtered by id `prefix`.
+    ///
+    /// A panel whose background matches the drawing area cannot be segmented
+    /// out of a screenshot by colour, so this is how a client locates the
+    /// palette, its tabs and each symbol cell it means to click.
+    pub(super) fn control_ui_bounds(&self, req: &Value) -> Value {
+        let prefix = req["prefix"].as_str().unwrap_or("");
+        let bounds: Vec<Value> = crate::ui::wrap_bar::recorded_bounds()
+            .into_iter()
+            .filter(|(id, _)| id.starts_with(prefix))
+            .map(|(id, rect)| {
+                json!({
+                    "id": id,
+                    "bounds": [rect.x, rect.y, rect.width, rect.height],
+                })
+            })
+            .collect();
+        json!({"ok":true,"count":bounds.len(),"widgets":bounds})
+    }
+
     /// The grips of the current selection, as the viewport shows them.
     pub(super) fn control_grips(&self) -> Value {
         let tab = &self.tabs[self.active_tab];
@@ -1419,6 +1441,40 @@ impl OpenCADStudio {
             }
         })
     }
+    /// Resolve a `pid_palette` `insert=` argument to a block name.
+    ///
+    /// Accepted forms, because the palette, the contract and a person all
+    /// name symbols differently: the block name (`PID_SYM_equipment_vessel`),
+    /// `category/symbol` (`equipment/vessel`), or the bare symbol id
+    /// (`vessel`).
+    fn pid_palette_block(&self, arg: &str) -> Option<String> {
+        let categories = self.pid_symbols.categories();
+        let arg = arg.trim();
+        if arg.is_empty() {
+            return None;
+        }
+        let (category_wanted, symbol_wanted) = match arg.split_once('/') {
+            Some((category, symbol)) => (Some(category), symbol),
+            None => (None, arg),
+        };
+        for category in categories {
+            if let Some(wanted) = category_wanted {
+                if !category.id.eq_ignore_ascii_case(wanted) && category.label != wanted {
+                    continue;
+                }
+            }
+            for symbol in &category.symbols {
+                let block = crate::pid::symbols::block_name(&category.id, &symbol.id);
+                if symbol.id.eq_ignore_ascii_case(symbol_wanted)
+                    || block.eq_ignore_ascii_case(symbol_wanted)
+                {
+                    return Some(block);
+                }
+            }
+        }
+        None
+    }
+
     pub(super) fn control_ui_action(&mut self, req: &Value) -> Result<Task<Message>, Value> {
         let name = string(req, "name")?;
         // Without a prompt there is no failed open to retry.
@@ -1753,6 +1809,35 @@ impl OpenCADStudio {
                         Message::BlockPalette(M::Menu(item(self, spec)?, action))
                     }
                     _ => return Err(failure("invalid_value", "Unknown blocks palette edit")),
+                }
+            }
+            // P&ID symbol palette: "tab=<id or label>" brings a category
+            // forward, and "insert=<block name | category/symbol | symbol id>"
+            // clicks a symbol cell and starts PIDINSERT.
+            "pid_palette" => {
+                use crate::ui::window::pid_palette::PidPaletteMsg as M;
+                let value = string(req, "value")?;
+                let (key, arg) = value.split_once('=').unwrap_or((value, ""));
+                match key {
+                    "tab" => {
+                        let categories = self.pid_symbols.categories();
+                        let index = categories
+                            .iter()
+                            .position(|category| {
+                                category.id.eq_ignore_ascii_case(arg) || category.label == arg
+                            })
+                            .ok_or_else(|| {
+                                failure("invalid_value", "No such palette category")
+                            })?;
+                        Message::PidPalette(M::Tab(index))
+                    }
+                    "insert" => {
+                        let block = self
+                            .pid_palette_block(arg)
+                            .ok_or_else(|| failure("invalid_value", "No such symbol"))?;
+                        Message::PidPalette(M::Insert(block))
+                    }
+                    _ => return Err(failure("invalid_value", "Unknown P&ID palette edit")),
                 }
             }
             // Attach dialog: choose pages by index ("0,2").

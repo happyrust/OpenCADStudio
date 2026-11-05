@@ -547,6 +547,16 @@ impl OpenCADStudio {
                         }
                         self.show_pid_legend_list = true;
                     }
+                    PanelId::PidPalette => {
+                        if self.dock.location(PanelId::PidPalette).is_none() {
+                            self.dock.dock(
+                                PanelId::PidPalette,
+                                crate::app::config::DockSide::Right,
+                                0,
+                            );
+                        }
+                        self.show_pid_palette = true;
+                    }
                     PanelId::ParametersManager => {
                         self.show_parameters_manager = true;
                         self.dock_open_at_default(id);
@@ -598,6 +608,7 @@ impl OpenCADStudio {
                 self.block_palette.placing = None;
             }
             PanelId::PidLegend => self.show_pid_legend_list = false,
+            PanelId::PidPalette => self.show_pid_palette = false,
             PanelId::AuthoringPalettes => {
                 self.show_authoring_palettes = false;
             }
@@ -725,6 +736,7 @@ impl OpenCADStudio {
             PanelId::Properties => self.show_properties,
             PanelId::BlockPalette => self.show_block_palette,
             PanelId::PidLegend => self.show_pid_legend_list,
+            PanelId::PidPalette => self.show_pid_palette,
             PanelId::ParametersManager => {
                 self.show_parameters_manager
                     && self.tabs[self.active_tab]

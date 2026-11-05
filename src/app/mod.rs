@@ -1344,6 +1344,14 @@ pub(super) struct OpenCADStudio {
     pub(crate) show_block_palette: bool,
     /// Docked P&ID legend list visibility (PIDLEGEND LIST).
     pub(crate) show_pid_legend_list: bool,
+    /// Docked P&ID symbol palette visibility (PIDPALETTE).
+    pub(crate) show_pid_palette: bool,
+    /// Which category tab the P&ID symbol palette shows, and the symbol
+    /// library its tabs and grid come from. Both live on the application, not
+    /// on a tab: the palette stays open on the tab the user chose across
+    /// document switches.
+    pub(crate) pid_palette: crate::ui::window::pid_palette::PidPalette,
+    pub(crate) pid_symbols: crate::pid::symbols::SymbolLibrary,
     /// Which group of symbols the P&ID legend list shows (its filter row).
     pub(crate) pid_legend_filter: crate::ui::window::pid_legend_list::PidLegendFilter,
     /// Whether the P&ID panel's five exception summaries are expanded.
@@ -5326,6 +5334,9 @@ pub enum Message {
     /// The P&ID legend list's group filter: all symbols, the tagged ones, or
     /// the ones that should carry a tag and do not.
     PidLegendFilter(crate::ui::window::pid_legend_list::PidLegendFilter),
+    /// An edit inside the docked P&ID symbol palette: a category tab, or a
+    /// symbol cell that starts `PIDINSERT`.
+    PidPalette(crate::ui::window::pid_palette::PidPaletteMsg),
     /// Expand or collapse the P&ID panel's exception section.
     PidLegendExceptionsToggle,
     /// Select and zoom to the source placement of an exception row.
@@ -6128,6 +6139,9 @@ impl OpenCADStudio {
             graphic_attributes: Default::default(),
             show_block_palette: false,
             show_pid_legend_list: false,
+            show_pid_palette: false,
+            pid_palette: Default::default(),
+            pid_symbols: crate::pid::symbols::SymbolLibrary::load_from_env(),
             pid_legend_filter: Default::default(),
             pid_legend_exceptions_open: false,
             show_authoring_palettes: false,

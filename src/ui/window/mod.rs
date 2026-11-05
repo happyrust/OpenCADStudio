@@ -44,6 +44,7 @@ pub mod options;
 pub mod pc_manager;
 pub mod pdf_dialogs;
 pub mod pid_legend_list;
+pub mod pid_palette;
 pub mod pdf_shx_dialog;
 pub mod plot;
 pub mod plugin_manager;

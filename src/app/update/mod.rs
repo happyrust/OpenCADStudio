@@ -13096,6 +13096,7 @@ impl OpenCADStudio {
                 self.pid_legend_filter = filter;
                 Task::none()
             }
+            Message::PidPalette(m) => self.on_pid_palette(m),
             Message::PidLegendExceptionsToggle => {
                 self.pid_legend_exceptions_open = !self.pid_legend_exceptions_open;
                 Task::none()

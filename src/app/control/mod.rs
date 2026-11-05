@@ -678,6 +678,7 @@ impl OpenCADStudio {
                 | "cad_get_blocks"
                 | "cad_extract_block_instances"
                 | "keytips"
+                | "ui_bounds"
         );
         if !query && !self.control.enabled {
             return (
@@ -1031,6 +1032,7 @@ impl OpenCADStudio {
                     }
                 }
                 "grips" => self.control_grips(),
+                "ui_bounds" => self.control_ui_bounds(&req),
                 "keytips" => self
                     .ribbon
                     .keytips_json(req["detail"].as_str() == Some("full")),
@@ -1860,11 +1862,19 @@ impl OpenCADStudio {
         let result = (|| -> Result<Value, String> {
             let s = screenshot
                 .ok_or("The window is minimized or has no size; restore it and capture again")?;
+            // `scope` is the primary selector; `view:"window"` is the
+            // documented spelling used by the validation contract for a
+            // full-window snapshot (docked panels included). Anything else
+            // keeps the historical viewport crop.
             let requested_scope = self
                 .control
                 .pending
                 .as_ref()
-                .and_then(|pending| pending.request["scope"].as_str())
+                .and_then(|pending| {
+                    pending.request["scope"]
+                        .as_str()
+                        .or_else(|| (pending.request["view"].as_str() == Some("window")).then_some("window"))
+                })
                 .unwrap_or("viewport");
             let max_dimension = self
                 .control

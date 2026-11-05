@@ -106,6 +106,9 @@ pub enum PanelId {
     GraphicAttributes,
     BlockPalette,
     PidLegend,
+    /// The P&ID symbol palette (PIDPALETTE): categories as tabs, symbols as
+    /// a grid of clickable icons.
+    PidPalette,
     /// Block Editor authoring tools.
     AuthoringPalettes,
     /// The Block Editor's Parameters Manager.
@@ -133,11 +136,12 @@ pub enum PanelId {
 
 impl PanelId {
     /// Every panel, in the order the pallet menu lists them.
-    pub const ALL: [PanelId; 15] = [
+    pub const ALL: [PanelId; 16] = [
         PanelId::Properties,
         PanelId::GraphicAttributes,
         PanelId::BlockPalette,
         PanelId::PidLegend,
+        PanelId::PidPalette,
         PanelId::AuthoringPalettes,
         PanelId::ParametersManager,
         PanelId::ExternalReferences,
@@ -158,6 +162,7 @@ impl PanelId {
             PanelId::GraphicAttributes => "Graphic Attributes",
             PanelId::BlockPalette => "Block Palette",
             PanelId::PidLegend => "P&ID 图例",
+            PanelId::PidPalette => "P&ID 符号",
             PanelId::AuthoringPalettes => "Authoring Palettes",
             PanelId::ParametersManager => "Parameters Manager",
             PanelId::ExternalReferences => "External References",
@@ -182,6 +187,7 @@ impl PanelId {
             }
             PanelId::BlockPalette => include_bytes!("../../assets/icons/blocks/insert.svg"),
             PanelId::PidLegend => include_bytes!("../../assets/icons/report.svg"),
+            PanelId::PidPalette => include_bytes!("../../assets/icons/pid_palette.svg"),
             PanelId::AuthoringPalettes => include_bytes!("../../assets/icons/tool_palettes.svg"),
             PanelId::ParametersManager => include_bytes!("../../assets/icons/table.svg"),
             PanelId::ExternalReferences => crate::ui::icons::FOLDER_OPEN,
@@ -204,6 +210,7 @@ impl PanelId {
             PanelId::GraphicAttributes => 250.0,
             PanelId::BlockPalette => 260.0,
             PanelId::PidLegend => 280.0,
+            PanelId::PidPalette => 300.0,
             PanelId::AuthoringPalettes => 260.0,
             PanelId::ParametersManager => 420.0,
             PanelId::ExternalReferences => 460.0,

@@ -71,6 +71,36 @@ pub fn recent_bounds(id: &str) -> Option<Rectangle> {
     })
 }
 
+/// Every widget id currently reporting bounds, sorted by id.
+///
+/// A panel whose background matches the drawing area cannot be segmented out
+/// of a screenshot, so a client reads where its widgets are from here instead
+/// of inferring the layout.
+///
+/// The map holds the last place each widget drew, and nothing removes an entry
+/// when the widget stops being built, so a caller that knows its own widgets
+/// went away must call [`forget_bounds`] — otherwise a closed panel or the
+/// cells of the category tab the user left would keep reporting a rectangle
+/// they no longer occupy.
+pub fn recorded_bounds() -> Vec<(String, Rectangle)> {
+    let mut out: Vec<(String, Rectangle)> = DD_BOUNDS.with(|m| {
+        m.borrow()
+            .iter()
+            .map(|(id, (bounds, _))| (id.clone(), *bounds))
+            .collect()
+    });
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Drop every recorded bound whose id starts with `prefix`.
+///
+/// For widgets the caller knows it stopped building, so [`recorded_bounds`]
+/// keeps describing what is actually on screen.
+pub fn forget_bounds(prefix: &str) {
+    DD_BOUNDS.with(|m| m.borrow_mut().retain(|id, _| !id.starts_with(prefix)));
+}
+
 /// Record `bounds` for the widget `id` as if it had just been drawn.
 #[cfg(test)]
 pub fn set_drawn_bounds(id: &str, bounds: Rectangle) {

@@ -40,6 +40,53 @@
       ]
     },
     {
+      "id": "instrument",
+      "label": "仪表",
+      "symbols": [
+        {
+          "id": "transmitter",
+          "label": "变送器",
+          "default_scale": 1.0,
+          "geometry": [
+            { "kind": "circle", "center": [0, 0], "radius": 8.0 },
+            { "kind": "line", "from": [-8, 0], "to": [8, 0] },
+            { "kind": "text", "value": "T", "at": [0, 0], "height": 2.5 }
+          ],
+          "ports": [
+            { "name": "in1", "at": [-8, 0], "type": "equal", "direction": "in" },
+            { "name": "out1", "at": [8, 0], "type": "equal", "direction": "out" }
+          ]
+        },
+        {
+          "id": "indicator",
+          "label": "指示器",
+          "default_scale": 1.0,
+          "geometry": [
+            { "kind": "circle", "center": [0, 0], "radius": 8.0 },
+            { "kind": "text", "value": "I", "at": [0, 0], "height": 2.5 }
+          ],
+          "ports": [
+            { "name": "in1", "at": [0, -8], "type": "equal", "direction": "in" },
+            { "name": "out1", "at": [0, 8], "type": "equal", "direction": "out" }
+          ]
+        },
+        {
+          "id": "controller",
+          "label": "控制器",
+          "default_scale": 1.0,
+          "geometry": [
+            { "kind": "circle", "center": [0, 0], "radius": 8.0 },
+            { "kind": "line", "from": [-8, 0], "to": [8, 0] },
+            { "kind": "text", "value": "C", "at": [0, 0], "height": 2.5 }
+          ],
+          "ports": [
+            { "name": "in1", "at": [-8, 0], "type": "equal", "direction": "in" },
+            { "name": "out1", "at": [8, 0], "type": "equal", "direction": "out" }
+          ]
+        }
+      ]
+    },
+    {
       "id": "valve",
       "label": "阀门",
       "symbols": [
@@ -101,6 +148,9 @@
       "symbol": "PID_SYM_valve_gate_valve",
       "types": ["VALVE_GATE", "VALVE_ISOLATION"]
     },
-    { "symbol": "PID_SYM_valve_gate_valve_alt", "types": ["VALVE_GATE"] }
+    { "symbol": "PID_SYM_valve_gate_valve_alt", "types": ["VALVE_GATE"] },
+    { "symbol": "PID_SYM_instrument_transmitter", "types": ["INSTRUMENT"] },
+    { "symbol": "PID_SYM_instrument_indicator", "types": ["INSTRUMENT"] },
+    { "symbol": "PID_SYM_instrument_controller", "types": ["INSTRUMENT"] }
   ]
 }
