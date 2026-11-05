@@ -214,6 +214,26 @@ impl OpenCADStudio {
             codec::EntityType::Insert(ins) => Some(ins.block_name.clone()),
             _ => None,
         };
+        // A P&ID placement names its type on the command, not on the entity:
+        // `PID_AUTHOR`'s record and the tag generated from it need the Insert's
+        // handle, which only exists once the entity is committed below.
+        let pid_author_type = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .and_then(|cmd| cmd.pid_author_type().map(str::to_owned));
+        // The symbol's block definitions come into being with the first
+        // placement — a drawing that has never held a symbol has none — and
+        // they belong to the same undo step as the Insert that needs them.
+        if let (Some(_), codec::EntityType::Insert(insert)) = (&pid_author_type, &entity) {
+            if !self.tabs[i]
+                .scene
+                .document
+                .block_records
+                .contains(&insert.block_name)
+            {
+                self.pid_symbols.instantiate(&mut self.tabs[i].scene);
+            }
+        }
         // Record where this draw ended so ARC_CONT can continue from it
         // (before `entity` is moved into commit_entity).
         self.update_cont_anchor(&entity);
@@ -248,6 +268,13 @@ impl OpenCADStudio {
         };
         let delta_safe =
             text_field.is_none() && !attribute_fields && self.delta_add_safe(i, &entity);
+        // A P&ID placement registers the `PID_AUTHOR` AppId and defines the
+        // symbol blocks — document structure the entity delta cannot replay.
+        // A structure snapshot is what puts them back, so the step cannot be
+        // delta-only. The cost is one snapshot on the first placement; later
+        // placements still pay it, because the XDATA write itself is part of
+        // the step's before/after images.
+        let delta_safe = delta_safe && pid_author_type.is_none();
         let field_value = match &entity {
             codec::EntityType::MText(m) => m.value.clone(),
             codec::EntityType::AttributeDefinition(a) => a.default_value.clone(),
@@ -291,6 +318,16 @@ impl OpenCADStudio {
         }
         if let Some(handle) = committed {
             self.apply_continuous_constraints(i, &[handle]);
+        }
+        // The `PID_AUTHOR` record lands inside the same undo step as the
+        // entity, before the step closes: the tag it carries is generated
+        // against the document, so a record written later would be invisible
+        // to the next placement's sequence scan.
+        if let (Some(handle), Some(type_code)) = (committed, pid_author_type.as_deref()) {
+            self.write_pid_author(i, handle, type_code);
+            self.tabs[i]
+                .scene
+                .bump_entities(&[(handle, crate::scene::ChangeKind::Modified)]);
         }
         self.tabs[i].dirty = true;
         self.tabs[i].scene.clear_preview_wire();

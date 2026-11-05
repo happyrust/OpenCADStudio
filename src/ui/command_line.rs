@@ -137,6 +137,11 @@ pub struct CommandLine {
     pub history: Vec<HistoryEntry>,
     pub error_revision: u64,
     pub last_error: Option<String>,
+    /// Machine-readable code for `last_error`, when the command that failed
+    /// named one (`unknown_symbol`, say). `None` means the failure carries no
+    /// code, and the control surface leaves its `code` field out entirely so
+    /// responses of commands that never name one keep their exact shape.
+    pub last_error_code: Option<String>,
     /// Tokens from the last multi-token command line that no prompt ever
     /// consumed — e.g. a trailing word after an in-place text step, or a typo'd
     /// extra argument (`CIRCLE 0,0 5 9`). The headless automation feeder reports
@@ -217,6 +222,7 @@ impl Default for CommandLine {
             history: Vec::new(),
             error_revision: 0,
             last_error: None,
+            last_error_code: None,
             unconsumed: Vec::new(),
             cmd_recall: Vec::new(),
             recent_commands: Vec::new(),
@@ -438,7 +444,18 @@ impl CommandLine {
     pub fn push_error(&mut self, msg: &str) {
         self.error_revision = self.error_revision.wrapping_add(1);
         self.last_error = Some(msg.to_owned());
+        self.last_error_code = None;
         self.push(EntryKind::Error, format_error(msg));
+    }
+    /// An error a caller can act on programmatically: the message for the
+    /// history line, plus the code the control surface reports as `code`.
+    ///
+    /// Most failures are prose only, so [`Self::push_error`] clears the code —
+    /// a code left over from an earlier failure would otherwise be attached to
+    /// a later error that never named one.
+    pub fn push_error_coded(&mut self, code: &str, msg: &str) {
+        self.push_error(msg);
+        self.last_error_code = Some(code.to_owned());
     }
     /// Append an error unless it is already the latest history line. Repeated
     /// retry failures should refresh the concise message, not flood history
@@ -447,6 +464,7 @@ impl CommandLine {
     pub fn push_error_once(&mut self, msg: &str) {
         self.error_revision = self.error_revision.wrapping_add(1);
         self.last_error = Some(msg.to_owned());
+        self.last_error_code = None;
         let text = format_error(msg);
         if let Some(last) = self
             .history

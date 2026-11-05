@@ -3088,6 +3088,15 @@ pub trait CadCommand: Send {
     fn preserve_commit_layer(&self) -> bool {
         false
     }
+    /// The P&ID type code a `PIDINSERT` placement records in `PID_AUTHOR`.
+    ///
+    /// Only `PIDINSERT` answers. The record is written after the `Insert` has
+    /// its handle (the XDATA and its generated tag need one), so the type
+    /// rides on the command instead of on the entity — the generic commit
+    /// machinery stays unaware of P&ID semantics.
+    fn pid_author_type(&self) -> Option<&str> {
+        None
+    }
     /// Short name shown in the command line prompt, e.g. `"LINE"`.
     #[allow(dead_code)]
     fn name(&self) -> &'static str;

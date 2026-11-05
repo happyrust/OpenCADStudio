@@ -1308,12 +1308,37 @@ fn is_dimension_display_entity(document: &codec::Document, entity: &codec::Entit
         .any(|block| block.handle == owner && is_generated_dimension_block_name(&block.name))
 }
 
+/// Whether `entity` is geometry the symbol library generated into a
+/// `PID_SYM_*` block definition.
+///
+/// Placing a P&ID symbol defines the block on the spot (the drawing may never
+/// have held one), and its members are the symbol's own drawing — derived
+/// display geometry in exactly the sense a baked dimension block is. The one
+/// logical entity a placement adds is the `Insert`; counting the definition's
+/// interior as drawing entities would make the drawing's entity count depend on
+/// how many lines a symbol happens to be drawn with.
+fn is_pid_symbol_block_member(document: &codec::Document, entity: &codec::EntityType) -> bool {
+    let owner = entity.common().owner_handle;
+    document
+        .block_records
+        .iter()
+        .any(|block| {
+            block.handle == owner && block.name.starts_with(crate::pid::symbols::BLOCK_PREFIX)
+        })
+}
+
+/// Entities that are derived display geometry rather than logical drawing
+/// content: generated dimension blocks and P&ID symbol definitions.
+fn is_derived_display_entity(document: &codec::Document, entity: &codec::EntityType) -> bool {
+    is_dimension_display_entity(document, entity) || is_pid_symbol_block_member(document, entity)
+}
+
 fn document_manifest(document: &codec::Document) -> Value {
     let mut by_type: BTreeMap<String, u64> = BTreeMap::new();
     let mut by_layer: BTreeMap<String, u64> = BTreeMap::new();
     let mut total = 0u64;
     for entity in document.entities() {
-        if is_dimension_display_entity(document, entity) {
+        if is_derived_display_entity(document, entity) {
             continue;
         }
         *by_type
@@ -1631,7 +1656,16 @@ impl OpenCADStudio {
                     return err(error);
                 }
                 if self.command_line.error_revision != error_revision {
-                    return err(self.command_line.last_error.clone().unwrap_or_default());
+                    let mut failure = err(
+                        self.command_line.last_error.clone().unwrap_or_default(),
+                    );
+                    // Same contract as the protocol-1 path: a command that
+                    // named its failure code reports it, one that did not
+                    // keeps the response it always had.
+                    if let Some(code) = self.command_line.last_error_code.clone() {
+                        failure["code"] = json!(code);
+                    }
+                    return failure;
                 }
                 let i = self.active_tab;
                 let after = self.tabs[i].scene.document.entities().count();
@@ -2323,6 +2357,14 @@ impl OpenCADStudio {
             .collect();
         let mut matched = Vec::new();
         for e in tab.scene.document.entities() {
+            // A `PID_SYM_*` definition's interior is the symbol's own drawing,
+            // not a logical entity of this document: the placement that
+            // defines it adds one `Insert`. Skipping it here keeps the count a
+            // caller reads stable regardless of how many strokes a symbol is
+            // drawn with, the same reason baked dimension blocks are skipped.
+            if is_pid_symbol_block_member(&tab.scene.document, e) {
+                continue;
+            }
             if handles
                 .as_ref()
                 .is_some_and(|handles| !handles.contains(&e.common().handle.value()))
@@ -2804,6 +2846,9 @@ impl OpenCADStudio {
         let mut by_type: std::collections::BTreeMap<String, u64> = Default::default();
         let mut total = 0u64;
         for e in self.tabs[i].scene.document.entities() {
+            if is_derived_display_entity(&self.tabs[i].scene.document, e) {
+                continue;
+            }
             *by_type
                 .entry(crate::entities::names::ui_name(e).to_string())
                 .or_default() += 1;

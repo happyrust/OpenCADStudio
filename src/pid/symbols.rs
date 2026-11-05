@@ -914,6 +914,37 @@ mod tests {
             vec!["in1".to_string(), "out1".to_string()],
             "端口元数据来自符号定义，不受块几何影响"
         );
+
+        // 端口元数据的三个字段逐项校验：M3 只断言了名字列表，而接线判定
+        // 需要 `type`（等径 / 异径 / 盲端）与 `direction`（流入 / 流出 /
+        // 双向）。它们同样只活在定义里，块内 POINT 承载不了。
+        let ports = &library.symbol(VESSEL).expect("vessel 存在").ports;
+        assert_eq!(ports.len(), 2, "vessel 应定义 2 个端口");
+        let summary: Vec<(&str, PortKind, PortDir, [f64; 2])> = ports
+            .iter()
+            .map(|port| (port.name.as_str(), port.port_type, port.direction, port.at))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("in1", PortKind::Equal, PortDir::In, [0.0, -12.0]),
+                ("out1", PortKind::Equal, PortDir::Out, [0.0, 12.0]),
+            ],
+            "端口元数据应逐项为 (name, type, direction, 块内坐标)"
+        );
+
+        // 三个字段在符号库与 JSON 之间是同一套序列化词汇，`type` 落盘为
+        // `equal` / `reducing` / `blind`，`direction` 为 `in` / `out` /
+        // `bidir` —— 外部编辑 `assets/pid-symbols.json` 时按这套写。
+        assert_eq!(
+            serde_json::to_value(&ports[0]).expect("端口可序列化"),
+            serde_json::json!({
+                "name": "in1",
+                "at": [0.0, -12.0],
+                "type": "equal",
+                "direction": "in",
+            })
+        );
     }
 
     /// `VAL-SEM-032`：符号与类型多对多，插入写入正确的 `type` 与块名。

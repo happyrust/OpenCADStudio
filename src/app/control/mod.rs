@@ -1788,6 +1788,16 @@ impl OpenCADStudio {
                 .collect::<Vec<_>>()
         });
         let response = json!({"ok":!failed,"status":status,"request_id":p.id,"error":if failed{self.command_line.last_error.clone()}else{None},"result":p.result,"changes":changes,"state":self.control_state()});
+        let mut response = response;
+        // A command that named a failure code reports it alongside the prose,
+        // so a caller can branch on `unknown_symbol` instead of matching
+        // message text. Failures that name no code keep the response shape
+        // they have always had — no `code` key at all.
+        if failed {
+            if let Some(code) = self.command_line.last_error_code.clone() {
+                response["code"] = json!(code);
+            }
+        }
         self.control.serial += 1;
         self.control.events.push_back(json!({"sequence":self.control.serial,"request_id":p.id,"status":status,"document_id":self.tabs[self.active_tab].id,"revision":self.tabs[self.active_tab].edit_revision}));
         while self.control.events.len() > 128 {
