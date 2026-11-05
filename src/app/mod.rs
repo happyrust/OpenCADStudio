@@ -1351,6 +1351,15 @@ pub(super) struct OpenCADStudio {
     /// on a tab: the palette stays open on the tab the user chose across
     /// document switches.
     pub(crate) pid_palette: crate::ui::window::pid_palette::PidPalette,
+    /// Docked SmartPlant backup browser visibility (PIDBACKUPOPEN). The panel
+    /// id exists on both builds so the persisted layout is the same; only the
+    /// web build's body is a hint instead of a tree.
+    pub(crate) show_pid_backup: bool,
+    /// The backup the browser shows: its load state, the open rows, the
+    /// selected node and the items read so far. App-level, not per tab, so
+    /// switching documents leaves the tree where the user left it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pid_backup_browser: crate::ui::window::pid_backup_browser::PidBackupBrowser,
     pub(crate) pid_symbols: crate::pid::symbols::SymbolLibrary,
     /// Which group of symbols the P&ID legend list shows (its filter row).
     pub(crate) pid_legend_filter: crate::ui::window::pid_legend_list::PidLegendFilter,
@@ -4013,15 +4022,11 @@ pub enum Message {
     /// PIDPLOT's worker finished: the PDF it wrote, or why it could not.
     #[cfg(not(target_arch = "wasm32"))]
     PidPdfFinished(Result<crate::io::pid_pdf::PidPdfReceipt, String>),
-    /// PIDBACKUPOPEN's source dialog closed: the zip or folder, or `None`.
+    /// PIDBACKUPOPEN's panel: a tree row clicked, a backup loaded, a drawing
+    /// opened. The panel's own state machine decides what each one does; the
+    /// command layer only carries out the effect it asks for.
     #[cfg(not(target_arch = "wasm32"))]
-    PidBackupSourcePicked(Option<PathBuf>),
-    /// PIDBACKUPOPEN's restore finished.
-    #[cfg(not(target_arch = "wasm32"))]
-    PidBackupRestored(Result<crate::io::pid_backup::Restored, String>),
-    /// PIDBACKUPOPEN's drawing dialog closed: the `.pid` to open, or `None`.
-    #[cfg(not(target_arch = "wasm32"))]
-    PidBackupDrawingPicked(Option<PathBuf>),
+    PidBackup(crate::ui::window::pid_backup_browser::PidBackupMsg),
     /// Web SCRIPT: the picked .scr file's name and text. `None` = the
     /// browser dialog was cancelled.
     #[cfg(target_arch = "wasm32")]
@@ -6150,6 +6155,9 @@ impl OpenCADStudio {
             show_pid_legend_list: false,
             show_pid_palette: false,
             pid_palette: Default::default(),
+            show_pid_backup: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            pid_backup_browser: Default::default(),
             pid_symbols: crate::pid::symbols::SymbolLibrary::load_from_env(),
             pid_legend_filter: Default::default(),
             pid_legend_exceptions_open: false,

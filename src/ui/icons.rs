@@ -87,6 +87,10 @@ pub static SNAP: &[u8] = include_bytes!("../../assets/icons/ui/snap.svg");
 pub static DOC_NEW: &[u8] = include_bytes!("../../assets/icons/ui/doc_new.svg");
 pub static DOC: &[u8] = include_bytes!("../../assets/icons/ui/doc.svg");
 pub static FOLDER_OPEN: &[u8] = include_bytes!("../../assets/icons/ui/folder_open.svg");
+/// The closed folder. The P&ID backup panel uses it: every panel needs an
+/// icon no other panel has, and the open folder already marks External
+/// References.
+pub static FOLDER: &[u8] = include_bytes!("../../assets/icons/ui/folder.svg");
 pub static SAVE: &[u8] = include_bytes!("../../assets/icons/ui/save.svg");
 pub static FILE_EXPORT: &[u8] = include_bytes!("../../assets/icons/ui/file_export.svg");
 pub static PRINT: &[u8] = include_bytes!("../../assets/icons/ui/print.svg");

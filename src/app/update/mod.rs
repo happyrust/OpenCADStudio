@@ -4300,13 +4300,7 @@ impl OpenCADStudio {
                 Task::none()
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Message::PidBackupSourcePicked(source) => self.on_pid_backup_source_picked(source),
-            #[cfg(not(target_arch = "wasm32"))]
-            Message::PidBackupRestored(result) => self.on_pid_backup_restored(result),
-            #[cfg(not(target_arch = "wasm32"))]
-            Message::PidBackupDrawingPicked(Some(path)) => self.update(Message::OpenRecent(path)),
-            #[cfg(not(target_arch = "wasm32"))]
-            Message::PidBackupDrawingPicked(None) => Task::none(),
+            Message::PidBackup(m) => self.on_pid_backup(m),
 
             // Web SCRIPT: the picked .scr file arrived — run it through the
             // same runner the native path feeds.

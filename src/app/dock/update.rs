@@ -557,6 +557,16 @@ impl OpenCADStudio {
                         }
                         self.show_pid_palette = true;
                     }
+                    PanelId::PidBackup => {
+                        if self.dock.location(PanelId::PidBackup).is_none() {
+                            self.dock.dock(
+                                PanelId::PidBackup,
+                                crate::app::config::DockSide::Right,
+                                0,
+                            );
+                        }
+                        self.show_pid_backup = true;
+                    }
                     PanelId::ParametersManager => {
                         self.show_parameters_manager = true;
                         self.dock_open_at_default(id);
@@ -609,6 +619,9 @@ impl OpenCADStudio {
             }
             PanelId::PidLegend => self.show_pid_legend_list = false,
             PanelId::PidPalette => self.show_pid_palette = false,
+            // The backup stays loaded: closing the pallet hides the tree, and
+            // reopening it (or PIDBACKUPOPEN again) shows the same backup.
+            PanelId::PidBackup => self.show_pid_backup = false,
             PanelId::AuthoringPalettes => {
                 self.show_authoring_palettes = false;
             }
@@ -737,6 +750,7 @@ impl OpenCADStudio {
             PanelId::BlockPalette => self.show_block_palette,
             PanelId::PidLegend => self.show_pid_legend_list,
             PanelId::PidPalette => self.show_pid_palette,
+            PanelId::PidBackup => self.show_pid_backup,
             PanelId::ParametersManager => {
                 self.show_parameters_manager
                     && self.tabs[self.active_tab]

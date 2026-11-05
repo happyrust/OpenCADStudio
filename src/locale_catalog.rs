@@ -7040,6 +7040,29 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "Select P&ID Backup Folder" => Some(("pid-backup", "select-folder")),
         "Select P&ID Backup" => Some(("pid-backup", "select-backup")),
         "SmartPlant backup (*.zip)" => Some(("pid-backup", "zip-filter")),
+        "P&ID Backup" => Some(("pid-backup", "panel-title")),
+        "Open…" => Some(("pid-backup", "panel-open")),
+        "Close backup" => Some(("pid-backup", "close-backup")),
+        "Search drawings…" => Some(("pid-backup", "search")),
+        "No backup is open." => Some(("pid-backup", "no-backup")),
+        "Select a node to see its details." => Some(("pid-backup", "no-selection")),
+        "Plant groups" => Some(("pid-backup", "plant-groups")),
+        "Reference data" => Some(("pid-backup", "reference-data")),
+        "Restored" => Some(("pid-backup", "restored")),
+        "Registered but missing" => Some(("pid-backup", "missing")),
+        "File path" => Some(("pid-backup", "file-path")),
+        "Group path" => Some(("pid-backup", "group-path")),
+        "Member" => Some(("pid-backup", "member")),
+        "Members" => Some(("pid-backup", "members")),
+        "Warnings" => Some(("pid-backup", "warnings")),
+        "No warnings." => Some(("pid-backup", "no-warnings")),
+        "Backup type" => Some(("pid-backup", "backup-type")),
+        "Date created" => Some(("pid-backup", "date-created")),
+        "SPID" => Some(("pid-backup", "spid")),
+        "Not available in the web build." => Some(("pid-backup", "panel-web-unavailable")),
+        "PIDBACKUPOPEN: {} drawing(s), {} warning(s)" => {
+            Some(("pid-backup", "loaded-report"))
+        }
         _ => None,
     }
 }

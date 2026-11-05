@@ -21,8 +21,14 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::app::Message;
 use crate::io::pid_backup_browse::{BackupIndex, DrawingItems, GroupNode, RefNode};
 use crate::t;
+use crate::ui::dock::{Chrome, PanelId};
+use iced::widget::{
+    button, column, container, mouse_area, row, scrollable, text, text_input, Space,
+};
+use iced::{Element, Fill, Length, Theme};
 
 /// Where the panel is in loading a backup.
 #[derive(Debug, Clone, Default)]
@@ -287,7 +293,7 @@ fn push_files(state: &PidBackupBrowser, index: &BackupIndex, rows: &mut Vec<Row>
     rows.push(Row {
         id: NodeId::Files,
         depth: 1,
-        label: t!("Backup files").into_owned(),
+        label: t!("Backup Files").into_owned(),
         expandable: !index.files.is_empty(),
         expanded,
         disabled: false,
@@ -560,6 +566,410 @@ fn activate(state: &PidBackupBrowser, id: NodeId) -> Effect {
         .and_then(|index| index.drawings.get(drawing))
         .and_then(|entry| entry.pid_path.clone())
         .map_or(Effect::None, Effect::OpenDrawing)
+}
+
+impl PidBackupMsg {
+    pub(crate) fn message(self) -> Message {
+        Message::PidBackup(self)
+    }
+}
+
+// ── View ──────────────────────────────────────────────────────────────────
+
+/// `PosReport` id of the panel body, so a client can locate it on screen.
+pub const PANEL_BOUNDS_ID: &str = "pid-backup-panel";
+
+/// `PosReport` id prefix of the visible tree rows.
+///
+/// The suffix is the row's index among the visible rows: the tree is rebuilt
+/// from [`visible_rows`] every frame, so a node's own identity (`NodeId`) can
+/// name a row that is not on screen while its index always names the row a
+/// screenshot shows.
+pub const ROW_BOUNDS_PREFIX: &str = "pid-backup-row-";
+
+/// Indentation one tree level costs, in pixels.
+const INDENT: f32 = 12.0;
+
+fn muted(theme: &Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(theme.palette().background.base.text.scale_alpha(0.6)),
+    }
+}
+
+/// One key/value line of the detail table.
+fn kv<'a>(key: String, value: String) -> Element<'a, Message> {
+    row![
+        text(key).size(10).width(Length::Fixed(96.0)).style(muted),
+        text(value).size(10).width(Fill),
+    ]
+    .spacing(4)
+    .align_y(iced::Top)
+    .into()
+}
+
+/// A byte count as the panel shows it.
+pub fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn group_at<'a>(index: &'a BackupIndex, path: &[usize]) -> Option<&'a GroupNode> {
+    let (first, rest) = path.split_first()?;
+    let mut node = index.plant_groups.get(*first)?;
+    for at in rest {
+        node = node.children.get(*at)?;
+    }
+    Some(node)
+}
+
+fn ref_at<'a>(node: &'a RefNode, path: &[usize]) -> Option<&'a RefNode> {
+    let mut node = node;
+    for at in path {
+        node = node.dirs.get(*at)?;
+    }
+    Some(node)
+}
+
+fn group_drawing_count(node: &GroupNode) -> usize {
+    node.drawings.len()
+        + node
+            .children
+            .iter()
+            .map(group_drawing_count)
+            .sum::<usize>()
+}
+
+/// One row of the tree: its indentation, its expand arrow and its label.
+fn tree_row<'a>(row: &Row, at: usize) -> Element<'a, Message> {
+    let arrow: Element<'a, Message> = if row.expandable {
+        let icon = if row.expanded {
+            crate::ui::icons::themed_arrow_down(10.0)
+        } else {
+            crate::ui::icons::themed_arrow_right(10.0)
+        };
+        button(icon)
+            .on_press(PidBackupMsg::Toggle(row.id.clone()).message())
+            .style(button::text)
+            .padding(0)
+            .into()
+    } else {
+        Space::new().width(Length::Fixed(12.0)).into()
+    };
+    let label = if row.disabled {
+        text(row.label.clone()).size(11).style(muted)
+    } else {
+        text(row.label.clone()).size(11)
+    };
+    let line = row![
+        Space::new().width(Length::Fixed(row.depth as f32 * INDENT)),
+        arrow,
+        label,
+    ]
+    .spacing(2)
+    .align_y(iced::Center);
+    // A press selects; the second press of a double click activates. The row
+    // stays clickable when it is greyed (its details still explain why), and
+    // `update` is what refuses to open a drawing with no file.
+    let area = mouse_area(container(line).width(Fill).padding([1, 4]))
+        .interaction(iced::mouse::Interaction::Pointer)
+        .on_press(PidBackupMsg::Select(row.id.clone()).message())
+        .on_double_click(PidBackupMsg::Activate(row.id.clone()).message());
+    crate::ui::wrap_bar::PosReport::owned(format!("{ROW_BOUNDS_PREFIX}{at}"), area).into()
+}
+
+/// The lower half: what the selected node is.
+fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
+    let Some(index) = state.index() else {
+        return text(t!("No backup is open.")).size(11).style(muted).into();
+    };
+    let Some(id) = state.selected.as_ref() else {
+        return text(t!("Select a node to see its details."))
+            .size(11)
+            .style(muted)
+            .into();
+    };
+    let mut body = column![].spacing(2);
+    match id {
+        NodeId::Root => {
+            if let Some(manifest) = &index.manifest {
+                for (key, value) in [
+                    ("Name", manifest.name.clone()),
+                    ("Version", manifest.version.clone()),
+                    ("Backup type", manifest.backup_type.clone()),
+                    ("Date created", manifest.date_created.clone()),
+                    ("SPID", manifest.spid.clone()),
+                ] {
+                    if let Some(value) = value {
+                        body = body.push(kv(t!(key).into_owned(), value));
+                    }
+                }
+            }
+            body = body.push(kv(
+                t!("Source").into_owned(),
+                index.source.display().to_string(),
+            ));
+            body = body.push(kv(
+                t!("Restored").into_owned(),
+                index.restored.display().to_string(),
+            ));
+            if index.read_only {
+                body = body.push(kv(t!("Read-only").into_owned(), String::new()));
+            }
+            body = body.push(Space::new().height(4));
+            body = body.push(text(t!("Warnings")).size(10));
+            if index.warnings.is_empty() {
+                body = body.push(text(t!("No warnings.")).size(10).style(muted));
+            }
+            for warning in &index.warnings {
+                body = body.push(text(warning.clone()).size(10).style(muted));
+            }
+        }
+        NodeId::Files => {
+            body = body.push(kv(
+                t!("File").into_owned(),
+                index.files.len().to_string(),
+            ));
+        }
+        NodeId::File(at) => {
+            if let Some(file) = index.files.get(*at) {
+                body = body.push(kv(t!("Name").into_owned(), file.name.clone()));
+                if !file.format.is_empty() {
+                    body = body.push(kv(t!("Format").into_owned(), file.format.clone()));
+                }
+                body = body.push(kv(t!("Size").into_owned(), human_size(file.size)));
+                body = body.push(kv(
+                    t!("Members").into_owned(),
+                    file.members.len().to_string(),
+                ));
+                if let Some(line) = &file.version_line {
+                    body = body.push(kv(t!("Version").into_owned(), line.clone()));
+                }
+                if file.missing {
+                    body = body.push(
+                        text(t!("Registered but missing"))
+                            .size(10)
+                            .style(muted),
+                    );
+                }
+            }
+        }
+        NodeId::FileMember(file, member) => {
+            if let Some(file) = index.files.get(*file) {
+                body = body.push(kv(t!("File").into_owned(), file.name.clone()));
+                if let Some(name) = file.members.get(*member) {
+                    body = body.push(kv(t!("Member").into_owned(), name.clone()));
+                }
+            }
+        }
+        NodeId::Groups => {
+            body = body.push(kv(
+                t!("Group").into_owned(),
+                index.plant_groups.len().to_string(),
+            ));
+            body = body.push(kv(
+                t!("Drawings").into_owned(),
+                index.drawings.len().to_string(),
+            ));
+        }
+        NodeId::Group(path) => {
+            if let Some(node) = group_at(index, path) {
+                body = body.push(kv(t!("Name").into_owned(), node.name.clone()));
+                body = body.push(kv(t!("Path").into_owned(), node.path.clone()));
+                body = body.push(kv(
+                    t!("Drawings").into_owned(),
+                    group_drawing_count(node).to_string(),
+                ));
+            }
+        }
+        NodeId::Drawing(drawing) => {
+            if let Some(entry) = index.drawings.get(*drawing) {
+                body = body.push(kv(t!("Name").into_owned(), entry.name.clone()));
+                body = body.push(kv(
+                    t!("Group path").into_owned(),
+                    entry.group_path.clone(),
+                ));
+                match &entry.pid_path {
+                    Some(path) => {
+                        body = body.push(kv(
+                            t!("File path").into_owned(),
+                            path.display().to_string(),
+                        ));
+                        body = body.push(
+                            button(text(t!("Open")).size(11))
+                                .on_press(
+                                    PidBackupMsg::Activate(NodeId::Drawing(*drawing))
+                                        .message(),
+                                )
+                                .padding([3, 10]),
+                        );
+                    }
+                    // A row the plant knows about but the backup does not
+                    // carry: there is nothing to open, so the panel says why.
+                    None => {
+                        body = body.push(
+                            text(t!("Registered but missing")).size(10).style(muted),
+                        );
+                    }
+                }
+                // Every `T_DRAWING` column, empty values included: the panel
+                // is the only place the backup's own metadata is visible.
+                for (key, value) in &entry.meta {
+                    body = body.push(kv(key.clone(), value.clone()));
+                }
+            }
+        }
+        NodeId::ItemType(drawing, group) => {
+            if let Some(ItemsState::Ready(items)) = state.items.get(drawing) {
+                if let Some(group) = items.groups.get(*group) {
+                    body = body.push(kv(t!("Type").into_owned(), group.item_type.clone()));
+                    body = body.push(kv(
+                        t!("Items").into_owned(),
+                        group.items.len().to_string(),
+                    ));
+                }
+            }
+        }
+        NodeId::Item(drawing, group, item) => {
+            let found = match state.items.get(drawing) {
+                Some(ItemsState::Ready(items)) => items
+                    .groups
+                    .get(*group)
+                    .and_then(|group| group.items.get(*item)),
+                _ => None,
+            };
+            if let Some(entry) = found {
+                body = body.push(kv(t!("UID").into_owned(), entry.uid.clone()));
+                body = body.push(kv(t!("Type").into_owned(), entry.item_type.clone()));
+                if let Some(class) = &entry.class {
+                    body = body.push(kv(t!("Class").into_owned(), class.clone()));
+                }
+                body = body.push(Space::new().height(4));
+                body = body.push(text(t!("Attributes")).size(10));
+                for attribute in &entry.attributes {
+                    body = body.push(kv(
+                        format!("{}.{}", attribute.interface, attribute.name),
+                        attribute.value.clone(),
+                    ));
+                }
+            }
+        }
+        NodeId::Ref => {
+            body = body.push(kv(
+                t!("Name").into_owned(),
+                index.ref_tree.name.clone(),
+            ));
+            body = body.push(kv(
+                t!("File").into_owned(),
+                index.ref_tree.file_count().to_string(),
+            ));
+        }
+        NodeId::RefDir(path) => {
+            if let Some(node) = ref_at(&index.ref_tree, path) {
+                body = body.push(kv(t!("Name").into_owned(), node.name.clone()));
+                body = body.push(kv(
+                    t!("File").into_owned(),
+                    node.file_count().to_string(),
+                ));
+            }
+        }
+        NodeId::RefFile(path, at) => {
+            if let Some(file) = ref_at(&index.ref_tree, path).and_then(|node| node.files.get(*at)) {
+                body = body.push(kv(t!("Name").into_owned(), file.name.clone()));
+                body = body.push(kv(t!("Size").into_owned(), human_size(file.size)));
+            }
+        }
+    }
+    body.into()
+}
+
+/// Build the docked panel.
+pub fn view<'a>(state: &'a PidBackupBrowser, width: f32, chrome: Chrome) -> Element<'a, Message> {
+    let title_bar = crate::ui::dock::title_bar(
+        PanelId::PidBackup,
+        t!("P&ID Backup").into_owned(),
+        chrome,
+    );
+
+    let toolbar = row![
+        button(text(t!("Open…")).size(11))
+            .on_press(PidBackupMsg::Open.message())
+            .padding([3, 8]),
+        button(text(t!("Refresh")).size(11))
+            .on_press(PidBackupMsg::Refresh.message())
+            .padding([3, 8]),
+        button(text(t!("Close backup")).size(11))
+            .on_press(PidBackupMsg::Close.message())
+            .padding([3, 8]),
+    ]
+    .spacing(4)
+    .align_y(iced::Center);
+
+    let search = text_input(t!("Search drawings…").as_ref(), &state.filter)
+        .on_input(|text| PidBackupMsg::Filter(text).message())
+        .size(11)
+        .padding([3, 6]);
+
+    // The upper half is the tree, built only from the rows the user opened;
+    // the lower half is what the selected node is.
+    let tree: Element<'a, Message> = match &state.load {
+        LoadState::Idle => {
+            let mut hint = column![
+                text(t!("No backup is open.")).size(11).style(muted),
+            ]
+            .spacing(2);
+            if let Some(error) = &state.error {
+                hint = hint.push(text(error.clone()).size(10).style(muted));
+            }
+            container(hint).width(Fill).padding([4, 6]).into()
+        }
+        LoadState::Loading(source) => container(
+            column![
+                text(t!("Loading…")).size(11).style(muted),
+                text(source.display().to_string()).size(10).style(muted),
+            ]
+            .spacing(2),
+        )
+        .width(Fill)
+        .padding([4, 6])
+        .into(),
+        LoadState::Ready(_) => {
+            let rows = visible_rows(state);
+            let mut list = column![].spacing(1);
+            for (at, row) in rows.iter().enumerate() {
+                list = list.push(tree_row(row, at));
+            }
+            scrollable(list)
+                .direction(scrollable::Direction::Vertical(
+                    scrollable::Scrollbar::default(),
+                ))
+                .width(Fill)
+                .height(Length::FillPortion(3))
+                .into()
+        }
+    };
+
+    let details = scrollable(details(state))
+        .direction(scrollable::Direction::Vertical(
+            scrollable::Scrollbar::default(),
+        ))
+        .width(Fill)
+        .height(Length::FillPortion(2));
+
+    let content = column![toolbar, search, tree, details]
+        .spacing(4)
+        .height(Fill);
+    let reported = crate::ui::wrap_bar::PosReport::new(PANEL_BOUNDS_ID, content);
+    crate::ui::dock::frame(title_bar, reported, width)
 }
 
 #[cfg(test)]

@@ -522,6 +522,7 @@ impl OpenCADStudio {
                 width,
                 chrome,
             ),
+            crate::ui::dock::PanelId::PidBackup => pid_backup_panel(self, width, chrome),
             crate::ui::dock::PanelId::ExternalReferences => {
                 self.xref_manager
                     .view(width, chrome, tab.xref_missing, &tab.scene.document)
@@ -1325,4 +1326,38 @@ fn place_at(content: Element<'_, Message>, x: f32, y: f32) -> Element<'_, Messag
             left: x.max(0.0),
         })
         .into()
+}
+
+/// The backup browser's body.
+///
+/// Desktop reads the index the panel holds; the web build carries neither the
+/// data layer nor the panel module, so it draws the same frame with a hint
+/// instead of a tree. The panel id exists on both sides (the persisted layout
+/// names it either way), so this is the one place the two builds differ.
+#[cfg(not(target_arch = "wasm32"))]
+fn pid_backup_panel<'a>(
+    app: &'a OpenCADStudio,
+    width: f32,
+    chrome: crate::ui::dock::Chrome,
+) -> Element<'a, Message> {
+    crate::ui::window::pid_backup_browser::view(&app.pid_backup_browser, width, chrome)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn pid_backup_panel<'a>(
+    _app: &'a OpenCADStudio,
+    width: f32,
+    chrome: crate::ui::dock::Chrome,
+) -> Element<'a, Message> {
+    let title_bar = crate::ui::dock::title_bar(
+        crate::ui::dock::PanelId::PidBackup,
+        t!("P&ID Backup").into_owned(),
+        chrome,
+    );
+    let hint = container(text(t!("Not available in the web build.")).size(12))
+        .center_x(Fill)
+        .center_y(Fill)
+        .width(Fill)
+        .height(Fill);
+    crate::ui::dock::frame(title_bar, hint, width)
 }

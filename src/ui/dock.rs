@@ -109,6 +109,9 @@ pub enum PanelId {
     /// The P&ID symbol palette (PIDPALETTE): categories as tabs, symbols as
     /// a grid of clickable icons.
     PidPalette,
+    /// The SmartPlant P&ID backup browser (PIDBACKUPOPEN): the backup's files,
+    /// its plant groups and drawings, their model items and its `Ref` data.
+    PidBackup,
     /// Block Editor authoring tools.
     AuthoringPalettes,
     /// The Block Editor's Parameters Manager.
@@ -136,12 +139,13 @@ pub enum PanelId {
 
 impl PanelId {
     /// Every panel, in the order the pallet menu lists them.
-    pub const ALL: [PanelId; 16] = [
+    pub const ALL: [PanelId; 17] = [
         PanelId::Properties,
         PanelId::GraphicAttributes,
         PanelId::BlockPalette,
         PanelId::PidLegend,
         PanelId::PidPalette,
+        PanelId::PidBackup,
         PanelId::AuthoringPalettes,
         PanelId::ParametersManager,
         PanelId::ExternalReferences,
@@ -163,6 +167,7 @@ impl PanelId {
             PanelId::BlockPalette => "Block Palette",
             PanelId::PidLegend => "P&ID 图例",
             PanelId::PidPalette => "P&ID 符号",
+            PanelId::PidBackup => "P&ID Backup",
             PanelId::AuthoringPalettes => "Authoring Palettes",
             PanelId::ParametersManager => "Parameters Manager",
             PanelId::ExternalReferences => "External References",
@@ -188,6 +193,10 @@ impl PanelId {
             PanelId::BlockPalette => include_bytes!("../../assets/icons/blocks/insert.svg"),
             PanelId::PidLegend => include_bytes!("../../assets/icons/report.svg"),
             PanelId::PidPalette => include_bytes!("../../assets/icons/pid_palette.svg"),
+            // `FOLDER_OPEN` already marks External References, and a panel
+            // needs an icon of its own; the closed folder is the one folder
+            // shape no other panel uses.
+            PanelId::PidBackup => crate::ui::icons::FOLDER,
             PanelId::AuthoringPalettes => include_bytes!("../../assets/icons/tool_palettes.svg"),
             PanelId::ParametersManager => include_bytes!("../../assets/icons/table.svg"),
             PanelId::ExternalReferences => crate::ui::icons::FOLDER_OPEN,
@@ -211,6 +220,7 @@ impl PanelId {
             PanelId::BlockPalette => 260.0,
             PanelId::PidLegend => 280.0,
             PanelId::PidPalette => 300.0,
+            PanelId::PidBackup => 340.0,
             PanelId::AuthoringPalettes => 260.0,
             PanelId::ParametersManager => 420.0,
             PanelId::ExternalReferences => 460.0,
@@ -1850,5 +1860,20 @@ mod tests {
                 assert_ne!(a.icon(), b.icon(), "{a:?} and {b:?} share an icon");
             }
         }
+    }
+
+    #[test]
+    fn the_backup_browser_is_a_panel_of_its_own() {
+        assert_eq!(PanelId::ALL.len(), 17);
+        assert!(PanelId::ALL.contains(&PanelId::PidBackup));
+        // The persisted layout names the panel, so the id has to round trip.
+        let json = serde_json::to_string(&PanelId::PidBackup).unwrap();
+        assert_eq!(json, "\"pid_backup\"");
+        assert_eq!(
+            serde_json::from_str::<PanelId>("\"pid_backup\"").unwrap(),
+            PanelId::PidBackup
+        );
+        assert_eq!(PanelId::PidBackup.title(), "P&ID Backup");
+        assert_eq!(PanelId::PidBackup.default_width(), 340.0);
     }
 }
