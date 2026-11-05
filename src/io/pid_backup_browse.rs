@@ -984,15 +984,30 @@ mod tests {
 
     /// A backup folder with a manifest, a drawing archive of two folders, and
     /// a `Ref` tree -- and no `Export.dmp`.
+    ///
+    /// The `Ref` tree is nested three levels deep on purpose: a read-only
+    /// check that only lists the top level of the source would miss a file
+    /// written under `Ref/Symbols/Valves` or `Ref/Sheets`.
     fn synthetic_backup(root: &Path) -> PathBuf {
         let backup = root.join("backup");
-        std::fs::create_dir_all(backup.join("Ref").join("Symbols")).unwrap();
+        std::fs::create_dir_all(backup.join("Ref").join("Symbols").join("Valves")).unwrap();
+        std::fs::create_dir_all(backup.join("Ref").join("Sheets")).unwrap();
         std::fs::write(
             backup.join("Manifest.txt"),
             "BackupType<<|>>2\nVersion<<|>>7.02\nDateCreated<<|>>07/19/2026 20:13:24\nName<<|>>SQPlant\nSpid<<|>>F8D466206C55478D9BB9482FA7769A46\n",
         )
         .unwrap();
         std::fs::write(backup.join("Ref").join("Symbols").join("valve.sym"), b"s").unwrap();
+        std::fs::write(
+            backup
+                .join("Ref")
+                .join("Symbols")
+                .join("Valves")
+                .join("ball.sym"),
+            b"b",
+        )
+        .unwrap();
+        std::fs::write(backup.join("Ref").join("Sheets").join("legend.xml"), b"l").unwrap();
         std::fs::write(backup.join("Ref").join("readme.txt"), b"r").unwrap();
         write_zip(
             &backup.join("PlantData~2~711.zip"),
@@ -1009,19 +1024,36 @@ mod tests {
         backup
     }
 
+    /// Everything under `path`, depth first: `relative/path:size` per entry,
+    /// with `-1` for a directory. Relative paths are `/`-separated so the
+    /// listing does not depend on the platform separator, and directories are
+    /// listed so a folder the index created shows up as well.
     fn manifest_of(path: &Path) -> Vec<String> {
-        let mut listed: Vec<String> = std::fs::read_dir(path)
-            .unwrap()
-            .flatten()
-            .map(|entry| {
+        fn walk(dir: &Path, prefix: &str, listed: &mut Vec<String>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.path())
+                .collect();
+            entries.sort();
+            for entry in entries {
+                let name = entry.file_name().unwrap().to_string_lossy().into_owned();
+                let relative = if prefix.is_empty() {
+                    name
+                } else {
+                    format!("{prefix}/{name}")
+                };
                 let meta = entry.metadata().unwrap();
-                format!(
-                    "{}:{}",
-                    entry.file_name().to_string_lossy(),
-                    if meta.is_dir() { -1 } else { meta.len() as i64 }
-                )
-            })
-            .collect();
+                if meta.is_dir() {
+                    listed.push(format!("{relative}:-1"));
+                    walk(&entry, &relative, listed);
+                } else {
+                    listed.push(format!("{relative}:{}", meta.len()));
+                }
+            }
+        }
+        let mut listed = Vec::new();
+        walk(path, "", &mut listed);
         listed.sort();
         listed
     }
@@ -1083,12 +1115,31 @@ mod tests {
             .drawings
             .iter()
             .all(|drawing| drawing.pid_path.is_some()));
-        assert_eq!(index.ref_tree.file_count(), 2);
-        assert!(index
+        assert_eq!(index.ref_tree.file_count(), 4);
+        let symbols = index
             .ref_tree
             .dirs
             .iter()
-            .any(|dir| dir.name == "Symbols" && dir.files.len() == 1));
+            .find(|dir| dir.name == "Symbols")
+            .unwrap();
+        assert_eq!(
+            symbols
+                .files
+                .iter()
+                .map(|file| file.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["valve.sym"]
+        );
+        // Sub-directories are walked, not just the first level.
+        assert_eq!(
+            symbols
+                .dirs
+                .iter()
+                .map(|dir| dir.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Valves"]
+        );
+        assert_eq!(symbols.dirs[0].files[0].name, "ball.sym");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1130,6 +1181,13 @@ mod tests {
         let root = scratch("readonly");
         let backup = synthetic_backup(&root);
         let before = manifest_of(&backup);
+        // The listing really reaches into the sub-folders: a top-level-only
+        // manifest would still be equal before and after a write below it.
+        assert!(
+            before.contains(&"Ref/Symbols/Valves/ball.sym:1".to_string()),
+            "{before:?}"
+        );
+        assert!(before.contains(&"Ref/Symbols:-1".to_string()), "{before:?}");
         let index = build_index(&backup, Some(&root.join("out"))).unwrap();
 
         assert!(index.read_only);
@@ -1283,6 +1341,9 @@ mod tests {
         )
         .unwrap();
         let before = manifest_of(&backup);
+        // The drawing sits two folders down; only a recursive listing can
+        // prove the in-place source was not touched at that depth.
+        assert!(before.contains(&"00/00/A.pid:1".to_string()), "{before:?}");
         let index = build_index(&backup, None).unwrap();
 
         assert!(index.read_only);
@@ -1359,13 +1420,17 @@ mod tests {
 
     #[test]
     fn items_are_grouped_by_model_item_type() {
+        // Fed in descending UID order, so an unsorted group would come out
+        // reversed: only the group's own sort can yield ascending UIDs.
         let (groups, count) = group_published_items(vec![
+            published_item("UID-E", "Pipe", None),
+            published_item("UID-D", "Instrument", None),
+            published_item("UID-C", "Instrument", Some("PIDInstrument")),
             published_item("UID-B", "Pipe", None),
-            published_item("UID-A", "Instrument", Some("PIDInstrument")),
-            published_item("UID-C", "Instrument", None),
+            published_item("UID-A", "Instrument", None),
         ]);
 
-        assert_eq!(count, 3);
+        assert_eq!(count, 5);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].item_type, "Instrument");
         assert_eq!(
@@ -1374,12 +1439,19 @@ mod tests {
                 .iter()
                 .map(|item| item.uid.as_str())
                 .collect::<Vec<_>>(),
-            vec!["UID-A", "UID-C"]
+            vec!["UID-A", "UID-C", "UID-D"]
         );
-        assert_eq!(groups[0].items[0].class.as_deref(), Some("PIDInstrument"));
-        assert_eq!(groups[0].items[1].class, None);
+        assert_eq!(groups[0].items[0].class, None);
+        assert_eq!(groups[0].items[1].class.as_deref(), Some("PIDInstrument"));
         assert_eq!(groups[1].item_type, "Pipe");
-        assert_eq!(groups[1].items.len(), 1);
+        assert_eq!(
+            groups[1]
+                .items
+                .iter()
+                .map(|item| item.uid.as_str())
+                .collect::<Vec<_>>(),
+            vec!["UID-B", "UID-E"]
+        );
         // Every item carries its type and its attribute triple.
         let first = &groups[0].items[0];
         assert_eq!(first.item_type, "Instrument");
@@ -1486,9 +1558,16 @@ mod tests {
         // Ten archives on disk plus the one `RefData~4~824` the manifest
         // declares but the export failed to write.
         assert_eq!(refdata.len(), 11);
+        // Exactly one declared archive is missing, and it is the one the
+        // export failed to write: `RefData~4~824`.
+        let missing: Vec<&str> = refdata
+            .iter()
+            .filter(|file| file.missing)
+            .map(|file| file.name.as_str())
+            .collect();
         assert_eq!(
-            refdata.iter().filter(|file| file.missing).count(),
-            1,
+            missing,
+            vec!["RefData~4~824"],
             "{:?}",
             refdata
                 .iter()
