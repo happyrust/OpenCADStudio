@@ -43,6 +43,11 @@ pub mod open_progress;
 pub mod options;
 pub mod pc_manager;
 pub mod pdf_dialogs;
+/// The P&ID backup browser's state and its pure functions. Desktop only: it
+/// reads [`crate::io::pid_backup_browse`], which the web build does not carry;
+/// the web build's dock branch says the panel is unavailable instead.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pid_backup_browser;
 pub mod pid_legend_list;
 pub mod pid_palette;
 pub mod pdf_shx_dialog;
