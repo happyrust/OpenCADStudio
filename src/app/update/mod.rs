@@ -4321,6 +4321,24 @@ impl OpenCADStudio {
                             self.command_line.input.push(' ');
                             return Task::none();
                         }
+                        // A command may claim Space for itself — the symbol
+                        // insert turns its preview with it. Only a command
+                        // that takes the key consumes it; every other one
+                        // still finishes the step like Enter.
+                        if self.ctrl_down
+                            && self.tabs[self.active_tab]
+                                .active_cmd
+                                .as_ref()
+                                .is_some_and(|command| command.takes_ctrl_space())
+                        {
+                            // Ctrl+Space already switched the insertion point
+                            // on the Ctrl edge; the Space half must not also
+                            // turn or place the symbol (`VAL-DRAW-016`).
+                            return Task::none();
+                        }
+                        if self.rotate_active_command_on_space() {
+                            return Task::none();
+                        }
                         self.update(Message::CommandFinalize)
                     }
                 }

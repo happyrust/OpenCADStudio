@@ -65,6 +65,20 @@ pub struct PidInsertCommand {
     scale: f64,
     /// The point the user has picked, once they have.
     point: Option<DVec3>,
+    /// Preview rotation, radians. `SPACE` adds a quarter turn
+    /// (`VAL-DRAW-015`); the placement is committed with the same angle the
+    /// preview showed.
+    rotation: f64,
+    /// Block-local points the placement can hang from: the block's own
+    /// insertion base first, then the symbol's ports. `CTRL+SPACE` walks them
+    /// (`VAL-DRAW-016`).
+    anchors: Vec<DVec3>,
+    /// Which of [`Self::anchors`] the preview hangs from.
+    anchor_index: usize,
+    /// The symbol's block-local geometry, tessellated once when the command
+    /// starts. The preview maps it through the same scale / rotation / anchor
+    /// the placement uses, so what the user sees is what Enter commits.
+    preview: Vec<crate::scene::WireModel>,
 }
 
 impl PidInsertCommand {
@@ -76,7 +90,119 @@ impl PidInsertCommand {
             author_type: type_code,
             scale: 1.0,
             point: None,
+            rotation: 0.0,
+            anchors: vec![DVec3::ZERO],
+            anchor_index: 0,
+            preview: Vec::new(),
         }
+    }
+
+    /// The block's own geometry, tessellated in block-local coordinates. The
+    /// host resolves it once (`refresh_point_pick_scene`) and the preview
+    /// maps it per cursor position.
+    pub fn with_preview(mut self, preview: Vec<crate::scene::WireModel>) -> Self {
+        self.preview = preview;
+        self
+    }
+
+    /// The block-local points `CTRL+SPACE` walks: the block base, then the
+    /// symbol's ports in definition order.
+    pub fn with_anchors(mut self, ports: Vec<DVec3>) -> Self {
+        let mut anchors = Vec::with_capacity(ports.len() + 1);
+        anchors.push(DVec3::ZERO);
+        for port in ports {
+            if port.is_finite() && !anchors.iter().any(|a| a.distance(port) < 1e-12) {
+                anchors.push(port);
+            }
+        }
+        self.anchors = anchors;
+        self.anchor_index = 0;
+        self
+    }
+
+    /// The block-local point the placement hangs from.
+    fn anchor(&self) -> DVec3 {
+        self.anchors
+            .get(self.anchor_index)
+            .copied()
+            .unwrap_or(DVec3::ZERO)
+    }
+
+    /// World offset from the anchor to the insertion point: the rotation and
+    /// scale the placement applies, so `cursor - anchor_offset()` is the
+    /// insertion point that puts the anchor under the cursor.
+    fn anchor_offset(&self) -> DVec3 {
+        let (sin, cos) = self.rotation.sin_cos();
+        let x = self.anchor().x * self.scale;
+        let y = self.anchor().y * self.scale;
+        DVec3::new(x * cos - y * sin, x * sin + y * cos, 0.0)
+    }
+
+    /// The placement for a cursor at `cursor`, with the preview's rotation,
+    /// scale and anchor.
+    fn insert_at(&self, cursor: DVec3) -> codec::entities::Insert {
+        let at = cursor - self.anchor_offset();
+        codec::entities::Insert::new(
+            self.block.clone(),
+            codec::types::Vector3::new(at.x, at.y, at.z),
+        )
+        .with_uniform_scale(self.scale)
+        .with_rotation(self.rotation)
+    }
+
+    /// `SPACE`: a quarter turn, kept in `[0, 2π)`.
+    fn rotate_quarter_turn(&mut self) {
+        use std::f64::consts::{FRAC_PI_2, TAU};
+        self.rotation = (self.rotation + FRAC_PI_2) % TAU;
+    }
+
+    /// `CTRL+SPACE`: move to the next anchor. False when the symbol offers no
+    /// alternative — the command then has nothing to switch to.
+    fn advance_anchor(&mut self) -> bool {
+        if self.anchors.len() < 2 {
+            return false;
+        }
+        self.anchor_index = (self.anchor_index + 1) % self.anchors.len();
+        true
+    }
+
+    /// The preview rotation, for tests.
+    #[cfg(test)]
+    pub fn rotation_for_test(&self) -> f64 {
+        self.rotation
+    }
+
+    /// The preview anchor, for tests.
+    #[cfg(test)]
+    pub fn anchor_for_test(&self) -> DVec3 {
+        self.anchor()
+    }
+
+    /// The insertion point a cursor would produce, for tests.
+    #[cfg(test)]
+    pub fn insertion_point_for_test(&self, cursor: DVec3) -> DVec3 {
+        cursor - self.anchor_offset()
+    }
+
+    /// The preview geometry, for tests.
+    #[cfg(test)]
+    pub fn preview_for_test(&self) -> &[crate::scene::WireModel] {
+        &self.preview
+    }
+
+    /// 一个块内点落在屏幕预览上的世界坐标。
+    ///
+    /// `insert_transform_with_base` 把块点 `P` 放到
+    /// `insert_point + R·S·(P − base)`，而符号块的基点是原点，所以把插入点
+    /// 取成让插入基准点落在光标处（`cursor − R·S·anchor`）之后，块点就落在
+    /// `cursor + R·S·(P − anchor)`。预览与落点共用这一条换算，两处不可能
+    /// 不一致（`VAL-DRAW-014`）。
+    pub fn preview_point(&self, cursor: DVec3, local: DVec3) -> DVec3 {
+        let (sin, cos) = self.rotation.sin_cos();
+        let d = local - self.anchor();
+        let x = d.x * self.scale;
+        let y = d.y * self.scale;
+        cursor + DVec3::new(x * cos - y * sin, x * sin + y * cos, d.z)
     }
 
     /// Carry the author type and the symbol's default scale; the palette sets
@@ -136,6 +262,42 @@ impl CadCommand for PidInsertCommand {
         CmdResult::NeedPoint
     }
 
+    /// The symbol ghost follows the cursor. Mapping the block-local preview
+    /// through the placement's own transform is what makes the screenshot
+    /// diff and the committed `Insert` agree (`VAL-DRAW-014`).
+    fn on_preview_wires(&mut self, pt: DVec3) -> Vec<crate::scene::WireModel> {
+        if self.preview.is_empty() || !pt.is_finite() {
+            return Vec::new();
+        }
+        self.preview
+            .iter()
+            .map(|wire| wire.mapped(|p| self.preview_point(pt, p)))
+            .collect()
+    }
+
+    /// `SPACE` rotates the preview a quarter turn instead of finishing the
+    /// step (`VAL-DRAW-015`).
+    fn rotate_on_space(&mut self) -> bool {
+        if self.preview.is_empty() && self.point.is_none() {
+            // Nothing to turn yet — leave Space meaning Enter so the command
+            // still behaves like every other one before its first point.
+            return false;
+        }
+        self.rotate_quarter_turn();
+        true
+    }
+
+    /// `CTRL+SPACE` walks the placement's insertion points
+    /// (`VAL-DRAW-016`).
+    fn cycle_insertion_point(&mut self) -> bool {
+        self.advance_anchor()
+    }
+
+    /// The Ctrl edge did the switch; the Space that follows belongs to it.
+    fn takes_ctrl_space(&self) -> bool {
+        self.anchors.len() > 1
+    }
+
     fn on_enter(&mut self) -> CmdResult {
         // Enter before a point has been picked only re-asks for one: the
         // placement has no default point, and `run_command_line` ends a
@@ -146,13 +308,7 @@ impl CadCommand for PidInsertCommand {
         let Some(point) = self.point else {
             return CmdResult::NeedPoint;
         };
-        let insert = codec::entities::Insert::new(
-            self.block.clone(),
-            codec::types::Vector3::new(point.x, point.y, point.z),
-        )
-        .with_uniform_scale(self.scale)
-        .with_rotation(0.0);
-        CmdResult::CommitAndExit(codec::EntityType::Insert(insert))
+        CmdResult::CommitAndExit(codec::EntityType::Insert(self.insert_at(point)))
     }
 }
 
@@ -290,9 +446,32 @@ impl OpenCADStudio {
 
     /// Install `PIDINSERT <block>` as the active command, as the palette's cell
     /// click does.
+    ///
+    /// The symbol's own geometry and ports are tessellated here, in block-local
+    /// coordinates, before the block definition exists: the preview must show
+    /// the symbol from the moment insertion mode starts, and a drawing that has
+    /// never held a symbol has no `PID_SYM_*` block yet (the commit path defines
+    /// it). `SymbolDefinition` is the same source that definition is built from,
+    /// so preview and placement cannot drift apart.
     fn start_pid_insert(&mut self, i: usize, symbol: ResolvedSymbol) -> Task<Message> {
+        let preview = self.pid_symbols.symbol(&symbol.block).map_or_else(Vec::new, |definition| {
+            self.tabs[i].scene.wires_for_entities(&definition.block_entities())
+        });
+        let ports = self
+            .pid_symbols
+            .symbol(&symbol.block)
+            .map(|definition| {
+                definition
+                    .ports
+                    .iter()
+                    .map(|port| DVec3::new(port.at[0], port.at[1], 0.0))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         let command = PidInsertCommand::new(symbol.block, symbol.label, symbol.type_code)
-            .placing(symbol.author_type, symbol.scale);
+            .placing(symbol.author_type, symbol.scale)
+            .with_anchors(ports)
+            .with_preview(preview);
         let prompt = command.prompt();
         self.reset_command_start_state(i);
         self.command_line.push_info(&prompt);
@@ -820,5 +999,252 @@ mod tests {
         .placing("EQUIPMENT".into(), 2.5);
         assert_eq!(command.pid_author_type(), Some("EQUIPMENT"));
         assert_eq!(command.scale_for_test(), 2.5);
+    }
+
+    /// 带预览与端口的命令，等价于 `PIDINSERT vessel` 在文档里的样子：
+    /// vessel 的 geometry 是 16×24 的矩形（块内 -8..8 / -12..12），端口是
+    /// `in1 (0,-12)` 与 `out1 (0,12)`。
+    fn interactive_command() -> PidInsertCommand {
+        let library = library();
+        let symbol = resolve_symbol(&library, "vessel").expect("vessel 存在");
+        let scene = crate::scene::Scene::new();
+        let definition = library.symbol(&symbol.block).expect("符号定义存在");
+        let preview = scene.wires_for_entities(&definition.block_entities());
+        let ports = definition
+            .ports
+            .iter()
+            .map(|port| DVec3::new(port.at[0], port.at[1], 0.0))
+            .collect::<Vec<_>>();
+        PidInsertCommand::new(symbol.block, symbol.label, symbol.type_code)
+            .placing(symbol.author_type, symbol.scale)
+            .with_anchors(ports)
+            .with_preview(preview)
+    }
+
+    /// 预览外形的包围盒（世界坐标）。
+    ///
+    /// 取包围盒面积最大的那条线框，也就是符号的主体图形：`vessel` 的块里除了
+    /// 16×24 的矩形还有一个居中的 `V` 文字，字形线框并不以块基点对称，会把
+    /// 整体包围盒的中心拉偏。契约量的是符号图形本身的位置与宽高比，所以量
+    /// 主体那一条。
+    fn preview_bounds(wires: &[crate::scene::WireModel]) -> (DVec3, DVec3) {
+        let bounds_of = |wire: &crate::scene::WireModel| {
+            let mut min = DVec3::splat(f64::INFINITY);
+            let mut max = DVec3::splat(f64::NEG_INFINITY);
+            for (i, high) in wire.points.iter().enumerate() {
+                let low = wire.points_low.get(i).copied().unwrap_or([0.0; 3]);
+                let p = DVec3::new(
+                    high[0] as f64 + low[0] as f64,
+                    high[1] as f64 + low[1] as f64,
+                    high[2] as f64 + low[2] as f64,
+                );
+                min = min.min(p);
+                max = max.max(p);
+            }
+            (min, max)
+        };
+        wires
+            .iter()
+            .map(bounds_of)
+            .filter(|(min, max)| min.is_finite() && max.is_finite())
+            .max_by(|(min_a, max_a), (min_b, max_b)| {
+                let area = |min: &DVec3, max: &DVec3| {
+                    (max.x - min.x).abs() * (max.y - min.y).abs()
+                };
+                area(min_a, max_a)
+                    .partial_cmp(&area(min_b, max_b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .expect("预览至少有一条线框")
+    }
+
+    /// `VAL-DRAW-014`：喂两个不同的点，预览出现在两个不同的位置，位移与
+    /// 两点世界坐标之差一致（预览不建实体）。
+    #[test]
+    fn the_preview_follows_the_cursor() {
+        use crate::command::CadCommand;
+        let mut command = interactive_command();
+        assert!(
+            !command.preview_for_test().is_empty(),
+            "命令自带块内几何，否则预览无从生成"
+        );
+        let first = command.on_preview_wires(DVec3::new(200.0, 150.0, 0.0));
+        assert!(!first.is_empty(), "预览必须有几何，否则截图里看不到东西");
+        let (min1, max1) = preview_bounds(&first);
+        let center1 = (min1 + max1) * 0.5;
+
+        let second = command.on_preview_wires(DVec3::new(600.0, 400.0, 0.0));
+        let (min2, max2) = preview_bounds(&second);
+        let center2 = (min2 + max2) * 0.5;
+        let moved = center2 - center1;
+        assert!(
+            (moved.x - 400.0).abs() < 1e-6 && (moved.y - 250.0).abs() < 1e-6,
+            "预览位移必须等于喂点位移 (400,250)，实得 {moved:?}"
+        );
+        assert!(
+            center1.x > 0.0 && center1.y > 0.0,
+            "预览应出现在第一个喂点附近，实得 {center1:?}"
+        );
+    }
+
+    /// `VAL-DRAW-015`：空格使包围盒宽高互换、中心不变。
+    #[test]
+    fn space_rotates_the_preview_a_quarter_turn_about_its_centre() {
+        use crate::command::CadCommand;
+        let mut command = interactive_command();
+        let at = DVec3::new(600.0, 400.0, 0.0);
+        // vessel 的块内矩形是 (-8,-12)..(8,12)：宽 16、高 24。
+        let corners = [
+            DVec3::new(-8.0, -12.0, 0.0),
+            DVec3::new(8.0, -12.0, 0.0),
+            DVec3::new(8.0, 12.0, 0.0),
+            DVec3::new(-8.0, 12.0, 0.0),
+        ];
+        let span = |command: &PidInsertCommand| {
+            let pts: Vec<DVec3> = corners
+                .iter()
+                .map(|corner| command.preview_point(at, *corner))
+                .collect();
+            let min = pts.iter().copied().fold(DVec3::splat(f64::INFINITY), DVec3::min);
+            let max = pts.iter().copied().fold(DVec3::splat(f64::NEG_INFINITY), DVec3::max);
+            (max - min, (min + max) * 0.5)
+        };
+        let before = span(&command);
+        assert!(before.0.y > before.0.x, "vessel 块内是竖向矩形（16×24），旋转前应更高");
+
+        assert!(command.rotate_on_space(), "插入模式必须吃掉空格");
+        assert!(
+            (command.rotation_for_test() - std::f64::consts::FRAC_PI_2).abs() < 1e-12,
+            "空格应加 90°，实得 {}",
+            command.rotation_for_test()
+        );
+
+        let after = span(&command);
+        assert!(
+            (after.0.x - before.0.y).abs() < 1e-6 && (after.0.y - before.0.x).abs() < 1e-6,
+            "旋转后宽高应互换：{:?} -> {:?}",
+            before.0,
+            after.0
+        );
+        assert!(
+            after.1.distance(before.1) < 1e-6,
+            "旋转不移动预览中心：{:?} -> {:?}",
+            before.1,
+            after.1
+        );
+        // 预览线框也跟着转：同一个喂点下，旋转前后几何不同。
+        let rotated = command.on_preview_wires(at);
+        assert!(!rotated.is_empty(), "旋转后预览仍在");
+    }
+
+    /// `VAL-DRAW-016`：Ctrl+空格切换插入点，预览相对光标的偏移方向改变，
+    /// 且不改变旋转角。
+    #[test]
+    fn ctrl_space_switches_the_insertion_point() {
+        use crate::command::CadCommand;
+        let mut command = interactive_command();
+        let at = DVec3::new(600.0, 400.0, 0.0);
+        let corner = DVec3::new(-8.0, -12.0, 0.0);
+        let before = command.preview_point(at, corner);
+        assert_eq!(command.anchor_for_test(), DVec3::ZERO, "默认插入点是块基点");
+
+        assert!(command.cycle_insertion_point(), "有端口时必须能切换");
+        assert_eq!(
+            command.anchor_for_test(),
+            DVec3::new(0.0, -12.0, 0.0),
+            "第一个端口 in1 在 (0,-12)"
+        );
+
+        let after = command.preview_point(at, corner);
+        let shift = (after - before).length();
+        assert!(shift >= 3.0, "预览相对光标的位置必须明显改变，实得 {shift}");
+        assert!(
+            (command.rotation_for_test()).abs() < 1e-12,
+            "切换插入点不该旋转"
+        );
+        // 切换后的插入点让端口落在光标上：块点 anchor 映射到喂点本身。
+        assert!(
+            command
+                .preview_point(at, command.anchor_for_test())
+                .distance(at)
+                < 1e-9,
+            "插入基准点必须落在光标处"
+        );
+    }
+
+    /// `VAL-DRAW-017` / `VAL-DRAW-018`：Esc 取消不建实体；取消后重新插入
+    /// 仍能正常提交，落点就是喂进去的坐标。
+    #[test]
+    fn escape_cancels_without_a_placement_and_a_later_insert_still_commits() {
+        let mut app = app();
+        let before = entity_count(&app);
+
+        let started = request(
+            &mut app,
+            serde_json::json!({"op":"run","cmd":"PIDINSERT vessel"}),
+        );
+        assert_eq!(started["ok"], true, "{started}");
+        let picked = request(
+            &mut app,
+            serde_json::json!({"op":"input","kind":"point","point":[200.0,150.0,0.0],"space":"wcs"}),
+        );
+        assert_eq!(picked["ok"], true, "{picked}");
+        let cancelled = request(&mut app, serde_json::json!({"op":"cancel"}));
+        assert_eq!(cancelled["ok"], true, "{cancelled}");
+        let state = request(&mut app, serde_json::json!({"op":"state"}));
+        assert!(
+            state["command"].is_null(),
+            "取消后不应有活动命令：{state}"
+        );
+        assert_eq!(entity_count(&app), before, "取消后实体数不变");
+
+        // 取消后重新插入仍能提交。
+        let placed = place(&mut app, "vessel", [250.0, 250.0, 0.0]);
+        assert_eq!(placed["ok"], true, "{placed}");
+        assert_eq!(entity_count(&app), before + 1, "重新插入应 +1");
+        let inserted = inserts(&app);
+        assert_eq!(inserted.len(), 1, "应只有一个 Insert，实得 {inserted:?}");
+        assert_eq!(inserted[0].1, "PID_SYM_equipment_vessel");
+        assert!(
+            (inserted[0].2[0] - 250.0).abs() <= 0.5 && (inserted[0].2[1] - 250.0).abs() <= 0.5,
+            "落点应贴近 (250,250)，实得 {:?}",
+            inserted[0].2
+        );
+    }
+
+    /// 提交用的是预览显示的角度：空格转 90° 后落点，`Insert.rotation` 就是
+    /// 那个角，预览与实体不会不一致。
+    #[test]
+    fn a_placement_commits_the_rotation_the_preview_showed() {
+        let mut app = app();
+        request(
+            &mut app,
+            serde_json::json!({"op":"run","cmd":"PIDINSERT vessel"}),
+        );
+        request(
+            &mut app,
+            serde_json::json!({"op":"input","kind":"point","point":[200.0,150.0,0.0],"space":"wcs"}),
+        );
+        request(
+            &mut app,
+            serde_json::json!({"op":"input","kind":"token","text":"SPACE"}),
+        );
+        let placed = request(&mut app, serde_json::json!({"op":"input","kind":"enter"}));
+        assert_eq!(placed["ok"], true, "{placed}");
+
+        let document = &app.tabs[app.active_tab].scene.document;
+        let rotations: Vec<f64> = document
+            .entities()
+            .filter_map(|entity| match entity {
+                codec::EntityType::Insert(insert) => Some(insert.rotation),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rotations.len(), 1, "应有 1 个 Insert，实得 {rotations:?}");
+        assert!(
+            (rotations[0] - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+            "落点应带预览的 90°，实得 {}",
+            rotations[0]
+        );
     }
 }

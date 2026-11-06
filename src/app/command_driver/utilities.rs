@@ -1795,6 +1795,57 @@ impl OpenCADStudio {
         Some(self.feed_command(StepInput::EntityPick(found.unwrap_or(Handle::NULL), wcs)))
     }
 
+    /// Keys the live command owns rather than reads as text.
+    ///
+    /// `SPACE` turns the symbol insert's preview and `CTRL+SPACE` walks its
+    /// insertion points (`VAL-DRAW-015` / `VAL-DRAW-016`). A command that does
+    /// not take the key returns `None`, leaving the token to the ordinary
+    /// pipeline — so every other command keeps reading `SPACE` as nothing at
+    /// all and `CTRL+SPACE` as text.
+    fn feed_command_own_key(&mut self, token: &str) -> Option<Task<Message>> {
+        let key = token.trim().to_ascii_uppercase().replace(' ', "");
+        match key.as_str() {
+            "SPACE" => self
+                .rotate_active_command_on_space()
+                .then(Task::none),
+            "CTRL+SPACE" | "CONTROL+SPACE" => {
+                let i = self.active_tab;
+                let switched = self.tabs[i]
+                    .active_cmd
+                    .as_mut()
+                    .is_some_and(|command| command.cycle_insertion_point());
+                if !switched {
+                    return None;
+                }
+                if let Some(command) = self.tabs[i].active_cmd.as_ref() {
+                    self.command_line.push_info(&command.prompt());
+                }
+                self.refresh_active_cmd_preview(i);
+                Some(Task::none())
+            }
+            _ => None,
+        }
+    }
+
+    /// Let the live command take `SPACE`, redrawing its preview at the cursor
+    /// when it does. `false` means the key is not the command's: the caller
+    /// keeps the ordinary "Space = Enter" meaning.
+    pub(in crate::app) fn rotate_active_command_on_space(&mut self) -> bool {
+        let i = self.active_tab;
+        let rotated = self.tabs[i]
+            .active_cmd
+            .as_mut()
+            .is_some_and(|command| command.rotate_on_space());
+        if !rotated {
+            return false;
+        }
+        if let Some(command) = self.tabs[i].active_cmd.as_ref() {
+            self.command_line.push_info(&command.prompt());
+        }
+        self.refresh_active_cmd_preview(i);
+        true
+    }
+
     pub(in crate::app) fn feed_active_cmd(&mut self, token: &str) -> Task<Message> {
         let i = self.active_tab;
         if self.typed_window_corner.is_some() {
@@ -1808,6 +1859,13 @@ impl OpenCADStudio {
             || trimmed.eq_ignore_ascii_case("RETURN")
         {
             return self.feed_command(StepInput::Enter);
+        }
+        // Keys a live command owns rather than reads as text: the symbol
+        // insert turns its preview on `SPACE` and walks its insertion points
+        // on `CTRL+SPACE` (`VAL-DRAW-015` / `VAL-DRAW-016`). A command that
+        // does not take the key leaves the token to the pipeline below.
+        if let Some(task) = self.feed_command_own_key(trimmed) {
+            return task;
         }
         // Object-pick step: the token is a handle (as returned by `query`).
         if self.tabs[i]

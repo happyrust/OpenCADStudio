@@ -1304,7 +1304,15 @@ impl OpenCADStudio {
                             }
                             _ => return Err(failure("invalid_space", "Use wcs, ucs or relative")),
                         };
-                        self.feed_command(StepInput::Point(p))
+                        // A fed point is the cursor for a live command: a
+                        // symbol insert hangs its preview off it, and a REST
+                        // caller never moves a mouse (`VAL-DRAW-014`).
+                        self.tabs[i].last_cursor_world = p;
+                        let task = self.feed_command(StepInput::Point(p));
+                        if self.tabs[self.active_tab].active_cmd.is_some() {
+                            self.refresh_active_cmd_preview(self.active_tab);
+                        }
+                        task
                     }
                     "entity" | "structure" => {
                         let h = handle(req)?;

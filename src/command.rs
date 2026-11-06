@@ -3678,6 +3678,24 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// Space is this command's own key, not "finish the step".
+    ///
+    /// Only commands whose prompt says so opt in: the symbol insert rotates
+    /// its preview on Space (`VAL-DRAW-015`), so a Space that reached
+    /// `CommandFinalize` would place the symbol instead of turning it. Every
+    /// other command keeps Space = Enter. Returns whether the command took the
+    /// key — `false` leaves Space meaning Enter, as it does everywhere else.
+    fn rotate_on_space(&mut self) -> bool {
+        false
+    }
+
+    /// The command owns `CTRL+SPACE` too: the Ctrl edge already switched its
+    /// insertion point, so the Space that follows must neither rotate nor
+    /// finish the step (`VAL-DRAW-016`).
+    fn takes_ctrl_space(&self) -> bool {
+        false
+    }
+
     fn is_selection_gathering(&self) -> bool {
         false
     }
