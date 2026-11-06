@@ -832,10 +832,19 @@ pub async fn build_index_in_background(
         .spawn(move || {
             let _ = sender.send(build_index(&source, target.as_deref()));
         })
-        .map_err(|error| format!("cannot start indexing the backup: {error}"))?;
-    receiver
-        .await
-        .unwrap_or_else(|_| Err("the backup index stopped before it finished".into()))
+        .map_err(index_start_error)?;
+    receiver.await.unwrap_or_else(|_| Err(index_stopped_error()))
+}
+
+/// The message a refused index thread reports, in the UI language.
+fn index_start_error(error: std::io::Error) -> String {
+    crate::tf!("cannot start indexing the backup: {}", error).into_owned()
+}
+
+/// The message a dropped index channel reports, in the UI language: the
+/// worker thread went away without sending, e.g. because it panicked.
+fn index_stopped_error() -> String {
+    crate::t!("the backup index stopped before it finished").into_owned()
 }
 
 /// Group a loaded drawing's items by `ModelItemType`, UID-sorted inside each
@@ -1532,6 +1541,76 @@ mod tests {
         let (groups, count) = group_published_items(Vec::new());
         assert!(groups.is_empty());
         assert_eq!(count, 0);
+    }
+
+    /// Both failure paths of [`build_index_in_background`] speak the UI
+    /// language: the catalog already carries `pid-backup.cannot-start-indexing`
+    /// and `pid-backup.index-stopped`, and a hard-coded English string here
+    /// reaches the command line through `PIDBACKUPOPEN: {}` and the panel's
+    /// idle error line, leaving a Chinese UI half English.
+    ///
+    /// The thread-start failure itself cannot be provoked on demand -- it
+    /// needs `spawn` to fail, which happens only when the OS refuses a thread
+    /// -- so this pins the mapping the failing call uses, not the `spawn` call.
+    ///
+    /// The UI language is one process-wide loader, so switching it here would
+    /// leak into every test running beside this one (it turned a warning
+    /// assertion in this very module Chinese). The assertions therefore run in
+    /// a child process of this test binary, filtered to this test alone.
+    #[test]
+    fn the_index_failures_speak_the_ui_language() {
+        const CHILD: &str = "OCS_PID_BACKUP_INDEX_ERRORS_CHILD";
+        const NAME: &str = "io::pid_backup_browse::tests::the_index_failures_speak_the_ui_language";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("the test binary has a path"),
+            )
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .expect("the test binary must start");
+            assert!(
+                output.status.success(),
+                "the child run failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        crate::i18n::set_language(crate::i18n::Language::ZhCn)
+            .expect("Chinese Fluent resources must parse");
+        let start = index_start_error(std::io::Error::other("boom"));
+        assert_eq!(start, "无法开始建立备份索引：boom");
+        assert_ne!(start, "cannot start indexing the backup: boom");
+        assert_eq!(index_stopped_error(), "备份索引在完成前停止");
+        assert_ne!(
+            index_stopped_error(),
+            "the backup index stopped before it finished"
+        );
+    }
+
+    /// The two messages above only reach the user if `build_index_in_background`
+    /// really routes through them; a later edit that inlines `format!` again
+    /// would leave the catalog keys orphaned exactly as they were before.
+    #[test]
+    fn the_index_failures_route_through_the_catalog() {
+        let source = include_str!("pid_backup_browse.rs");
+        let body = source
+            .split("pub async fn build_index_in_background")
+            .nth(1)
+            .expect("the background indexer is still declared");
+        let body = &body[..body.find("\n}\n").expect("the function still ends at column 0")];
+        assert!(body.contains("map_err(index_start_error)"), "{body}");
+        assert!(body.contains("index_stopped_error()"), "{body}");
+        assert!(
+            !body.contains("cannot start indexing the backup"),
+            "the start failure went back to a hard-coded string: {body}"
+        );
+        assert!(
+            !body.contains("the backup index stopped before it finished"),
+            "the stop failure went back to a hard-coded string: {body}"
+        );
     }
 
     /// The panel hands both background loaders to `Task::perform`; this pins
