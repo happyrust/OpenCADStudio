@@ -27,8 +27,10 @@ mod mleader_layer;
 pub(crate) mod display;
 mod draw;
 mod field;
+mod group_display;
 mod fileops;
 mod hyperlink;
+pub(crate) use group_display::{group_display_mode, set_group_display_mode};
 pub(crate) use hyperlink::{hyperlink_options, set_hyperlink_options};
 mod inquiry;
 mod layerprops;
@@ -105,7 +107,9 @@ impl OpenCADStudio {
         self.tabs[i].zoom_dynamic_mode = false;
         // Reset the last committed point so the first click of the new command
         // is not constrained by ortho/polar relative to a previous command's endpoint.
-        self.last_point = None;
+        if let Some(point) = self.last_point.take() {
+            self.last_entered_point = Some(point);
+        }
         // A new command collects its own points, so the previous command's
         // accepted snaps must not leak into it.
         self.clear_accepted_snaps();
@@ -536,6 +540,7 @@ impl OpenCADStudio {
         // Remove or a fixed Window sense must not quietly still be in force
         // when the next command asks for objects. (#596)
         self.select_remove_mode = false;
+        crate::modules::draw::select::set_remove_mode(false);
         {
             let mut selection = self.tabs[i].scene.selection.borrow_mut();
             // Cancel the active selection gesture before the new command starts.
@@ -1121,6 +1126,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "VISUALSTYLES",
         "QUICKCALC",
         "QC",
+        "COMMANDHISTORY",
         "HYPERLINK",
         "XOPEN",
         "REGION",
@@ -1246,6 +1252,9 @@ inventory::submit!(crate::command::CommandRegistration {
         "REVCLOUDCREATEMODE",
         "REVCLOUDARCVARIANCE",
         "REVCLOUDGRIPS",
+        "GROUPDISPLAYMODE",
+        "OFFSETGAPTYPE",
+        "MATCHMODE",
         "REVCLOUDAPPROXARCLEN",
         "PELLIPSE",
         "SELECTIONCYCLING",
@@ -1307,12 +1316,24 @@ inventory::submit!(crate::command::CommandRegistration {
         "MENUBAR",
         "RIBBON",
         "RIBBONCLOSE",
+        "TOOLBAR",
+        "-TOOLBAR",
+        "WSCURRENT",
+        "COMMANDLINE",
+        "COMMANDLINEHIDE",
+        "COMMANDLINETOGGLE",
         "COLORTHEME",
         "SELECTIONAREA",
         "SELECTIONAREAOPACITY",
         "SELECTIONEFFECT",
         "SELECTIONEFFECTCOLOR",
         "VSEDGECOLOR",
+        "VSEDGESMOOTH",
+        "COMPARECOLORADDED",
+        "COMPARECOLORREMOVED",
+        "COMPARECOLORMODIFIED",
+        "COMPARETOLERANCE",
+        "HPDLGMODE",
         "WINDOWSAREACOLOR",
         "WINDOWAREACOLOR",
         "CROSSINGAREACOLOR",

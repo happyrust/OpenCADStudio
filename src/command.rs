@@ -2073,6 +2073,13 @@ pub enum CmdResult {
         boundaries: Vec<EntityType>,
         entity_style: Option<(codec::types::Color, codec::types::Transparency)>,
     },
+    /// Commit one hatch, print `message` and keep the command at its prompt
+    /// (HATCH's drawn boundaries).
+    CommitHatchContinue {
+        hatch: HatchModel,
+        entity_style: Option<(codec::types::Color, codec::types::Transparency)>,
+        message: String,
+    },
     /// Commit independently editable hatch entities for every selected region.
     CommitHatches {
         hatches: Vec<HatchModel>,
@@ -2295,6 +2302,10 @@ pub enum CmdResult {
     /// Opens the Text to MText Settings dialog from TXT2MTXT's selection
     /// prompt; the command keeps its prompt.
     OpenTxt2MtxtSettings,
+    /// Opens the Property Settings window from MATCHPROP's destination
+    /// prompt, showing this source object's values; the command keeps its
+    /// prompt.
+    OpenMatchPropSettings(Handle),
     /// Opens the Auto Constrain settings dialog from the selection prompt.
     OpenAutoConstrainSettings,
     /// Adds an ordered Coincident relation.  Point/point selections create a
@@ -2427,6 +2438,11 @@ pub enum CmdResult {
     /// command calls of a script). A plugin command's script starts from an
     /// empty selection.
     Script(String),
+    /// Merge several layers in a single undo step; end command.
+    MergeLayers {
+        sources: Vec<String>,
+        target: String,
+    },
     /// Move `dest` entities to the layer of the `src` entity, or put copies
     /// of them there when `copy` is set and offer placement of those copies.
     MatchEntityLayer {
@@ -2654,6 +2670,9 @@ pub enum CmdResult {
         /// A Shift+window excludes points inside this area without adding a
         /// new crossing window or subtracting whole entities.
         subtract_window: Option<(DVec3, DVec3)>,
+        /// Objects taken out with Shift+click. They stay out when the crossing
+        /// windows are queried again for this command.
+        removed_handles: Vec<Handle>,
     },
     /// Stretch entities: move only vertices/endpoints inside any gathered
     /// crossing window.
@@ -3151,6 +3170,11 @@ pub trait CadCommand: Send {
         false
     }
 
+    /// Remove a whole object in STRETCH's crossing-window collection stage.
+    fn remove_stretch_entity(&mut self, _handle: Handle) -> bool {
+        false
+    }
+
     /// Consume the matching release after STRETCH removed a selected grip.
     fn consume_stretch_remove_release(&mut self) -> bool {
         false
@@ -3248,9 +3272,10 @@ pub trait CadCommand: Send {
         false
     }
 
-    /// Take a typed coordinate at an object prompt as a pick at that point.
+    /// Take a typed coordinate at an object prompt as a pick at that point,
+    /// as a click there would; a step that reads points itself keeps them.
     fn typed_point_picks_entity(&self) -> bool {
-        false
+        !self.entity_pick_accepts_points()
     }
 
     /// A constraint point the host resolved for a `CheckConstraintPoint`
@@ -3797,6 +3822,20 @@ pub trait CadCommand: Send {
     fn hatch_gap_tolerance(&self) -> Option<f64> {
         None
     }
+
+    /// The boundary method HATCH was switched to (0 pick internal point,
+    /// 1 select objects, 2 draw), kept for its next start. Default `None`.
+    fn hatch_start_method(&self) -> Option<u8> {
+        None
+    }
+
+    /// HATCH's settings for the Hatch panel; `None` for other commands.
+    fn hatch_settings(&self) -> Option<crate::modules::draw::draw::hatch::HatchSettings> {
+        None
+    }
+
+    /// Settings edited in the Hatch panel.
+    fn set_hatch_settings(&mut self, _settings: crate::modules::draw::draw::hatch::HatchSettings) {}
 
     /// The step draws a window that selects objects rather than placing
     /// geometry: no coordinate boxes at the cursor. Default `false`.

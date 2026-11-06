@@ -208,13 +208,13 @@ fn name_of(doc: &Document, handle: Handle) -> String {
 }
 
 #[test]
-fn a_parameter_name_defaults_to_the_next_free_type_number() {
+fn a_parameter_name_leaves_the_first_of_its_type_unnumbered() {
     let (mut doc, def, handles) = fixture();
     let polar = handles[2];
-    assert_eq!(name_of(&doc, polar), "Polar1");
+    assert_eq!(name_of(&doc, polar), "Polar");
     assert_eq!(
         next_parameter_name(&doc, def, "Polar"),
-        Ok("Polar2".to_owned())
+        Ok("Polar1".to_owned())
     );
     assert_eq!(set_parameter_name(&mut doc, def, polar, "P9"), Ok(true));
     assert_eq!(
@@ -224,13 +224,27 @@ fn a_parameter_name_defaults_to_the_next_free_type_number() {
 }
 
 #[test]
-fn a_parameter_name_starts_at_one_without_an_authoring_graph() {
+fn a_taken_offered_name_falls_back_to_the_first_free_number() {
+    let (mut doc, def, handles) = fixture();
+    assert_eq!(
+        set_parameter_name(&mut doc, def, handles[1], "Polar1"),
+        Ok(true)
+    );
+    assert_eq!(
+        next_parameter_name(&doc, def, "Polar"),
+        Ok("Polar2".to_owned()),
+        "the offered Polar1 is taken, so the next free number follows"
+    );
+}
+
+#[test]
+fn a_parameter_name_starts_bare_without_an_authoring_graph() {
     let mut scene = Scene::new();
     scene.define_block_raw("PLAIN", Vector3::ZERO, vec![]);
     let definition = scene.document.block_records.get("PLAIN").unwrap().handle;
     assert_eq!(
         next_parameter_name(&scene.document, definition, "Polar"),
-        Ok("Polar1".to_owned())
+        Ok("Polar".to_owned())
     );
 }
 
@@ -249,12 +263,50 @@ fn a_parameter_name_is_trimmed_and_must_be_new() {
         set_parameter_name(&mut doc, def, polar, "a\0b"),
         Err("Parameter text cannot contain a null character.")
     );
+    let linear_name = name_of(&doc, handles[1]);
+    assert_eq!(linear_name, "Linear");
     assert_eq!(
-        set_parameter_name(&mut doc, def, polar, "linear"),
+        set_parameter_name(&mut doc, def, polar, &linear_name.to_ascii_uppercase()),
         Err("Parameter names must be unique.")
     );
     assert_eq!(
         set_parameter_name(&mut doc, def, Handle::new(999_999), "P9"),
         Err("The block parameter is unavailable.")
     );
+}
+
+#[test]
+fn block_parameter_metadata_preserves_literal_backslashes_and_dwg_line_breaks() {
+    let (mut doc, def, handles) = fixture();
+    let inputs = [
+        "plain literal \\P and \\\\P",
+        "line one\nline two",
+        "line one\r\nline two",
+        "line one\rline two",
+    ];
+    for input in inputs {
+        for &handle in &handles {
+            for (field, _) in values(&doc, def, handle) {
+                if matches!(field, Field::Description | Field::SecondaryDescription) {
+                    set_text(&mut doc, def, handle, field, input).unwrap();
+                }
+            }
+        }
+        for extension in if input.contains(['\r', '\n']) {
+            &["dwg"][..]
+        } else {
+            &["dwg", "dxf"][..]
+        } {
+            let bytes = crate::io::save_to_bytes(&doc, extension, doc.version).unwrap();
+            let loaded =
+                crate::io::load_bytes(&format!("metadata-lines.{extension}"), bytes).unwrap();
+            for &handle in &handles {
+                assert_eq!(
+                    values(&loaded, def, handle),
+                    values(&doc, def, handle),
+                    "{extension}: {handle}, input={input:?}"
+                );
+            }
+        }
+    }
 }

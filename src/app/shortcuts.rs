@@ -52,7 +52,11 @@ pub(super) fn default_bindings() -> BTreeMap<String, String> {
         // application mirrors), so the quad's master toggle rides the
         // nearest free seat beside it: Shift+F12.
         ("SHIFT+F12".to_string(), "QUADTOGGLE"),
+        // The next and the previous open drawing.
+        ("CTRL+TAB".to_string(), "NEXTDRAWING"),
+        ("CTRL+SHIFT+TAB".to_string(), "PREVDRAWING"),
         (format!("{ACCEL}+0"), "CLEANSCREEN"),
+        (format!("{ACCEL}+9"), "COMMANDLINETOGGLE"),
         (format!("{ACCEL}+1"), "PROPERTIES"),
         (format!("{ACCEL}+K"), "HYPERLINK"),
         (format!("{ACCEL}+N"), "QNEW"),
@@ -209,6 +213,8 @@ pub(super) const INPUT_ACTIONS: &[&str] = &[
     "PASTECLIP",
     // The quad cursor menu's master toggle (docs/quad-menu.md §3.6).
     "QUADTOGGLE",
+    "NEXTDRAWING",
+    "PREVDRAWING",
 ];
 
 impl OpenCADStudio {
@@ -330,7 +336,23 @@ impl OpenCADStudio {
     }
 
     pub(super) fn run_shortcut(&mut self, key: &str) -> Task<Message> {
-        let action = self.shortcut_bindings.get(key).or_else(|| {
+        // Configurations saved before these keys were bound still switch
+        // drawings with them, rather than falling back to plain Tab.
+        let builtin = match key {
+            "CTRL+TAB" => Some("NEXTDRAWING".to_string()),
+            "CTRL+SHIFT+TAB" => Some("PREVDRAWING".to_string()),
+            _ => None,
+        };
+        let builtin = builtin.filter(|_| !self.shortcut_bindings.contains_key(key));
+        // Alt+letter opens that menu of the menu bar, unless it is bound.
+        if let Some(letter) = key.strip_prefix("ALT+").filter(|rest| rest.chars().count() == 1) {
+            if !self.shortcut_bindings.contains_key(key) {
+                if let Some(task) = letter.chars().next().and_then(|ch| self.open_menu_bar_menu(ch)) {
+                    return task;
+                }
+            }
+        }
+        let action = builtin.as_ref().or_else(|| self.shortcut_bindings.get(key)).or_else(|| {
             let base = key.rsplit('+').next()?;
             is_named_key(base)
                 .then(|| self.shortcut_bindings.get(base))
@@ -392,6 +414,15 @@ impl OpenCADStudio {
             // included, lives in the quad router (docs/quad-menu.md §3.6).
             "QUADTOGGLE" => Message::Quad(crate::ui::popup::quad_menu::QuadMsg::Toggle),
             "NEXTVIEWPORT" => return self.next_viewport(),
+            // Ctrl+Tab / Ctrl+Shift+Tab: the next / previous open drawing.
+            "NEXTDRAWING" | "PREVDRAWING" => {
+                let count = self.tabs.len();
+                if count < 2 {
+                    return Task::none();
+                }
+                let step = if action == "NEXTDRAWING" { 1 } else { count - 1 };
+                Message::TabSwitch((self.active_tab + step) % count)
+            }
             "SELECTALL" => Message::SelectAllShortcut,
             "PASTECLIP" => Message::PasteShortcut,
 
@@ -460,5 +491,22 @@ mod tests {
 
         let _ = app.run_shortcut("SHIFT+F12");
         assert!(app.quad, "SHIFT+F12 toggles the quad via QUADTOGGLE");
+    }
+
+    #[test]
+    fn ctrl_tab_switches_drawings_also_without_a_binding() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        app.automation_op(r#"{"op":"new"}"#);
+        let count = app.tabs.len();
+        let start = app.active_tab;
+        let _ = app.update(Message::ShortcutPressed("CTRL+TAB".into()));
+        assert_eq!(app.active_tab, (start + 1) % count);
+        let _ = app.update(Message::ShortcutPressed("CTRL+SHIFT+TAB".into()));
+        assert_eq!(app.active_tab, start);
+        // A configuration saved before the binding existed.
+        app.shortcut_bindings.remove("CTRL+TAB");
+        let _ = app.update(Message::ShortcutPressed("CTRL+TAB".into()));
+        assert_eq!(app.active_tab, (start + 1) % count);
     }
 }

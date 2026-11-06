@@ -58,6 +58,37 @@ fn endpoints(app: &OpenCADStudio, tab: usize, definition: Handle) -> (glam::DVec
     (parameter.base, parameter.end)
 }
 
+/// A visibility parameter's row names the parameter and prints no number of its
+/// own: the state set is not a quantity the manager writes back, so both numeric
+/// cells stay empty and the row is not one it opens a field on. `Show` carries
+/// the parameter's own flag, and `Order` and `Description` stay empty because a
+/// visibility parameter carries neither.
+#[test]
+fn a_visibility_row_names_the_parameter_and_prints_no_number() {
+    let (app, tab, definition) = open(&["BPARAMETER VISIBILITY 0,0"], &[]);
+    let found = manager::rows(&app.tabs[tab].scene.document, definition)
+        .into_iter()
+        .find(|row| row.type_name == "Visibility")
+        .expect("the placed visibility parameter gets a row");
+    assert_eq!(found.name, "Visibility1", "the row names the parameter");
+    assert!(
+        !found.numeric,
+        "neither numeric cell is a number the manager writes back"
+    );
+    assert!(
+        found.expression.is_empty() && found.value.is_empty(),
+        "the row prints no number of its own: {found:?}"
+    );
+    assert!(
+        found.show,
+        "a freshly authored parameter is shown, and the row carries that flag"
+    );
+    assert!(
+        found.order.is_empty() && found.description.is_empty(),
+        "and the row leaves the two cells no rule is measured for empty: {found:?}"
+    );
+}
+
 #[test]
 fn typing_a_distance_in_the_manager_moves_the_parameter() {
     let (mut app, tab, definition) = open(&["BPARAMETER LINEAR 0,0 10,0 6,6"], &[]);
@@ -1222,4 +1253,161 @@ fn manager_edit_refreshes_ordered_actions_and_transported_parameters_with_undo()
         );
         assert_eq!(line(&app.tabs[tab].scene.document, other), original);
     }
+}
+
+/// The definition's evaluation graph — the fixture's definition holds one.
+fn evaluation_graph(document: &codec::Document) -> codec::Handle {
+    document
+        .objects
+        .values()
+        .find_map(|object| match object {
+            codec::objects::ObjectType::DynamicBlock(object) => matches!(
+                object.data,
+                codec::objects::DynamicBlockData::EvaluationGraph(_)
+            )
+            .then_some(object.handle),
+            _ => None,
+        })
+        .expect("the authored definition carries an evaluation graph")
+}
+
+/// Leave the graph naming one node twice: every parameter it held is still
+/// named, and no authoring read will edit it.
+fn duplicate_a_node(document: &mut codec::Document, graph: codec::Handle) -> bool {
+    let Some(codec::objects::ObjectType::DynamicBlock(object)) = document.objects.get_mut(&graph)
+    else {
+        return false;
+    };
+    match &mut object.data {
+        codec::objects::DynamicBlockData::EvaluationGraph(graph) => {
+            match graph.nodes.first().cloned() {
+                Some(node) => {
+                    graph.nodes.push(node);
+                    true
+                }
+                None => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// A definition whose evaluation graph refuses to be edited still holds the
+/// parameters it was authored with, and the manager's rule is one row per
+/// parameter, so it has to keep printing them. Dropping the row leaves the
+/// operator with a short table and no word about why.
+#[test]
+fn an_uneditable_graph_keeps_the_parameters_it_holds_listed() {
+    let (mut app, tab, definition) = open(&["BPARAMETER VISIBILITY 0,0"], &[]);
+    let graph = evaluation_graph(&app.tabs[tab].scene.document);
+    assert_eq!(
+        crate::scene::block_visibility::parameter(&app.tabs[tab].scene.document, definition)
+            .expect("the placed visibility parameter sits on the definition")
+            .owner,
+        graph,
+        "and it hangs off the definition's graph"
+    );
+    assert!(
+        manager::target_of(&app.tabs[tab].scene.document, definition, "Visibility1").is_some(),
+        "the placed parameter is addressable while the graph is sound"
+    );
+    assert!(
+        duplicate_a_node(&mut app.tabs[tab].scene.document, graph),
+        "the graph has a node to name twice"
+    );
+    // The refusal is what makes this the uneditable case: the same row the list
+    // prints is one nothing can be addressed through.
+    assert!(
+        manager::target_of(&app.tabs[tab].scene.document, definition, "Visibility1").is_none(),
+        "and the definition's graph really does refuse"
+    );
+    let names: Vec<String> = manager::rows(&app.tabs[tab].scene.document, definition)
+        .into_iter()
+        .map(|row| row.name)
+        .collect();
+    assert!(
+        names.iter().any(|name| name == "Visibility1"),
+        "the parameter the definition still holds keeps its row: {names:?}"
+    );
+}
+
+/// The other half of the same rule: a definition's lookup row is read off its
+/// evaluation graph, so a graph that will not take an edit still has to keep that
+/// row listed. Listing it is not editing it — the row stays one nothing can be
+/// addressed through, which is what the refusal below says.
+#[test]
+fn an_uneditable_graph_keeps_the_lookup_it_holds_listed() {
+    let (mut app, tab, definition) = open(
+        &["BPARAMETER POLAR 0,0 10,0 5,2", "BPARAMETER LOOKUP 3,3"],
+        &[],
+    );
+    let graph = evaluation_graph(&app.tabs[tab].scene.document);
+    // Before the corruption, the lookup is addressable through the definition, so
+    // the refusal below is a refusal on this row and not a name that never matched.
+    assert!(
+        manager::target_of(&app.tabs[tab].scene.document, definition, "Lookup1").is_some(),
+        "the placed lookup is addressable while the graph is sound"
+    );
+    assert!(
+        duplicate_a_node(&mut app.tabs[tab].scene.document, graph),
+        "the graph has a node to name twice"
+    );
+    assert!(
+        manager::target_of(&app.tabs[tab].scene.document, definition, "Lookup1").is_none(),
+        "and the definition's graph really does refuse"
+    );
+    let rows = manager::rows(&app.tabs[tab].scene.document, definition);
+    assert!(
+        rows.iter()
+            .any(|row| row.name == "Lookup1" && row.type_name == "Lookup"),
+        "the lookup the definition still holds keeps its row: {:?}",
+        rows.iter()
+            .map(|row| (row.name.as_str(), row.type_name))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A parameter the definition holds in its own components is the same case as
+/// one hanging off the graph: the manager's rule is one row per component, so a
+/// graph that will not take an edit has to keep both of a polar parameter's rows
+/// listed, with the numbers they printed. A short table with no reason is the
+/// defect either way; only addressing a row by name keeps refusing.
+#[test]
+fn an_uneditable_graph_keeps_the_component_rows_it_holds_listed() {
+    let (mut app, tab, definition) = open(&["BPARAMETER POLAR 0,0 10,0 5,2"], &[]);
+    let table = |app: &OpenCADStudio| {
+        manager::rows(&app.tabs[tab].scene.document, definition)
+            .into_iter()
+            .map(|row| (row.name, row.type_name, row.value))
+            .collect::<Vec<_>>()
+    };
+    let before = table(&app);
+    for name in ["Distance1", "Angle1"] {
+        assert!(
+            before.iter().any(|(row, _, _)| row.as_str() == name),
+            "a sound graph lists both of the polar parameter's rows: {before:?}"
+        );
+    }
+    let graph = evaluation_graph(&app.tabs[tab].scene.document);
+    assert!(
+        manager::target_of(&app.tabs[tab].scene.document, definition, "Distance1").is_some(),
+        "and a row is addressable while the graph is sound"
+    );
+    assert!(
+        duplicate_a_node(&mut app.tabs[tab].scene.document, graph),
+        "the graph has a node to name twice"
+    );
+    assert!(
+        manager::target_of(&app.tabs[tab].scene.document, definition, "Distance1").is_none(),
+        "and the definition's graph really does refuse"
+    );
+    let after = table(&app);
+    assert_eq!(
+        after, before,
+        "the parameter the definition holds keeps its rows, and the numbers they printed"
+    );
+    assert!(
+        after.iter().all(|(_, type_name, _)| *type_name == "Polar"),
+        "and they still read as the parameter type they came from: {after:?}"
+    );
 }

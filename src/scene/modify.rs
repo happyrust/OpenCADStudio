@@ -1381,7 +1381,8 @@ impl Scene {
                 }
                 let rebuilt_history =
                     self.copy_solid_history(src_handle, h) && self.transform_solid_history(h, t);
-                if !rebuilt_history
+                // A moved history only moves a mesh the copy does not have yet.
+                if (!rebuilt_history || !self.meshes.contains_key(&h))
                     && self.document.get_entity(h).is_some_and(|entity| {
                         matches!(
                             entity,
@@ -2786,6 +2787,12 @@ impl Scene {
     pub fn apply_grip(&mut self, handle: Handle, grip_id: usize, apply: GripApply) {
         // Objects on a locked layer can't be grip-edited.
         if self.is_layer_locked(handle) {
+            return;
+        }
+        if grip_id == GROUP_GRIP_ID {
+            if let GripApply::Translate(delta) = apply {
+                self.transform_entities(&[handle], &crate::command::EntityTransform::Translate(delta));
+            }
             return;
         }
         // An attribute grip sits on the displayed (annotation-scaled)

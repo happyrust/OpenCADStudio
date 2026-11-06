@@ -889,8 +889,11 @@ impl OpenCADStudio {
             aperture: self.snapper.osnap_radius_px,
             hatch_associative: self.hatch_associative,
             hatch_gap_tolerance: self.hatch_gap_tolerance,
+            hatch_start_method: self.hatch_start_method,
             show_menu_bar: self.show_menu_bar,
             ribbon_closed: self.ribbon_closed,
+            command_line_hidden: self.command_line_hidden,
+            layer_columns: crate::ui::window::layers::column_layout_names(),
             options_tab: self.options_tab,
             show_viewcube: self.show_viewcube,
             show_ucs_icon: self.show_ucs_icon,
@@ -932,7 +935,11 @@ impl OpenCADStudio {
             file_dia: crate::sys::file_dia(),
             ole_hide: crate::entities::ole2frame::hide_mode(),
             ole_quality: crate::app::commands::ole_quality(),
+            group_display_mode: crate::app::commands::group_display_mode(),
+            offset_gap_type: crate::modules::draw::modify::offset::gap_type(),
             trim_extend_quick: crate::modules::draw::modify::trim::quick_mode(),
+            match_mode: crate::entities::match_props::match_mode(),
+            measuregeom_quick: crate::modules::draw::inquiry::measuregeom::quick_default(),
             revcloud_create_mode: crate::entities::revcloud::create_mode(),
             revcloud_arc_variance: crate::entities::revcloud::arc_variance(),
             revcloud_grips: crate::entities::revcloud::grips_on(),
@@ -1075,8 +1082,11 @@ impl OpenCADStudio {
         if !(0.0..=max_gap).contains(&self.hatch_gap_tolerance) {
             self.hatch_gap_tolerance = 0.0;
         }
+        self.hatch_start_method = s.hatch_start_method.min(2);
         self.show_menu_bar = s.show_menu_bar;
         self.ribbon_closed = s.ribbon_closed;
+        self.command_line_hidden = s.command_line_hidden;
+        crate::ui::window::layers::set_column_layout_names(&s.layer_columns);
         self.options_tab = s.options_tab;
         self.spacemouse_preferences = s.spacemouse;
         // These four drive real features with commands and status-bar pills,
@@ -1123,7 +1133,11 @@ impl OpenCADStudio {
         crate::sys::set_file_dia(s.file_dia);
         crate::entities::ole2frame::set_hide_mode(s.ole_hide);
         crate::app::commands::set_ole_quality(s.ole_quality);
+        crate::app::commands::set_group_display_mode(s.group_display_mode);
+        crate::modules::draw::modify::offset::set_gap_type(s.offset_gap_type);
         crate::modules::draw::modify::trim::set_quick_mode(s.trim_extend_quick);
+        crate::entities::match_props::set_match_mode(s.match_mode);
+        crate::modules::draw::inquiry::measuregeom::set_quick_default(s.measuregeom_quick);
         crate::entities::revcloud::set_create_mode(s.revcloud_create_mode);
         crate::entities::revcloud::set_arc_variance(s.revcloud_arc_variance);
         crate::entities::revcloud::set_grips_on(s.revcloud_grips);
@@ -1594,12 +1608,14 @@ impl OpenCADStudio {
                 dock
             },
             show_graphic_attributes: self.show_graphic_attributes,
+            show_command_history: self.show_command_history,
             graphic_fills_on_current_layer: self.graphic_attributes.fill_on_current_layer,
             annotation_auto_scale: self.annotation_auto_scale,
             ribbon: crate::app::config::RibbonConfig {
                 layout: self.ribbon.layout().clone(),
             },
             plot: self.plot_dialog.clone(),
+            context_menu: self.context_menu_custom.clone(),
             shortcuts: crate::app::config::ShortcutConfig {
                 bindings: self
                     .shortcut_bindings
@@ -1663,6 +1679,10 @@ impl OpenCADStudio {
         dock.ensure_settings();
         self.dock = dock;
         self.show_graphic_attributes = cfg.show_graphic_attributes;
+        self.show_command_history = cfg.show_command_history;
+        if self.show_command_history {
+            self.sync_command_history_panel();
+        }
         self.graphic_attributes.fill_on_current_layer = cfg.graphic_fills_on_current_layer;
         if self.show_graphic_attributes {
             self.dock
@@ -1673,6 +1693,7 @@ impl OpenCADStudio {
         self.annotation_auto_scale = cfg.annotation_auto_scale.clamp(-4, 4);
         self.ribbon.set_layout(cfg.ribbon.layout);
         self.plot_dialog = cfg.plot;
+        self.context_menu_custom = cfg.context_menu;
         self.shortcut_bindings = cfg.shortcuts.bindings.into_iter().collect();
         self.shortcut_bindings
             .entry("F5".to_string())
@@ -1719,6 +1740,15 @@ impl OpenCADStudio {
     /// Sync the active theme and model space configuration into all open tabs
     /// and the application default background settings.
     pub(in crate::app) fn sync_model_space_theme(&mut self, geometry_changed: bool) {
+        // VSEDGESMOOTH: meshes draw their edges again when the angle changes.
+        let smooth = self.model_space.edge_smooth.clamp(0.0, 180.0);
+        if (crate::entities::mesh::edge_smooth_degrees() - smooth).abs() > f32::EPSILON {
+            crate::entities::mesh::set_edge_smooth_degrees(smooth);
+            // Block definitions hold meshes too, so every mesh is built again.
+            for tab in &mut self.tabs {
+                tab.scene.populate_meshes_from_document();
+            }
+        }
         let model_bg = self.model_space.resolve_model_bg(&self.active_theme);
         let paper_bg = self.model_space.resolve_paper_bg();
         let desk_bg = self.model_space.resolve_desk_bg();
@@ -2401,6 +2431,7 @@ impl OpenCADStudio {
         self.install_native_edit_guard(i, &path, opened_fingerprint);
         self.tabs[i].scene.material_base_dir = path.parent().map(std::path::Path::to_path_buf);
         self.tabs[i].scene.document = doc;
+        self.tabs[i].ifccad_alpha_acknowledged = false;
         // A walk belongs to the drawing it was opened on. Loading a document
         // into this tab ends any walk it still held, so the new drawing can
         // never render under the previous one's hide.
@@ -2597,6 +2628,8 @@ impl OpenCADStudio {
             .header
             .current_table_style_name
             .clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.notice_newer_autosave(i, &path);
         self.tabs[i].active_mleader_style = self.tabs[i]
             .scene
             .document
@@ -2900,6 +2933,16 @@ impl OpenCADStudio {
     /// writer ran.
     #[cfg(target_arch = "wasm32")]
     pub(in crate::app) fn saveall_web(&mut self) -> Task<Message> {
+        // Collect per-document alpha consent before capturing or writing any batch output.
+        if let Some(tab_id) = self.tabs.iter().enumerate().find_map(|(i, tab)| {
+            let ext = tab.current_path.as_ref()?.extension()?.to_str()?;
+            (tab.dirty && !tab.is_start && tab.block_test.is_none()
+                && self.needs_ifccad_alpha_consent(i, ext)).then_some(tab.id)
+        }) {
+            self.pending_ifccad_alpha_save = Some(crate::app::PendingConversionSave::WebSaveAll { tab_id });
+            self.active_modal = Some(crate::app::ModalKind::IfccadAlphaWarning);
+            return Task::none();
+        }
         let mut skipped = 0usize;
         let mut pending: Vec<(crate::app::WebSaveallEntry, codec::Document)> = Vec::new();
         for t in 0..self.tabs.len() {
@@ -3590,6 +3633,17 @@ impl OpenCADStudio {
                 let pending = crate::app::PendingConversionSave::Native(save);
                 return self.ask_conversion_loss(losses, pending);
             }
+        }
+        if purpose != crate::app::SavePurpose::Autosave
+            && self.needs_ifccad_alpha_consent(i, path.extension().and_then(|e| e.to_str()).unwrap_or(""))
+        {
+            let save = crate::app::PendingNativeThumbnailSave {
+                tab_id: self.tabs[i].id, path, version, purpose, continuation,
+                set_current_path, check_external_change, allow_conversion_loss,
+            };
+            self.pending_ifccad_alpha_save = Some(crate::app::PendingConversionSave::Native(save));
+            self.active_modal = Some(crate::app::ModalKind::IfccadAlphaWarning);
+            return Task::none();
         }
         let tab_id = self.tabs[i].id;
         if self
@@ -4444,7 +4498,7 @@ impl OpenCADStudio {
         let path = self.tabs[tab_idx].current_path.as_deref()?;
         let ext = path.extension()?.to_str()?;
         if let Some(converter) = ocs_save::external_format(ext) {
-            return Some(converter.name().to_string());
+            return Some(ocs_save::external_format_label(converter).to_string());
         }
         let is_dxf = ext.eq_ignore_ascii_case("dxf");
         (is_dxf || ext.eq_ignore_ascii_case("dwg")).then(|| {
@@ -4498,7 +4552,7 @@ impl OpenCADStudio {
             let (filter_label, filter_ext): (&str, &str) = if let Some(converter) =
                 ocs_save::external_format(ext)
             {
-                (converter.name(), ext)
+                (ocs_save::external_format_label(converter), ext)
             } else if ext.eq_ignore_ascii_case("dxf") {
                 ("DXF Files", "dxf")
             } else if ext.eq_ignore_ascii_case("dwt") {
@@ -4620,6 +4674,15 @@ impl OpenCADStudio {
                     version,
                 };
                 return self.ask_conversion_loss(losses, save);
+            }
+        }
+        if let Some(i) = self.tabs.iter().position(|tab| tab.id == tab_id) {
+            if self.needs_ifccad_alpha_consent(i, &ext) {
+                self.pending_ifccad_alpha_save = Some(crate::app::PendingConversionSave::Web {
+                    tab_id, filename, ext, version,
+                });
+                self.active_modal = Some(crate::app::ModalKind::IfccadAlphaWarning);
+                return Task::none();
             }
         }
         // The save is now committed to this tab and this format: mark it
@@ -4806,8 +4869,14 @@ impl OpenCADStudio {
         pending: crate::app::PendingConversionSave,
     ) -> Task<Message> {
         self.conversion_losses = losses;
+        let ifccad = pending.format_name() == "IFCCAD"
+            && (cfg!(target_arch = "wasm32") || self.main_window.is_some());
         self.pending_conversion_save = Some(pending);
-        self.active_modal = Some(crate::app::ModalKind::ConversionLoss);
+        self.active_modal = Some(if ifccad {
+            crate::app::ModalKind::IfccadAlphaWarning
+        } else {
+            crate::app::ModalKind::ConversionLoss
+        });
         Task::none()
     }
 
@@ -4820,7 +4889,50 @@ impl OpenCADStudio {
             return Task::none();
         };
         self.conversion_loss_allowed = true;
+        self.resume_format_save(pending)
+    }
+
+    fn needs_ifccad_alpha_consent(&self, i: usize, ext: &str) -> bool {
+        (cfg!(target_arch = "wasm32") || self.main_window.is_some())
+            && ext.eq_ignore_ascii_case("ifcx")
+            && !self.tabs[i].ifccad_alpha_acknowledged
+    }
+
+    pub(super) fn on_ifccad_alpha_proceed(&mut self) -> Task<Message> {
+        self.active_modal = None;
+        let accepted_losses = self.pending_conversion_save.is_some();
+        let pending = self.pending_ifccad_alpha_save.take()
+            .or_else(|| self.pending_conversion_save.take());
+        let Some(pending) = pending else {
+            return Task::none();
+        };
+        self.conversion_losses.clear();
+        let tab_id = match &pending {
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::app::PendingConversionSave::Native(save) => save.tab_id,
+            #[cfg(target_arch = "wasm32")]
+            crate::app::PendingConversionSave::Web { tab_id, .. }
+            | crate::app::PendingConversionSave::WebSaveAll { tab_id } => *tab_id,
+        };
+        let Some(i) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
+            self.conversion_loss_allowed = false;
+            return Task::none();
+        };
+        self.tabs[i].ifccad_alpha_acknowledged = true;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let crate::app::PendingConversionSave::Native(save) = &pending;
+            self.conversion_loss_allowed = accepted_losses || save.allow_conversion_loss;
+        }
+        #[cfg(target_arch = "wasm32")]
+        if accepted_losses { self.conversion_loss_allowed = true; }
+        self.resume_format_save(pending)
+    }
+
+    fn resume_format_save(&mut self, pending: crate::app::PendingConversionSave) -> Task<Message> {
         match pending {
+            #[cfg(target_arch = "wasm32")]
+            crate::app::PendingConversionSave::WebSaveAll { .. } => self.saveall_web(),
             #[cfg(not(target_arch = "wasm32"))]
             crate::app::PendingConversionSave::Native(save) => {
                 let Some(i) = self.tabs.iter().position(|tab| tab.id == save.tab_id) else {
@@ -4876,6 +4988,30 @@ impl OpenCADStudio {
         self.aec_drop_acknowledged = true;
         self.active_modal = Some(crate::app::ModalKind::SaveDialog);
         self.on_save_dialog_confirm()
+    }
+
+    /// A recovery copy newer than the drawing holds work a crash cut off.
+    /// This session's own copy goes when the drawing is saved or closed, so
+    /// the old one moves aside to `<name>.ocs-recovered.sv$` and the notice
+    /// says where it is.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn notice_newer_autosave(&mut self, i: usize, path: &std::path::Path) {
+        let copy = self.autosave_target(i);
+        let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        if !modified(&copy)
+            .zip(modified(path))
+            .is_some_and(|(copy_time, file_time)| copy_time > file_time)
+        {
+            return;
+        }
+        let name = copy.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let kept = copy.with_file_name(name.replace(".ocs-autosave.sv$", ".ocs-recovered.sv$"));
+        let file = if kept != copy && std::fs::rename(&copy, &kept).is_ok() { kept } else { copy };
+        self.command_line.push_warning(&crate::tr!(
+            "recovery",
+            "newer-autosave",
+            file = file.display().to_string()
+        ));
     }
 
     /// Where the autosave recovery copy for tab `i` lives.
@@ -5339,6 +5475,13 @@ impl OpenCADStudio {
         }
     }
 
+    /// Quit without removing the recovery copies (see `Message::Terminate`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::app) fn leave_keeping_recovery(&mut self) -> Task<Message> {
+        self.exit_requested = true;
+        iced::exit()
+    }
+
     /// Remove the autosave recovery files, then quit the application.
     pub(in crate::app) fn exit_app(&mut self) -> Task<Message> {
         self.cleanup_autosaves();
@@ -5689,6 +5832,145 @@ impl OpenCADStudio {
         );
     }
 
+    /// Refresh the paper/scale context from the active layout without
+    /// disturbing the device the user plotted with. Shared by the dialog's
+    /// export continuation and the direct `EXPORTPDF <path>` form.
+    fn refresh_current_plot_context(&mut self) {
+        let i = self.active_tab;
+        if self.tabs[i].scene.current_layout == "Model" {
+            return;
+        }
+        self.plot_dialog.paper_space = true;
+        self.plot_dialog.scales = self.tabs[i]
+            .scene
+            .scale_list()
+            .into_iter()
+            .map(|(name, _, factor)| (name, factor))
+            .collect();
+        let kept_printer = self.plot_dialog.printer.clone();
+        let kept_to_file = self.plot_dialog.to_file;
+        if let Some(settings) = self.tabs[i].scene.effective_plot_settings() {
+            self.load_plotsettings_into_dialog(&settings);
+        }
+        self.plot_dialog.printer = kept_printer;
+        self.plot_dialog.to_file = kept_to_file;
+    }
+
+    /// Write `path` through the same page pipeline the plot dialog uses, with
+    /// no dialog and no background task, so a script gets the file before the
+    /// command returns. `all_layouts` exports every paper layout instead of
+    /// only the current one.
+    ///
+    /// Returns the page count, byte size and the first page's sheet size in
+    /// millimetres.
+    pub(in crate::app) fn export_pdf_direct(
+        &mut self,
+        path: &std::path::Path,
+        all_layouts: bool,
+    ) -> Result<(usize, u64, (f64, f64)), String> {
+        self.stamp_plot_fields();
+        let pages = if all_layouts {
+            let i = self.active_tab;
+            let saved = std::mem::take(&mut self.print_all_layouts);
+            self.print_all_layouts = self.tabs[i]
+                .scene
+                .layout_names()
+                .into_iter()
+                .filter(|name| name != "Model")
+                .map(|name| (name, true))
+                .collect();
+            let result = self.print_all_pages();
+            self.print_all_layouts = saved;
+            let pages = result?;
+            if pages.is_empty() {
+                return Err(
+                    crate::t!("Nothing to plot: the drawing has no paper layouts.").into_owned(),
+                );
+            }
+            pages
+        } else {
+            self.refresh_current_plot_context();
+            vec![self.direct_plot_page().ok_or_else(|| {
+                crate::t!("Nothing to plot: model space contains no printable geometry.").into_owned()
+            })?]
+        };
+        let style = self.dialog_plot_style(&self.plot_dialog);
+        crate::io::pdf_export::export_pdf_pages(&pages, path, style.as_ref())?;
+        let bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        let sheet = pages
+            .first()
+            .map(|page| (page.paper_w, page.paper_h))
+            .unwrap_or((0.0, 0.0));
+        Ok((pages.len(), bytes, sheet))
+    }
+
+    /// Publish named layouts into one PDF, each with its own page setup, and
+    /// return each sheet's size so the caller can report per-sheet status.
+    pub(in crate::app) fn export_pdf_layout_names(
+        &mut self,
+        path: &std::path::Path,
+        names: &[String],
+    ) -> Result<(usize, u64, Vec<(String, f64, f64)>), String> {
+        if names.is_empty() {
+            return Err(
+                crate::t!("Nothing to publish: no paper layouts were selected.").into_owned(),
+            );
+        }
+        self.stamp_plot_fields();
+        let saved = std::mem::take(&mut self.print_all_layouts);
+        self.print_all_layouts = names.iter().cloned().map(|name| (name, true)).collect();
+        let result = self.print_all_pages();
+        self.print_all_layouts = saved;
+        let pages = result?;
+        if pages.is_empty() {
+            return Err(crate::t!("Nothing to publish: no page could be built.").into_owned());
+        }
+        let style = self.dialog_plot_style(&self.plot_dialog);
+        crate::io::pdf_export::export_pdf_pages(&pages, path, style.as_ref())?;
+        let bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        let sheets = names
+            .iter()
+            .zip(pages.iter())
+            .map(|(name, page)| (name.clone(), page.paper_w, page.paper_h))
+            .collect();
+        Ok((pages.len(), bytes, sheets))
+    }
+
+    /// Write a vector preview of the current layout through the same page and
+    /// plot-style pipeline PLOT uses. Returns page count, byte size, the first
+    /// sheet's millimetres, the plot scale and the style name (if any).
+    pub(in crate::app) fn export_preview_svg(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<(usize, u64, (f64, f64), f64, String), String> {
+        self.stamp_plot_fields();
+        self.refresh_current_plot_context();
+        let page = self.direct_plot_page().ok_or_else(|| {
+            crate::t!("Nothing to preview: the layout contains no printable geometry.").into_owned()
+        })?;
+        let style = self.dialog_plot_style(&self.plot_dialog);
+        let style_name = if self.plot_dialog.style_name.is_empty() {
+            "None".to_string()
+        } else {
+            self.plot_dialog.style_name.clone()
+        };
+        let (paper_w, paper_h, scale) = (page.paper_w, page.paper_h, page.scale as f64);
+        let assets = crate::io::plot_emit::PlotAssets::for_pages(std::slice::from_ref(&page));
+        crate::io::svg_export::export_svg_pages(
+            std::slice::from_ref(&page),
+            style.as_ref(),
+            &assets,
+            path,
+            &crate::io::svg_export::SvgWriteOptions {
+                force: true,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+        Ok((1, bytes, (paper_w, paper_h), scale, style_name))
+    }
+
     pub(in crate::app) fn on_plot_export_path_some(
         &mut self,
         path: std::path::PathBuf,
@@ -5698,24 +5980,7 @@ impl OpenCADStudio {
         if let Some(task) = self.export_pid_pdf(i, &path) {
             return task;
         }
-        if self.tabs[i].scene.current_layout != "Model" {
-            self.plot_dialog.paper_space = true;
-            self.plot_dialog.scales = self.tabs[i]
-                .scene
-                .scale_list()
-                .into_iter()
-                .map(|(name, _, factor)| (name, factor))
-                .collect();
-            // This load only refreshes paper/scale context from the layout;
-            // the device the user just plotted with must survive it.
-            let kept_printer = self.plot_dialog.printer.clone();
-            let kept_to_file = self.plot_dialog.to_file;
-            if let Some(settings) = self.tabs[i].scene.effective_plot_settings() {
-                self.load_plotsettings_into_dialog(&settings);
-            }
-            self.plot_dialog.printer = kept_printer;
-            self.plot_dialog.to_file = kept_to_file;
-        }
+        self.refresh_current_plot_context();
         let Some(page) = self.direct_plot_page() else {
             self.command_line.push_error(
                 crate::t!("Nothing to plot: model space contains no printable geometry.").as_ref(),
@@ -6770,6 +7035,39 @@ impl OpenCADStudio {
         dir.join(format!("{stem}_{ts}.pdf"))
     }
 
+    /// File stem the plot dialog names its output by and, when it picks a
+    /// folder (and the drawing has been saved), the finished path that
+    /// skips the save dialog. The `PDF` subfolder is created on demand.
+    pub(super) fn plot_output_target(&self) -> (String, Option<std::path::PathBuf>) {
+        let tab = &self.tabs[self.active_tab];
+        let drawing = self.active_stem("");
+        let layout = &tab.scene.current_layout;
+        let stem = match self.plot_dialog.output_name {
+            1 => layout.clone(),
+            2 => format!("{drawing}-{layout}"),
+            _ => drawing,
+        };
+        let stem: String = stem
+            .chars()
+            .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+            .collect();
+        let dir = tab.current_path.as_deref().and_then(|path| path.parent());
+        let folder = match (self.plot_dialog.output_folder, dir) {
+            _ if cfg!(target_arch = "wasm32") => None,
+            (1, Some(dir)) => Some(dir.to_path_buf()),
+            (2, Some(dir)) => Some(dir.join("PDF")),
+            _ => None,
+        };
+        let path = folder.filter(|folder| std::fs::create_dir_all(folder).is_ok()).map(|folder| {
+            let ext = match self.plot_dialog.destination() {
+                crate::ui::window::plot::PlotDestination::Svg => "svg",
+                _ => "pdf",
+            };
+            folder.join(format!("{stem}.{ext}"))
+        });
+        (stem, path)
+    }
+
     /// File stem of the active drawing for default output names, with an
     /// optional suffix (e.g. "_layouts" for print-all). Falls back to
     /// "drawing" when the tab has never been saved.
@@ -7379,6 +7677,22 @@ impl OpenCADStudio {
             }
             M::Quality(s) => {
                 self.plot_dialog.quality = s;
+                Task::none()
+            }
+            M::OutputFolder(s) => {
+                self.plot_dialog.output_folder = s.parse().unwrap_or(0);
+                Task::none()
+            }
+            M::OutputName(s) => {
+                self.plot_dialog.output_name = s.parse().unwrap_or(0);
+                Task::none()
+            }
+            M::RasterDpi(s) => {
+                self.plot_dialog.raster_dpi = s;
+                Task::none()
+            }
+            M::VectorDpi(s) => {
+                self.plot_dialog.vector_dpi = s;
                 Task::none()
             }
             M::Shade(s) => {
@@ -8168,6 +8482,8 @@ impl OpenCADStudio {
             merge_lines: d.merge_lines,
             monochrome: d.monochrome,
             quality: crate::io::pdf_export::PlotQuality::from_dialog(&d.quality),
+            raster_dpi: d.raster_dpi.trim().parse().ok().filter(|&dpi| dpi > 0),
+            vector_dpi: d.vector_dpi.trim().parse().ok().filter(|&dpi| dpi > 0),
         }
     }
 

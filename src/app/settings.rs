@@ -836,10 +836,17 @@ pub struct UserSettings {
     pub hatch_associative: bool,
     /// HPGAPTOL: largest boundary gap HATCH/BOUNDARY picks treat as closed.
     pub hatch_gap_tolerance: f64,
+    /// HATCH starts with the boundary method used last (0 pick internal
+    /// point, 1 select objects, 2 draw).
+    pub hatch_start_method: u8,
     /// MENUBAR: the classic pull-down menus show above the ribbon.
     pub show_menu_bar: bool,
     /// RIBBONCLOSE hid the ribbon; RIBBON brings it back.
     pub ribbon_closed: bool,
+    /// COMMANDLINEHIDE (Ctrl+9) hid the command line; COMMANDLINE shows it.
+    pub command_line_hidden: bool,
+    /// The Layer Manager's column order; a hidden column is led by `-`.
+    pub layer_columns: Vec<String>,
     /// When true, double-clicking a block reference starts REFEDIT instead of BEDIT.
     pub double_click_block_refedit: bool,
     /// When true, double-clicking a block with attributes opens ATTEDIT.
@@ -916,8 +923,18 @@ pub struct UserSettings {
     pub ole_hide: i16,
     /// OLEQUALITY: the plot quality of new OLE objects (3 automatic).
     pub ole_quality: i16,
+    /// GROUPDISPLAYMODE: a picked group shows member grips (0), a centre
+    /// grip (1) or a centre grip and a box (2).
+    pub group_display_mode: i16,
+    /// OFFSETGAPTYPE: how a polyline offset outward closes its corners
+    /// (0 extend, 1 fillet, 2 chamfer).
+    pub offset_gap_type: u8,
     /// TRIMEXTENDMODE: TRIM and EXTEND start in Quick mode (else Standard).
     pub trim_extend_quick: bool,
+    /// MATCHMODE: the properties MATCHPROP transfers, one bit each.
+    pub match_mode: u32,
+    /// MEASUREGEOM starts in quick measure (its Mode option).
+    pub measuregeom_quick: bool,
     /// REVCLOUDCREATEMODE: the type REVCLOUD starts with (0 Freehand, 1 Rectangular, 2 Polygonal).
     pub revcloud_create_mode: u8,
     /// REVCLOUDARCVARIANCE: cloud chords of random length.
@@ -1460,8 +1477,11 @@ impl Default for UserSettings {
             aperture: crate::snap::DEFAULT_OSNAP_RADIUS_PX,
             hatch_associative: true,
             hatch_gap_tolerance: 0.0,
+            hatch_start_method: 0,
             show_menu_bar: false,
             ribbon_closed: false,
+            command_line_hidden: false,
+            layer_columns: Vec::new(),
             options_tab: crate::ui::window::options::OptionsTab::General,
             show_viewcube: true,
             show_ucs_icon: true,
@@ -1500,7 +1520,11 @@ impl Default for UserSettings {
             file_dia: true,
             ole_hide: 0,
             ole_quality: 3,
+            group_display_mode: 2,
+            offset_gap_type: 0,
             trim_extend_quick: true,
+            match_mode: crate::entities::match_props::MatchOpts::DEFAULT_MODE,
+            measuregeom_quick: true,
             revcloud_create_mode: 1,
             revcloud_arc_variance: true,
             revcloud_grips: true,

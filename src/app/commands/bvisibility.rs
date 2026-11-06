@@ -63,6 +63,10 @@ impl OpenCADStudio {
             vector(end),
             vector(reference),
             label_offset,
+            options
+                .value_set
+                .as_ref()
+                .filter(|_| kind == crate::scene::block_orientation_parameter::Kind::Rotation),
         )
         .expect("validated parameter placement");
         if let Some(count) = grips
@@ -87,14 +91,34 @@ impl OpenCADStudio {
             let description = options.description.as_deref().map(|value| {
                 metadata::set_text(document, definition, parameter, metadata::Field::Description, value)
             });
+            let named = matches!(
+                kind,
+                crate::scene::block_orientation_parameter::Kind::Rotation
+                    | crate::scene::block_orientation_parameter::Kind::Flip
+            );
+            let parameter_name =
+                options.name.as_deref().filter(|_| named).map(|value| {
+                    metadata::set_parameter_name(document, definition, parameter, value)
+                });
+            let label = options.label.as_deref().filter(|_| named).map(|value| {
+                metadata::set_text(
+                    document,
+                    definition,
+                    parameter,
+                    metadata::Field::Name,
+                    value,
+                )
+            });
             let chain = options
                 .chain
                 .map(|value| metadata::set_chain(document, definition, parameter, value));
             let palette = options
                 .palette
                 .map(|value| metadata::set_visible(document, definition, parameter, value));
-            description
+            parameter_name
                 .into_iter()
+                .chain(label)
+                .chain(description)
                 .chain(chain)
                 .chain(palette)
                 .find_map(Result::err)
@@ -155,15 +179,40 @@ impl OpenCADStudio {
             return Task::none();
         }
         self.push_undo_snapshot(i, &format!("{} parameter", kind.name()));
-        let parameter = crate::scene::block_distance_parameter::create(
+        let parameter = crate::scene::block_distance_parameter::create_with(
             &mut self.tabs[i].scene.document,
             definition,
             kind,
             vector(base),
             vector(end),
             vector(label),
+            options
+                .base_location
+                .filter(|_| kind == crate::scene::block_distance_parameter::Kind::Linear),
+            options
+                .value_set
+                .as_ref()
+                .filter(|_| kind == crate::scene::block_distance_parameter::Kind::Linear),
         )
         .expect("validated parameter placement");
+        if kind == crate::scene::block_distance_parameter::Kind::Polar {
+            crate::scene::block_distance_parameter::set_polar_value_sets(
+                &mut self.tabs[i].scene.document,
+                parameter,
+                options.value_set.as_ref(),
+                options.angle_value_set.as_ref(),
+            )
+            .expect("a placed polar parameter carries its value sets");
+        }
+        if kind == crate::scene::block_distance_parameter::Kind::XY {
+            crate::scene::block_distance_parameter::set_xy_value_sets(
+                &mut self.tabs[i].scene.document,
+                parameter,
+                options.value_set.as_ref(),
+                options.vertical_value_set.as_ref(),
+            )
+            .expect("a placed xy parameter carries its value sets");
+        }
         if let Some(count) = grips
             .filter(|_| kind == crate::scene::block_distance_parameter::Kind::XY)
             .filter(|count| *count != 1)
@@ -179,7 +228,12 @@ impl OpenCADStudio {
         let option_error = {
             use crate::scene::block_authoring::metadata;
             let document = &mut self.tabs[i].scene.document;
-            let labels = kind == crate::scene::block_distance_parameter::Kind::Polar;
+            let labels = matches!(
+                kind,
+                crate::scene::block_distance_parameter::Kind::Linear
+                    | crate::scene::block_distance_parameter::Kind::Polar
+                    | crate::scene::block_distance_parameter::Kind::XY
+            );
             let parameter_name = options.name.as_deref().filter(|_| labels);
             let parameter_name = parameter_name
                 .map(|value| metadata::set_parameter_name(document, definition, parameter, value));
@@ -192,7 +246,10 @@ impl OpenCADStudio {
                     value,
                 )
             });
-            let distance_label = options.distance_label.as_deref().filter(|_| labels);
+            let distance_label = options
+                .distance_label
+                .as_deref()
+                .filter(|_| kind != crate::scene::block_distance_parameter::Kind::XY);
             let distance_label = distance_label.map(|value| {
                 metadata::set_text(
                     document,
@@ -202,7 +259,35 @@ impl OpenCADStudio {
                     value,
                 )
             });
-            let angle_label = options.angle_label.as_deref().filter(|_| labels);
+            let horizontal_label = options
+                .horizontal_label
+                .as_deref()
+                .filter(|_| kind == crate::scene::block_distance_parameter::Kind::XY);
+            let horizontal_label = horizontal_label.map(|value| {
+                metadata::set_text(
+                    document,
+                    definition,
+                    parameter,
+                    metadata::Field::Name,
+                    value,
+                )
+            });
+            let vertical_label = options
+                .vertical_label
+                .as_deref()
+                .filter(|_| kind == crate::scene::block_distance_parameter::Kind::XY);
+            let vertical_label = vertical_label.map(|value| {
+                metadata::set_text(
+                    document,
+                    definition,
+                    parameter,
+                    metadata::Field::SecondaryName,
+                    value,
+                )
+            });
+            let angle_label = options.angle_label.as_deref().filter(|_| {
+                kind == crate::scene::block_distance_parameter::Kind::Polar
+            });
             let angle_label = angle_label.map(|value| {
                 metadata::set_text(
                     document,
@@ -223,6 +308,8 @@ impl OpenCADStudio {
                 .chain(description)
                 .chain(distance_label)
                 .chain(angle_label)
+                .chain(horizontal_label)
+                .chain(vertical_label)
                 .chain(chain)
                 .chain(palette)
                 .find_map(Result::err)
@@ -634,7 +721,26 @@ impl OpenCADStudio {
                 if let Some(kind) =
                     crate::scene::block_orientation_parameter::Kind::parse(parameter_type)
                 {
-                    let command = crate::modules::block_editor::orientation_parameter::OrientationParameterCommand::new(self.tabs[i].id,block,kind);
+                    let mut command = crate::modules::block_editor::orientation_parameter::OrientationParameterCommand::new(self.tabs[i].id,block,kind);
+                    if kind == crate::scene::block_orientation_parameter::Kind::Rotation {
+                        let name = crate::scene::block_authoring::metadata::next_parameter_name(
+                            &self.tabs[i].scene.document,
+                            block,
+                            kind.name(),
+                        )
+                        .unwrap_or_else(|_| kind.name().to_owned());
+                        // The label question shows the plain word; the created
+                        // parameter takes the name the prompt offered.
+                        command = command.with_name(name).with_label("Angle".to_owned());
+                    } else if kind == crate::scene::block_orientation_parameter::Kind::Flip {
+                        // Scene creation always names a Flip parameter `Flip`,
+                        // so the prompt default must not be numbered.
+                        let label = crate::scene::block_orientation_parameter::next_flip_state_label(
+                            &self.tabs[i].scene.document,
+                            block,
+                        );
+                        command = command.with_name("Flip".to_owned()).with_label(label);
+                    }
                     self.command_line.push_info(&command.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(command));
                     return Some(Task::none());
@@ -643,20 +749,40 @@ impl OpenCADStudio {
                     crate::scene::block_distance_parameter::Kind::parse(parameter_type)
                 {
                     let mut command = crate::modules::block_editor::distance_parameter::DistanceParameterCommand::new(self.tabs[i].id, block, kind);
-                    if kind == crate::scene::block_distance_parameter::Kind::Polar {
-                        let [distance, angle] =
-                            crate::scene::block_distance_parameter::next_polar_labels(
-                                &self.tabs[i].scene.document,
-                                block,
-                            );
-                        let name = crate::scene::block_authoring::metadata::next_parameter_name(
-                            &self.tabs[i].scene.document,
-                            block,
-                            kind.name(),
-                        )
-                        .unwrap_or_else(|_| format!("{}1", kind.name()));
-                        command = command.with_name(name).with_labels(distance, angle);
-                    }
+                    let name = crate::scene::block_authoring::metadata::next_parameter_name(
+                        &self.tabs[i].scene.document,
+                        block,
+                        kind.name(),
+                    )
+                    .unwrap_or_else(|_| kind.name().to_owned());
+                    command = command.with_name(name);
+                    command = match kind {
+                        crate::scene::block_distance_parameter::Kind::Polar => {
+                            let [distance, angle] =
+                                crate::scene::block_distance_parameter::next_polar_labels(
+                                    &self.tabs[i].scene.document,
+                                    block,
+                                );
+                            command.with_labels(distance, angle)
+                        }
+                        crate::scene::block_distance_parameter::Kind::Linear => {
+                            // A Linear parameter asks for one label only.
+                            let distance =
+                                crate::scene::block_distance_parameter::next_distance_label(
+                                    &self.tabs[i].scene.document,
+                                    block,
+                                );
+                            command.with_labels(distance, String::new())
+                        }
+                        crate::scene::block_distance_parameter::Kind::XY => {
+                            let [horizontal, vertical] =
+                                crate::scene::block_distance_parameter::next_xy_labels(
+                                    &self.tabs[i].scene.document,
+                                    block,
+                                );
+                            command.with_xy_labels(horizontal, vertical)
+                        }
+                    };
                     self.command_line.push_info(&command.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(command));
                     return Some(Task::none());

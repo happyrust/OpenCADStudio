@@ -55,6 +55,29 @@ fn object(
 ) -> Result<&ObjectType, &'static str> {
     let graph =
         super::graph(document, definition)?.ok_or("The block authoring graph is unavailable.")?;
+    belonging(document, graph, handle)
+}
+
+/// The proof a list needs: the links between the definition, its dictionary and
+/// its graph, and the node that names the parameter. The checks that decide
+/// whether a graph can be edited are not needed to say a parameter belongs to a
+/// definition, and a parameter that belongs has to be listed even when no edit
+/// can be addressed through it.
+fn listed_object(
+    document: &Document,
+    definition: Handle,
+    handle: Handle,
+) -> Result<&ObjectType, &'static str> {
+    let graph = super::listed_graph(document, definition)
+        .ok_or("The block authoring graph is unavailable.")?;
+    belonging(document, graph, handle)
+}
+
+fn belonging(
+    document: &Document,
+    graph: Handle,
+    handle: Handle,
+) -> Result<&ObjectType, &'static str> {
     let Some(ObjectType::DynamicBlock(graph_object)) = document.objects.get(&graph) else {
         return Err("The block authoring graph is unavailable.");
     };
@@ -242,6 +265,17 @@ pub(crate) fn read(
 ) -> Result<Metadata<'_>, &'static str> {
     describe(object(document, definition, handle)?)
 }
+
+/// The metadata of a parameter a definition holds, for a reader that only lists:
+/// the same text, resolved through the links rather than through the checks that
+/// decide whether the graph can be edited.
+pub(crate) fn listed_read(
+    document: &Document,
+    definition: Handle,
+    handle: Handle,
+) -> Result<Metadata<'_>, &'static str> {
+    describe(listed_object(document, definition, handle)?)
+}
 /// The authoring name a named parameter object stores on its own element.
 fn element_name(object: &ObjectType) -> Option<&String> {
     match object {
@@ -298,17 +332,57 @@ fn owned_parameter_names(
         .filter_map(element_name)
         .collect())
 }
-/// The next free parameter name with the given prefix, e.g. the `Polar1` a
-/// placement prompt offers when no such name is taken.
+/// Whether an authoring object is a parameter of the type the placement
+/// prompts name with `prefix`.
+fn is_parameter_of_type(object: &ObjectType, prefix: &str) -> bool {
+    let ObjectType::DynamicBlock(object) = object else {
+        return false;
+    };
+    matches!(
+        (&object.data, prefix),
+        (Data::LinearParameter(_), "Linear")
+            | (Data::PolarParameter(_), "Polar")
+            | (Data::XYParameter(_), "XY")
+            | (Data::RotationParameter(_), "Rotation")
+    )
+}
+fn parameter_type_count(
+    document: &Document,
+    definition: Handle,
+    prefix: &str,
+) -> Result<usize, &'static str> {
+    let Some((graph, nodes)) = graph_nodes(document, definition)? else {
+        return Ok(0);
+    };
+    Ok(nodes
+        .iter()
+        .filter_map(|node| document.objects.get(&node.expression))
+        .filter(|object| owned_by(object, graph))
+        .filter(|object| is_parameter_of_type(object, prefix))
+        .count())
+}
+/// The name a placement prompt offers for the next parameter of a type: the
+/// type name alone for the first one, then the type name with the number of
+/// parameters of that type already placed (`Polar1` once a Polar exists).
 pub(crate) fn next_parameter_name(
     document: &Document,
     definition: Handle,
     prefix: &str,
 ) -> Result<String, &'static str> {
     let names = owned_parameter_names(document, definition)?;
+    let count = parameter_type_count(document, definition, prefix)?;
+    let taken = |name: &str| names.iter().any(|old| old.eq_ignore_ascii_case(name));
+    let offered = if count == 0 {
+        prefix.to_owned()
+    } else {
+        format!("{prefix}{count}")
+    };
+    if !taken(&offered) {
+        return Ok(offered);
+    }
     Ok((1..)
         .map(|n| format!("{prefix}{n}"))
-        .find(|name| names.iter().all(|old| !old.eq_ignore_ascii_case(name)))
+        .find(|name| !taken(name))
         .unwrap())
 }
 /// Rename a parameter's own element, refusing a name another parameter

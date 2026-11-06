@@ -8,6 +8,9 @@ use std::borrow::Cow;
 #[path = "conversion_loss_tests.rs"]
 mod conversion_loss_tests;
 #[cfg(test)]
+#[path = "ifccad_tests.rs"]
+mod ifccad_tests;
+#[cfg(test)]
 #[path = "unsaved_changes_tests.rs"]
 mod unsaved_changes_tests;
 
@@ -15,8 +18,15 @@ impl OpenCADStudio {
     /// Title shown in the active modal's title bar. Keep in sync with the
     /// [`Self::modal_content`] dispatch.
     pub(super) fn modal_title(&self) -> String {
+        self.active_modal
+            .map(|kind| self.modal_title_for(kind))
+            .unwrap_or_default()
+    }
+
+    /// Title of dialog `kind`'s title bar (or of its own window).
+    pub(crate) fn modal_title_for(&self, kind: super::super::ModalKind) -> String {
         use super::super::ModalKind as K;
-        match self.active_modal {
+        match Some(kind) {
             Some(K::About) => crate::tr!("modal", "about"),
             Some(K::Shortcuts) => crate::tr!("modal", "keyboard-shortcuts"),
             Some(K::Aliases) => crate::tr!("modal", "command-aliases"),
@@ -32,6 +42,7 @@ impl OpenCADStudio {
             Some(K::LayerStateManager) => crate::tr!("modal", "layer-state-manager"),
             Some(K::LayerTranslator) => crate::t!("Layer Translator").into_owned(),
             Some(K::DrawingUnits) => crate::t!("Drawing Units").into_owned(),
+            Some(K::RibbonCustomize) => crate::tr!("ribbon-customize", "window-title"),
             Some(K::BlockDefinition) => crate::t!("Block Definition").into_owned(),
             Some(K::PdfAttach) => match self.pdf_attach.as_ref().map(|s| s.kind) {
                 Some(codec::entities::UnderlayType::Dwf) => {
@@ -66,6 +77,7 @@ impl OpenCADStudio {
             Some(K::UnderlayLayers) => crate::t!("Underlay Layers").into_owned(),
             Some(K::PdfImportSettings) => crate::t!("PDF Import Settings").into_owned(),
             Some(K::Txt2MtxtSettings) => crate::tr!("txt2mtxt", "title"),
+            Some(K::MatchPropSettings) => crate::tr!("matchprop-settings", "title"),
             Some(K::Spell) => crate::ui::window::spell_dialog::title(),
             Some(K::PdfImportFile) => crate::t!("Import PDF").into_owned(),
             Some(K::ImportFile) => crate::t!("Import File").into_owned(),
@@ -109,6 +121,7 @@ impl OpenCADStudio {
             Some(K::AssocPrompt) => crate::tr!("modal", "default-application"),
             Some(K::AecDropWarning) => crate::tr!("modal", "save-warning"),
             Some(K::ConversionLoss) => crate::tr!("modal", "save-warning"),
+            Some(K::IfccadAlphaWarning) => crate::tr!("ifccad-ui", "alpha-title"),
             #[cfg(not(target_arch = "wasm32"))]
             Some(K::FileInUse) => crate::tr!("modal", "unable-save"),
             #[cfg(not(target_arch = "wasm32"))]
@@ -162,8 +175,17 @@ impl OpenCADStudio {
     /// Iced 0.15 measures the content first, so dialogs start at their natural
     /// size and overflowing regions become scrollable where a cap is supplied.
     pub(super) fn modal_content<'s>(&'s self) -> Option<Element<'s, Message>> {
-        let ex = self.modal_resize;
-        Some(match self.active_modal? {
+        self.modal_content_for(self.active_modal?, self.modal_resize)
+    }
+
+    /// Dialog `kind`'s content, `ex` past its natural size: the active modal,
+    /// an open tool's frame, or a window of its own.
+    pub(crate) fn modal_content_for<'s>(
+        &'s self,
+        kind: super::super::ModalKind,
+        ex: iced::Vector,
+    ) -> Option<Element<'s, Message>> {
+        Some(match kind {
             super::super::ModalKind::StyleImport => sized_flow(ex, 540, 480, |flow| {
                 crate::ui::style::style_manager::import_view(
                     self.style_import.as_ref().expect("style import dialog without draft"),
@@ -436,6 +458,13 @@ impl OpenCADStudio {
                     crate::ui::window::layer_translator::view_window(state, sources.clone(), flow)
                 })
             }
+            super::super::ModalKind::RibbonCustomize => {
+                let state = self.ribbon_customize.as_ref()?;
+                let panels = self.ribbon.custom_panels();
+                sized_flow(ex, 640, 440, |flow| {
+                    crate::ui::window::ribbon_customize::view_window(state, panels, flow)
+                })
+            }
             super::super::ModalKind::DrawingUnits => {
                 let state = self.drawing_units.as_ref()?;
                 sized_flow(ex, 560, 420, |flow| {
@@ -611,6 +640,12 @@ impl OpenCADStudio {
                 let settings = self.txt2mtxt_dialog.as_ref()?;
                 sized_flow(ex, 600, 470, |flow| {
                     crate::ui::window::pdf_dialogs::view_txt2mtxt_settings(settings, flow)
+                })
+            }
+            super::super::ModalKind::MatchPropSettings => {
+                let state = self.matchprop_dialog.as_ref()?;
+                sized_flow(ex, 560, 520, |flow| {
+                    crate::ui::window::pdf_dialogs::view_matchprop_settings(state, flow)
                 })
             }
             super::super::ModalKind::PdfImportFile => {
@@ -1891,6 +1926,9 @@ impl OpenCADStudio {
                     conversion_loss_dialog_window(&self.conversion_losses, &target, flow)
                 })
             }
+            super::super::ModalKind::IfccadAlphaWarning => {
+                sized_flow(ex, 600, 480, |flow| ifccad_alpha_dialog(&self.conversion_losses, flow))
+            }
             #[cfg(not(target_arch = "wasm32"))]
             super::super::ModalKind::FileInUse => {
                 let (path, error) = self
@@ -2260,11 +2298,10 @@ fn save_as_dialog_window<'a>(
 ) -> Element<'a, Message> {
     let options = crate::io::save_format_options();
     let sel_fmt = options.iter().find(|s| *s == format).cloned();
-    let label = |s: Cow<'static, str>| text(s).size(11).style(dialog_muted_text_style);
     let field_width = if matches!(sizing.width, iced::Length::Fill) {
         Fill
     } else {
-        iced::Length::Shrink
+        iced::Length::Fixed(160.0)
     };
 
     let mut items: Vec<Element<'a, Message>> = Vec::new();
@@ -2275,38 +2312,30 @@ fn save_as_dialog_window<'a>(
     // the OS save dialog collects the name, so this field is omitted.
     #[cfg(target_arch = "wasm32")]
     {
-        items.push(
-            row![
-                label(t!("File name:")).width(70),
-                iced::widget::text_input("drawing.dwg", filename)
-                    .on_input(Message::SaveDialogFilenameChanged)
-                    .size(13)
-                    .padding([5, 8])
-                    .width(field_width),
-            ]
-            .align_y(iced::Alignment::Center)
-            .spacing(6)
-            .width(sizing.width)
-            .into(),
-        );
+        items.push(crate::ui::style::form::labeled_field(
+            t!("File name:"),
+            filename,
+            Message::SaveDialogFilenameChanged,
+            field_width,
+        ));
         items.push(Space::new().height(8).into());
     }
     #[cfg(not(target_arch = "wasm32"))]
     let _ = filename;
 
-    items.push(
-        row![
-            label(t!("Format:")).width(70),
-            crate::ui::dropdown_list::pick_list(sel_fmt, options, |value| value.clone())
-                .on_select(Message::SaveDialogFormatChanged)
-            .width(field_width),
-        ]
-        .align_y(iced::Alignment::Center)
-        .spacing(6)
-        .width(sizing.width)
-        .into(),
-    );
+    items.push(crate::ui::style::form::labeled_pick_list(
+        t!("Format:"),
+        options,
+        sel_fmt,
+        Message::SaveDialogFormatChanged,
+        field_width,
+    ));
     items.push(Space::new().height(16).into());
+    if crate::io::parse_save_format(format).0 == "ifcx" {
+        items.push(text(crate::tr!("ifccad-ui", "alpha-note"))
+            .size(11).style(dialog_muted_text_style).into());
+        items.push(Space::new().height(12).into());
+    }
     items.push(
         row![
             Space::new().width(Fit),
@@ -2673,6 +2702,34 @@ fn external_change_dialog_window(
 /// (AEC / application) objects that survive only as verbatim source-version
 /// bytes, so saving to a different version or to DXF would drop them. Offers to
 /// save in the source version (keep them) or proceed (drop them).
+fn ifccad_alpha_dialog<'a>(losses: &'a [String], sizing: crate::ui::modal::ModalSizing) -> Element<'a, Message> {
+    let mut body = column![text(crate::tr!("ifccad-ui", "alpha-body"))
+        .size(13).wrapping(iced::widget::text::Wrapping::WordOrGlyph)].spacing(8)
+        .padding(iced::Padding {
+            right: 14.0,
+            bottom: 1.0,
+            ..iced::Padding::ZERO
+        });
+    if !losses.is_empty() {
+        body = body.push(text(crate::tr!("ifccad-ui", "conversion-title")).size(13));
+        for loss in losses {
+            body = body.push(text(format!("• {loss}")).size(12)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph));
+        }
+    }
+    container(column![
+        iced::widget::scrollable(body)
+            .width(sizing.width).height(sizing.height),
+        Space::new().height(16),
+        row![
+            dialog_button(t!("Save anyway"), Message::IfccadAlphaProceed, button::warning),
+            Space::new().width(8),
+            dialog_button(t!("Cancel"), Message::CloseModal, button::secondary),
+        ],
+    ].width(sizing.width).height(sizing.height))
+        .style(dialog_body_style).padding([20, 24]).into()
+}
+
 fn conversion_loss_dialog_window<'a>(
     losses: &'a [String],
     target: &str,

@@ -993,7 +993,7 @@ fn drop_down_below_in_an_offset_scrollable() -> (iced::Rectangle, iced::Rectangl
             list.into(),
             None,
             iced::Length::Shrink,
-            Message::PropEditChoiceToggle,
+            Message::PropEditChoiceToggle("transparency"),
         );
         let pallet = scrollable(column![Space::new().height(300), dd]).height(500);
         row![
@@ -1874,10 +1874,17 @@ fn lookup_basepoint_palette_and_table_dialog_real_controls() {
                 .row_count,
             1
         );
+        find_in_view(&app, "<Unmatched>");
+        find_in_view(&app, "Custom");
+        let _ = app.update(Message::BlockLookup(A::Cell(0, 0, "20".into())));
         let _ = app.update(Message::BlockLookup(A::Cell(0, 1, "Small".into())));
         let point = find_in_view(&app, "Audit");
         authoring_click(&mut app, point);
-        assert!(app.block_lookup.as_ref().unwrap().notice.is_some());
+        assert!(
+            app.block_lookup.as_ref().unwrap().notice.is_some(),
+            "audit should pass with a notice: {:?}",
+            app.block_lookup.as_ref().unwrap().error
+        );
         authoring_capture(&app, "lookup-property-table");
         let point = find_in_view(&app, "OK");
         authoring_click(&mut app, point);
@@ -2355,4 +2362,25 @@ fn visibility_parameter_placement_starts_from_the_actual_palette_row() {
         assert_eq!(app.tabs[app.active_tab].scene.document, before);
         authoring_capture(&app, "visibility-parameter-placed");
     });
+}
+
+#[test]
+fn labelled_strip_shares_the_edge_height_between_pallets() {
+    use crate::app::config::DockSide;
+    use crate::ui::dock::{DockMsg, PanelId, STRIP_CELL_H, STRIP_LABEL_MIN_H};
+    let mut app = dock_app();
+    app.show_browser = false;
+    let _ = app.on_dock(DockMsg::EdgeMenuToggle(DockSide::Left, PanelId::Browser));
+    let (icons, _) = app.dock_strip_layout(DockSide::Left);
+    assert!(icons.iter().all(|g| g.cell_h == STRIP_CELL_H));
+    let _ = app.on_dock(DockMsg::StripLabels(true));
+    let (labelled, plus_top) = app.dock_strip_layout(DockSide::Left);
+    let height = app.dock_workspace_size().1;
+    assert!(labelled[0].cell_h >= STRIP_LABEL_MIN_H);
+    // The pallets fill the edge, leaving room for the + button.
+    if labelled[0].cell_h > STRIP_LABEL_MIN_H {
+        assert!(plus_top < height && plus_top > height - 60.0, "{plus_top} of {height}");
+    }
+    let _ = app.on_dock(DockMsg::StripLabels(false));
+    assert_eq!(app.dock_strip_layout(DockSide::Left).0, icons);
 }

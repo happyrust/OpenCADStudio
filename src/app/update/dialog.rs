@@ -45,7 +45,7 @@ impl OpenCADStudio {
             .and_then(|path| path.extension())
             .and_then(|ext| ocs_save::external_format(&ext.to_string_lossy()));
         self.save_dialog_format = if let Some(converter) = converter {
-            converter.name().to_string()
+            ocs_save::external_format_label(converter).to_string()
         } else if let Some(path) = self.tabs[tab_idx]
             .current_path
             .as_ref()
@@ -101,7 +101,7 @@ impl OpenCADStudio {
 
     pub(in crate::app) fn close_save_dialog_window(&mut self) -> Task<Message> {
         self.aec_drop_acknowledged = false;
-        if self.active_modal == Some(crate::app::ModalKind::SaveDialog) {
+        if self.focus_dialog(crate::app::ModalKind::SaveDialog) {
             self.active_modal = None;
             self.reset_modal_geometry();
         }
@@ -129,7 +129,7 @@ impl OpenCADStudio {
     }
 
     pub(in crate::app) fn close_unsaved_dialog_window(&mut self) -> Task<Message> {
-        if self.active_modal == Some(crate::app::ModalKind::Unsaved) {
+        if self.focus_dialog(crate::app::ModalKind::Unsaved) {
             self.active_modal = None;
             self.reset_modal_geometry();
         }

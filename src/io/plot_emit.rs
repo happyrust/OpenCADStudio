@@ -496,6 +496,7 @@ pub fn emit_plot_content<S: PlotSink>(
     // `merge_lines` multiplies overlapping ink for the whole page; wipeouts
     // switch back to Normal for their own fill (see `emit_hatch`).
     let normal_blend = options.merge_lines;
+    let line_step = vector_step(options);
     if options.merge_lines {
         sink.emit(PlotOp::Save)?;
         sink.emit(PlotOp::Blend(PlotBlend::Multiply))?;
@@ -945,7 +946,7 @@ pub fn emit_plot_content<S: PlotSink>(
                             x: geometry_pt((start.x + (end.x - start.x) * t as f64 + ox) as f32),
                             y: geometry_pt((start.y + (end.y - start.y) * t as f64 + oy) as f32),
                         };
-                        flush_line(sink, &[point(from), point(to)], None)?;
+                        flush_line(sink, &[point(from), point(to)], None, line_step)?;
                     }
                 }
                 continue;
@@ -970,7 +971,7 @@ pub fn emit_plot_content<S: PlotSink>(
                 .then_some(SCREEN_DOT_MM * MM_TO_PT / (2.0 * scale.max(1e-6)));
             for (pi, &[x, y, _z]) in wire.points.iter().enumerate() {
                 if x.is_nan() || y.is_nan() {
-                    flush_line(sink, &segment, dot_radius)?;
+                    flush_line(sink, &segment, dot_radius, line_step)?;
                     segment.clear();
                 } else {
                     let point = wire.point_world(pi, paper_h as f64 / scale.max(1e-6) as f64);
@@ -982,7 +983,7 @@ pub fn emit_plot_content<S: PlotSink>(
                     });
                 }
             }
-            flush_line(sink, &segment, dot_radius)?;
+            flush_line(sink, &segment, dot_radius, line_step)?;
         }
         if open_group.is_some() {
             sink.emit(PlotOp::EndGroup)?;
@@ -1167,11 +1168,40 @@ fn visible_station_ranges(
     ranges
 }
 
+/// One vector DPI step in points, for `PdfPlotOptions::vector_dpi`.
+fn vector_step(options: PdfPlotOptions) -> Option<f32> {
+    options
+        .vector_dpi
+        .filter(|&dpi| dpi > 0)
+        .map(|dpi| 72.0 / dpi as f32)
+}
+
 fn flush_line<S: PlotSink>(
     sink: &mut S,
     pts: &[PlotPoint],
     dot_radius: Option<f32>,
+    step: Option<f32>,
 ) -> Result<(), S::Error> {
+    // Snapped to the vector resolution, points that land together merge.
+    let snapped: Vec<PlotPoint>;
+    let pts = match step {
+        Some(step) => {
+            let snap = |v: f32| (v / step).round() * step;
+            let mut out: Vec<PlotPoint> = Vec::with_capacity(pts.len());
+            for point in pts {
+                let point = PlotPoint {
+                    x: snap(point.x),
+                    y: snap(point.y),
+                };
+                if out.last() != Some(&point) {
+                    out.push(point);
+                }
+            }
+            snapped = out;
+            snapped.as_slice()
+        }
+        None => pts,
+    };
     if pts.len() < 2 {
         return Ok(());
     }
@@ -1919,7 +1949,7 @@ fn emit_hatch<S: PlotSink>(
                 },
             ];
             let dot_radius = SCREEN_DOT_MM * MM_TO_PT / (2.0 * scale.max(1e-6));
-            flush_line(sink, &points, Some(dot_radius))?;
+            flush_line(sink, &points, Some(dot_radius), vector_step(options))?;
         }
         return Ok(());
     }
@@ -2279,6 +2309,46 @@ mod tests {
         case.wires.push(canvas_mask([0.96, 0.96, 0.96, 1.0]));
         let (_, fill) = mesh_and_fill(&ops_for(&case));
         assert_eq!(fill, [1.0, 1.0, 1.0]);
+    }
+
+    /// `vector_dpi` snaps every stroked point to that grid on paper and
+    /// merges the points that land together; unset, points stay exact.
+    #[test]
+    fn vector_dpi_snaps_stroke_points_to_its_grid() {
+        let strokes = |vector_dpi: Option<u32>| -> Vec<Vec<PlotPoint>> {
+            let mut case = Case::new("vector-dpi");
+            case.options.vector_dpi = vector_dpi;
+            case.wires.push(PlotWire {
+                wire: WireModel::solid(
+                    "line".into(),
+                    vec![[10.0, 10.0, 0.0], [10.01, 10.0, 0.0], [40.3, 25.7, 0.0]],
+                    [0.0, 0.0, 0.0, 1.0],
+                    false,
+                ),
+                draw_depth: 0.0,
+            });
+            ops_for(&case)
+                .into_iter()
+                .filter_map(|op| match op {
+                    PlotOp::Stroke { points, .. } => Some(points),
+                    _ => None,
+                })
+                .collect()
+        };
+        let exact = strokes(None);
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].len(), 3);
+
+        let step = 72.0 / 10.0;
+        let snapped = strokes(Some(10));
+        assert_eq!(snapped.len(), 1);
+        // The first two points sit 0.01 mm apart: one grid cell, one point.
+        assert_eq!(snapped[0].len(), 2);
+        for point in &snapped[0] {
+            for v in [point.x, point.y] {
+                assert!(((v / step).round() * step - v).abs() < 1e-3, "{v} is off the grid");
+            }
+        }
     }
 
     /// Under `merge_lines` the page multiplies; white times ink is ink, so the

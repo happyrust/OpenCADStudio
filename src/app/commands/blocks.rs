@@ -1,5 +1,18 @@
 use super::*;
 
+/// The symbol-kind words `XBIND` accepts.
+fn xbind_kind(word: &str) -> Option<crate::io::xref::XbindKind> {
+    use crate::io::xref::XbindKind;
+    match word.to_ascii_uppercase().as_str() {
+        "LAYER" | "LAYERS" | "LA" => Some(XbindKind::Layer),
+        "BLOCK" | "BLOCKS" | "B" => Some(XbindKind::Block),
+        "LTYPE" | "LINETYPE" | "LTYPES" | "LT" => Some(XbindKind::Linetype),
+        "STYLE" | "STYLES" | "TEXTSTYLE" | "TEXT" => Some(XbindKind::TextStyle),
+        "DIMSTYLE" | "DIMSTYLES" | "DIM" => Some(XbindKind::DimStyle),
+        _ => None,
+    }
+}
+
 impl OpenCADStudio {
     /// Shared per-reference status reporting for XRELOAD and XREF Reload.
     /// Extracted verbatim from the XRELOAD arm — no behavior change.
@@ -28,6 +41,27 @@ impl OpenCADStudio {
                 self.command_line
                     .push_info(crate::tf!("XREF  Unloaded (skipped): \"{}\"", info.name).as_ref());
             }
+        }
+    }
+
+    /// The selection as SVG on the system clipboard, so other programs
+    /// paste it as editable paths; OCS itself pastes from its own copy.
+    pub(in crate::app) fn copy_svg_to_system_clipboard(
+        &self,
+        i: usize,
+        handles: &[codec::Handle],
+    ) -> Task<Message> {
+        let Some(svg) = crate::io::svg_clipboard::selection_svg(&self.tabs[i].scene, handles) else {
+            return Task::none();
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            crate::sys::write_clipboard_text(&svg);
+            Task::none()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            iced::clipboard::write(svg).discard()
         }
     }
 
@@ -261,6 +295,7 @@ impl OpenCADStudio {
                     let count = self.copy_entities_to_clipboard(i, &handles, base);
                     self.command_line
                         .push_info(crate::tf!("{} object(s) copied to clipboard.", count).as_ref());
+                    return Some(self.copy_svg_to_system_clipboard(i, &handles));
                 }
             }
 
@@ -311,6 +346,7 @@ impl OpenCADStudio {
                         )
                         .as_ref(),
                     );
+                    return Some(self.copy_svg_to_system_clipboard(i, &handles));
                 }
             }
 
@@ -333,6 +369,7 @@ impl OpenCADStudio {
                         &handles,
                     );
                     let count = self.copy_entities_to_clipboard(i, &handles, base);
+                    let svg = self.copy_svg_to_system_clipboard(i, &handles);
                     self.push_undo_snapshot(i, "CUTCLIP");
                     self.tabs[i].scene.erase_entities(&handles);
                     self.tabs[i].scene.deselect_all();
@@ -340,6 +377,7 @@ impl OpenCADStudio {
                     self.refresh_properties();
                     self.command_line
                         .push_info(crate::tf!("{} object(s) cut to clipboard.", count).as_ref());
+                    return Some(svg);
                 }
             }
 
@@ -397,6 +435,53 @@ impl OpenCADStudio {
                             .as_ref(),
                     ),
                 }
+            }
+
+            // ARRAYEDIT's single-item edits: ARRAYEDIT_ITEM:<array>:<op>[:x,y,z…]
+            // with E (erase the item at a point), M (move the item at a
+            // point by an offset) or R (reset every item).
+            cmd if cmd.starts_with("ARRAYEDIT_ITEM:") => {
+                use crate::scene::assoc_array::{self, ItemEdit};
+                let mut parts = cmd["ARRAYEDIT_ITEM:".len()..].split(':');
+                let handle = codec::Handle::new(parts.next()?.parse().unwrap_or(0));
+                let op = parts.next().unwrap_or("");
+                let points: Vec<glam::DVec3> = parts
+                    .filter_map(|p| {
+                        let v: Vec<f64> = p.split(',').filter_map(|c| c.parse().ok()).collect();
+                        (v.len() == 3).then(|| glam::DVec3::new(v[0], v[1], v[2]))
+                    })
+                    .collect();
+                let Some(array) = assoc_array::array_of_insert(&self.tabs[i].scene.document, handle)
+                else {
+                    self.command_line.push_error(
+                        crate::t!("ARRAYEDIT: the selected object is not an associative array.")
+                            .as_ref(),
+                    );
+                    return Some(Task::none());
+                };
+                let location = points
+                    .first()
+                    .and_then(|p| assoc_array::nearest_item(&self.tabs[i].scene.document, &array, *p));
+                self.push_undo_snapshot(i, "ARRAYEDIT");
+                let scene = &mut self.tabs[i].scene;
+                let result = match (op, location, points.get(1)) {
+                    ("R", _, _) => assoc_array::reset_items(scene, &array),
+                    ("E", Some(location), _) => {
+                        assoc_array::edit_item(scene, &array, location, ItemEdit::Erase)
+                    }
+                    ("M", Some(location), Some(offset)) => {
+                        assoc_array::edit_item(scene, &array, location, ItemEdit::Move(*offset))
+                    }
+                    _ => Err(crate::t!("ARRAYEDIT: no array item there.").into_owned()),
+                };
+                match result {
+                    Ok(()) => self.tabs[i].dirty = true,
+                    Err(error) => self
+                        .command_line
+                        .push_error(crate::tf!("ARRAYEDIT: {error}").as_ref()),
+                }
+                self.finish_pending_history(i);
+                self.refresh_properties();
             }
 
             // PASTESPEC — offer the copied objects now; the system clipboard's
@@ -967,6 +1052,7 @@ impl OpenCADStudio {
             // (XREFMAN was a provisional name and is not kept, not even as an
             // alias.) The XREF command below is untouched.
             "EXTERNALREFERENCES" => {
+                self.pallet_as_window(crate::ui::dock::PanelId::ExternalReferences);
                 self.show_external_references = true;
                 // Always open expanded so the panel is immediately usable;
                 // dock it on the right if the user closed it from the layout.
@@ -986,6 +1072,178 @@ impl OpenCADStudio {
                     "ERSTATE = {} (read only)",
                     u8::from(self.show_external_references)
                 ));
+            }
+
+            // XBIND / -XBIND — copy named symbols out of one reference and
+            // leave the reference attached. The bound copy uses the same
+            // `PLAN$0$WALLS` names a full BIND produces.
+            //   XBIND                         list the drawing references
+            //   XBIND <reference>             list its bindable symbols
+            //   XBIND <reference> <kind> <name> [<name>…] [<kind> <name>…]
+            cmd if cmd.eq_ignore_ascii_case("XBIND")
+                || cmd.to_ascii_uppercase().starts_with("XBIND ")
+                || cmd.eq_ignore_ascii_case("-XBIND")
+                || cmd.to_ascii_uppercase().starts_with("-XBIND ") =>
+            {
+                let rest = cmd
+                    .trim_start_matches('-')
+                    .split_once(char::is_whitespace)
+                    .map(|(_, rest)| rest.trim())
+                    .unwrap_or("");
+                let base_dir: std::path::PathBuf = self.tabs[i]
+                    .current_path
+                    .as_ref()
+                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let entries = crate::io::xref::collect_entries_with_prev(
+                    &self.tabs[i].scene.document,
+                    &base_dir,
+                    self.tabs[i].xref_unloaded.as_set(),
+                    &self.tabs[i].xref_stat_cache.0,
+                );
+                let direct: Vec<_> = entries
+                    .iter()
+                    .filter(|entry| entry.parent_key.is_none())
+                    .collect();
+                let mut words = rest.split_whitespace();
+                let Some(pattern) = words.next() else {
+                    if direct.is_empty() {
+                        self.command_line
+                            .push_info(crate::t!("No drawing references to bind from.").as_ref());
+                    } else {
+                        self.command_line
+                            .push_output(crate::t!("Bindable references:").as_ref());
+                        for entry in &direct {
+                            self.command_line
+                                .push_output(crate::tf!("  {}", entry.name).as_ref());
+                        }
+                        self.command_line.push_info(
+                            crate::t!(
+                                "Usage: XBIND <reference> <layer|block|ltype|style|dimstyle> <name> …"
+                            )
+                            .as_ref(),
+                        );
+                    }
+                    return Some(self.finish_dispatch(cmd));
+                };
+                let matched: Vec<_> = direct
+                    .iter()
+                    .filter(|entry| crate::io::xref_model::wildcard_match(&entry.name, pattern))
+                    .collect();
+                if matched.is_empty() {
+                    self.command_line.push_error(
+                        crate::tf!("XBIND: no reference matches '{}'.", pattern).as_ref(),
+                    );
+                    return Some(self.finish_dispatch(cmd));
+                }
+                if matched.len() > 1 {
+                    let names: Vec<&str> = matched.iter().map(|entry| entry.name.as_str()).collect();
+                    self.command_line.push_error(
+                        crate::tf!(
+                            "XBIND: '{}' matches more than one reference ({}).",
+                            pattern,
+                            names.join(", ")
+                        )
+                        .as_ref(),
+                    );
+                    return Some(self.finish_dispatch(cmd));
+                }
+                let entry = matched[0];
+                let mut requests: Vec<(crate::io::xref::XbindKind, String)> = Vec::new();
+                let mut kind: Option<crate::io::xref::XbindKind> = None;
+                let mut parse_error = None;
+                for word in words {
+                    if let Some(found) = xbind_kind(word) {
+                        kind = Some(found);
+                        continue;
+                    }
+                    match kind {
+                        Some(kind) => requests.push((
+                            kind,
+                            word.trim_matches('"').to_string(),
+                        )),
+                        None => {
+                            parse_error = Some(word.to_string());
+                            break;
+                        }
+                    }
+                }
+                if let Some(word) = parse_error {
+                    self.command_line.push_error(
+                        crate::tf!(
+                            "XBIND: name a symbol type before '{}' (layer, block, ltype, style, dimstyle).",
+                            word
+                        )
+                        .as_ref(),
+                    );
+                    return Some(self.finish_dispatch(cmd));
+                }
+                if requests.is_empty() {
+                    match crate::io::xref::xbind_list(
+                        &self.tabs[i].scene.document,
+                        entry.key,
+                        &base_dir,
+                    ) {
+                        Ok(symbols) => {
+                            if symbols.is_empty() {
+                                self.command_line.push_info(
+                                    crate::tf!("No bindable symbols in \"{}\".", entry.name)
+                                        .as_ref(),
+                                );
+                            } else {
+                                self.command_line.push_output(
+                                    crate::tf!("Bindable symbols in \"{}\":", entry.name).as_ref(),
+                                );
+                                for (kind, name) in symbols {
+                                    self.command_line.push_output(
+                                        crate::tf!("  {} {}", kind.label(), name).as_ref(),
+                                    );
+                                }
+                            }
+                        }
+                        Err(error) => self.command_line.push_error(&error),
+                    }
+                    return Some(self.finish_dispatch(cmd));
+                }
+                self.push_undo_snapshot(i, "XBIND");
+                match crate::io::xref::xbind_symbols(
+                    &mut self.tabs[i].scene.document,
+                    entry.key,
+                    &base_dir,
+                    &requests,
+                ) {
+                    Ok(outcome) => {
+                        for (kind, source_name, host_name) in &outcome.imported {
+                            self.command_line.push_output(
+                                crate::tf!(
+                                    "XBIND: \"{}\" {} {} -> {}",
+                                    outcome.reference,
+                                    kind.label(),
+                                    source_name,
+                                    host_name
+                                )
+                                .as_ref(),
+                            );
+                        }
+                        for (kind, pattern) in &outcome.missing {
+                            self.command_line.push_error(
+                                crate::tf!(
+                                    "XBIND: no {} matching '{}' in \"{}\".",
+                                    kind.label(),
+                                    pattern,
+                                    outcome.reference
+                                )
+                                .as_ref(),
+                            );
+                        }
+                        if !outcome.imported.is_empty() {
+                            self.tabs[i].dirty = true;
+                            self.post_ref_op(i);
+                        }
+                    }
+                    Err(error) => self.command_line.push_error(&error),
+                }
+                return Some(self.finish_dispatch(cmd));
             }
 
             cmd if cmd.eq_ignore_ascii_case("XREF")

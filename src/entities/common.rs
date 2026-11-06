@@ -122,6 +122,17 @@ pub fn set_unit_context(ctx: UnitContext) {
     UNIT_CTX.with(|c| c.set(ctx));
 }
 
+/// Runs `f` with DIMZIN off: a command-line measurement shows every place
+/// LUPREC asks for (`Area = 5000.0000`); zero suppression is for the
+/// Properties palette.
+pub fn with_all_places<T>(f: impl FnOnce() -> T) -> T {
+    let saved = unit_context();
+    set_unit_context(UnitContext { dimzin: 0, ..saved });
+    let out = f();
+    set_unit_context(saved);
+    out
+}
+
 pub fn unit_context() -> UnitContext {
     UNIT_CTX.with(|c| c.get())
 }
@@ -208,8 +219,17 @@ fn format_signed_length(value: f64) -> String {
                 None => format!("{}{:.0}{}", sign, whole, frac_str),
             }
         }
-        _ => trailing_zeros(format!("{:.*}", prec, value), ctx.dimzin),
+        _ => trailing_zeros(fixed(value, prec), ctx.dimzin),
     }
+}
+
+/// `value` at `precision` decimals, a tie rounding away from zero as the
+/// drawing's own readouts do (878.90625 → 878.9063); plain `{:.4}` rounds a
+/// tie to even.
+fn fixed(value: f64, precision: usize) -> String {
+    let scale = 10f64.powi(precision as i32);
+    let rounded = (value * scale).round() / scale;
+    format!("{:.*}", precision, if rounded.is_finite() { rounded } else { value })
 }
 
 /// Drop the trailing zeros of a decimal (and a bare point) when DIMZIN asks
@@ -226,7 +246,7 @@ fn trailing_zeros(text: String, dimzin: i16) -> String {
 pub fn format_decimal(value: f64) -> String {
     let ctx = unit_context();
     let precision = ctx.luprec.max(0).min(15) as usize;
-    without_negative_zero(trailing_zeros(format!("{:.*}", precision, value), ctx.dimzin))
+    without_negative_zero(trailing_zeros(fixed(value, precision), ctx.dimzin))
 }
 
 /// Format an area with the drawing's linear precision. Area stays a decimal
@@ -237,7 +257,7 @@ pub fn format_area(value: f64) -> String {
     if ctx.lunits == 1 {
         format!("{:.*e}", precision, value)
     } else {
-        trailing_zeros(format!("{:.*}", precision, value), ctx.dimzin)
+        trailing_zeros(fixed(value, precision), ctx.dimzin)
     }
 }
 

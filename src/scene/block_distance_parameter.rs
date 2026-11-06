@@ -16,6 +16,53 @@ pub enum Kind {
     XY,
 }
 
+/// Where a Linear parameter's base sits between its definition points.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum BaseLocation {
+    #[default]
+    Startpoint,
+    Midpoint,
+}
+
+/// The value set answered at a parameter's Value set option.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ValueSet {
+    None,
+    Increment {
+        increment: f64,
+        minimum: f64,
+        maximum: f64,
+    },
+    List(Vec<f64>),
+}
+
+impl ValueSet {
+    pub(crate) fn record(&self) -> BlockParameterValueSet {
+        match self {
+            Self::None => BlockParameterValueSet {
+                flags: 1,
+                ..Default::default()
+            },
+            Self::Increment {
+                increment,
+                minimum,
+                maximum,
+            } => BlockParameterValueSet {
+                flags: 1 | 2 | 4,
+                minimum: *minimum,
+                maximum: *maximum,
+                increment: *increment,
+                ..Default::default()
+            },
+            Self::List(values) => BlockParameterValueSet {
+                flags: 8,
+                values: values.clone(),
+                ..Default::default()
+            },
+        }
+    }
+}
+
 impl Kind {
     pub(crate) fn parse(text: &str) -> Option<Self> {
         match text.to_ascii_uppercase().as_str() {
@@ -59,7 +106,7 @@ fn graph_handle(document: &Document, definition: Handle) -> Option<Handle> {
     }
 }
 
-fn label_names(document: &Document, definition: Handle) -> Vec<String> {
+pub(crate) fn label_names(document: &Document, definition: Handle) -> Vec<String> {
     let mut names = parameters(document, definition)
         .into_iter()
         .flat_map(|p| p.labels)
@@ -72,11 +119,17 @@ fn label_names(document: &Document, definition: Handle) -> Vec<String> {
     names
 }
 
-fn unique_label(names: &[String], prefix: &str) -> String {
+pub(crate) fn unique_label(names: &[String], prefix: &str) -> String {
     (1..)
         .map(|n| format!("{prefix}{n}"))
         .find(|name| names.iter().all(|old| !old.eq_ignore_ascii_case(name)))
         .unwrap()
+}
+
+/// The next free distance label name, the default a Linear parameter's label
+/// question shows.
+pub(crate) fn next_distance_label(document: &Document, definition: Handle) -> String {
+    unique_label(&label_names(document, definition), "Distance")
 }
 
 /// The next free distance and angle label names, the defaults a Polar
@@ -86,6 +139,16 @@ pub(crate) fn next_polar_labels(document: &Document, definition: Handle) -> [Str
     [
         unique_label(&names, "Distance"),
         unique_label(&names, "Angle"),
+    ]
+}
+
+/// The next free horizontal and vertical label names, the defaults an XY
+/// placement's two label questions show.
+pub(crate) fn next_xy_labels(document: &Document, definition: Handle) -> [String; 2] {
+    let names = label_names(document, definition);
+    [
+        unique_label(&names, "X Distance"),
+        unique_label(&names, "Y Distance"),
     ]
 }
 
@@ -206,6 +269,65 @@ pub(crate) fn create(
     end: Vector3,
     label: Vector3,
 ) -> Result<Handle, &'static str> {
+    create_with(document, definition, kind, base, end, label, None, None)
+}
+
+/// Writes the value sets a Polar placement collected: the distance set and the
+/// angle set, the latter in radians.
+pub(crate) fn set_polar_value_sets(
+    document: &mut Document,
+    parameter: Handle,
+    distance: Option<&ValueSet>,
+    angle: Option<&ValueSet>,
+) -> Result<(), &'static str> {
+    let Some(ObjectType::DynamicBlock(object)) = document.objects.get_mut(&parameter) else {
+        return Err("The parameter is unavailable.");
+    };
+    let DynamicBlockData::PolarParameter(polar) = &mut object.data else {
+        return Err("The parameter is not a Polar parameter.");
+    };
+    if let Some(set) = distance {
+        polar.distance_value_set = set.record();
+    }
+    if let Some(set) = angle {
+        polar.angle_value_set = set.record();
+    }
+    Ok(())
+}
+
+/// Writes the horizontal and vertical value sets of an XY parameter.
+pub(crate) fn set_xy_value_sets(
+    document: &mut Document,
+    parameter: Handle,
+    horizontal: Option<&ValueSet>,
+    vertical: Option<&ValueSet>,
+) -> Result<(), &'static str> {
+    let Some(ObjectType::DynamicBlock(object)) = document.objects.get_mut(&parameter) else {
+        return Err("The parameter is unavailable.");
+    };
+    let DynamicBlockData::XYParameter(xy) = &mut object.data else {
+        return Err("The parameter is not an XY parameter.");
+    };
+    if let Some(set) = horizontal {
+        xy.x_value_set = set.record();
+    }
+    if let Some(set) = vertical {
+        xy.y_value_set = set.record();
+    }
+    Ok(())
+}
+
+/// Creates a parameter with the placement answers a Linear command collected.
+pub(crate) fn create_with(
+    document: &mut Document,
+    definition: Handle,
+    kind: Kind,
+    base: Vector3,
+    end: Vector3,
+    label: Vector3,
+    base_location: Option<BaseLocation>,
+    value_set: Option<&ValueSet>,
+) -> Result<Handle, &'static str> {
     if let Some(error) = points_error(kind, base, end, label) {
         return Err(error);
     }
@@ -213,17 +335,14 @@ pub(crate) fn create(
     let unique = |prefix: &str| unique_label(&names, prefix);
     let distance_name = unique("Distance");
     let angle_name = unique("Angle");
-    let x_label = unique("DistanceX");
-    let y_label = unique("DistanceY");
+    let x_label = unique("X Distance");
+    let y_label = unique("Y Distance");
     let values = match kind {
         Kind::XY => [end.x - base.x, end.y - base.y],
         _ => offsets(kind, base, end, label),
     };
-    let parameter_name = if kind == Kind::Polar {
-        super::block_authoring::metadata::next_parameter_name(document, definition, kind.name())?
-    } else {
-        kind.name().to_owned()
-    };
+    let parameter_name =
+        super::block_authoring::metadata::next_parameter_name(document, definition, kind.name())?;
     let (graph, slots) = authoring::prepare(document, definition)?;
     let (class, cpp) = kind.class();
     let (grip_class, grip_cpp) = match kind {
@@ -271,10 +390,14 @@ pub(crate) fn create(
             },
         }),
         property_states: [0, slots.eval + 1, 0, 0],
-        parameter_base_location: 0,
+        parameter_base_location: if base_location == Some(BaseLocation::Midpoint) {
+            1
+        } else {
+            0
+        },
         ..Default::default()
     };
-    let value_set = || BlockParameterValueSet {
+    let default_value_set = || BlockParameterValueSet {
         flags: 1,
         ..Default::default()
     };
@@ -283,7 +406,9 @@ pub(crate) fn create(
             parameter: native,
             distance_name,
             distance: values[0],
-            value_set: value_set(),
+            value_set: value_set
+                .map(ValueSet::record)
+                .unwrap_or_else(default_value_set),
             ..Default::default()
         }),
         Kind::Polar => DynamicBlockData::PolarParameter(BlockPolarParameter {
@@ -291,7 +416,7 @@ pub(crate) fn create(
             distance_name,
             angle_name,
             offset: values[0],
-            distance_value_set: value_set(),
+            distance_value_set: default_value_set(),
             angle_value_set: BlockParameterValueSet {
                 flags: 3,
                 maximum: std::f64::consts::TAU,
@@ -305,8 +430,8 @@ pub(crate) fn create(
             y_label,
             x_value: values[0],
             y_value: values[1],
-            x_value_set: value_set(),
-            y_value_set: value_set(),
+            x_value_set: default_value_set(),
+            y_value_set: default_value_set(),
             ..Default::default()
         }),
     };
@@ -559,7 +684,7 @@ mod tests {
     use crate::scene::{block_point_parameter, block_visibility, Scene};
     use codec::{entities::Line, EntityType};
 
-    fn fixture() -> (Scene, Handle) {
+    pub(super) fn fixture() -> (Scene, Handle) {
         let mut scene = Scene::new();
         scene.define_block_raw(
             "PARAMETERS",
@@ -803,6 +928,45 @@ mod tests {
     }
 
     #[test]
+    fn a_linear_placement_stores_the_base_location_and_value_set_it_was_given() {
+        let (mut scene, definition) = fixture();
+        let placed = |scene: &mut Scene, base_location, value_set| {
+            create_with(
+                &mut scene.document,
+                definition,
+                Kind::Linear,
+                Vector3::ZERO,
+                Vector3::new(10.0, 0.0, 0.0),
+                Vector3::new(5.0, 2.0, 0.0),
+                base_location,
+                value_set,
+            )
+            .unwrap()
+        };
+        let list = ValueSet::List(vec![1.0, 2.5, 3.0]);
+        let parameter = placed(&mut scene, Some(BaseLocation::Midpoint), Some(&list));
+        let Some(ObjectType::DynamicBlock(object)) = scene.document.objects.get(&parameter) else {
+            panic!("expected a dynamic block record");
+        };
+        let DynamicBlockData::LinearParameter(native) = &object.data else {
+            panic!("expected a linear parameter");
+        };
+        assert_eq!(native.parameter.parameter_base_location, 1);
+        assert_eq!(native.value_set.flags, 8);
+        assert_eq!(native.value_set.values, vec![1.0, 2.5, 3.0]);
+
+        let parameter = placed(&mut scene, None, None);
+        let Some(ObjectType::DynamicBlock(object)) = scene.document.objects.get(&parameter) else {
+            panic!("expected a dynamic block record");
+        };
+        let DynamicBlockData::LinearParameter(native) = &object.data else {
+            panic!("expected a linear parameter");
+        };
+        assert_eq!(native.parameter.parameter_base_location, 0);
+        assert_eq!(native.value_set.flags, 1, "the default set has no type");
+    }
+
+    #[test]
     fn distance_parameter_upright_reframe_keeps_finite_label_and_grip() {
         let (mut scene, definition) = fixture();
         create(
@@ -907,5 +1071,124 @@ mod tests {
             assert_eq!(Sha256::digest(std::fs::read(&path).unwrap()), checksum);
             eprintln!("{filename}: Linear/Polar/XY appended to existing graph; DWG/DXF passed; original objects/checksum preserved");
         }
+    }
+}
+
+#[cfg(test)]
+mod value_set_tests {
+    use super::*;
+
+    #[test]
+    fn value_sets_are_written_only_to_a_polar_parameter() {
+        let (mut scene, definition) = super::tests::fixture();
+        let linear = create(
+            &mut scene.document,
+            definition,
+            Kind::Linear,
+            Vector3::ZERO,
+            Vector3::UNIT_X,
+            Vector3::UNIT_Y,
+        )
+        .unwrap();
+        let polar = create(
+            &mut scene.document,
+            definition,
+            Kind::Polar,
+            Vector3::ZERO,
+            Vector3::UNIT_X,
+            Vector3::UNIT_Y,
+        )
+        .unwrap();
+
+        assert_eq!(
+            set_polar_value_sets(
+                &mut scene.document,
+                linear,
+                Some(&ValueSet::List(vec![1.0])),
+                None
+            ),
+            Err("The parameter is not a Polar parameter.")
+        );
+        assert_eq!(
+            set_polar_value_sets(
+                &mut scene.document,
+                polar,
+                Some(&ValueSet::Increment {
+                    increment: 5.0,
+                    minimum: 0.0,
+                    maximum: 100.0
+                }),
+                Some(&ValueSet::List(vec![0.0, 1.0])),
+            ),
+            Ok(())
+        );
+
+        let ObjectType::DynamicBlock(object) = &scene.document.objects[&polar] else {
+            panic!("expected a dynamic block record");
+        };
+        let DynamicBlockData::PolarParameter(native) = &object.data else {
+            panic!("expected a polar parameter");
+        };
+        assert_eq!(native.distance_value_set.flags, 1 | 2 | 4);
+        assert_eq!(native.distance_value_set.maximum, 100.0);
+        assert_eq!(native.angle_value_set.flags, 8);
+        assert_eq!(native.angle_value_set.values, vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn value_sets_are_written_only_to_an_xy_parameter() {
+        let (mut scene, definition) = super::tests::fixture();
+        let linear = create(
+            &mut scene.document,
+            definition,
+            Kind::Linear,
+            Vector3::ZERO,
+            Vector3::UNIT_X,
+            Vector3::UNIT_Y,
+        )
+        .unwrap();
+        let xy = create(
+            &mut scene.document,
+            definition,
+            Kind::XY,
+            Vector3::ZERO,
+            Vector3::new(1.0, 1.0, 0.0),
+            Vector3::UNIT_Y,
+        )
+        .unwrap();
+
+        assert_eq!(
+            set_xy_value_sets(
+                &mut scene.document,
+                linear,
+                Some(&ValueSet::List(vec![1.0])),
+                None
+            ),
+            Err("The parameter is not an XY parameter.")
+        );
+        assert_eq!(
+            set_xy_value_sets(
+                &mut scene.document,
+                xy,
+                Some(&ValueSet::Increment {
+                    increment: 2.0,
+                    minimum: 0.0,
+                    maximum: 10.0
+                }),
+                Some(&ValueSet::List(vec![3.0, 4.0])),
+            ),
+            Ok(())
+        );
+
+        let ObjectType::DynamicBlock(object) = &scene.document.objects[&xy] else {
+            panic!("expected a dynamic block record");
+        };
+        let DynamicBlockData::XYParameter(native) = &object.data else {
+            panic!("expected an xy parameter");
+        };
+        assert_eq!(native.x_value_set.flags, 1 | 2 | 4);
+        assert_eq!(native.x_value_set.maximum, 10.0);
+        assert_eq!(native.y_value_set.flags, 8);
+        assert_eq!(native.y_value_set.values, vec![3.0, 4.0]);
     }
 }

@@ -618,6 +618,7 @@ impl OpenCADStudio {
             "selection":tab.scene.selected_handles_in_order().iter().map(|h|format!("{:X}",h.value())).collect::<Vec<_>>(),
             "selection_revision":self.control.selection_revision,
             "command":command,"modal":self.active_modal.as_ref().map(|m|format!("{m:?}")),
+            "tool_windows":self.tool_windows.iter().map(|t|format!("{:?}",t.kind)).collect::<Vec<_>>(),
             "layout":tab.scene.current_layout,
             "block_editor":tab.active_block_edit
                 .and_then(|index| tab.block_edits.get(index))
@@ -641,7 +642,7 @@ impl OpenCADStudio {
         // may be reading it; clients close it with `close_modal`.
         if !self.control.automation_seen && self.control.enabled {
             self.control.automation_seen = true;
-            if self.active_modal != Some(super::ModalKind::DonationPrompt) {
+            if !self.dialog_open(super::ModalKind::DonationPrompt) {
                 self.pending_startup_modals
                     .retain(|kind| kind != &super::ModalKind::DonationPrompt);
             }
@@ -1058,7 +1059,7 @@ impl OpenCADStudio {
         // form covers the whole app, so any client may answer it, as any client
         // may answer the dialogs the same guard has always let through.
         let answers_attribute_form = op == "action"
-            && self.active_modal == Some(crate::app::ModalKind::InsertAttributes)
+            && self.dialog_open(crate::app::ModalKind::InsertAttributes)
             && matches!(
                 req["name"].as_str(),
                 Some("dialog_answer") | Some("dialog_ok") | Some("dialog_cancel") | Some("close_modal")
@@ -1831,8 +1832,6 @@ impl OpenCADStudio {
             let Some(entity) = tab.scene.document.get_entity(handle) else {
                 continue;
             };
-            let (min, max) =
-                crate::scene::convert::tess::entity_bounds_in(&tab.scene.document, entity);
             let metrics = tab
                 .scene
                 .meshes
@@ -1849,6 +1848,46 @@ impl OpenCADStudio {
                         crate::entities::solid3d::clamp_header_isolines(h.isolines),
                     )
                 });
+            let valid_bounds = |(min, max): &([f64; 3], [f64; 3])| {
+                (0..3).all(|axis| {
+                    min[axis].is_finite() && max[axis].is_finite() && min[axis] <= max[axis]
+                })
+            };
+            let solid_bounds = if let codec::EntityType::Solid3D(solid) = entity {
+                crate::scene::convert::solid3d_tess::kernel_body(solid)
+                    .and_then(|body| kernel::brep::body_bounds(&body))
+                    .map(|bounds| (bounds.min, bounds.max))
+                    .filter(valid_bounds)
+                    .or_else(|| {
+                        let mesh = metrics
+                            .as_ref()?
+                            .lods
+                            .iter()
+                            .find(|mesh| !mesh.verts.is_empty())?;
+                        let mut min = [f64::INFINITY; 3];
+                        let mut max = [f64::NEG_INFINITY; 3];
+                        // Reconstruct world coordinates; the f32 culling box loses
+                        // small dimensions at large drawing offsets.
+                        for (index, high) in mesh.verts.iter().enumerate() {
+                            let low = mesh.verts_low.get(index).copied().unwrap_or([0.0; 3]);
+                            let point = std::array::from_fn::<_, 3, _>(|axis| {
+                                high[axis] as f64 + low[axis] as f64
+                            });
+                            if point.iter().all(|value| value.is_finite()) {
+                                for axis in 0..3 {
+                                    min[axis] = min[axis].min(point[axis]);
+                                    max[axis] = max[axis].max(point[axis]);
+                                }
+                            }
+                        }
+                        Some((min, max)).filter(valid_bounds)
+                    })
+            } else {
+                None
+            };
+            let (min, max) = solid_bounds.unwrap_or_else(|| {
+                crate::scene::convert::tess::entity_bounds_in(&tab.scene.document, entity)
+            });
             let curve = crate::entities::curve::entity_curve(entity).map(|planar| {
                 let length = planar.curve.length();
                 json!({
@@ -2125,7 +2164,25 @@ impl OpenCADStudio {
         {
             self.control.capture_frame_pending = false;
             self.control.capture_after_redraw = redrew;
-            let Some(window) = self.main_window else {
+            // `os_window` names a window of its own (by title, or by what it
+            // shows, e.g. "Options" or "CommandHistory") to capture instead.
+            let named = self
+                .control
+                .pending
+                .as_ref()
+                .and_then(|pending| pending.request["os_window"].as_str())
+                .and_then(|name| {
+                    self.os_windows
+                        .iter()
+                        .find(|window| {
+                            format!("{:?}", window.content).contains(name)
+                                || self
+                                    .os_window_title(window.id)
+                                    .is_some_and(|title| title.contains(name))
+                        })
+                        .map(|window| window.id)
+                });
+            let Some(window) = named.or(self.main_window) else {
                 return Task::done(Message::ControlScreenshot(path, None));
             };
             // A minimized window reports a failed capture instead.
@@ -2355,7 +2412,7 @@ mod tests {
             &mut app,
             json!({"op":"save","path":path,"overwrite":true,"allow_lossy":true}),
         );
-        let asked = app.active_modal == Some(crate::app::ModalKind::ConversionLoss);
+        let asked = app.active_modal == Some(crate::app::ModalKind::IfccadAlphaWarning);
         let _ = std::fs::remove_file(&path);
         assert!(asked, "converter target must still ask");
     }
@@ -4137,6 +4194,166 @@ mod tests {
         let curve = &measured["measurements"][0]["curve"];
         assert!((curve["length"].as_f64().unwrap() - std::f64::consts::TAU * 2.0).abs() < 1e-9);
         assert!((curve["area"].as_f64().unwrap() - std::f64::consts::PI * 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn control_measure_solid_bounds_torus() {
+        let mut app = OpenCADStudio::new_for_test();
+        for center in [
+            [0.0, 0.0, 0.0],
+            [1000000000.25, -1000000000.5, 1000000000.75],
+        ] {
+            request(&mut app, json!({"op":"new"}));
+            let created = request(
+                &mut app,
+                json!({"op":"run","cmd":format!("TORUS {},{},{} 10 3", center[0], center[1], center[2])}),
+            );
+            assert_eq!(created["status"], "completed", "{created}");
+            let queried = request(&mut app, json!({"op":"query","type":"3DSOLID"}));
+            let handle = queried["entities"][0]["handle"].clone();
+            if center[0] != 0.0 {
+                let key =
+                    codec::Handle::new(u64::from_str_radix(handle.as_str().unwrap(), 16).unwrap());
+                let scene = &mut app.tabs[app.active_tab].scene;
+                assert!(scene.meshes.contains_key(&key));
+                // Keep the real mesh but force bounds to use its double-single vertices.
+                let Some(codec::EntityType::Solid3D(solid)) = scene.document.get_entity_mut(key)
+                else {
+                    panic!("expected a torus solid");
+                };
+                solid.acis_data = codec::entities::AcisData::from_sat("");
+            }
+            let measured = request(&mut app, json!({"op":"measure","handles":[handle]}));
+            let bounds = &measured["measurements"][0]["bounds"];
+            for axis in 0..3 {
+                let radius = if axis == 2 { 3.0 } else { 13.0 };
+                let min = bounds["min"][axis].as_f64().unwrap();
+                let max = bounds["max"][axis].as_f64().unwrap();
+                assert!((min - (center[axis] - radius)).abs() < 0.1, "{measured}");
+                assert!((max - (center[axis] + radius)).abs() < 0.1, "{measured}");
+                assert!((max - min - 2.0 * radius).abs() < 0.2, "{measured}");
+            }
+        }
+    }
+
+    #[test]
+    fn control_measure_solid_bounds_roundtrip() {
+        let mut app = OpenCADStudio::new_for_test();
+        request(&mut app, json!({"op":"new"}));
+        let created = request(
+            &mut app,
+            json!({"op":"run","cmd":"BOX 20,30,40 26,35,40 4"}),
+        );
+        assert_eq!(created["status"], "completed", "{created}");
+        let queried = request(&mut app, json!({"op":"query","type":"3DSOLID"}));
+        let handle = queried["entities"][0]["handle"].clone();
+        let path = std::env::temp_dir().join(format!("ocs-measure-bounds-{}.dwg", session_id()));
+        for stage in 0..3 {
+            let measured = request(&mut app, json!({"op":"measure","handles":[handle]}));
+            let bounds = &measured["measurements"][0]["bounds"];
+            for (field, expected) in [("min", [20.0, 30.0, 40.0]), ("max", [26.0, 35.0, 44.0])] {
+                for axis in 0..3 {
+                    assert!(
+                        (bounds[field][axis].as_f64().unwrap() - expected[axis]).abs() < 1e-6,
+                        "{measured}"
+                    );
+                }
+            }
+            if stage == 0 {
+                assert_eq!(
+                    request(&mut app, json!({"op":"save","path":path}))["ok"],
+                    true
+                );
+                request(&mut app, json!({"op":"new"}));
+                assert_eq!(
+                    request(&mut app, json!({"op":"open","path":path}))["status"],
+                    "completed"
+                );
+            } else if stage == 1 {
+                app.tabs[app.active_tab].scene.meshes.clear();
+                app.tabs[app.active_tab].scene.block_meshes.clear();
+            }
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn control_measure_solid_bounds_preserves_curve_bounds() {
+        let mut app = OpenCADStudio::new_for_test();
+        request(&mut app, json!({"op":"new"}));
+        for (cmd, kind, min, max, length) in [
+            (
+                "LINE -5,0 5,0",
+                "Line",
+                [-5.0, 0.0, 0.0],
+                [5.0, 0.0, 0.0],
+                10.0,
+            ),
+            (
+                "CIRCLE 20,0 2",
+                "Circle",
+                [18.0, -2.0, 0.0],
+                [22.0, 2.0, 0.0],
+                std::f64::consts::TAU * 2.0,
+            ),
+        ] {
+            assert_eq!(
+                request(&mut app, json!({"op":"run","cmd":cmd}))["status"],
+                "completed"
+            );
+            let queried = request(&mut app, json!({"op":"query","type":kind}));
+            let measured = request(
+                &mut app,
+                json!({"op":"measure","handles":[queried["entities"][0]["handle"]]}),
+            );
+            let measurement = &measured["measurements"][0];
+            assert_eq!(measurement["bounds"], json!({"min":min,"max":max}));
+            assert!((measurement["curve"]["length"].as_f64().unwrap() - length).abs() < 1e-9);
+            assert_eq!(measurement["curve"]["bounded"], true);
+            assert_eq!(measurement["curve"]["closed"], kind == "Circle");
+            if kind == "Circle" {
+                assert!(
+                    (measurement["curve"]["area"].as_f64().unwrap() - std::f64::consts::PI * 4.0)
+                        .abs()
+                        < 1e-9
+                );
+            } else {
+                assert!(measurement["curve"]["area"].is_null());
+            }
+        }
+        for handles in [json!([]), json!(["FFFFFFFFFFFFFFFF"])] {
+            let measured = request(&mut app, json!({"op":"measure","handles":handles}));
+            assert_eq!(measured["ok"], true);
+            assert_eq!(measured["measurements"], json!([]));
+        }
+    }
+
+    #[test]
+    fn control_measure_solid_bounds_without_geometry() {
+        let mut app = OpenCADStudio::new_for_test();
+        request(&mut app, json!({"op":"new"}));
+        let scene = &mut app.tabs[app.active_tab].scene;
+        let handle = scene
+            .document
+            .add_entity(codec::EntityType::Solid3D(codec::entities::Solid3D::new()))
+            .unwrap();
+        let entity = scene.document.get_entity(handle).unwrap();
+        let (min, max) = crate::scene::convert::tess::entity_bounds_in(&scene.document, entity);
+        let measured = request(
+            &mut app,
+            json!({"op":"measure","handles":[format!("{:X}", handle.value())]}),
+        );
+        let measurement = &measured["measurements"][0];
+        assert_eq!(measurement["bounds"], json!({"min":min,"max":max}));
+        for field in ["min", "max"] {
+            for axis in 0..3 {
+                assert!(measurement["bounds"][field][axis]
+                    .as_f64()
+                    .unwrap()
+                    .is_finite());
+            }
+        }
+        assert!(measurement["mesh"].is_null());
     }
 
     #[test]

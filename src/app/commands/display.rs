@@ -626,9 +626,97 @@ impl OpenCADStudio {
             "CLEANSCREEN" => {
                 return Some(Task::done(Message::ToggleCleanScreen));
             }
+            // ── TOOLBAR — the ribbon's panels as floating toolbars ──────────────
+            // TOOLBAR lists them; TOOLBAR / -TOOLBAR <tab/panel | panel>
+            // [Show|Hide] shows one over the drawing or puts it back (a bare
+            // name toggles it). They stay while the ribbon is closed.
+            cmd if cmd == "TOOLBAR" || cmd == "-TOOLBAR" || cmd.starts_with("TOOLBAR ") || cmd.starts_with("-TOOLBAR ") => {
+                let rest = cmd.trim_start_matches('-').trim_start_matches("TOOLBAR").trim();
+                if rest.is_empty() {
+                    let list: Vec<String> = self
+                        .ribbon
+                        .toolbars()
+                        .into_iter()
+                        .map(|(module, title, shown)| {
+                            format!("{}{module}/{title}", if shown { "● " } else { "  " })
+                        })
+                        .collect();
+                    self.command_line.push_output(&crate::tr!("toolbar", "list"));
+                    for line in list {
+                        self.command_line.push_output(&line);
+                    }
+                    return Some(Task::none());
+                }
+                let words: Vec<&str> = rest.split_whitespace().collect();
+                let (name, action) = match words.last().map(|w| w.to_ascii_uppercase()) {
+                    Some(last) if words.len() > 1 && matches!(last.as_str(), "SHOW" | "S" | "HIDE" | "H") => {
+                        (words[..words.len() - 1].join(" "), Some(last.starts_with('S')))
+                    }
+                    _ => (words.join(" "), None),
+                };
+                match self.ribbon.find_toolbar(&name) {
+                    Some((module, title)) => {
+                        let shown = self
+                            .ribbon
+                            .toolbars()
+                            .into_iter()
+                            .any(|(m, t, shown)| m == module && t == title && shown);
+                        let origin = self.toolbar_origin();
+                        if self.ribbon.show_toolbar(module, title, action.unwrap_or(!shown), origin) {
+                            self.save_config();
+                        }
+                    }
+                    None => self
+                        .command_line
+                        .push_error(&crate::tr!("toolbar", "not-found", name = name.clone())),
+                }
+                return Some(Task::none());
+            }
+            // ── WSCURRENT — the workspace: Classic (menu bar and toolbars, no
+            // ribbon) or Ribbon. Classic shows the Draw, Modify, Layers and
+            // Properties toolbars when no toolbar is shown yet.
+            cmd if cmd == "WSCURRENT" || cmd.starts_with("WSCURRENT ") => {
+                let value = cmd.trim_start_matches("WSCURRENT").trim().to_ascii_uppercase();
+                match value.as_str() {
+                    "CLASSIC" | "C" => {
+                        self.ribbon_closed = true;
+                        self.show_menu_bar = true;
+                        if !self.ribbon.toolbars().iter().any(|(_, _, shown)| *shown) {
+                            let origin = self.toolbar_origin();
+                            for title in ["Draw", "Modify", "Layers", "Properties"] {
+                                self.ribbon.show_toolbar("draw", title, true, origin);
+                            }
+                        }
+                        self.persist_settings_if_changed();
+                        self.save_config();
+                    }
+                    "RIBBON" | "R" => {
+                        self.ribbon_closed = false;
+                        self.persist_settings_if_changed();
+                    }
+                    _ => {
+                        let current = if self.ribbon_closed { "Classic" } else { "Ribbon" };
+                        self.command_line
+                            .push_output(&crate::tr!("toolbar", "workspace", current = current));
+                    }
+                }
+                return Some(Task::none());
+            }
             // ── RIBBON / RIBBONCLOSE — show or hide the ribbon ───────────────────
             "RIBBON" | "RIBBONCLOSE" => {
                 self.ribbon_closed = cmd == "RIBBONCLOSE";
+                self.persist_settings_if_changed();
+            }
+            // ── COMMANDLINE / COMMANDLINEHIDE — show or hide the command line ──
+            // Hidden, it still takes the typing; Dynamic Input shows the
+            // prompt and what is typed at the cursor.
+            "COMMANDLINE" | "COMMANDLINEHIDE" | "COMMANDLINETOGGLE" => {
+                self.command_line_hidden = match cmd {
+                    "COMMANDLINE" => false,
+                    "COMMANDLINEHIDE" => true,
+                    // Ctrl+9: one way or the other, as the command line stands.
+                    _ => !self.command_line_hidden,
+                };
                 self.persist_settings_if_changed();
             }
             // ── QUICKPROPERTIES — toggle the floating quick-properties readout ───
@@ -827,11 +915,15 @@ impl OpenCADStudio {
                         anchor,
                         direction,
                     );
-                    self.command_line.push_info(&cmd.prompt());
+                    self.command_line
+                    .push_info(&cmd.wire_density_line(crate::entities::solid3d::clamp_header_isolines(self.tabs[i].scene.document.header.isolines)));
+                self.command_line.push_info(&cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                 } else {
                     let cmd = ExtrudeCommand::new_named(cmd, color);
-                    self.command_line.push_info(&cmd.prompt());
+                    self.command_line
+                    .push_info(&cmd.wire_density_line(crate::entities::solid3d::clamp_header_isolines(self.tabs[i].scene.document.header.isolines)));
+                self.command_line.push_info(&cmd.prompt());
                     self.tabs[i].active_cmd = Some(Box::new(cmd));
                 }
             }
@@ -878,6 +970,8 @@ impl OpenCADStudio {
                             .collect(),
                     );
                 }
+                self.command_line
+                    .push_info(&cmd.wire_density_line(crate::entities::solid3d::clamp_header_isolines(self.tabs[i].scene.document.header.isolines)));
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -907,6 +1001,8 @@ impl OpenCADStudio {
                 if !selected.is_empty() {
                     cmd.set_preselection(selected);
                 }
+                self.command_line
+                    .push_info(&cmd.wire_density_line(crate::entities::solid3d::clamp_header_isolines(self.tabs[i].scene.document.header.isolines)));
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -944,6 +1040,7 @@ impl OpenCADStudio {
                     selected,
                     available,
                 );
+                self.command_line.push_info(&cmd.wire_density_line(isolines));
                 self.command_line.push_info(&cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(cmd));
             }
@@ -1013,6 +1110,164 @@ impl OpenCADStudio {
             }
             "EXPORT" => {
                 return Some(Task::done(Message::PlotExport));
+            }
+            // PREVIEW [path] — render the plot page to SVG through the plot
+            // pipeline, including the plot style, and report its paper size and
+            // scale before committing to paper.
+            cmd if cmd == "PREVIEW"
+                || cmd == "-PREVIEW"
+                || cmd.starts_with("PREVIEW ")
+                || cmd.starts_with("-PREVIEW ") =>
+            {
+                let rest = cmd
+                    .trim_start_matches('-')
+                    .trim_start_matches("PREVIEW")
+                    .trim();
+                let path = if rest.is_empty() {
+                    std::env::temp_dir().join(format!("ocs-preview-{}.svg", std::process::id()))
+                } else {
+                    std::path::PathBuf::from(rest.trim_matches('"'))
+                };
+                match self.export_preview_svg(&path) {
+                    Ok((pages, bytes, (width, height), scale, style)) => {
+                        self.command_line.push_output(
+                            crate::tf!(
+                                "Preview: {}  {pages} page(s), {width:.1}×{height:.1} mm, \
+                                 scale {scale:.4}, style {style}, {bytes} bytes",
+                                path.display()
+                            )
+                            .as_ref(),
+                        );
+                    }
+                    Err(error) => self.command_line.push_error(&error),
+                }
+                return Some(Task::none());
+            }
+            // PUBLISH <file.pdf> [sheets…] — batch publish without the dialog:
+            // every named layout (or all paper layouts) into one multi-page
+            // PDF, each sheet with its own page setup, with per-sheet status.
+            cmd if cmd.starts_with("PUBLISH ") || cmd.starts_with("-PUBLISH ") => {
+                let line = cmd.trim_start_matches('-');
+                let rest = line
+                    .split_once(char::is_whitespace)
+                    .map(|(_, rest)| rest.trim())
+                    .unwrap_or("");
+                let (path_text, sheet_text) = if let Some(stripped) = rest.strip_prefix('"') {
+                    match stripped.split_once('"') {
+                        Some((path, tail)) => (path, tail.trim()),
+                        None => (stripped, ""),
+                    }
+                } else {
+                    match rest.split_once(char::is_whitespace) {
+                        Some((path, tail)) => (path, tail.trim()),
+                        None => (rest, ""),
+                    }
+                };
+                if path_text.is_empty() {
+                    self.command_line.push_info(
+                        crate::t!("Usage: PUBLISH <file.pdf> [sheet names…]").as_ref(),
+                    );
+                    return Some(Task::none());
+                }
+                let available: Vec<String> = self.tabs[i]
+                    .scene
+                    .layout_names()
+                    .into_iter()
+                    .filter(|name| name != "Model")
+                    .collect();
+                let mut names: Vec<String> = Vec::new();
+                if !sheet_text.is_empty() {
+                    let requested: Vec<&str> = if sheet_text.contains(',') {
+                        sheet_text.split(',').collect()
+                    } else {
+                        sheet_text.split_whitespace().collect()
+                    };
+                    for sheet in requested {
+                        let sheet = sheet.trim().trim_matches('"').trim();
+                        if sheet.is_empty() {
+                            continue;
+                        }
+                        match available
+                            .iter()
+                            .find(|name| name.eq_ignore_ascii_case(sheet))
+                        {
+                            Some(name) => names.push(name.clone()),
+                            None => {
+                                self.command_line.push_error(
+                                    crate::tf!(
+                                        "PUBLISH: no layout named '{sheet}'. Layouts: {}",
+                                        available.join(", ")
+                                    )
+                                    .as_ref(),
+                                );
+                                return Some(Task::none());
+                            }
+                        }
+                    }
+                } else {
+                    names = available.clone();
+                }
+                let path = std::path::PathBuf::from(path_text);
+                self.command_line.push_output(
+                    crate::tf!(
+                        "Publishing {} sheet(s) to {}",
+                        names.len(),
+                        path.display()
+                    )
+                    .as_ref(),
+                );
+                match self.export_pdf_layout_names(&path, &names) {
+                    Ok((pages, bytes, sheets)) => {
+                        for (name, (_, width, height)) in names.iter().zip(sheets.iter()) {
+                            self.command_line.push_output(
+                                crate::tf!("  {name}: {width:.1}×{height:.1} mm").as_ref(),
+                            );
+                        }
+                        self.command_line.push_output(
+                            crate::tf!(
+                                "Published: {}  {pages} page(s), {bytes} bytes",
+                                path.display()
+                            )
+                            .as_ref(),
+                        );
+                    }
+                    Err(error) => {
+                        self.command_line.push_error(&error);
+                    }
+                }
+                return Some(Task::none());
+            }
+            cmd if cmd.starts_with("EXPORTPDF ") || cmd.starts_with("EXPORT ") => {
+                let rest = cmd.split_once(' ').map(|(_, rest)| rest.trim()).unwrap_or("");
+                let (path_text, all_layouts) = match rest.rsplit_once(char::is_whitespace) {
+                    Some((head, tail)) if tail.eq_ignore_ascii_case("ALL") => {
+                        (head.trim(), true)
+                    }
+                    _ => (rest, false),
+                };
+                let path_text = path_text.trim().trim_matches('"');
+                if path_text.is_empty() {
+                    self.command_line.push_info(
+                        crate::t!("Usage: EXPORTPDF <file.pdf> [ALL]").as_ref(),
+                    );
+                    return Some(Task::none());
+                }
+                let path = std::path::PathBuf::from(path_text);
+                match self.export_pdf_direct(&path, all_layouts) {
+                    Ok((pages, bytes, (width, height))) => {
+                        self.command_line.push_output(
+                            crate::tf!(
+                                "Exported: {}  {pages} page(s), {bytes} bytes, {width:.1}×{height:.1} mm",
+                                path.display()
+                            )
+                            .as_ref(),
+                        );
+                    }
+                    Err(error) => {
+                        self.command_line.push_error(&error);
+                    }
+                }
+                return Some(Task::none());
             }
             "EXPORTPDF" => {
                 self.plot_dialog.to_file = true;
@@ -1246,7 +1501,158 @@ impl OpenCADStudio {
                 }
             }
 
-            // PAGESETUP is folded into the unified plot dialog.
+            // PAGESETUP is folded into the unified plot dialog. Its scriptable
+            // form manages the named page setups the drawing already stores in
+            // its ACAD_PLOTSETTINGS dictionary:
+            //   -PAGESETUP SAVE <name>    capture the current layout's setup
+            //   -PAGESETUP APPLY <name>   apply it to the current layout
+            //   -PAGESETUP RENAME <old> <new>
+            //   -PAGESETUP LIST
+            //   -PAGESETUP DELETE <name>
+            cmd if cmd == "-PAGESETUP" || cmd.starts_with("-PAGESETUP ") => {
+                let rest = cmd.trim_start_matches("-PAGESETUP").trim();
+                let mut words = rest.split_whitespace();
+                let action = words.next().unwrap_or("").to_uppercase();
+                let name = words.next().unwrap_or("");
+                match action.as_str() {
+                    "" => self.command_line.push_info(
+                        crate::t!(
+                            "Usage: -PAGESETUP SAVE <name> | APPLY <name> | RENAME <old> <new> | DELETE <name> | LIST"
+                        )
+                        .as_ref(),
+                    ),
+                    "SAVE" => {
+                        if name.is_empty() {
+                            self.command_line.push_error(
+                                crate::t!("-PAGESETUP SAVE: name the setup.").as_ref(),
+                            );
+                            return Some(Task::none());
+                        }
+                        if self.tabs[i].scene.current_layout == "Model" {
+                            self.command_line.push_error(
+                                crate::t!("-PAGESETUP: switch to a paper layout first.").as_ref(),
+                            );
+                            return Some(Task::none());
+                        }
+                        let Some(ps) = self.tabs[i].scene.effective_plot_settings() else {
+                            self.command_line.push_error(
+                                crate::t!("-PAGESETUP: this layout has no plot settings.")
+                                    .as_ref(),
+                            );
+                            return Some(Task::none());
+                        };
+                        self.push_undo_snapshot(i, "-PAGESETUP SAVE");
+                        self.tabs[i].scene.page_setup_save(name, ps);
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(
+                            crate::tf!("PAGESETUP: saved '{name}'.").as_ref(),
+                        );
+                    }
+                    "APPLY" | "SET" => {
+                        let Some(mut ps) = self.tabs[i].scene.page_setup_get(name) else {
+                            self.command_line.push_error(
+                                crate::tf!("-PAGESETUP: no setup named '{name}'.").as_ref(),
+                            );
+                            return Some(Task::none());
+                        };
+                        if self.tabs[i].scene.current_layout == "Model" {
+                            self.command_line.push_error(
+                                crate::t!("-PAGESETUP: switch to a paper layout first.").as_ref(),
+                            );
+                            return Some(Task::none());
+                        }
+                        let layout = self.tabs[i].scene.current_layout.clone();
+                        ps.page_name = name.to_string();
+                        self.push_undo_snapshot(i, "-PAGESETUP APPLY");
+                        self.tabs[i]
+                            .scene
+                            .set_layout_plot_settings(&layout, &ps);
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(
+                            crate::tf!(
+                                "PAGESETUP: applied '{name}' to {layout}: {:.1}×{:.1} mm, style {}",
+                                ps.paper_width,
+                                ps.paper_height,
+                                if ps.current_style_sheet.is_empty() {
+                                    "None"
+                                } else {
+                                    ps.current_style_sheet.as_str()
+                                }
+                            )
+                            .as_ref(),
+                        );
+                    }
+                    "RENAME" => {
+                        let new = words.next().unwrap_or("");
+                        if name.is_empty() || new.is_empty() {
+                            self.command_line.push_error(
+                                crate::t!("-PAGESETUP RENAME: give the old and new names.")
+                                    .as_ref(),
+                            );
+                            return Some(Task::none());
+                        }
+                        if self.tabs[i].scene.page_setup_get(name).is_none() {
+                            self.command_line.push_error(
+                                crate::tf!("-PAGESETUP: no setup named '{name}'.").as_ref(),
+                            );
+                            return Some(Task::none());
+                        }
+                        self.push_undo_snapshot(i, "-PAGESETUP RENAME");
+                        self.tabs[i].scene.page_setup_rename(name, new);
+                        self.tabs[i].dirty = true;
+                        self.command_line.push_output(
+                            crate::tf!("PAGESETUP: renamed '{name}' to '{new}'.").as_ref(),
+                        );
+                    }
+                    "DELETE" | "DEL" => {
+                        if self.tabs[i].scene.page_setup_get(name).is_none() {
+                            self.command_line.push_error(
+                                crate::tf!("-PAGESETUP: no setup named '{name}'.").as_ref(),
+                            );
+                            return Some(Task::none());
+                        }
+                        self.push_undo_snapshot(i, "-PAGESETUP DELETE");
+                        self.tabs[i].scene.page_setup_delete(name);
+                        self.tabs[i].dirty = true;
+                        self.command_line
+                            .push_output(crate::tf!("PAGESETUP: deleted '{name}'.").as_ref());
+                    }
+                    "LIST" => {
+                        let names = self.tabs[i].scene.page_setup_names();
+                        if names.is_empty() {
+                            self.command_line
+                                .push_info(crate::t!("No named page setups.").as_ref());
+                        } else {
+                            self.command_line
+                                .push_output(crate::t!("Named page setups:").as_ref());
+                            for name in names {
+                                let Some(ps) = self.tabs[i].scene.page_setup_get(&name) else {
+                                    continue;
+                                };
+                                let style = if ps.current_style_sheet.is_empty() {
+                                    "None".to_string()
+                                } else {
+                                    ps.current_style_sheet.clone()
+                                };
+                                self.command_line.push_output(
+                                    crate::tf!(
+                                        "  {name}: {:.1}×{:.1} mm  style={style}",
+                                        ps.paper_width,
+                                        ps.paper_height
+                                    )
+                                    .as_ref(),
+                                );
+                            }
+                        }
+                    }
+                    other => {
+                        self.command_line.push_error(
+                            crate::tf!("-PAGESETUP: unknown option '{other}'.").as_ref(),
+                        );
+                    }
+                }
+                return Some(Task::none());
+            }
             "PAGESETUP" => {
                 return Some(Task::done(Message::PlotDialogOpen));
             }
@@ -1572,35 +1978,46 @@ impl OpenCADStudio {
                     .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
                     .collect();
                 if handles.is_empty() {
-                    self.command_line.push_error(
-                        crate::t!("ANNOUPDATE: select annotation objects first.").as_ref(),
+                    use crate::modules::draw::select::SelectObjectsCommand;
+                    let command = SelectObjectsCommand::with_keyword(
+                        "ANNOUPDATE",
+                        "ANNOUPDATE",
+                        "Select annotation objects or [ALL]:",
+                        "ALL",
+                        "ALL",
+                        || crate::command::CmdResult::Dispatch("ANNOUPDATE ALL".to_string()),
+                    );
+                    self.command_line.push_info(&command.prompt());
+                    self.command_line.set_step_options(command.options());
+                    self.tabs[i].active_cmd = Some(Box::new(command));
+                    return Some(Task::none());
+                }
+                self.apply_annoupdate(i, handles);
+                return Some(Task::none());
+            }
+            cmd if cmd.eq_ignore_ascii_case("ANNOUPDATE ALL")
+                || cmd.eq_ignore_ascii_case("ANNOUPDATE A") =>
+            {
+                let handles: Vec<_> = self.tabs[i]
+                    .scene
+                    .document
+                    .entities()
+                    .filter(|entity| {
+                        crate::scene::annotative::is_annotative(
+                            &self.tabs[i].scene.document,
+                            entity,
+                        )
+                    })
+                    .map(|entity| entity.common().handle)
+                    .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
+                    .collect();
+                if handles.is_empty() {
+                    self.command_line.push_output(
+                        crate::t!("ANNOUPDATE: no annotative objects in this drawing.").as_ref(),
                     );
                     return Some(Task::none());
                 }
-                self.push_undo_snapshot(i, "ANNOUPDATE");
-                let scale = self.tabs[i].scene.creation_annotation_scale_handle();
-                let paper_to_model = self.tabs[i].scene.creation_annotation_multiplier();
-                let mut updated = 0usize;
-                for handle in &handles {
-                    if crate::scene::annotative::update_entity_from_annotation_style(
-                        &mut self.tabs[i].scene.document,
-                        *handle,
-                        scale,
-                        paper_to_model,
-                    ) {
-                        updated += 1;
-                    }
-                }
-                if updated > 0 {
-                    let changes: Vec<_> = handles
-                        .into_iter()
-                        .map(|handle| (handle, crate::scene::ChangeKind::Modified))
-                        .collect();
-                    self.tabs[i].scene.bump_entities(&changes);
-                    self.tabs[i].dirty = true;
-                }
-                self.command_line
-                    .push_output(crate::tf!("ANNOUPDATE: updated {updated} object(s).").as_ref());
+                self.apply_annoupdate(i, handles);
                 return Some(Task::none());
             }
             cmd if cmd.starts_with("ANNOSCALE ") || cmd.starts_with("CANNOSCALE ") => {
@@ -1642,14 +2059,16 @@ impl OpenCADStudio {
             }
 
             // SCALELISTEDIT — list / add / delete the drawing's annotation scales.
-            //   SCALELISTEDIT              list
+            //   SCALELISTEDIT              prompt (Add / Delete)
+            //   SCALELISTEDIT LIST         every scale with ratio and in-use count
             //   SCALELISTEDIT ADD 1:50     add (name is a paper:drawing ratio)
-            //   SCALELISTEDIT DELETE 1:50  remove (not the current scale)
-            "SCALELISTEDIT" => {
+            //   SCALELISTEDIT DELETE 1:50  remove (not current and not in use)
+            //   SCALELISTEDIT DELETE FORCE 1:50  remove and drop its contexts
+            "SCALELISTEDIT" | "-SCALELISTEDIT" => {
                 use crate::command::KeywordCommand;
                 let c = KeywordCommand::new(
                     "SCALELISTEDIT",
-                    "SCALELISTEDIT  [Add / Delete]:",
+                    "SCALELISTEDIT  [Add / Delete / List]:",
                     vec![
                         (
                             "Add",
@@ -1661,13 +2080,17 @@ impl OpenCADStudio {
                             "DELETE",
                             Some("SCALELISTEDIT DELETE  scale ratio to remove:"),
                         ),
+                        ("List", "LIST", None),
                     ],
                 );
                 self.command_line.push_info(&c.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(c));
             }
-            cmd if cmd.starts_with("SCALELISTEDIT ") => {
-                let rest = cmd.trim_start_matches("SCALELISTEDIT").trim();
+            cmd if cmd.starts_with("SCALELISTEDIT ") || cmd.starts_with("-SCALELISTEDIT ") => {
+                let rest = cmd
+                    .trim_start_matches('-')
+                    .trim_start_matches("SCALELISTEDIT")
+                    .trim();
                 let mut parts = rest.splitn(2, char::is_whitespace);
                 let sub = parts.next().unwrap_or("").to_uppercase();
                 let arg = parts.next().unwrap_or("").trim();
@@ -1702,47 +2125,51 @@ impl OpenCADStudio {
                             .header
                             .current_annotation_scale
                             .clone();
-                        if arg.is_empty() {
+                        let (force, name) = match arg
+                            .split_once(char::is_whitespace)
+                            .map(|(first, rest)| (first, rest.trim()))
+                        {
+                            Some((first, rest)) if first.eq_ignore_ascii_case("FORCE") => {
+                                (true, rest)
+                            }
+                            _ => (false, arg),
+                        };
+                        if name.is_empty() {
                             self.command_line.push_info(
-                                crate::t!("Usage: SCALELISTEDIT DELETE <name>").as_ref(),
+                                crate::t!("Usage: SCALELISTEDIT DELETE [FORCE] <name>").as_ref(),
                             );
-                        } else if arg.eq_ignore_ascii_case(&current) {
+                        } else if name.eq_ignore_ascii_case(&current) {
                             self.command_line.push_error(
-                                crate::tf!("Cannot delete the current annotation scale ({arg}).")
+                                crate::tf!("Cannot delete the current annotation scale ({name}).")
                                     .as_ref(),
                             );
                         } else {
-                            self.push_undo_snapshot(i, "SCALELISTEDIT");
-                            if self.tabs[i].scene.remove_scale(arg) {
-                                self.tabs[i].dirty = true;
-                                self.command_line.push_output(
-                                    crate::tf!("Removed annotation scale {arg}.").as_ref(),
+                            let in_use = self.tabs[i].scene.scale_in_use_count(name);
+                            if in_use > 0 && !force {
+                                self.command_line.push_error(
+                                    crate::tf!(
+                                        "Cannot delete {name}: {in_use} annotative object(s) use it. Use SCALELISTEDIT DELETE FORCE {name} to remove it anyway."
+                                    )
+                                    .as_ref(),
                                 );
                             } else {
-                                self.command_line.push_info(
-                                    crate::tf!("No annotation scale named {arg}.").as_ref(),
-                                );
+                                self.push_undo_snapshot(i, "SCALELISTEDIT");
+                                if self.tabs[i].scene.remove_scale(name) {
+                                    self.tabs[i].dirty = true;
+                                    self.command_line.push_output(
+                                        crate::tf!("Removed annotation scale {name}.").as_ref(),
+                                    );
+                                } else {
+                                    self.command_line.push_info(
+                                        crate::tf!("No annotation scale named {name}.").as_ref(),
+                                    );
+                                }
                             }
                         }
                     }
-                    "" => {
-                        let names: Vec<String> = self.tabs[i]
-                            .scene
-                            .scale_list()
-                            .into_iter()
-                            .map(|(n, _, _)| n)
-                            .collect();
-                        if names.is_empty() {
-                            self.command_line
-                                .push_info(crate::t!("No annotation scales defined.").as_ref());
-                        } else {
-                            self.command_line.push_output(
-                                crate::tf!("Annotation scales: {}", names.join(", ")).as_ref(),
-                            );
-                        }
-                    }
-                    _ => self.command_line.push_info(
-                        crate::t!("Usage: SCALELISTEDIT [ADD 1:50 | DELETE 1:50]").as_ref(),
+                    "LIST" | "?" | "" => self.print_scale_list(i),
+                    _ => self.command_line.push_error(
+                        crate::t!("SCALELISTEDIT: use LIST, ADD <ratio> or DELETE <ratio>.").as_ref(),
                     ),
                 }
             }
@@ -2141,6 +2568,78 @@ impl OpenCADStudio {
         self.command_line
             .push_info(&crate::command::CadCommand::prompt(&command));
         self.tabs[i].active_cmd = Some(Box::new(command));
+    }
+
+    /// Print the scale list with each ratio's factor and how many annotative
+    /// objects depend on it, marking the current scale. Shared by the command
+    /// form and `SCALELISTEDIT LIST`.
+    fn print_scale_list(&mut self, i: usize) {
+        let current = self.tabs[i]
+            .scene
+            .document
+            .header
+            .current_annotation_scale
+            .clone();
+        let rows = self.tabs[i].scene.scale_list();
+        if rows.is_empty() {
+            self.command_line
+                .push_info(crate::t!("No annotation scales defined.").as_ref());
+            return;
+        }
+        self.command_line.push_output(
+            crate::tf!("Annotation scales ({}):", rows.len()).as_ref(),
+        );
+        for (name, _inverse, factor) in rows {
+            let in_use = self.tabs[i].scene.scale_in_use_count(&name);
+            let marker = if name.eq_ignore_ascii_case(&current) {
+                "  (current)"
+            } else {
+                ""
+            };
+            self.command_line.push_output(&format!(
+                "  {name}  factor={factor:.6}  in use: {in_use}{marker}"
+            ));
+        }
+    }
+
+    /// Re-solve the selected annotative objects for the current scale. Shared
+    /// by the pick flow and `ANNOUPDATE ALL`; reports how many changed and
+    /// how many were not annotative, as the reference application does.
+    fn apply_annoupdate(&mut self, i: usize, handles: Vec<codec::Handle>) {
+        let scale = self.tabs[i].scene.creation_annotation_scale_handle();
+        let paper_to_model = self.tabs[i].scene.creation_annotation_multiplier();
+        let mut updated = 0usize;
+        let mut skipped = 0usize;
+        let mut changed = Vec::new();
+        for handle in &handles {
+            if crate::scene::annotative::update_entity_from_annotation_style(
+                &mut self.tabs[i].scene.document,
+                *handle,
+                scale,
+                paper_to_model,
+            ) {
+                updated += 1;
+                changed.push((*handle, crate::scene::ChangeKind::Modified));
+            } else {
+                skipped += 1;
+            }
+        }
+        if !changed.is_empty() {
+            self.push_undo_snapshot(i, "ANNOUPDATE");
+            self.tabs[i].scene.bump_entities(&changed);
+            self.tabs[i].dirty = true;
+        }
+        if skipped > 0 {
+            self.command_line.push_output(
+                crate::tf!(
+                    "ANNOUPDATE: updated {updated} object(s); {skipped} not annotative and left unchanged."
+                )
+                .as_ref(),
+            );
+        } else {
+            self.command_line
+                .push_output(crate::tf!("ANNOUPDATE: updated {updated} object(s).").as_ref());
+        }
     }
 }
 

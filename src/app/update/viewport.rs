@@ -2137,6 +2137,12 @@ impl OpenCADStudio {
                 self.cancel_active_grip_edit();
                 return Task::none();
             }
+            // Remove Vertex / Convert to Line wait for the next click; the
+            // cursor has nothing to place in the meantime.
+            if self.grip_ctrl_one_shot(i).is_some() {
+                self.tabs[i].last_cursor_screen = p_full;
+                return Task::none();
+            }
             let grip_started = Instant::now();
             let (vw, vh) = vp_size;
             let bounds = iced::Rectangle {
@@ -4252,6 +4258,15 @@ impl OpenCADStudio {
                     previews.push(guide);
                 }
             }
+            // A drawing command previews the new object in the colour it will
+            // get: the current colour, or the current layer's when ByLayer.
+            if let Some(color) = self.creation_preview_color(i) {
+                for wire in &mut previews {
+                    if wire.color == crate::scene::WireModel::CYAN {
+                        wire.color = color;
+                    }
+                }
+            }
             let preview_hidden = modifier_hidden.unwrap_or_else(|| {
                 self.tabs[i]
                     .active_cmd
@@ -4309,6 +4324,30 @@ impl OpenCADStudio {
             );
         }
         Task::none()
+    }
+
+    /// The colour a drawing command's new object will be drawn in, for its
+    /// preview; `None` for any other command.
+    fn creation_preview_color(&self, i: usize) -> Option<[f32; 4]> {
+        const DRAWING: &[&str] = &[
+            "LINE", "PLINE", "RECT", "CIRCLE", "ARC", "ELLIPSE", "POLY", "SPLINE", "XLINE",
+            "RAY", "POINT", "MULTIPOINT", "DONUT", "REVCLOUD", "3DPOLY", "HELIX", "MLINE",
+            "SKETCH", "TRACE", "SOLID", "3DFACE",
+        ];
+        let tab = &self.tabs[i];
+        let name = tab.active_cmd.as_ref()?.name();
+        let base = name.split('_').next().unwrap_or(name);
+        if !DRAWING.contains(&base) && !name.starts_with("SPLINE") {
+            return None;
+        }
+        let document = &tab.scene.document;
+        let color = match document.header.current_entity_color {
+            codec::types::Color::ByLayer => document.layers.get(&tab.active_layer)?.color,
+            codec::types::Color::ByBlock => codec::types::Color::Index(7),
+            color => color,
+        };
+        let rgba = crate::scene::convert::tess_util::aci_to_rgba(&color);
+        Some(crate::scene::view::render::adapt_to_bg(rgba, tab.scene.bg_color))
     }
 
     /// The navigation style's action for `held` and the modifiers now down.
@@ -5254,9 +5293,6 @@ impl OpenCADStudio {
         if self.table_popup.take().is_some() {
             return Task::none();
         }
-        if self.flip_popup.take().is_some() {
-            return Task::none();
-        }
         // Same dismiss-on-outside-click for the right-click
         // context menu: its panel is opaque, so a press that
         // reaches here is outside the menu.
@@ -5476,6 +5512,47 @@ impl OpenCADStudio {
             }
         }
 
+        // STRETCH: Shift+click on an object (away from its grips) takes the
+        // whole object out, which also works where vertices of several
+        // objects coincide and a Shift+window would catch them all.
+        if self.shift_down
+            && self.tabs[i]
+                .active_cmd
+                .as_ref()
+                .is_some_and(|command| command.name() == "STRETCH")
+        {
+            let (view_rot, eye) = match &edit_cam {
+                Some(cam) => (cam.view_proj_rte(bounds), cam.eye()),
+                None => {
+                    let cam = self.tabs[i].scene.camera.borrow();
+                    (cam.view_proj_rte(bounds), cam.eye())
+                }
+            };
+            let wires = self.tabs[i].scene.hit_test_wires();
+            let hit = scene::pick::hit_test::click_hit(
+                p,
+                &*wires,
+                view_rot,
+                eye,
+                bounds,
+                self.tabs[i].scene.document.header.lineweight_display,
+                crate::ui::overlay::pick_box_aperture_px(self.pick_box),
+                &self.tabs[i].scene.draw_depth_map(),
+            )
+            .and_then(Scene::handle_from_wire_name);
+            drop(wires);
+            if let Some(handle) = hit {
+                let removed = self.tabs[i]
+                    .active_cmd
+                    .as_mut()
+                    .is_some_and(|command| command.remove_stretch_entity(handle));
+                if removed {
+                    self.remove_stretch_object_feedback(i, handle);
+                    return Task::none();
+                }
+            }
+        }
+
         if self.tabs[i].active_cmd.is_none()
             && self.tabs[i].active_grip.is_none()
             && !self.tabs[i].selected_grips.is_empty()
@@ -5567,14 +5644,6 @@ impl OpenCADStudio {
                         self.grip_popup = None;
                         return Task::none();
                     }
-                    // A flip parameter's chevron lists its two state labels
-                    // outside the block editor instead of toggling or
-                    // starting a command.
-                    if self.open_flip_popup_at(handle, grip_id, p_full) {
-                        self.grip_hover = None;
-                        self.grip_popup = None;
-                        return Task::none();
-                    }
                     if self.start_test_action_grip(handle, grip_id) {
                         return Task::none();
                     }
@@ -5616,6 +5685,7 @@ impl OpenCADStudio {
                         edit.grab = grabbed.map(|point| point - world);
                     }
                     self.tabs[i].active_grip = Some(edit);
+                    self.grip_ctrl_cycle = None;
                     self.grip_engage_press = Some(p);
                     self.grip_hover = None;
                     self.grip_popup = None;
@@ -5691,7 +5761,9 @@ impl OpenCADStudio {
 
         // Ctrl+click on a polyline picks the segment under the cursor; the
         // edit commands then move just that part.
-        if self.ctrl_down && self.tabs[i].active_cmd.is_none() {
+        // SUbobject at a selection prompt picks segments the same way.
+        let subobject = self.subobject_mode();
+        if self.ctrl_down && self.tabs[i].active_cmd.is_none() || subobject {
             let (view_rot, eye) = {
                 let cam = self.tabs[i].scene.camera.borrow();
                 (cam.view_proj_rte(bounds), cam.eye())
@@ -5711,14 +5783,41 @@ impl OpenCADStudio {
             .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
             drop(wires);
             let point = self.tabs[i].last_cursor_world;
-            if hit.is_some_and(|handle| self.tabs[i].scene.toggle_sub_segment(handle, point)) {
+            if let Some(handle) =
+                hit.filter(|handle| self.tabs[i].scene.toggle_sub_segment(*handle, point))
+            {
                 self.tabs[i]
                     .scene
                     .selection
                     .borrow_mut()
                     .clear_left_selection_gesture();
+                if subobject {
+                    return self.feed_subobject_pick(Some(handle));
+                }
                 self.refresh_properties();
                 return Task::none();
+            }
+            let solid = |entity: Option<&codec::EntityType>| {
+                matches!(
+                    entity,
+                    Some(
+                        codec::EntityType::Solid3D(_)
+                            | codec::EntityType::Region(_)
+                            | codec::EntityType::Body(_)
+                            | codec::EntityType::Surface(_)
+                            | codec::EntityType::Mesh(_)
+                    )
+                )
+            };
+            if subobject
+                && hit.is_some_and(|handle| !solid(self.tabs[i].scene.document.get_entity(handle)))
+            {
+                self.tabs[i]
+                    .scene
+                    .selection
+                    .borrow_mut()
+                    .clear_left_selection_gesture();
+                return self.feed_subobject_pick(None);
             }
         }
 
@@ -5949,6 +6048,9 @@ impl OpenCADStudio {
                 let (dx, dy) = (p.x - press.x, p.y - press.y);
                 dx * dx + dy * dy <= 12.0 * 12.0
             });
+            if !engaging_click && self.grip_ctrl_one_shot(i).is_some() {
+                return self.commit_grip_ctrl_one_shot(i);
+            }
             let moved = grip.last_world != grip.origin_world;
             if engaging_click || (is_click && !moved) {
                 return Task::none();
@@ -8911,7 +9013,6 @@ properties={:.1}ms picked={}",
             (session.br_handle, session.editor_camera.clone())
         };
         self.layout_rename_state = None;
-        self.flip_popup = None;
         self.tabs[i].scene.active_viewport = None;
         self.tabs[i].scene.set_current_layout("Model".to_string());
         self.tabs[i].scene.block_edit_block = Some(br_handle);
@@ -9462,6 +9563,7 @@ properties={:.1}ms picked={}",
         }
         // Placement confirmed — keep the just-added leader.
         self.grip_add_provisional = None;
+        self.grip_ctrl_cycle = None;
         self.tabs[i].snap_result = None;
         if let Some(vertex_id) = added_vertex_focus {
             self.tabs[i].properties.prop_vertex = vertex_id;
@@ -10543,6 +10645,132 @@ mod snap_elevation_tests {
 mod selection_preview_tests {
     use super::*;
     use crate::app::{HoverDwell, OpenCADStudio, HOVER_DWELL_MS};
+
+    fn mtext_size_fixture(rotation: f64) -> (OpenCADStudio, Handle) {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        app.snapper.snap_enabled = false;
+        app.snapper.grid_snap_on = false;
+        app.snapper.otrack_enabled = false;
+        app.ortho_mode = false;
+        app.polar_mode = false;
+        app.tabs[i].scene.selection.borrow_mut().view.vp_size = (800.0, 600.0);
+        let mut text = codec::entities::MText::with_value(
+            "asd asd asd asd",
+            codec::types::Vector3::new(100.0, 50.0, 0.0),
+        );
+        text.height = 2.5;
+        text.rectangle_width = 60.0;
+        text.rectangle_height = Some(10.0);
+        text.rotation = rotation;
+        text.attachment_point = codec::entities::AttachmentPoint::TopLeft;
+        let handle = app.tabs[i]
+            .scene
+            .add_entity(codec::EntityType::MText(Box::new(text)));
+        app.tabs[i].scene.selected.insert(handle);
+        app.refresh_selected_grips();
+        (app, handle)
+    }
+
+    fn mtext_size_value(app: &OpenCADStudio, handle: Handle) -> &codec::entities::MText {
+        let Some(codec::EntityType::MText(text)) = app.tabs[app.active_tab].scene.document.get_entity(handle)
+        else {
+            panic!("expected MTEXT")
+        };
+        text
+    }
+
+    fn drag_mtext_size(
+        app: &mut OpenCADStudio,
+        id: usize,
+        points: &[glam::DVec3],
+    ) {
+        let i = app.active_tab;
+        let bounds = iced::Rectangle::with_size(iced::Size::new(800.0, 600.0));
+        let grip = app.tabs[i].selected_grips.iter()
+            .find(|g| g.id == id).unwrap().clone();
+        let cursor = app.tabs[i].scene.camera.borrow().project(grip.world, bounds).unwrap();
+        app.tabs[i].scene.selection.borrow_mut().input.last_move_pos =
+            Some(Point::new(cursor.x, cursor.y));
+        let _ = app.on_viewport_left_press();
+        assert_eq!(app.tabs[i].active_grip.as_ref().map(|g| g.grip_id), Some(id));
+        for point in points {
+            let cursor = app.tabs[i].scene.camera.borrow().project(*point, bounds).unwrap();
+            let _ = app.on_viewport_move(Point::new(cursor.x, cursor.y));
+        }
+        let _ = app.on_viewport_left_release();
+        assert!(app.tabs[i].active_grip.is_none());
+        assert_eq!(app.tabs[i].history.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn mtext_size_width_drag_rewraps_and_undo_restores() {
+        for rotation in [0.0, std::f64::consts::FRAC_PI_2] {
+            let (mut app, handle) = mtext_size_fixture(rotation);
+            let before = mtext_size_value(&app, handle).clone();
+            let line_count = crate::entities::mtext::layout_of(
+                &before, &app.tabs[app.active_tab].scene.document, false,
+            ).line_count;
+            let x = glam::DVec3::new(rotation.cos(), rotation.sin(), 0.0);
+            let down = glam::DVec3::new(rotation.sin(), -rotation.cos(), 0.0);
+            let origin = glam::DVec3::new(100.0, 50.0, 0.0);
+            drag_mtext_size(&mut app, 1, &[
+                origin + x * 20.0 + down * 3.0,
+                origin + x * 8.0 + down * 5.0,
+            ]);
+            let text = mtext_size_value(&app, handle);
+            assert!((text.rectangle_width - 8.0).abs() < 1e-3, "width = {}", text.rectangle_width);
+            assert_eq!(text.insertion_point, before.insertion_point);
+            assert!(crate::entities::mtext::layout_of(
+                text, &app.tabs[app.active_tab].scene.document, false,
+            ).line_count > line_count);
+            app.undo_steps(1);
+            assert_eq!(mtext_size_value(&app, handle), &before);
+            let grip = app.tabs[app.active_tab].selected_grips.iter()
+                .find(|g| g.id == 1).unwrap();
+            assert_eq!(grip.shape, crate::scene::model::object::GripShape::Triangle);
+            assert!((grip.dir.expect("width arrow direction") - x).length() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn mtext_size_height_drag_and_undo_restores() {
+        for rotation in [0.0, std::f64::consts::FRAC_PI_2] {
+            let (mut app, handle) = mtext_size_fixture(rotation);
+            let before = mtext_size_value(&app, handle).clone();
+            let x = glam::DVec3::new(rotation.cos(), rotation.sin(), 0.0);
+            let down = glam::DVec3::new(rotation.sin(), -rotation.cos(), 0.0);
+            let origin = glam::DVec3::new(100.0, 50.0, 0.0);
+            drag_mtext_size(&mut app, 2, &[
+                origin + down * 20.0 + x * 3.0,
+                origin + down * 30.0 + x * 5.0,
+            ]);
+            let text = mtext_size_value(&app, handle);
+            assert!((text.rectangle_height.unwrap() - 30.0).abs() < 1e-3, "height = {:?}", text.rectangle_height);
+            assert_eq!(text.insertion_point, before.insertion_point);
+            assert_eq!(text.rectangle_width, before.rectangle_width);
+            app.undo_steps(1);
+            assert_eq!(mtext_size_value(&app, handle), &before);
+            let grip = app.tabs[app.active_tab].selected_grips.iter()
+                .find(|g| g.id == 2).unwrap();
+            assert!((grip.dir.expect("height arrow direction") - down).length() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn mtext_size_width_drag_clamps_before_insertion() {
+        let (mut app, handle) = mtext_size_fixture(0.0);
+        let before = mtext_size_value(&app, handle).clone();
+        drag_mtext_size(&mut app, 1, &[glam::DVec3::new(80.0, 55.0, 0.0)]);
+        assert_eq!(mtext_size_value(&app, handle).rectangle_width, 0.01);
+        app.undo_steps(1);
+        assert_eq!(mtext_size_value(&app, handle), &before);
+        drag_mtext_size(&mut app, 2, &[glam::DVec3::new(105.0, 70.0, 0.0)]);
+        assert_eq!(mtext_size_value(&app, handle).rectangle_height, Some(0.01));
+        app.undo_steps(1);
+        assert_eq!(mtext_size_value(&app, handle), &before);
+    }
 
     #[test]
     fn lower_endpoint_drag_previews_connected_tangent_profile_and_keeps_top_fixed() {
@@ -12093,5 +12321,53 @@ impl OpenCADStudio {
             let elevation = self.tabs[i].scene.document.header.elevation;
             (origin + normal * elevation, normal)
         });
+    }
+}
+
+#[cfg(test)]
+mod stretch_shift_click_tests {
+    use crate::app::OpenCADStudio;
+    use codec::EntityType;
+    use glam::DVec3;
+
+    #[test]
+    fn shift_click_takes_a_whole_object_out_of_stretch() {
+        use crate::modules::draw::modify::stretch::StretchCommand;
+        use codec::entities::Line;
+        use codec::types::Vector3;
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        app.show_ucs_icon = false;
+        let line = Line::from_points(Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0));
+        let handle = app.tabs[i].scene.add_entity(EntityType::Line(line));
+        app.tabs[i].scene.selection.borrow_mut().view.vp_size = (800.0, 600.0);
+        let _ = app.run_command_line("ZOOM EXTENTS");
+        app.tabs[i].scene.selection.borrow_mut().input.last_move_pos =
+            Some(iced::Point::new(400.0, 300.0));
+        let window = (DVec3::new(-11.0, -1.0, -1.0), DVec3::new(-9.0, 1.0, 1.0));
+        app.tabs[i].active_cmd = Some(Box::new(StretchCommand::with_windows(
+            vec![handle],
+            vec![],
+            vec![window],
+            Vec::new(),
+        )));
+        app.tabs[i].scene.selected.insert(handle);
+        app.shift_down = true;
+
+        let _ = app.on_viewport_left_press();
+        assert!(
+            !app.tabs[i].scene.selected.contains(&handle),
+            "the highlight is dropped"
+        );
+        // Enter has nothing left to stretch.
+        let command = app.tabs[i]
+            .active_cmd
+            .as_mut()
+            .expect("STRETCH stays active");
+        assert!(matches!(
+            command.on_enter(),
+            crate::command::CmdResult::Cancel
+        ));
     }
 }

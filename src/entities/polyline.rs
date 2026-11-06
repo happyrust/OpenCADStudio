@@ -590,21 +590,46 @@ impl RenderConvertible for Polyline2D {
     }
 }
 
+/// A heavy 2D polyline's vertices as (position, bulge) pairs.
+fn plain_points(pl: &Polyline2D) -> Vec<([f64; 2], f64)> {
+    pl.vertices.iter().map(|v| ([v.location.x, v.location.y], v.bulge)).collect()
+}
+
 impl Grippable for Polyline2D {
     fn grips(&self) -> Vec<GripDef> {
-        // A spline-fit polyline is gripped at its frame vertices, not at the
-        // samples the frame generates.
+        // A fit polyline is gripped at its frame (spline) or original
+        // (curve fit) vertices, not at the vertices the fit generates.
         let elev = self.elevation;
-        let spline_fit = self.flags.bits() & 4 != 0;
-        self.vertices
-            .iter()
-            .enumerate()
-            .filter(|(_, v)| !spline_fit || v.flags.bits() & 8 == 0)
-            .map(|(i, v)| square_grip(i, glam::DVec3::new(v.location.x, v.location.y, elev)))
-            .collect()
+        let mut grips: Vec<GripDef> = polyline2d_frame_indices(self)
+            .into_iter()
+            .map(|i| {
+                let v = &self.vertices[i];
+                square_grip(i, glam::DVec3::new(v.location.x, v.location.y, elev))
+            })
+            .collect();
+        // A polyline that is not curve- or spline-fit has a mid grip on each
+        // segment, as a lightweight one (ids after the vertices).
+        if self.flags.bits() & (2 | 4) == 0 {
+            grips.extend(crate::entities::lwpolyline::mid_grips(
+                &plain_points(self),
+                self.flags.is_closed(),
+                elev,
+                self.vertices.len(),
+            ));
+        }
+        grips
     }
 
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
+        let n = self.vertices.len();
+        if grip_id >= n && self.flags.bits() & (2 | 4) == 0 {
+            let mut points = plain_points(self);
+            crate::entities::lwpolyline::apply_mid_grip(&mut points, self.flags.is_closed(), grip_id - n, apply);
+            for (vertex, ([x, y], bulge)) in self.vertices.iter_mut().zip(points) {
+                (vertex.location.x, vertex.location.y, vertex.bulge) = (x, y, bulge);
+            }
+            return;
+        }
         if let Some(v) = self.vertices.get_mut(grip_id) {
             match apply {
                 GripApply::Translate(d) => {
@@ -1159,7 +1184,9 @@ fn rebuild_polyline3d_fit(pl: &mut Polyline3D) -> bool {
     true
 }
 
-fn tessellate_polyline3d(pl: &Polyline3D) -> RenderEntity {
+/// `frame` (SPLFRAME on) also draws a spline-fit polyline's frame, from the
+/// first frame vertex through every one to the last.
+fn tessellate_polyline3d(pl: &Polyline3D, frame: bool) -> RenderEntity {
     let to_pt = |v: &codec::entities::Vertex3DPolyline| -> [f64; 3] {
         [v.position.x, v.position.y, v.position.z]
     };
@@ -1193,6 +1220,13 @@ fn tessellate_polyline3d(pl: &Polyline3D) -> RenderEntity {
     if pl.is_closed() && wire_pts.len() >= 2 {
         points.push(wire_pts[0]);
     }
+    if frame && !spline_curve.is_empty() && key_verts.len() >= 2 {
+        points.push([f64::NAN; 3]);
+        points.extend(key_verts.iter().copied());
+        if pl.is_closed() {
+            points.push(key_verts[0]);
+        }
+    }
 
     RenderEntity {
         pick_tris: Vec::new(),
@@ -1205,8 +1239,8 @@ fn tessellate_polyline3d(pl: &Polyline3D) -> RenderEntity {
 }
 
 impl RenderConvertible for Polyline3D {
-    fn to_render(&self, _document: &codec::Document) -> Option<RenderEntity> {
-        Some(tessellate_polyline3d(self))
+    fn to_render(&self, document: &codec::Document) -> Option<RenderEntity> {
+        Some(tessellate_polyline3d(self, document.header.spline_frame))
     }
 }
 

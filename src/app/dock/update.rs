@@ -132,6 +132,12 @@ impl OpenCADStudio {
                 }
             }
             DockMsg::FloatBarPointer(p) => self.dock_float_pointer = p,
+            #[cfg(not(target_arch = "wasm32"))]
+            DockMsg::Detach(id) => {
+                let _ = self.detach_panel(id);
+            }
+            #[cfg(target_arch = "wasm32")]
+            DockMsg::Detach(_) => {}
             DockMsg::FloatDockingToggle(id) => {
                 self.dock_float_menu = None;
                 if self.dock.toggle_float_docking(id) {
@@ -139,11 +145,19 @@ impl OpenCADStudio {
                 }
             }
             DockMsg::EdgeMenu(side) => self.dock_edge_menu = side,
+            DockMsg::StripLabels(on) => {
+                self.dock_edge_menu = None;
+                self.dock.strip_labels = on;
+                self.save_config();
+            }
             DockMsg::EdgeMenuToggle(side, id) => {
                 // Checked = open and docked on this edge: unchecking hides it.
                 // Anything else (closed, floating, on the other edge) moves
                 // here and opens, in its own group here if it has one, else
                 // as a new group; adding a pallet ends the menu's job.
+                // Called from the dock, a pallet in a window of its own comes
+                // back as a pallet.
+                self.dock.detached.remove(&id);
                 let here = self.dock.location(id).map(|(s, _)| s) == Some(side);
                 if !here {
                     self.dock.dock(id, side, usize::MAX);
@@ -481,7 +495,7 @@ impl OpenCADStudio {
             || tab.properties.bg_color_picker_open
             || tab.properties.open_color_field.is_some()
             || tab.properties.hatch_pattern_picker_open
-            || tab.properties.edit_choice_open
+            || tab.properties.edit_choice_open.is_some()
             || tab.properties.open_block_picker.is_some()
             || tab.properties.open_choice.is_some()
             || self.color_picker.is_some()
@@ -600,6 +614,12 @@ impl OpenCADStudio {
                         }
                     }
                     PanelId::QuickCalc => self.quick_calc.show = true,
+                    PanelId::CommandHistory => {
+                        self.show_command_history = true;
+                        self.sync_command_history_panel();
+                        self.dock_open_at_default(id);
+                        self.save_config();
+                    }
                     PanelId::Plugin(num) => {
                         if let Some(panel_id) = self.plugin_panel_by_num.get(&num) {
                             if let Some(panel) = self.plugin_panels.get_mut(panel_id) {
@@ -672,6 +692,10 @@ impl OpenCADStudio {
             }
             PanelId::Laywalk => self.close_layer_walk(false),
             PanelId::QuickCalc => self.quick_calc.show = false,
+            PanelId::CommandHistory => {
+                self.show_command_history = false;
+                self.save_config();
+            }
             PanelId::GraphicAttributes => {
                 self.show_graphic_attributes = false;
                 self.ribbon.set_graphic_attributes(false);
@@ -745,6 +769,14 @@ impl OpenCADStudio {
         if self.clean_screen && !(id == PanelId::Properties && self.clean_screen_properties) {
             return false;
         }
+        self.dock_panel_wanted(id)
+    }
+
+    /// Whether pallet `id` is open, wherever it is shown: the main window
+    /// hides pallets on the Start page and in clean screen, a window of its
+    /// own does not.
+    pub(crate) fn dock_panel_wanted(&self, id: crate::ui::dock::PanelId) -> bool {
+        use crate::ui::dock::PanelId;
         match id {
             PanelId::Properties => self.show_properties,
             PanelId::BlockPalette => self.show_block_palette,
@@ -779,6 +811,7 @@ impl OpenCADStudio {
                     && !(tab.layer_walk_picking && tab.active_cmd.is_some())
             }
             PanelId::QuickCalc => self.quick_calc.show,
+            PanelId::CommandHistory => self.show_command_history,
             PanelId::GraphicAttributes => self.show_graphic_attributes,
             PanelId::Plugin(num) => {
                 if let Some(panel_id) = self.plugin_panel_by_num.get(&num) {
@@ -892,7 +925,24 @@ impl OpenCADStudio {
             .into_iter()
             .map(|gi| (gi, self.dock_group_visible(side, gi).len()))
             .collect();
-        crate::ui::dock::strip_layout(&groups)
+        crate::ui::dock::strip_layout(&groups, self.dock_strip_cell_h(&groups))
+    }
+
+    /// Height of a pallet cell in an icon strip holding `groups`: fixed for
+    /// icons only; labelled, the edge's height shared between the pallets.
+    fn dock_strip_cell_h(&self, groups: &[(usize, usize)]) -> f32 {
+        use crate::ui::dock::{
+            STRIP_CELL_H, STRIP_DIVIDER_H, STRIP_LABEL_MIN_H, STRIP_PAD, STRIP_PLUS_GAP, STRIP_PLUS_H,
+        };
+        if !self.dock.strip_labels {
+            return STRIP_CELL_H;
+        }
+        let pallets: usize = groups.iter().map(|&(_, icons)| icons).sum();
+        let fixed = groups.len() as f32 * (2.0 * STRIP_PAD + STRIP_DIVIDER_H)
+            + STRIP_PLUS_GAP
+            + STRIP_PLUS_H
+            + STRIP_PAD;
+        ((self.dock_workspace_size().1 - fixed) / pallets.max(1) as f32).max(STRIP_LABEL_MIN_H)
     }
 
     /// The open pallets of `side`'s shown group, each as (position in the

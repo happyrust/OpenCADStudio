@@ -190,11 +190,7 @@ pub(crate) fn bind_existing(
 
 pub(crate) fn validate_options(a: &BlockStretchAction) -> Result<(), &'static str> {
     options::validate(&a.offsets)?;
-    if !a.action.action_ids.is_empty() {
-        return Err("This Stretch action cannot chain follow-up actions yet.");
-    }
-    if !a.codes.is_empty()
-        || a.connections[0].code != a.connections[1].code
+    if a.connections[0].code != a.connections[1].code
         || !matches!(
             [
                 a.connections[0].name.as_str(),
@@ -275,12 +271,8 @@ pub(crate) fn validate_polar(
     a: &BlockPolarStretchAction,
 ) -> Result<(), &'static str> {
     polar_key_point(a)?;
-    if !a.action.action_ids.is_empty() {
-        return Err("This Polar Stretch action cannot chain follow-up actions yet.");
-    }
     if !a.distance_multiplier.is_finite()
         || !a.angle_offset.is_finite()
-        || !a.codes.is_empty()
         || !a.extra.is_empty()
         || a.points.len() < 2
         || a.points

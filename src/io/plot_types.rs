@@ -52,6 +52,11 @@ pub struct PdfPlotOptions {
     /// still hide what sits below them.
     pub monochrome: bool,
     pub quality: PlotQuality,
+    /// Raster image resolution cap in DPI; overrides `quality` when set.
+    pub raster_dpi: Option<u32>,
+    /// Vector resolution in DPI: path points snap to that grid on paper,
+    /// trading precision for size. `None` keeps full precision.
+    pub vector_dpi: Option<u32>,
 }
 
 /// End indexes of the first paper/model render group in each flat input list.
@@ -130,6 +135,8 @@ impl Default for PdfPlotOptions {
             merge_lines: false,
             monochrome: false,
             quality: PlotQuality::Normal,
+            raster_dpi: None,
+            vector_dpi: None,
         }
     }
 }

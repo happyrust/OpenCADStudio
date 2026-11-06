@@ -298,6 +298,7 @@ impl OpenCADStudio {
             selected_after: Vec::new(),
             dirty_before: checkpoint.dirty,
             dirty_after: true,
+            view: None,
             active_layer,
             layiso_state: None,
             structure,
@@ -624,7 +625,6 @@ impl OpenCADStudio {
         self.grip_popup = None;
         self.visibility_popup = None;
         self.table_popup = None;
-        self.flip_popup = None;
         history.checkpoint = self.block_edit_checkpoint(i);
         self.tabs[i].block_edit_history = Some(history);
         self.tabs[i].scene.bump_geometry();
@@ -904,7 +904,7 @@ impl OpenCADStudio {
     pub(super) fn cancel_block_edit_close(&mut self) {
         self.pending_block_close = None;
         self.pending_tab_closes.clear();
-        if self.active_modal == Some(ModalKind::BlockEditChanges) {
+        if self.focus_dialog(ModalKind::BlockEditChanges) {
             self.active_modal = None;
         }
     }

@@ -3032,14 +3032,19 @@ filter={:.1} local={:.1} aggregate={:.1} entities={}",
                         });
                     }
                     if let Some(definition) = self.tabs[i].active_block_edit_session().map(|session| session.br_handle) {
-                        if let Some(current) = crate::scene::block_actions::chain::label(
+                        if let Some(names) = crate::scene::block_actions::chain::labels(
                             &self.tabs[i].scene.document, definition, item.handle) {
+                            let value = match names.as_slice() {
+                                [] => String::new(),
+                                [name] if name.trim() == name && !name.starts_with('[') => name.clone(),
+                                _ => serde_json::to_string(&names).expect("action names serialize as JSON strings"),
+                            };
                             panel.sections.push(PropSection {
                                 title: crate::t!("Action chain").into_owned(),
                                 props: vec![Property {
                                     label: crate::t!("Chain to").into_owned(),
                                     field: "authoring_action_chain",
-                                    value: PropValue::EditText(current),
+                                    value: PropValue::PlainText(value),
                                 }],
                             });
                         }
@@ -3285,7 +3290,7 @@ filter={:.1} local={:.1} aggregate={:.1} entities={}",
                 panel.bg_color_picker_open = false;
                 panel.open_color_field = None;
                 panel.hatch_pattern_picker_open = false;
-                panel.edit_choice_open = false;
+                panel.edit_choice_open = None;
             }
             panel
         };
@@ -3485,10 +3490,26 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
             self.cancel_active_grip_edit();
             return;
         }
+        // Keep the grips of the moment a drag starts, before it reshapes
+        // anything, to draw them in place for the whole drag.
+        let drag_key = self.tabs[i]
+            .active_grip
+            .as_ref()
+            .map(|grip| (grip.handle, grip.grip_id, grip.origin_world));
+        let tab = &mut self.tabs[i];
+        match drag_key {
+            Some(key) if tab.drag_start_grips.as_ref().map(|(k, ..)| *k) != Some(key) => {
+                tab.drag_start_grips =
+                    Some((key, tab.selected_grips.clone(), tab.selected_grip_handles.clone()));
+            }
+            Some(_) => {}
+            None => tab.drag_start_grips = None,
+        }
         let is_paper = self.tabs[i].scene.current_layout != "Model";
         // Paper-space entity coordinates are NOT offset by world_offset (same rule
         // as wire tessellation in wires_for_block). Only subtract in model space.
         let wo = if is_paper { [0.0f64; 3] } else { [0.0_f64; 3] };
+        let group_boxes;
         let (new_handle, new_grips, new_grip_handles) = {
             let selected = self.tabs[i].scene.selected_entities();
             let single_handle = (selected.len() == 1
@@ -3505,9 +3526,48 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
             } else {
                 selected
             };
+            // A group picked whole shows one grip at the centre of its
+            // extents (GROUPDISPLAYMODE 1, 2) in place of its members' own,
+            // and a box round them (2) 2.5 % of their size out on each side.
+            let group_mode = crate::app::commands::group_display_mode();
+            let whole_groups = if group_mode == 0 {
+                Vec::new()
+            } else {
+                self.tabs[i].scene.selected_whole_groups()
+            };
+            let group_members: rustc_hash::FxHashSet<Handle> = whole_groups
+                .iter()
+                .flat_map(|(members, _, _)| members.iter().copied())
+                .collect();
+            let mut boxes = Vec::new();
+            for (members, min, max) in &whole_groups {
+                let centre = (*min + *max) * 0.5;
+                for &member in members {
+                    if self.tabs[i].scene.is_layer_locked(member) {
+                        continue;
+                    }
+                    handles.push(member);
+                    grips.push(GripDef {
+                        id: crate::scene::GROUP_GRIP_ID,
+                        world: centre,
+                        is_midpoint: true,
+                        shape: crate::scene::model::object::GripShape::Square,
+                        dir: None,
+                        axis: None,
+                    });
+                }
+                if group_mode == 2 {
+                    let pad = (*max - *min) * 0.025;
+                    boxes.push([*min - pad, *max + pad]);
+                }
+            }
+            group_boxes = boxes;
             // A table whose cells are picked shows no table grips.
             let picked_table = self.tabs[i].scene.table_cells_handle();
             for (handle, entity) in selected {
+                if group_members.contains(&handle) {
+                    continue;
+                }
                 if Some(handle) == picked_table {
                     // Picked cells show their own edge and fill grips.
                     if let (codec::EntityType::Table(table), Some(cells)) =
@@ -3523,7 +3583,56 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                 // entity_grips_for errs only for a missing tab/entity; inside
                 // the selection walk the entity exists, so a defensive empty
                 // keeps the cache build total.
+                // A polyline picked by segment shows only those segments'
+                // vertex and mid grips (vertex `k` is grip `k`, the mid grip
+                // of segment `k` is `n + k`; a heavy polyline has no mid grips).
+                let segment_grips: Option<rustc_hash::FxHashSet<usize>> =
+                    match (entity, self.tabs[i].scene.picked_segments(handle)) {
+                        // A spline-fit polyline's segments run between generated
+                        // vertices, which carry no grips.
+                        (codec::EntityType::Polyline2D(polyline), Some(_))
+                            if polyline.flags.bits() & 4 != 0 =>
+                        {
+                            Some(Default::default())
+                        }
+                        // A curve-fit polyline's picked segment shows the
+                        // original vertices around it, not the fit vertices.
+                        (codec::EntityType::Polyline2D(polyline), Some(segments))
+                            if polyline.flags.bits() & 2 != 0 =>
+                        {
+                            let n = polyline.vertices.len();
+                            let original = |i: usize| polyline.vertices[i % n].flags.bits() & 1 == 0;
+                            Some(
+                                segments
+                                    .iter()
+                                    .flat_map(|&k| {
+                                        let before = (0..=k).rev().find(|&i| original(i)).unwrap_or(k);
+                                        let after = (k + 1..k + 1 + n).find(|&i| original(i)).unwrap_or(k + 1) % n;
+                                        [before, after]
+                                    })
+                                    .collect(),
+                            )
+                        }
+                        (codec::EntityType::LwPolyline(_) | codec::EntityType::Polyline2D(_), Some(segments)) => {
+                            let n = match entity {
+                                codec::EntityType::LwPolyline(polyline) => polyline.vertices.len(),
+                                codec::EntityType::Polyline2D(polyline) => polyline.vertices.len(),
+                                _ => 0,
+                            }
+                            .max(1);
+                            Some(
+                                segments
+                                    .iter()
+                                    .flat_map(|&k| [k, (k + 1) % n, n + k])
+                                    .collect(),
+                            )
+                        }
+                        _ => None,
+                    };
                 for grip in self.entity_grips_for(i, handle).unwrap_or_default() {
+                    if segment_grips.as_ref().is_some_and(|ids| !ids.contains(&grip.id)) {
+                        continue;
+                    }
                     handles.push(handle);
                     grips.push(grip);
                 }
@@ -3558,6 +3667,10 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
         self.tabs[i].selected_handle = new_handle;
         self.tabs[i].selected_grips = new_grips;
         self.tabs[i].selected_grip_handles = new_grip_handles;
+        // The box stays where it was while a grip drag moves the group.
+        if self.tabs[i].active_grip.is_none() {
+            self.tabs[i].group_boxes = group_boxes;
+        }
         let available: rustc_hash::FxHashSet<_> = self.tabs[i]
             .selected_grip_handles
             .iter()
@@ -3654,13 +3767,13 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                     &self.tabs[i].scene.document,
                     anno_scale,
                 ) {
-                    // The text grip is the final native grip of Linear/Aligned
-                    // dims. While the text is still automatic, make this a
+                    // The text grip has ID 3 on Linear/Aligned dims.
+                    // While the text is still automatic, make this a
                     // point/stretch grip rather than a midpoint-translate
                     // grip. That makes the first drag use the displayed
                     // automatic position as its absolute starting point instead
                     // of translating the stale DWG text_middle_point.
-                    if let Some(text_grip) = entity_grips.last_mut() {
+                    if let Some(text_grip) = entity_grips.iter_mut().find(|grip| grip.id == 3) {
                         text_grip.world = glam::DVec3::new(position.x, position.y, position.z);
                         text_grip.is_midpoint = false;
                     }
@@ -6309,6 +6422,40 @@ mod aggregation_tests {
         let sections = aggregate_sections(&selected, &[]);
         let layer = row(&sections, "layer").expect("a layer row");
         assert!(format!("{:?}", layer.value).contains("WALLS"));
+    }
+}
+
+#[cfg(test)]
+mod arrow_tip_grips_tests {
+    use crate::app::OpenCADStudio;
+    use codec::{entities::{Dimension, DimensionLinear}, types::Vector3, EntityType};
+    use glam::DVec3;
+
+    #[test]
+    fn automatic_text_correction_preserves_arrow_tips() {
+        let mut app = OpenCADStudio::new_for_test();
+        let i = app.active_tab;
+        let mut d = DimensionLinear::horizontal(
+            Vector3::new(10.0, 10.0, 0.0), Vector3::new(30.0, 10.0, 0.0),
+        );
+        d.definition_point = Vector3::new(10.0, 20.0, 0.0);
+        let dim = Dimension::Linear(d);
+        let text = crate::entities::dimension::dimension_text_grip_position(
+            &dim, &app.tabs[i].scene.document, app.tabs[i].scene.annotation_scale as f64,
+        ).expect("automatic text placement");
+        let handle = app.tabs[i].scene.add_entity(EntityType::Dimension(Box::new(dim)));
+        app.tabs[i].scene.selected.insert(handle);
+        app.refresh_selected_grips();
+        let grips = &app.tabs[i].selected_grips;
+        assert_eq!(grips.len(), 6, "selected dimension must retain both arrow-tip grips");
+        let text_grip = grips.iter().find(|g| g.id == 3).unwrap();
+        assert!(text_grip.world.distance(DVec3::new(text.x, text.y, text.z)) < 1e-9);
+        assert!(!text_grip.is_midpoint);
+        for (id, x) in [(4, 10.0), (5, 30.0)] {
+            let grip = grips.iter().find(|g| g.id == id).unwrap();
+            assert!(grip.world.distance(DVec3::new(x, 20.0, 0.0)) < 1e-9);
+            assert!(grip.is_midpoint);
+        }
     }
 }
 

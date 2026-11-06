@@ -91,6 +91,8 @@ mod solid3d;
 mod tests;
 mod autolisp_tests;
 mod text_edit;
+#[cfg(test)]
+mod mtext_preview_tests;
 mod transform;
 mod utilities;
 mod viewport;
@@ -173,15 +175,24 @@ impl OpenCADStudio {
                 self.persist_settings_if_changed();
             }
         }
+        let hatch_method = self.tabs[self.active_tab]
+            .active_cmd
+            .as_ref()
+            .and_then(|command| command.hatch_start_method());
+        if let Some(method) = hatch_method.filter(|method| *method != self.hatch_start_method) {
+            self.hatch_start_method = method;
+            self.persist_settings_if_changed();
+        }
         let variable = self.tabs[self.active_tab]
             .active_cmd
             .as_ref()
             .and_then(|command| command.drawing_variable_update());
-        // REVCLOUD's type choice is a profile setting (REVCLOUDCREATEMODE).
+        // REVCLOUD's type choice (REVCLOUDCREATEMODE) and MEASUREGEOM's
+        // Mode answer are profile settings.
         if self.tabs[self.active_tab]
             .active_cmd
             .as_ref()
-            .is_some_and(|command| command.name() == "REVCLOUD")
+            .is_some_and(|command| matches!(command.name(), "REVCLOUD" | "MEASUREGEOM"))
         {
             self.save_config();
         }
@@ -548,6 +559,7 @@ impl OpenCADStudio {
             CmdResult::TableTemplatePick(handle) => self.table_template_pick_done(handle),
             CmdResult::SetLayerOn { layer, on } => self.set_layer_on_from_command(i, &layer, on),
             CmdResult::OpenTxt2MtxtSettings => self.open_txt2mtxt_settings(),
+            CmdResult::OpenMatchPropSettings(src) => self.open_matchprop_settings(src),
             CmdResult::OpenAutoConstrainSettings => {
                 self.handle_open_auto_constrain_settings();
             }
@@ -781,6 +793,13 @@ impl OpenCADStudio {
                 entity_style,
             } => {
                 self.handle_commit_hatch_with_boundaries(hatch, boundaries, entity_style);
+            }
+            CmdResult::CommitHatchContinue {
+                hatch,
+                entity_style,
+                message,
+            } => {
+                self.handle_commit_hatch_continue(hatch, entity_style, message);
             }
             CmdResult::CommitHatches {
                 hatches,
@@ -1096,6 +1115,9 @@ impl OpenCADStudio {
                     return task;
                 }
             }
+            CmdResult::MergeLayers { sources, target } => {
+                self.handle_merge_layers(sources, target);
+            }
             CmdResult::MatchEntityLayer { dest, src, copy } => {
                 self.handle_match_entity_layer(dest, src, copy);
             }
@@ -1203,8 +1225,15 @@ impl OpenCADStudio {
                 windows,
                 excluded_points,
                 subtract_window,
+                removed_handles,
             } => {
-                self.handle_stretch_window(handles, windows, excluded_points, subtract_window);
+                self.handle_stretch_window(
+                    handles,
+                    windows,
+                    excluded_points,
+                    subtract_window,
+                    removed_handles,
+                );
             }
             CmdResult::StretchEntities {
                 handles,
@@ -1656,10 +1685,15 @@ impl OpenCADStudio {
 
     fn handle_relaunch(&mut self, cmd: String, handles: Vec<Handle>) -> Task<Message> {
         let i = self.active_tab;
+        // Polylines gathered by segment (SUbobject) keep their picked
+        // segments into the command the selection is handed to.
+        let segments = std::mem::take(&mut self.tabs[i].scene.sub_segments);
         self.tabs[i].scene.deselect_all();
         for h in &handles {
             self.tabs[i].scene.select_entity(*h, false);
         }
+        self.tabs[i].scene.sub_segments =
+            segments.into_iter().filter(|(handle, _)| handles.contains(handle)).collect();
         self.tabs[i].active_cmd = None;
         self.tabs[i].snap_result = None;
         self.tabs[i].scene.clear_preview_wire();
@@ -1789,9 +1823,9 @@ impl OpenCADStudio {
         self.tabs[i].scene.clear_preview_wire();
         self.refresh_area_preview(i);
         self.command_line.push_output(&msg);
-        if let Some(prompt) = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt()) {
-            self.command_line.push_info(&prompt);
-        }
+        // Reports can advance a step (LAYMRG's warning or Name input), so
+        // refresh its options and dynamic input along with the prompt.
+        let _ = self.handle_need_point();
     }
 
     fn handle_report_error(&mut self, msg: String) {
@@ -1799,9 +1833,9 @@ impl OpenCADStudio {
         self.tabs[i].snap_result = None;
         self.tabs[i].scene.clear_preview_wire();
         self.command_line.push_error(&msg);
-        if let Some(prompt) = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt()) {
-            self.command_line.push_info(&prompt);
-        }
+        // Reports can advance a step (LAYMRG's warning or Name input), so
+        // refresh its options and dynamic input along with the prompt.
+        let _ = self.handle_need_point();
     }
 
     fn handle_report_measurement_and_deselect(&mut self, msg: String) {

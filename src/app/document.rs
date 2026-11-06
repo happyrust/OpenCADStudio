@@ -164,6 +164,8 @@ pub(super) struct DocumentTab {
     /// Direct Save is redirected to Save As after open-time repairs so the
     /// source drawing cannot be overwritten accidentally.
     pub(super) recovery_save_as_required: bool,
+    /// Experimental IFCCAD consent belongs only to this open document session.
+    pub(super) ifccad_alpha_acknowledged: bool,
     /// Monotonic committed-edit/undo/redo revision. Background save completion
     /// uses it with scene epochs so an older snapshot never clears newer work.
     pub(super) edit_revision: u64,
@@ -225,6 +227,13 @@ pub(super) struct DocumentTab {
     pub(super) selected_grips: Vec<GripDef>,
     /// Entity handle for each entry in `selected_grips`.
     pub(super) selected_grip_handles: Vec<Handle>,
+    /// The grips as they were when the active grip drag started (keyed by
+    /// the drag's handle, grip and start point): every grip stays drawn
+    /// there while the drag reshapes the object.
+    pub(super) drag_start_grips: Option<((Handle, usize, glam::DVec3), Vec<GripDef>, Vec<Handle>)>,
+    /// GROUPDISPLAYMODE 2: the box (min, max corners) round each group
+    /// picked whole.
+    pub(super) group_boxes: Vec<[glam::DVec3; 2]>,
     /// Plugin-declared custom grip points for this tab (API v11): session
     /// display state only — never persisted, never host-interpreted.
     #[cfg(not(target_arch = "wasm32"))]
@@ -840,6 +849,7 @@ impl DocumentTab {
             disk_fingerprint: None,
             dirty: false,
             recovery_save_as_required: false,
+            ifccad_alpha_acknowledged: false,
             edit_revision: 0,
             document_opened_pending: true,
             prev_selection: Vec::new(),
@@ -863,6 +873,8 @@ impl DocumentTab {
             active_grip: None,
             selected_grips: vec![],
             selected_grip_handles: vec![],
+            drag_start_grips: None,
+            group_boxes: vec![],
             #[cfg(not(target_arch = "wasm32"))]
             plugin_grips: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1180,6 +1192,9 @@ pub(super) struct DeltaSnapshot {
     pub(super) selected_after: Vec<Handle>,
     pub(super) dirty_before: bool,
     pub(super) dirty_after: bool,
+    /// The view when this step was made. Undo and redo bring it back, so
+    /// stepping through the history shows each change where it was made.
+    pub(super) view: Option<Box<crate::scene::view::camera::Camera>>,
     pub(super) active_layer: Option<(String, String)>,
     /// LAYISO state changed by this history entry, if any. Other commands leave
     /// the isolation state untouched, so their history entries keep this None.

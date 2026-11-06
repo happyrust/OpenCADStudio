@@ -19,7 +19,6 @@ mod insert_attributes;
 mod insert_attributes_tests;
 mod block_alignment;
 mod block_feedback;
-mod block_flip;
 mod block_cycle_order;
 mod block_grip_set;
 mod block_construction;
@@ -60,6 +59,7 @@ mod find_replace;
 pub(crate) mod helpers;
 mod history;
 mod layer_filters;
+pub(crate) mod layer_groups;
 mod layer_walk;
 #[cfg(test)]
 mod layer_walk_tests;
@@ -89,6 +89,7 @@ mod qselect_tests;
 mod recent;
 mod record_api;
 pub(crate) mod settings;
+pub(crate) mod tool_windows;
 mod shortcuts;
 mod startup;
 pub(crate) mod style_ops;
@@ -243,6 +244,21 @@ pub enum ContextMenuNav {
     Enter,
     /// Pick the next row whose mnemonic letter matches.
     Mnemonic(char),
+}
+
+/// Where Ctrl has taken a hot polyline grip. `grip_id` and `world` describe the
+/// grip as it was picked up; `active_grip_id` is the grip the current stage
+/// holds, which differs while a new vertex is being placed.
+#[derive(Clone, Copy, Debug)]
+pub struct GripCtrlCycle {
+    pub handle: codec::Handle,
+    pub grip_id: usize,
+    pub is_translate: bool,
+    pub world: glam::DVec3,
+    pub stage: usize,
+    pub active_grip_id: usize,
+    /// Remove Vertex / Convert to Line: applied by the next click.
+    pub one_shot: Option<crate::scene::model::object::GripMenuAction>,
 }
 
 /// Open multi-functional-grip popup state.
@@ -655,6 +671,20 @@ pub(crate) fn screenshot_if_drawn(
     })
 }
 
+/// The viewport VPMAX enlarged, with the geometry and active-viewport choice
+/// VPMIN must put back.
+#[derive(Clone, Debug)]
+pub(crate) struct VpMaxState {
+    pub layout: String,
+    pub handle: codec::Handle,
+    pub center: codec::types::Vector3,
+    pub width: f64,
+    pub height: f64,
+    pub view_height: f64,
+    pub scale: f64,
+    pub active_viewport: Option<codec::Handle>,
+}
+
 pub(super) struct OpenCADStudio {
     start: Instant,
     control: control::State,
@@ -771,6 +801,8 @@ pub(super) struct OpenCADStudio {
     /// a pick *replaces* the set, so borrowing it here would wipe everything
     /// gathered so far rather than subtract one thing. (#596)
     select_remove_mode: bool,
+    /// A selection count was just reported: the step's prompt is shown again.
+    selection_reprompt: bool,
     /// What the last layer translation did, kept so the log can be written
     /// after the fact rather than forcing a path out of the user up front.
     last_layer_translation: Option<crate::modules::draw::layers::laytrans::Report>,
@@ -955,13 +987,27 @@ pub(super) struct OpenCADStudio {
     pick_box: i32,
     /// HPASSOC: new hatches follow their boundary objects.
     hatch_associative: bool,
+    /// The Hatch panel's numbers as typed.
+    hatch_drafts: crate::ui::window::hatch_panel::Drafts,
+    /// The user's changes to the right-click menu.
+    context_menu_custom: crate::ui::popup::context_menu::MenuCustomization,
+    /// Customize User Interface while it is open.
+    ribbon_customize: Option<crate::ui::window::ribbon_customize::State>,
+    /// The right-click menu is being edited in place; the command typed
+    /// to add.
+    context_menu_editing: Option<String>,
     /// HPGAPTOL: gaps up to this size count as closed for HATCH/BOUNDARY
     /// internal-point picks (0 = exact).
     hatch_gap_tolerance: f64,
+    /// HATCH starts with the boundary method used last (0 pick internal
+    /// point, 1 select objects, 2 draw).
+    hatch_start_method: u8,
     /// MENUBAR: the classic pull-down menus show above the ribbon.
     show_menu_bar: bool,
     /// RIBBONCLOSE hid the ribbon; RIBBON brings it back.
     ribbon_closed: bool,
+    /// COMMANDLINEHIDE (Ctrl+9) hid the command line; COMMANDLINE shows it.
+    pub(super) command_line_hidden: bool,
     /// Use REFEDIT rather than BEDIT when double-clicking an attribute-free block.
     double_click_block_refedit: bool,
     /// Open ATTEDIT when double-clicking a block with attributes.
@@ -1108,6 +1154,8 @@ pub(super) struct OpenCADStudio {
     pub dim_inspect_settings: settings::DimInspectSettings,
     /// The Text to MText Settings dialog's working copy.
     txt2mtxt_dialog: Option<settings::Txt2MtxtSettings>,
+    /// MATCHPROP's Property Settings window.
+    matchprop_dialog: Option<crate::ui::window::pdf_dialogs::MatchPropDialog>,
     /// Check Spelling (profile) and its open window.
     pub spell_prefs: settings::SpellPrefs,
     spell: Option<crate::ui::window::spell_dialog::SpellState>,
@@ -1166,6 +1214,25 @@ pub(super) struct OpenCADStudio {
     /// The objects the last selection step picked (a click, a window, a
     /// fence, Last / Previous / All) and whether it removed them.
     pub(crate) last_pick: Option<(Vec<codec::Handle>, bool)>,
+    /// The selection steps of the current Select objects: prompt (keyed by
+    /// the gathering command), newest last: the objects each added, or with
+    /// `true` the ones it removed. Undo takes them back one by one.
+    pub(crate) selection_undo: (usize, Vec<(Vec<codec::Handle>, bool)>),
+    /// The next completed selection is an Undo: no report, no new step.
+    pub(crate) selection_undoing: bool,
+    /// Group at a Select objects: prompt is waiting for the group's name.
+    pub(crate) selection_group_pending: bool,
+    /// The selection step being reported came from Group (a named group):
+    /// its count carries no group total.
+    pub(crate) selection_group_named: bool,
+    /// Selectable groups the reported selection step touched.
+    pub(crate) last_pick_groups: usize,
+    /// The last point entered by any command (LASTPOINT): a bare distance
+    /// at a selection prompt measures from it when the prompt has none yet.
+    pub(crate) last_entered_point: Option<glam::DVec3>,
+    /// SUbobject mode at the Select objects: prompt of this gathering
+    /// command (keyed like `selection_undo`); Object ends it.
+    pub(crate) selection_subobject: Option<usize>,
     /// The first corner of a window typed at a selection prompt, keyed by
     /// the gathering command, until the opposite corner is typed.
     pub(crate) typed_window_corner: Option<(usize, glam::DVec3)>,
@@ -1181,6 +1248,8 @@ pub(super) struct OpenCADStudio {
     /// `true` after a bare `VPORTS` in model space — the next command-line
     /// entry is treated as the tiled-config option (SIngle/2H/2V/4).
     awaiting_vports: bool,
+    /// VPMAX's saved viewport state; `None` while not maximized.
+    vpmax_state: Option<VpMaxState>,
     /// Set to the variable name after a bare system-variable query (e.g. a lone
     /// `MIRRTEXT`) — the next command-line entry is its new value, empty keeps
     /// the current one.
@@ -1260,12 +1329,13 @@ pub(super) struct OpenCADStudio {
     /// Open dynamic-block visibility-state dropdown.
     visibility_popup: Option<visibility::VisibilityPopup>,
     table_popup: Option<visibility::TablePopup>,
-    /// Open dynamic-block flip-state list on a model-space reference.
-    flip_popup: Option<block_flip::FlipPopup>,
     /// A leader line just added via the "Add Leader" grip menu whose arrow is
     /// being placed (follows the cursor). `(entity handle, new-arrow grip id)`.
     /// Esc before the placement click removes it again.
     grip_add_provisional: Option<(codec::Handle, usize)>,
+    /// Ctrl cycle of a hot polyline grip (Stretch, Add Vertex, and Remove
+    /// Vertex or Convert to Arc/Line).
+    grip_ctrl_cycle: Option<GripCtrlCycle>,
     /// Handles hidden from the base tessellation during an in-progress grip
     /// drag. The edited entities are shown in the overlay until commit.
     grip_preview_handles: Vec<codec::Handle>,
@@ -1339,6 +1409,8 @@ pub(super) struct OpenCADStudio {
     pub(crate) show_layers: bool,
     /// Whether the Graphic Attributes palette is shown (GRAPHICATTRIBUTES).
     show_graphic_attributes: bool,
+    /// The Command History pallet is open.
+    pub(crate) show_command_history: bool,
     graphic_attributes: crate::ui::window::graphic_attributes::GraphicAttributesState,
     /// Docked Insert Block panel visibility.
     pub(crate) show_block_palette: bool,
@@ -1416,6 +1488,17 @@ pub(super) struct OpenCADStudio {
     pub(crate) dock_edge_menu: Option<crate::app::config::DockSide>,
     /// Floating pallet whose title-bar right-click menu is open.
     pub(crate) dock_float_menu: Option<crate::ui::dock::PanelId>,
+    /// Open tool dialogs, back to front (see `tool_windows`).
+    pub(crate) tool_windows: Vec<tool_windows::ToolWindow>,
+    /// The tool swapped in as the active modal for the update running now.
+    pub(crate) tool_focus: Option<ModalKind>,
+    /// The tool dialog the keyboard goes to, as it went to a modal one.
+    pub(crate) keyboard_tool: Option<ModalKind>,
+    /// A tool dialog's frame being moved or resized.
+    pub(crate) tool_drag: Option<tool_windows::ToolDrag>,
+    /// Desktop: the windows of their own (tool dialogs and pallets).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) os_windows: Vec<tool_windows::OsWindow>,
     /// Pointer position over a floating title bar (bar-local), and where
     /// its open menu was asked for.
     pub(crate) dock_float_pointer: iced::Point,
@@ -1562,6 +1645,7 @@ pub(super) struct OpenCADStudio {
     conversion_losses: Vec<String>,
     /// The save held back while that modal asks.
     pending_conversion_save: Option<PendingConversionSave>,
+    pending_ifccad_alpha_save: Option<PendingConversionSave>,
     /// Set by "Save anyway" for the save it releases; that save takes it.
     conversion_loss_allowed: bool,
     /// Layers awaiting a "delete non-empty layer(s)" confirmation: `(names,
@@ -1922,6 +2006,9 @@ pub(super) struct OpenCADStudio {
     /// every dispatch (`resolve_alias`); user-editable via ALIASEDIT. See
     /// [`alias`].
     command_aliases: rustc_hash::FxHashMap<String, String>,
+    /// The menu-bar menu Alt+letter opened as a keyboard-driven shortcut
+    /// menu; the shortcut menu shows it instead of its own rows.
+    pub(super) menu_bar_popup: Option<usize>,
     /// Working buffer for the ALIASEDIT modal: `(alias, command)` rows being
     /// edited. Seeded from `command_aliases` on open, committed back on close.
     alias_editor_rows: Vec<(String, String)>,
@@ -2042,6 +2129,9 @@ pub(super) struct OpenCADStudio {
     pub(super) sdi: bool,
     /// The app asked to exit; a headless batch run stops there.
     pub(super) exit_requested: bool,
+    /// SIGTERM arrived: leave once the recovery copies are written.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) terminating: bool,
     /// One global interaction-index build at a time. Large drawings can each
     /// hold millions of entries, so file-open bursts must not multiply peak
     /// CPU and memory by the number of tabs.
@@ -2244,6 +2334,8 @@ pub(super) struct PendingNativeThumbnailSave {
 /// A save waiting on the conversion-loss modal; "Save anyway" replays it.
 #[derive(Debug, Clone)]
 pub(super) enum PendingConversionSave {
+    #[cfg(target_arch = "wasm32")]
+    WebSaveAll { tab_id: u64 },
     #[cfg(not(target_arch = "wasm32"))]
     Native(PendingNativeThumbnailSave),
     #[cfg(target_arch = "wasm32")]
@@ -2259,6 +2351,8 @@ impl PendingConversionSave {
     /// The name of the converter the held-back save writes with.
     pub(super) fn format_name(&self) -> String {
         let (ext, version) = match self {
+            #[cfg(target_arch = "wasm32")]
+            Self::WebSaveAll { .. } => ("ifcx".to_string(), codec::DxfVersion::AC1032),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(save) => (
                 save.path
@@ -2272,7 +2366,7 @@ impl PendingConversionSave {
         };
         // A DWG/DXF loss depends on the target version, so name it too.
         ocs_save::external_format(&ext)
-            .map(|format| format.name().to_string())
+            .map(|format| ocs_save::external_format_label(format).to_string())
             .unwrap_or_else(|| {
                 crate::io::format_for_version(version, ext.eq_ignore_ascii_case("dxf"))
             })
@@ -3022,6 +3116,21 @@ impl ClipboardDeps {
     }
 }
 
+/// The right-click menu editor's actions.
+#[derive(Debug, Clone)]
+pub enum ContextMenuEditMsg {
+    /// Show or hide the row with this key.
+    Toggle(String),
+    Draft(String),
+    /// Add the typed command.
+    Add,
+    Remove(usize),
+    /// Move a user command up (`true`) or down.
+    Move(usize, bool),
+    /// Leave the editor.
+    Done,
+}
+
 /// Which in-canvas modal dialog is currently open (Plan B). At most one shows
 /// at a time; dialog-specific data lives in its own fields. Closed via the
 /// modal's ✕ (`Message::CloseModal`).
@@ -3035,6 +3144,8 @@ pub enum ModalKind {
     LayerStateManager,
     LayerTranslator,
     DrawingUnits,
+    /// Customize User Interface (CUI): the user's ribbon panels.
+    RibbonCustomize,
     BlockDefinition,
     PdfAttach,
     PointCloudAttach,
@@ -3057,6 +3168,8 @@ pub enum ModalKind {
     PdfImportSettings,
     /// TXT2MTXT's Text to MText Settings, over the running command.
     Txt2MtxtSettings,
+    /// MATCHPROP's Property Settings, over the running command.
+    MatchPropSettings,
     Spell,
     PdfImportFile,
     XrefAttach,
@@ -3105,6 +3218,7 @@ pub enum ModalKind {
     AecDropWarning,
     /// A converter would drop part of the drawing on save.
     ConversionLoss,
+    IfccadAlphaWarning,
     #[cfg(not(target_arch = "wasm32"))]
     FileInUse,
     #[cfg(not(target_arch = "wasm32"))]
@@ -3884,6 +3998,7 @@ pub enum Message {
     AecDropBack,
     /// Save with the converter anyway, accepting the listed losses.
     ConversionLossProceed,
+    IfccadAlphaProceed,
     /// Drop the held-back save from the conversion-loss warning.
     ConversionLossBack,
     /// Periodic autosave tick — write `.sv$` recovery files for dirty tabs.
@@ -4098,6 +4213,12 @@ pub enum Message {
     CommandHistoryHeightReset,
     /// Start dragging the Layer Manager's Name-column divider.
     LayerNameColGrab,
+    /// Open or close the Layer Manager's column chooser.
+    LayerColumnsMenu(bool),
+    /// Show or hide a Layer Manager column.
+    LayerColumnToggle(crate::ui::window::layers::LayerSortCol),
+    /// Move a Layer Manager column left (-1) or right (1).
+    LayerColumnMove(crate::ui::window::layers::LayerSortCol, i8),
     /// Toggle the persistent literal-space mode (the `>` button): while on,
     /// every command line behaves as if it started with `>` — Space stays in
     /// the input instead of submitting. Saved in the user config.
@@ -4310,8 +4431,6 @@ pub enum Message {
     TestVisibilityPick(usize),
     /// The Test Block window's lookup widget picked a table entry.
     TestLookupPick(usize),
-    /// User picked a dynamic-block flip state — `0` base, `1` flipped.
-    FlipPick(usize),
     /// Timer pulse while the cursor is dwelling on a grip; drives the
     /// dwell-to-popup transition without requiring further mouse motion.
     GripDwellTick,
@@ -4648,6 +4767,16 @@ pub enum Message {
     RibbonLayerFilterChanged(String),
     /// Live text of the Layer Manager's search box (#343).
     LayerManagerFilterChanged(String),
+    /// Show only this layer group's layers (`None`: every layer).
+    LayerGroupShow(Option<String>),
+    /// A new layer group from the selected layers.
+    LayerGroupNew,
+    /// Add the selected layers to this group.
+    LayerGroupAdd(String),
+    /// Take the selected layers out of the shown group.
+    LayerGroupRemove,
+    /// Delete the shown group (its layers stay).
+    LayerGroupDelete,
     /// User changed the active color in the Properties toolbar.
     RibbonColorChanged(AcadColor),
     RibbonLayerColorChanged {
@@ -4737,8 +4866,8 @@ pub enum Message {
     PropGroupToggle(String),
     /// Toggle an entire Properties-panel section, keyed by its title.
     PropSectionToggle(String),
-    /// Toggle the editable-dropdown (block Name) option list open/closed.
-    PropEditChoiceToggle,
+    /// Toggle an editable-dropdown row's option list open/closed, by field.
+    PropEditChoiceToggle(&'static str),
     /// User is typing in a block-attribute value field (live buffer update),
     /// keyed by the attribute tag.
     PropAttrInput {
@@ -4880,6 +5009,19 @@ pub enum Message {
     /// Pick an AutoCAD/OpenCAD PGP file, then merge supported aliases for review.
     AliasEditorImport,
     AliasEditorImported(Option<Result<Vec<u8>, String>>),
+    /// Export the shortcut (`false`) or alias (`true`) list to a spreadsheet.
+    KeyListExport(bool),
+    /// An edit of the right-click menu in its in-place editor.
+    ContextMenuEdit(ContextMenuEditMsg),
+    /// Open Customize User Interface (CUI).
+    RibbonCustomizeOpen,
+    /// An edit in Customize User Interface.
+    RibbonCustomize(crate::ui::window::ribbon_customize::Msg),
+    /// An edit in the Hatch panel shown while HATCH runs.
+    HatchPanel(crate::ui::window::hatch_panel::HatchPanelMsg),
+    /// The file the export goes to (none when the picker was cancelled),
+    /// with the rows to write.
+    KeyListExportTo(Option<std::path::PathBuf>, Vec<Vec<String>>),
     /// Live edit of the alias or command in row `idx`.
     AliasEditorInput {
         idx: usize,
@@ -5269,11 +5411,39 @@ pub enum Message {
     OsWindowClosed(window::Id),
     /// No-op — used as a fallback when a TabEvent has no host mapping.
     Noop,
+    /// A message from an open tool dialog's frame or window: it runs with
+    /// that tool as the active modal (see `tool_windows`).
+    ToolWindow(ModalKind, Box<Message>),
+    /// What a task a tool dialog's message started answers with: it runs
+    /// with that tool swapped in again while the tool is open.
+    ToolWindowTask(ModalKind, Box<Message>),
+    /// A tool dialog's title bar was pressed: start moving it.
+    ToolWindowGrab(ModalKind),
+    /// A tool dialog's resize grip was pressed.
+    ToolWindowResizeGrab(ModalKind),
+    ToolWindowDragMove(iced::Point),
+    ToolWindowDragRelease,
+    /// A press on a tool dialog's frame: bring it to the front.
+    ToolWindowRaise(ModalKind),
+    /// Desktop: a window of its own's "back to the main window" button.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    OsWindowReturn(window::Id),
+    /// Desktop: Esc or Enter in a window of its own, by shortcut name.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    OsWindowKey(window::Id, String),
+    /// Desktop: a window other than the main one was resized or moved.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    OsWindowResized(window::Id, f32, f32),
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    OsWindowMoved(window::Id, iced::Point),
     /// Suppress menu-root tooltips between clicking the root and leaving it.
     StatusMenuTooltipHidden(bool),
     /// GitHub releases API returned a result. `Some(version)` means a
     /// newer release exists; we open the update-notice window.
     UpdateCheckResult(Option<crate::io::update_check::UpdateInfo>),
+    /// The process was asked to stop (SIGTERM).
+    #[cfg(not(target_arch = "wasm32"))]
+    Terminate,
     /// User dismissed the update-notice window.
     UpdateNoticeClose,
     DonationPromptDonate,
@@ -5905,6 +6075,7 @@ impl OpenCADStudio {
             select_similar_mode: crate::scene::SELECT_SIMILAR_DEFAULT,
             pick_add: true,
             select_remove_mode: false,
+            selection_reprompt: false,
             last_layer_translation: None,
             layer_translator: None,
             drawing_units: None,
@@ -5990,9 +6161,15 @@ impl OpenCADStudio {
             cursor_size: 5,
             pick_box: 3,
             hatch_associative: true,
+            hatch_drafts: Default::default(),
+            context_menu_custom: Default::default(),
+            ribbon_customize: None,
+            context_menu_editing: None,
             hatch_gap_tolerance: 0.0,
+            hatch_start_method: 0,
             show_menu_bar: false,
             ribbon_closed: false,
+            command_line_hidden: false,
             double_click_block_refedit: false,
             double_click_block_attedit: true,
             right_click_mode: settings::RightClickMode::ShortcutMenu,
@@ -6067,6 +6244,7 @@ impl OpenCADStudio {
             spell: None,
             dim_inspect_settings: settings::DimInspectSettings::default(),
             txt2mtxt_dialog: None,
+            matchprop_dialog: None,
             auto_constrain_saved: None,
             auto_constrain_selected_row: 0,
             auto_constrain_distance_input: "0.05".to_string(),
@@ -6092,6 +6270,13 @@ impl OpenCADStudio {
             block_mru_list: 50,
             selection_report: None,
             last_pick: None,
+            selection_undo: (0, Vec::new()),
+            selection_undoing: false,
+            selection_group_pending: false,
+            selection_group_named: false,
+            last_pick_groups: 0,
+            last_entered_point: None,
+            selection_subobject: None,
             typed_window_corner: None,
             refedit_options: Default::default(),
             block_redefine_mode: 1,
@@ -6099,6 +6284,7 @@ impl OpenCADStudio {
             #[cfg(not(target_arch = "wasm32"))]
             block_usage_last_persist: None,
             awaiting_vports: false,
+            vpmax_state: None,
             pending_setvar: None,
             delete_objects: 1,
             ucs_icon_hover: false,
@@ -6126,8 +6312,8 @@ impl OpenCADStudio {
             grip_pending: None,
             visibility_popup: None,
             table_popup: None,
-            flip_popup: None,
             grip_add_provisional: None,
+            grip_ctrl_cycle: None,
             grip_preview_handles: Vec::new(),
             hover_dwell: None,
             snap_dwell: None,
@@ -6150,6 +6336,7 @@ impl OpenCADStudio {
             show_properties: true,
             show_layers: false,
             show_graphic_attributes: false,
+            show_command_history: false,
             graphic_attributes: Default::default(),
             show_block_palette: false,
             show_pid_legend_list: false,
@@ -6182,6 +6369,12 @@ impl OpenCADStudio {
             dock_hover_pending: None,
             dock_hover_gen: 0,
             dock_float_menu: None,
+            tool_windows: Vec::new(),
+            tool_focus: None,
+            keyboard_tool: None,
+            tool_drag: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            os_windows: Vec::new(),
             dock_float_pointer: iced::Point::ORIGIN,
             dock_float_menu_at: iced::Point::ORIGIN,
             dock_drag: None,
@@ -6249,6 +6442,7 @@ impl OpenCADStudio {
             aec_drop_count: 0,
             conversion_losses: Vec::new(),
             pending_conversion_save: None,
+            pending_ifccad_alpha_save: None,
             conversion_loss_allowed: false,
             layer_delete_pending: None,
             modal_offset: iced::Vector::ZERO,
@@ -6351,6 +6545,8 @@ impl OpenCADStudio {
             script_paused: false,
             sdi: false,
             exit_requested: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            terminating: false,
             active_interaction_index: None,
             queued_interaction_indices: std::collections::VecDeque::new(),
             pending_close: None,
@@ -6404,6 +6600,7 @@ impl OpenCADStudio {
             shortcut_close_confirm: false,
             // Command aliases (populated from ocad.pgp just after construction)
             command_aliases: rustc_hash::FxHashMap::default(),
+            menu_bar_popup: None,
             alias_editor_rows: Vec::new(),
             alias_pending_add: false,
             alias_reset_confirm: false,
@@ -6697,11 +6894,16 @@ impl OpenCADStudio {
         });
         let mut s = state;
         s.main_window = Some(id);
+        tool_windows::set_main_window(id);
         let open_main = open_task.map(|_| Message::Noop);
-        let check_update = Task::perform(
-            crate::io::update_check::check_for_update(),
-            Message::UpdateCheckResult,
-        );
+        let check_update = if crate::config::managed() {
+            Task::none()
+        } else {
+            Task::perform(
+                crate::io::update_check::check_for_update(),
+                Message::UpdateCheckResult,
+            )
+        };
         let focus_cmd = s.focus_cmd_input();
         // Startup configuration from the command line (see `cli`). File
         // arguments — also how the OS file association launches us when
@@ -6938,7 +7140,7 @@ pub fn run() -> iced::Result {
     crate::sys::startup_times::mark("run: ui_font applied");
     iced::daemon(
         OpenCADStudio::boot,
-        OpenCADStudio::update,
+        OpenCADStudio::update_root,
         OpenCADStudio::view,
     )
     .settings(iced::Settings {
@@ -6948,7 +7150,10 @@ pub fn run() -> iced::Result {
     .subscription(OpenCADStudio::subscription)
     .scale_factor(|state: &OpenCADStudio, _| f32::from(state.ui_scale_percent) / 100.0)
     .title(|state: &OpenCADStudio, window_id: window::Id| {
-        let _ = window_id; // all dialogs are in-canvas modals now
+        // A tool dialog or pallet in a window of its own carries its name.
+        if let Some(title) = state.os_window_title(window_id) {
+            return title;
+        }
         if let Some(tab) = state.tabs.get(state.active_tab) {
             let dot = if tab.dirty { "● " } else { "" };
             let name = tab.tab_display_name();
@@ -7000,7 +7205,7 @@ pub fn run_web() -> iced::Result {
     });
     iced::application(
         OpenCADStudio::boot_web,
-        OpenCADStudio::update,
+        OpenCADStudio::update_root,
         OpenCADStudio::view_main,
     )
     .subscription(OpenCADStudio::subscription)

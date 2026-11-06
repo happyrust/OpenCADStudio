@@ -74,6 +74,10 @@ pub(crate) use entity::gradient_tint_color;
 pub use entity::CreateBlockOptions;
 pub(crate) use entity::normalize_block_terminators;
 mod group_layer;
+/// The one grip a whole picked group shows (GROUPDISPLAYMODE 1 and 2), at
+/// the centre of its extents: each member carries it, so dragging it moves
+/// the whole group.
+pub const GROUP_GRIP_ID: usize = usize::MAX - 2;
 #[cfg(test)]
 mod hatch_boundary;
 mod layout;
@@ -7236,6 +7240,26 @@ impl Scene {
         true
     }
 
+    /// How many annotative objects reference the named scale. Counts the
+    /// object's own scale contexts; the current scale is handled separately by
+    /// the command. Used to refuse a destructive delete.
+    pub fn scale_in_use_count(&self, name: &str) -> usize {
+        let Some(handle) = self.scale_object_handle(name) else {
+            return 0;
+        };
+        self.document
+            .entities()
+            .filter(|entity| {
+                crate::scene::annotative::object_scale_memberships(
+                    &self.document,
+                    entity.common().handle,
+                )
+                .iter()
+                .any(|(_, member)| *member == handle)
+            })
+            .count()
+    }
+
     /// Remove a named annotation scale from the drawing's `ACAD_SCALELIST`
     /// (both the `Scale` object and its dictionary entry). Returns `false` if
     /// no such scale exists. The current annotation scale should not be removed
@@ -8067,6 +8091,38 @@ impl Scene {
     #[allow(dead_code)]
     pub(crate) fn constraints_epoch(&self) -> u64 {
         self.constraints_epoch
+    }
+
+    /// Drops the named parameters in `names` that no constraint drives any more.
+    ///
+    /// A parameter declared by a constraint goes with that constraint, but a
+    /// name any constraint set still drives stays. The scan spans every set
+    /// because a block set may name a drawing-level parameter. Names that only
+    /// formulas read are not consulted, so the rule errs toward keeping.
+    pub(crate) fn drop_unread_named_parameters(&mut self, names: Vec<String>) {
+        let unread: Vec<String> = names
+            .into_iter()
+            .filter(|name| {
+                !self
+                    .parametric_constraints
+                    .iter()
+                    .flat_map(|set| set.constraints.iter())
+                    .any(|constraint| {
+                        matches!(
+                            &constraint.driving_param,
+                            Some(crate::scene::named_parameters::DrivingValue::Named(used))
+                                if used == name
+                        )
+                    })
+            })
+            .collect();
+        if unread.is_empty() {
+            return;
+        }
+        self.record_undo_named_parameters_before();
+        for name in &unread {
+            self.named_parameters_mut().remove(name);
+        }
     }
 
     /// Invalidate constraint-glyph consumers. Call on EVERY mutation of the
@@ -9744,7 +9800,7 @@ impl Scene {
         sig ^ count
     }
 
-    pub(super) fn wipeout_models_arc(&self) -> Arc<Vec<HatchModel>> {
+    pub(crate) fn wipeout_models_arc(&self) -> Arc<Vec<HatchModel>> {
         let target_block = self.content_render_block_handle();
         let any_wipeout = std::cell::OnceCell::<bool>::new();
         let key = (target_block, self.current_layout.clone());

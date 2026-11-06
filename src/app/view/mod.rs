@@ -312,6 +312,13 @@ fn ui_font_changes() -> Subscription<Message> {
     Subscription::none()
 }
 
+fn terminate_requests() -> Subscription<Message> {
+    #[cfg(unix)]
+    return Subscription::run(crate::sys::terminate_requests).map(|()| Message::Terminate);
+    #[allow(unreachable_code)]
+    Subscription::none()
+}
+
 /// Background used by drafting overlays in model or paper space.
 /// The background the viewport actually draws behind the cursor and grid. The
 /// block editor draws on the model background too (#2216).
@@ -349,6 +356,249 @@ const VIEWCUBE_GAP: f32 = 12.0;
 /// no longer fits at all (its `DensitySwap`).
 fn viewcube_has_room(bar_w: f32, tile_w: f32) -> bool {
     bar_w + VIEWCUBE_GAP + VIEWCUBE_REGION_PX + VIEWCUBE_PAD <= tile_w
+}
+
+/// The app-wide input events: keys for the command line and shortcuts,
+/// pointer presses, window changes. Split out of `subscription` so tests
+/// can feed it real events.
+pub(crate) fn main_window_event(
+    ev: iced::Event,
+    status: iced::event::Status,
+    win_id: window::Id,
+) -> Option<Message> {
+    use iced::event::Status;
+    match ev {
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
+            if crate::ui::ribbon::keytips_active() =>
+        {
+            crate::ui::ribbon::keytip_pointer_pressed();
+            Some(Message::KeyTip(crate::ui::ribbon::KeyTipInput::Hide))
+        }
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+            iced::mouse::Button::Left,
+        )) => {
+            crate::ui::ribbon::keytip_pointer_pressed();
+            Some(Message::PropPointerPressed)
+        }
+        iced::Event::Mouse(
+            iced::mouse::Event::ButtonPressed(_)
+            | iced::mouse::Event::ButtonReleased(_)
+            | iced::mouse::Event::WheelScrolled { .. },
+        ) => {
+            crate::ui::ribbon::keytip_pointer_pressed();
+            None
+        }
+        iced::Event::Window(window::Event::CloseRequested) => {
+            Some(Message::WindowCloseRequested(win_id))
+        }
+        iced::Event::Window(window::Event::Closed) => {
+            Some(Message::OsWindowClosed(win_id))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        iced::Event::Window(window::Event::Resized(sz))
+            if !crate::app::tool_windows::is_main_window(win_id) =>
+        {
+            Some(Message::OsWindowResized(win_id, sz.width, sz.height))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        iced::Event::Window(window::Event::Moved(at))
+            if !crate::app::tool_windows::is_main_window(win_id) =>
+        {
+            Some(Message::OsWindowMoved(win_id, at))
+        }
+        // Keys typed in a window of its own stay with its widgets; only Esc
+        // and an unclaimed Enter reach its dialog.
+        #[cfg(not(target_arch = "wasm32"))]
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. })
+            if !crate::app::tool_windows::is_main_window(win_id) =>
+        {
+            let name = match key {
+                keyboard::Key::Named(keyboard::key::Named::Escape) => "ESCAPE",
+                keyboard::Key::Named(keyboard::key::Named::Enter) if status == Status::Ignored => {
+                    "ENTER"
+                }
+                _ => return None,
+            };
+            Some(Message::OsWindowKey(win_id, name.to_string()))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        iced::Event::Keyboard(keyboard::Event::KeyReleased { .. })
+            if !crate::app::tool_windows::is_main_window(win_id) =>
+        {
+            None
+        }
+        iced::Event::Window(window::Event::Resized(sz)) => {
+            Some(Message::WindowResized(sz.width as f32, sz.height as f32))
+        }
+        // The ribbon's arrows sit on whole physical pixels.
+        iced::Event::Window(window::Event::Opened {
+            scale_factor, size, ..
+        }) => {
+            crate::ui::icons::set_scale_factor(scale_factor);
+            Some(Message::WindowOpened(win_id, size.width, size.height))
+        }
+        iced::Event::Window(window::Event::Rescaled(scale_factor)) => {
+            crate::ui::icons::set_scale_factor(scale_factor);
+            None
+        }
+        iced::Event::Window(window::Event::FileDropped(path)) => {
+            Some(Message::FileDropped(path))
+        }
+        iced::Event::Keyboard(keyboard::Event::KeyReleased { key, .. }) => {
+            crate::ui::ribbon::keytip_key_released(&key)
+        }
+        iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
+            // `command()` is Cmd on macOS, Ctrl elsewhere — the
+            // platform multi-select modifier for the layer list.
+            Some(Message::SetModifiers {
+                shift: m.shift(),
+                ctrl: m.command() || m.control(),
+                alt: m.alt(),
+            })
+        }
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key,
+            physical_key,
+            modifiers,
+            text,
+            repeat,
+            ..
+        }) => {
+            if let Some(keytip) =
+                crate::ui::ribbon::keytip_key_pressed(&key, modifiers, repeat)
+            {
+                return keytip;
+            }
+            #[cfg(target_arch = "wasm32")]
+            let accel = modifiers.command();
+            // AltGr reaches Windows apps as Ctrl+Alt, and a macOS
+            // layout types some characters with Option: when such a
+            // chord produces a printable glyph (`@`, `<`, `{` on many
+            // European layouts) it is typing, not a shortcut. (#1236)
+            let types_glyph = text.as_deref().is_some_and(|value| {
+                !value.is_empty()
+                    && value
+                        .chars()
+                        .all(|ch| !ch.is_control() && !ch.is_whitespace())
+            });
+            let altgr = modifiers.control() && modifiers.alt();
+            let mac_option = cfg!(target_os = "macos")
+                && modifiers.alt()
+                && !modifiers.control()
+                && !modifiers.logo();
+            let shortcut_modifier =
+                (modifiers.control() || modifiers.alt() || modifiers.logo())
+                    && !(types_glyph && (altgr || mac_option));
+            // Any key that produces a printable glyph types it,
+            // even when its logical key resolves to navigation
+            // (NumLock-on Numpad8 / Numpad2 arrive as
+            // ArrowUp / ArrowDown but still carry text "8" /
+            // "2"). Checked before the Arrow / history arms so
+            // those numpad digits aren't swallowed as history
+            // navigation. Whitespace / control text (Space,
+            // Enter, Tab) falls through to the named handlers.
+            // The numpad decimal key emits the OS-layout separator
+            // (a comma on German/European layouts), which the
+            // coordinate parser rejects. Force it to a decimal point
+            // from the physical key, independent of layout.
+            if !shortcut_modifier
+                && status == Status::Ignored
+                && matches!(
+                    physical_key,
+                    keyboard::key::Physical::Code(
+                        keyboard::key::Code::NumpadDecimal
+                            | keyboard::key::Code::NumpadComma
+                    )
+                )
+            {
+                return Some(Message::CommandAppendChar(".".to_string()));
+            }
+            if !shortcut_modifier && status == Status::Ignored {
+                if let Some(t) = text.as_deref() {
+                    if !t.is_empty()
+                        && t.chars().all(|c| !c.is_control() && !c.is_whitespace())
+                    {
+                        return Some(Message::CommandAppendChar(t.to_string()));
+                    }
+                }
+            }
+            let has_printable_text = text.as_deref().is_some_and(|value| {
+                !value.is_empty()
+                    && value
+                        .chars()
+                        .all(|ch| !ch.is_control() && !ch.is_whitespace())
+            });
+            let arrow = match &key {
+                keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
+                    Some(ArrowKey::Up)
+                }
+                keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
+                    Some(ArrowKey::Down)
+                }
+                keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                    Some(ArrowKey::Left)
+                }
+                keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                    Some(ArrowKey::Right)
+                }
+                _ => None,
+            };
+            if !has_printable_text && status == Status::Ignored {
+                if let Some(direction) = arrow {
+                    return Some(Message::ArrowKeyPressed {
+                        direction,
+                        shortcut: shortcut_key_name(&key, modifiers)?,
+                        extend_selection: modifiers.shift(),
+                    });
+                }
+            }
+            if !has_printable_text
+                && status == Status::Captured
+                && matches!(arrow, Some(ArrowKey::Up | ArrowKey::Down))
+                && !crate::ui::dropdown_list::take_dropdown_arrow_captured()
+            {
+                return Some(Message::CommandLineArrowProbe {
+                    direction: arrow?,
+                    extend_selection: modifiers.shift(),
+                });
+            }
+            // A focused web text field needs the browser clipboard;
+            // drawing shortcuts only run for ignored C/V events.
+            #[cfg(target_arch = "wasm32")]
+            if accel && status == Status::Captured {
+                if let keyboard::Key::Character(value) = &key {
+                    if value.eq_ignore_ascii_case("v") {
+                        return Some(Message::WebFieldPaste);
+                    }
+                    if value.eq_ignore_ascii_case("c") {
+                        return Some(Message::WebFieldCopy);
+                    }
+                }
+            }
+            let shortcut = shortcut_key_name(&key, modifiers)?;
+            if shortcut == "ESCAPE"
+                && status == Status::Captured
+                && crate::ui::dropdown_list::take_dropdown_escape_captured()
+            {
+                return None;
+            }
+            if status == Status::Ignored
+                || crate::app::shortcuts::is_global_key(&shortcut)
+            {
+                return Some(Message::ShortcutPressed(shortcut));
+            }
+            // A text field captured the key. SPACE rebound away from
+            // COMMANDSPACE still fires from the command line, but
+            // only there: other fields keep typing spaces. This
+            // closure is a plain fn, so the binding is read from a
+            // flag and the focus is asked for in update. (#1710)
+            (shortcut == "SPACE"
+                && crate::app::shortcuts::SPACE_REBOUND_OFF_COMMANDSPACE
+                    .load(std::sync::atomic::Ordering::Relaxed))
+            .then_some(Message::CommandLineSpaceProbe)
+        }
+        _ => None,
+    }
 }
 
 fn hatch_pattern_key_event(
@@ -481,10 +731,14 @@ impl OpenCADStudio {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn view(&self, window_id: window::Id) -> Element<'_, Message> {
         crate::sys::startup_times::view_tick();
-        // ── Floating panel windows ─────────────────────────────────────────
-        // All dialogs are in-canvas modals now (Plan B); view_main stacks the
-        // active one. `window_id` is unused — there is only the main window.
-        let _ = window_id;
+        // ── Windows of their own ──────────────────────────────────────────
+        // A tool dialog or dock pallet moved out of the main window draws
+        // its content there; every other window is the main one.
+        if Some(window_id) != self.main_window {
+            if let Some(element) = self.os_window_view(window_id) {
+                return element;
+            }
+        }
         // Pan latency on a large drawing is ~120 ms while `update`, `prepare`
         // and `encode` together account for ~1 ms of it, the GPU sits at 0-8%,
         // and encoding no scene at all changes nothing. Widget-tree
@@ -805,7 +1059,10 @@ bg={bg_ms:.1}ms n={view_count}"
                 color: if in_block_editor { [0.27, 0.48, 0.91] } else { [0.80, 0.80, 0.80] },
                 axes: self.grid_axes,
             };
-            crate::ui::overlay::grid_overlay(grid, grid_style)
+            // Wipeouts hide the model-space grid (the grid is an
+            // overlay above the GPU scene, so it is cut around them instead).
+            let masks = (!is_paper && !grid.is_empty()).then(|| tab.scene.wipeout_models_arc());
+            crate::ui::overlay::grid_overlay_masked(grid, grid_style, masks)
         };
 
         mark("selection_overlay");
@@ -830,8 +1087,12 @@ bg={bg_ms:.1}ms n={view_count}"
                     .as_ref()
                     .is_some_and(|cmd| cmd.name() == "STRETCH");
 
-            let grips: Vec<crate::ui::overlay::GripMarker> = if show_grips
-                && !tab.selected_grips.is_empty()
+            // Screen grips with the object they belong to, for the frames.
+            let mut owned_grips: Vec<(codec::Handle, iced::Point, crate::scene::model::object::GripShape)> =
+                Vec::new();
+            let mut grip_rubber: Option<(iced::Point, iced::Point)> = None;
+            let (grips, group_boxes): (Vec<crate::ui::overlay::GripMarker>, Vec<Vec<iced::Point>>) =
+                if show_grips && !tab.selected_grips.is_empty()
             {
                 let (vw, vh) = sel_ref.view.vp_size;
                 // Overlays project through the active tile's camera, so
@@ -868,27 +1129,81 @@ bg={bg_ms:.1}ms n={view_count}"
                 // viewport camera so they sit on the wire the GPU draws.
                 // Paper entities use the 2-D paper transform; the model tab
                 // uses the model camera.
-                let screen_grips = if let Some((cam, _)) = &edit_frame {
-                    grips_to_screen_rte(
-                        &tab.selected_grips,
-                        cam.view_proj_rte(bounds),
-                        cam.eye(),
-                        bounds,
-                    )
-                } else if is_paper {
-                    let cam = tab.scene.camera.borrow();
-                    let aspect = if vh > 0.0 { vw / vh } else { 1.0 };
-                    let half_h = cam.ortho_size();
-                    let half_w = half_h * aspect;
-                    let tx = cam.target.x as f32;
-                    let ty = cam.target.y as f32;
-                    drop(cam);
-                    grips_to_screen_paper(&tab.selected_grips, tx, ty, half_w, half_h, bounds)
-                } else {
-                    let cam = tab.scene.camera.borrow();
-                    grips_to_screen(&tab.selected_grips, &cam, bounds)
+                let project = |list: &[crate::scene::model::object::GripDef]| {
+                    if let Some((cam, _)) = &edit_frame {
+                        grips_to_screen_rte(list, cam.view_proj_rte(bounds), cam.eye(), bounds)
+                    } else if is_paper {
+                        let cam = tab.scene.camera.borrow();
+                        let aspect = if vh > 0.0 { vw / vh } else { 1.0 };
+                        let half_h = cam.ortho_size();
+                        let half_w = half_h * aspect;
+                        let tx = cam.target.x as f32;
+                        let ty = cam.target.y as f32;
+                        drop(cam);
+                        grips_to_screen_paper(list, tx, ty, half_w, half_h, bounds)
+                    } else {
+                        let cam = tab.scene.camera.borrow();
+                        grips_to_screen(list, &cam, bounds)
+                    }
                 };
-                screen_grips
+                // A dragged grip stays where the drag started, and so does a
+                // frame through it; a rubber band runs from it to the cursor.
+                let screen_grips = match tab.active_grip.as_ref() {
+                    Some(edit) => {
+                        // Every grip stays where it was when the drag
+                        // started; the dragged one marks its start point.
+                        let list = match &tab.drag_start_grips {
+                            Some(((handle, id, start), list, owners))
+                                if (*handle, *id, *start)
+                                    == (edit.handle, edit.grip_id, edit.origin_world)
+                                    && list.len() == tab.selected_grips.len()
+                                    && owners == &tab.selected_grip_handles =>
+                            {
+                                list.clone()
+                            }
+                            _ => tab.selected_grips.clone(),
+                        };
+                        // A circle's quadrant stretches from its centre.
+                        let base = match tab.scene.document.get_entity(edit.handle) {
+                            Some(codec::EntityType::Circle(circle)) => {
+                                let centre = circle.center_wcs();
+                                glam::DVec3::new(centre.x, centre.y, centre.z)
+                            }
+                            _ => edit.origin_world,
+                        };
+                        let ends = project(&[
+                            crate::entities::common::square_grip(0, base),
+                            crate::entities::common::square_grip(1, edit.last_world),
+                        ]);
+                        if let [(_, from, ..), (_, to, ..)] = ends.as_slice() {
+                            grip_rubber = Some((*from, *to));
+                        }
+                        project(&list)
+                    }
+                    None => project(&tab.selected_grips),
+                };
+                owned_grips = screen_grips
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, (_, screen, _, shape, _))| {
+                        Some((*tab.selected_grip_handles.get(index)?, *screen, *shape))
+                    })
+                    .collect();
+                // GROUPDISPLAYMODE 2: each group box's four corners on screen.
+                let boxes: Vec<Vec<iced::Point>> = tab
+                    .group_boxes
+                    .iter()
+                    .map(|[min, max]| {
+                        let z = (min.z + max.z) * 0.5;
+                        let corners: Vec<crate::scene::model::object::GripDef> =
+                            [(min.x, min.y), (max.x, min.y), (max.x, max.y), (min.x, max.y)]
+                                .into_iter()
+                                .map(|(x, y)| crate::entities::common::square_grip(0, glam::DVec3::new(x, y, z)))
+                                .collect();
+                        project(&corners).into_iter().map(|grip| grip.1).collect()
+                    })
+                    .collect();
+                let markers = screen_grips
                     .into_iter()
                     .enumerate()
                     .filter(|(_, (_, screen, _, _, _))| {
@@ -925,11 +1240,13 @@ bg={bg_ms:.1}ms n={view_count}"
                             is_authoring: crate::app::block_authoring_edit::is_editor_grip(grip_id),
                             is_dynamic: crate::app::block_actions::is_test_grip(grip_id)
                                 || grip_id == crate::app::visibility::VIS_GRIP_ID,
+                            is_filled: grip_id == crate::scene::GROUP_GRIP_ID,
                         }
                     })
-                    .collect()
+                    .collect();
+                (markers, boxes)
             } else {
-                vec![]
+                (vec![], vec![])
             };
             // API v11: plugin-declared custom grips render in the same overlay
             // layer with a distinct accent (always-visible display state of a
@@ -956,35 +1273,62 @@ bg={bg_ms:.1}ms n={view_count}"
                             is_plugin: true,
                             is_authoring: false,
                             is_dynamic: false,
+                            is_filled: false,
                         });
                     }
                 }
                 grips
             };
-            let control_polygon = tab.selected_handle.and_then(|handle| {
-                let spline = match tab.scene.document.get_entity(handle) {
-                    Some(codec::EntityType::Spline(spline))
-                        if crate::entities::spline::shows_control_vertices(spline) =>
-                    {
-                        spline
-                    }
-                    _ => return None,
-                };
-                if tab
-                    .selected_grip_handles
-                    .iter()
-                    .any(|owner| *owner != handle)
-                {
-                    return None;
+            // The frame of every selected CV spline and spline-fit 2D or 3D
+            // polyline: its frame-vertex grips joined in order.
+            let mut framed: Vec<codec::Handle> = Vec::new();
+            for (owner, _, _) in &owned_grips {
+                if !framed.contains(owner) {
+                    framed.push(*owner);
                 }
-                let points: Vec<_> = grips
-                    .iter()
-                    .filter(|grip| grip.shape == crate::scene::model::object::GripShape::Circle)
-                    .map(|grip| grip.pos)
-                    .collect();
-                (points.len() >= 2)
-                    .then_some((points, spline.flags.closed || spline.flags.periodic))
-            });
+            }
+            let control_polygons: Vec<(Vec<iced::Point>, bool, bool)> = framed
+                .into_iter()
+                .filter_map(|handle| {
+                    let (closed, dotted, grip_shape) = match tab.scene.document.get_entity(handle) {
+                        Some(codec::EntityType::Spline(spline))
+                            if crate::entities::spline::shows_control_vertices(spline) =>
+                        {
+                            (
+                                spline.flags.closed || spline.flags.periodic,
+                                false,
+                                crate::scene::model::object::GripShape::Circle,
+                            )
+                        }
+                        Some(codec::EntityType::Polyline2D(polyline))
+                            if polyline.flags.bits() & 4 != 0 =>
+                        {
+                            (
+                                polyline.is_closed(),
+                                true,
+                                crate::scene::model::object::GripShape::Square,
+                            )
+                        }
+                        Some(codec::EntityType::Polyline3D(polyline))
+                            if polyline.smooth_type
+                                != codec::entities::polyline3d::SmoothSurfaceType::None =>
+                        {
+                            (
+                                polyline.is_closed(),
+                                true,
+                                crate::scene::model::object::GripShape::Square,
+                            )
+                        }
+                        _ => return None,
+                    };
+                    let points: Vec<_> = owned_grips
+                        .iter()
+                        .filter(|(owner, _, shape)| *owner == handle && *shape == grip_shape)
+                        .map(|(_, pos, _)| *pos)
+                        .collect();
+                    (points.len() >= 2).then_some((points, closed, dotted))
+                })
+                .collect();
             let grip_clip = if grips.is_empty() {
                 None
             } else {
@@ -1547,7 +1891,9 @@ bg={bg_ms:.1}ms n={view_count}"
                 snap_ext_base2,
                 snap_ext_dir,
                 grips,
-                control_polygon,
+                control_polygons,
+                grip_rubber,
+                group_boxes,
                 grip_clip,
                 ucs_icons,
                 ost_points,
@@ -1893,11 +2239,15 @@ bg={bg_ms:.1}ms n={view_count}"
                     }
                 })
                 .collect();
-            let prompt = tab
+            let mut prompt = tab
                 .active_cmd
                 .as_ref()
                 .map(|c| c.prompt())
                 .unwrap_or_default();
+            // The command line is hidden: what is typed shows here.
+            if self.command_line_hidden && !self.command_line.input.is_empty() {
+                prompt = format!("{prompt} {}", self.command_line.input);
+            }
 
             let tracking_hint = match self.otrack_kind {
                 Some(crate::snap::TrackingKind::Perpendicular) => {
@@ -2197,6 +2547,17 @@ bg={bg_ms:.1}ms n={view_count}"
                 }
             }
 
+            // HATCH's settings float at the drawing's top left (HPDLGMODE).
+            if self.model_space.hatch_dialog_mode != 0 {
+                if let Some(settings) =
+                    tab.active_cmd.as_ref().and_then(|command| command.hatch_settings())
+                {
+                    viewport_stack = viewport_stack.push(position_canvas_overlay(
+                        iced::Point::new(12.0, 40.0),
+                        crate::ui::window::hatch_panel::view(settings, &self.hatch_drafts),
+                    ));
+                }
+            }
             let (vw,vh)=tab.scene.selection.borrow().view.vp_size;
             let bar_bounds=tab.scene.active_model_tile_bounds(vw,vh);
             let bar_color=crate::ui::overlay::authoring::AuthoringVisualOptions::new(&self.block_editor_preferences,&tab.scene.document,crosshair_background(tab,is_paper)).action;
@@ -2297,67 +2658,6 @@ bg={bg_ms:.1}ms n={view_count}"
                     let anchor = iced::Point::new(popup.anchor.x + 12.0, popup.anchor.y + 12.0);
                     viewport_stack =
                         viewport_stack.push(position_canvas_overlay(anchor, menu_panel.into()));
-                }
-            }
-
-            // Dynamic-block flip-state list.
-            if let Some(popup) = self.flip_popup.as_ref() {
-                if !tab.is_start {
-                    let max_len = popup
-                        .labels
-                        .iter()
-                        .map(|s| s.chars().count())
-                        .max()
-                        .unwrap_or(4) as f32;
-                    // +2 chars for the leading "✓ " / "  " marker column.
-                    let row_w = (max_len + 2.0) * 7.0 + 24.0;
-                    let mut col = column![].spacing(0).width(iced::Length::Fixed(row_w));
-                    for (idx, name) in popup.labels.iter().enumerate() {
-                        let is_cur = popup.current == idx;
-                        let mark: Element<'_, Message> = if is_cur {
-                            crate::ui::icons::themed_check_cell(true)
-                        } else {
-                            Space::new().width(11).into()
-                        };
-                        let btn = button(
-                            row![container(mark).width(16), text(name).size(12),]
-                                .spacing(2)
-                                .align_y(iced::Center),
-                        )
-                        .on_press(Message::FlipPick(idx))
-                        .padding([3, 10])
-                        .width(Fill)
-                        .style(move |theme: &Theme, status| {
-                            let palette = theme.palette();
-                            iced::widget::button::Style {
-                                background: matches!(status, iced::widget::button::Status::Hovered)
-                                    .then_some(Background::Color(palette.primary.weak.color)),
-                                border: Border {
-                                    color: Color::TRANSPARENT,
-                                    width: 0.0,
-                                    radius: 0.0.into(),
-                                },
-                                text_color: palette.background.base.text,
-                                ..Default::default()
-                            }
-                        });
-                        col = col.push(btn);
-                    }
-                    let panel = container(col).padding(2).style(|theme: &Theme| {
-                        let palette = theme.palette();
-                        container::Style {
-                            background: Some(Background::Color(palette.background.weak.color)),
-                            border: Border {
-                                color: palette.background.neutral.color,
-                                width: 1.0,
-                                radius: 3.0.into(),
-                            },
-                            ..Default::default()
-                        }
-                    });
-                    let anchor = iced::Point::new(popup.anchor.x + 12.0, popup.anchor.y + 12.0);
-                    viewport_stack =
-                        viewport_stack.push(position_canvas_overlay(anchor, panel.into()));
                 }
             }
 
@@ -2738,13 +3038,24 @@ bg={bg_ms:.1}ms n={view_count}"
                     (sel.menu.open_at, sel.menu.ui.highlighted)
                 };
                 if let Some(p) = ctx_pos {
-                    let menu = self.current_context_menu();
-                    viewport_stack = viewport_stack.push(viewport_context_menu_overlay(
-                        p,
-                        command_line_inset,
-                        &menu,
-                        highlighted,
-                    ));
+                    if let Some(draft) = &self.context_menu_editing {
+                        let raw = self.uncustomized_context_menu();
+                        viewport_stack = viewport_stack.push(overlay::context_menu_editor_overlay(
+                            p,
+                            command_line_inset,
+                            &raw.rows,
+                            &self.context_menu_custom,
+                            draft,
+                        ));
+                    } else {
+                        let menu = self.current_context_menu();
+                        viewport_stack = viewport_stack.push(viewport_context_menu_overlay(
+                            p,
+                            command_line_inset,
+                            &menu,
+                            highlighted,
+                        ));
+                    }
                 }
             }
 
@@ -2863,17 +3174,27 @@ bg={bg_ms:.1}ms n={view_count}"
             .height(Fill)
             .into()
         } else {
-            let command_line_overlay = iced::widget::container(command_line)
-                .width(Fill)
-                .height(Fill)
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::alignment::Vertical::Bottom)
-                .padding(iced::Padding {
-                    top: 0.0,
-                    right: 0.0,
-                    bottom: 2.0,
-                    left: 0.0,
-                });
+            // Hidden (COMMANDLINEHIDE / Ctrl+9), the field stays in the tree,
+            // collapsed, so it keeps the keyboard; Dynamic Input shows the
+            // prompt and the typing at the cursor.
+            let command_line_overlay = if self.command_line_hidden {
+                iced::widget::container(command_line)
+                    .width(Fill)
+                    .height(iced::Length::Fixed(0.0))
+                    .clip(true)
+            } else {
+                iced::widget::container(command_line)
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(iced::alignment::Horizontal::Center)
+                    .align_y(iced::alignment::Vertical::Bottom)
+                    .padding(iced::Padding {
+                        top: 0.0,
+                        right: 0.0,
+                        bottom: 2.0,
+                        left: 0.0,
+                    })
+            };
             iced::widget::stack![workspace, command_line_overlay]
                 .width(Fill)
                 .height(Fill)
@@ -3171,9 +3492,10 @@ bg={bg_ms:.1}ms n={view_count}"
         .unwrap_or_else(|| iced::widget::Space::new().width(0).height(0).into());
 
         // Floating ribbon panels lie over the drawing and the palettes, under
-        // the ribbon's popups and menus.
+        // the ribbon's popups and menus. With the ribbon closed they stay:
+        // they are the classic toolbars then.
         let floating_layer: Element<'_, Message> =
-            if self.clean_screen || self.ribbon_closed || self.tabs[self.active_tab].is_start {
+            if self.clean_screen || self.tabs[self.active_tab].is_start {
                 None
             } else {
                 self.ribbon.floating_layer(self.show_block_palette)
@@ -3246,10 +3568,19 @@ bg={bg_ms:.1}ms n={view_count}"
             composed.into()
         };
 
+        // Open tool dialogs float over the drawing without blocking it; a
+        // modal dialog below then covers them too.
+        let modal_underlay = self.with_tool_windows(modal_underlay);
+
         // ── In-canvas modal dialogs (Plan B) ───────────────────────────────
         // Former pop-up windows render as overlays here, so they work on both
         // the native (single main window) and web builds.
-        let base: Element<'_, Message> = match self.modal_content() {
+        // A dialog in a window of its own is drawn there, also while it is
+        // the active modal (the colour picker it opened holds it).
+        let in_own_window = self.active_modal.is_some_and(|kind| {
+            self.tool_windows.iter().any(|tool| tool.kind == kind && !tool.in_canvas())
+        });
+        let base: Element<'_, Message> = match self.modal_content().filter(|_| !in_own_window) {
             Some(content) => {
                 let modal_options = if cfg!(target_arch = "wasm32")
                     && matches!(self.active_modal, Some(super::ModalKind::PluginManager))
@@ -3303,6 +3634,9 @@ bg={bg_ms:.1}ms n={view_count}"
             if let Some(eyedropper) = picker.eyedropper_view() {
                 return iced::widget::stack![base, eyedropper].into();
             }
+            if in_own_window {
+                return base;
+            }
             crate::ui::modal::modal(
                 base,
                 t!("Select Color"),
@@ -3352,7 +3686,7 @@ impl OpenCADStudio {
             .as_ref()
             .is_some_and(|progress| progress.recovery_error.is_none());
         let frames = if needs_frames {
-            window::frames().map(Message::Tick)
+            crate::app::tool_windows::main_window_frames().map(Message::Tick)
         } else {
             Subscription::none()
         };
@@ -3361,7 +3695,7 @@ impl OpenCADStudio {
         // entry disappears at the moment its visible window expires.
         // The subscription auto-stops once no entry is expiring.
         let history_tick = if self.command_line.has_expiring_history() {
-            window::frames().map(Message::Tick)
+            crate::app::tool_windows::main_window_frames().map(Message::Tick)
         } else {
             Subscription::none()
         };
@@ -3372,12 +3706,12 @@ impl OpenCADStudio {
         // already open.
         // Resume scene construction after the notice redraw.
         let layout_settle = if self.layout_settling {
-            window::frames().map(|_| Message::LayoutSettled)
+            crate::app::tool_windows::main_window_frames().map(|_| Message::LayoutSettled)
         } else {
             Subscription::none()
         };
         let grip_dwell = if self.grip_hover.is_some() && self.grip_popup.is_none() {
-            window::frames().map(|_| Message::GripDwellTick)
+            crate::app::tool_windows::main_window_frames().map(|_| Message::GripDwellTick)
         } else {
             Subscription::none()
         };
@@ -3385,7 +3719,7 @@ impl OpenCADStudio {
         // moment the cursor has been still for the dwell window — without
         // this `ViewportMove` alone never re-fires once the user stops.
         let hover_dwell = if self.hover_dwell.is_some() {
-            window::frames().map(|_| Message::HoverDwellTick)
+            crate::app::tool_windows::main_window_frames().map(|_| Message::HoverDwellTick)
         } else {
             Subscription::none()
         };
@@ -3394,7 +3728,7 @@ impl OpenCADStudio {
             .as_ref()
             .is_some_and(|dwell| !dwell.snap_resolved || dwell.preview_dirty)
         {
-            window::frames().map(|_| Message::SnapDwellTick)
+            crate::app::tool_windows::main_window_frames().map(|_| Message::SnapDwellTick)
         } else {
             Subscription::none()
         };
@@ -3407,7 +3741,7 @@ impl OpenCADStudio {
         let nav_settle = if self.tabs[self.active_tab].scene.is_settling()
             || self.tabs[self.active_tab].scene.underlay_resolution_stale()
         {
-            window::frames().map(Message::Tick)
+            crate::app::tool_windows::main_window_frames().map(Message::Tick)
         } else {
             Subscription::none()
         };
@@ -3419,7 +3753,7 @@ impl OpenCADStudio {
         let gpu_probe = if matches!(self.gpu_status, crate::scene::pipeline::GpuStatus::Unknown)
             && !self.tabs[self.active_tab].is_start
         {
-            window::frames().map(Message::Tick)
+            crate::app::tool_windows::main_window_frames().map(Message::Tick)
         } else {
             Subscription::none()
         };
@@ -3427,7 +3761,7 @@ impl OpenCADStudio {
         // window) must not hold the save: a timer goes ahead without it.
         let thumbnail_capture = if self.thumbnail_capture_clean {
             Subscription::batch([
-                window::frames().map(|_| Message::ThumbnailCaptureFrame),
+                crate::app::tool_windows::main_window_frames().map(|_| Message::ThumbnailCaptureFrame),
                 iced::time::every(std::time::Duration::from_millis(300))
                     .map(|_| Message::ThumbnailCaptureFrame),
             ])
@@ -3439,7 +3773,7 @@ impl OpenCADStudio {
         // pending.
         let capture_frame = if self.control.capture_frame_pending {
             Subscription::batch([
-                window::frames().map(|_| Message::ControlCaptureFrame { redrew: true }),
+                crate::app::tool_windows::main_window_frames().map(|_| Message::ControlCaptureFrame { redrew: true }),
                 iced::time::every(std::time::Duration::from_millis(50))
                     .map(|_| Message::ControlCaptureFrame { redrew: false }),
             ])
@@ -3533,208 +3867,7 @@ impl OpenCADStudio {
         let keyboard_events = if self.shortcut_capture_row.is_some() {
             event::listen_with(shortcut_capture_key_event)
         } else {
-            event::listen_with(|ev, status, win_id| {
-                use iced::event::Status;
-                match ev {
-                    iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
-                        if crate::ui::ribbon::keytips_active() =>
-                    {
-                        crate::ui::ribbon::keytip_pointer_pressed();
-                        Some(Message::KeyTip(crate::ui::ribbon::KeyTipInput::Hide))
-                    }
-                    iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
-                        iced::mouse::Button::Left,
-                    )) => {
-                        crate::ui::ribbon::keytip_pointer_pressed();
-                        Some(Message::PropPointerPressed)
-                    }
-                    iced::Event::Mouse(
-                        iced::mouse::Event::ButtonPressed(_)
-                        | iced::mouse::Event::ButtonReleased(_)
-                        | iced::mouse::Event::WheelScrolled { .. },
-                    ) => {
-                        crate::ui::ribbon::keytip_pointer_pressed();
-                        None
-                    }
-                    iced::Event::Window(window::Event::CloseRequested) => {
-                        Some(Message::WindowCloseRequested(win_id))
-                    }
-                    iced::Event::Window(window::Event::Closed) => {
-                        Some(Message::OsWindowClosed(win_id))
-                    }
-                    iced::Event::Window(window::Event::Resized(sz)) => {
-                        Some(Message::WindowResized(sz.width as f32, sz.height as f32))
-                    }
-                    // The ribbon's arrows sit on whole physical pixels.
-                    iced::Event::Window(window::Event::Opened {
-                        scale_factor, size, ..
-                    }) => {
-                        crate::ui::icons::set_scale_factor(scale_factor);
-                        Some(Message::WindowOpened(win_id, size.width, size.height))
-                    }
-                    iced::Event::Window(window::Event::Rescaled(scale_factor)) => {
-                        crate::ui::icons::set_scale_factor(scale_factor);
-                        None
-                    }
-                    iced::Event::Window(window::Event::FileDropped(path)) => {
-                        Some(Message::FileDropped(path))
-                    }
-                    iced::Event::Keyboard(keyboard::Event::KeyReleased { key, .. }) => {
-                        crate::ui::ribbon::keytip_key_released(&key)
-                    }
-                    iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
-                        // `command()` is Cmd on macOS, Ctrl elsewhere — the
-                        // platform multi-select modifier for the layer list.
-                        Some(Message::SetModifiers {
-                            shift: m.shift(),
-                            ctrl: m.command() || m.control(),
-                            alt: m.alt(),
-                        })
-                    }
-                    iced::Event::Keyboard(keyboard::Event::KeyPressed {
-                        key,
-                        physical_key,
-                        modifiers,
-                        text,
-                        repeat,
-                        ..
-                    }) => {
-                        if let Some(keytip) =
-                            crate::ui::ribbon::keytip_key_pressed(&key, modifiers, repeat)
-                        {
-                            return keytip;
-                        }
-                        #[cfg(target_arch = "wasm32")]
-                        let accel = modifiers.command();
-                        // AltGr reaches Windows apps as Ctrl+Alt, and a macOS
-                        // layout types some characters with Option: when such a
-                        // chord produces a printable glyph (`@`, `<`, `{` on many
-                        // European layouts) it is typing, not a shortcut. (#1236)
-                        let types_glyph = text.as_deref().is_some_and(|value| {
-                            !value.is_empty()
-                                && value
-                                    .chars()
-                                    .all(|ch| !ch.is_control() && !ch.is_whitespace())
-                        });
-                        let altgr = modifiers.control() && modifiers.alt();
-                        let mac_option = cfg!(target_os = "macos")
-                            && modifiers.alt()
-                            && !modifiers.control()
-                            && !modifiers.logo();
-                        let shortcut_modifier =
-                            (modifiers.control() || modifiers.alt() || modifiers.logo())
-                                && !(types_glyph && (altgr || mac_option));
-                        // Any key that produces a printable glyph types it,
-                        // even when its logical key resolves to navigation
-                        // (NumLock-on Numpad8 / Numpad2 arrive as
-                        // ArrowUp / ArrowDown but still carry text "8" /
-                        // "2"). Checked before the Arrow / history arms so
-                        // those numpad digits aren't swallowed as history
-                        // navigation. Whitespace / control text (Space,
-                        // Enter, Tab) falls through to the named handlers.
-                        // The numpad decimal key emits the OS-layout separator
-                        // (a comma on German/European layouts), which the
-                        // coordinate parser rejects. Force it to a decimal point
-                        // from the physical key, independent of layout.
-                        if !shortcut_modifier
-                            && status == Status::Ignored
-                            && matches!(
-                                physical_key,
-                                keyboard::key::Physical::Code(
-                                    keyboard::key::Code::NumpadDecimal
-                                        | keyboard::key::Code::NumpadComma
-                                )
-                            )
-                        {
-                            return Some(Message::CommandAppendChar(".".to_string()));
-                        }
-                        if !shortcut_modifier && status == Status::Ignored {
-                            if let Some(t) = text.as_deref() {
-                                if !t.is_empty()
-                                    && t.chars().all(|c| !c.is_control() && !c.is_whitespace())
-                                {
-                                    return Some(Message::CommandAppendChar(t.to_string()));
-                                }
-                            }
-                        }
-                        let has_printable_text = text.as_deref().is_some_and(|value| {
-                            !value.is_empty()
-                                && value
-                                    .chars()
-                                    .all(|ch| !ch.is_control() && !ch.is_whitespace())
-                        });
-                        let arrow = match &key {
-                            keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
-                                Some(ArrowKey::Up)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
-                                Some(ArrowKey::Down)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
-                                Some(ArrowKey::Left)
-                            }
-                            keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
-                                Some(ArrowKey::Right)
-                            }
-                            _ => None,
-                        };
-                        if !has_printable_text && status == Status::Ignored {
-                            if let Some(direction) = arrow {
-                                return Some(Message::ArrowKeyPressed {
-                                    direction,
-                                    shortcut: shortcut_key_name(&key, modifiers)?,
-                                    extend_selection: modifiers.shift(),
-                                });
-                            }
-                        }
-                        if !has_printable_text
-                            && status == Status::Captured
-                            && matches!(arrow, Some(ArrowKey::Up | ArrowKey::Down))
-                            && !crate::ui::dropdown_list::take_dropdown_arrow_captured()
-                        {
-                            return Some(Message::CommandLineArrowProbe {
-                                direction: arrow?,
-                                extend_selection: modifiers.shift(),
-                            });
-                        }
-                        // A focused web text field needs the browser clipboard;
-                        // drawing shortcuts only run for ignored C/V events.
-                        #[cfg(target_arch = "wasm32")]
-                        if accel && status == Status::Captured {
-                            if let keyboard::Key::Character(value) = &key {
-                                if value.eq_ignore_ascii_case("v") {
-                                    return Some(Message::WebFieldPaste);
-                                }
-                                if value.eq_ignore_ascii_case("c") {
-                                    return Some(Message::WebFieldCopy);
-                                }
-                            }
-                        }
-                        let shortcut = shortcut_key_name(&key, modifiers)?;
-                        if shortcut == "ESCAPE"
-                            && status == Status::Captured
-                            && crate::ui::dropdown_list::take_dropdown_escape_captured()
-                        {
-                            return None;
-                        }
-                        if status == Status::Ignored
-                            || crate::app::shortcuts::is_global_key(&shortcut)
-                        {
-                            return Some(Message::ShortcutPressed(shortcut));
-                        }
-                        // A text field captured the key. SPACE rebound away from
-                        // COMMANDSPACE still fires from the command line, but
-                        // only there: other fields keep typing spaces. This
-                        // closure is a plain fn, so the binding is read from a
-                        // flag and the focus is asked for in update. (#1710)
-                        (shortcut == "SPACE"
-                            && crate::app::shortcuts::SPACE_REBOUND_OFF_COMMANDSPACE
-                                .load(std::sync::atomic::Ordering::Relaxed))
-                        .then_some(Message::CommandLineSpaceProbe)
-                    }
-                    _ => None,
-                }
-            })
+            event::listen_with(main_window_event)
         };
         #[cfg(not(target_arch = "wasm32"))]
         let control = iced::Subscription::batch([
@@ -3747,7 +3880,7 @@ impl OpenCADStudio {
             .map(|_| Message::PollWebControl);
         iced::Subscription::batch([
             if self.spacemouse.moving() && self.spacemouse_focused && !self.spacemouse_paused {
-                window::frames().map(Message::SpaceMouseFrame)
+                crate::app::tool_windows::main_window_frames().map(Message::SpaceMouseFrame)
             } else {
                 Subscription::none()
             },
@@ -3787,6 +3920,7 @@ impl OpenCADStudio {
             hatch_pattern_keys,
             keyboard_events,
             ui_font_changes(),
+            terminate_requests(),
         ])
     }
 
