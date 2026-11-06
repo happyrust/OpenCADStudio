@@ -285,7 +285,21 @@ fn root_label(index: &BackupIndex) -> String {
         .manifest
         .as_ref()
         .and_then(|manifest| manifest.name.clone())
-        .unwrap_or_else(|| t!("Backup").into_owned())
+        .unwrap_or_else(|| t!("Untitled backup").into_owned())
+}
+
+/// A plant group's name as the tree shows it.
+///
+/// The index files the drawings the drawing table does not mention under
+/// [`crate::io::pid_backup_browse::UNREGISTERED_GROUP`] and the ones with no
+/// folder at all under [`crate::io::pid_backup_browse::UNGROUPED`]; both are
+/// fixed labels the tree translates, every other name is the plant's own.
+fn group_label(name: &str) -> String {
+    match name {
+        crate::io::pid_backup_browse::UNREGISTERED_GROUP => t!("Unregistered").into_owned(),
+        crate::io::pid_backup_browse::UNGROUPED => t!("(ungrouped)").into_owned(),
+        other => other.to_string(),
+    }
 }
 
 fn push_files(state: &PidBackupBrowser, index: &BackupIndex, rows: &mut Vec<Row>) {
@@ -293,7 +307,7 @@ fn push_files(state: &PidBackupBrowser, index: &BackupIndex, rows: &mut Vec<Row>
     rows.push(Row {
         id: NodeId::Files,
         depth: 1,
-        label: t!("Backup Files").into_owned(),
+        label: t!("Backup files").into_owned(),
         expandable: !index.files.is_empty(),
         expanded,
         disabled: false,
@@ -370,7 +384,7 @@ fn push_group(
     rows.push(Row {
         id,
         depth,
-        label: node.name.clone(),
+        label: group_label(&node.name),
         expandable: !node.children.is_empty() || !node.drawings.is_empty(),
         expanded: open,
         disabled: false,
@@ -703,8 +717,8 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
         NodeId::Root => {
             if let Some(manifest) = &index.manifest {
                 for (key, value) in [
-                    ("Name", manifest.name.clone()),
-                    ("Version", manifest.version.clone()),
+                    ("Backup name", manifest.name.clone()),
+                    ("Backup version", manifest.version.clone()),
                     ("Backup type", manifest.backup_type.clone()),
                     ("Date created", manifest.date_created.clone()),
                     ("SPID", manifest.spid.clone()),
@@ -715,7 +729,7 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
                 }
             }
             body = body.push(kv(
-                t!("Source").into_owned(),
+                t!("Backup source").into_owned(),
                 index.source.display().to_string(),
             ));
             body = body.push(kv(
@@ -723,7 +737,7 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
                 index.restored.display().to_string(),
             ));
             if index.read_only {
-                body = body.push(kv(t!("Read-only").into_owned(), String::new()));
+                body = body.push(kv(t!("Backup is read-only").into_owned(), String::new()));
             }
             body = body.push(Space::new().height(4));
             body = body.push(text(t!("Warnings")).size(10));
@@ -736,23 +750,23 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
         }
         NodeId::Files => {
             body = body.push(kv(
-                t!("File").into_owned(),
+                t!("File count").into_owned(),
                 index.files.len().to_string(),
             ));
         }
         NodeId::File(at) => {
             if let Some(file) = index.files.get(*at) {
-                body = body.push(kv(t!("Name").into_owned(), file.name.clone()));
+                body = body.push(kv(t!("Backup file name").into_owned(), file.name.clone()));
                 if !file.format.is_empty() {
-                    body = body.push(kv(t!("Format").into_owned(), file.format.clone()));
+                    body = body.push(kv(t!("File format").into_owned(), file.format.clone()));
                 }
-                body = body.push(kv(t!("Size").into_owned(), human_size(file.size)));
+                body = body.push(kv(t!("File size").into_owned(), human_size(file.size)));
                 body = body.push(kv(
                     t!("Members").into_owned(),
                     file.members.len().to_string(),
                 ));
                 if let Some(line) = &file.version_line {
-                    body = body.push(kv(t!("Version").into_owned(), line.clone()));
+                    body = body.push(kv(t!("Version line").into_owned(), line.clone()));
                 }
                 if file.missing {
                     body = body.push(
@@ -765,7 +779,7 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
         }
         NodeId::FileMember(file, member) => {
             if let Some(file) = index.files.get(*file) {
-                body = body.push(kv(t!("File").into_owned(), file.name.clone()));
+                body = body.push(kv(t!("Backup file name").into_owned(), file.name.clone()));
                 if let Some(name) = file.members.get(*member) {
                     body = body.push(kv(t!("Member").into_owned(), name.clone()));
                 }
@@ -773,27 +787,27 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
         }
         NodeId::Groups => {
             body = body.push(kv(
-                t!("Group").into_owned(),
+                t!("Group count").into_owned(),
                 index.plant_groups.len().to_string(),
             ));
             body = body.push(kv(
-                t!("Drawings").into_owned(),
+                t!("Drawing count").into_owned(),
                 index.drawings.len().to_string(),
             ));
         }
         NodeId::Group(path) => {
             if let Some(node) = group_at(index, path) {
-                body = body.push(kv(t!("Name").into_owned(), node.name.clone()));
-                body = body.push(kv(t!("Path").into_owned(), node.path.clone()));
+                body = body.push(kv(t!("Group name").into_owned(), node.name.clone()));
+                body = body.push(kv(t!("Group path").into_owned(), node.path.clone()));
                 body = body.push(kv(
-                    t!("Drawings").into_owned(),
+                    t!("Drawing count").into_owned(),
                     group_drawing_count(node).to_string(),
                 ));
             }
         }
         NodeId::Drawing(drawing) => {
             if let Some(entry) = index.drawings.get(*drawing) {
-                body = body.push(kv(t!("Name").into_owned(), entry.name.clone()));
+                body = body.push(kv(t!("Drawing name").into_owned(), entry.name.clone()));
                 body = body.push(kv(
                     t!("Group path").into_owned(),
                     entry.group_path.clone(),
@@ -805,7 +819,7 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
                             path.display().to_string(),
                         ));
                         body = body.push(
-                            button(text(t!("Open")).size(11))
+                            button(text(t!("Open drawing")).size(11))
                                 .on_press(
                                     PidBackupMsg::Activate(NodeId::Drawing(*drawing))
                                         .message(),
@@ -831,9 +845,9 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
         NodeId::ItemType(drawing, group) => {
             if let Some(ItemsState::Ready(items)) = state.items.get(drawing) {
                 if let Some(group) = items.groups.get(*group) {
-                    body = body.push(kv(t!("Type").into_owned(), group.item_type.clone()));
+                    body = body.push(kv(t!("Item type").into_owned(), group.item_type.clone()));
                     body = body.push(kv(
-                        t!("Items").into_owned(),
+                        t!("Item count").into_owned(),
                         group.items.len().to_string(),
                     ));
                 }
@@ -848,13 +862,13 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
                 _ => None,
             };
             if let Some(entry) = found {
-                body = body.push(kv(t!("UID").into_owned(), entry.uid.clone()));
-                body = body.push(kv(t!("Type").into_owned(), entry.item_type.clone()));
+                body = body.push(kv(t!("Item UID").into_owned(), entry.uid.clone()));
+                body = body.push(kv(t!("Item type").into_owned(), entry.item_type.clone()));
                 if let Some(class) = &entry.class {
-                    body = body.push(kv(t!("Class").into_owned(), class.clone()));
+                    body = body.push(kv(t!("Item class").into_owned(), class.clone()));
                 }
                 body = body.push(Space::new().height(4));
-                body = body.push(text(t!("Attributes")).size(10));
+                body = body.push(text(t!("Item attributes")).size(10));
                 for attribute in &entry.attributes {
                     body = body.push(kv(
                         format!("{}.{}", attribute.interface, attribute.name),
@@ -865,27 +879,27 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
         }
         NodeId::Ref => {
             body = body.push(kv(
-                t!("Name").into_owned(),
+                t!("Reference name").into_owned(),
                 index.ref_tree.name.clone(),
             ));
             body = body.push(kv(
-                t!("File").into_owned(),
+                t!("Reference file count").into_owned(),
                 index.ref_tree.file_count().to_string(),
             ));
         }
         NodeId::RefDir(path) => {
             if let Some(node) = ref_at(&index.ref_tree, path) {
-                body = body.push(kv(t!("Name").into_owned(), node.name.clone()));
+                body = body.push(kv(t!("Reference name").into_owned(), node.name.clone()));
                 body = body.push(kv(
-                    t!("File").into_owned(),
+                    t!("Reference file count").into_owned(),
                     node.file_count().to_string(),
                 ));
             }
         }
         NodeId::RefFile(path, at) => {
             if let Some(file) = ref_at(&index.ref_tree, path).and_then(|node| node.files.get(*at)) {
-                body = body.push(kv(t!("Name").into_owned(), file.name.clone()));
-                body = body.push(kv(t!("Size").into_owned(), human_size(file.size)));
+                body = body.push(kv(t!("Reference file name").into_owned(), file.name.clone()));
+                body = body.push(kv(t!("File size").into_owned(), human_size(file.size)));
             }
         }
     }
@@ -904,7 +918,7 @@ pub fn view<'a>(state: &'a PidBackupBrowser, width: f32, chrome: Chrome) -> Elem
         button(text(t!("Open…")).size(11))
             .on_press(PidBackupMsg::Open.message())
             .padding([3, 8]),
-        button(text(t!("Refresh")).size(11))
+        button(text(t!("Refresh backup")).size(11))
             .on_press(PidBackupMsg::Refresh.message())
             .padding([3, 8]),
         button(text(t!("Close backup")).size(11))
@@ -934,7 +948,7 @@ pub fn view<'a>(state: &'a PidBackupBrowser, width: f32, chrome: Chrome) -> Elem
         }
         LoadState::Loading(source) => container(
             column![
-                text(t!("Loading…")).size(11).style(muted),
+                text(t!("Loading backup…")).size(11).style(muted),
                 text(source.display().to_string()).size(10).style(muted),
             ]
             .spacing(2),
@@ -1095,6 +1109,22 @@ mod tests {
 
     fn ids(rows: &[Row]) -> Vec<NodeId> {
         rows.iter().map(|row| row.id.clone()).collect()
+    }
+
+    #[test]
+    fn a_group_row_shows_its_own_name_and_translates_the_two_fixed_ones() {
+        // Every other name belongs to the plant and is shown as it is; the
+        // two the index synthesises are labels the panel translates.
+        assert_eq!(group_label("SQPlant"), "SQPlant");
+        assert_eq!(group_label("00"), "00");
+        assert_eq!(
+            group_label(crate::io::pid_backup_browse::UNREGISTERED_GROUP),
+            t!("Unregistered").into_owned()
+        );
+        assert_eq!(
+            group_label(crate::io::pid_backup_browse::UNGROUPED),
+            t!("(ungrouped)").into_owned()
+        );
     }
 
     #[test]

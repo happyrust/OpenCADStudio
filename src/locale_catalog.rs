@@ -7085,9 +7085,6 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "PIDBACKUPOPEN: the folder is used in place (read-only)." => Some(("pid-backup", "in-place")),
         "PIDBACKUPOPEN: reused the earlier restore in {}." => Some(("pid-backup", "reused")),
         "PIDBACKUPOPEN: {} .pid drawing(s) in {}" => Some(("pid-backup", "drawing-count")),
-        "PIDBACKUPOPEN: open one with OPEN, from {}." => Some(("pid-backup", "open-with-open")),
-        "Select P&ID Drawing" => Some(("pid-backup", "select-drawing")),
-        "P&ID drawing (*.pid)" => Some(("pid-backup", "drawing-filter")),
         "Select P&ID Backup Folder" => Some(("pid-backup", "select-folder")),
         "Select P&ID Backup" => Some(("pid-backup", "select-backup")),
         "SmartPlant backup (*.zip)" => Some(("pid-backup", "zip-filter")),
@@ -7113,6 +7110,69 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "Not available in the web build." => Some(("pid-backup", "panel-web-unavailable")),
         "PIDBACKUPOPEN: {} drawing(s), {} warning(s)" => {
             Some(("pid-backup", "loaded-report"))
+        }
+        "Untitled backup" => Some(("pid-backup", "untitled")),
+        "Backup files" => Some(("pid-backup", "backup-files")),
+        "Unregistered" => Some(("pid-backup", "unregistered")),
+        "(ungrouped)" => Some(("pid-backup", "ungrouped")),
+        "Backup name" => Some(("pid-backup", "backup-name")),
+        "Backup version" => Some(("pid-backup", "backup-version")),
+        "Backup source" => Some(("pid-backup", "backup-source")),
+        "Backup is read-only" => Some(("pid-backup", "backup-read-only")),
+        "File count" => Some(("pid-backup", "file-count")),
+        "Backup file name" => Some(("pid-backup", "backup-file-name")),
+        "File format" => Some(("pid-backup", "file-format")),
+        "File size" => Some(("pid-backup", "file-size")),
+        "Version line" => Some(("pid-backup", "version-line")),
+        "Group count" => Some(("pid-backup", "group-count")),
+        "Group name" => Some(("pid-backup", "group-name")),
+        "Drawing count" => Some(("pid-backup", "drawing-count-label")),
+        "Drawing name" => Some(("pid-backup", "drawing-name")),
+        "Open drawing" => Some(("pid-backup", "open-drawing")),
+        "Item type" => Some(("pid-backup", "item-type")),
+        "Item count" => Some(("pid-backup", "item-count")),
+        "Item UID" => Some(("pid-backup", "item-uid")),
+        "Item class" => Some(("pid-backup", "item-class")),
+        "Item attributes" => Some(("pid-backup", "item-attributes")),
+        "Reference name" => Some(("pid-backup", "reference-name")),
+        "Reference file count" => Some(("pid-backup", "reference-file-count")),
+        "Reference file name" => Some(("pid-backup", "reference-file-name")),
+        "Refresh backup" => Some(("pid-backup", "refresh-backup")),
+        "Loading backup…" => Some(("pid-backup", "loading-backup")),
+        "no Export.dmp in the backup folder; drawings are listed by folder" => {
+            Some(("pid-backup", "no-export-dump"))
+        }
+        "Export.dmp is a SQL Server MTF dump; its database is not read, so drawings are listed by folder" => {
+            Some(("pid-backup", "sql-server-dump"))
+        }
+        "Export.dmp is not a recognizable Oracle exp dump ({}); drawings are listed by folder" => {
+            Some(("pid-backup", "unrecognized-dump"))
+        }
+        "cannot read {}: {}; drawings are listed by folder" => {
+            Some(("pid-backup", "unreadable-dump"))
+        }
+        "cannot read the drawing table from {}: {}; drawings are listed by folder" => {
+            Some(("pid-backup", "unreadable-drawing-table"))
+        }
+        "cannot read the plant groups from Export.dmp: {}; group paths are left empty" => {
+            Some(("pid-backup", "unreadable-plant-groups"))
+        }
+        "{} .pid file(s) are not in the drawing table; they are listed under \"{}\"" => {
+            Some(("pid-backup", "unregistered-drawings"))
+        }
+        "{} is listed in Manifest.txt but the backup does not carry it ({})" => {
+            Some(("pid-backup", "declared-but-missing"))
+        }
+        "{}: {}" => Some(("pid-backup", "scan-problem")),
+        "cannot scan {}: {}" => Some(("pid-backup", "cannot-scan")),
+        "cannot read {}: {}" => Some(("pid-backup", "cannot-read-drawing")),
+        "cannot start reading the drawing: {}" => Some(("pid-backup", "cannot-start-reading")),
+        "cannot start indexing the backup: {}" => Some(("pid-backup", "cannot-start-indexing")),
+        "the drawing read stopped before it finished" => {
+            Some(("pid-backup", "drawing-read-stopped"))
+        }
+        "the backup index stopped before it finished" => {
+            Some(("pid-backup", "index-stopped"))
         }
         _ => None,
     }

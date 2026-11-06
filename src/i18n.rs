@@ -1099,4 +1099,157 @@ mod tests {
         switch_language(&loader, Language::DeDe).expect("German Fluent resources must parse");
         assert!(LANGUAGE_GENERATION.load(Ordering::Acquire) > before);
     }
+
+    /// Every fixed label the backup browser and its command add, by Fluent
+    /// attribute. A missing one would fall back to English in that locale,
+    /// which is exactly what a translated panel must not do.
+    const PID_BACKUP_PANEL_KEYS: &[&str] = &[
+        "untitled",
+        "backup-files",
+        "unregistered",
+        "ungrouped",
+        "backup-name",
+        "backup-version",
+        "backup-source",
+        "backup-read-only",
+        "file-count",
+        "backup-file-name",
+        "file-format",
+        "file-size",
+        "version-line",
+        "group-count",
+        "group-name",
+        "drawing-count-label",
+        "drawing-name",
+        "open-drawing",
+        "item-type",
+        "item-count",
+        "item-uid",
+        "item-class",
+        "item-attributes",
+        "reference-name",
+        "reference-file-count",
+        "reference-file-name",
+        "refresh-backup",
+        "loading-backup",
+        "no-export-dump",
+        "sql-server-dump",
+        "unrecognized-dump",
+        "unreadable-dump",
+        "unreadable-drawing-table",
+        "unreadable-plant-groups",
+        "unregistered-drawings",
+        "declared-but-missing",
+        "scan-problem",
+        "cannot-scan",
+        "cannot-read-drawing",
+        "cannot-start-reading",
+        "cannot-start-indexing",
+        "drawing-read-stopped",
+        "index-stopped",
+    ];
+
+    /// The panel's own labels, the ones the dock title and the command share.
+    const PID_BACKUP_SHARED_KEYS: &[&str] = &[
+        "open-menu",
+        "web-unavailable",
+        "prompt-path",
+        "prompt-source",
+        "restoring",
+        "error",
+        "no-drawing",
+        "in-place",
+        "reused",
+        "drawing-count",
+        "select-folder",
+        "select-backup",
+        "zip-filter",
+        "panel-title",
+        "panel-open",
+        "close-backup",
+        "search",
+        "no-backup",
+        "no-selection",
+        "plant-groups",
+        "reference-data",
+        "restored",
+        "missing",
+        "file-path",
+        "group-path",
+        "member",
+        "members",
+        "warnings",
+        "no-warnings",
+        "backup-type",
+        "date-created",
+        "spid",
+        "panel-web-unavailable",
+        "loaded-report",
+    ];
+
+    /// `VAL-I18N-001`: the backup browser's fixed labels exist in all 23
+    /// locales, and the `__ocs_fmt_N__` markers the catalog relies on survive
+    /// translation.
+    #[test]
+    fn the_pid_backup_panel_labels_exist_in_every_locale() {
+        for language in Language::ALL
+            .into_iter()
+            .filter(|language| *language != Language::System)
+        {
+            let loader = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
+            load_language(&loader, language).expect("Fluent resources must parse");
+            for key in PID_BACKUP_PANEL_KEYS.iter().chain(PID_BACKUP_SHARED_KEYS) {
+                let text = loader.get_attr("pid-backup", key);
+                assert!(!text.is_empty(), "{language:?}: pid-backup.{key}");
+            }
+            // The count markers are what `translate_format` substitutes; a
+            // translation that dropped one would print the raw placeholder.
+            for (key, markers) in [
+                ("loaded-report", &["__ocs_fmt_0__", "__ocs_fmt_1__"][..]),
+                ("drawing-count", &["__ocs_fmt_0__", "__ocs_fmt_1__"][..]),
+                ("unregistered-drawings", &["__ocs_fmt_0__", "__ocs_fmt_1__"][..]),
+                ("declared-but-missing", &["__ocs_fmt_0__", "__ocs_fmt_1__"][..]),
+                ("scan-problem", &["__ocs_fmt_0__", "__ocs_fmt_1__"][..]),
+            ] {
+                let text = loader.get_attr("pid-backup", key);
+                for marker in markers {
+                    assert!(text.contains(marker), "{language:?}: pid-backup.{key} -> {text}");
+                }
+            }
+        }
+    }
+
+    /// `VAL-I18N-002`: Simplified Chinese reads as Chinese, and the three
+    /// retired labels are gone from the catalog.
+    #[test]
+    fn the_pid_backup_panel_labels_are_chinese_in_simplified_chinese() {
+        let english = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
+        load_language(&english, Language::EnUs).expect("Fluent resources must parse");
+        let chinese = FluentLanguageLoader::new("opencadstudio", "en-US".parse().unwrap());
+        load_language(&chinese, Language::ZhCn).expect("Chinese Fluent resources must parse");
+        for key in PID_BACKUP_PANEL_KEYS.iter().chain(PID_BACKUP_SHARED_KEYS) {
+            let text = chinese.get_attr("pid-backup", key);
+            assert!(!text.is_empty(), "zh-CN: pid-backup.{key}");
+            if *key == "spid" {
+                // An acronym the plant's own data uses; it stays as it is.
+                continue;
+            }
+            assert!(
+                !text.is_ascii(),
+                "zh-CN: pid-backup.{key} is still English: {text}"
+            );
+        }
+        assert_eq!(chinese.get_attr("pid-backup", "panel-title"), "P&ID 备份");
+        assert_ne!(
+            chinese.get_attr("pid-backup", "backup-files"),
+            english.get_attr("pid-backup", "backup-files")
+        );
+        for retired in [
+            "Select P&ID Drawing",
+            "P&ID drawing (*.pid)",
+            "PIDBACKUPOPEN: open one with OPEN, from {}.",
+        ] {
+            assert_eq!(catalog_ids(retired), None, "{retired} must be retired");
+        }
+    }
 }

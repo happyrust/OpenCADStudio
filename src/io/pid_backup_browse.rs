@@ -36,7 +36,7 @@ use pid_parse::publish::pid_load::{load_publish_from_pid, PidPublishDrawing, Pid
 pub const UNREGISTERED_GROUP: &str = "Unregistered";
 
 /// Group a drawing with no folder or plant group is filed under.
-const UNGROUPED: &str = "(ungrouped)";
+pub const UNGROUPED: &str = "(ungrouped)";
 
 /// How deep the `Ref` tree is walked before a runaway directory is cut off.
 const REF_SEARCH_DEPTH: usize = 16;
@@ -199,7 +199,7 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
         find_backup_root(&restored.root)
     };
     let scan = scan_backup_folder(&backup_root)
-        .map_err(|error| format!("cannot scan {}: {error}", backup_root.display()))?;
+        .map_err(|error| crate::tf!("cannot scan {}: {}", backup_root.display(), error))?;
 
     let mut warnings = Vec::new();
     let files = describe_files(&backup_root, &scan, &mut warnings);
@@ -214,10 +214,14 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
             group_paths.extend(entries.iter().map(|entry| entry.group_path.clone()));
             drawings.extend(entries);
             if !unmatched.is_empty() {
-                warnings.push(format!(
-                    "{} .pid file(s) are not in the drawing table; they are listed under \"{UNREGISTERED_GROUP}\"",
-                    unmatched.len()
-                ));
+                warnings.push(
+                    crate::tf!(
+                        "{} .pid file(s) are not in the drawing table; they are listed under \"{}\"",
+                        unmatched.len(),
+                        crate::t!(UNREGISTERED_GROUP)
+                    )
+                    .into_owned(),
+                );
                 for entry in &unmatched {
                     group_paths.push(entry.group_path.clone());
                 }
@@ -369,11 +373,9 @@ fn describe_files(
         files.extend(declared_refdata(manifest, &present, warnings));
     }
     for problem in &scan.problems {
-        warnings.push(format!(
-            "{}: {}",
-            problem.path.display(),
-            problem.detail
-        ));
+        warnings.push(
+            crate::tf!("{}: {}", problem.path.display(), problem.detail).into_owned(),
+        );
     }
     files
 }
@@ -417,10 +419,14 @@ fn declared_refdata(
         if carried {
             continue;
         }
-        warnings.push(format!(
-            "{} is listed in Manifest.txt but the backup does not carry it ({declared})",
-            name
-        ));
+        warnings.push(
+            crate::tf!(
+                "{} is listed in Manifest.txt but the backup does not carry it ({})",
+                name,
+                declared
+            )
+            .into_owned(),
+        );
         missing.push(BackupFile {
             name,
             kind: FileKind::RefData,
@@ -482,22 +488,29 @@ fn dump_drawings(
 ) -> Option<Vec<DrawingRow>> {
     let Some(export) = &scan.export else {
         warnings.push(
-            "no Export.dmp in the backup folder; drawings are listed by folder".to_string(),
+            crate::t!("no Export.dmp in the backup folder; drawings are listed by folder")
+                .into_owned(),
         );
         return None;
     };
     match &export.format {
         ExportDumpFormat::SqlServerMtf(_) => {
             warnings.push(
-                "Export.dmp is a SQL Server MTF dump; its database is not read, so drawings are listed by folder"
-                    .to_string(),
+                crate::t!(
+                    "Export.dmp is a SQL Server MTF dump; its database is not read, so drawings are listed by folder"
+                )
+                .into_owned(),
             );
             return None;
         }
         ExportDumpFormat::Unrecognized { detail } => {
-            warnings.push(format!(
-                "Export.dmp is not a recognizable Oracle exp dump ({detail}); drawings are listed by folder"
-            ));
+            warnings.push(
+                crate::tf!(
+                    "Export.dmp is not a recognizable Oracle exp dump ({}); drawings are listed by folder",
+                    detail
+                )
+                .into_owned(),
+            );
             return None;
         }
         ExportDumpFormat::OracleExp { .. } => {}
@@ -505,27 +518,39 @@ fn dump_drawings(
     let bytes = match std::fs::read(&export.path) {
         Ok(bytes) => bytes,
         Err(error) => {
-            warnings.push(format!(
-                "cannot read {}: {error}; drawings are listed by folder",
-                export.path.display()
-            ));
+            warnings.push(
+                crate::tf!(
+                    "cannot read {}: {}; drawings are listed by folder",
+                    export.path.display(),
+                    error
+                )
+                .into_owned(),
+            );
             return None;
         }
     };
     let rows = match read_backup_drawings(&bytes) {
         Ok(rows) => rows,
         Err(error) => {
-            warnings.push(format!(
-                "cannot read the drawing table from {}: {error:?}; drawings are listed by folder",
-                backup_root.join("Export.dmp").display()
-            ));
+            warnings.push(
+                crate::tf!(
+                    "cannot read the drawing table from {}: {}; drawings are listed by folder",
+                    backup_root.join("Export.dmp").display(),
+                    format!("{error:?}")
+                )
+                .into_owned(),
+            );
             return None;
         }
     };
     let groups = read_plant_groups(&bytes).unwrap_or_else(|error| {
-        warnings.push(format!(
-            "cannot read the plant groups from Export.dmp: {error:?}; group paths are left empty"
-        ));
+        warnings.push(
+            crate::tf!(
+                "cannot read the plant groups from Export.dmp: {}; group paths are left empty",
+                format!("{error:?}")
+            )
+            .into_owned(),
+        );
         Vec::new()
     });
     let rows = rows
@@ -772,7 +797,7 @@ pub struct ItemAttribute {
 /// attributes are megabytes of compound file the tree must not wait on.
 pub fn load_items(path: &Path) -> Result<DrawingItems, String> {
     let drawing = load_publish_from_pid(path)
-        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        .map_err(|error| crate::tf!("cannot read {}: {}", path.display(), error).into_owned())?;
     Ok(group_items(drawing))
 }
 
@@ -785,10 +810,14 @@ pub async fn load_items_in_background(path: PathBuf) -> Result<DrawingItems, Str
         .spawn(move || {
             let _ = sender.send(load_items(&path));
         })
-        .map_err(|error| format!("cannot start reading the drawing: {error}"))?;
+        .map_err(|error| {
+            crate::tf!("cannot start reading the drawing: {}", error).into_owned()
+        })?;
     receiver
         .await
-        .unwrap_or_else(|_| Err("the drawing read stopped before it finished".into()))
+        .unwrap_or_else(|_| {
+            Err(crate::t!("the drawing read stopped before it finished").into_owned())
+        })
 }
 
 /// [`build_index`] on a worker thread: restoring a backup and reading its dump
