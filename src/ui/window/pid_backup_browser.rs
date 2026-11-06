@@ -797,7 +797,7 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
         }
         NodeId::Group(path) => {
             if let Some(node) = group_at(index, path) {
-                body = body.push(kv(t!("Group name").into_owned(), node.name.clone()));
+                body = body.push(kv(t!("Group name").into_owned(), group_label(&node.name)));
                 body = body.push(kv(t!("Group path").into_owned(), node.path.clone()));
                 body = body.push(kv(
                     t!("Drawing count").into_owned(),
