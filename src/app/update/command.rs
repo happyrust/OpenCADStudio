@@ -4591,6 +4591,10 @@ impl OpenCADStudio {
                     self.refresh_properties();
                     return Task::none();
                 }
+                if self.commit_pid_author_property(i, &handles, field, &val) {
+                    self.refresh_properties();
+                    return Task::none();
+                }
                 if field == "pid_tag" {
                     self.set_pid_group_tag_property(i, &handles, &val);
                     self.refresh_properties();

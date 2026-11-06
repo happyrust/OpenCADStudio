@@ -2030,6 +2030,10 @@ impl OpenCADStudio {
             retain_compact_solid_sections(&mut sections);
         }
         append_pid_group_properties(&mut sections, &self.tabs[i].scene.document, &[handle]);
+        sections.extend(crate::app::commands::pidprops::pid_author_section(
+            &self.tabs[i].scene.document,
+            handle,
+        ));
         if let codec::EntityType::Ole2Frame(ole) = entity {
             self.fill_ole_rows(i, handle, ole, &mut sections);
         }

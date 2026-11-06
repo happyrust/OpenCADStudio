@@ -48,6 +48,7 @@ mod pdf_underlay;
 mod pidbackup;
 mod pidlegend;
 mod pidpalette;
+pub(in crate::app) mod pidprops;
 mod pidplot;
 mod plotvars;
 mod point_cloud;
