@@ -701,18 +701,102 @@ fn tree_row<'a>(row: &Row, at: usize) -> Element<'a, Message> {
     crate::ui::wrap_bar::PosReport::owned(format!("{ROW_BOUNDS_PREFIX}{at}"), area).into()
 }
 
+/// One line of the detail half, before it is laid out.
+///
+/// [`detail_rows`] projects these to `(key, value)` pairs so the content can
+/// be asserted without a window; [`details`] draws each kind its own way.
+enum DetailLine {
+    /// A key/value field.
+    Field(String, String),
+    /// A plain muted line: a warning, or "registered but missing".
+    Marker(String),
+    /// A section heading, set off from the fields above it.
+    Heading(String),
+    /// The "open drawing" button for a drawing that has a file.
+    OpenDrawing(String),
+}
+
+/// How [`details`] draws one line of the detail half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetailLineKind {
+    /// A key/value field.
+    Field,
+    /// A plain muted line: a warning, or "registered but missing".
+    Marker,
+    /// A section heading, set off from the fields above it.
+    Heading,
+    /// The "open drawing" button for a drawing that has a file.
+    OpenDrawing,
+}
+
+impl DetailLine {
+    /// The `(key, value)` pair this line shows.
+    fn into_pair(self) -> (String, String) {
+        match self {
+            DetailLine::Field(key, value) => (key, value),
+            DetailLine::Marker(key) | DetailLine::Heading(key) | DetailLine::OpenDrawing(key) => {
+                (key, String::new())
+            }
+        }
+    }
+
+    fn kind(&self) -> DetailLineKind {
+        match self {
+            DetailLine::Field(..) => DetailLineKind::Field,
+            DetailLine::Marker(_) => DetailLineKind::Marker,
+            DetailLine::Heading(_) => DetailLineKind::Heading,
+            DetailLine::OpenDrawing(_) => DetailLineKind::OpenDrawing,
+        }
+    }
+}
+
 /// The lower half: what the selected node is.
+///
+/// Rendering only: the content and the shape of every line come from
+/// [`detail_rows`] and [`detail_lines`].
 fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
-    let Some(index) = state.index() else {
+    if state.index().is_none() {
         return text(t!("No backup is open.")).size(11).style(muted).into();
-    };
+    }
     let Some(id) = state.selected.as_ref() else {
         return text(t!("Select a node to see its details."))
             .size(11)
             .style(muted)
             .into();
     };
+    let kinds: Vec<DetailLineKind> = detail_lines(state, id)
+        .into_iter()
+        .map(|line| line.kind())
+        .collect();
     let mut body = column![].spacing(2);
+    for ((key, value), kind) in detail_rows(state, id).into_iter().zip(kinds) {
+        body = match kind {
+            DetailLineKind::Field => body.push(kv(key, value)),
+            DetailLineKind::Marker => body.push(text(key).size(10).style(muted)),
+            DetailLineKind::Heading => {
+                body = body.push(Space::new().height(4));
+                body.push(text(key).size(10))
+            }
+            DetailLineKind::OpenDrawing => body.push(
+                button(text(key).size(11))
+                    .on_press(PidBackupMsg::Activate(id.clone()).message())
+                    .padding([3, 10]),
+            ),
+        };
+    }
+    body.into()
+}
+
+/// The lines the detail half shows for `id`, in display order.
+///
+/// Pure and free of `iced` types: every value is already localized and
+/// formatted, so the content can be asserted without a window. An `id` the
+/// index no longer holds, and an idle panel, yield no lines.
+fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
+    let Some(index) = state.index() else {
+        return Vec::new();
+    };
+    let mut lines: Vec<DetailLine> = Vec::new();
     match id {
         NodeId::Root => {
             if let Some(manifest) = &index.manifest {
@@ -724,82 +808,105 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
                     ("SPID", manifest.spid.clone()),
                 ] {
                     if let Some(value) = value {
-                        body = body.push(kv(t!(key).into_owned(), value));
+                        lines.push(DetailLine::Field(t!(key).into_owned(), value));
                     }
                 }
             }
-            body = body.push(kv(
+            lines.push(DetailLine::Field(
                 t!("Backup source").into_owned(),
                 index.source.display().to_string(),
             ));
-            body = body.push(kv(
+            lines.push(DetailLine::Field(
                 t!("Restored").into_owned(),
                 index.restored.display().to_string(),
             ));
+            // The marker keeps the key/value layout with an empty value: it
+            // states a property of the backup, not a message.
             if index.read_only {
-                body = body.push(kv(t!("Backup is read-only").into_owned(), String::new()));
+                lines.push(DetailLine::Field(
+                    t!("Backup is read-only").into_owned(),
+                    String::new(),
+                ));
             }
-            body = body.push(Space::new().height(4));
-            body = body.push(text(t!("Warnings")).size(10));
+            lines.push(DetailLine::Heading(t!("Warnings").into_owned()));
             if index.warnings.is_empty() {
-                body = body.push(text(t!("No warnings.")).size(10).style(muted));
+                lines.push(DetailLine::Marker(t!("No warnings.").into_owned()));
             }
             for warning in &index.warnings {
-                body = body.push(text(warning.clone()).size(10).style(muted));
+                lines.push(DetailLine::Marker(warning.clone()));
             }
         }
         NodeId::Files => {
-            body = body.push(kv(
+            lines.push(DetailLine::Field(
                 t!("File count").into_owned(),
                 index.files.len().to_string(),
             ));
         }
         NodeId::File(at) => {
             if let Some(file) = index.files.get(*at) {
-                body = body.push(kv(t!("Backup file name").into_owned(), file.name.clone()));
+                lines.push(DetailLine::Field(
+                    t!("Backup file name").into_owned(),
+                    file.name.clone(),
+                ));
                 if !file.format.is_empty() {
-                    body = body.push(kv(t!("File format").into_owned(), file.format.clone()));
+                    lines.push(DetailLine::Field(
+                        t!("File format").into_owned(),
+                        file.format.clone(),
+                    ));
                 }
-                body = body.push(kv(t!("File size").into_owned(), human_size(file.size)));
-                body = body.push(kv(
+                lines.push(DetailLine::Field(
+                    t!("File size").into_owned(),
+                    human_size(file.size),
+                ));
+                lines.push(DetailLine::Field(
                     t!("Members").into_owned(),
                     file.members.len().to_string(),
                 ));
                 if let Some(line) = &file.version_line {
-                    body = body.push(kv(t!("Version line").into_owned(), line.clone()));
+                    lines.push(DetailLine::Field(
+                        t!("Version line").into_owned(),
+                        line.clone(),
+                    ));
                 }
                 if file.missing {
-                    body = body.push(
-                        text(t!("Registered but missing"))
-                            .size(10)
-                            .style(muted),
-                    );
+                    lines.push(DetailLine::Marker(
+                        t!("Registered but missing").into_owned(),
+                    ));
                 }
             }
         }
         NodeId::FileMember(file, member) => {
             if let Some(file) = index.files.get(*file) {
-                body = body.push(kv(t!("Backup file name").into_owned(), file.name.clone()));
+                lines.push(DetailLine::Field(
+                    t!("Backup file name").into_owned(),
+                    file.name.clone(),
+                ));
                 if let Some(name) = file.members.get(*member) {
-                    body = body.push(kv(t!("Member").into_owned(), name.clone()));
+                    lines.push(DetailLine::Field(t!("Member").into_owned(), name.clone()));
                 }
             }
         }
         NodeId::Groups => {
-            body = body.push(kv(
+            lines.push(DetailLine::Field(
                 t!("Group count").into_owned(),
                 index.plant_groups.len().to_string(),
             ));
-            body = body.push(kv(
+            lines.push(DetailLine::Field(
                 t!("Drawing count").into_owned(),
                 index.drawings.len().to_string(),
             ));
         }
         NodeId::Group(path) => {
             if let Some(node) = group_at(index, path) {
-                body = body.push(kv(t!("Group name").into_owned(), group_label(&node.name)));
-                body = body.push(kv(t!("Group path").into_owned(), node.path.clone()));
-                body = body.push(kv(
+                lines.push(DetailLine::Field(
+                    t!("Group name").into_owned(),
+                    group_label(&node.name),
+                ));
+                lines.push(DetailLine::Field(
+                    t!("Group path").into_owned(),
+                    node.path.clone(),
+                ));
+                lines.push(DetailLine::Field(
                     t!("Drawing count").into_owned(),
                     group_drawing_count(node).to_string(),
                 ));
@@ -807,46 +914,47 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
         }
         NodeId::Drawing(drawing) => {
             if let Some(entry) = index.drawings.get(*drawing) {
-                body = body.push(kv(t!("Drawing name").into_owned(), entry.name.clone()));
-                body = body.push(kv(
+                lines.push(DetailLine::Field(
+                    t!("Drawing name").into_owned(),
+                    entry.name.clone(),
+                ));
+                lines.push(DetailLine::Field(
                     t!("Group path").into_owned(),
                     entry.group_path.clone(),
                 ));
                 match &entry.pid_path {
                     Some(path) => {
-                        body = body.push(kv(
+                        lines.push(DetailLine::Field(
                             t!("File path").into_owned(),
                             path.display().to_string(),
                         ));
-                        body = body.push(
-                            button(text(t!("Open drawing")).size(11))
-                                .on_press(
-                                    PidBackupMsg::Activate(NodeId::Drawing(*drawing))
-                                        .message(),
-                                )
-                                .padding([3, 10]),
-                        );
+                        lines.push(DetailLine::OpenDrawing(
+                            t!("Open drawing").into_owned(),
+                        ));
                     }
                     // A row the plant knows about but the backup does not
                     // carry: there is nothing to open, so the panel says why.
                     None => {
-                        body = body.push(
-                            text(t!("Registered but missing")).size(10).style(muted),
-                        );
+                        lines.push(DetailLine::Marker(
+                            t!("Registered but missing").into_owned(),
+                        ));
                     }
                 }
                 // Every `T_DRAWING` column, empty values included: the panel
                 // is the only place the backup's own metadata is visible.
                 for (key, value) in &entry.meta {
-                    body = body.push(kv(key.clone(), value.clone()));
+                    lines.push(DetailLine::Field(key.clone(), value.clone()));
                 }
             }
         }
         NodeId::ItemType(drawing, group) => {
             if let Some(ItemsState::Ready(items)) = state.items.get(drawing) {
                 if let Some(group) = items.groups.get(*group) {
-                    body = body.push(kv(t!("Item type").into_owned(), group.item_type.clone()));
-                    body = body.push(kv(
+                    lines.push(DetailLine::Field(
+                        t!("Item type").into_owned(),
+                        group.item_type.clone(),
+                    ));
+                    lines.push(DetailLine::Field(
                         t!("Item count").into_owned(),
                         group.items.len().to_string(),
                     ));
@@ -862,15 +970,25 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
                 _ => None,
             };
             if let Some(entry) = found {
-                body = body.push(kv(t!("Item UID").into_owned(), entry.uid.clone()));
-                body = body.push(kv(t!("Item type").into_owned(), entry.item_type.clone()));
+                lines.push(DetailLine::Field(
+                    t!("Item UID").into_owned(),
+                    entry.uid.clone(),
+                ));
+                lines.push(DetailLine::Field(
+                    t!("Item type").into_owned(),
+                    entry.item_type.clone(),
+                ));
                 if let Some(class) = &entry.class {
-                    body = body.push(kv(t!("Item class").into_owned(), class.clone()));
+                    lines.push(DetailLine::Field(
+                        t!("Item class").into_owned(),
+                        class.clone(),
+                    ));
                 }
-                body = body.push(Space::new().height(4));
-                body = body.push(text(t!("Item attributes")).size(10));
+                lines.push(DetailLine::Heading(
+                    t!("Item attributes").into_owned(),
+                ));
                 for attribute in &entry.attributes {
-                    body = body.push(kv(
+                    lines.push(DetailLine::Field(
                         format!("{}.{}", attribute.interface, attribute.name),
                         attribute.value.clone(),
                     ));
@@ -878,19 +996,22 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
             }
         }
         NodeId::Ref => {
-            body = body.push(kv(
+            lines.push(DetailLine::Field(
                 t!("Reference name").into_owned(),
                 index.ref_tree.name.clone(),
             ));
-            body = body.push(kv(
+            lines.push(DetailLine::Field(
                 t!("Reference file count").into_owned(),
                 index.ref_tree.file_count().to_string(),
             ));
         }
         NodeId::RefDir(path) => {
             if let Some(node) = ref_at(&index.ref_tree, path) {
-                body = body.push(kv(t!("Reference name").into_owned(), node.name.clone()));
-                body = body.push(kv(
+                lines.push(DetailLine::Field(
+                    t!("Reference name").into_owned(),
+                    node.name.clone(),
+                ));
+                lines.push(DetailLine::Field(
                     t!("Reference file count").into_owned(),
                     node.file_count().to_string(),
                 ));
@@ -898,12 +1019,30 @@ fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
         }
         NodeId::RefFile(path, at) => {
             if let Some(file) = ref_at(&index.ref_tree, path).and_then(|node| node.files.get(*at)) {
-                body = body.push(kv(t!("Reference file name").into_owned(), file.name.clone()));
-                body = body.push(kv(t!("File size").into_owned(), human_size(file.size)));
+                lines.push(DetailLine::Field(
+                    t!("Reference file name").into_owned(),
+                    file.name.clone(),
+                ));
+                lines.push(DetailLine::Field(
+                    t!("File size").into_owned(),
+                    human_size(file.size),
+                ));
             }
         }
     }
-    body.into()
+    lines
+}
+
+/// The `(key, value)` pairs the detail half shows for `id`, in display order.
+///
+/// The testable projection of [`detail_lines`]: an empty value marks a line
+/// that is not a plain field (a warning, a heading, "registered but missing",
+/// the "open drawing" action).
+pub(crate) fn detail_rows(state: &PidBackupBrowser, id: &NodeId) -> Vec<(String, String)> {
+    detail_lines(state, id)
+        .into_iter()
+        .map(DetailLine::into_pair)
+        .collect()
 }
 
 /// Build the docked panel.
@@ -1482,5 +1621,467 @@ mod tests {
         assert_eq!(state.selected, None);
         assert!(state.filter.is_empty());
         assert_eq!(state.error, None);
+    }
+
+    /// A backup richer than [`index`]: every manifest field, a file the
+    /// manifest declares but the backup does not carry, the two synthesised
+    /// group names, and drawings with and without a file.
+    fn detail_index() -> Arc<BackupIndex> {
+        let mut plant = group("00", "SQPlant / 00", vec![0, 2]);
+        plant.children.push(group("01", "SQPlant / 00 / 01", vec![1]));
+        let mut root = group("SQPlant", "SQPlant", Vec::new());
+        root.children.push(plant);
+        let unregistered = group(
+            crate::io::pid_backup_browse::UNREGISTERED_GROUP,
+            crate::io::pid_backup_browse::UNREGISTERED_GROUP,
+            Vec::new(),
+        );
+        let ungrouped = group(
+            crate::io::pid_backup_browse::UNGROUPED,
+            crate::io::pid_backup_browse::UNGROUPED,
+            Vec::new(),
+        );
+
+        Arc::new(BackupIndex {
+            source: PathBuf::from("D:/backups/plant.zip"),
+            restored: PathBuf::from("D:/tmp/restore"),
+            backup_root: PathBuf::from("D:/tmp/restore"),
+            read_only: true,
+            manifest: Some(ManifestSummary {
+                name: Some("Plant backup".to_string()),
+                version: Some("7".to_string()),
+                date_created: Some("2026-01-02".to_string()),
+                backup_type: Some("Full".to_string()),
+                spid: Some("SQPlant".to_string()),
+            }),
+            files: vec![
+                BackupFile {
+                    name: "Export.dmp".to_string(),
+                    kind: FileKind::ExportDump,
+                    format: "Oracle exp (EXPORT:V12.01.00)".to_string(),
+                    size: 2048,
+                    members: Vec::new(),
+                    version_line: Some("EXPORT:V12.01.00".to_string()),
+                    missing: false,
+                },
+                BackupFile {
+                    name: "PlantData~2~711.zip".to_string(),
+                    kind: FileKind::PlantData,
+                    format: "zip".to_string(),
+                    size: 1024,
+                    members: vec!["00/00/a.pid".to_string(), "00/00/b.pid".to_string()],
+                    version_line: None,
+                    missing: false,
+                },
+                BackupFile {
+                    name: "RefData~4~824.zip".to_string(),
+                    kind: FileKind::RefData,
+                    format: "zip".to_string(),
+                    size: 0,
+                    members: Vec::new(),
+                    version_line: None,
+                    missing: true,
+                },
+            ],
+            plant_groups: vec![root, unregistered, ungrouped],
+            drawings: vec![
+                DrawingEntry {
+                    name: "A-101".to_string(),
+                    pid_path: Some(PathBuf::from("D:/tmp/restore/00/00/a.pid")),
+                    group_path: "SQPlant / 00".to_string(),
+                    meta: vec![
+                        ("id".to_string(), "1".to_string()),
+                        ("PATH".to_string(), "00/00/a.pid".to_string()),
+                    ],
+                },
+                DrawingEntry {
+                    name: "B-202".to_string(),
+                    pid_path: Some(PathBuf::from("D:/tmp/restore/00/00/01/b.pid")),
+                    group_path: "SQPlant / 00 / 01".to_string(),
+                    meta: vec![("id".to_string(), "2".to_string())],
+                },
+                DrawingEntry {
+                    name: "C-303".to_string(),
+                    pid_path: None,
+                    group_path: "SQPlant / 00".to_string(),
+                    meta: vec![("id".to_string(), "3".to_string())],
+                },
+            ],
+            ref_tree: RefNode {
+                name: "Ref".to_string(),
+                dirs: vec![RefNode {
+                    name: "Symbols".to_string(),
+                    dirs: Vec::new(),
+                    files: vec![
+                        RefFile {
+                            name: "pump.svg".to_string(),
+                            size: 4096,
+                        },
+                        RefFile {
+                            name: "valve.svg".to_string(),
+                            size: 2048,
+                        },
+                    ],
+                }],
+                files: vec![RefFile {
+                    name: "readme.txt".to_string(),
+                    size: 12,
+                }],
+            },
+            warnings: vec![
+                "no usable Export.dmp".to_string(),
+                "one declared file is missing".to_string(),
+            ],
+        })
+    }
+
+    fn detail_state() -> PidBackupBrowser {
+        let mut state = PidBackupBrowser::default();
+        assert_eq!(
+            update(&mut state, PidBackupMsg::Loaded(Ok(detail_index()))),
+            Effect::None
+        );
+        state
+    }
+
+    /// The detail rows as the panel shows them: `(key, value)` pairs.
+    fn detail_rows_of(state: &PidBackupBrowser, id: &NodeId) -> Vec<(String, String)> {
+        detail_rows(state, id)
+    }
+
+    fn detail_keys(state: &PidBackupBrowser, id: &NodeId) -> Vec<String> {
+        detail_rows_of(state, id)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect()
+    }
+
+    /// Only the rows that carry a value: the plain `(key, value)` fields.
+    fn detail_fields(state: &PidBackupBrowser, id: &NodeId) -> Vec<(String, String)> {
+        detail_rows_of(state, id)
+            .into_iter()
+            .filter(|(_, value)| !value.is_empty())
+            .collect()
+    }
+
+    /// A literal value as the detail rows carry it.
+    fn plain(value: &str) -> String {
+        value.to_string()
+    }
+
+    #[test]
+    fn the_root_details_list_the_manifest_read_only_marker_and_every_warning() {
+        let state = detail_state();
+        assert_eq!(
+            detail_fields(&state, &NodeId::Root),
+            vec![
+                (t!("Backup name").into_owned(), plain("Plant backup")),
+                (t!("Backup version").into_owned(), plain("7")),
+                (t!("Backup type").into_owned(), plain("Full")),
+                (t!("Date created").into_owned(), plain("2026-01-02")),
+                (t!("SPID").into_owned(), plain("SQPlant")),
+                (t!("Backup source").into_owned(), plain("D:/backups/plant.zip")),
+                (t!("Restored").into_owned(), plain("D:/tmp/restore")),
+            ],
+            "the manifest fields come first, then where the backup came from"
+        );
+        assert_eq!(
+            detail_keys(&state, &NodeId::Root),
+            vec![
+                t!("Backup name").into_owned(),
+                t!("Backup version").into_owned(),
+                t!("Backup type").into_owned(),
+                t!("Date created").into_owned(),
+                t!("SPID").into_owned(),
+                t!("Backup source").into_owned(),
+                t!("Restored").into_owned(),
+                t!("Backup is read-only").into_owned(),
+                t!("Warnings").into_owned(),
+                plain("no usable Export.dmp"),
+                plain("one declared file is missing"),
+            ],
+            "the read-only marker and every warning follow in order"
+        );
+    }
+
+    #[test]
+    fn a_root_without_warnings_says_so() {
+        let mut state = detail_state();
+        update(
+            &mut state,
+            PidBackupMsg::Loaded(Ok(Arc::new(BackupIndex {
+                warnings: Vec::new(),
+                read_only: false,
+                ..(*detail_index()).clone()
+            }))),
+        );
+        let keys = detail_keys(&state, &NodeId::Root);
+        assert!(keys.contains(&t!("No warnings.").into_owned()));
+        assert!(!keys.contains(&t!("Backup is read-only").into_owned()));
+    }
+
+    #[test]
+    fn the_files_group_details_count_the_backup_files() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::Files),
+            vec![(t!("File count").into_owned(), plain("3"))]
+        );
+    }
+
+    #[test]
+    fn a_file_details_show_its_name_format_size_members_and_version_line() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::File(0)),
+            vec![
+                (t!("Backup file name").into_owned(), plain("Export.dmp")),
+                (
+                    t!("File format").into_owned(),
+                    plain("Oracle exp (EXPORT:V12.01.00)")
+                ),
+                (t!("File size").into_owned(), human_size(2048)),
+                (t!("Members").into_owned(), plain("0")),
+                (
+                    t!("Version line").into_owned(),
+                    plain("EXPORT:V12.01.00")
+                ),
+            ],
+            "the dump carries its EXPORT line"
+        );
+    }
+
+    #[test]
+    fn an_archive_file_details_count_its_members() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::File(1)),
+            vec![
+                (
+                    t!("Backup file name").into_owned(),
+                    plain("PlantData~2~711.zip")
+                ),
+                (t!("File format").into_owned(), plain("zip")),
+                (t!("File size").into_owned(), human_size(1024)),
+                (t!("Members").into_owned(), plain("2")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_the_backup_does_not_carry_says_it_is_registered_but_missing() {
+        let state = detail_state();
+        let rows = detail_rows_of(&state, &NodeId::File(2));
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    t!("Backup file name").into_owned(),
+                    plain("RefData~4~824.zip")
+                ),
+                (t!("File format").into_owned(), plain("zip")),
+                (t!("File size").into_owned(), human_size(0)),
+                (t!("Members").into_owned(), plain("0")),
+                (t!("Registered but missing").into_owned(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_member_details_name_its_file_and_the_member() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::FileMember(1, 1)),
+            vec![
+                (
+                    t!("Backup file name").into_owned(),
+                    plain("PlantData~2~711.zip")
+                ),
+                (t!("Member").into_owned(), plain("00/00/b.pid")),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_groups_group_details_count_groups_and_drawings() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::Groups),
+            vec![
+                (t!("Group count").into_owned(), plain("3")),
+                (t!("Drawing count").into_owned(), plain("3")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_group_details_name_its_path_and_its_drawing_subtree() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::Group(vec![0, 0])),
+            vec![
+                (t!("Group name").into_owned(), plain("00")),
+                (t!("Group path").into_owned(), plain("SQPlant / 00")),
+                (t!("Drawing count").into_owned(), plain("3")),
+            ],
+            "the count covers the group's own drawings and its child's"
+        );
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::Group(vec![0])),
+            vec![
+                (t!("Group name").into_owned(), plain("SQPlant")),
+                (t!("Group path").into_owned(), plain("SQPlant")),
+                (t!("Drawing count").into_owned(), plain("3")),
+            ],
+            "the parent counts the drawings of its whole subtree"
+        );
+    }
+
+    #[test]
+    fn a_group_details_translate_the_two_names_the_index_synthesises() {
+        let state = detail_state();
+        assert_eq!(
+            detail_fields(&state, &NodeId::Group(vec![1]))[0],
+            (
+                t!("Group name").into_owned(),
+                t!("Unregistered").into_owned()
+            )
+        );
+        assert_eq!(
+            detail_fields(&state, &NodeId::Group(vec![2]))[0],
+            (
+                t!("Group name").into_owned(),
+                t!("(ungrouped)").into_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn a_drawing_details_show_its_file_path_metadata_and_open_action() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::Drawing(0)),
+            vec![
+                (t!("Drawing name").into_owned(), plain("A-101")),
+                (t!("Group path").into_owned(), plain("SQPlant / 00")),
+                (
+                    t!("File path").into_owned(),
+                    plain("D:/tmp/restore/00/00/a.pid")
+                ),
+                (t!("Open drawing").into_owned(), String::new()),
+                (plain("id"), plain("1")),
+                (plain("PATH"), plain("00/00/a.pid")),
+            ],
+            "the file path, the open action, then every T_DRAWING column"
+        );
+    }
+
+    #[test]
+    fn a_missing_drawing_details_say_why_and_offer_no_open_action() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::Drawing(2)),
+            vec![
+                (t!("Drawing name").into_owned(), plain("C-303")),
+                (t!("Group path").into_owned(), plain("SQPlant / 00")),
+                (t!("Registered but missing").into_owned(), String::new()),
+                (plain("id"), plain("3")),
+            ]
+        );
+        let keys = detail_keys(&state, &NodeId::Drawing(2));
+        assert!(!keys.contains(&t!("Open drawing").into_owned()));
+        assert!(!keys.contains(&t!("File path").into_owned()));
+    }
+
+    #[test]
+    fn an_item_type_details_name_it_and_count_its_items() {
+        let mut state = detail_state();
+        update(
+            &mut state,
+            PidBackupMsg::ItemsLoaded(0, Ok(Arc::new(items_of("UID-1", "Instrument")))),
+        );
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::ItemType(0, 0)),
+            vec![
+                (t!("Item type").into_owned(), plain("Instrument")),
+                (t!("Item count").into_owned(), plain("1")),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_item_details_show_its_uid_type_class_and_every_attribute() {
+        let mut state = detail_state();
+        update(
+            &mut state,
+            PidBackupMsg::ItemsLoaded(0, Ok(Arc::new(items_of("UID-1", "Instrument")))),
+        );
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::Item(0, 0, 0)),
+            vec![
+                (t!("Item UID").into_owned(), plain("UID-1")),
+                (t!("Item type").into_owned(), plain("Instrument")),
+                (t!("Item class").into_owned(), plain("PIDInstrument")),
+                (t!("Item attributes").into_owned(), String::new()),
+                (
+                    plain("INamedInstrument.MeasuredVariable"),
+                    plain("T")
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_reference_group_details_count_every_reference_file() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::Ref),
+            vec![
+                (t!("Reference name").into_owned(), plain("Ref")),
+                (t!("Reference file count").into_owned(), plain("3")),
+            ],
+            "the count covers the whole Ref subtree"
+        );
+    }
+
+    #[test]
+    fn a_reference_directory_details_name_it_and_count_its_subtree() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::RefDir(vec![0])),
+            vec![
+                (t!("Reference name").into_owned(), plain("Symbols")),
+                (t!("Reference file count").into_owned(), plain("2")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reference_file_details_show_its_name_and_size() {
+        let state = detail_state();
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::RefFile(vec![], 0)),
+            vec![
+                (t!("Reference file name").into_owned(), plain("readme.txt")),
+                (t!("File size").into_owned(), human_size(12)),
+            ]
+        );
+        assert_eq!(
+            detail_rows_of(&state, &NodeId::RefFile(vec![0], 1)),
+            vec![
+                (t!("Reference file name").into_owned(), plain("valve.svg")),
+                (t!("File size").into_owned(), human_size(2048)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_node_out_of_range_and_an_idle_panel_have_no_details() {
+        let state = detail_state();
+        assert!(detail_rows_of(&state, &NodeId::File(99)).is_empty());
+        assert!(detail_rows_of(&state, &NodeId::Group(vec![9])).is_empty());
+        assert!(detail_rows_of(&state, &NodeId::RefDir(vec![7])).is_empty());
+        assert!(detail_rows_of(&state, &NodeId::Item(0, 0, 0)).is_empty());
+        assert!(detail_rows_of(&PidBackupBrowser::default(), &NodeId::Root).is_empty());
     }
 }
