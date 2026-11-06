@@ -237,6 +237,12 @@
         "responses": {"201": {"description": "Image handle"}, "400": {"description": "Attach failed"}}
       }
     },
+    "/api/v1/run": {
+      "post": {
+        "summary": "Run one protocol-1 request whose op the body names (e.g. {\"document_id\":D,\"op\":\"run\",\"cmd\":\"LINE 0,0 10,10\"}, or {\"document_id\":D,\"op\":\"cancel\"} to escape a live interactive command); a body without op is a plain command run",
+        "responses": {"200": {"description": "Request status"}, "400": {"description": "Request failed"}}
+      }
+    },
     "/api/v1/commands": {
       "post": {
         "summary": "Run one editor command line (e.g. \"LINE 0,0 10,10\"); send document_id when the drawing you mean is not the active one",

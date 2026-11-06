@@ -500,10 +500,11 @@ impl Plan {
     }
 }
 
-/// Wrap a body in the protocol-1 envelope for one op: the caller's
-/// `request_id` wins, an unstamped body gets a serial one — exactly what the
-/// generic `POST /api/v1/{op}` passthrough does, so an op that only exists on
-/// the envelope path (`capture`) reaches it.
+/// Wrap a body in the protocol-1 envelope for one op: the named op wins, the
+/// caller's `request_id` survives, an unstamped body gets a serial one. This
+/// is what every `POST` passthrough does, so an op that only exists on the
+/// envelope path (`capture`, `cancel`) reaches it instead of dying as
+/// "unknown op" on the legacy path.
 fn stamp_envelope(op: &str, mut body: Value) -> Value {
     body["op"] = json!(op);
     body["protocol"] = json!(1);
@@ -821,6 +822,23 @@ pub(crate) fn plan(method: &str, rest: &[&str], request: &HttpRequest) -> Plan {
             fields: body,
             created: 201,
         },
+        // `POST /run` carries its own op. The P&ID contract cancels a live
+        // insertion with `{"document_id":D,"op":"cancel"}` on this route
+        // (`VAL-DRAW-017`), and a route that rewrote the op to `run` — as the
+        // generic passthrough does with the path segment — would answer
+        // `command_busy` while a command is live instead of escaping it. The
+        // body's op wins; a body without one is the plain `run` of `cmd`.
+        ("POST", ["run"]) => {
+            let op = body["op"]
+                .as_str()
+                .filter(|op| !op.is_empty())
+                .unwrap_or("run")
+                .to_owned();
+            Plan::Run {
+                request: stamp_envelope(&op, body),
+                created: 200,
+            }
+        }
         ("POST", ["commands"]) => {
             let mut request = json!({"op":"run","cmd":body["cmd"]});
             if let Some(id) = body["document_id"].as_u64() {
@@ -1325,6 +1343,48 @@ mod tests {
         assert!(response.get("state").is_none(), "{response}");
     }
 
+    /// `POST /run` keeps the op its body names. The generic passthrough
+    /// overwrites `op` with the path segment, which turned
+    /// `{"op":"cancel"}` into a `run` and made it die on `command_busy`
+    /// while an insertion was live (`VAL-DRAW-017`); the dedicated route
+    /// must carry `cancel` through untouched.
+    #[test]
+    fn run_route_keeps_the_op_the_body_names() {
+        let Plan::Run { request: cancel, .. } = plan(
+            "POST",
+            &["run"],
+            &request(
+                "POST",
+                "/api/v1/run",
+                r#"{"document_id":7,"op":"cancel"}"#,
+            ),
+        ) else {
+            panic!("POST /run plans a run request")
+        };
+        assert_eq!(cancel["op"], "cancel", "{cancel}");
+        assert_eq!(cancel["document_id"], 7, "{cancel}");
+        assert_eq!(cancel["protocol"], 1, "{cancel}");
+        assert!(
+            cancel["request_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty()),
+            "{cancel}"
+        );
+
+        // A body with no op is still the plain command run it always was.
+        let Plan::Run {
+            request: plain, ..
+        } = plan(
+            "POST",
+            &["run"],
+            &request("POST", "/api/v1/run", r#"{"cmd":"LINE 0,0 10,0"}"#),
+        ) else {
+            panic!("POST /run plans a run request")
+        };
+        assert_eq!(plain["op"], "run", "{plain}");
+        assert_eq!(plain["cmd"], "LINE 0,0 10,0", "{plain}");
+    }
+
     /// `run` is not a query: the dispatcher refuses it without
     /// `document_id`, so the convenience route must forward the one the
     /// caller sent — same handling as undo/redo.
@@ -1419,6 +1479,128 @@ mod tests {
         assert_eq!(body["ok"], true, "{body}");
         assert_eq!(body["status"], "completed", "{body}");
         assert_eq!(entities(&mut app), before + 1, "{body}");
+    }
+
+    /// `VAL-DRAW-017` through the route the contract names: while an
+    /// insertion is live, `POST /api/v1/run` with `{"op":"cancel"}` must
+    /// escape it and answer `cancelled` — not `command_busy`, which is what
+    /// the generic passthrough produced by rewriting the op to `run`.
+    #[test]
+    fn run_cancel_escapes_a_live_command() {
+        let mut counter: u64 = 0;
+        let mut app = serve_app(true);
+        let doc = app.automation_op(r#"{"protocol":1,"op":"state"}"#)["document_id"]
+            .as_u64()
+            .expect("a document id exists");
+        let mut document_id: Option<u64> = Some(doc);
+        let entities = |app: &mut OpenCADStudio| -> u64 {
+            app.automation_op(r#"{"op":"entities"}"#)["total"]
+                .as_u64()
+                .unwrap_or(0)
+        };
+        let blocks = |app: &mut OpenCADStudio| -> u64 {
+            app.automation_op(r#"{"op":"entities"}"#)["by_type"]["Block Reference"]
+                .as_u64()
+                .unwrap_or(0)
+        };
+        let before = entities(&mut app);
+        let blocks_before = blocks(&mut app);
+
+        // A live command: `PIDINSERT` parks on its point step.
+        let (status, started) = route(
+            &mut app,
+            &request(
+                "POST",
+                "/api/v1/run",
+                &format!(r#"{{"document_id":{doc},"op":"run","cmd":"PIDINSERT vessel"}}"#),
+            ),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{started}");
+        assert_eq!(started["ok"], true, "{started}");
+        let state = app.automation_op(r#"{"protocol":1,"op":"state"}"#);
+        assert!(
+            !state["command"].is_null(),
+            "PIDINSERT 应停在取点步骤：{state}"
+        );
+
+        // The point without the confirming Enter: the preview hangs here.
+        let (status, picked) = route(
+            &mut app,
+            &request(
+                "POST",
+                "/api/v1/input",
+                &format!(
+                    r#"{{"document_id":{doc},"op":"input","kind":"point","point":[200,150,0]}}"#
+                ),
+            ),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{picked}");
+        assert_eq!(picked["ok"], true, "{picked}");
+
+        // The contract's cancel: same route, op in the body.
+        let (status, cancelled) = route(
+            &mut app,
+            &request(
+                "POST",
+                "/api/v1/run",
+                &format!(r#"{{"document_id":{doc},"op":"cancel"}}"#),
+            ),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{cancelled}");
+        assert_eq!(cancelled["ok"], true, "{cancelled}");
+        assert_eq!(cancelled["status"], "cancelled", "{cancelled}");
+        assert_ne!(cancelled["code"], "command_busy", "{cancelled}");
+
+        let state = app.automation_op(r#"{"protocol":1,"op":"state"}"#);
+        assert!(state["command"].is_null(), "取消后无活动命令：{state}");
+        assert_eq!(entities(&mut app), before, "取消后实体数不变");
+        assert_eq!(blocks(&mut app), blocks_before, "取消后 Block Reference 计数不变");
+
+        // A later insertion still commits: the escape left nothing behind.
+        let (status, started) = route(
+            &mut app,
+            &request(
+                "POST",
+                "/api/v1/run",
+                &format!(r#"{{"document_id":{doc},"op":"run","cmd":"PIDINSERT vessel"}}"#),
+            ),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{started}");
+        let (status, picked) = route(
+            &mut app,
+            &request(
+                "POST",
+                "/api/v1/input",
+                &format!(
+                    r#"{{"document_id":{doc},"op":"input","kind":"point","point":[250,250,0]}}"#
+                ),
+            ),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{picked}");
+        let (status, entered) = route(
+            &mut app,
+            &request(
+                "POST",
+                "/api/v1/input",
+                &format!(r#"{{"document_id":{doc},"op":"input","kind":"enter"}}"#),
+            ),
+            &mut document_id,
+            &mut counter,
+        );
+        assert_eq!(status, 200, "{entered}");
+        assert_eq!(entered["ok"], true, "{entered}");
+        assert_eq!(entities(&mut app), before + 1, "取消后再插入应提交一个实体");
+        assert_eq!(blocks(&mut app), blocks_before + 1, "新实体是一个 Block Reference");
     }
 
     /// The generic `POST /api/v1/{op}` passthrough must reach the protocol-1
