@@ -32,12 +32,12 @@
 //! `{序号}` 段按 `TagRule::pad` 补零；`{后缀}` 段**固定两位**
 //! （`format!("{n:02}")`），与 `pad` 无关，`-99` 之后是 `-100`，不截断不回绕。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use codec::{Document, Handle};
 
 use super::persist::PidAuthor;
-use super::tag_rule::{HierarchyMode, TagRule};
+use super::tag_rule::{default_tag_rule, HierarchyMode, TagRule};
 use super::type_lib::TypeLib;
 
 /// 位号来源：自动编码。
@@ -240,7 +240,7 @@ impl SequenceIndex {
             {
                 continue;
             }
-            let Some((rule, _)) = lib.resolve_tag_rule(type_code) else {
+            let Some(rule) = resolve_rule(lib, type_code).ok() else {
                 continue;
             };
             index.advance(type_code, &author.tag, &rule, &parse_props(&author.props));
@@ -295,6 +295,31 @@ impl SequenceIndex {
     fn occupant(&self, type_code: &str, tag: &str) -> Option<Handle> {
         self.occupied.get(type_code)?.get(tag).copied()
     }
+}
+
+/// 解析一个类型编码生效的位号规则。
+///
+/// 两条口径必须同时成立：
+///
+/// 1. **类型在库里**：只认类型树（本类型规则 → 沿 `parent` 上溯）。整条链
+///    都没有规则仍是 [`TagError::NoRule`] —— 这是 `empty_rule_reports_missing_rule`
+///    锁定的既有语义，不能被默认表掩盖。
+/// 2. **类型不在库里**：按 `architecture.md` A.9 的默认表兜底
+///    （[`default_tag_rule`]）。`VALVE` / `INSTRUMENT` 走这条：它们由符号库
+///    的 `symbol_type_map` 作为作者类型写进 `PID_AUTHOR`，但类型库因 D4 /
+///    D16 不能收它们。默认表里也没有的类型仍是 [`TagError::UnknownType`]。
+fn resolve_rule(lib: &TypeLib, type_code: &str) -> Result<TagRule, TagError> {
+    if lib.contains(type_code) {
+        return lib
+            .resolve_tag_rule(type_code)
+            .map(|(rule, _)| rule)
+            .ok_or_else(|| TagError::NoRule {
+                type_code: type_code.to_string(),
+            });
+    }
+    default_tag_rule(type_code).ok_or_else(|| TagError::UnknownType {
+        type_code: type_code.to_string(),
+    })
 }
 
 /// 模板骨架：把 `join` 声明的属性占位符渲染掉，保留 `{序号}` / `{后缀}`。
@@ -481,16 +506,7 @@ fn resolve_with_index(
     type_code: &str,
     props: &BTreeMap<String, String>,
 ) -> Result<TagView, TagError> {
-    if !lib.contains(type_code) {
-        return Err(TagError::UnknownType {
-            type_code: type_code.to_string(),
-        });
-    }
-    let Some((rule, _)) = lib.resolve_tag_rule(type_code) else {
-        return Err(TagError::NoRule {
-            type_code: type_code.to_string(),
-        });
-    };
+    let rule = resolve_rule(lib, type_code)?;
     // 自动编码关闭：位号为空、来源 manual、状态 ok、显示为空（VAL-SEM-013）。
     if !rule.auto_code {
         return Ok(TagView::empty());
@@ -591,7 +607,7 @@ impl<'a> TagSequencer<'a> {
         {
             return;
         }
-        let Some((rule, _)) = self.lib.resolve_tag_rule(type_code) else {
+        let Ok(rule) = resolve_rule(self.lib, type_code) else {
             return;
         };
         // 此处拿不到实例属性，按空表反解：模板无拼接字段时照常推进，有拼接
@@ -622,16 +638,7 @@ pub fn reevaluate(lib: &TypeLib, doc: &Document, handle: Handle) -> Result<TagVi
     }
 
     let type_code = author.type_code.as_str();
-    if !lib.contains(type_code) {
-        return Err(TagError::UnknownType {
-            type_code: type_code.to_string(),
-        });
-    }
-    let Some((rule, _)) = lib.resolve_tag_rule(type_code) else {
-        return Err(TagError::NoRule {
-            type_code: type_code.to_string(),
-        });
-    };
+    let rule = resolve_rule(lib, type_code)?;
     // 规则启停：自动编码关闭后，已生成位号的实例回到空位号视图。
     if !rule.auto_code {
         return Ok(TagView::empty());
@@ -662,11 +669,7 @@ pub fn check_unique(
     tag: &str,
     excluding: Option<Handle>,
 ) -> Result<(), TagError> {
-    let Some((rule, _)) = lib.resolve_tag_rule(type_code) else {
-        return Err(TagError::NoRule {
-            type_code: type_code.to_string(),
-        });
-    };
+    let rule = resolve_rule(lib, type_code)?;
     if !rule.unique || tag.is_empty() {
         return Ok(());
     }
@@ -690,6 +693,54 @@ pub fn store_view(doc: &mut Document, handle: Handle, view: &TagView) -> Result<
     author.tag_status = view.tag_status.clone();
     author.store(doc, handle);
     Ok(())
+}
+
+/// 按 `(类型编码, 位号)` 复合键重算全文档的 `tag_status`，返回状态有变化的实例。
+///
+/// 先到先得：文档顺序在前的实例保留位号，后来者标 `duplicated`。`edited`
+/// 里的实例排在最后参与比较 —— 刚被改成冲突值的那个才是冲突方，而不是
+/// 原本就持有该位号的实例。冲突解除后状态回到 `ok`；`tag` 本身从不改写。
+/// 规则未开启唯一校验、或类型无规则的实例一律视为 `ok`。
+pub fn refresh_statuses(lib: &TypeLib, doc: &mut Document, edited: &[Handle]) -> Vec<Handle> {
+    let mut records: Vec<(Handle, PidAuthor)> = doc
+        .entities()
+        .filter_map(|entity| {
+            let handle = entity.common().handle;
+            PidAuthor::load(doc, handle).map(|author| (handle, author))
+        })
+        .filter(|(_, author)| !author.type_code.is_empty())
+        .collect();
+    records.sort_by_key(|(handle, _)| edited.contains(handle));
+
+    let mut unique_of: HashMap<String, bool> = HashMap::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut changed = Vec::new();
+    for (handle, author) in records {
+        let unique = *unique_of
+            .entry(author.type_code.clone())
+            .or_insert_with(|| resolve_rule(lib, &author.type_code).is_ok_and(|rule| rule.unique));
+        let duplicated = unique
+            && !author.tag.is_empty()
+            && !seen.insert((author.type_code.clone(), author.tag.clone()));
+        let status = if duplicated {
+            TAG_STATUS_DUPLICATED
+        } else {
+            TAG_STATUS_OK
+        };
+        let current = if author.tag_status.is_empty() {
+            TAG_STATUS_OK
+        } else {
+            author.tag_status.as_str()
+        };
+        if current == status {
+            continue;
+        }
+        let view = TagView::new(author.tag.clone(), author.tag_source.clone(), status);
+        if store_view(doc, handle, &view).is_ok() {
+            changed.push(handle);
+        }
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -1274,5 +1325,123 @@ mod tests {
         assert_eq!(parsed.get("a").map(String::as_str), Some("1"));
         assert_eq!(parsed.get("b").map(String::as_str), Some("2"), "整数 2 应当归一成 \"2\"");
         assert_eq!(parsed.get("c").map(String::as_str), Some("true"));
+    }
+
+    // ── A.9 默认规则表兜底 ───────────────────────────────────────────────
+
+    /// 类型库只认 `EQUIPMENT`（M3 的 `assets/pid-types.json` 就是这样），
+    /// 而阀门符号落点的作者类型是 `VALVE`：库外类型按 A.9 默认表兜底，
+    /// 首个阀门得到 `V-1001`，第二个 `V-1002`。
+    #[test]
+    fn a_valve_outside_the_type_lib_takes_the_default_rule() {
+        let lib = lib_with(unique(rule("P-{序号}", 1001)));
+        let mut doc = Document::new();
+        let got = sequence(&lib, &mut doc, "VALVE", 2);
+        assert_eq!(got, vec!["V-1001", "V-1002"]);
+    }
+
+    /// 阀门与设备的序号空间互不相干：设备用到 `P-1003` 后，阀门仍从 `V-1001` 起。
+    #[test]
+    fn valve_and_equipment_sequences_are_independent() {
+        let lib = lib_with(unique(rule("P-{序号}", 1001)));
+        let mut doc = Document::new();
+        assert_eq!(
+            sequence(&lib, &mut doc, "EQUIPMENT", 3),
+            vec!["P-1001", "P-1002", "P-1003"]
+        );
+        assert_eq!(sequence(&lib, &mut doc, "VALVE", 1), vec!["V-1001"]);
+        assert_eq!(sequence(&lib, &mut doc, "EQUIPMENT", 1), vec!["P-1004"]);
+    }
+
+    /// 仪表默认模板取 `仪表功能` 属性做前缀（`TI-1001`）；属性缺失时按
+    /// `TemplateFieldMissing` 失败，不消耗序号。
+    #[test]
+    fn an_instrument_outside_the_type_lib_joins_its_function_prefix() {
+        let lib = lib_with(unique(rule("P-{序号}", 1001)));
+        let mut doc = Document::new();
+        let (_, view) = insert(&lib, &mut doc, "INSTRUMENT", &props(&[("仪表功能", "TI")]));
+        assert_eq!(view.expect("仪表位号生成成功").tag, "TI-1001");
+
+        let err = generate(&lib, &doc, "INSTRUMENT", &BTreeMap::new())
+            .expect_err("缺 仪表功能 必须失败");
+        assert_eq!(err.code(), "TAG_TEMPLATE_FIELD_MISSING");
+    }
+
+    /// 默认表兜底不掩盖库内语义：库里有的类型仍走类型树，整链无规则报
+    /// `TAG_RULE_MISSING`；默认表里也没有的编码仍是 `TAG_TYPE_UNKNOWN`。
+    #[test]
+    fn the_default_table_does_not_shadow_type_lib_semantics() {
+        let lib = TypeLib::new(vec![TypeNode::new("EQUIPMENT", None::<String>)]).unwrap();
+        let doc = Document::new();
+        assert_eq!(
+            generate(&lib, &doc, "EQUIPMENT", &BTreeMap::new())
+                .expect_err("库里无规则")
+                .code(),
+            "TAG_RULE_MISSING"
+        );
+        assert_eq!(
+            generate(&lib, &doc, "NOPE", &BTreeMap::new())
+                .expect_err("默认表也没有")
+                .code(),
+            "TAG_TYPE_UNKNOWN"
+        );
+    }
+
+    /// 手工把第 2 个实例改成第 1 个的位号：被改的那个标 `duplicated`（显示
+    /// `？`、位号原值保留），原持有者仍 `ok`；改回不冲突的值后两者都回到 `ok`。
+    #[test]
+    fn refresh_marks_the_edited_instance_duplicated_and_clears_it_again() {
+        let lib = lib_with(unique(rule("P-{序号}", 1001)));
+        let mut doc = Document::new();
+        let first = place(&mut doc, "EQUIPMENT", "P-1001", TAG_SOURCE_AUTO, TAG_STATUS_OK);
+        let second = place(&mut doc, "EQUIPMENT", "P-1001", TAG_SOURCE_MANUAL, TAG_STATUS_OK);
+
+        let changed = refresh_statuses(&lib, &mut doc, &[second]);
+        assert_eq!(changed, vec![second]);
+        let edited = PidAuthor::load(&doc, second).unwrap();
+        assert_eq!(edited.tag, "P-1001", "冲突时位号原值保留");
+        assert_eq!(edited.tag_status, TAG_STATUS_DUPLICATED);
+        assert_eq!(
+            TagView::new(edited.tag, edited.tag_source, edited.tag_status).display,
+            DUPLICATED_DISPLAY
+        );
+        assert_eq!(PidAuthor::load(&doc, first).unwrap().tag_status, TAG_STATUS_OK);
+
+        let mut fixed = PidAuthor::load(&doc, second).unwrap();
+        fixed.tag = "P-9001".into();
+        fixed.store(&mut doc, second);
+        assert_eq!(refresh_statuses(&lib, &mut doc, &[second]), vec![second]);
+        assert_eq!(PidAuthor::load(&doc, second).unwrap().tag_status, TAG_STATUS_OK);
+        assert!(refresh_statuses(&lib, &mut doc, &[]).is_empty(), "无变化时不改写");
+    }
+
+    /// 不同类型同位号不冲突（复合键）。
+    #[test]
+    fn refresh_keys_on_type_and_tag() {
+        let lib = lib_with(unique(rule("P-{序号}", 1001)));
+        let mut doc = Document::new();
+        place(&mut doc, "EQUIPMENT", "X-1", TAG_SOURCE_MANUAL, TAG_STATUS_OK);
+        place(&mut doc, "VALVE", "X-1", TAG_SOURCE_MANUAL, TAG_STATUS_OK);
+        assert!(refresh_statuses(&lib, &mut doc, &[]).is_empty());
+    }
+
+    /// 默认规则表覆盖 A.9 的五类，且都是唯一校验开启。
+    #[test]
+    fn default_rules_cover_the_documented_categories() {
+        for code in ["EQUIPMENT", "VALVE", "INSTRUMENT", "PIPE_LINE", "PIPE_RUN"] {
+            let rule = default_tag_rule(code).unwrap_or_else(|| panic!("{code} 应有默认规则"));
+            assert!(rule.unique, "{code} 的默认规则必须开启唯一校验");
+            assert!(rule.auto_code, "{code} 的默认规则必须开启自动编码");
+        }
+        assert_eq!(default_tag_rule("VALVE").unwrap().pattern, "V-{序号}");
+        assert_eq!(default_tag_rule("PIPE_LINE").unwrap().pattern, "L-{序号}");
+        assert_eq!(
+            default_tag_rule("INSTRUMENT").unwrap().join.as_deref(),
+            Some("仪表功能")
+        );
+        assert!(default_tag_rule("PIPE_RUN").unwrap().suffix_increment);
+        assert!(default_tag_rule("NOT_A_CATEGORY").is_none());
+        // 大小写不敏感：作者类型一律大写，但手写记录不该因此失效。
+        assert!(default_tag_rule("valve").is_some());
     }
 }

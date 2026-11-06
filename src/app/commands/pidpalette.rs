@@ -312,6 +312,90 @@ impl CadCommand for PidInsertCommand {
     }
 }
 
+/// ATTRIB tag of the label that shows a placement's `PID_AUTHOR` tag.
+pub(crate) const PID_TAG_ATTRIBUTE: &str = "PID_TAG";
+
+/// Text height of the tag label, drawing units.
+const PID_TAG_HEIGHT: f64 = 4.0;
+
+/// Gap between the symbol's highest point and the bottom of its tag label.
+const PID_TAG_GAP: f64 = 3.0;
+
+/// Fallback label offset for a symbol whose block has no measurable extent.
+const PID_TAG_FALLBACK_RISE: f64 = 15.0;
+
+/// Highest block-local y of the symbol's own geometry, so the label sits
+/// clear of it whatever the symbol's size.
+fn symbol_top(document: &codec::Document, block: &str) -> Option<f64> {
+    document
+        .entities_in_block(block)
+        .filter(|entity| !matches!(entity, codec::EntityType::Point(_)))
+        .map(|entity| entity.as_entity().bounding_box().max.y)
+        .filter(|y| y.is_finite())
+        .reduce(f64::max)
+}
+
+/// Make the Insert at `handle` carry an ATTRIB showing its `PID_AUTHOR` tag
+/// display string (`？` while the tag is duplicated), centred above the
+/// symbol. The label is an attribute of the reference, so it moves, rotates
+/// and is erased with the symbol, and it adds no entity of its own to the
+/// document. Returns whether the reference carries a P&ID tag label.
+pub(crate) fn sync_pid_tag_attribute(document: &mut codec::Document, handle: codec::Handle) -> bool {
+    use codec::entities::{AttributeEntity, HorizontalAlignment, VerticalAlignment};
+    use codec::types::Vector3;
+    let Some(author) = PidAuthor::load(document, handle) else {
+        return false;
+    };
+    let display =
+        crate::pid::tag_engine::TagView::new(author.tag, author.tag_source, author.tag_status)
+            .display;
+    let Some(codec::EntityType::Insert(insert)) = document.get_entity(handle) else {
+        return false;
+    };
+    // ATTRIB geometry is stored in world coordinates, so the block-local
+    // anchor is carried through the reference's own scale and rotation.
+    let rise = symbol_top(document, &insert.block_name)
+        .map(|top| top + PID_TAG_GAP)
+        .unwrap_or(PID_TAG_FALLBACK_RISE);
+    let scale = insert.y_scale().abs();
+    let (sin, cos) = insert.rotation.sin_cos();
+    let local_y = rise * scale;
+    let at = Vector3::new(
+        insert.insert_point.x - local_y * sin,
+        insert.insert_point.y + local_y * cos,
+        insert.insert_point.z,
+    );
+    let height = PID_TAG_HEIGHT * scale;
+    let rotation = insert.rotation;
+    let layer = insert.common.layer.clone();
+    let Some(codec::EntityType::Insert(insert)) = document.get_entity_mut(handle) else {
+        return false;
+    };
+    let attribute = match insert
+        .attributes
+        .iter_mut()
+        .position(|attribute| attribute.tag == PID_TAG_ATTRIBUTE)
+    {
+        Some(index) => &mut insert.attributes[index],
+        None => {
+            let mut attribute =
+                AttributeEntity::new(PID_TAG_ATTRIBUTE.to_string(), String::new());
+            attribute.common.layer = layer;
+            attribute.horizontal_alignment = HorizontalAlignment::Center;
+            attribute.vertical_alignment = VerticalAlignment::Bottom;
+            insert.attributes.push(attribute);
+            insert.attributes.last_mut().expect("just pushed")
+        }
+    };
+    attribute.value = display;
+    attribute.insertion_point = at;
+    attribute.alignment_point = at;
+    attribute.height = height;
+    attribute.rotation = rotation;
+    crate::scene::Scene::adopt_attributes(document, handle);
+    true
+}
+
 /// A symbol the library knows, resolved from a typed name.
 struct ResolvedSymbol {
     block: String,
@@ -514,6 +598,31 @@ impl OpenCADStudio {
             ..PidAuthor::default()
         };
         author.store(&mut self.tabs[i].scene.document, handle);
+        sync_pid_tag_attribute(&mut self.tabs[i].scene.document, handle);
+    }
+
+    /// After `PID_AUTHOR` records on `edited` were rewritten from outside the
+    /// placement path, re-run the uniqueness check across the document and
+    /// redraw every tag label whose text may have changed. The caller owns
+    /// the undo step.
+    pub(in crate::app) fn refresh_pid_tags(&mut self, i: usize, edited: &[codec::Handle]) {
+        let document = &mut self.tabs[i].scene.document;
+        let mut touched =
+            crate::pid::tag_engine::refresh_statuses(&TypeLib::embedded(), document, edited);
+        for handle in edited {
+            if !touched.contains(handle) {
+                touched.push(*handle);
+            }
+        }
+        touched.retain(|handle| sync_pid_tag_attribute(document, *handle));
+        if touched.is_empty() {
+            return;
+        }
+        let changes: Vec<_> = touched
+            .iter()
+            .map(|handle| (*handle, crate::scene::ChangeKind::Modified))
+            .collect();
+        self.tabs[i].scene.bump_entities(&changes);
     }
 
     /// A palette interaction: switch category, or click a symbol cell.
@@ -963,11 +1072,10 @@ mod tests {
     /// 阀门符号存的是它自己的类别编码：`VALVE_GATE` 不在内置类型树里
     /// （D16），所以 [`author_type_of`] 回落到分类 id 的规范写法。
     ///
-    /// 位号此时为空是已知且预期的：内置类型树没有 `VALVE` 节点，`generate`
-    /// 返回 `TAG_TYPE_UNKNOWN`，落盘的是 `TagView::empty()`（D14）。阀门
-    /// 位号（`V-1001`）连同默认规则表播种是 `drawing-tag-display` 的前置
-    /// 条件，`assets/pid-types.json` 由 `pid-type-lib` 拥有（AGENTS.md 3d.4），
-    /// 本 feature 不改它。
+    /// 位号来自 A.9 默认规则表：`VALVE` 不在类型库中，`tag_engine` 按作者类型
+    /// 编码查默认表得 `V-{序号}` / 起始 1001，所以首个阀门是 `V-1001`。
+    /// `assets/pid-types.json` 由 `pid-type-lib` 拥有（AGENTS.md 3d.4），本
+    /// feature 不改它 —— 兜底落在规则解析处。
     #[test]
     fn a_valve_placement_records_the_valve_category_code() {
         let mut app = app();
@@ -985,6 +1093,190 @@ mod tests {
             author.ports, "in1,out1",
             "阀门端口同样来自符号定义"
         );
+        assert_eq!(author.tag, "V-1001", "首个阀门位号来自 A.9 默认规则表");
+        assert_eq!(author.tag_source, "auto");
+        assert_eq!(author.tag_status, "ok");
+    }
+
+    /// `VAL-DRAW-019` / `020` / `023`：三个容器依次得到 `P-1001`、
+    /// `P-1002`、`P-1003`，随后的阀门从 `V-1001` 起（不接续 `P-1003`），
+    /// 已有 `P-*` 不变。
+    #[test]
+    fn consecutive_placements_increment_and_each_category_starts_at_its_own_origin() {
+        let mut app = app();
+        let mut tags = Vec::new();
+        for x in [200.0_f64, 400.0, 600.0] {
+            place(&mut app, "vessel", [x, 150.0, 0.0]);
+            tags.push(last_author(&app));
+        }
+        let expected = [
+            ("P-1001", "auto", "ok"),
+            ("P-1002", "auto", "ok"),
+            ("P-1003", "auto", "ok"),
+        ];
+        for (got, want) in tags.iter().zip(expected.iter()) {
+            assert_eq!(
+                (got.tag.as_str(), got.tag_source.as_str(), got.tag_status.as_str()),
+                *want,
+                "设备位号序列"
+            );
+        }
+
+        place(&mut app, "gate_valve", [800.0, 150.0, 0.0]);
+        let valve = last_author(&app);
+        assert_eq!(valve.type_code, "VALVE");
+        assert_eq!(valve.tag, "V-1001", "阀门从自己的起始编码开始");
+        assert_eq!(valve.tag_status, "ok");
+
+        // 已有三个 P-* 位号不变。
+        let after: Vec<String> = inserts(&app)
+            .iter()
+            .filter(|(_, block, _)| block == "PID_SYM_equipment_vessel")
+            .map(|(handle, _, _)| {
+                PidAuthor::load(
+                    &app.tabs[app.active_tab].scene.document,
+                    codec::Handle::new(u64::from_str_radix(handle, 16).unwrap()),
+                )
+                .expect("容器带记录")
+                .tag
+            })
+            .collect();
+        assert_eq!(after, vec!["P-1001", "P-1002", "P-1003"]);
+    }
+
+    /// 落点实体上 `PID_TAG` 属性的显示值。
+    fn tag_label(app: &OpenCADStudio, handle: &str) -> Option<String> {
+        let handle = codec::Handle::new(u64::from_str_radix(handle, 16).unwrap());
+        match app.tabs[app.active_tab].scene.document.get_entity(handle) {
+            Some(codec::EntityType::Insert(insert)) => insert
+                .attributes
+                .iter()
+                .find(|attribute| attribute.tag == PID_TAG_ATTRIBUTE)
+                .map(|attribute| attribute.value.clone()),
+            _ => None,
+        }
+    }
+
+    /// `VAL-DRAW-022`：每个落点都带一个显示位号的属性，有 handle、位于
+    /// 符号上方且不压住符号几何；三个相邻符号的标签互不重叠，且不增加
+    /// 逻辑实体数。
+    #[test]
+    fn each_placement_shows_its_tag_above_the_symbol() {
+        let mut app = app();
+        let before = entity_count(&app);
+        for x in [200.0_f64, 400.0, 600.0] {
+            place(&mut app, "vessel", [x, 150.0, 0.0]);
+        }
+        assert_eq!(entity_count(&app), before + 3, "标签不是独立实体");
+        let placed = inserts(&app);
+        let labels: Vec<_> = placed
+            .iter()
+            .map(|(handle, _, _)| tag_label(&app, handle).expect("落点带位号标签"))
+            .collect();
+        assert_eq!(labels, vec!["P-1001", "P-1002", "P-1003"]);
+
+        let document = &app.tabs[app.active_tab].scene.document;
+        for entity in document.entities() {
+            let codec::EntityType::Insert(insert) = entity else {
+                continue;
+            };
+            let attribute = &insert.attributes[0];
+            assert!(!attribute.common.handle.is_null(), "标签有自己的 handle");
+            assert_eq!(attribute.common.owner_handle, insert.common.handle);
+            assert!(insert.seqend_handle.is_some(), "属性序列有 SEQEND");
+            assert_eq!(attribute.insertion_point.x, insert.insert_point.x, "水平居中");
+            // vessel 的几何上沿是块内 y=12；标签底边在它之上。
+            assert!(attribute.insertion_point.y > insert.insert_point.y + 12.0);
+            assert!(attribute.insertion_point.y < insert.insert_point.y + 40.0);
+        }
+        let rendered: usize = document
+            .entities()
+            .filter_map(|entity| match entity {
+                codec::EntityType::Insert(insert) => Some(insert),
+                _ => None,
+            })
+            .map(|insert| {
+                crate::entities::insert::insert_attribute_entities(
+                    document,
+                    insert,
+                    1.0,
+                    crate::scene::BlockScalePolicy::FromInsert,
+                )
+                .len()
+            })
+            .sum();
+        assert_eq!(rendered, 3, "三个标签都走插入属性的渲染路径");
+
+        // 聚焦截图按实体框取景时要把标签框进去，否则标签落在视图边缘外。
+        let scene = &app.tabs[app.active_tab].scene;
+        for (handle, _, at) in &placed {
+            let handle = codec::Handle::new(u64::from_str_radix(handle, 16).unwrap());
+            let (lo, hi) = scene.insert_attribute_bounds(handle).expect("标签有包围盒");
+            assert!(lo.x < at[0] && hi.x > at[0], "标签框水平跨过符号中线");
+            assert!(lo.y > at[1] && hi.y < at[1] + 40.0, "标签框在符号上方");
+        }
+    }
+
+    /// `VAL-DRAW-021`：把第 2 个实体的位号经 `xdata_set` 手工设为 `P-1001`，
+    /// 该实体 `tag_status=duplicated`、`tag` 保留 `P-1001`，画布标签显示 `？`；
+    /// 第 1 个实体不受影响。撤销回到 `P-1002`，重做再回到 `？`。
+    #[test]
+    fn a_manual_duplicate_shows_the_conflict_mark_and_undoes() {
+        let mut app = app();
+        for x in [200.0_f64, 400.0, 600.0] {
+            place(&mut app, "vessel", [x, 150.0, 0.0]);
+        }
+        let placed = inserts(&app);
+        let (first, second) = (placed[0].0.clone(), placed[1].0.clone());
+        let handle = codec::Handle::new(u64::from_str_radix(&second, 16).unwrap());
+        let mut author =
+            PidAuthor::load(&app.tabs[app.active_tab].scene.document, handle).unwrap();
+        author.tag = "P-1001".into();
+        author.tag_source = "manual".into();
+        let data: Vec<serde_json::Value> = crate::pid::persist::encode(&author)
+            .iter()
+            .filter_map(|value| match value {
+                codec::xdata::XDataValue::String(text) => {
+                    Some(serde_json::json!({"code":1000,"value":text}))
+                }
+                _ => None,
+            })
+            .collect();
+        let set = request(
+            &mut app,
+            serde_json::json!({
+                "op":"xdata_set",
+                "handles":[second],
+                "app":"PID_AUTHOR",
+                "data":data,
+            }),
+        );
+        assert_eq!(set["ok"], true, "xdata_set 应成功：{set}");
+
+        let document = &app.tabs[app.active_tab].scene.document;
+        let edited = PidAuthor::load(document, handle).unwrap();
+        assert_eq!(edited.tag, "P-1001", "冲突时位号原值保留");
+        assert_eq!(edited.tag_status, "duplicated");
+        assert_eq!(tag_label(&app, &second).as_deref(), Some("？"));
+        assert_eq!(tag_label(&app, &first).as_deref(), Some("P-1001"));
+
+        let undone = request(&mut app, serde_json::json!({"op":"undo"}));
+        assert_eq!(undone["ok"], true, "undo：{undone}");
+        assert_eq!(tag_label(&app, &second).as_deref(), Some("P-1002"));
+        let redone = request(&mut app, serde_json::json!({"op":"redo"}));
+        assert_eq!(redone["ok"], true, "redo：{redone}");
+        assert_eq!(tag_label(&app, &second).as_deref(), Some("？"));
+    }
+
+    /// 最近一次落点实体的 `PID_AUTHOR` 记录。
+    fn last_author(app: &OpenCADStudio) -> PidAuthor {
+        let inserted = inserts(app);
+        let (handle, _, _) = inserted.last().expect("至少插入过一个符号");
+        PidAuthor::load(
+            &app.tabs[app.active_tab].scene.document,
+            codec::Handle::new(u64::from_str_radix(handle, 16).unwrap()),
+        )
+        .expect("落点实体必须带 PID_AUTHOR")
     }
 
     /// 符号的缺省缩放来自定义，不是硬编码的 1.0。

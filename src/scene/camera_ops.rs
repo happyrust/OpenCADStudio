@@ -730,12 +730,54 @@ impl Scene {
         self.camera_generation += 1;
     }
 
+    /// World box of the attributes a reference draws. The reference's wire
+    /// set carries only its block geometry, so without this a zoom to the
+    /// reference cuts off a label hung beside the symbol.
+    pub(crate) fn insert_attribute_bounds(&self, handle: Handle) -> Option<(glam::DVec3, glam::DVec3)> {
+        use codec::entities::Entity;
+        let Some(EntityType::Insert(insert)) = self.document.get_entity(handle) else {
+            return None;
+        };
+        crate::entities::insert::insert_attribute_entities(
+            &self.document,
+            insert,
+            1.0,
+            crate::scene::BlockScalePolicy::FromInsert,
+        )
+        .into_iter()
+        .filter_map(|attribute| match attribute {
+            EntityType::AttributeEntity(mut attribute) => {
+                // The stored box is anchored at the insertion point whatever
+                // the justification; re-anchor a centred label so the box
+                // covers the text actually drawn.
+                let width = attribute.estimated_width();
+                attribute.insertion_point.x -= width;
+                let mut bbox = attribute.bounding_box();
+                bbox.max.x += width;
+                bbox.min.y -= attribute.height;
+                let lo = glam::DVec3::new(bbox.min.x, bbox.min.y, bbox.min.z);
+                let hi = glam::DVec3::new(bbox.max.x, bbox.max.y, bbox.max.z);
+                (lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+            }
+            _ => None,
+        })
+        .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
+    }
+
     /// Fit the active view to the rendered bounds of the supplied entities.
     /// Returns false when the selection has no finite visible geometry.
     pub fn zoom_to_entities(&mut self, handles: &[Handle]) -> bool {
         let fallback_z = self.active_camera_target().z;
         let wires = self.wire_models_for(handles);
         let mut bounds = rendered_wire_bounds(&wires, fallback_z);
+        for handle in handles {
+            if let Some((lo, hi)) = self.insert_attribute_bounds(*handle) {
+                bounds = Some(match bounds {
+                    Some((min, max)) => (min.min(lo), max.max(hi)),
+                    None => (lo, hi),
+                });
+            }
+        }
 
         for handle in handles {
             let Some(mesh) = self.meshes.get(handle) else {

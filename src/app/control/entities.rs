@@ -365,6 +365,11 @@ impl OpenCADStudio {
                 );
             }
         }
+        // A rewritten author record can change a tag; its label and the
+        // uniqueness status of every same-type instance follow it.
+        if app == crate::pid::persist::PID_AUTHOR_APP {
+            self.refresh_pid_tags(i, &handles);
+        }
         let updated = handles.len();
         self.set_control_result(json!({ "updated": updated, "app": app }));
         Ok(Task::none())
