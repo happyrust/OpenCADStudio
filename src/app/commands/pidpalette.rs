@@ -397,14 +397,18 @@ pub(crate) fn sync_pid_tag_attribute(document: &mut codec::Document, handle: cod
 }
 
 /// A symbol the library knows, resolved from a typed name.
-struct ResolvedSymbol {
-    block: String,
-    label: String,
-    type_code: String,
+///
+/// `pub(super)` so the batch placement command (`super::pidbulk`) resolves a
+/// symbol through this one function instead of carrying a second copy of the
+/// symbol-library rules.
+pub(super) struct ResolvedSymbol {
+    pub(super) block: String,
+    pub(super) label: String,
+    pub(super) type_code: String,
     /// Canonical type code for `PID_AUTHOR`; see [`author_type_of`].
-    author_type: String,
+    pub(super) author_type: String,
     /// The symbol definition's default insertion scale.
-    scale: f64,
+    pub(super) scale: f64,
 }
 
 /// Fold a symbol's mapped type code up to the canonical category code the
@@ -463,6 +467,15 @@ fn resolve_symbol(library: &SymbolLibrary, name: &str) -> Option<ResolvedSymbol>
         }
     }
     None
+}
+
+/// [`resolve_symbol`] for the batch placement path, which lives in a sibling
+/// module and so cannot see the private one.
+pub(super) fn resolve_symbol_for_batch(
+    library: &SymbolLibrary,
+    name: &str,
+) -> Option<ResolvedSymbol> {
+    resolve_symbol(library, name)
 }
 
 impl OpenCADStudio {

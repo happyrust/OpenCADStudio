@@ -46,6 +46,7 @@ mod pdf_password;
 mod pdf_shx_text;
 mod pdf_underlay;
 mod pidbackup;
+mod pidbulk;
 mod pidlegend;
 mod pidpalette;
 pub(in crate::app) mod pidprops;

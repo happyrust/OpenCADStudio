@@ -1445,6 +1445,7 @@ impl OpenCADStudio {
                 "close":true,
                 "entities_copy_to":true,
                 "entities_create":true,
+                "pid_insert_batch":true,
                 "entities_delete":true,
                 "entities_transform":true,
                 "file_identity":true,

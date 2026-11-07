@@ -238,6 +238,7 @@ fn background_mutation(op: &str) -> bool {
             | "entities_create"
             | "entities_delete"
             | "entities_transform"
+            | "pid_insert_batch"
             | "text_replace"
             | "xdata_set"
             | "block_define"
@@ -1400,6 +1401,11 @@ impl OpenCADStudio {
             #[cfg(not(target_arch = "wasm32"))]
             "plot" => self.control_plot(req)?,
             "entities_create" => self.control_entities_create(req)?,
+            // Many P&ID placements in one step. A batch of 2000 costs one
+            // request instead of 6000 round trips, which is the only way the
+            // contract's tag-generation budget is about tags rather than
+            // about HTTP (`VAL-DRAW-031`).
+            "pid_insert_batch" => self.control_pid_insert_batch(req)?,
             "entities_delete" => self.control_entities_delete(req)?,
             "entities_transform" => self.control_entities_transform(req)?,
             "node_graph" => self.control_node_graph(req)?,
