@@ -845,6 +845,13 @@ impl OpenCADStudio {
         if self.tabs[i].active_cmd.is_some() {
             self.tabs[i].last_cmd = Some(cmd.to_string());
             self.sync_dyn_fields();
+            // A control client drives the command through `step_input`, not
+            // through the text field, so moving keyboard focus there buys it
+            // nothing — and the focus operation is a task that makes the
+            // request asynchronous, costing an extra round trip per step.
+            if self.control.routing {
+                return Task::none();
+            }
             self.focus_cmd_input()
         } else {
             Task::none()

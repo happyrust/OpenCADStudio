@@ -1370,7 +1370,14 @@ impl OpenCADStudio {
         // The rich text canvas owns keyboard editing itself. Leaving the
         // hidden command input focused would make it consume Left/Right before
         // the editor can handle them.
-        let focus = if self.mtext_editor.is_some() {
+        //
+        // A control client (`POST /api/v1/run`) feeds its steps through
+        // `step_input`, never through the text field, so keyboard focus buys
+        // it nothing — and the focus operation is a task, which would make
+        // every automated step asynchronous and cost an extra round trip.
+        let focus = if self.control.routing {
+            Task::none()
+        } else if self.mtext_editor.is_some() {
             self.unfocus_widgets()
         } else if self.text_inline.is_some() {
             // The in-place TEXT editor needs keyboard focus on its own field.

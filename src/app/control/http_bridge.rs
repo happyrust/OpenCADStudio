@@ -258,6 +258,7 @@ fn transact(
         return json!({"ok":false,"code":"response_timeout","error":"The GUI did not answer in time"});
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(wait);
+    let mut backoff = PollBackoff::default();
     while matches!(response["status"].as_str(), Some("accepted" | "running"))
         && std::time::Instant::now() < deadline
     {
@@ -277,7 +278,7 @@ fn transact(
                 {"ok":false,"code":"client_disconnected","error":"The HTTP client hung up; the pending pick was cancelled"}
             );
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(backoff.next_delay());
         let poll_id = response["request_id"].clone();
         let Some(poll) = call(
             sender,
@@ -306,6 +307,46 @@ fn transact(
         }
     }
     response
+}
+
+/// Delay between `operation` polls of a request that answered `accepted`.
+///
+/// Most such requests (a command step, a point fed to the active command)
+/// settle within a frame or two, so a fixed 100 ms sleep made every one of
+/// them cost at least 100 ms of idle wait. For the first 50 ms the request
+/// is polled every 2 ms (a poll is an in-process channel round trip); after
+/// that the delay doubles up to the old 100 ms, so a long operation (plot,
+/// save, a parked pick) is still polled no more often than before.
+#[derive(Debug)]
+struct PollBackoff {
+    next: Duration,
+    waited: Duration,
+}
+
+/// Interval of the fast phase.
+const POLL_FAST: Duration = Duration::from_millis(2);
+/// How long the fast phase lasts before the delay starts doubling.
+const POLL_FAST_WINDOW: Duration = Duration::from_millis(50);
+const POLL_MAX: Duration = Duration::from_millis(100);
+
+impl Default for PollBackoff {
+    fn default() -> Self {
+        Self {
+            next: POLL_FAST,
+            waited: Duration::ZERO,
+        }
+    }
+}
+
+impl PollBackoff {
+    fn next_delay(&mut self) -> Duration {
+        let delay = self.next;
+        self.waited += delay;
+        if self.waited >= POLL_FAST_WINDOW {
+            self.next = (self.next * 2).min(POLL_MAX);
+        }
+        delay
+    }
 }
 
 /// True once the HTTP client has hung up: a graceful close surfaces as EOF,
@@ -454,6 +495,22 @@ mod tests {
             .and_then(|code| code.parse().ok())
             .unwrap();
         (status, serde_json::from_slice(&payload).unwrap())
+    }
+
+    /// An `accepted` request is re-polled every 2 ms for its first 50 ms,
+    /// then the delay doubles to the old 100 ms ceiling: a step that settles in a frame is not charged a
+    /// whole 100 ms sleep, and a long operation is never polled faster than
+    /// every 100 ms once it has run for a while.
+    #[test]
+    fn operation_polls_start_fast_and_back_off_to_the_old_interval() {
+        let mut backoff = PollBackoff::default();
+        let delays: Vec<u64> = (0..33)
+            .map(|_| backoff.next_delay().as_millis() as u64)
+            .collect();
+        // 前 50 ms 每 2 ms 一轮（25 次），之后翻倍直到 100 ms 封顶。
+        assert!(delays[..25].iter().all(|d| *d == 2), "{delays:?}");
+        assert_eq!(&delays[25..], &[4, 8, 16, 32, 64, 100, 100, 100]);
+        assert!(delays[0] < 10, "首次轮询的等待应远小于 100 ms");
     }
 
     #[test]

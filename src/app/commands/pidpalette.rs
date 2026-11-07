@@ -1539,4 +1539,76 @@ mod tests {
             rotations[0]
         );
     }
+
+    /// 一条协议 1 请求，**不**驱动它返回的任务，并断言它一个任务都没排。
+    ///
+    /// `VAL-DRAW-030` / `VAL-DRAW-032` 的机制前提就在这个断言上：一个
+    /// 自动化步骤只要排了异步任务（键盘焦点、重绘请求），请求就先回
+    /// `accepted`，REST 侧必须再等一轮轮询才拿到结果。一次插入是三步，
+    /// 三步都异步就是三条额外往返 —— 单次往返 30 ms 时正好把中位数顶过
+    /// 100 ms。
+    fn synchronous_step(
+        app: &mut OpenCADStudio,
+        mut req: serde_json::Value,
+        serial: u64,
+    ) -> serde_json::Value {
+        let state = app.control_state();
+        req["protocol"] = serde_json::json!(1);
+        req["document_id"] = state["document_id"].clone();
+        req["revision"] = state["revision"].clone();
+        req["client_id"] = serde_json::json!("test");
+        req["request_id"] = serde_json::json!(format!("perf-{serial}"));
+        let (response, task) = app.control_request(req);
+        assert_eq!(
+            task.units(),
+            0,
+            "自动化的一步不得为自己排异步任务：{response}"
+        );
+        response
+    }
+
+    /// `VAL-DRAW-030` / `VAL-DRAW-032`：插入的三步（起命令、喂点、回车）在
+    /// 控制面路径上都是同步结算的，因此 REST 每次只需一次往返。
+    #[test]
+    fn an_automated_insert_settles_each_step_without_an_async_task() {
+        let mut app = app();
+        let started = synchronous_step(
+            &mut app,
+            serde_json::json!({"op":"run","cmd":"PIDINSERT vessel"}),
+            1,
+        );
+        assert_eq!(started["status"], "waiting_input", "{started}");
+        let picked = synchronous_step(
+            &mut app,
+            serde_json::json!({
+                "op":"input","kind":"point","point":[200.0,150.0,0.0],"space":"wcs",
+            }),
+            2,
+        );
+        assert_eq!(picked["status"], "waiting_input", "{picked}");
+        let placed = synchronous_step(&mut app, serde_json::json!({"op":"input","kind":"enter"}), 3);
+        assert_eq!(placed["status"], "completed", "{placed}");
+        assert_eq!(inserts(&app).len(), 1, "落点应真的提交");
+    }
+
+    /// 同一条路径上的普通命令（LINE）也必须是同步的，否则这条断言只覆盖
+    /// 了 PIDINSERT 一个特例。
+    #[test]
+    fn an_automated_line_command_settles_without_an_async_task() {
+        let mut app = app();
+        let started = synchronous_step(
+            &mut app,
+            serde_json::json!({"op":"run","cmd":"LINE"}),
+            1,
+        );
+        assert_eq!(started["status"], "waiting_input", "{started}");
+        let first = synchronous_step(
+            &mut app,
+            serde_json::json!({
+                "op":"input","kind":"point","point":[0.0,0.0,0.0],"space":"wcs",
+            }),
+            2,
+        );
+        assert_eq!(first["status"], "waiting_input", "{first}");
+    }
 }
