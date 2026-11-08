@@ -1127,7 +1127,13 @@ pub(crate) fn map_status(response: Value, created: bool) -> u16 {
     }
     match response["code"].as_str().unwrap_or("") {
         "entity_absent" | "unknown_route" => 404,
-        "stale_state" | "session_changed" | "document_not_active" | "gui_required" => 409,
+        // 同一线号同图第二个流入连接符是「与现有资源冲突」，不是请求格式错。
+        // `CONNECTOR_KIND_MISMATCH` 保持 400（契约 A.7 明文）。
+        "stale_state"
+        | "session_changed"
+        | "document_not_active"
+        | "gui_required"
+        | "DUPLICATE_INFLOW_CONNECTOR" => 409,
         "busy" => 503,
         _ => 400,
     }

@@ -1206,6 +1206,12 @@ impl OpenCADStudio {
                 }))
             // `PIDFITTING <symbol>` takes its symbol on the same line.
             || tokens[0].eq_ignore_ascii_case("PIDFITTING")
+            // `PIDCONNECTOR <kind> [<peer>]` takes its kind (and optional
+            // cross-drawing peer) on the same line; the verb alone would start
+            // the picker and swallow the kind as a point.
+            || tokens[0].eq_ignore_ascii_case("PIDCONNECTOR")
+            // `PIDPAIR <handle> <drawing_id>:<handle>` is one whole line.
+            || tokens[0].eq_ignore_ascii_case("PIDPAIR")
         {
             return self.dispatch_command(cmd);
         }

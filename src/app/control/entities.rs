@@ -502,6 +502,9 @@ impl OpenCADStudio {
             // 写 `PID_AUTHOR` 之后自动重算下传链（`architecture.md` A.7），
             // 不引入独立的 propagate op。
             self.propagate_pid_chain(i, &handles);
+            // 连接符的 `connector_peer` 变了要同步拓扑表并触发属性传递
+            // （`VAL-PIPE-026` / `027`）。
+            self.sync_connectors_after_xdata(i, &handles);
         }
         let updated = handles.len();
         self.set_control_result(json!({ "updated": updated, "app": app }));

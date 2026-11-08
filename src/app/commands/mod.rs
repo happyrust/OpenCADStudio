@@ -47,6 +47,7 @@ mod pdf_shx_text;
 mod pdf_underlay;
 mod pidbackup;
 mod pidbulk;
+mod pidconnector;
 mod pidlegend;
 pub(in crate::app) mod pidmove;
 mod pidpalette;
@@ -839,6 +840,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_pidpipe(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_pidconnector(cmd, i) {
+            return Some(t);
+        }
         None
     }
 
@@ -1474,11 +1478,13 @@ inventory::submit!(crate::command::CommandRegistration {
         // pid-parse's own plotter; and a drawing opened out of a SmartPlant
         // backup.
         "PIDBACKUPOPEN",
+        "PIDCONNECTOR",
         "PIDFITTING",
         "PIDGROUP",
         "PIDINSERT",
         "PIDLEGEND",
         "PIDLINE",
+        "PIDPAIR",
         "PIDPALETTE",
         "PIDPIPE",
         "PIDPLOT",

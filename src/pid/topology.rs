@@ -56,6 +56,100 @@ pub const TYPE_VALVE: &str = "VALVE";
 /// 阀门两个拓扑端口的别名，顺序即 `连接点1` → `连接点2`。
 pub const VALVE_PORT_NAMES: [&str; 2] = ["连接点1", "连接点2"];
 
+/// 页间连接符的四个 `kind` 字面量，逐字照抄契约（`PIDCONNECTOR <kind>`）。
+pub const KIND_PIPE_IN: &str = "pipe_in";
+/// 管道流出连接符。
+pub const KIND_PIPE_OUT: &str = "pipe_out";
+/// 信号线流入连接符。
+pub const KIND_SIGNAL_IN: &str = "signal_in";
+/// 信号线流出连接符。
+pub const KIND_SIGNAL_OUT: &str = "signal_out";
+
+/// 同一线号同图第二个流入连接符的错误码（HTTP 409）。
+pub const DUPLICATE_INFLOW_CONNECTOR: &str = "DUPLICATE_INFLOW_CONNECTOR";
+/// 管道连接符选到信号线（或反向）的错误码（HTTP 400）。
+pub const CONNECTOR_KIND_MISMATCH: &str = "CONNECTOR_KIND_MISMATCH";
+/// 落点不在任何管线/信号线上。
+pub const CONNECTOR_NO_LINE: &str = "CONNECTOR_NO_LINE";
+/// 配对的两个连接符种类不相配（都流入、都流出，或管道对信号线）。
+pub const CONNECTOR_PEER_INVALID: &str = "CONNECTOR_PEER_INVALID";
+
+/// 四种页间连接符。
+///
+/// `topology` 只有 `connector_in` / `connector_out` 两个取值，管道与信号线
+/// 靠实体 XDATA 的 `type` 键区分（`PIPE_LINE` vs `SIGNAL_LINE`）——
+/// `VAL-PIPE-023` 明写「若 `topology` + `type` 无法区分这 4 种，记 FAIL」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectorKind {
+    /// 管道流入。
+    PipeIn,
+    /// 管道流出。
+    PipeOut,
+    /// 信号线流入。
+    SignalIn,
+    /// 信号线流出。
+    SignalOut,
+}
+
+impl ConnectorKind {
+    /// 从命令参数解析。大小写不敏感；非法值返回 `None`。
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            KIND_PIPE_IN => Some(Self::PipeIn),
+            KIND_PIPE_OUT => Some(Self::PipeOut),
+            KIND_SIGNAL_IN => Some(Self::SignalIn),
+            KIND_SIGNAL_OUT => Some(Self::SignalOut),
+            _ => None,
+        }
+    }
+
+    /// 契约字面量，写进拓扑表的 `kind`。
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PipeIn => KIND_PIPE_IN,
+            Self::PipeOut => KIND_PIPE_OUT,
+            Self::SignalIn => KIND_SIGNAL_IN,
+            Self::SignalOut => KIND_SIGNAL_OUT,
+        }
+    }
+
+    /// 实体 XDATA 的 `topology` 角色。
+    #[must_use]
+    pub fn role(self) -> &'static str {
+        match self {
+            Self::PipeIn | Self::SignalIn => ROLE_CONNECTOR_IN,
+            Self::PipeOut | Self::SignalOut => ROLE_CONNECTOR_OUT,
+        }
+    }
+
+    /// 实体 XDATA 的 `type` 编码，也是它与线体种类匹配的判据。
+    #[must_use]
+    pub fn type_code(self) -> &'static str {
+        match self {
+            Self::PipeIn | Self::PipeOut => TYPE_PIPE_LINE,
+            Self::SignalIn | Self::SignalOut => TYPE_SIGNAL_LINE,
+        }
+    }
+
+    /// 载体线的拓扑角色：管道连接符挂在 `pipe_line` 上，信号线连接符挂在
+    /// `signal_line` 上。
+    #[must_use]
+    pub fn host_role(self) -> &'static str {
+        match self {
+            Self::PipeIn | Self::PipeOut => ROLE_PIPE_LINE,
+            Self::SignalIn | Self::SignalOut => ROLE_SIGNAL_LINE,
+        }
+    }
+
+    /// 是否是流入连接符（同一线号同图至多一个）。
+    #[must_use]
+    pub fn is_inflow(self) -> bool {
+        matches!(self, Self::PipeIn | Self::SignalIn)
+    }
+}
+
 /// `handle` → 十六进制字符串，与 REST 的 `handle` 字段同编码。
 #[must_use]
 pub fn handle_text(handle: Handle) -> String {
@@ -412,6 +506,54 @@ impl TopologyTable {
             })
             .collect()
     }
+
+    /// 按 handle 找连接符。
+    #[must_use]
+    pub fn connector_by_handle(&self, handle: Handle) -> Option<&ConnectorRecord> {
+        let text = handle_text(handle);
+        self.connectors.iter().find(|item| item.handle == text)
+    }
+
+    /// 按 handle 找连接符（可变）。
+    pub fn connector_by_handle_mut(&mut self, handle: Handle) -> Option<&mut ConnectorRecord> {
+        let text = handle_text(handle);
+        self.connectors.iter_mut().find(|item| item.handle == text)
+    }
+
+    /// 同一线号在同一张图上是否已有该方向的连接符。
+    ///
+    /// 契约只约束**流入**方向（`VAL-PIPE-024`），流出可重复。
+    #[must_use]
+    pub fn has_inflow_connector(&self, line_tag: &str) -> bool {
+        self.connectors.iter().any(|item| {
+            item.line_tag == line_tag
+                && item
+                    .kind_of()
+                    .is_some_and(|kind| kind.is_inflow())
+        })
+    }
+
+    /// 按线号找该线上全部连接符。
+    #[must_use]
+    pub fn connectors_of(&self, line_tag: &str) -> Vec<&ConnectorRecord> {
+        self.connectors
+            .iter()
+            .filter(|item| item.line_tag == line_tag)
+            .collect()
+    }
+
+    /// 落一条连接符。同一 handle 已存在时原地替换（重跑幂等）。
+    pub fn upsert_connector(&mut self, record: ConnectorRecord) {
+        if let Some(existing) = self
+            .connectors
+            .iter_mut()
+            .find(|item| item.handle == record.handle)
+        {
+            *existing = record;
+            return;
+        }
+        self.connectors.push(record);
+    }
 }
 
 /// 一条管线。
@@ -527,6 +669,39 @@ pub struct ConnectorRecord {
     /// 对端 `<drawing_id>:<handle>`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer: Option<String>,
+    /// 对端图纸标识（`peer` 冒号前那一段的副本，便于只读跳转）。
+    /// `VAL-PIPE-027` 要求连接符条目含可读的图纸跳转信息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_drawing: Option<String>,
+    /// 上游/下游头尾信息：本侧线体在配对前的首尾 handle 位号。
+    /// 管道连接符传宿主管路位号，信号线连接符传宿主线位号。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    /// 下游头尾信息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downstream: Option<String>,
+}
+
+impl ConnectorRecord {
+    /// 一条尚未配对的连接符。
+    #[must_use]
+    pub fn new(handle: String, kind: ConnectorKind, line_tag: String) -> Self {
+        Self {
+            handle,
+            kind: kind.as_str().to_string(),
+            line_tag,
+            peer: None,
+            peer_drawing: None,
+            upstream: None,
+            downstream: None,
+        }
+    }
+
+    /// 本条记录的 `kind` 解析回枚举。
+    #[must_use]
+    pub fn kind_of(&self) -> Option<ConnectorKind> {
+        ConnectorKind::parse(&self.kind)
+    }
 }
 
 // ── 命令请求 ─────────────────────────────────────────────────────────────
@@ -571,6 +746,34 @@ pub struct FittingRequest {
     pub point: [f64; 3],
 }
 
+/// 一个 `PIDCONNECTOR` 请求：连接符种类 + 落点 + 可选对端。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConnectorRequest {
+    /// 四种连接符之一。
+    pub kind: ConnectorKind,
+    /// 世界坐标落点（必须落在宿主管线/信号线上）。
+    pub point: [f64; 3],
+    /// 可选对端 `<drawing_id>:<handle>`；给了就顺手配对。
+    pub peer: Option<String>,
+}
+
+/// 把 `(drawing_id, handle)` 拼成跨图 `peer` 文本。
+#[must_use]
+pub fn peer_text(drawing_id: u64, handle: Handle) -> String {
+    format!("{drawing_id}:{}", handle_text(handle))
+}
+
+/// 解析跨图 `peer` 文本为 `(drawing_id, handle)`。
+///
+/// `drawing_id` 取 `GET /api/v1/documents` 的 `document_id`（不是文件名），
+/// 冒号后是本图连接符的十六进制 handle（大小写不敏感）。
+#[must_use]
+pub fn parse_peer(text: &str) -> Option<(u64, Handle)> {
+    let (drawing, handle) = text.trim().split_once(':')?;
+    let drawing = drawing.trim().parse::<u64>().ok()?;
+    parse_handle(handle).map(|handle| (drawing, handle))
+}
+
 /// 一个 P&ID 拓扑命令交给宿主的提交请求。
 ///
 /// 命令本身只收点，落盘（建实体、写 `PID_AUTHOR`、维护拓扑表）由
@@ -582,6 +785,8 @@ pub enum PipeCommit {
     Pipe(PipeRequest),
     /// `PIDFITTING`：在命中的管段上插管件。
     Fitting(FittingRequest),
+    /// `PIDCONNECTOR`：在命中的管线/信号线上插页间连接符。
+    Connector(ConnectorRequest),
 }
 
 #[cfg(test)]
@@ -671,7 +876,10 @@ mod tests {
             handle: handle_text(line_handle),
             kind: "pipe_in".to_string(),
             line_tag: "L-1001".to_string(),
-            peer: Some("PID-1102:2B7".to_string()),
+            peer: Some("7:2B7".to_string()),
+            peer_drawing: Some("7".to_string()),
+            upstream: Some("L-1001".to_string()),
+            downstream: Some("L-2001".to_string()),
         });
         table.store(&mut doc);
 
@@ -687,7 +895,9 @@ mod tests {
             format!("{}:连接点1", handle_text(valve)).as_str()
         ));
         assert_eq!(back.fittings[0].ports.len(), 2);
-        assert_eq!(back.connectors[0].peer.as_deref(), Some("PID-1102:2B7"));
+        assert_eq!(back.connectors[0].peer.as_deref(), Some("7:2B7"));
+        assert_eq!(back.connectors[0].peer_drawing.as_deref(), Some("7"));
+        assert_eq!(back.connectors[0].upstream.as_deref(), Some("L-1001"));
     }
 
     /// 管段记录序列化后**没有** `tag` 键（`VAL-PIPE-005` 的拓扑表判据）。

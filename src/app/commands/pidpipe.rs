@@ -245,6 +245,7 @@ impl OpenCADStudio {
         match commit {
             PipeCommit::Pipe(request) => self.commit_pid_pipe(i, request),
             PipeCommit::Fitting(request) => self.commit_pid_fitting(i, request),
+            PipeCommit::Connector(request) => self.commit_pid_connector(i, request),
         }
     }
 
