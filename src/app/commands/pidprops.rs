@@ -11,8 +11,12 @@
 
 use super::*;
 use crate::pid::persist::PidAuthor;
-use crate::pid::propagate::{join_props, set_prop_manual, split_props};
+use crate::pid::propagate::{
+    apply, join_props, propagate_line_to_runs, propagate_run_to_segments, set_prop_manual,
+    split_props, LINE_FIELDS,
+};
 use crate::pid::tag_engine::{TagView, TAG_SOURCE_MANUAL};
+use crate::pid::topology::{parse_handle, TopologyTable};
 use crate::scene::model::object::{PropSection, PropValue, Property};
 use crate::t;
 
@@ -156,9 +160,153 @@ impl OpenCADStudio {
         }
         let edited: Vec<codec::Handle> = changed.iter().map(|(handle, _)| *handle).collect();
         self.refresh_pid_tags(i, &edited);
+        // 手工改管路字段之后，管路当前值要立刻下传给它的管段
+        // （`VAL-PIPE-010`）；改管线字段同理级联到管路再级联到管段。
+        self.propagate_pid_chain(i, &edited);
         self.tabs[i].dirty = true;
         true
     }
+
+    /// 属性下传重算：`edited` 里的管线/管路按「管线 → 管路 → 管段」级联。
+    ///
+    /// 唯一的重算入口。写 `PID_AUTHOR` XDATA 的每条路径（REST `xdata_set`、
+    /// 属性面板提交、`PIDPIPE` 创建管路与管段）都在写完自己的记录之后调它，
+    /// 因此不存在独立的 propagate op（`architecture.md` A.7）。
+    ///
+    /// 返回本批实际被改写的实体 handle，供调用方刷新画布与撤销步。调用方
+    /// 负责 undo 快照的包围（一次操作一个快照）。
+    pub(in crate::app) fn propagate_pid_chain(
+        &mut self,
+        i: usize,
+        edited: &[codec::Handle],
+    ) -> Vec<codec::Handle> {
+        if self.tabs[i].is_start {
+            return Vec::new();
+        }
+        let mut written: Vec<codec::Handle> = Vec::new();
+        {
+            let document = &mut self.tabs[i].scene.document;
+            let mut table = TopologyTable::load(document);
+            table.prune(document);
+            // 表里的 `props` / `overrides` 是 XDATA 的副本；编辑刚发生，
+            // 先对齐，否则会拿旧值去比、错判成「无变化」。
+            table.sync_props_from_document(document);
+
+            let mut lines: Vec<String> = Vec::new();
+            let mut runs: Vec<String> = Vec::new();
+            for &handle in edited {
+                if let Some(tag) = table.line_tag_of_handle(handle) {
+                    if !lines.contains(&tag) {
+                        lines.push(tag);
+                    }
+                } else if let Some(tag) = table.run_tag_of_handle(handle) {
+                    if !runs.contains(&tag) {
+                        runs.push(tag);
+                    }
+                }
+            }
+
+            // 第 1 环：管线 → 管路。
+            for line_tag in &lines {
+                let Some(line_handle) = table
+                    .line_by_tag(line_tag)
+                    .and_then(|line| parse_handle(&line.handle))
+                else {
+                    continue;
+                };
+                let run_handles = table.run_handles_of(line_tag);
+                if run_handles.is_empty() {
+                    continue;
+                }
+                let batch = propagate_line_to_runs(document, line_handle, &run_handles);
+                if batch.is_empty() {
+                    continue;
+                }
+                apply(document, &batch);
+                for write in &batch.writes {
+                    written.push(write.handle);
+                    // 刚跟随的管路要接着把值送到自己的管段（第 2 环）。
+                    if let Some(tag) = table.run_tag_of_handle(write.handle) {
+                        if !runs.contains(&tag) {
+                            runs.push(tag);
+                        }
+                    }
+                }
+            }
+
+            // 第 2 环：管路 → 管段。管段不直连管线，始终取管路当前值。
+            for run_tag in &runs {
+                let Some(run_handle) = table
+                    .pipe_runs
+                    .iter()
+                    .find(|run| &run.tag == run_tag)
+                    .and_then(|run| parse_handle(&run.handle))
+                else {
+                    continue;
+                };
+                let segments = table.segment_handles_of(run_tag);
+                if segments.is_empty() {
+                    continue;
+                }
+                let batch = propagate_run_to_segments(document, run_handle, &segments);
+                if batch.is_empty() {
+                    continue;
+                }
+                apply(document, &batch);
+                written.extend(batch.writes.iter().map(|write| write.handle));
+            }
+
+            if !table.is_empty() {
+                table.sync_props_from_document(document);
+                table.store(document);
+            }
+        }
+        written.sort();
+        written.dedup();
+        if !written.is_empty() {
+            let changes: Vec<_> = written
+                .iter()
+                .map(|handle| (*handle, crate::scene::ChangeKind::Modified))
+                .collect();
+            self.tabs[i].scene.bump_entities(&changes);
+        }
+        written
+    }
+}
+
+/// 一条管路的手工改值若动了某个下传字段，就给它打上覆盖标记。
+///
+/// 「手工改」的判据是「新值与旧值不同」而不是「来自哪个入口」：属性面板
+/// 提交与 REST `xdata_set` 都是用户手工改值，两者必须同语义
+/// （`VAL-PIPE-008`）。下传写入走 `PidAuthor::store`，不经这里，因此不会
+/// 被误打标记。
+pub(in crate::app) fn mark_manual_run_overrides(
+    document: &mut codec::Document,
+    handle: codec::Handle,
+    before: &std::collections::BTreeMap<String, String>,
+) {
+    let Some(author) = PidAuthor::load(document, handle) else {
+        return;
+    };
+    if !author.type_code.eq_ignore_ascii_case(crate::pid::topology::TYPE_PIPE_RUN) {
+        return;
+    }
+    let (props, mut marks) = split_props(&author.props);
+    let mut added = false;
+    for field in LINE_FIELDS {
+        let now = props.get(field);
+        let was = before.get(field);
+        if now != was && now.is_some() {
+            marks.insert(field.to_string());
+            added = true;
+        }
+    }
+    if !added {
+        return;
+    }
+    let mut author = author;
+    author.props = join_props(&props, &marks);
+    author.store(document, handle);
 }
 
 #[cfg(test)]
@@ -359,5 +507,95 @@ mod tests {
                 .map(|attribute| attribute.value.clone()),
             _ => None,
         }
+    }
+
+    // ── 属性下传：属性面板这条通道 ────────────────────────────────────────
+
+    use crate::pid::propagate::{overrides_of, props_of, LINE_FIELDS};
+    use crate::pid::topology::{parse_handle, TopologyTable};
+
+    fn draw(app: &mut OpenCADStudio, cmd: &str, points: &[[f64; 3]]) {
+        let started = request(app, json!({"op":"run","cmd":cmd}));
+        assert_eq!(started["ok"], true, "{cmd} 应启动：{started}");
+        for point in points {
+            request(
+                app,
+                json!({"op":"input","kind":"point","point":point,"space":"wcs"}),
+            );
+        }
+        request(app, json!({"op":"input","kind":"enter"}));
+    }
+
+    fn field(app: &OpenCADStudio, handle: codec::Handle, name: &str) -> String {
+        props_of(&app.tabs[app.active_tab].scene.document, handle)
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn marks(app: &OpenCADStudio, handle: codec::Handle) -> Vec<String> {
+        overrides_of(&app.tabs[app.active_tab].scene.document, handle)
+            .into_iter()
+            .collect()
+    }
+
+    /// 属性面板改管路字段也走同一条下传链：打覆盖标记、管线改值不穿透、
+    /// 管段跟随管路（`VAL-PIPE-008` / `009` / `010` 的面板通道）。
+    ///
+    /// 面板只列 `props` 里已有的键，所以先经契约的 REST 写入口
+    /// （`PUT …/xdata/PID_AUTHOR` 的等价 op）把管线的初值写上，再用面板改值。
+    #[test]
+    fn a_run_edit_from_the_property_panel_marks_the_override_and_cascades() {
+        let mut app = app();
+        draw(&mut app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        let table = TopologyTable::load(&app.tabs[app.active_tab].scene.document);
+        let line = parse_handle(&table.pipe_lines[0].handle).expect("handle");
+        put_props(
+            &mut app,
+            line,
+            &[("管道等级", "A1A"), ("公称直径", "DN50")],
+        );
+
+        draw(&mut app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        let table = TopologyTable::load(&app.tabs[app.active_tab].scene.document);
+        let run = parse_handle(&table.pipe_runs[0].handle).expect("handle");
+        let segment = parse_handle(&table.pipe_segments[0].handle).expect("handle");
+        assert_eq!(field(&app, run, "管道等级"), "A1A");
+        assert_eq!(field(&app, run, "公称直径"), "DN50");
+
+        // 面板改管路的公称直径。
+        select(&mut app, run);
+        set(&mut app, "pid_props_公称直径", "DN80");
+        assert_eq!(field(&app, run, "公称直径"), "DN80");
+        assert_eq!(marks(&app, run), vec!["公称直径".to_string()]);
+        assert_eq!(field(&app, segment, "公称直径"), "DN80", "管段跟随管路");
+
+        // 管线改值：被覆盖的字段不穿透，未覆盖的仍下传。
+        put_props(&mut app, line, &[("公称直径", "DN150"), ("管道等级", "A2B")]);
+        assert_eq!(field(&app, run, "公称直径"), "DN80");
+        assert_eq!(field(&app, run, "管道等级"), "A2B");
+        assert_eq!(field(&app, segment, "公称直径"), "DN80");
+        assert_eq!(field(&app, segment, "管道等级"), "A2B");
+        assert!(marks(&app, segment).is_empty(), "管段无覆盖标记");
+    }
+
+    /// 契约的 `PUT /api/v1/entities/{h}/xdata/PID_AUTHOR` 等价写法：只发
+    /// `props` 时按字段合并，其余八键与未提及的属性键都不丢。
+    fn put_props(app: &mut OpenCADStudio, handle: codec::Handle, pairs: &[(&str, &str)]) {
+        let mut props = serde_json::Map::new();
+        for (key, value) in pairs {
+            props.insert((*key).to_string(), json!(value));
+        }
+        let payload = serde_json::Value::Object(props).to_string();
+        let done = request(
+            app,
+            json!({
+                "op":"xdata_set",
+                "handles":[hex(handle)],
+                "app":"PID_AUTHOR",
+                "data":[{"code":1000,"value":format!("props={payload}")}],
+            }),
+        );
+        assert_eq!(done["ok"], true, "写 props 应成功：{done}");
     }
 }

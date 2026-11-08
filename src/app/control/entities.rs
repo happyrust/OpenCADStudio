@@ -6,8 +6,75 @@
 use super::*;
 use crate::command::EntityTransform;
 use crate::entity_creation::{build_entity, deg_field, point_field};
+use crate::pid::persist::PidAuthor;
 
 type Parsed<T> = Result<T, Value>;
+
+/// One `PID_AUTHOR` field by its落盘键名, for the partial-update merge.
+fn author_slot<'a>(author: &'a mut PidAuthor, key: &str) -> Option<&'a mut String> {
+    match key {
+        "type" => Some(&mut author.type_code),
+        "tag" => Some(&mut author.tag),
+        "tag_source" => Some(&mut author.tag_source),
+        "tag_status" => Some(&mut author.tag_status),
+        "props" => Some(&mut author.props),
+        "ports" => Some(&mut author.ports),
+        "owner" => Some(&mut author.owner),
+        "topology" => Some(&mut author.topology),
+        "connector_peer" => Some(&mut author.connector_peer),
+        _ => None,
+    }
+}
+
+/// `PID_AUTHOR` 的写入是**按键合并**，不是整条替换。
+///
+/// `incoming` 为 `None`（空 `data`）仍然整条删除；否则以既有记录为底，只覆盖
+/// 载荷里真的出现的键。契约的写入口 `PUT …/xdata/PID_AUTHOR` 只发 `props`，
+/// 整条替换会把 `type` / `tag` / `topology` 一起抹掉，实体就不再是 P&ID 对象。
+///
+/// `props` 再往里合并一层：它的载荷是「要改的那几个字段」，不是整套属性。
+/// 只改 `公称直径` 的提交必须留下其余四个下传字段（`VAL-PIPE-008` 断言
+/// 「其余四个字段仍在 `props` 中且值未变」），整串替换会让它们凭空消失。
+fn merge_author_values(
+    existing: Option<PidAuthor>,
+    incoming: Option<Vec<codec::xdata::XDataValue>>,
+) -> Option<Vec<codec::xdata::XDataValue>> {
+    let incoming = incoming?;
+    let Some(mut author) = existing else {
+        return Some(incoming);
+    };
+    for value in &incoming {
+        let Some(text) = crate::pid::persist::as_str(value) else {
+            continue;
+        };
+        let Some((key, val)) = text.split_once('=') else {
+            continue;
+        };
+        if key == "props" {
+            author.props = merge_props(&author.props, val);
+            continue;
+        }
+        if let Some(slot) = author_slot(&mut author, key) {
+            *slot = val.to_string();
+        }
+    }
+    Some(crate::pid::persist::encode(&author))
+}
+
+/// 把 `incoming` 里的属性键覆盖到 `existing` 上。`__overrides` 一并按载荷走，
+/// 所以写入口能显式打标记；载荷没提的键原样保留。
+fn merge_props(existing: &str, incoming: &str) -> String {
+    let Ok(serde_json::Value::Object(mut base)) = serde_json::from_str(existing) else {
+        return incoming.to_string();
+    };
+    let Ok(serde_json::Value::Object(update)) = serde_json::from_str(incoming) else {
+        return incoming.to_string();
+    };
+    for (key, value) in update {
+        base.insert(key, value);
+    }
+    serde_json::Value::Object(base).to_string()
+}
 
 pub(super) fn hex_handles(req: &Value, key: &str) -> Parsed<Vec<codec::Handle>> {
     let list = req[key]
@@ -344,6 +411,13 @@ impl OpenCADStudio {
     /// listed handle. The APPID table entry is
     /// registered implicitly; an empty (or absent) `data` list removes the
     /// application's record.
+    ///
+    /// `PID_AUTHOR` is the one application written as a **partial update**:
+    /// a key the payload does not carry keeps its stored value. The P&ID
+    /// contract's write channel for a line's properties
+    /// (`PUT /api/v1/entities/{h}/xdata/PID_AUTHOR`, `VAL-PIPE-007`) sends
+    /// only `props`, and replacing the whole record would drop the type, the
+    /// tag and the topology role that identify the entity.
     pub(super) fn control_xdata_set(&mut self, req: &Value) -> Result<Task<Message>, Value> {
         let handles = hex_handles(req, "handles")?;
         let app = string(req, "app")?.to_owned();
@@ -353,22 +427,53 @@ impl OpenCADStudio {
         let values = parse_xdata_values(req)?;
         let i = self.active_tab;
         require_existing(&self.tabs[i].scene.document, &handles)?;
+        let author = app == crate::pid::persist::PID_AUTHOR_APP;
+        // 管路手工改值的判据是「新值与旧值不同」，所以改写前先留底。
+        let before: Vec<Option<PidAuthor>> = if author {
+            handles
+                .iter()
+                .map(|handle| PidAuthor::load(&self.tabs[i].scene.document, *handle))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let before_props: Vec<std::collections::BTreeMap<String, String>> = before
+            .iter()
+            .map(|author| {
+                author
+                    .as_ref()
+                    .map(|author| crate::pid::propagate::split_props(&author.props).0)
+                    .unwrap_or_default()
+            })
+            .collect();
         self.push_undo_snapshot(i, "XDATASET");
         {
             let document = &mut self.tabs[i].scene.document;
-            for handle in &handles {
-                crate::scene::view::dispatch::set_entity_xdata(
-                    document,
-                    *handle,
-                    &app,
-                    values.clone(),
-                );
+            for (index, handle) in handles.iter().enumerate() {
+                let merged = if author {
+                    merge_author_values(before.get(index).cloned().flatten(), values.clone())
+                } else {
+                    values.clone()
+                };
+                crate::scene::view::dispatch::set_entity_xdata(document, *handle, &app, merged);
+            }
+            if author {
+                for (index, handle) in handles.iter().enumerate() {
+                    crate::app::commands::pidprops::mark_manual_run_overrides(
+                        document,
+                        *handle,
+                        &before_props[index],
+                    );
+                }
             }
         }
         // A rewritten author record can change a tag; its label and the
         // uniqueness status of every same-type instance follow it.
-        if app == crate::pid::persist::PID_AUTHOR_APP {
+        if author {
             self.refresh_pid_tags(i, &handles);
+            // 写 `PID_AUTHOR` 之后自动重算下传链（`architecture.md` A.7），
+            // 不引入独立的 propagate op。
+            self.propagate_pid_chain(i, &handles);
         }
         let updated = handles.len();
         self.set_control_result(json!({ "updated": updated, "app": app }));

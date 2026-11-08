@@ -200,6 +200,104 @@ impl TopologyTable {
             .unwrap_or_default()
     }
 
+    /// 按 handle 反查管线位号。
+    #[must_use]
+    pub fn line_tag_of_handle(&self, handle: Handle) -> Option<String> {
+        let text = handle_text(handle);
+        self.pipe_lines
+            .iter()
+            .find(|line| line.handle == text)
+            .map(|line| line.tag.clone())
+    }
+
+    /// 按 handle 反查管路位号。
+    #[must_use]
+    pub fn run_tag_of_handle(&self, handle: Handle) -> Option<String> {
+        self.run_by_handle(handle).map(|run| run.tag.clone())
+    }
+
+    /// 一条管线的全部管路 handle。
+    ///
+    /// 两个来源取并集：管线自己的 `runs` 位号表，以及 `line_tag` 指回它的
+    /// 管路记录。表是外部写入的（`xdata_set` 之后由下传重算），两者可能短暂
+    /// 不一致，下传链不能因此漏掉一条管路。
+    #[must_use]
+    pub fn run_handles_of(&self, line_tag: &str) -> Vec<Handle> {
+        let mut tags: Vec<&str> = self
+            .line_by_tag(line_tag)
+            .map(|line| line.runs.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        for run in &self.pipe_runs {
+            if run.line_tag == line_tag && !tags.contains(&run.tag.as_str()) {
+                tags.push(run.tag.as_str());
+            }
+        }
+        tags.iter()
+            .filter_map(|tag| {
+                self.pipe_runs
+                    .iter()
+                    .find(|run| &run.tag == tag)
+                    .and_then(|run| parse_handle(&run.handle))
+            })
+            .collect()
+    }
+
+    /// 一条管路的全部管段 handle。两个来源取并集，理由同 [`Self::run_handles_of`]。
+    #[must_use]
+    pub fn segment_handles_of(&self, run_tag: &str) -> Vec<Handle> {
+        let mut texts: Vec<&str> = self
+            .pipe_runs
+            .iter()
+            .find(|run| run.tag == run_tag)
+            .map(|run| run.segments.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        for segment in &self.pipe_segments {
+            if segment.run_tag == run_tag && !texts.contains(&segment.handle.as_str()) {
+                texts.push(segment.handle.as_str());
+            }
+        }
+        texts
+            .iter()
+            .filter_map(|text| parse_handle(text))
+            .collect()
+    }
+
+    /// 用文档里 `PID_AUTHOR` 的现值刷新表内的 `props` / `overrides` 副本。
+    ///
+    /// 权威值在实体 XDATA 上，表里那两份只是副本（`VAL-PIPE-007` 读 XDATA，
+    /// `VAL-PIPE-008` 读表里的 `overrides`），所以每次下传写入之后都要回灌
+    /// 一次，两者才不会漂移。返回表是否有变化。
+    pub fn sync_props_from_document(&mut self, doc: &Document) -> bool {
+        use crate::pid::propagate::{overrides_of, props_of};
+        let mut changed = false;
+        for line in &mut self.pipe_lines {
+            let Some(handle) = parse_handle(&line.handle) else {
+                continue;
+            };
+            let props = props_of(doc, handle);
+            if props != line.props {
+                line.props = props;
+                changed = true;
+            }
+        }
+        for run in &mut self.pipe_runs {
+            let Some(handle) = parse_handle(&run.handle) else {
+                continue;
+            };
+            let props = props_of(doc, handle);
+            if props != run.props {
+                run.props = props;
+                changed = true;
+            }
+            let overrides: Vec<String> = overrides_of(doc, handle).into_iter().collect();
+            if overrides != run.overrides {
+                run.overrides = overrides;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// 追加一条管线，返回它的可变引用。
     pub fn append_line(
         &mut self,

@@ -264,6 +264,9 @@ impl OpenCADStudio {
         let types = TypeLib::embedded();
         let mut table = TopologyTable::load(&self.tabs[i].scene.document);
         table.prune(&self.tabs[i].scene.document);
+        // 表里的 `props` 是 XDATA 的副本。新建管路要继承管线**当前**值
+        // （`VAL-PIPE-012`），所以先把副本对齐到文档现值。
+        table.sync_props_from_document(&self.tabs[i].scene.document);
 
         // 一条折线代表一次拾取序列：每段一条 `Line`，这样每段都能独立
         // 被阀门拆分、被移动补位（M5 后续 feature 的前提）。
@@ -366,24 +369,43 @@ impl OpenCADStudio {
                     tag_status: view.tag_status.clone(),
                     topology: ROLE_PIPE_RUN.to_string(),
                     props: run_props_json.clone(),
-                    owner: line_handle_text,
+                    owner: line_handle_text.clone(),
                     ..PidAuthor::default()
                 }
                 .store(&mut self.tabs[i].scene.document, run_handle);
                 changed.push((run_handle, ChangeKind::Modified));
 
+                // 管路创建时**全量继承管线当前值**（`VAL-PIPE-007`），并且
+                // 继承的是管线的现值而不是创建初值（`VAL-PIPE-012`）——
+                // `inherit_on_create` 读的就是管线此刻的 `PID_AUTHOR`。
+                // 继承写入一律不打覆盖标记，所以新管路 `overrides` 为空。
+                if let Some(line_handle) = parse_handle(&line_handle_text) {
+                    let batch = crate::pid::propagate::inherit_on_create(
+                        &self.tabs[i].scene.document,
+                        line_handle,
+                        run_handle,
+                    );
+                    crate::pid::propagate::apply(&mut self.tabs[i].scene.document, &batch);
+                }
+                let run_author =
+                    PidAuthor::load(&self.tabs[i].scene.document, run_handle).unwrap_or_default();
+                let (run_props_now, run_marks) =
+                    crate::pid::propagate::split_props(&run_author.props);
+
                 table.append_run(
                     &line_tag,
                     &view.tag,
                     run_handle,
-                    run_props.clone(),
-                    Vec::new(),
+                    run_props_now.clone(),
+                    run_marks.iter().cloned().collect(),
                 );
                 if let Some(line) = table.line_by_tag_mut(&line_tag) {
                     // 序号只前进不回退：删除管路后再建是 `-03` 而不是 `-02`。
                     line.next_run_ordinal = ordinal.saturating_add(1);
                 }
                 let run_owner = handle_text(run_handle);
+                // 管段**不直连管线**：它取管路当前值（继承之后的完整 props）。
+                let segment_props = run_author.props.clone();
                 for (index, handle) in segments.iter().copied().enumerate() {
                     PidAuthor {
                         type_code: TYPE_PIPE_SEGMENT.to_string(),
@@ -391,7 +413,7 @@ impl OpenCADStudio {
                         tag_source: "auto".to_string(),
                         tag_status: "ok".to_string(),
                         topology: ROLE_PIPE_SEGMENT.to_string(),
-                        props: run_props_json.clone(),
+                        props: segment_props.clone(),
                         owner: run_owner.clone(),
                         ..PidAuthor::default()
                     }
@@ -1201,5 +1223,248 @@ mod tests {
         assert_eq!(done["code"], "unknown_symbol", "{done}");
         assert_eq!(handles(&app).len(), before, "不该新增实体");
         assert!(topology(&app).fittings.is_empty());
+    }
+
+    // ── 属性下传链（VAL-PIPE-007 .. 012）────────────────────────────────
+
+    use crate::pid::propagate::{overrides_of, props_of, LINE_FIELDS};
+
+    /// 五字段的一套值，按 `LINE_FIELDS` 顺序。
+    fn five(grade: &str, diameter: &str, insulation: &str, medium: &str, kind: &str) -> Vec<String> {
+        vec![
+            grade.to_string(),
+            diameter.to_string(),
+            insulation.to_string(),
+            medium.to_string(),
+            kind.to_string(),
+        ]
+    }
+
+    /// 某实体五字段的现值，按 `LINE_FIELDS` 顺序；缺键为空串。
+    fn five_of(app: &OpenCADStudio, handle: codec::Handle) -> Vec<String> {
+        let props = props_of(&app.tabs[app.active_tab].scene.document, handle);
+        LINE_FIELDS
+            .iter()
+            .map(|field| props.get(*field).cloned().unwrap_or_default())
+            .collect()
+    }
+
+    fn marks_of(app: &OpenCADStudio, handle: codec::Handle) -> Vec<String> {
+        overrides_of(&app.tabs[app.active_tab].scene.document, handle)
+            .into_iter()
+            .collect()
+    }
+
+    /// 契约的属性写入口：`PUT /api/v1/entities/{h}/xdata/PID_AUTHOR`，
+    /// 载荷只带 `props`（`VAL-PIPE-007` 的「等价 REST 通道」）。
+    fn put_props(app: &mut OpenCADStudio, handle: codec::Handle, pairs: &[(&str, &str)]) {
+        let mut props = serde_json::Map::new();
+        for (key, value) in pairs {
+            props.insert((*key).to_string(), json!(value));
+        }
+        let payload = json!(serde_json::Value::Object(props)).to_string();
+        let done = request(
+            app,
+            json!({
+                "op":"xdata_set",
+                "handles":[handle_text(handle)],
+                "app":"PID_AUTHOR",
+                "data":[{"code":1000,"value":format!("props={payload}")}],
+            }),
+        );
+        assert_eq!(done["ok"], true, "写 props 应成功：{done}");
+    }
+
+    /// 画一条管线并返回它的 handle。
+    fn draw_line(app: &mut OpenCADStudio) -> codec::Handle {
+        draw(app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        let table = topology(app);
+        parse_handle(&table.pipe_lines.last().expect("管线已建").handle).expect("handle")
+    }
+
+    /// 在最后一条管线上建一条管路，返回（管路 handle, 管段 handles）。
+    fn draw_run(app: &mut OpenCADStudio) -> (codec::Handle, Vec<codec::Handle>) {
+        draw(app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        let table = topology(app);
+        let run = table.pipe_runs.last().expect("管路已建");
+        let run_handle = parse_handle(&run.handle).expect("handle");
+        let segments = table
+            .pipe_segments
+            .iter()
+            .filter(|segment| segment.run_tag == run.tag)
+            .filter_map(|segment| parse_handle(&segment.handle))
+            .collect();
+        (run_handle, segments)
+    }
+
+    /// `VAL-PIPE-007`：管路创建时全量继承管线五个字段，且不打覆盖标记。
+    #[test]
+    fn a_new_run_inherits_all_five_line_fields() {
+        let mut app = app();
+        let line = draw_line(&mut app);
+        let expected = five("A1A", "DN50", "H", "工艺水", "工艺管线");
+        put_props(
+            &mut app,
+            line,
+            &[
+                ("管道等级", "A1A"),
+                ("公称直径", "DN50"),
+                ("绝热等级", "H"),
+                ("流体介质", "工艺水"),
+                ("管线类型", "工艺管线"),
+            ],
+        );
+        assert_eq!(five_of(&app, line), expected, "管线自身先要有五个值");
+
+        let (run, segments) = draw_run(&mut app);
+        assert_eq!(five_of(&app, run), expected, "管路必须全量继承管线五个字段");
+        assert!(marks_of(&app, run).is_empty(), "继承写入不得打覆盖标记");
+        let table = topology(&app);
+        assert!(table.pipe_runs[0].overrides.is_empty(), "{:?}", table.pipe_runs[0]);
+        // 管段同样取到这套值。
+        for segment in &segments {
+            assert_eq!(five_of(&app, *segment), expected);
+        }
+    }
+
+    /// `VAL-PIPE-008`：管路手工改 `公称直径` 后打覆盖标记，且只标这一个。
+    #[test]
+    fn a_manual_run_edit_marks_the_field_as_overridden() {
+        let mut app = app();
+        let line = draw_line(&mut app);
+        put_props(
+            &mut app,
+            line,
+            &[
+                ("管道等级", "A1A"),
+                ("公称直径", "DN50"),
+                ("绝热等级", "H"),
+                ("流体介质", "工艺水"),
+                ("管线类型", "工艺管线"),
+            ],
+        );
+        let (run, _) = draw_run(&mut app);
+        assert!(marks_of(&app, run).is_empty());
+
+        put_props(&mut app, run, &[("公称直径", "DN80")]);
+        assert_eq!(five_of(&app, run)[1], "DN80", "手工值必须落地");
+        assert_eq!(marks_of(&app, run), vec!["公称直径".to_string()], "只标被改的字段");
+        // 其余四个字段原样保留且未被标记。
+        let props = five_of(&app, run);
+        assert_eq!(props[0], "A1A");
+        assert_eq!(props[2], "H");
+        assert_eq!(props[3], "工艺水");
+        assert_eq!(props[4], "工艺管线");
+        let table = topology(&app);
+        assert_eq!(table.pipe_runs[0].overrides, vec!["公称直径".to_string()]);
+        assert_eq!(table.pipe_runs[0].props.get("公称直径").map(String::as_str), Some("DN80"));
+    }
+
+    /// `VAL-PIPE-009`：已打标记的字段不被管线改值覆盖，未标记的仍下传。
+    #[test]
+    fn an_overridden_field_stops_taking_the_line_value() {
+        let mut app = app();
+        let line = draw_line(&mut app);
+        put_props(
+            &mut app,
+            line,
+            &[("管道等级", "A1A"), ("公称直径", "DN50")],
+        );
+        let (run, _) = draw_run(&mut app);
+        put_props(&mut app, run, &[("公称直径", "DN80")]);
+        assert_eq!(marks_of(&app, run), vec!["公称直径".to_string()]);
+
+        put_props(&mut app, line, &[("公称直径", "DN150"), ("管道等级", "A2B")]);
+        assert_eq!(five_of(&app, run)[1], "DN80", "已覆盖字段保持手工值");
+        assert_eq!(five_of(&app, run)[0], "A2B", "未覆盖字段仍下传");
+        assert_eq!(marks_of(&app, run), vec!["公称直径".to_string()], "不新增标记");
+        assert_eq!(five_of(&app, line)[1], "DN150", "管线自身改成了 DN150");
+    }
+
+    /// `VAL-PIPE-010`：管段始终取管路当前值，且管段没有覆盖标记。
+    #[test]
+    fn a_segment_follows_its_run_and_carries_no_override_mark() {
+        let mut app = app();
+        let line = draw_line(&mut app);
+        put_props(&mut app, line, &[("公称直径", "DN50")]);
+        let (run, segments) = draw_run(&mut app);
+        put_props(&mut app, run, &[("公称直径", "DN80")]);
+        assert_eq!(five_of(&app, run)[1], "DN80");
+        for segment in &segments {
+            assert_eq!(five_of(&app, *segment)[1], "DN80", "管段先跟随到 DN80");
+        }
+
+        put_props(&mut app, run, &[("公称直径", "DN100")]);
+        assert_eq!(five_of(&app, run)[1], "DN100");
+        for segment in &segments {
+            assert_eq!(five_of(&app, *segment)[1], "DN100", "管段跟随管路到 DN100");
+            assert!(marks_of(&app, *segment).is_empty(), "管段无覆盖标记机制");
+            let author = author_of(&app, *segment).expect("管段带 PID_AUTHOR");
+            assert!(
+                !author.props.contains(crate::pid::propagate::OVERRIDES_KEY),
+                "管段 props 不得出现 __overrides：{}",
+                author.props
+            );
+        }
+        let table = topology(&app);
+        for segment in &table.pipe_segments {
+            assert!(
+                !segment.handle.is_empty() && !table.pipe_segments.is_empty(),
+                "管段记录仍在表里"
+            );
+        }
+        assert!(
+            !serde_json::to_string(&table.pipe_segments[0])
+                .unwrap()
+                .contains("overrides"),
+            "拓扑表管段记录无 overrides 字段"
+        );
+    }
+
+    /// `VAL-PIPE-011`：管段不直连管线。管路有覆盖标记后，管线改值不能穿透。
+    #[test]
+    fn a_line_edit_never_reaches_a_segment_behind_an_overridden_run() {
+        let mut app = app();
+        let line = draw_line(&mut app);
+        put_props(&mut app, line, &[("管道等级", "A1A")]);
+        let (run, segments) = draw_run(&mut app);
+        let segment = segments[0];
+        // 九宫格起点：三层都是 A1A。
+        assert_eq!(five_of(&app, line)[0], "A1A");
+        assert_eq!(five_of(&app, run)[0], "A1A");
+        assert_eq!(five_of(&app, segment)[0], "A1A");
+
+        // (1) 管路手工改 A3C：产生覆盖标记，管段取管路当前值。
+        put_props(&mut app, run, &[("管道等级", "A3C")]);
+        assert_eq!(five_of(&app, run)[0], "A3C");
+        assert_eq!(five_of(&app, segment)[0], "A3C", "管段取管路当前值");
+        assert_eq!(marks_of(&app, run), vec!["管道等级".to_string()]);
+
+        // (2) 管线改 A9Z：管路被覆盖标记挡住，管段**不得**跳到 A9Z。
+        put_props(&mut app, line, &[("管道等级", "A9Z")]);
+        assert_eq!(five_of(&app, line)[0], "A9Z");
+        assert_eq!(five_of(&app, run)[0], "A3C", "覆盖标记挡住管线改值");
+        assert_eq!(five_of(&app, segment)[0], "A3C", "管段不直连管线，仍取管路值");
+    }
+
+    /// `VAL-PIPE-012`：新建管路继承的是管线**当前**值，不是创建初值。
+    #[test]
+    fn a_late_run_inherits_the_lines_current_value() {
+        let mut app = app();
+        let line = draw_line(&mut app);
+        put_props(&mut app, line, &[("管道等级", "A1A")]);
+        // 建管路之前把管线改成 A5E。
+        put_props(&mut app, line, &[("管道等级", "A5E")]);
+        assert!(topology(&app).pipe_runs.is_empty(), "此时还没有任何管路");
+
+        let (run, segments) = draw_run(&mut app);
+        assert_eq!(five_of(&app, run)[0], "A5E", "继承管线当前值，不是 A1A");
+        assert!(marks_of(&app, run).is_empty(), "继承不打标记");
+        assert_eq!(five_of(&app, segments[0])[0], "A5E");
+
+        // 继承之后仍受下传约束。
+        put_props(&mut app, line, &[("管道等级", "A6F")]);
+        assert_eq!(five_of(&app, run)[0], "A6F", "未覆盖字段跟随管线");
+        assert_eq!(five_of(&app, segments[0])[0], "A6F", "管段跟随管路");
     }
 }
