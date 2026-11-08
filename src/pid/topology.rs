@@ -970,4 +970,221 @@ mod tests {
         assert_eq!(parse_handle("0x1a2f"), Some(handle));
         assert_eq!(parse_handle("not-hex"), None);
     }
+
+    // ── VAL-PIPE-029 / VAL-PIPE-030 ───────────────────────────────────────
+
+    /// 一条「管线 → 管路 → 2 段 → 阀门」的完整拓扑，供往返测试共用。
+    fn pipeline_fixture() -> (Document, TopologyTable, Vec<Handle>) {
+        let mut doc = Document::new();
+        let line_handle = doc.add_entity(line(0.0)).unwrap();
+        let run_handle = doc.add_entity(line(10.0)).unwrap();
+        let seg_a = doc.add_entity(line(20.0)).unwrap();
+        let seg_b = doc.add_entity(line(30.0)).unwrap();
+        let valve = doc.add_entity(line(40.0)).unwrap();
+
+        // 管线：五个下传字段齐全。
+        let mut line_props = BTreeMap::new();
+        for (field, value) in [
+            ("管道等级", "A1A"),
+            ("公称直径", "DN50"),
+            ("绝热等级", "H"),
+            ("流体介质", "水"),
+            ("管线类型", "工艺"),
+        ] {
+            line_props.insert(field.to_string(), value.to_string());
+        }
+        PidAuthor {
+            type_code: TYPE_PIPE_LINE.to_string(),
+            tag: "L-1001".to_string(),
+            tag_source: "auto".to_string(),
+            tag_status: "ok".to_string(),
+            props: crate::pid::propagate::join_props(&line_props, &Default::default()),
+            topology: ROLE_PIPE_LINE.to_string(),
+            ..PidAuthor::default()
+        }
+        .store(&mut doc, line_handle);
+
+        // 管路：继承管线值 + 一个覆盖标记。
+        let mut run_props = line_props.clone();
+        run_props.insert("公称直径".to_string(), "DN80".to_string());
+        let mut marks = std::collections::BTreeSet::new();
+        marks.insert("公称直径".to_string());
+        PidAuthor {
+            type_code: TYPE_PIPE_RUN.to_string(),
+            tag: "L-1001-01".to_string(),
+            tag_source: "auto".to_string(),
+            tag_status: "ok".to_string(),
+            props: crate::pid::propagate::join_props(&run_props, &marks),
+            owner: handle_text(line_handle),
+            topology: ROLE_PIPE_RUN.to_string(),
+            ..PidAuthor::default()
+        }
+        .store(&mut doc, run_handle);
+
+        // 两个管段：只有轻量键，无 tag。
+        for segment in [seg_a, seg_b] {
+            PidAuthor {
+                type_code: TYPE_PIPE_SEGMENT.to_string(),
+                tag_source: "auto".to_string(),
+                tag_status: "ok".to_string(),
+                props: crate::pid::propagate::join_props(&run_props, &Default::default()),
+                owner: handle_text(run_handle),
+                topology: ROLE_PIPE_SEGMENT.to_string(),
+                ..PidAuthor::default()
+            }
+            .store(&mut doc, segment);
+        }
+
+        // 阀门：独立位号 + 两个端口 + owner 指向管路。
+        PidAuthor {
+            type_code: TYPE_VALVE.to_string(),
+            tag: "V-1001".to_string(),
+            tag_source: "manual".to_string(),
+            tag_status: "ok".to_string(),
+            ports: format!("{},{}", VALVE_PORT_NAMES[0], VALVE_PORT_NAMES[1]),
+            owner: handle_text(run_handle),
+            topology: ROLE_FITTING.to_string(),
+            ..PidAuthor::default()
+        }
+        .store(&mut doc, valve);
+
+        let mut table = TopologyTable::default();
+        table.append_line("L-1001", line_handle, line_props);
+        table.append_run("L-1001", "L-1001-01", run_handle, run_props, vec!["公称直径".into()]);
+        table.append_segment(
+            "L-1001-01",
+            seg_a,
+            SegmentEnd::open([0.0, 0.0]),
+            SegmentEnd::joined([84.0, 0.0], valve, VALVE_PORT_NAMES[0]),
+        );
+        table.append_segment(
+            "L-1001-01",
+            seg_b,
+            SegmentEnd::joined([116.0, 0.0], valve, VALVE_PORT_NAMES[1]),
+            SegmentEnd::open([200.0, 0.0]),
+        );
+        let mut ports = BTreeMap::new();
+        ports.insert(VALVE_PORT_NAMES[0].to_string(), Some(handle_text(seg_a)));
+        ports.insert(VALVE_PORT_NAMES[1].to_string(), Some(handle_text(seg_b)));
+        table.fittings.push(FittingRecord {
+            handle: handle_text(valve),
+            run_tag: "L-1001-01".to_string(),
+            fitting_type: "gate_valve".to_string(),
+            tag: Some("V-1001".to_string()),
+            ports,
+        });
+        table.store(&mut doc);
+
+        (doc, table, vec![line_handle, run_handle, seg_a, seg_b, valve])
+    }
+
+    /// 保存 DWG 后重开，拓扑表与实体 XDATA 逐字段一致（`VAL-PIPE-029` /
+    /// `VAL-PIPE-030` 的单测版本）。
+    ///
+    /// 判据覆盖契约点名的每一项：四个集合长度（1/1/2/1）、三个位号、
+    /// 阀门两个端口绑定、两段端点坐标（容差 1e-6）、逐实体
+    /// `tag`/`topology`/`ports`/`props`/`owner`，以及单实体 XDATA
+    /// 序列化长度 ≤ 2048 字节。
+    #[test]
+    fn topology_and_entity_xdata_survive_a_dwg_roundtrip() {
+        let (doc, table, handles) = pipeline_fixture();
+        let before_authors: Vec<PidAuthor> = handles
+            .iter()
+            .map(|handle| PidAuthor::load(&doc, *handle).expect("author before save"))
+            .collect();
+
+        // 先判定：单实体记录都不超 2 KB 软上限，否则 DWG 会静默丢 EED。
+        for (handle, author) in handles.iter().zip(&before_authors) {
+            let len = crate::pid::persist::encoded_len(&crate::pid::persist::encode(author));
+            assert!(
+                len <= crate::pid::persist::XDATA_SOFT_LIMIT,
+                "实体 {handle} 的 XDATA {len} 字节超 2048"
+            );
+        }
+
+        let bytes = crate::io::save_to_bytes(&doc, "dwg", codec::DxfVersion::AC1032)
+            .expect("save dwg");
+        let back = crate::io::load_bytes("topology-roundtrip.dwg", bytes).expect("load dwg");
+
+        // 拓扑表逐字段一致。
+        let reloaded = TopologyTable::load(&back);
+        assert_eq!(reloaded.pipe_lines.len(), 1, "管线数");
+        assert_eq!(reloaded.pipe_runs.len(), 1, "管路数");
+        assert_eq!(reloaded.pipe_segments.len(), 2, "管段数");
+        assert_eq!(reloaded.fittings.len(), 1, "管件数");
+        assert_eq!(reloaded.connectors.len(), 0, "连接符数");
+        assert_eq!(reloaded, table, "拓扑表必须逐字段一致");
+
+        // 位号不变。
+        assert_eq!(reloaded.pipe_lines[0].tag, "L-1001");
+        assert_eq!(reloaded.pipe_runs[0].tag, "L-1001-01");
+        assert_eq!(reloaded.fittings[0].tag.as_deref(), Some("V-1001"));
+
+        // 阀门端口绑定完全相同。
+        assert_eq!(reloaded.fittings[0].ports, table.fittings[0].ports);
+        assert_eq!(reloaded.fittings[0].ports.len(), 2);
+
+        // 两段端点坐标逐项相等（容差 1e-6）。
+        for (before, after) in table
+            .pipe_segments
+            .iter()
+            .zip(&reloaded.pipe_segments)
+        {
+            for (b, a) in [
+                (before.start.point, after.start.point),
+                (before.end.point, after.end.point),
+            ] {
+                assert!(
+                    (b[0] - a[0]).abs() <= 1e-6 && (b[1] - a[1]).abs() <= 1e-6,
+                    "端点坐标不一致：{b:?} vs {a:?}"
+                );
+            }
+            assert_eq!(before.start.peer, after.start.peer);
+            assert_eq!(before.end.peer, after.end.peer);
+        }
+
+        // 逐实体 XDATA 语义零丢失。
+        for (handle, before) in handles.iter().zip(&before_authors) {
+            let after = PidAuthor::load(&back, *handle)
+                .unwrap_or_else(|| panic!("实体 {handle} 的 PID_AUTHOR 记录读不回来"));
+            assert_eq!(&after, before, "实体 {handle} 的九键必须零丢失");
+            let len = crate::pid::persist::encoded_len(&crate::pid::persist::encode(&after));
+            assert!(
+                len <= crate::pid::persist::XDATA_SOFT_LIMIT,
+                "读回后实体 {handle} 的 XDATA {len} 字节超 2048"
+            );
+        }
+
+        // 语义抽查：管线/管路/管段/阀门各自的角色与关键字段。
+        let line_author = PidAuthor::load(&back, handles[0]).expect("line author");
+        assert_eq!(line_author.topology, ROLE_PIPE_LINE);
+        assert_eq!(line_author.tag, "L-1001");
+        assert_eq!(
+            crate::pid::propagate::props_of(&back, handles[0]).len(),
+            5,
+            "管线五个下传字段必须齐全"
+        );
+        let run_author = PidAuthor::load(&back, handles[1]).expect("run author");
+        assert_eq!(run_author.topology, ROLE_PIPE_RUN);
+        assert_eq!(run_author.owner, handle_text(handles[0]));
+        assert!(
+            crate::pid::propagate::is_overridden(&back, handles[1], "公称直径"),
+            "管路的覆盖标记必须保留"
+        );
+        for segment in [handles[2], handles[3]] {
+            let author = PidAuthor::load(&back, segment).expect("segment author");
+            assert_eq!(author.topology, ROLE_PIPE_SEGMENT);
+            assert!(author.tag.is_empty(), "管段无独立位号");
+        }
+        let valve_author = PidAuthor::load(&back, handles[4]).expect("valve author");
+        assert_eq!(valve_author.topology, ROLE_FITTING);
+        assert_eq!(valve_author.tag, "V-1001");
+        assert_eq!(valve_author.owner, handle_text(handles[1]));
+        assert_eq!(
+            valve_author.ports.split(',').count(),
+            2,
+            "阀门两个端口都要落盘：{:?}",
+            valve_author.ports
+        );
+    }
 }

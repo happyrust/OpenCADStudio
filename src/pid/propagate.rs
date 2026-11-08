@@ -39,7 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use codec::xdata::XDataValue;
 use codec::{Document, Handle};
 
-use super::persist::{encode, PidAuthor, PID_AUTHOR_APP};
+use super::persist::{decode, encode, PidAuthor, PID_AUTHOR_APP};
 use super::tag_engine::{
     TagError, DUPLICATED_DISPLAY, TAG_STATUS_DUPLICATED, TAG_STATUS_OK,
 };
@@ -445,12 +445,19 @@ fn occupant_of(
 ///
 /// 返回 `Err(PidError::Tag(TagError::DuplicatedBlocksSave { .. }))`，
 /// 其 [`PidError::code`] 为 `TAG_DUPLICATED_BLOCKS_SAVE`。调用点在保存
-/// 路径（`src/io/mod.rs` 的 `save` / `save_as_version` 一带，M5 集成）；
-/// 判定发生在任何写盘动作**之前**，所以冲突时不会产生新文件。
+/// 路径（`src/io/mod.rs` 的 `save_owned_as_version_inner` /
+/// `save_to_bytes`），判定发生在任何写盘动作**之前**，所以冲突时不会
+/// 产生新文件，也不会碰同目录已有的 `.bak`（`VAL-SEM-039`）。
+///
+/// 只解码记录本身（[`decode`]），不走 [`PidAuthor::load`] —— `tag_status`
+/// 永远在主记录上，`props_ref` 指向的溢出 XRecord 与门禁无关，省掉一次
+/// 每个实体的 XRecord 查找。
 pub fn gate_save(doc: &Document) -> Result<(), PidError> {
     for entity in doc.entities() {
-        let handle = entity.common().handle;
-        let Some(author) = PidAuthor::load(doc, handle) else {
+        let Some(record) = entity.common().extended_data.get_record(PID_AUTHOR_APP) else {
+            continue;
+        };
+        let Some(author) = decode(&record.values) else {
             continue;
         };
         if author.tag_status == TAG_STATUS_DUPLICATED {
@@ -704,14 +711,123 @@ mod tests {
         // 这里**只**断言语义层能证伪的部分。原实现另有两条断言
         // （`!target.exists()` / `backup.exists()`）恒真不可证伪 —— 唯一写
         // target 的动作在 `if outcome.is_ok()` 分支内，而本用例要求它是
-        // `Err`，所以该分支永不执行。真实的保存副作用验证见
-        // VAL-SEM-039（M5，`gate_save` 接入真实保存包装后）。
+        // `Err`，所以该分支永不执行。真实的保存副作用验证在
+        // `conflicting_save_is_blocked_on_the_real_save_path`（VAL-SEM-039，
+        // M5 `gate_save` 已接入真实保存包装后）。
         let outcome = gate_save(&doc);
         let error = outcome.expect_err("duplicated tag must block save");
         assert_eq!(error.code(), "TAG_DUPLICATED_BLOCKS_SAVE");
     }
 
     // ── 辅助行为 ─────────────────────────────────────────────────────────
+
+    /// 可写目录：优先 `D:\scratch`（任务约定），不存在时退回系统临时目录。
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let base = if std::path::Path::new("D:\\scratch").is_dir() {
+            std::path::PathBuf::from("D:\\scratch")
+        } else {
+            std::env::temp_dir()
+        };
+        let dir = base.join(format!("ocs-pid-save-gate-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    // ── VAL-SEM-039 ──────────────────────────────────────────────────────
+
+    /// 冲突保存被**真实保存路径**阻断，且不落新文件、不动原有 `.bak`。
+    ///
+    /// 这是 D30 从 `VAL-SEM-038` 拆出来的那一半：`gate_save` 已接进
+    /// `io::save_owned_as_version_atomic` / `io::save_as_version` /
+    /// `io::save_to_bytes` 三个真实包装的**前置**位置，所以下面的副作用
+    /// 断言都能实际证伪（改前它们是恒真断言，因为根本没有生产调用点）。
+    #[test]
+    fn conflicting_save_is_blocked_on_the_real_save_path() {
+        let dir = scratch_dir("sem-039");
+        let target = dir.join("blocked.dwg");
+        let backup = target.with_extension("bak");
+        let backup_bytes: &[u8] = b"previous backup bytes, must stay byte-identical";
+        std::fs::write(&backup, backup_bytes).expect("seed the .bak");
+        assert!(!target.exists(), "目标文件一开始就不存在");
+
+        let mut doc = Document::new();
+        let _squatter = place_tagged(&mut doc, NOZZLE, "P-3001-01");
+        let conflicted = place_tagged(&mut doc, NOZZLE, "P-3001-01");
+        let mut author = PidAuthor::load(&doc, conflicted).expect("conflicting nozzle loads");
+        author.tag_status = TAG_STATUS_DUPLICATED.to_string();
+        author.store(&mut doc, conflicted);
+
+        // (1) 结构化包装：拿到带错误码的失败。
+        let failure = crate::io::save_owned_as_version_atomic(
+            doc.clone(),
+            &target,
+            codec::DxfVersion::AC1032,
+            true,
+            None,
+            None,
+            false,
+        )
+        .expect_err("duplicated tag must block the real save path");
+        assert_eq!(
+            failure.code,
+            Some("TAG_DUPLICATED_BLOCKS_SAVE"),
+            "保存返回值={failure:?}；目标存在={}；.bak 长度={:?}",
+            target.exists(),
+            std::fs::metadata(&backup).map(|meta| meta.len())
+        );
+        assert_eq!(failure.message, failure.message.trim());
+        assert!(failure.message.contains("TAG_DUPLICATED_BLOCKS_SAVE"));
+        assert!(!target.exists(), "冲突保存不得产生目标文件");
+        assert_eq!(
+            std::fs::read(&backup).expect("bak readable"),
+            backup_bytes,
+            "原有 .bak 必须逐字节不变"
+        );
+
+        // (2) 字符串包装（`io::save` 的上游）：同样被拒，且错误串带错误码。
+        let message = crate::io::save_as_version(&doc, &target, codec::DxfVersion::AC1032)
+            .expect_err("string save wrapper must refuse too");
+        assert!(
+            message.contains("TAG_DUPLICATED_BLOCKS_SAVE"),
+            "错误串应带错误码：{message}"
+        );
+        assert!(!target.exists(), "字符串包装也不得落文件");
+        assert_eq!(std::fs::read(&backup).expect("bak readable"), backup_bytes);
+
+        // (3) 字节缓冲包装（web 保存路径）同样被拒。
+        let bytes_error = crate::io::save_to_bytes(&doc, "dwg", codec::DxfVersion::AC1032)
+            .expect_err("byte-buffer save wrapper must refuse too");
+        assert!(
+            bytes_error.contains("TAG_DUPLICATED_BLOCKS_SAVE"),
+            "错误串应带错误码：{bytes_error}"
+        );
+
+        // (4) 清除冲突后同一包装返回 Ok，目标文件存在且可被 load_bytes 读回。
+        let mut author = PidAuthor::load(&doc, conflicted).expect("conflicting nozzle loads");
+        author.tag_status = TAG_STATUS_OK.to_string();
+        author.store(&mut doc, conflicted);
+        assert!(gate_save(&doc).is_ok(), "清除冲突后门禁应放行");
+
+        crate::io::save_owned_as_version_atomic(
+            doc.clone(),
+            &target,
+            codec::DxfVersion::AC1032,
+            true,
+            None,
+            None,
+            false,
+        )
+        .expect("cleared conflict saves through the same wrapper");
+        assert!(target.exists(), "成功保存必须落目标文件");
+        let saved = std::fs::read(&target).expect("target readable");
+        let back = crate::io::load_bytes("blocked.dwg", saved).expect("load_bytes reads it back");
+        let restored = PidAuthor::load(&back, conflicted).expect("author record round trips");
+        assert_eq!(restored.tag, "P-3001-01");
+        assert_eq!(restored.tag_status, TAG_STATUS_OK);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn propagation_is_idempotent_and_overrides_excluded_from_count() {

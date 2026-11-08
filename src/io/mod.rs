@@ -2254,6 +2254,10 @@ pub struct SaveFailure {
     pub message: String,
     pub file_in_use: bool,
     pub externally_modified: bool,
+    /// Structured error code for failures that carry one. Today only the P&ID
+    /// save gate (`TAG_DUPLICATED_BLOCKS_SAVE`) sets it; every other failure
+    /// leaves it `None` so callers keep matching on the boolean categories.
+    pub code: Option<&'static str>,
 }
 
 impl SaveFailure {
@@ -2262,6 +2266,17 @@ impl SaveFailure {
             message: message.into(),
             file_in_use: false,
             externally_modified: false,
+            code: None,
+        }
+    }
+
+    /// A failure with a contract error code (`TAG_DUPLICATED_BLOCKS_SAVE`).
+    pub fn tagged(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            file_in_use: false,
+            externally_modified: false,
+            code: Some(code),
         }
     }
 
@@ -2271,6 +2286,7 @@ impl SaveFailure {
             message: message.into(),
             file_in_use: true,
             externally_modified: false,
+            code: None,
         }
     }
 
@@ -2279,6 +2295,7 @@ impl SaveFailure {
             message: format!("replace {}: {error}", path.display()),
             file_in_use: replace_error_is_file_in_use(&error),
             externally_modified: false,
+            code: None,
         }
     }
 
@@ -2288,8 +2305,17 @@ impl SaveFailure {
             message: format!("{} changed on disk after it was opened", path.display()),
             file_in_use: false,
             externally_modified: true,
+            code: None,
         }
     }
+}
+
+/// P&ID save gate failure (`propagate::gate_save`) → structured save failure.
+///
+/// The gate runs before any byte is written, so a duplicated tag leaves the
+/// destination absent and any sibling `.bak` untouched.
+fn pid_gate_failure(error: crate::pid::propagate::PidError) -> SaveFailure {
+    SaveFailure::tagged(error.code(), error.to_string())
 }
 
 impl std::fmt::Display for SaveFailure {
@@ -2694,6 +2720,12 @@ where
         )));
     }
     validate_save_extension(path)?;
+    // P&ID save gate (D30): a document holding a `tag_status == duplicated`
+    // P&ID entity must not reach the disk. The check runs before the temp file
+    // is created, before the `.bak` backup and before the atomic replace, so a
+    // refused save produces no new file and leaves an existing `.bak` byte for
+    // byte unchanged (`VAL-SEM-039`).
+    crate::pid::propagate::gate_save(&doc).map_err(pid_gate_failure)?;
     let perf = crate::perf::enabled();
     let total_started = iced::time::Instant::now();
     doc.version = version;
@@ -2864,6 +2896,9 @@ pub fn save_to_bytes(
     ext: &str,
     version: codec::DxfVersion,
 ) -> Result<Vec<u8>, String> {
+    // Same P&ID save gate as the on-disk path (D30): the byte-buffer route is
+    // the other real save wrapper, so it must refuse the same documents.
+    crate::pid::propagate::gate_save(doc).map_err(|error| error.to_string())?;
     let perf = crate::perf::enabled();
     let total_started = iced::time::Instant::now();
     let doc = prepare_document_for_save(doc.clone(), version);

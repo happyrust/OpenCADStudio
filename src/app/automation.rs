@@ -1975,7 +1975,19 @@ impl OpenCADStudio {
                             "mtext_losses": losses.mtext_json(),
                         })
                     }
-                    Err(e) => err(format!("save: {e}")),
+                    Err(e) => {
+                        // A P&ID save gate refusal carries a contract error code
+                        // (`TAG_DUPLICATED_BLOCKS_SAVE`); surface it beside the
+                        // message so a caller can branch on it without parsing.
+                        match e.code {
+                            Some(code) => json!({
+                                "ok": false,
+                                "code": code,
+                                "error": format!("save: {e}"),
+                            }),
+                            None => err(format!("save: {e}")),
+                        }
+                    }
                 }
             }
             "" => err("missing \"op\""),
@@ -7937,5 +7949,94 @@ mod type_name_tests {
         assert!(super::entity_type_matches(&xline, "XLine"));
         assert!(!super::entity_type_matches(&xline, "Line"));
         assert!(!super::entity_type_matches(&xline, "Object"));
+    }
+}
+
+/// The `save` operation is a real save path, so the P&ID gate must fire there
+/// too (`VAL-SEM-039`, D30): a duplicated tag refuses the save with the
+/// contract error code and leaves no file behind, and clearing the conflict
+/// lets the same operation through.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pid_save_gate_tests {
+    use crate::app::OpenCADStudio;
+    use crate::pid::persist::PidAuthor;
+    use crate::pid::tag_engine::{TAG_STATUS_DUPLICATED, TAG_STATUS_OK};
+    use codec::{EntityType, Handle};
+    use serde_json::json;
+
+    fn scratch_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ocs-pid-gate-op-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn app_with_conflict(status: &str) -> (OpenCADStudio, Handle) {
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs
+            .push(crate::app::document::DocumentTab::new_drawing(1));
+        app.active_tab = 1;
+        let handle = app.tabs[1]
+            .scene
+            .document
+            .add_entity(EntityType::Line(codec::entities::Line::from_points(
+                codec::types::Vector3::new(0., 0., 0.),
+                codec::types::Vector3::new(10., 0., 0.),
+            )))
+            .unwrap();
+        let mut author = PidAuthor::new("EQUIPMENT", "P-1001");
+        author.tag_source = "auto".into();
+        author.tag_status = status.into();
+        author.topology = "equipment".into();
+        author.store(&mut app.tabs[1].scene.document, handle);
+        (app, handle)
+    }
+
+    #[test]
+    fn the_save_operation_surfaces_the_pid_gate_code() {
+        let dir = scratch_dir();
+        let path = dir.join("conflict.dwg");
+        let (mut app, handle) = app_with_conflict(TAG_STATUS_DUPLICATED);
+
+        let refused = app.automation_op(
+            &json!({"op": "save", "path": path, "allow_lossy": true}).to_string(),
+        );
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(
+            refused["code"], "TAG_DUPLICATED_BLOCKS_SAVE",
+            "save must surface the gate code: {refused}"
+        );
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("TAG_DUPLICATED_BLOCKS_SAVE"),
+            "{refused}"
+        );
+        assert!(!path.exists(), "a refused save must not create the file");
+
+        // Clear the conflict: the same operation now writes the drawing.
+        let mut author = PidAuthor::load(&app.tabs[1].scene.document, handle).unwrap();
+        author.tag_status = TAG_STATUS_OK.into();
+        author.store(&mut app.tabs[1].scene.document, handle);
+        let saved = app.automation_op(
+            &json!({"op": "save", "path": path, "allow_lossy": true}).to_string(),
+        );
+        assert_eq!(saved["ok"], true, "{saved}");
+        assert!(path.is_file(), "the cleared conflict must save");
+
+        let bytes = std::fs::read(&path).unwrap();
+        let back = crate::io::load_bytes("conflict.dwg", bytes).expect("load_bytes reads it back");
+        let restored = PidAuthor::load(&back, handle).expect("author record survives");
+        assert_eq!(restored.tag, "P-1001");
+        assert_eq!(restored.tag_status, TAG_STATUS_OK);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
