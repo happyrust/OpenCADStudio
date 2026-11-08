@@ -1478,6 +1478,7 @@ inventory::submit!(crate::command::CommandRegistration {
         // pid-parse's own plotter; and a drawing opened out of a SmartPlant
         // backup.
         "PIDBACKUPOPEN",
+        "PIDBREAK",
         "PIDCONNECTOR",
         "PIDFITTING",
         "PIDGROUP",

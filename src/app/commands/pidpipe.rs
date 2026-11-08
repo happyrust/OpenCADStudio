@@ -1,20 +1,21 @@
-//! `PIDPIPE` / `PIDFITTING` —— P&ID 管线与管件的作者命令。
+//! `PIDPIPE` / `PIDFITTING` / `PIDBREAK` —— P&ID 管线与管件的作者命令。
 //!
 //! ```text
 //! PIDPIPE                    建管线（pipe_line），两点 + Enter
 //! PIDPIPE run [<line_tag>]   建管路（pipe_run），两点以上 + Enter
 //! PIDPIPE signal [<tag>]     建信号线（signal_line），两点以上 + Enter
 //! PIDFITTING <symbol_id>     在命中的管段上插管件，一点 + Enter
+//! PIDBREAK                   在命中的管段上插打断符，一点 + Enter
 //! PIDTOPOLOGY                读回拓扑表（调试/验证用）
 //! ```
 //!
 //! 三种子模式用**同一个命令名 + 首参数**表达（`architecture.md` A.7 裁决），
 //! `run` / `signal` 两个关键字优先于把首参数当管线号解析。
 //!
-//! 分工：命令只收点（[`PidPipeCommand`] / [`PidFittingCommand`]），落盘由
-//! [`OpenCADStudio::commit_pid_pipeline`] 完成 —— 建实体、写 `PID_AUTHOR`、
-//! 维护 `PID_AUTHOR_TOPOLOGY` 都需要 `&mut Document`，而 `CadCommand` 没有
-//! 文档访问权。
+//! 分工：命令只收点（[`PidPipeCommand`] / [`PidFittingCommand`] /
+//! [`PidBreakCommand`]），落盘由 [`OpenCADStudio::commit_pid_pipeline`] 完成 ——
+//! 建实体、写 `PID_AUTHOR`、维护 `PID_AUTHOR_TOPOLOGY` 都需要 `&mut Document`，
+//! 而 `CadCommand` 没有文档访问权。
 
 use super::pidpalette::{resolve_symbol_for_batch, sync_pid_tag_attribute};
 use super::*;
@@ -22,10 +23,10 @@ use crate::command::{CadCommand, CmdResult, InputKind};
 use crate::pid::persist::PidAuthor;
 use crate::pid::tag_engine::{TagSequencer, TagView};
 use crate::pid::topology::{
-    handle_text, parse_handle, FittingRequest, PipeCommit, PipeMode, PipeRequest, SegmentEnd,
-    TopologyTable, FittingRecord, ROLE_FITTING, ROLE_PIPE_LINE, ROLE_PIPE_RUN, ROLE_PIPE_SEGMENT,
-    ROLE_SIGNAL_LINE, TYPE_FITTING, TYPE_PIPE_LINE, TYPE_PIPE_RUN, TYPE_PIPE_SEGMENT,
-    TYPE_SIGNAL_LINE, TYPE_VALVE, VALVE_PORT_NAMES,
+    handle_text, parse_handle, BreakRequest, FittingRecord, FittingRequest, PipeCommit, PipeMode,
+    PipeRequest, SegmentEnd, TopologyTable, ROLE_FITTING, ROLE_PIPE_LINE, ROLE_PIPE_RUN,
+    ROLE_PIPE_SEGMENT, ROLE_SIGNAL_LINE, TYPE_FITTING, TYPE_PIPE_LINE, TYPE_PIPE_RUN,
+    TYPE_PIPE_SEGMENT, TYPE_SIGNAL_LINE, TYPE_VALVE, VALVE_PORT_NAMES,
 };
 use crate::pid::type_lib::TypeLib;
 use crate::scene::ChangeKind;
@@ -34,6 +35,28 @@ use serde_json::{json, Value};
 
 /// 信号线自动位号的起始序号（`S-2001` 起）。
 const SIGNAL_START: i64 = 2001;
+
+/// 打断点两侧各让开的世界距离。
+///
+/// 两段内侧端点因此严格有序（`end_A.x < start_B.x`），缝隙里正好放打断符
+/// 的斜线，截图可见管线不再贯通。与 [`FITTING_CLEARANCE`] 同一量级但语义
+/// 不同：那是阀门外形宽度，这是打断标记自身占的宽度。
+const BREAK_CLEARANCE: f64 = 2.0;
+
+/// 打断符斜线在缝隙内缩进的比例（0..0.5），留出可见的空白。
+const BREAK_MARK_INSET: f64 = 0.2;
+
+/// 打断符斜线的高度（世界单位），沿管段法向。
+const BREAK_MARK_HEIGHT: f64 = 4.0;
+
+/// 打断点不在任何管段上。
+const BREAK_NO_SEGMENT: &str = "BREAK_NO_SEGMENT";
+
+/// 打断点落在管段端点上（会留下零长度管段）。
+const BREAK_AT_ENDPOINT: &str = "BREAK_AT_ENDPOINT";
+
+/// 打断点离管段端点太近，让开 `BREAK_CLEARANCE` 后某一侧会退化。
+const BREAK_TOO_CLOSE: &str = "BREAK_TOO_CLOSE";
 
 // ── 命令：PIDPIPE ─────────────────────────────────────────────────────────
 
@@ -225,6 +248,54 @@ impl CadCommand for PidFittingCommand {
 // `CmdResult` 的载荷在 `crate::command` 里已由 `PidPipeCommit(Box<PipeCommit>)`
 // 表达；本模块不再需要额外包装类型。
 
+// ── 命令：PIDBREAK ───────────────────────────────────────────────────────
+
+/// `PIDBREAK`：在命中的管段上插打断符（一点 + Enter）。
+///
+/// **无参数**（`architecture.md` 附录 A.7）：打断点由拾取的那一点给出，
+/// 打断符不引用符号库里的任何符号 —— 它是一段独立画出的隔断标记。
+pub struct PidBreakCommand {
+    /// 拾取到的打断点。
+    point: Option<DVec3>,
+}
+
+impl PidBreakCommand {
+    /// 一个等待打断点的命令。
+    pub fn new() -> Self {
+        Self { point: None }
+    }
+}
+
+impl CadCommand for PidBreakCommand {
+    fn name(&self) -> &'static str {
+        "PIDBREAK"
+    }
+
+    fn prompt(&self) -> String {
+        "PIDBREAK  在管段上指定打断点:".to_string()
+    }
+
+    fn input_kind(&self) -> InputKind {
+        InputKind::Point
+    }
+
+    fn on_point(&mut self, pt: DVec3) -> CmdResult {
+        self.point = Some(pt);
+        CmdResult::NeedPoint
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        let Some(point) = self.point else {
+            return CmdResult::CancelWithMessage(
+                "PIDBREAK: 需要先指定打断点。".to_string(),
+            );
+        };
+        CmdResult::PidPipeCommit(Box::new(PipeCommit::Break(BreakRequest {
+            point: [point.x, point.y, point.z],
+        })))
+    }
+}
+
 // ── 宿主侧：提交 ─────────────────────────────────────────────────────────
 
 impl OpenCADStudio {
@@ -246,6 +317,7 @@ impl OpenCADStudio {
             PipeCommit::Pipe(request) => self.commit_pid_pipe(i, request),
             PipeCommit::Fitting(request) => self.commit_pid_fitting(i, request),
             PipeCommit::Connector(request) => self.commit_pid_connector(i, request),
+            PipeCommit::Break(request) => self.commit_pid_break(i, request),
         }
     }
 
@@ -665,6 +737,166 @@ impl OpenCADStudio {
         })
     }
 
+    /// `PIDBREAK` 的落盘：在命中的管段上插打断符，管段被分为**不连通**的两段。
+    ///
+    /// 四条口径（`architecture.md` A.7 / `VAL-PIPE-031` / `VAL-PIPE-032`）：
+    ///
+    /// 1. 打断符生成**独立实体**，`PID_AUTHOR` 的 `topology` 为 `fitting`，
+    ///    并在拓扑表 `fittings` 里留一条记录。
+    /// 2. **原管段 handle 作为第一段保留**，新建实体作第二段。
+    /// 3. 两段沿管段方向留出 [`BREAK_CLEARANCE`] 的间隙，区间严格不重叠。
+    /// 4. 两段内侧端点的 `peer` 都是 `None` —— 打断符**不**出现在任何管段的
+    ///    `peer` 里，隔断而非导通。
+    fn commit_pid_break(&mut self, i: usize, request: BreakRequest) -> Option<String> {
+        if self.tabs[i].is_start {
+            return None;
+        }
+        let point = DVec3::new(request.point[0], request.point[1], request.point[2]);
+        let mut table = TopologyTable::load(&self.tabs[i].scene.document);
+        table.prune(&self.tabs[i].scene.document);
+
+        let Some(hit) = find_segment_at(&table, point) else {
+            self.command_line
+                .push_error_coded(BREAK_NO_SEGMENT, "PIDBREAK: 落点不在任何管段上。");
+            return None;
+        };
+        let Some(segment) = table.segment_by_handle(hit.segment).cloned() else {
+            self.command_line
+                .push_error_coded(BREAK_NO_SEGMENT, "PIDBREAK: 命中的管段已不在拓扑表里。");
+            return None;
+        };
+        if point_is_endpoint(&segment, point) {
+            self.command_line.push_error_coded(
+                BREAK_AT_ENDPOINT,
+                "PIDBREAK: 打断点不能落在管段端点上（会留下零长度管段）。",
+            );
+            return None;
+        }
+        let run_tag = segment.run_tag.clone();
+        let run_handle_text = table
+            .pipe_runs
+            .iter()
+            .find(|run| run.tag == run_tag)
+            .map(|run| run.handle.clone())
+            .unwrap_or_default();
+
+        let first_handle = parse_handle(&segment.handle).unwrap_or(codec::Handle::NULL);
+        // 第二段继承原管段的 `props` / `owner`：管段无覆盖标记，始终取管路
+        // 当前值，所以直接复制第一段现值即可（`VAL-PIPE-010`）。
+        let first_author = PidAuthor::load(&self.tabs[i].scene.document, first_handle);
+        let segment_props = first_author
+            .as_ref()
+            .map(|author| author.props.clone())
+            .unwrap_or_else(|| "{}".to_string());
+        let segment_owner = first_author
+            .as_ref()
+            .map(|author| author.owner.clone())
+            .filter(|owner| !owner.is_empty())
+            .unwrap_or(run_handle_text);
+
+        // 打断点两侧各让开 `BREAK_CLEARANCE`：区间严格不重叠，且打断符的
+        // 斜线落在缝隙里，截图可见管线不再贯通。
+        let Some((inner_a, inner_b)) = break_points(segment.start.point, segment.end.point, point)
+        else {
+            self.command_line.push_error_coded(
+                BREAK_TOO_CLOSE,
+                "PIDBREAK: 打断点离管段端点太近，打断后会留下零长度管段。",
+            );
+            return None;
+        };
+
+        self.push_undo_snapshot(i, "PIDBREAK");
+
+        // 打断符实体：一条跨过缝隙的斜线，独立实体、不引用符号库。
+        let (mark_from, mark_to) = break_mark_points(inner_a, inner_b);
+        let marker = codec::EntityType::Line(codec::entities::Line::from_points(
+            codec::types::Vector3::new(mark_from[0], mark_from[1], 0.0),
+            codec::types::Vector3::new(mark_to[0], mark_to[1], 0.0),
+        ));
+        let break_handle = self.tabs[i].scene.add_entity(marker);
+        PidAuthor {
+            type_code: TYPE_FITTING.to_string(),
+            tag: String::new(),
+            tag_source: "auto".to_string(),
+            tag_status: "ok".to_string(),
+            topology: ROLE_FITTING.to_string(),
+            owner: segment_owner.clone(),
+            props: "{}".to_string(),
+            ..PidAuthor::default()
+        }
+        .store(&mut self.tabs[i].scene.document, break_handle);
+
+        // 第二段：新实体，起点在打断点右侧（无 peer），终点保持原管段终点。
+        let second = self.tabs[i].scene.add_entity(codec::EntityType::Line(
+            codec::entities::Line::from_points(
+                codec::types::Vector3::new(inner_b[0], inner_b[1], 0.0),
+                codec::types::Vector3::new(segment.end.point[0], segment.end.point[1], 0.0),
+            ),
+        ));
+        PidAuthor {
+            type_code: TYPE_PIPE_SEGMENT.to_string(),
+            tag: String::new(),
+            tag_source: "auto".to_string(),
+            tag_status: "ok".to_string(),
+            topology: ROLE_PIPE_SEGMENT.to_string(),
+            props: segment_props,
+            owner: segment_owner,
+            ..PidAuthor::default()
+        }
+        .store(&mut self.tabs[i].scene.document, second);
+
+        // 第一段：起点不动，终点收在打断点左侧，**peer 保持 null**。
+        if let Some(first) = table.segment_by_handle_mut(first_handle) {
+            first.end = SegmentEnd::open(inner_a);
+        }
+        let end_point = segment.end.point;
+        table.append_segment(
+            &run_tag,
+            second,
+            SegmentEnd::open(inner_b),
+            SegmentEnd::open(end_point),
+        );
+        // 几何同步：第一段的 Line 终点收到打断点左侧。
+        if let Some(codec::EntityType::Line(line)) =
+            self.tabs[i].scene.document.get_entity_mut(first_handle)
+        {
+            line.end = codec::types::Vector3::new(inner_a[0], inner_a[1], 0.0);
+        }
+
+        // 打断符在 `fittings` 里有一条记录，但 `ports` 为空 —— 它不绑定任何
+        // 管段，也就不会出现在任何管段的 `peer` 里（`VAL-PIPE-032`）。
+        table.fittings.push(FittingRecord {
+            handle: handle_text(break_handle),
+            run_tag: run_tag.clone(),
+            fitting_type: crate::pid::topology::FITTING_BREAK.to_string(),
+            tag: None,
+            ports: std::collections::BTreeMap::new(),
+        });
+        table.store(&mut self.tabs[i].scene.document);
+
+        self.tabs[i].scene.bump_entities(&[
+            (first_handle, ChangeKind::Modified),
+            (second, ChangeKind::Modified),
+            (break_handle, ChangeKind::Modified),
+        ]);
+        self.tabs[i].dirty = true;
+        self.post_ref_op(i);
+        self.set_control_result(json!({
+            "added": 2,
+            "handle": handle_text(break_handle),
+            "first": handle_text(first_handle),
+            "second": handle_text(second),
+        }));
+
+        Some(format!(
+            "PIDBREAK: 打断符 {} 插在 {} 上，管段分为 {} 与 {}",
+            handle_text(break_handle),
+            run_tag,
+            handle_text(first_handle),
+            handle_text(second)
+        ))
+    }
+
     /// `PIDTOPOLOGY`：把拓扑表写进 `result.topology`（调试/验证用）。
     pub(in crate::app) fn control_pid_topology(&mut self) -> Value {
         let table = TopologyTable::load(&self.tabs[self.active_tab].scene.document);
@@ -793,13 +1025,64 @@ fn fitting_port_points(
     ([first.x, first.y], [second.x, second.y])
 }
 
+/// 打断点两侧的缝隙端点，按「管段起点 → 终点」方向。
+///
+/// 返回 `None` 表示打断点离某一侧端点不足 [`BREAK_CLEARANCE`]，让开后那一
+/// 侧会退化成零长度管段 —— 调用方按 [`BREAK_TOO_CLOSE`] 拒绝。
+fn break_points(
+    start: [f64; 2],
+    end: [f64; 2],
+    point: DVec3,
+) -> Option<([f64; 2], [f64; 2])> {
+    let a = DVec3::new(start[0], start[1], 0.0);
+    let b = DVec3::new(end[0], end[1], 0.0);
+    let ab = b - a;
+    let length = ab.length();
+    if length <= 1e-9 {
+        return None;
+    }
+    let direction = ab / length;
+    let first = point - direction * BREAK_CLEARANCE;
+    let second = point + direction * BREAK_CLEARANCE;
+    // 让开后两侧都必须仍有正长度，且方向不反转。
+    let first_span = (first - a).dot(direction);
+    let second_span = (b - second).dot(direction);
+    if first_span <= 1e-9 || second_span <= 1e-9 {
+        return None;
+    }
+    Some(([first.x, first.y], [second.x, second.y]))
+}
+
+/// 打断符的两个端点：一条斜线跨过缝隙，落在两段之间。
+///
+/// 斜线从缝隙起点侧的上方拉到终点侧的下方，因此整条标记都画在
+/// `[inner_a, inner_b]` 之内，不与任何管段重叠（`VAL-PIPE-031` 的「区间不
+/// 重叠」判据不会把它算进管段区间）。
+fn break_mark_points(inner_a: [f64; 2], inner_b: [f64; 2]) -> ([f64; 2], [f64; 2]) {
+    let a = DVec3::new(inner_a[0], inner_a[1], 0.0);
+    let b = DVec3::new(inner_b[0], inner_b[1], 0.0);
+    let span = b - a;
+    let length = span.length();
+    let direction = if length <= 1e-9 {
+        DVec3::X
+    } else {
+        span / length
+    };
+    let normal = DVec3::new(-direction.y, direction.x, 0.0);
+    let half = BREAK_MARK_HEIGHT * 0.5;
+    let inset = length * BREAK_MARK_INSET;
+    let from = a + direction * inset + normal * half;
+    let to = b - direction * inset - normal * half;
+    ([from.x, from.y], [to.x, to.y])
+}
+
 // ── 命令分发 ─────────────────────────────────────────────────────────────
 
 impl OpenCADStudio {
-    /// `PIDPIPE` / `PIDFITTING` / `PIDTOPOLOGY` 的分发入口。
+    /// `PIDPIPE` / `PIDFITTING` / `PIDBREAK` / `PIDTOPOLOGY` 的分发入口。
     ///
-    /// 三个名字同属一个 family：它们共享拓扑表与符号解析，分开注册会让
-    /// 「谁拥有拓扑表」变成三处约定。
+    /// 四个名字同属一个 family：它们共享拓扑表与符号解析，分开注册会让
+    /// 「谁拥有拓扑表」变成四处约定。
     pub(super) fn dispatch_pidpipe(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {
         let mut words = cmd.split_whitespace();
         let verb = words.next()?;
@@ -808,6 +1091,14 @@ impl OpenCADStudio {
             self.command_line
                 .push_info("PIDTOPOLOGY: 拓扑表已读回（见 result.topology）。");
             return Some(Task::none());
+        }
+        if verb.eq_ignore_ascii_case("PIDBREAK") {
+            let command = PidBreakCommand::new();
+            let prompt = command.prompt();
+            self.reset_command_start_state(i);
+            self.command_line.push_info(&prompt);
+            self.tabs[i].active_cmd = Some(Box::new(command));
+            return Some(self.finish_dispatch(cmd));
         }
         if verb.eq_ignore_ascii_case("PIDPIPE") {
             let arg = words.next();
@@ -1476,5 +1767,191 @@ mod tests {
         put_props(&mut app, line, &[("管道等级", "A6F")]);
         assert_eq!(five_of(&app, run)[0], "A6F", "未覆盖字段跟随管线");
         assert_eq!(five_of(&app, segments[0])[0], "A6F", "管段跟随管路");
+    }
+
+    // ── 打断符（VAL-PIPE-031 / 032）────────────────────────────────────
+
+    /// `VAL-PIPE-031`：`PIDBREAK` 在 `(0,0)-(200,0)` 的中点打断后，管段数
+    /// 从 1 变 2、沿 X 区间不重叠、打断符是独立实体且 `topology=fitting`、
+    /// 原管段 handle 作为第一段保留、`pipe_segments` 与 `pipe_runs[0].segments`
+    /// 的 handle 集合一致。
+    #[test]
+    fn pidbreak_splits_the_segment_into_two_non_overlapping_pieces() {
+        let mut app = app();
+        draw(&mut app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        draw(&mut app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        let before = topology(&app);
+        assert_eq!(before.pipe_segments.len(), 1, "前置：1 个管段");
+        let original = before.pipe_segments[0].handle.clone();
+
+        let done = draw(&mut app, "PIDBREAK", &[[100.0, 0.0, 0.0]]);
+        assert_eq!(done["ok"], true, "{done}");
+        assert_eq!(done["status"], "completed", "{done}");
+
+        let table = topology(&app);
+        assert_eq!(table.pipe_segments.len(), 2, "管段被分为两段");
+
+        // 原管段 handle 作为第一段保留。
+        assert_eq!(table.pipe_segments[0].handle, original, "原管段 handle 作为第一段");
+
+        // 沿 X 区间不重叠。
+        let a = &table.pipe_segments[0];
+        let b = &table.pipe_segments[1];
+        assert_eq!(a.start.point, [0.0, 0.0], "第一段起点不动");
+        assert_eq!(b.end.point, [200.0, 0.0], "第二段终点不动");
+        assert!(
+            a.end.point[0] < b.start.point[0],
+            "两段沿 X 必须严格不重叠：{a:?} vs {b:?}"
+        );
+        // 长度守恒：两段之和 + 缝隙 == 原长。
+        let covered = (a.end.point[0] - a.start.point[0]) + (b.end.point[0] - b.start.point[0]);
+        let gap = b.start.point[0] - a.end.point[0];
+        assert!(
+            (covered + gap - 200.0).abs() <= 1e-6,
+            "长度守恒失败：covered={covered} gap={gap}"
+        );
+
+        // 打断符是独立实体，`topology=fitting`。
+        let fitting = &table.fittings[0];
+        assert_eq!(fitting.fitting_type, crate::pid::topology::FITTING_BREAK);
+        assert_eq!(fitting.run_tag, "L-1001-01");
+        assert!(fitting.tag.is_none(), "打断符无独立位号");
+        assert!(fitting.ports.is_empty(), "打断符不绑定管段端口");
+        let break_handle = parse_handle(&fitting.handle).expect("handle");
+        let author = author_of(&app, break_handle).expect("打断符带 PID_AUTHOR");
+        assert_eq!(author.topology, "fitting");
+        assert!(handles(&app).contains(&break_handle), "打断符是文档里的独立实体");
+
+        // `pipe_segments` 与 `pipe_runs[0].segments` 的 handle 集合一致。
+        let mut from_segments: Vec<String> =
+            table.pipe_segments.iter().map(|s| s.handle.clone()).collect();
+        let mut from_run: Vec<String> = table.pipe_runs[0].segments.clone();
+        from_segments.sort();
+        from_run.sort();
+        assert_eq!(from_segments, from_run, "两处 handle 集合必须一致");
+        // 无悬空引用：每个 handle 在文档里都存在。
+        let live: Vec<String> = handles(&app).iter().map(|h| handle_text(*h)).collect();
+        for text in &from_segments {
+            assert!(live.contains(text), "悬空引用：{text}");
+        }
+    }
+
+    /// `VAL-PIPE-032`：打断后两段**不连通** —— 段 A 的 `end.peer` 与段 B 的
+    /// `start.peer` 都是 `null`，且互不指向对方；打断符不出现在任何 `peer` 里。
+    #[test]
+    fn pidbreak_leaves_both_inner_ends_disconnected() {
+        let mut app = app();
+        draw(&mut app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        draw(&mut app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        draw(&mut app, "PIDBREAK", &[[100.0, 0.0, 0.0]]);
+
+        let table = topology(&app);
+        assert_eq!(table.pipe_segments.len(), 2);
+        let a = &table.pipe_segments[0];
+        let b = &table.pipe_segments[1];
+        assert_eq!(a.end.peer, None, "段 A 的 end.peer 必须为 null");
+        assert_eq!(b.start.peer, None, "段 B 的 start.peer 必须为 null");
+
+        // 互不指向：任何一个 peer 都不指向另一段的 handle。
+        let a_handle = a.handle.clone();
+        let b_handle = b.handle.clone();
+        for segment in &table.pipe_segments {
+            for end in [&segment.start, &segment.end] {
+                if let Some(peer) = &end.peer {
+                    assert!(
+                        !peer.starts_with(&a_handle) && !peer.starts_with(&b_handle),
+                        "打断后两段不得互指：{peer}"
+                    );
+                }
+            }
+        }
+
+        // 打断符自身不出现在任何管段的 peer 里（隔断而非导通）。
+        let break_handle = table.fittings[0].handle.clone();
+        for segment in &table.pipe_segments {
+            for end in [&segment.start, &segment.end] {
+                assert!(
+                    end.peer
+                        .as_deref()
+                        .is_none_or(|peer| !peer.starts_with(&break_handle)),
+                    "打断符不得出现在任何管段的 peer 里：{:?}",
+                    end.peer
+                );
+            }
+        }
+        assert_eq!(table.fittings.len(), 1, "打断符在 fittings 里有一条记录");
+    }
+
+    /// 打断点不在任何管段上时拒绝，且不新增实体、不动拓扑表。
+    #[test]
+    fn pidbreak_off_the_pipe_is_refused_without_changes() {
+        let mut app = app();
+        draw(&mut app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        draw(&mut app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        let before_handles = handles(&app).len();
+        let before = topology(&app);
+
+        let done = draw(&mut app, "PIDBREAK", &[[0.0, 500.0, 0.0]]);
+        assert_eq!(done["ok"], false, "落点不在管段上必须被拒：{done}");
+        assert_eq!(done["code"], BREAK_NO_SEGMENT, "{done}");
+        assert_eq!(handles(&app).len(), before_handles, "不该新增实体");
+        assert_eq!(topology(&app), before, "拓扑表不得变化");
+    }
+
+    /// 打断点落在管段端点上时拒绝（否则会留下零长度管段）。
+    #[test]
+    fn pidbreak_on_a_segment_endpoint_is_refused() {
+        let mut app = app();
+        draw(&mut app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        draw(&mut app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        let before = topology(&app);
+
+        let done = draw(&mut app, "PIDBREAK", &[[0.0, 0.0, 0.0]]);
+        assert_eq!(done["ok"], false, "端点打断必须被拒：{done}");
+        assert_eq!(done["code"], BREAK_AT_ENDPOINT, "{done}");
+        assert_eq!(topology(&app), before, "拓扑表不得变化");
+    }
+
+    /// 打断点离端点不足让开距离时拒绝，且不动拓扑表。
+    #[test]
+    fn pidbreak_too_close_to_an_endpoint_is_refused() {
+        let mut app = app();
+        draw(&mut app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        draw(&mut app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        let before = topology(&app);
+
+        let done = draw(&mut app, "PIDBREAK", &[[1.0, 0.0, 0.0]]);
+        assert_eq!(done["ok"], false, "太靠近端点必须被拒：{done}");
+        assert_eq!(done["code"], BREAK_TOO_CLOSE, "{done}");
+        assert_eq!(topology(&app), before, "拓扑表不得变化");
+    }
+
+    /// 打断后两段继承原管段的 `props` / `owner`（管段无覆盖标记）。
+    #[test]
+    fn both_pieces_of_a_break_keep_the_run_props_and_owner() {
+        let mut app = app();
+        let line = draw_line(&mut app);
+        put_props(&mut app, line, &[("管道等级", "A1A")]);
+        let (run, _segments) = draw_run(&mut app);
+        draw(&mut app, "PIDBREAK", &[[100.0, 0.0, 0.0]]);
+
+        let table = topology(&app);
+        assert_eq!(table.pipe_segments.len(), 2);
+        for segment in &table.pipe_segments {
+            let handle = parse_handle(&segment.handle).expect("handle");
+            assert_eq!(five_of(&app, handle)[0], "A1A", "两段都继承管路等级");
+            let author = author_of(&app, handle).expect("带 PID_AUTHOR");
+            assert_eq!(author.topology, "pipe_segment");
+            assert_eq!(
+                author.owner,
+                handle_text(run),
+                "两段的 owner 都指向宿主管路"
+            );
+            assert!(
+                !author.props.contains("__overrides"),
+                "管段无覆盖标记：{}",
+                author.props
+            );
+        }
     }
 }

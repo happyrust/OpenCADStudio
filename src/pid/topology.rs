@@ -56,6 +56,12 @@ pub const TYPE_VALVE: &str = "VALVE";
 /// 阀门两个拓扑端口的别名，顺序即 `连接点1` → `连接点2`。
 pub const VALVE_PORT_NAMES: [&str; 2] = ["连接点1", "连接点2"];
 
+/// 打断符的 `fitting_type` 字面量。
+///
+/// 打断符是管件的一种（`topology=fitting`），但不引用符号库里的任何符号，
+/// 也不绑定任何管段端口 —— 它是**隔断**而非导通（`VAL-PIPE-032`）。
+pub const FITTING_BREAK: &str = "break";
+
 /// 页间连接符的四个 `kind` 字面量，逐字照抄契约（`PIDCONNECTOR <kind>`）。
 pub const KIND_PIPE_IN: &str = "pipe_in";
 /// 管道流出连接符。
@@ -746,6 +752,17 @@ pub struct FittingRequest {
     pub point: [f64; 3],
 }
 
+/// 一个 `PIDBREAK` 请求：打断点。
+///
+/// 打断符**无参数**（`architecture.md` 附录 A.7），一点 + Enter。落点命中
+/// 某条管段后该段被拆为两段，打断符自身生成独立实体（`topology=fitting`），
+/// 且两侧端点的 `peer` 均为 `null` —— 隔断而非导通（`VAL-PIPE-032`）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct BreakRequest {
+    /// 世界坐标打断点。
+    pub point: [f64; 3],
+}
+
 /// 一个 `PIDCONNECTOR` 请求：连接符种类 + 落点 + 可选对端。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectorRequest {
@@ -787,6 +804,8 @@ pub enum PipeCommit {
     Fitting(FittingRequest),
     /// `PIDCONNECTOR`：在命中的管线/信号线上插页间连接符。
     Connector(ConnectorRequest),
+    /// `PIDBREAK`：在命中的管段上插打断符（管段被分成不连通的两段）。
+    Break(BreakRequest),
 }
 
 #[cfg(test)]
