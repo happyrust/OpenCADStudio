@@ -16,6 +16,7 @@ pub mod propagate;
 pub mod symbols;
 pub mod tag_engine;
 pub mod tag_rule;
+pub mod topology;
 pub mod type_lib;
 
 pub use graph_data::{
