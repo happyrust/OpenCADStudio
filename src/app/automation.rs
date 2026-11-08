@@ -2784,6 +2784,15 @@ impl OpenCADStudio {
         let mut baked_view = snapshot.clone();
         crate::modules::draw::modify::explode::bake_dimension_blocks(&mut baked_view);
         let before = document_manifest(&baked_view);
+        // The verified-save path is a real save path too, so the P&ID gate must
+        // fire here with its contract code before the checksum/audit work. The
+        // wrapper below refuses the same documents, but it flattens the failure
+        // into a string, so the code is taken here where it is still typed.
+        crate::pid::propagate::gate_save(&snapshot).map_err(|error| {
+            json!({
+                "ok":false,"status":"failed","code":error.code(),"error":error.to_string(),
+            })
+        })?;
         crate::io::save_as_version(&snapshot, &path, version).map_err(|error| {
             json!({
                 "ok":false,"status":"failed","code":"save_failed","error":error,
@@ -8036,6 +8045,44 @@ mod pid_save_gate_tests {
         let restored = PidAuthor::load(&back, handle).expect("author record survives");
         assert_eq!(restored.tag, "P-1001");
         assert_eq!(restored.tag_status, TAG_STATUS_OK);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `save_verified` is the other real save path a client can drive, and it
+    /// must refuse the same documents with the same contract code.
+    #[test]
+    fn the_verified_save_surfaces_the_pid_gate_code() {
+        let dir = scratch_dir();
+        let path = dir.join("verified-conflict.dwg");
+        let (mut app, handle) = app_with_conflict(TAG_STATUS_DUPLICATED);
+
+        let request = json!({
+            "path": path,
+            "target_format": "dwg",
+            "allow_lossy": true,
+            "overwrite": true,
+        });
+        let refused = app
+            .save_verified_request(&request)
+            .expect_err("duplicated tag must block the verified save");
+        assert_eq!(
+            refused["code"], "TAG_DUPLICATED_BLOCKS_SAVE",
+            "verified save must carry the gate code: {refused}"
+        );
+        assert!(
+            !path.exists(),
+            "a refused verified save must not create the file"
+        );
+
+        let mut author = PidAuthor::load(&app.tabs[1].scene.document, handle).unwrap();
+        author.tag_status = TAG_STATUS_OK.into();
+        author.store(&mut app.tabs[1].scene.document, handle);
+        let saved = app
+            .save_verified_request(&request)
+            .expect("cleared conflict saves");
+        assert_eq!(saved["ok"], true, "{saved}");
+        assert!(path.is_file());
 
         std::fs::remove_dir_all(&dir).ok();
     }
