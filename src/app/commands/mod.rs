@@ -48,6 +48,7 @@ mod pdf_underlay;
 mod pidbackup;
 mod pidbulk;
 mod pidlegend;
+pub(in crate::app) mod pidmove;
 mod pidpalette;
 mod pidpipe;
 pub(in crate::app) mod pidprops;

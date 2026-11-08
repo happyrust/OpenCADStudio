@@ -334,6 +334,31 @@ impl OpenCADStudio {
         };
 
         self.push_undo_snapshot(i, "ENTITIESTRANSFORM");
+        // P&ID 管件平移要带动两侧管段的**内侧**端点（`VAL-PIPE-019`）。
+        // 预演在写任何字节之前完成：越界时返回结构化失败，几何保持移动前
+        // 的状态（`VAL-PIPE-022` 的「无部分写入」）。
+        let refill = if action == "move" {
+            let delta = glam::DVec3::new(
+                req["vector"][0].as_f64().unwrap_or(0.0),
+                req["vector"][1].as_f64().unwrap_or(0.0),
+                req["vector"][2].as_f64().unwrap_or(0.0),
+            );
+            match crate::app::commands::pidmove::plan_refill(
+                &self.tabs[i].scene.document,
+                &self.pid_symbols,
+                &handles,
+                delta,
+            ) {
+                Ok(plan) => Some(plan),
+                Err(error) => {
+                    // 尚未写入任何字节：撤掉刚开的快照即可原样回退。
+                    self.discard_last_undo_entry(i);
+                    return Err(error.into_value());
+                }
+            }
+        } else {
+            None
+        };
         let scene = &mut self.tabs[i].scene;
         let mut created: Vec<String> = Vec::new();
         let affected;
@@ -400,6 +425,9 @@ impl OpenCADStudio {
             }
         }
         self.post_ref_op(i);
+        if let Some(plan) = refill.as_ref() {
+            self.apply_fitting_refill(i, plan);
+        }
         self.set_control_result(json!({
             "affected": affected,
             "created": created,

@@ -1,0 +1,626 @@
+//! 移动管件后的管段自动补位。
+//!
+//! 拖动阀门时两侧管段的**内侧**端点收到阀门端口的新坐标上，外侧端点不动 ——
+//! 管段数与端口绑定都不变（不重建管段），只改端点坐标。拓扑表是权威判据
+//! （`VAL-PIPE-019/020` 读 `pipe_segments[].start/end.point`），管段实体的
+//! 几何随之同步，截图才与表一致。
+//!
+//! 内侧端点取**阀门端口的世界坐标**，不是「原坐标 + 平移量」。插入时两侧
+//! 端点留了 [`crate::app::commands::pidpipe`] 的 `FITTING_CLEARANCE`（让截图
+//! 判据严格有序），补位按契约 `VAL-PIPE-019` 把端点吸附回端口上；阀门外形
+//! 区间 `[v0,v1]` 因此就是两个端口之间的距离，长度守恒 `end_A + (200 - start_B)
+//! + (v1 - v0) == 200` 精确成立（`VAL-PIPE-020`）。
+//!
+//! **先校验、后写入**：越界移动（会让某段反向，或让两侧段沿管段方向重叠）
+//! 返回结构化失败，此时一个字节都不写，几何保持移动前的状态
+//! （`VAL-PIPE-022` 的「无部分写入」）。
+//!
+//! 补位不重建管段、不重绑端口、不改位号 —— `VAL-PIPE-021` 断言这三件事
+//! 在移动前后完全相同。
+
+use crate::app::OpenCADStudio;
+use crate::pid::symbols::SymbolLibrary;
+use crate::pid::topology::{
+    handle_text, parse_handle, SegmentEnd, TopologyTable, VALVE_PORT_NAMES,
+};
+use crate::scene::ChangeKind;
+use glam::DVec3;
+use serde_json::{json, Value};
+
+/// 补位被拒时带的结构化错误。
+pub(in crate::app) struct RefillError {
+    /// 契约里可判定的错误码。
+    pub code: &'static str,
+    /// 人读的原因。
+    pub message: String,
+}
+
+impl RefillError {
+    /// 控制面响应体：与 `control::failure` 同形。
+    pub(in crate::app) fn into_value(self) -> Value {
+        json!({
+            "ok": false,
+            "status": "failed",
+            "code": self.code,
+            "error": self.message,
+        })
+    }
+}
+
+/// 一次补位的预演结果：阀门平移后各管段端点的新坐标。
+pub(in crate::app) struct RefillPlan {
+    /// 需要改写的管段：handle → (start, end)。
+    pub segments: Vec<(codec::Handle, SegmentEnd, SegmentEnd)>,
+}
+
+impl RefillPlan {
+    fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+}
+
+/// 移动被拒的错误码：平移把管段推过了外侧端点，或让两侧段重叠。
+pub(in crate::app) const REFILL_OUT_OF_RANGE: &str = "FITTING_REFILL_OUT_OF_RANGE";
+
+/// 一个被移动管件的端口表：`(端口名, 世界坐标)`，按主轴排序后下标即
+/// `VALVE_PORT_NAMES` 的顺序。
+type PortTable = Vec<(String, [f64; 2])>;
+
+/// 全部被移动管件的端口表：`(管件 handle 文本, 端口表)`。
+type PortTables = Vec<(String, PortTable)>;
+
+/// 预演一次平移带来的补位。**只读**，失败时不碰文档。
+///
+/// `moved` 是被平移的实体；其中只有拓扑表 `fittings` 里登记的管件会带动
+/// 补位。返回空计划表示这次移动与管件无关（普通实体、或在管段端点插入、
+/// 只绑了一个端口的管件）。
+pub(in crate::app) fn plan_refill(
+    document: &codec::Document,
+    library: &SymbolLibrary,
+    moved: &[codec::Handle],
+    delta: DVec3,
+) -> Result<RefillPlan, RefillError> {
+    let mut plan = RefillPlan {
+        segments: Vec::new(),
+    };
+    if moved.is_empty() || (delta.x == 0.0 && delta.y == 0.0) {
+        return Ok(plan);
+    }
+    let table = TopologyTable::load(document);
+    let moved_text: Vec<String> = moved.iter().map(|handle| handle_text(*handle)).collect();
+    let fittings: Vec<_> = table
+        .fittings
+        .iter()
+        .filter(|fitting| moved_text.contains(&fitting.handle))
+        .cloned()
+        .collect();
+    if fittings.is_empty() {
+        return Ok(plan);
+    }
+
+    // 每个被移动管件：把符号定义的两个端口坐标平移到新位置，并按段主轴
+    // 决定哪个端口是「连接点1」。插入时 `连接点1` 落在「段起点 → 落点」的
+    // 反侧，所以主轴方向取「段 A 外侧端点 → 段 B 外侧端点」，与插入同源。
+    let mut port_points: PortTables = Vec::new();
+    for fitting in &fittings {
+        let Some(handle) = parse_handle(&fitting.handle) else {
+            continue;
+        };
+        let Some(codec::EntityType::Insert(insert)) = document.get_entity(handle) else {
+            continue;
+        };
+        let Some(symbol) = library.symbol(&insert.block_name) else {
+            continue;
+        };
+        let base = document
+            .block_records
+            .get(&insert.block_name)
+            .map(|record| (record.base_point.x, record.base_point.y))
+            .unwrap_or((0.0, 0.0));
+        let scale = (insert.x_scale(), insert.y_scale());
+        let at = (
+            insert.insert_point.x + delta.x,
+            insert.insert_point.y + delta.y,
+        );
+        let axis = fitting_axis(&table, fitting);
+        // 端口先落到世界坐标，再按主轴投影排序：投影小的在段起点侧，
+        // 即 `连接点1`。用世界坐标排序而不是块内坐标，插入带旋转时也成立。
+        let mut world_ports: Vec<(String, [f64; 2])> = symbol
+            .ports
+            .iter()
+            .map(|port| {
+                let world = crate::pid::symbols::place(
+                    (port.at[0], port.at[1]),
+                    base,
+                    scale,
+                    insert.rotation,
+                    at,
+                );
+                (port.name.clone(), [world.0, world.1])
+            })
+            .collect();
+        world_ports.sort_by(|a, b| {
+            let key = |point: &[f64; 2]| point[0] * axis[0] + point[1] * axis[1];
+            key(&a.1)
+                .partial_cmp(&key(&b.1))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let points: Vec<(String, [f64; 2])> = VALVE_PORT_NAMES
+            .iter()
+            .enumerate()
+            .filter_map(|(index, name)| {
+                world_ports
+                    .get(index)
+                    .map(|(_, point)| ((*name).to_string(), *point))
+            })
+            .collect();
+        port_points.push((fitting.handle.clone(), points));
+    }
+    if port_points.is_empty() {
+        return Ok(plan);
+    }
+
+    // 只有 `peer` 指向被移动管件端口的端点才动 —— 另一侧是外侧端点，保持原位。
+    for segment in &table.pipe_segments {
+        let mut start = segment.start.clone();
+        let mut end = segment.end.clone();
+        let mut touched = false;
+        if let Some(point) = port_of(&port_points, start.peer.as_deref()) {
+            start.point = point;
+            touched = true;
+        }
+        if let Some(point) = port_of(&port_points, end.peer.as_deref()) {
+            end.point = point;
+            touched = true;
+        }
+        if !touched {
+            continue;
+        }
+        let Some(handle) = parse_handle(&segment.handle) else {
+            continue;
+        };
+        plan.segments.push((handle, start, end));
+    }
+    if plan.is_empty() {
+        return Ok(plan);
+    }
+
+    // 判据一：段本身不得反向，也不得退化成一个点 —— 内侧端点不能越过外侧端点。
+    for (handle, start, end) in &plan.segments {
+        let text = handle_text(*handle);
+        let Some(old) = table.pipe_segments.iter().find(|s| s.handle == text) else {
+            continue;
+        };
+        let old_dir = [
+            old.end.point[0] - old.start.point[0],
+            old.end.point[1] - old.start.point[1],
+        ];
+        let new_dir = [
+            end.point[0] - start.point[0],
+            end.point[1] - start.point[1],
+        ];
+        let along = old_dir[0] * new_dir[0] + old_dir[1] * new_dir[1];
+        if along <= 0.0 || new_dir[0].hypot(new_dir[1]) <= 1e-9 {
+            return Err(RefillError {
+                code: REFILL_OUT_OF_RANGE,
+                message: format!(
+                    "PID 补位：平移让管段 {text} 越过它的外侧端点，几何保持不变。"
+                ),
+            });
+        }
+    }
+
+    // 判据二：同一管件两侧的段不得沿管段方向重叠（内侧点必须严格有序）。
+    for fitting in &fittings {
+        let port = |name: &str| fitting.ports.get(name).and_then(|slot| slot.clone());
+        let (Some(port_a), Some(port_b)) =
+            (port(VALVE_PORT_NAMES[0]), port(VALVE_PORT_NAMES[1]))
+        else {
+            // 端点插入的管件只绑一个端口，没有第二段可重叠。
+            continue;
+        };
+        let (Some(inner_a), Some(inner_b)) = (
+            inner_point(&plan, &port_a, &fitting.handle, VALVE_PORT_NAMES[0]),
+            inner_point(&plan, &port_b, &fitting.handle, VALVE_PORT_NAMES[1]),
+        ) else {
+            continue;
+        };
+        let axis = axis_of(&plan, &port_a).unwrap_or([1.0, 0.0]);
+        let gap = (inner_b[0] - inner_a[0]) * axis[0] + (inner_b[1] - inner_a[1]) * axis[1];
+        if gap <= 0.0 {
+            return Err(RefillError {
+                code: REFILL_OUT_OF_RANGE,
+                message: format!(
+                    "PID 补位：平移会让管件 {} 两侧的管段重叠，几何保持不变。",
+                    fitting.handle
+                ),
+            });
+        }
+    }
+
+    Ok(plan)
+}
+
+impl OpenCADStudio {
+    /// 把预演结果落到拓扑表与管段几何上。调用方负责 undo 快照的包围。
+    ///
+    /// 只改端点坐标：不新建/删除实体、不动 `ports` 绑定、不碰位号
+    /// （`VAL-PIPE-021`）。
+    pub(in crate::app) fn apply_fitting_refill(&mut self, i: usize, plan: &RefillPlan) {
+        if plan.is_empty() {
+            return;
+        }
+        let mut changed: Vec<(codec::Handle, ChangeKind)> = Vec::with_capacity(plan.segments.len());
+        {
+            let document = &mut self.tabs[i].scene.document;
+            let mut table = TopologyTable::load(document);
+            for (handle, start, end) in &plan.segments {
+                if let Some(record) = table.segment_by_handle_mut(*handle) {
+                    record.start = start.clone();
+                    record.end = end.clone();
+                }
+                // 几何同步：管段实体是 `Line`，端点跟拓扑表走。
+                if let Some(codec::EntityType::Line(line)) = document.get_entity_mut(*handle) {
+                    line.start =
+                        codec::types::Vector3::new(start.point[0], start.point[1], line.start.z);
+                    line.end = codec::types::Vector3::new(end.point[0], end.point[1], line.end.z);
+                }
+                changed.push((*handle, ChangeKind::Modified));
+            }
+            table.store(document);
+        }
+        self.tabs[i].scene.bump_entities(&changed);
+        self.tabs[i].dirty = true;
+        self.post_ref_op(i);
+    }
+}
+
+/// 被移动管件所在管路的主轴方向：从段 A 的外侧端点指向段 B 的外侧端点。
+///
+/// 插入阀门时内侧端点就是沿这条轴分列两侧的（`pidpipe::fitting_port_points`
+/// 用「段起点 → 落点」定向），补位沿用同一根轴，`连接点1` 才能稳定落在
+/// 起点侧 —— 否则段反向绘制时两个端口会互换，`VAL-PIPE-020` 的
+/// `end_A.x < start_B.x` 会翻。
+fn fitting_axis(table: &TopologyTable, fitting: &crate::pid::topology::FittingRecord) -> [f64; 2] {
+    let port = |name: &str| fitting.ports.get(name).and_then(|slot| slot.clone());
+    let outer = |segment_text: &str, port_name: &str| -> Option<[f64; 2]> {
+        let handle = parse_handle(segment_text)?;
+        let segment = table.pipe_segments.iter().find(|s| s.handle == handle_text(handle))?;
+        let peer = format!("{}:{}", fitting.handle, port_name);
+        if segment.start.peer.as_deref() == Some(peer.as_str()) {
+            Some(segment.end.point)
+        } else if segment.end.peer.as_deref() == Some(peer.as_str()) {
+            Some(segment.start.point)
+        } else {
+            None
+        }
+    };
+    let (Some(a), Some(b)) = (
+        port(VALVE_PORT_NAMES[0]).and_then(|text| outer(&text, VALVE_PORT_NAMES[0])),
+        port(VALVE_PORT_NAMES[1]).and_then(|text| outer(&text, VALVE_PORT_NAMES[1])),
+    ) else {
+        return [1.0, 0.0];
+    };
+    let dir = [b[0] - a[0], b[1] - a[1]];
+    let length = dir[0].hypot(dir[1]);
+    if length > 1e-12 {
+        [dir[0] / length, dir[1] / length]
+    } else {
+        [1.0, 0.0]
+    }
+}
+
+/// `peer` 指向的端口平移后的坐标。`peer` 形如 `<handle>:<端口名>`。
+fn port_of(port_points: &PortTables, peer: Option<&str>) -> Option<[f64; 2]> {
+    let peer = peer?;
+    let (handle, port) = peer.rsplit_once(':')?;
+    let (_, points) = port_points
+        .iter()
+        .find(|(candidate, _)| candidate == handle)?;
+    points
+        .iter()
+        .find(|(name, _)| name == port)
+        .map(|(_, point)| *point)
+}
+
+/// 某段落在管件某一端口上的端点坐标（内侧端点）。按 `peer` 判方向，不假定
+/// 它一定是 `end` —— 管段可能反向绘制。
+fn inner_point(
+    plan: &RefillPlan,
+    segment_text: &str,
+    fitting_text: &str,
+    port: &str,
+) -> Option<[f64; 2]> {
+    let handle = parse_handle(segment_text)?;
+    let (_, start, end) = plan
+        .segments
+        .iter()
+        .find(|(candidate, _, _)| *candidate == handle)?;
+    let peer = format!("{fitting_text}:{port}");
+    if start.peer.as_deref() == Some(peer.as_str()) {
+        Some(start.point)
+    } else if end.peer.as_deref() == Some(peer.as_str()) {
+        Some(end.point)
+    } else {
+        None
+    }
+}
+
+/// 段的方向单位向量（平移后的新方向）。
+fn axis_of(plan: &RefillPlan, segment_text: &str) -> Option<[f64; 2]> {
+    let handle = parse_handle(segment_text)?;
+    let (_, start, end) = plan
+        .segments
+        .iter()
+        .find(|(candidate, _, _)| *candidate == handle)?;
+    let dir = [end.point[0] - start.point[0], end.point[1] - start.point[1]];
+    let length = dir[0].hypot(dir[1]);
+    (length > 1e-12).then(|| [dir[0] / length, dir[1] / length])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use serde_json::json;
+
+    static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn app() -> OpenCADStudio {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        app
+    }
+
+    fn request(app: &mut OpenCADStudio, mut req: Value) -> Value {
+        if let Some(object) = req.as_object_mut() {
+            object.insert("document_id".into(), json!(app.tabs[app.active_tab].id));
+            if !object.contains_key("request_id") {
+                let serial = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                object.insert("request_id".into(), json!(format!("pidmove-test-{serial}")));
+            }
+        }
+        app.control_request(req).0
+    }
+
+    fn draw(app: &mut OpenCADStudio, cmd: &str, points: &[[f64; 3]]) -> Value {
+        let started = request(app, json!({"op":"run","cmd":cmd}));
+        assert_eq!(started["ok"], true, "{cmd} 应启动：{started}");
+        for point in points {
+            let fed = request(
+                app,
+                json!({"op":"input","kind":"point","point":point,"space":"wcs"}),
+            );
+            assert_eq!(fed["ok"], true, "喂点应被接受：{fed}");
+        }
+        request(app, json!({"op":"input","kind":"enter"}))
+    }
+
+    fn topology(app: &OpenCADStudio) -> TopologyTable {
+        TopologyTable::load(&app.tabs[app.active_tab].scene.document)
+    }
+
+    fn hex(handle: codec::Handle) -> String {
+        handle_text(handle)
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-6
+    }
+
+    /// 一条 200 单位长的管路，中点上插一个闸阀。返回（阀门 handle, 段 A, 段 B）。
+    fn line_with_valve_at_midpoint(app: &mut OpenCADStudio) -> (codec::Handle, codec::Handle, codec::Handle) {
+        draw(app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        draw(app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        let done = draw(app, "PIDFITTING gate_valve", &[[100.0, 0.0, 0.0]]);
+        assert_eq!(done["ok"], true, "{done}");
+        let table = topology(app);
+        assert_eq!(table.pipe_segments.len(), 2, "中点插阀门应拆成两段");
+        assert_eq!(table.fittings.len(), 1);
+        let valve = parse_handle(&table.fittings[0].handle).expect("阀门 handle");
+        let a = parse_handle(&table.pipe_segments[0].handle).expect("段 A");
+        let b = parse_handle(&table.pipe_segments[1].handle).expect("段 B");
+        (valve, a, b)
+    }
+
+    fn move_valve(app: &mut OpenCADStudio, valve: codec::Handle, dx: f64) -> Value {
+        request(
+            app,
+            json!({
+                "op":"entities_transform",
+                "action":"move",
+                "handles":[hex(valve)],
+                "vector":[dx,0,0],
+            }),
+        )
+    }
+
+    fn insert_point(app: &OpenCADStudio, handle: codec::Handle) -> [f64; 3] {
+        match app.tabs[app.active_tab].scene.document.get_entity(handle) {
+            Some(codec::EntityType::Insert(insert)) => [
+                insert.insert_point.x,
+                insert.insert_point.y,
+                insert.insert_point.z,
+            ],
+            other => panic!("不是 Insert：{other:?}"),
+        }
+    }
+
+    /// `VAL-PIPE-019`：平移 +40 后阀门到 140，两侧管段内侧端点等于阀门端口坐标。
+    #[test]
+    fn moving_the_valve_drags_the_inner_endpoints_onto_its_ports() {
+        let mut app = app();
+        let (valve, _, _) = line_with_valve_at_midpoint(&mut app);
+        assert!(close(insert_point(&app, valve)[0], 100.0), "阀门起初在 100");
+
+        let moved = move_valve(&mut app, valve, 40.0);
+        assert_eq!(moved["ok"], true, "{moved}");
+        assert!(close(insert_point(&app, valve)[0], 140.0), "位移必须真的生效");
+
+        let table = topology(&app);
+        let a = &table.pipe_segments[0];
+        let b = &table.pipe_segments[1];
+        // 闸阀端口在 ±14：内侧端点落在 126 与 154。
+        assert!(close(a.end.point[0], 126.0), "段 A 内侧端点：{:?}", a.end.point);
+        assert!(close(b.start.point[0], 154.0), "段 B 内侧端点：{:?}", b.start.point);
+        // 与阀门端口坐标逐个相等。
+        let ports = placed_ports(&app, valve);
+        assert_eq!(ports.len(), 2, "阀门两个端口：{ports:?}");
+        assert!(close(a.end.point[0], ports[0].0) && close(a.end.point[1], ports[0].1));
+        assert!(close(b.start.point[0], ports[1].0) && close(b.start.point[1], ports[1].1));
+    }
+
+    fn placed_ports(app: &OpenCADStudio, valve: codec::Handle) -> Vec<(f64, f64)> {
+        let document = &app.tabs[app.active_tab].scene.document;
+        match document.get_entity(valve) {
+            Some(codec::EntityType::Insert(insert)) => {
+                crate::pid::symbols::placed_ports(document, insert)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// `VAL-PIPE-020`：外侧端点不动，两段沿 X 不重叠，长度守恒。
+    #[test]
+    fn the_refilled_segments_stay_joined_without_overlap_or_gap() {
+        let mut app = app();
+        let (valve, _, _) = line_with_valve_at_midpoint(&mut app);
+        let moved = move_valve(&mut app, valve, 40.0);
+        assert_eq!(moved["ok"], true, "{moved}");
+
+        let table = topology(&app);
+        let a = &table.pipe_segments[0];
+        let b = &table.pipe_segments[1];
+        assert!(close(a.start.point[0], 0.0) && close(a.start.point[1], 0.0), "段 A 起点不动");
+        assert!(close(b.end.point[0], 200.0) && close(b.end.point[1], 0.0), "段 B 终点不动");
+        assert!(a.end.point[0] < b.start.point[0], "两段沿 X 严格不重叠");
+
+        // 长度守恒：段 A + 阀门外形 + 段 B == 200。
+        let ports = placed_ports(&app, valve);
+        let (v0, v1) = (ports[0].0, ports[1].0);
+        let total = (a.end.point[0] - a.start.point[0]) + (b.end.point[0] - b.start.point[0]) + (v1 - v0);
+        assert!((total - 200.0).abs() <= 1e-6, "长度守恒偏差：{total}");
+        // 兜底判据（实现不暴露 v0/v1 时用）。
+        assert!(a.end.point[0] <= 140.0 && 140.0 <= b.start.point[0], "{a:?} {b:?}");
+    }
+
+    /// `VAL-PIPE-021`：移动不改变管段数与端口绑定，阀门 handle 与位号不变。
+    #[test]
+    fn moving_the_valve_keeps_the_segment_count_and_port_bindings() {
+        let mut app = app();
+        let (valve, seg_a, seg_b) = line_with_valve_at_midpoint(&mut app);
+        let before = topology(&app);
+        assert_eq!(before.pipe_runs[0].segments.len(), 2);
+        let ports_before = before.fittings[0].ports.clone();
+
+        let moved = move_valve(&mut app, valve, 40.0);
+        assert_eq!(moved["ok"], true, "{moved}");
+
+        let after = topology(&app);
+        assert_eq!(after.pipe_runs[0].segments.len(), 2, "管段数不变");
+        assert_eq!(after.pipe_segments.len(), 2, "不重建管段");
+        assert_eq!(after.fittings.len(), 1);
+        assert_eq!(after.fittings[0].ports, ports_before, "端口绑定不变");
+        assert_eq!(
+            after.fittings[0].ports[VALVE_PORT_NAMES[0]].as_deref(),
+            Some(hex(seg_a).as_str())
+        );
+        assert_eq!(
+            after.fittings[0].ports[VALVE_PORT_NAMES[1]].as_deref(),
+            Some(hex(seg_b).as_str())
+        );
+        assert_eq!(after.fittings[0].handle, hex(valve), "阀门 handle 未变");
+        assert_eq!(after.fittings[0].tag.as_deref(), Some("V-1001"), "位号未变");
+    }
+
+    /// `VAL-PIPE-022` 第一步：反向平移 -100 后仍满足 019 / 020 的全部判据。
+    #[test]
+    fn a_reverse_move_keeps_the_topology_intact() {
+        let mut app = app();
+        let (valve, _, _) = line_with_valve_at_midpoint(&mut app);
+        assert_eq!(move_valve(&mut app, valve, 40.0)["ok"], true);
+
+        let back = move_valve(&mut app, valve, -100.0);
+        assert_eq!(back["ok"], true, "{back}");
+        assert!(close(insert_point(&app, valve)[0], 40.0), "阀门回到 40");
+
+        let table = topology(&app);
+        let a = &table.pipe_segments[0];
+        let b = &table.pipe_segments[1];
+        assert!(close(a.start.point[0], 0.0), "段 A 起点不动");
+        assert!(close(b.end.point[0], 200.0), "段 B 终点不动");
+        assert!(close(a.end.point[0], 26.0), "段 A 内侧端点跟到端口：{:?}", a.end.point);
+        assert!(close(b.start.point[0], 54.0), "段 B 内侧端点跟到端口：{:?}", b.start.point);
+        assert!(a.end.point[0] < b.start.point[0], "不重叠");
+        let ports = placed_ports(&app, valve);
+        let total = (a.end.point[0] - a.start.point[0])
+            + (b.end.point[0] - b.start.point[0])
+            + (ports[1].0 - ports[0].0);
+        assert!((total - 200.0).abs() <= 1e-6, "长度守恒偏差：{total}");
+    }
+
+    /// `VAL-PIPE-022` 第二步：越界平移返回结构化失败，几何保持移动前状态。
+    #[test]
+    fn an_out_of_range_move_fails_without_partial_writes() {
+        let mut app = app();
+        let (valve, _, _) = line_with_valve_at_midpoint(&mut app);
+        assert_eq!(move_valve(&mut app, valve, 40.0)["ok"], true);
+        let before = topology(&app);
+        let before_point = insert_point(&app, valve);
+
+        let refused = move_valve(&mut app, valve, 400.0);
+        assert_eq!(refused["ok"], false, "越界必须被拒：{refused}");
+        assert_eq!(refused["code"], REFILL_OUT_OF_RANGE, "{refused}");
+
+        let after = topology(&app);
+        assert_eq!(after, before, "失败时拓扑表一个字节都不该变");
+        assert_eq!(insert_point(&app, valve), before_point, "阀门也不该动");
+    }
+
+    /// 只绑一个端口的管件（端点插入）移动时不补位、也不被拒。
+    #[test]
+    fn a_fitting_with_one_bound_port_is_not_refilled() {
+        let mut app = app();
+        draw(&mut app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        draw(&mut app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+        let done = draw(&mut app, "PIDFITTING gate_valve", &[[0.0, 0.0, 0.0]]);
+        assert_eq!(done["ok"], true, "{done}");
+        let table = topology(&app);
+        assert_eq!(table.pipe_segments.len(), 1, "端点插管件不拆分");
+        let valve = parse_handle(&table.fittings[0].handle).unwrap();
+        let before = table.pipe_segments[0].clone();
+
+        let moved = move_valve(&mut app, valve, 400.0);
+        assert_eq!(moved["ok"], true, "单端口管件移动不触发补位校验：{moved}");
+        let after = topology(&app);
+        assert_eq!(after.pipe_segments[0], before, "唯一的管段不该被改写");
+    }
+
+    /// 平移普通实体不碰拓扑表。
+    #[test]
+    fn moving_a_non_fitting_entity_leaves_the_topology_alone() {
+        let mut app = app();
+        line_with_valve_at_midpoint(&mut app);
+        let before = topology(&app);
+        // 一条与 P&ID 无关的线。
+        request(&mut app, json!({"op":"run","cmd":"LINE 0,300 100,300"}));
+        let queried = request(&mut app, json!({"op":"query","type":"Line"}));
+        let plain = queried["entities"]
+            .as_array()
+            .and_then(|list| list.last())
+            .and_then(|entity| entity["handle"].as_str())
+            .expect("新线有 handle")
+            .to_string();
+        let moved = request(
+            &mut app,
+            json!({
+                "op":"entities_transform",
+                "action":"move",
+                "handles":[plain],
+                "vector":[40,0,0],
+            }),
+        );
+        assert_eq!(moved["ok"], true, "{moved}");
+        assert_eq!(topology(&app), before, "普通实体移动不该改拓扑表");
+    }
+}
