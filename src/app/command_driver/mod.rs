@@ -657,6 +657,19 @@ impl OpenCADStudio {
                     return task;
                 }
             }
+            CmdResult::PidPipeCommit(commit) => {
+                // The command gathered the points; the host owns the document.
+                // `commit_pid_pipeline` opens and closes its own undo step, so
+                // the command is ended here rather than by the generic commit
+                // machinery.
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].scene.clear_preview_wire();
+                self.tabs[i].snap_result = None;
+                self.restore_pre_cmd_tangent();
+                if let Some(receipt) = self.commit_pid_pipeline(i, *commit) {
+                    self.command_line.push_output(&receipt);
+                }
+            }
             CmdResult::CommitAndReport(entity, message) => {
                 let task = self.handle_commit_and_exit(entity, preserve_commit_layer);
                 self.command_line.push_output(&message);

@@ -1194,6 +1194,18 @@ impl OpenCADStudio {
             // LAYTRANS takes its standards file and FROM=TO pairs on one line.
             || tokens[0].eq_ignore_ascii_case("LAYTRANS")
             || tokens[0].eq_ignore_ascii_case("-LAYTRANS")
+            // The P&ID topology commands take their sub-mode as the first word
+            // (`PIDPIPE run L-1001`, `PIDPIPE signal S-2001`). Probing the verb
+            // alone would start the bare pipe command and feed `run` / `signal`
+            // to it as a point. A bare `PIDPIPE 0,0 200,0` still goes through
+            // the ordinary first-word + fed-tokens path, so the condition names
+            // the sub-mode words rather than the verb.
+            || (tokens[0].eq_ignore_ascii_case("PIDPIPE")
+                && tokens.get(1).is_some_and(|word| {
+                    word.eq_ignore_ascii_case("run") || word.eq_ignore_ascii_case("signal")
+                }))
+            // `PIDFITTING <symbol>` takes its symbol on the same line.
+            || tokens[0].eq_ignore_ascii_case("PIDFITTING")
         {
             return self.dispatch_command(cmd);
         }

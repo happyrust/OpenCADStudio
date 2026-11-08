@@ -49,6 +49,7 @@ mod pidbackup;
 mod pidbulk;
 mod pidlegend;
 mod pidpalette;
+mod pidpipe;
 pub(in crate::app) mod pidprops;
 mod pidplot;
 mod plotvars;
@@ -834,6 +835,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_pidpalette(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_pidpipe(cmd, i) {
+            return Some(t);
+        }
         None
     }
 
@@ -1469,13 +1473,16 @@ inventory::submit!(crate::command::CommandRegistration {
         // pid-parse's own plotter; and a drawing opened out of a SmartPlant
         // backup.
         "PIDBACKUPOPEN",
+        "PIDFITTING",
         "PIDGROUP",
         "PIDINSERT",
         "PIDLEGEND",
         "PIDLINE",
         "PIDPALETTE",
+        "PIDPIPE",
         "PIDPLOT",
         "PIDTAG",
+        "PIDTOPOLOGY",
         "PLOT",
         "PRINTERS",
         "PLOTSTYLE",

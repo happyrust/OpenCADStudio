@@ -2401,6 +2401,11 @@ pub enum CmdResult {
     },
     /// Cancel: discard any preview and end the command.
     Cancel,
+    /// A P&ID topology command (`PIDPIPE` / `PIDFITTING`) has gathered what it
+    /// needs and hands the request to the host, which owns the document: it
+    /// creates the entities, writes `PID_AUTHOR`, and maintains
+    /// `PID_AUTHOR_TOPOLOGY`, all in one undo step.
+    PidPipeCommit(Box<crate::pid::topology::PipeCommit>),
     /// Cleanly end the command without reporting cancellation.
     Done,
     /// End the command and begin in-place editing of the table cell under
