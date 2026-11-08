@@ -745,12 +745,20 @@ fn point_is_endpoint(segment: &crate::pid::topology::PipeSegmentRecord, point: D
     near(segment.start.point) || near(segment.end.point)
 }
 
+/// 管段内侧端点相对阀门端口再让开的世界距离。
+///
+/// `VAL-PIPE-017` 的截图判据按实体**包围盒**比对 `screen_bounds`，而 P&ID
+/// 符号的包围盒含位号 ATTRIB 文字（`AGENTS.md`「`capture` 的坐标语义」：
+/// `world_center` 是含 ATTRIB 的包围盒中点），文字比阀体宽出一点。留这道
+/// 缝既让管线不压在阀体上，也让「段A → 阀门 → 段B」在像素上严格有序。
+const FITTING_CLEARANCE: f64 = 2.0;
+
 /// 管件两个端口的世界坐标，按「沿管段方向、以落点为中心」摆放。
 ///
-/// 半宽取符号定义里端口 `at[0]` 的绝对值（闸阀是 14），乘插入缩放。方向
-/// 取「管段起点 → 落点」，于是返回的第一个点总在靠起点侧、第二个点在靠
-/// 终点侧 —— 拆开后 `end_A` 恒在 `start_B` 之前，中间那段就是阀门外形
-/// （`VAL-PIPE-016` 的 `end_A.x < start_B.x`）。
+/// 半宽取符号定义里端口 `at[0]` 的绝对值（闸阀是 14），乘插入缩放，再加
+/// [`FITTING_CLEARANCE`]。方向取「管段起点 → 落点」，于是返回的第一个点
+/// 总在靠起点侧、第二个点在靠终点侧 —— 拆开后 `end_A` 恒在 `start_B` 之前，
+/// 中间那段就是阀门外形（`VAL-PIPE-016` 的 `end_A.x < start_B.x`）。
 fn fitting_port_points(
     library: &crate::pid::symbols::SymbolLibrary,
     block: &str,
@@ -768,7 +776,8 @@ fn fitting_port_points(
                 .fold(0.0_f64, f64::max)
         })
         .unwrap_or(0.0)
-        * scale.abs();
+        * scale.abs()
+        + FITTING_CLEARANCE;
     let mut direction = DVec3::new(
         center.x - segment_start[0],
         center.y - segment_start[1],
