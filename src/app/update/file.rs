@@ -5499,6 +5499,7 @@ impl OpenCADStudio {
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::app) fn leave_keeping_recovery(&mut self) -> Task<Message> {
         self.exit_requested = true;
+        crate::app::collab::shutdown();
         iced::exit()
     }
 
@@ -5506,6 +5507,11 @@ impl OpenCADStudio {
     pub(in crate::app) fn exit_app(&mut self) -> Task<Message> {
         self.cleanup_autosaves();
         self.exit_requested = true;
+        // Say goodbye to the collaboration server before the process ends: a
+        // socket that just dies leaves the server waiting out the heartbeat
+        // timeout, while a close frame retires the session immediately.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::app::collab::shutdown();
         iced::exit()
     }
 

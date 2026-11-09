@@ -246,6 +246,23 @@ impl SessionRegistry {
         stale
     }
 
+    /// Marks one live session stale because its client said goodbye.
+    ///
+    /// A `Close` frame is a deliberate exit, unlike a socket that merely dies
+    /// (appendix A.2 keeps that session alive for the heartbeat timeout), so
+    /// the caller may retire it at once and tell the room. Returns the retired
+    /// session only when it actually transitioned: a session that was already
+    /// stale has had its `peer_left` broadcast, and repeating it would shrink
+    /// the roster twice.
+    pub fn retire(&mut self, session_id: &str) -> Option<Session> {
+        let session = self.get_mut(session_id)?;
+        if session.status != SessionStatus::Active {
+            return None;
+        }
+        session.status = SessionStatus::Stale;
+        Some(session.clone())
+    }
+
     /// Drops a session outright (used on restart or explicit close).
     pub fn remove(&mut self, session_id: &str) -> Option<Session> {
         match self.sessions.iter().position(|s| s.session_id == session_id) {
@@ -435,6 +452,42 @@ mod tests {
         assert_eq!(registry.len(), 2);
         assert_eq!(registry.get("s-1").map(|s| s.user_id.as_str()), Some("u1"));
         assert_eq!(registry.get("s-2").map(|s| s.user_id.as_str()), Some("u1"));
+    }
+
+    #[test]
+    fn a_close_frame_retires_a_live_session() {
+        let mut registry = registry();
+        open(&mut registry, "s-1", "协同编辑", 1_000);
+        let retired = registry.retire("s-1").expect("a live session retires");
+        assert_eq!(retired.status, SessionStatus::Stale);
+        assert_eq!(
+            registry.get("s-1").map(|s| s.status),
+            Some(SessionStatus::Stale)
+        );
+        assert!(registry.active_peers("PID-1101").is_empty());
+    }
+
+    #[test]
+    fn retiring_is_idempotent_so_peer_left_is_not_repeated() {
+        let mut registry = registry();
+        open(&mut registry, "s-1", "协同编辑", 1_000);
+        assert!(registry.retire("s-1").is_some());
+        assert!(
+            registry.retire("s-1").is_none(),
+            "an already stale session must not retire twice"
+        );
+    }
+
+    #[test]
+    fn retiring_an_unknown_or_swept_session_yields_nothing() {
+        let mut registry = registry();
+        assert!(registry.retire("s-missing").is_none());
+        open(&mut registry, "s-1", "协同编辑", 1_000);
+        registry.sweep(1_100);
+        assert!(
+            registry.retire("s-1").is_none(),
+            "the sweep already announced this departure"
+        );
     }
 
     #[test]

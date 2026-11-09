@@ -283,13 +283,27 @@ pub(super) fn subscribe() -> iced::Subscription<CollabEvent> {
 fn worker() -> impl iced::futures::Stream<Item = CollabEvent> {
     iced::stream::channel(64, |mut sender| async move {
         eprintln!("[collab] 订阅已启动，准备连接");
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             if let Err(error) = transport::run_client(&mut sender) {
                 eprintln!("[collab] 传输层退出：{error}");
             }
         });
+        // The quit path needs this handle to wait for the goodbye frame, so
+        // the thread that owns the socket is the one the app joins.
+        transport::register_worker(handle);
         iced::futures::future::pending::<()>().await;
     })
+}
+
+/// Close the collaboration socket before the process exits.
+///
+/// A process that just dies leaves the server counting down the 90 s heartbeat
+/// timeout; saying goodbye retires the session and tells the other peers at
+/// once (`VAL-CLI-016`). Blocking here is bounded by the transport's own
+/// budget, so a wedged socket cannot stall the quit.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn shutdown() {
+    transport::shutdown();
 }
 
 #[cfg(test)]

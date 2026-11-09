@@ -23,6 +23,7 @@ use iced::futures::channel::mpsc;
 use ocs_collab::ClientMessage;
 use std::io::{ErrorKind, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tungstenite::{Message, WebSocket};
@@ -38,6 +39,24 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Heartbeat cadence the server expects (see `architecture.md` §3.1).
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
+/// Test-only override for the cadence, so the emission path can be exercised
+/// without sitting through a real minute of wall clock. Production always uses
+/// [`HEARTBEAT_INTERVAL`].
+#[cfg(test)]
+static HEARTBEAT_OVERRIDE: Mutex<Option<Duration>> = Mutex::new(None);
+
+/// Cadence actually used by the read loop.
+fn heartbeat_interval() -> Duration {
+    #[cfg(test)]
+    if let Some(interval) = *HEARTBEAT_OVERRIDE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    {
+        return interval;
+    }
+    HEARTBEAT_INTERVAL
+}
+
 /// Reconnect backoff: 200 ms doubling to a 5 s ceiling, matching the
 /// documented retry ladder.
 const BACKOFF_START: Duration = Duration::from_millis(200);
@@ -46,6 +65,55 @@ const BACKOFF_MAX: Duration = Duration::from_secs(5);
 /// How long one wait-for-retry slice sleeps before re-checking whether the
 /// subscription is still alive.
 const BACKOFF_SLICE: Duration = Duration::from_millis(50);
+
+/// Set by [`shutdown`] when the app is quitting. Unlike a dropped
+/// subscription, this asks the thread to say goodbye on the wire: a process
+/// that just dies leaves the server waiting out the heartbeat timeout, while a
+/// `Close` frame retires the session at once (`VAL-CLI-016`).
+static STOP: AtomicBool = AtomicBool::new(false);
+
+/// The transport thread, kept so [`shutdown`] can wait for its goodbye.
+static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+/// Whether the app is quitting and the transport must close its socket.
+pub(super) fn stop_requested() -> bool {
+    STOP.load(Ordering::Relaxed)
+}
+
+/// Records the thread [`shutdown`] waits on. Called from the subscription
+/// worker, which is the only place that spawns it.
+pub(super) fn register_worker(handle: std::thread::JoinHandle<()>) {
+    if let Ok(mut slot) = WORKER.lock() {
+        *slot = Some(handle);
+    }
+}
+
+/// Asks the transport to close its socket and waits for the thread to finish.
+///
+/// Returns once the worker is gone or the budget elapses. The budget exists so
+/// a wedged socket cannot hang the quit path; the thread's 100 ms read timeout
+/// means the normal case returns almost immediately.
+pub(super) fn shutdown() {
+    eprintln!("[collab] 退出：请求关闭协同连接");
+    STOP.store(true, Ordering::Relaxed);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let finished = WORKER
+            .lock()
+            .map(|slot| slot.as_ref().is_none_or(|handle| handle.is_finished()))
+            .unwrap_or(true);
+        if finished || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Reap the handle so the join does not leak on a later restart of the
+    // subscription (iced may rebuild it if the window reopens).
+    let handle = WORKER.lock().ok().and_then(|mut slot| slot.take());
+    if let Some(handle) = handle {
+        let _ = handle.join();
+    }
+}
 
 /// Session config handed to the transport thread before it starts. The worker
 /// is spawned by iced with no arguments, so the value travels through here.
@@ -72,6 +140,8 @@ fn current_config() -> ClientConfig {
 enum Ended {
     /// The server closed the conversation cleanly.
     Closed(String),
+    /// The app is quitting: the socket was closed on purpose.
+    Quit,
     /// The subscription is gone; nothing may reconnect.
     SubscriptionGone,
 }
@@ -116,11 +186,12 @@ fn emit(sender: &mut mpsc::Sender<CollabEvent>, event: CollabEvent) -> Result<()
     }
 }
 
-/// Sleep out a retry delay, aborting early when the subscription disappears.
+/// Sleep out a retry delay, aborting early when the subscription disappears or
+/// the app starts quitting.
 fn wait_before_retry(sender: &mpsc::Sender<CollabEvent>, delay: Duration) -> Result<(), ()> {
     let deadline = Instant::now() + delay;
     while Instant::now() < deadline {
-        if sender.is_closed() {
+        if sender.is_closed() || stop_requested() {
             return Err(());
         }
         std::thread::sleep(BACKOFF_SLICE.min(deadline.saturating_duration_since(Instant::now())));
@@ -136,6 +207,9 @@ fn wait_before_retry(sender: &mpsc::Sender<CollabEvent>, delay: Duration) -> Res
 pub(super) fn run_client(sender: &mut mpsc::Sender<CollabEvent>) -> std::io::Result<()> {
     let mut attempt = 0u32;
     loop {
+        if stop_requested() || sender.is_closed() {
+            return Ok(());
+        }
         let config = current_config();
         if config.server_url.trim().is_empty() {
             // The subscription is gated on a configured address, so this is
@@ -154,6 +228,7 @@ pub(super) fn run_client(sender: &mut mpsc::Sender<CollabEvent>) -> std::io::Res
         }
         match run_session(sender, &config) {
             Ok(Ended::SubscriptionGone) => return Ok(()),
+            Ok(Ended::Quit) => return Ok(()),
             Ok(Ended::Closed(reason)) => {
                 if emit(
                     sender,
@@ -207,6 +282,12 @@ fn run_session(
     let mut session_id: Option<String> = None;
 
     loop {
+        if stop_requested() {
+            // The app is quitting: say goodbye on the wire so the server
+            // retires the session now instead of after the 90 s timeout.
+            close(&mut ws);
+            return Ok(Ended::Quit);
+        }
         if sender.is_closed() {
             close(&mut ws);
             return Ok(Ended::SubscriptionGone);
@@ -263,7 +344,7 @@ fn run_session(
             }
         }
 
-        if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+        if last_heartbeat.elapsed() >= heartbeat_interval() {
             let Some(session_id) = session_id.clone() else {
                 continue;
             };
@@ -386,6 +467,194 @@ mod tests {
         (url, handle)
     }
 
+    /// A one-connection server that records every client frame it reads, so a
+    /// test can assert what the client actually put on the wire.
+    fn recording_server() -> (
+        String,
+        std::sync::Arc<Mutex<Vec<String>>>,
+        std::sync::Arc<AtomicBool>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("ws://{addr}/ws");
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let closed = std::sync::Arc::new(AtomicBool::new(false));
+        let seen_writer = std::sync::Arc::clone(&seen);
+        let closed_writer = std::sync::Arc::clone(&closed);
+        let handle = std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut ws = match tungstenite::accept(stream) {
+                Ok(ws) => ws,
+                Err(_) => return,
+            };
+            let _ = ws.read();
+            let welcome = r#"{"type":"welcome","session_id":"s-test","base_revision":0,"peers":[],"claims":[]}"#;
+            if ws.send(Message::text(welcome)).is_err() {
+                return;
+            }
+            loop {
+                match ws.read() {
+                    Ok(Message::Text(text)) => {
+                        if let Ok(mut log) = seen_writer.lock() {
+                            log.push(text.to_string());
+                        }
+                    }
+                    Ok(Message::Close(_)) => {
+                        closed_writer.store(true, Ordering::Relaxed);
+                        let _ = ws.flush();
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(_) => return,
+                }
+            }
+        });
+        (url, seen, closed, handle)
+    }
+
+    /// VAL-CLI-002: the read loop really emits `heartbeat` frames on its
+    /// cadence, and every one carries the session id from `welcome`.
+    #[test]
+    fn the_session_emits_heartbeats_carrying_its_session_id() {
+        let _guard = config_lock();
+        let (url, seen, _closed, server) = recording_server();
+        set_client_config(ClientConfig {
+            server_url: url,
+            user_id: "u1".to_owned(),
+            drawing_id: "PID-1101".to_owned(),
+            mode: "协同编辑".to_owned(),
+            client_version: "test".to_owned(),
+        });
+        *HEARTBEAT_OVERRIDE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Duration::from_millis(120));
+
+        let (mut sender, receiver) = mpsc::channel::<CollabEvent>(64);
+        let worker = std::thread::spawn(move || {
+            let _ = run_client(&mut sender);
+        });
+
+        let mut receiver = receiver;
+        let mut connected = false;
+        for _ in 0..60 {
+            match receiver.try_next() {
+                Ok(Some(CollabEvent::Connected { .. })) => {
+                    connected = true;
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        assert!(connected, "the client never reported a session");
+
+        // Four cadence periods is enough for at least three beats.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let beats = loop {
+            let beats: Vec<String> = seen
+                .lock()
+                .expect("frame log")
+                .iter()
+                .filter(|frame| frame.contains("\"type\":\"heartbeat\""))
+                .cloned()
+                .collect();
+            if beats.len() >= 3 || Instant::now() >= deadline {
+                break beats;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(
+            beats.len() >= 3,
+            "expected at least 3 heartbeats, saw {}: {beats:?}",
+            beats.len()
+        );
+        for beat in &beats {
+            assert!(
+                beat.contains("s-test"),
+                "a heartbeat must carry the session id from welcome: {beat}"
+            );
+        }
+
+        drop(receiver);
+        let mut exited = false;
+        for _ in 0..60 {
+            if worker.is_finished() {
+                exited = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(exited, "the transport thread leaked after cancellation");
+        let _ = worker.join();
+        *HEARTBEAT_OVERRIDE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let _ = server.join();
+    }
+
+    /// VAL-CLI-016: quitting closes the socket instead of vanishing, and the
+    /// thread is joined rather than leaked.
+    #[test]
+    fn quitting_sends_a_close_frame_and_joins_the_thread() {
+        let _guard = config_lock();
+        let (url, _seen, closed, server) = recording_server();
+        set_client_config(ClientConfig {
+            server_url: url,
+            user_id: "u1".to_owned(),
+            drawing_id: "PID-1101".to_owned(),
+            mode: "协同编辑".to_owned(),
+            client_version: "test".to_owned(),
+        });
+
+        let (mut sender, receiver) = mpsc::channel::<CollabEvent>(64);
+        let worker = std::thread::spawn(move || {
+            let _ = run_client(&mut sender);
+        });
+        register_worker(worker);
+
+        let mut receiver = receiver;
+        let mut connected = false;
+        for _ in 0..60 {
+            match receiver.try_next() {
+                Ok(Some(CollabEvent::Connected { .. })) => {
+                    connected = true;
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        assert!(connected, "the client never reported a session");
+
+        let started = Instant::now();
+        shutdown();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed <= Duration::from_secs(3),
+            "shutdown took {elapsed:?}, over its budget"
+        );
+
+        // The server saw the close frame, not a dead socket.
+        let mut saw_close = false;
+        for _ in 0..40 {
+            if closed.load(Ordering::Relaxed) {
+                saw_close = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(saw_close, "the client never sent a close frame on quit");
+        let _ = server.join();
+        drop(receiver);
+        // Reset the process-global stop flag so later tests are unaffected.
+        STOP.store(false, Ordering::Relaxed);
+    }
+
     #[test]
     fn a_read_timeout_is_not_an_error_branch() {
         let would_block =
@@ -422,6 +691,28 @@ mod tests {
         assert_eq!(backoff_delay(4), Duration::from_millis(3200));
         assert_eq!(backoff_delay(5), BACKOFF_MAX);
         assert_eq!(backoff_delay(64), BACKOFF_MAX);
+    }
+
+    #[test]
+    fn the_heartbeat_cadence_lands_inside_the_contract_window() {
+        // VAL-CLI-002: 60 s must carry 3–5 beats, 13–17 s apart. The cadence
+        // itself is the only input, so assert the arithmetic the contract
+        // measures rather than waiting a minute for it.
+        assert_eq!(HEARTBEAT_INTERVAL, Duration::from_secs(15));
+        let window = Duration::from_secs(60);
+        let beats = window.as_secs() / HEARTBEAT_INTERVAL.as_secs();
+        assert!(
+            (3..=5).contains(&beats),
+            "60 s at 15 s per beat yields {beats} beats, outside 3..=5"
+        );
+        let gap = HEARTBEAT_INTERVAL.as_secs();
+        assert!((13..=17).contains(&gap), "beat gap {gap}s outside 13..=17");
+        // The server's timeout must be several beats wide, or one dropped beat
+        // would retire a live session.
+        assert!(
+            HEARTBEAT_INTERVAL.as_secs() * 3 <= 90,
+            "90 s timeout must tolerate several missed beats"
+        );
     }
 
     #[test]

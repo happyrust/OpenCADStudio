@@ -139,6 +139,10 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, peer_addr: S
 
     let mut ticker = interval(SWEEP_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // Set when the client said goodbye with a `Close` frame: the session is
+    // retired here and the room has already been told, so the disconnect tail
+    // must not repeat either step.
+    let mut retired = false;
     loop {
         tokio::select! {
             frame = socket.recv() => {
@@ -171,7 +175,15 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, peer_addr: S
                                     break;
                                 }
                             }
-                            Incoming::Close => break,
+                            Incoming::Close => {
+                                // A close frame is a deliberate goodbye, not a
+                                // dead socket: retire the session now instead
+                                // of waiting out the heartbeat timeout, so a
+                                // client that exits cleanly disappears from the
+                                // roster (VAL-CLI-016) as promptly as it left.
+                                retired = close_session(&state, &conn).await;
+                                break;
+                            }
                             Incoming::Ignore => {}
                         }
                     }
@@ -231,14 +243,73 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, peer_addr: S
             .remove(session_id);
     }
 
-    // The session and its claims survive disconnect: the heartbeat timeout,
-    // not the socket close, owns teardown (VAL-SRV-027). The room still learns
-    // that this peer went away (VAL-SRV-018).
-    if let Some(session) = &conn.session {
-        state
-            .bus
-            .publish(&session.drawing_id, &ServerMessage::PeerLeft(peer_of(session)));
+    // The session and its claims survive a dropped socket: the heartbeat
+    // timeout, not the socket close, owns teardown (VAL-SRV-027). A session
+    // already retired by an explicit `Close` frame needs neither step again —
+    // `close_session` wrote the row and told the room.
+    if !retired {
+        if let Some(session) = &conn.session {
+            state.bus.publish(
+                &session.drawing_id,
+                &ServerMessage::PeerLeft(peer_of(session)),
+            );
+        }
     }
+}
+
+/// Retires the connection's session after an explicit `Close` frame.
+///
+/// Returns whether the room was told, so the caller can skip the disconnect
+/// tail. A session that is already stale, taken over or unknown is left alone:
+/// its `peer_left` went out when it went stale, and repeating it would make the
+/// roster shrink twice.
+async fn close_session(state: &AppState, conn: &Connection) -> bool {
+    let Some(session) = &conn.session else {
+        return false;
+    };
+    let retired = {
+        let mut sessions = state.sessions.lock().await;
+        sessions.retire(&session.session_id)
+    };
+    let Some(retired) = retired else {
+        return false;
+    };
+    println!(
+        "[ocs_collab_server] 入站 close 帧 session={} user={} -> 会话判失效",
+        retired.session_id, retired.user_id
+    );
+    if let Some(store) = &state.store {
+        if let Err(err) = store.upsert_session(&session_row(&retired)) {
+            eprintln!("[ocs_collab_server] 写入已退出会话失败：{err}");
+        }
+    }
+    for occupancy in state
+        .occupancy
+        .lock()
+        .await
+        .release_session(&retired.session_id)
+    {
+        if let Some(store) = &state.store {
+            if let Err(err) = store.delete_claim(&occupancy.tag) {
+                eprintln!("[ocs_collab_server] 清理已退出会话的占用失败：{err}");
+            }
+        }
+        state.bus.publish(
+            &occupancy.drawing_id,
+            &ServerMessage::ClaimReleased {
+                tag: occupancy.tag,
+                reason: release_reasons::EXPIRED.to_owned(),
+            },
+        );
+    }
+    state
+        .bus
+        .publish(&retired.drawing_id, &ServerMessage::PeerLeft(peer_of(&retired)));
+    println!(
+        "[ocs_collab_server] 广播 peer_left session={} user={} drawing={} reason=close-frame",
+        retired.session_id, retired.user_id, retired.drawing_id
+    );
+    true
 }
 
 /// Reads frames until `hello` establishes a session. Returns `false` when the
@@ -594,6 +665,12 @@ async fn heartbeat(state: &AppState, session: &Session, now: i64) -> Vec<Reactio
                     eprintln!("[ocs_collab_server] 心跳写库失败：{err}");
                 }
             }
+            // One line per inbound beat: the heartbeat cadence is a contract
+            // (15 s, VAL-CLI-002) and the timestamp sequence is its evidence.
+            println!(
+                "[ocs_collab_server] 入站 heartbeat session={} at={now}",
+                session.session_id
+            );
             vec![Reaction::Nothing]
         }
         // The connection stays open: the client decides whether to re-hello.
@@ -812,6 +889,10 @@ pub async fn sweep_expired(state: &AppState, now: i64) -> Vec<Reaction> {
             drawing_id: session.drawing_id.clone(),
             message: ServerMessage::PeerLeft(peer_of(&session)),
         });
+        println!(
+            "[ocs_collab_server] 广播 peer_left session={} user={} drawing={} reason=heartbeat-timeout",
+            session.session_id, session.user_id, session.drawing_id
+        );
     }
 
     let expired = state.occupancy.lock().await.expire(now);
@@ -1111,6 +1192,102 @@ mod tests {
             "hello must yield a welcome: {reactions:?}"
         );
         conn
+    }
+
+    #[tokio::test]
+    async fn an_explicit_close_retires_the_session_and_tells_the_room_once() {
+        // VAL-CLI-016: a client that says goodbye must disappear from the
+        // roster at once, not 90 s later, and the row must say 失效.
+        let state = state();
+        let mut conn = opened_conn(&state, "u1", T0).await;
+        let id = session_id(&conn);
+        handle_message(
+            &state,
+            &mut conn,
+            ClientMessage::Claim {
+                session_id: id.clone(),
+                tag: "V-1001".into(),
+            },
+            T0,
+        )
+        .await;
+
+        let mut room = state.bus.subscribe("PID-1101");
+        let retired = close_session(&state, &conn).await;
+        assert!(retired, "a live session must be retired on close");
+
+        let mut seen = Vec::new();
+        while let Some(message) = room.try_recv() {
+            seen.push(message);
+        }
+        assert!(
+            seen.iter()
+                .any(|message| matches!(message, ServerMessage::PeerLeft(peer) if peer.session_id == id)),
+            "the room must learn the peer left: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|message| matches!(message,
+                ServerMessage::ClaimReleased { tag, reason } if tag == "V-1001" && reason == "expired")),
+            "the retired session's claims must be released: {seen:?}"
+        );
+
+        let row = store_of(&state)
+            .session_row(&id)
+            .expect("lookup")
+            .expect("session row");
+        assert_eq!(row.status, "失效");
+        assert!(state
+            .occupancy
+            .lock()
+            .await
+            .for_drawing("PID-1101", T0 + 1)
+            .0
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn closing_twice_does_not_repeat_peer_left() {
+        // The disconnect tail runs after the read loop, so a second retire
+        // would shrink the roster twice on one departure.
+        let state = state();
+        let conn = opened_conn(&state, "u1", T0).await;
+        assert!(close_session(&state, &conn).await);
+        assert!(
+            !close_session(&state, &conn).await,
+            "an already stale session must not be retired twice"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_swept_session_is_not_retired_again_on_close() {
+        // The heartbeat timeout already broadcast `peer_left`; a late close
+        // frame from the same socket must not repeat it.
+        let state = state();
+        let conn = opened_conn(&state, "u1", T0).await;
+        sweep_expired(&state, T0 + 91).await;
+        assert!(
+            !close_session(&state, &conn).await,
+            "a stale session's departure was already announced"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_without_a_session_has_nothing_to_retire() {
+        let state = state();
+        let conn = conn();
+        assert!(!close_session(&state, &conn).await);
+    }
+
+    #[tokio::test]
+    async fn a_storeless_close_still_retires_and_announces() {
+        let state = storeless_state();
+        let conn = opened_conn(&state, "u1", T0).await;
+        assert!(close_session(&state, &conn).await);
+        let sessions = state.sessions.lock().await;
+        assert_eq!(
+            sessions.get(&session_id(&conn)).map(|s| s.status),
+            Some(SessionStatus::Stale)
+        );
     }
 
     #[tokio::test]
