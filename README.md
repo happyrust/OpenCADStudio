@@ -86,6 +86,7 @@ The project is under active development. Keep backups of important production dr
 | DXF | Read and write; versioned save targets from R14 through 2018 |
 | BAK / SV$ | Open drawing backups and autosave files |
 | PID / P&ID | Read SmartPlant / Smart P&ID sheets through [`pid-parse`](../pid-parse); recognise DXF symbols, manually group/ungroup misidentified geometry, edit `tagName`, and preserve corrected groups in DXF/DWG and SVG output |
+| P&ID backup | Browse a SmartPlant P&ID backup (its `.zip` or the folder it lies in) in a docked panel: the plant groups and drawings it carries, each drawing's items and attributes, and its reference data. `PIDBACKUPOPEN`, or **Open P&ID Backup...** in the application menu |
 | OBJ | Import polygon meshes |
 | SVG / SVGZ | Import vector shapes as a block (`SVGIN`, or `IMPORT`) |
 | LandXML | Import `CgPoint` survey points |
