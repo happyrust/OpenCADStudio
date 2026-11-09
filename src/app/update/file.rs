@@ -1624,6 +1624,12 @@ impl OpenCADStudio {
                     .collect(),
             },
             model_space: self.model_space.clone(),
+            collab: crate::app::config::CollabConfig {
+                server_url: self.collab.configured_server_url.clone(),
+                user_id: self.collab.configured_user_id.clone(),
+                drawing_id: self.collab.configured_drawing_id.clone(),
+                mode: self.collab.configured_mode.clone(),
+            },
         }
     }
 
@@ -1716,6 +1722,20 @@ impl OpenCADStudio {
                 .or_insert_with(|| action.to_string());
         }
         crate::app::shortcuts::sync_space_dispatch_flag(&self.shortcut_bindings);
+        // Collaboration: the saved server address and identity. CLI flags
+        // (`--collab` / `--user` / `--drawing`) are applied afterwards in
+        // `boot`, where they win over the saved values for this run only.
+        self.collab.configured_server_url = cfg.collab.server_url.clone();
+        self.collab.configured_user_id = cfg.collab.user_id.clone();
+        self.collab.configured_drawing_id = cfg.collab.drawing_id.clone();
+        self.collab.configured_mode = cfg.collab.mode.clone();
+        self.collab.server_url = cfg.collab.server_url;
+        self.collab.user_id = cfg.collab.user_id;
+        self.collab.drawing_id = cfg.collab.drawing_id;
+        if !cfg.collab.mode.trim().is_empty() {
+            self.collab.mode = cfg.collab.mode;
+        }
+        self.collab.sync_client_config();
     }
 
     /// Write the config only when it changed since the last write, so a toggle

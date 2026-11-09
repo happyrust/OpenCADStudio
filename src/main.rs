@@ -259,6 +259,10 @@ fn main() -> iced::Result {
             script_lines,
             gpu_fallback_notice,
             gpu_compat_auto,
+            collab_url: args.collab.clone(),
+            collab_user: args.user.clone(),
+            collab_drawing: args.drawing.clone(),
+            collab_mode: args.collab_mode.clone(),
         });
 
         // Register (or refresh) the freedesktop DWG thumbnailer so file managers

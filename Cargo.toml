@@ -61,6 +61,13 @@ dwg-thumbnailer = { path = "crates/dwg-thumbnailer" }
 # Shared SAVE serialization dispatch + web-worker wire format: one
 # implementation for the inline (fallback/native) path and the worker path.
 ocs_save = { path = "crates/ocs_save" }
+# Collaboration: the shared protocol crate carries the wire shapes and the
+# permission/occupancy rules, and the desktop client drives them over a
+# *blocking* tungstenite socket (see `src/app/collab/transport.rs`). Deliberately
+# no async runtime: the sync client keeps `tokio` out of this dependency tree
+# (VAL-CLI-019), which `tokio-tungstenite` would not.
+ocs_collab = { path = "crates/ocs_collab" }
+tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 flate2 = "1"
 # Raster decode set: png/jpeg/bmp/tiff plus webp/gif (both pure-Rust in
 # image 0.25, so the wasm target stays C-free). Every format named here must

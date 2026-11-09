@@ -681,6 +681,7 @@ impl OpenCADStudio {
                 | "cad_extract_block_instances"
                 | "keytips"
                 | "ui_bounds"
+                | "collab_status"
         );
         if !query && !self.control.enabled {
             return (
@@ -708,6 +709,9 @@ impl OpenCADStudio {
         }
         if op == "hello" || op == "state" {
             return (self.control_state(), Task::none());
+        }
+        if op == "collab_status" {
+            return (self.collab.status_json(), Task::none());
         }
         if op == "operation" {
             let id = req["request_id"].as_str().unwrap_or("");

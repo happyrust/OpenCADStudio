@@ -571,6 +571,12 @@ pub(crate) fn plan(method: &str, rest: &[&str], request: &HttpRequest) -> Plan {
             request: json!({"protocol":1,"op":"state"}),
             created: 200,
         },
+        // Collaboration session status (architecture.md A.5): what the desktop
+        // client's transport thread last reported.
+        ("GET", ["collab", "status"]) => Plan::Run {
+            request: json!({"protocol":1,"op":"collab_status"}),
+            created: 200,
+        },
         // Same state read, plus `documents[].document_id` — the spelling the
         // REST contract (and every validator) reads.
         ("GET", ["documents"]) => Plan::Aliased {

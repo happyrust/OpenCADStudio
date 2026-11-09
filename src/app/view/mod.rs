@@ -3878,6 +3878,17 @@ impl OpenCADStudio {
         #[cfg(target_arch = "wasm32")]
         let control = iced::time::every(std::time::Duration::from_millis(50))
             .map(|_| Message::PollWebControl);
+        // Collaboration transport. Gated on a configured server address: with
+        // none, no worker starts and no socket is ever opened (the
+        // offline-first invariant, VAL-CLI-017).
+        #[cfg(not(target_arch = "wasm32"))]
+        let collab = if self.collab.wanted() {
+            super::collab::subscribe().map(Message::CollabEvent)
+        } else {
+            Subscription::none()
+        };
+        #[cfg(target_arch = "wasm32")]
+        let collab = Subscription::none();
         iced::Subscription::batch([
             if self.spacemouse.moving() && self.spacemouse_focused && !self.spacemouse_paused {
                 crate::app::tool_windows::main_window_frames().map(Message::SpaceMouseFrame)
@@ -3899,6 +3910,7 @@ impl OpenCADStudio {
                 _ => None,
             }),
             control,
+            collab,
             frames,
             history_tick,
             layout_settle,

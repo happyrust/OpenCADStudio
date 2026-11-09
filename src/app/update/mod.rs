@@ -1193,6 +1193,34 @@ impl OpenCADStudio {
                 envelope.reply.send(response);
                 task
             }
+            Message::CollabEvent(event) => {
+                // The transport thread owns the socket; the UI only folds what
+                // it reported into the session state. Visible consequences
+                // (claims, peers, read-only) land in later M6 features; the
+                // connection lifecycle is narrated here so the command line
+                // says what happened instead of going quiet.
+                let was_connected = self.collab.connected;
+                self.collab.apply(event.clone());
+                match &event {
+                    super::collab::CollabEvent::Connected { session_id, .. } => {
+                        self.command_line.push_info(&format!(
+                            "协同：已连接 {}（会话 {session_id}）",
+                            self.collab.server_url
+                        ));
+                    }
+                    super::collab::CollabEvent::Disconnected { reason, will_retry } => {
+                        if was_connected || !*will_retry {
+                            self.command_line.push_warning(&format!("协同：断开（{reason}）"));
+                        }
+                    }
+                    super::collab::CollabEvent::ReadonlyDowngrade { reason, .. } => {
+                        self.command_line
+                            .push_warning(&format!("协同：只读降级（{reason}）"));
+                    }
+                    _ => {}
+                }
+                Task::none()
+            }
             #[cfg(target_arch = "wasm32")]
             Message::PollWebControl => {
                 let control = if let Some(request) = super::control::web_request() {

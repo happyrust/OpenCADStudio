@@ -221,6 +221,28 @@ pub struct Cli {
     #[arg(help = crate::t!("Log level (error|warn|info|debug|trace). Also reads RUST_LOG.").into_owned(), long_help = None)]
     pub log: Option<String>,
 
+    /// Collaboration server WebSocket URL, e.g. ws://127.0.0.1:3240/ws.
+    /// Overrides the saved `collab.server_url`; without either, the editor
+    /// stays offline and never dials out.
+    #[arg(long, value_name = "URL")]
+    #[arg(help = crate::t!("Collaboration server WebSocket URL (ws://host:port/ws).").into_owned(), long_help = None)]
+    pub collab: Option<String>,
+
+    /// User id this session joins the collaboration drawing as.
+    #[arg(long, value_name = "USER")]
+    #[arg(help = crate::t!("User id for the collaboration session.").into_owned(), long_help = None)]
+    pub user: Option<String>,
+
+    /// Drawing id this session joins the collaboration room as.
+    #[arg(long, value_name = "DRAWING")]
+    #[arg(help = crate::t!("Drawing id for the collaboration session.").into_owned(), long_help = None)]
+    pub drawing: Option<String>,
+
+    /// Collaboration session mode (协同编辑 / 单人编辑 / 只读).
+    #[arg(long = "collab-mode", value_name = "MODE")]
+    #[arg(help = crate::t!("Collaboration session mode (协同编辑, 单人编辑, 只读).").into_owned(), long_help = None)]
+    pub collab_mode: Option<String>,
+
     /// Internal: probe one GPU backend offscreen (`dx12|vulkan|gl|sw`), print
     /// one JSON line on success, then exit 0/1. Spawned by the GPU backend
     /// resolver so a legacy-driver abort kills only the probe child, never
@@ -258,6 +280,14 @@ pub struct GuiConfig {
     /// The GPU probe found no shader storage buffers: the packed
     /// compatibility renderer was enabled automatically for this session.
     pub gpu_compat_auto: bool,
+    /// Collaboration server URL from `--collab`; wins over the saved config.
+    pub collab_url: Option<String>,
+    /// `--user`: collaboration identity.
+    pub collab_user: Option<String>,
+    /// `--drawing`: collaboration drawing id.
+    pub collab_drawing: Option<String>,
+    /// `--collab-mode`: collaboration session mode.
+    pub collab_mode: Option<String>,
 }
 
 /// Set once by `main` before the GUI boots; read by `app::boot`.

@@ -39,6 +39,7 @@ mod block_test;
 mod block_test_tests;
 mod block_visibility;
 pub(crate) mod calc;
+pub(crate) mod collab;
 mod command_driver;
 pub(crate) use command_driver::{
     copy_to_clipboard_kernel, define_block_raw_doc, paste_entities_kernel, PasteSpace,
@@ -688,6 +689,10 @@ pub(crate) struct VpMaxState {
 pub(super) struct OpenCADStudio {
     start: Instant,
     control: control::State,
+    /// Collaboration session: who we are, where the server is, and what the
+    /// last inbound frames said. Kept beside `control` because both are
+    /// out-of-band channels into the live editor.
+    collab: collab::State,
     tabs: Vec<DocumentTab>,
     active_tab: usize,
     hovered_doc_tab: Option<usize>,
@@ -3411,6 +3416,8 @@ pub enum Message {
     /// One magnification delta from a trackpad pinch, positive zooming in.
     TrackpadPinch(f32),
     ControlRequest(control::Envelope),
+    /// One event from the collaboration transport thread (`src/app/collab`).
+    CollabEvent(collab::CollabEvent),
     PollWebControl,
     ControlStep(String, Box<Message>),
     ControlTaskDone(String),
@@ -6012,6 +6019,7 @@ impl OpenCADStudio {
         let start_tab = DocumentTab::new_start();
         let mut app = Self {
             control: control::State::new(),
+            collab: collab::State::new(),
             start: Instant::now(),
             tabs: vec![start_tab],
             active_tab: 0,
@@ -6916,6 +6924,39 @@ impl OpenCADStudio {
         // `--read-only` disables saving. `--script` queues command lines.
         let cfg = crate::cli::gui_config();
         s.read_only = cfg.read_only;
+        // Collaboration: command-line identity and server address win over the
+        // saved config (architecture.md A.5). With neither, `server_url` stays
+        // empty, the subscription is never registered and nothing dials out.
+        if let Some(url) = cfg.collab_url.as_deref().map(str::trim) {
+            if !url.is_empty() {
+                s.collab.server_url = url.to_owned();
+            }
+        }
+        if let Some(user) = cfg.collab_user.as_deref().map(str::trim) {
+            if !user.is_empty() {
+                s.collab.user_id = user.to_owned();
+            }
+        }
+        if let Some(drawing) = cfg.collab_drawing.as_deref().map(str::trim) {
+            if !drawing.is_empty() {
+                s.collab.drawing_id = drawing.to_owned();
+            }
+        }
+        if let Some(mode) = cfg.collab_mode.as_deref().map(str::trim) {
+            if !mode.is_empty() {
+                s.collab.mode = mode.to_owned();
+            }
+        }
+        // The drawing id defaults to the drawing being opened, so `--collab`
+        // alone still names a room; `--drawing` overrides it.
+        if s.collab.drawing_id.is_empty() {
+            if let Some(path) = cfg.files.first() {
+                if let Some(stem) = path.file_stem() {
+                    s.collab.drawing_id = stem.to_string_lossy().into_owned();
+                }
+            }
+        }
+        s.collab.sync_client_config();
         // GPU backend / renderer fallback: the resolver ran before iced
         // booted, so surface its verdict here where the user can see it.
         if let Some(notice) = cfg.gpu_fallback_notice {

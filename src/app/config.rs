@@ -50,6 +50,8 @@ pub struct AppConfig {
     pub model_space: ModelSpaceThemeConfig,
     /// The user's changes to the right-click menu.
     pub context_menu: crate::ui::popup::context_menu::MenuCustomization,
+    /// Collaboration server address and identity (`--collab` overrides these).
+    pub collab: CollabConfig,
 }
 
 impl Default for AppConfig {
@@ -70,6 +72,7 @@ impl Default for AppConfig {
             shortcuts: ShortcutConfig::default(),
             model_space: ModelSpaceThemeConfig::default(),
             context_menu: Default::default(),
+            collab: CollabConfig::default(),
         }
     }
 }
@@ -571,6 +574,25 @@ impl Default for RecentConfig {
 #[serde(default)]
 pub struct StartConfig {
     pub section: super::StartSection,
+}
+
+/// Collaboration settings persisted with the rest of the user config.
+///
+/// `server_url` empty means "collaboration is off": no connection is attempted
+/// at all (the offline-first invariant). The auth token is deliberately *not*
+/// stored here — `settings.json` is plain text, so a token would live in it in
+/// the clear.
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CollabConfig {
+    /// `ws://host:port/ws`. Empty disables collaboration.
+    pub server_url: String,
+    /// User id sent in `hello`.
+    pub user_id: String,
+    /// Drawing id sent in `hello`.
+    pub drawing_id: String,
+    /// Session mode sent in `hello`; empty means the client default.
+    pub mode: String,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
