@@ -203,7 +203,28 @@ impl Scene {
 
     // ── Modify (transform / copy) ─────────────────────────────────────────
 
+    /// [`Self::transform_entities_checked`], ignoring a refused P&ID refill.
+    ///
+    /// A refused refill writes nothing, so a caller that cannot report the
+    /// reason still gets an all-or-nothing move. Command and grip paths call
+    /// the checked form to say why.
     pub fn transform_entities(&mut self, handles: &[Handle], t: &EntityTransform) {
+        let _ = self.transform_entities_checked(handles, t);
+    }
+
+    /// Transform `handles` by `t`, dragging the inner endpoints of the P&ID
+    /// pipe segments joined to any moved fitting (valve) along with it.
+    ///
+    /// The refill is planned **before** any geometry is written, so a move
+    /// that would push a segment past its outer endpoint, or make the two
+    /// segments on either side of a fitting overlap, is refused with nothing
+    /// changed (no partial write). Every move path in the product — GUI grip
+    /// drag, `MOVE`, and the `grip_drag` op — shares this one implementation.
+    pub(crate) fn transform_entities_checked(
+        &mut self,
+        handles: &[Handle],
+        t: &EntityTransform,
+    ) -> Result<(), pid_refill::RefillError> {
         // Never transform objects on a locked layer (defense-in-depth: the pick
         // path already excludes them, but programmatic callers may not).
         let handles: Vec<Handle> = handles
@@ -212,6 +233,14 @@ impl Scene {
             .filter(|&h| !self.is_layer_locked(h))
             .collect();
         let handles = &handles[..];
+        // Plan the P&ID refill off the layer-filtered set: a valve on a locked
+        // layer is not moved, so it must not drag its segments either.
+        let refill = match t {
+            EntityTransform::Translate(delta) => {
+                Some(pid_refill::plan_refill_uniform(&self.document, handles, *delta)?)
+            }
+            _ => None,
+        };
         let selection: rustc_hash::FxHashSet<Handle> = handles.iter().copied().collect();
         // The only consumer of these pre-edit images is the parametric solve:
         // they feed its retained sizes and its collapse refusal, and the solve
@@ -469,8 +498,25 @@ impl Scene {
         // mirror never edits a block definition) — report just those so the
         // resident set re-tessellates only them and every derived cache patches
         // per-handle, keeping the block cache + all other memoized wires.
-        let changes: Vec<(Handle, ChangeKind)> =
+        let mut changes: Vec<(Handle, ChangeKind)> =
             handles.iter().map(|&h| (h, ChangeKind::Modified)).collect();
+        // The refill is safe to write now: the plan above already passed every
+        // refusal check, so nothing can fail between here and the write.
+        if let Some(plan) = refill.as_ref() {
+            if self.is_recording_undo() {
+                for (handle, _, _) in &plan.segments {
+                    if !handles.contains(handle) {
+                        let before = self.document.get_entity_arc(*handle);
+                        self.record_undo_before(*handle, before);
+                    }
+                }
+            }
+            for handle in pid_refill::apply_geometry(&mut self.document, plan) {
+                if !handles.contains(&handle) {
+                    changes.push((handle, ChangeKind::Modified));
+                }
+            }
+        }
         self.bump_entities_with_parametric_transform_policy(
             &changes,
             &driven_refs,
@@ -478,6 +524,7 @@ impl Scene {
             &retained_originals,
         );
         self.refresh_meshes_for_handles(&refresh_solid_handles);
+        Ok(())
     }
 
     /// Entities in anonymous dimension blocks that visually belong to

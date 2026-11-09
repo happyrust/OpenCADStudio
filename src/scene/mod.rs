@@ -83,6 +83,7 @@ mod hatch_boundary;
 mod layout;
 mod limits;
 mod modify;
+pub(crate) mod pid_refill;
 pub(crate) mod table_content;
 pub(crate) use modify::remap_copied_reactors;
 pub(crate) use modify::remap_copied_viewport_clips;

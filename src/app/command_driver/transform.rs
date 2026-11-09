@@ -37,10 +37,40 @@ impl OpenCADStudio {
         // component so each member keeps its own dimensions. Other
         // transforms retain their selected-object behavior.
         let pending = self.begin_undo(i, label, handles.len(), true);
+        // P&ID refill: a refused move writes nothing, so the whole command is
+        // abandoned (including its undo step) rather than reporting a failure
+        // over a half-applied move. `Scene::transform_entities_checked` owns
+        // the decision, shared with the REST and grip paths — it is pre-flighted
+        // here, before partly selected polylines are touched, so no path can
+        // leave a partial write.
+        if let crate::command::EntityTransform::Translate(delta) = &transform {
+            let movable: Vec<Handle> = handles
+                .iter()
+                .copied()
+                .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
+                .collect();
+            let refusal = crate::scene::pid_refill::plan_refill_uniform(
+                &self.tabs[i].scene.document,
+                &movable,
+                *delta,
+            );
+            if let Err(error) = refusal {
+                self.abort_refused_move(i, pending.is_some(), &error.message);
+                return Some(Task::none());
+            }
+        }
+        // Partly selected polylines move only their picked vertices.
         let handles = self.tabs[i]
             .scene
             .transform_picked_segments(&handles, &transform);
-        self.tabs[i].scene.transform_entities(&handles, &transform);
+        if let Err(error) = self
+            .tabs[i]
+            .scene
+            .transform_entities_checked(&handles, &transform)
+        {
+            self.abort_refused_move(i, pending.is_some(), &error.message);
+            return Some(Task::none());
+        }
         self.apply_inferred_constraints(i, &handles);
         self.tabs[i].dirty = true;
         self.tabs[i].scene.clear_preview_wire();
@@ -52,6 +82,21 @@ impl OpenCADStudio {
             self.commit_undo_delta(i, p);
         }
         None
+    }
+
+    /// Abandon a move the P&ID refill refused: say why, and drop the undo
+    /// step it opened so the history has no empty entry. Nothing was written,
+    /// so the drawing keeps its pre-command state.
+    fn abort_refused_move(&mut self, i: usize, opened_undo: bool, message: &str) {
+        if opened_undo {
+            let _ = self.tabs[i].scene.take_undo_recording();
+        }
+        self.command_line.push_error(message);
+        self.tabs[i].active_cmd = None;
+        self.tabs[i].snap_result = None;
+        self.tabs[i].scene.clear_preview_wire();
+        self.restore_pre_cmd_tangent();
+        self.refresh_properties();
     }
 
     pub(super) fn handle_copy_selected(

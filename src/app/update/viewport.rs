@@ -9447,13 +9447,69 @@ properties={:.1}ms picked={}",
                 return Task::none();
             }
         }
+        // P&ID refill: dragging a valve drags the inner endpoints of the pipe
+        // segments joined to it (`VAL-PIPE-019`). The grip preview has already
+        // written the new position, so the plan reads the moved insert and a
+        // refusal cancels the whole gesture instead of leaving a half edit.
+        // Planned before the gesture state is taken, so `cancel_active_grip_edit`
+        // can still put the originals back.
+        let refill: Option<crate::scene::pid_refill::RefillPlan> = {
+            let moved: Vec<(Handle, glam::DVec3)> = self.grip_originals
+                .iter()
+                .filter_map(|(handle, entity)| {
+                    let codec::EntityType::Insert(before) = entity else {
+                        return None;
+                    };
+                    let Some(codec::EntityType::Insert(after)) =
+                        self.tabs[i].scene.document.get_entity(*handle)
+                    else {
+                        return None;
+                    };
+                    let delta = glam::DVec3::new(
+                        after.insert_point.x - before.insert_point.x,
+                        after.insert_point.y - before.insert_point.y,
+                        0.0,
+                    );
+                    (delta.x != 0.0 || delta.y != 0.0).then_some((*handle, delta))
+                })
+                .collect();
+            if moved.is_empty() {
+                None
+            } else {
+                match crate::scene::pid_refill::plan_refill(
+                    &self.tabs[i].scene.document,
+                    &moved,
+                    true,
+                ) {
+                    Ok(plan) => Some(plan),
+                    Err(error) => {
+                        self.cancel_active_grip_edit();
+                        self.command_line.push_error(&error.message);
+                        self.refresh_properties();
+                        return Task::none();
+                    }
+                }
+            }
+        };
         self.tabs[i].active_grip = None;
         // Commit the grip drag as one undoable group, then put every
         // edited entity back into the resident tessellation.
-        let handles = std::mem::take(&mut self.grip_preview_handles);
-        let originals = std::mem::take(&mut self.grip_originals);
+        let mut handles = std::mem::take(&mut self.grip_preview_handles);
+        let mut originals = std::mem::take(&mut self.grip_originals);
         let history_originals = std::mem::take(&mut self.grip_history_originals);
         let dirty_before = self.grip_dirty_before.take().unwrap_or(self.tabs[i].dirty);
+        if let Some(plan) = refill.as_ref() {
+            for (handle, _, _) in &plan.segments {
+                if handles.contains(handle) {
+                    continue;
+                }
+                if let Some(entity) = self.tabs[i].scene.document.get_entity(*handle) {
+                    originals.push((*handle, entity.clone()));
+                }
+                handles.push(*handle);
+            }
+            crate::scene::pid_refill::apply_geometry(&mut self.tabs[i].scene.document, plan);
+        }
         if !handles.is_empty() {
             self.grip_reference_wires.clear();
             self.grip_text_verts = Vec::new();
