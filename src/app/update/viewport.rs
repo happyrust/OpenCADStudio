@@ -9498,6 +9498,15 @@ properties={:.1}ms picked={}",
         let mut originals = std::mem::take(&mut self.grip_originals);
         let history_originals = std::mem::take(&mut self.grip_history_originals);
         let dirty_before = self.grip_dirty_before.take().unwrap_or(self.tabs[i].dirty);
+        // The refill rewrites the `PID_AUTHOR_TOPOLOGY` XRecord too. Capture its
+        // pre-drag image before the write so this one undo step restores the
+        // table together with the geometry it describes — otherwise undo would
+        // put the segments back while the table kept the moved endpoints.
+        let topology_before = if refill.as_ref().is_some_and(|plan| !plan.is_empty()) {
+            crate::scene::pid_refill::topology_record_image(&self.tabs[i].scene.document)
+        } else {
+            None
+        };
         if let Some(plan) = refill.as_ref() {
             for (handle, _, _) in &plan.segments {
                 if handles.contains(handle) {
@@ -9606,6 +9615,14 @@ properties={:.1}ms picked={}",
                         if !object_before.iter().any(|(known, _)| *known == handle) {
                             object_before.push((handle, object));
                         }
+                    }
+                }
+                if let Some((record_handle, before)) = topology_before {
+                    if !object_before
+                        .iter()
+                        .any(|(known, _)| *known == record_handle)
+                    {
+                        object_before.push((record_handle, before));
                     }
                 }
                 if rebuilds_table {

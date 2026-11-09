@@ -3524,6 +3524,9 @@ impl OpenCADStudio {
             .map(|e| scene.add_entity_clone(e))
             .collect();
         scene.active_viewport = active;
+        // These are freshly cloned handles, so no topology fitting names them
+        // and the P&ID refill plans nothing — `transform_entities`'s
+        // cannot-refuse contract is exactly what CHSPACE wants here.
         for step in &steps {
             scene.transform_entities(&moved, step);
         }

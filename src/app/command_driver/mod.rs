@@ -634,10 +634,22 @@ impl OpenCADStudio {
             CmdResult::MoveLayerCopies(handles, delta) => {
                 let i = self.active_tab;
                 // Copy + layer + placement share the snapshot taken before copying.
-                self.tabs[i].scene.transform_entities(
+                // `transform_entities` cannot refuse, so pre-flight the P&ID
+                // refill here and say why a unit stayed put: a fitting bound to
+                // pipe segments whose move would break the run keeps its place
+                // instead of moving with its segments left behind.
+                if let Err(error) = crate::scene::pid_refill::plan_refill_uniform(
+                    &self.tabs[i].scene.document,
                     &handles,
-                    &crate::command::EntityTransform::Translate(delta),
-                );
+                    delta,
+                ) {
+                    self.command_line.push_error(&error.message);
+                } else {
+                    self.tabs[i].scene.transform_entities(
+                        &handles,
+                        &crate::command::EntityTransform::Translate(delta),
+                    );
+                }
                 self.tabs[i].dirty = true;
                 self.tabs[i].scene.clear_preview_wire();
                 self.tabs[i].active_cmd = None;

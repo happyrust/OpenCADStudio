@@ -1,5 +1,35 @@
 use super::*;
 
+/// The translation an `Affine` matrix amounts to, when its linear part is the
+/// identity (within a tolerance that ignores the rounding of a rotation-free
+/// alignment solve). `None` for a real rotation, scale, or shear — and for
+/// `Affine`'s siblings, which already carry their own shape.
+fn pure_translation(transform: &crate::command::EntityTransform) -> Option<glam::DVec3> {
+    let crate::command::EntityTransform::Affine(affine) = transform else {
+        return None;
+    };
+    let m = &affine.matrix.m;
+    const TOLERANCE: f64 = 1e-9;
+    let identity = [
+        (m[0][0], 1.0),
+        (m[0][1], 0.0),
+        (m[0][2], 0.0),
+        (m[1][0], 0.0),
+        (m[1][1], 1.0),
+        (m[1][2], 0.0),
+        (m[2][0], 0.0),
+        (m[2][1], 0.0),
+        (m[2][2], 1.0),
+    ];
+    if !identity
+        .iter()
+        .all(|(actual, expected)| (actual - expected).abs() <= TOLERANCE)
+    {
+        return None;
+    }
+    Some(glam::DVec3::new(m[0][3], m[1][3], m[2][3]))
+}
+
 impl OpenCADStudio {
     pub(super) fn handle_transform_selected(
         &mut self,
@@ -12,6 +42,16 @@ impl OpenCADStudio {
             self.tabs[i].active_cmd = None;
             return Some(Task::none());
         }
+        // ALIGN's two- and three-pair modes hand over an `Affine` matrix even
+        // when the pairs describe a plain translation (same direction, no
+        // rotation, no scaling). The P&ID refill only understands a
+        // translation, so collapse an affine that is one back to `Translate`:
+        // a collinear ALIGN then drags the pipe segments exactly like MOVE,
+        // instead of moving the fitting and leaving its segments behind.
+        let transform = match pure_translation(&transform) {
+            Some(delta) => crate::command::EntityTransform::Translate(delta),
+            None => transform,
+        };
         if matches!(&transform, crate::command::EntityTransform::Translate(_)) {
             let scope = self.tabs[i].current_parametric_scope();
             handles = self.tabs[i]
@@ -30,6 +70,42 @@ impl OpenCADStudio {
             self.tabs[i].snap_result = None;
             self.tabs[i].scene.clear_preview_wire();
             self.restore_pre_cmd_tangent();
+            return Some(Task::none());
+        }
+        // A real rotation or scaling cannot drag the segments: the refill only
+        // slides a segment's inner endpoint along its own axis. ALIGN is the
+        // one command that pairs a rotation/scale with a placement the user
+        // expects the drawing to keep consistent, so it refuses the whole
+        // command when the selection holds a fitting bound to pipe segments,
+        // and names the command that can do it. Other rotate/scale/mirror
+        // commands keep their long-standing behaviour (the fitting turns, the
+        // segments stay put) — they are the six wrapper call sites the pre-M5
+        // contract covers, and `transform_entities` no longer silently drops
+        // their transform.
+        let active_is_align = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .is_some_and(|command| command.name().eq_ignore_ascii_case("ALIGN"));
+        if active_is_align
+            && !matches!(&transform, crate::command::EntityTransform::Translate(_))
+            && crate::scene::pid_refill::binds_pipe_segments(
+                &self.tabs[i].scene.document,
+                &handles,
+            )
+        {
+            self.command_line.push_error(
+                crate::t!(
+                    "The selection holds a fitting bound to pipe segments; this transform \
+                     rotates or scales, so the pipe segments cannot follow. Use MOVE to \
+                     translate it instead."
+                )
+                .as_ref(),
+            );
+            self.tabs[i].active_cmd = None;
+            self.tabs[i].snap_result = None;
+            self.tabs[i].scene.clear_preview_wire();
+            self.restore_pre_cmd_tangent();
+            self.refresh_properties();
             return Some(Task::none());
         }
         let label = self.history_label_from_active_cmd(i, "MOVE");

@@ -203,13 +203,20 @@ impl Scene {
 
     // ── Modify (transform / copy) ─────────────────────────────────────────
 
-    /// [`Self::transform_entities_checked`], ignoring a refused P&ID refill.
+    /// [`Self::transform_entities_checked`] with the pre-M5 refusal contract:
+    /// a refused P&ID refill degrades to "move without dragging the segments"
+    /// instead of refusing the move.
     ///
-    /// A refused refill writes nothing, so a caller that cannot report the
-    /// reason still gets an all-or-nothing move. Command and grip paths call
-    /// the checked form to say why.
+    /// The transform still happens, so a caller that cannot report the reason
+    /// (composite transforms, solid grips) never silently does nothing. Paths
+    /// that must refuse the whole move (GUI grip drag, `MOVE`, `grip_drag`,
+    /// the REST transform op) call the checked form and say why.
     pub fn transform_entities(&mut self, handles: &[Handle], t: &EntityTransform) {
-        let _ = self.transform_entities_checked(handles, t);
+        if self.transform_entities_inner(handles, t, true).is_err() {
+            // The refused plan wrote nothing, so replaying the same transform
+            // with the refill disabled is the exact "move only" outcome.
+            let _ = self.transform_entities_inner(handles, t, false);
+        }
     }
 
     /// Transform `handles` by `t`, dragging the inner endpoints of the P&ID
@@ -225,6 +232,17 @@ impl Scene {
         handles: &[Handle],
         t: &EntityTransform,
     ) -> Result<(), pid_refill::RefillError> {
+        self.transform_entities_inner(handles, t, true)
+    }
+
+    /// Shared body of both entry points. `with_refill` decides whether the P&ID
+    /// segment refill is planned (and can therefore refuse the move).
+    fn transform_entities_inner(
+        &mut self,
+        handles: &[Handle],
+        t: &EntityTransform,
+        with_refill: bool,
+    ) -> Result<(), pid_refill::RefillError> {
         // Never transform objects on a locked layer (defense-in-depth: the pick
         // path already excludes them, but programmatic callers may not).
         let handles: Vec<Handle> = handles
@@ -236,7 +254,7 @@ impl Scene {
         // Plan the P&ID refill off the layer-filtered set: a valve on a locked
         // layer is not moved, so it must not drag its segments either.
         let refill = match t {
-            EntityTransform::Translate(delta) => {
+            EntityTransform::Translate(delta) if with_refill => {
                 Some(pid_refill::plan_refill_uniform(&self.document, handles, *delta)?)
             }
             _ => None,
@@ -502,6 +520,25 @@ impl Scene {
             handles.iter().map(|&h| (h, ChangeKind::Modified)).collect();
         // The refill is safe to write now: the plan above already passed every
         // refusal check, so nothing can fail between here and the write.
+        let mut refill = refill;
+        if refill.as_ref().is_some_and(|plan| !plan.is_empty()) && self.is_recording_undo() {
+            // `apply_geometry` rewrites the `PID_AUTHOR_TOPOLOGY` XRecord as
+            // well as the segment geometry. That record is a `document.objects`
+            // entry, so `record_undo_before` (entities) never sees it and undo
+            // would leave the table at the moved endpoints while the geometry
+            // went back — the two sides contradicting each other. Mirror the
+            // record before the write.
+            match pid_refill::topology_record_image(&self.document) {
+                Some((record_handle, before)) => {
+                    self.record_undo_object_before(record_handle, Some(before));
+                }
+                // Unreachable: a non-empty plan is built from the table's
+                // fittings, so the record exists. If it ever is missing, drop
+                // the refill rather than write a table no delta can name — the
+                // move still happens, only the segments do not follow.
+                None => refill = None,
+            }
+        }
         if let Some(plan) = refill.as_ref() {
             if self.is_recording_undo() {
                 for (handle, _, _) in &plan.segments {
@@ -2776,6 +2813,9 @@ impl Scene {
         if delta.length_squared() <= f64::EPSILON {
             return Some(true);
         }
+        // Solid geometry: no topology fitting can name this handle, so the
+        // refill plans nothing and `transform_entities`'s cannot-refuse
+        // contract applies unchanged.
         self.transform_entities(&[handle], &EntityTransform::Translate(delta));
         Some(true)
     }
@@ -2838,6 +2878,8 @@ impl Scene {
         }
         if grip_id == GROUP_GRIP_ID {
             if let GripApply::Translate(delta) = apply {
+                // Group grip: same cannot-refuse contract as solid geometry —
+                // a group never holds a topology fitting.
                 self.transform_entities(&[handle], &crate::command::EntityTransform::Translate(delta));
             }
             return;

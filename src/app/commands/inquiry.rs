@@ -69,18 +69,35 @@ impl OpenCADStudio {
         let offsets = kernel::space::align_aabbs_2d(&extents, alignment)
             .expect("validated at least two finite bounds");
         let pending = self.begin_undo(i, label, handles.len(), true);
+        // `transform_entities` keeps its "cannot refuse" contract: a P&ID
+        // refill it cannot satisfy degrades to moving the unit without
+        // dragging its segments. That is only reachable for a fitting bound to
+        // pipe segments, which a bounding-box alignment would move on its own
+        // anyway — say so instead of claiming the unit was aligned.
+        let mut refused_units = 0usize;
         for ((unit, _), [dx, dy]) in bounds.iter().zip(offsets) {
+            let delta = DVec3::new(dx, dy, 0.0);
+            if let Err(error) = crate::scene::pid_refill::plan_refill_uniform(
+                &self.tabs[i].scene.document,
+                unit,
+                delta,
+            ) {
+                refused_units += 1;
+                self.command_line.push_error(&error.message);
+                continue;
+            }
             self.tabs[i]
                 .scene
-                .transform_entities(unit, &EntityTransform::Translate(DVec3::new(dx, dy, 0.0)));
+                .transform_entities(unit, &EntityTransform::Translate(delta));
         }
         self.tabs[i].dirty = true;
         self.refresh_properties();
         if let Some(pending) = pending {
             self.commit_undo_delta(i, pending);
         }
+        let aligned = bounds.len().saturating_sub(refused_units);
         self.command_line
-            .push_output(crate::tf!("{command}: aligned {} object(s).", bounds.len()).as_ref());
+            .push_output(crate::tf!("{command}: aligned {aligned} object(s).").as_ref());
     }
 
     pub(super) fn dispatch_inquiry(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {

@@ -536,4 +536,212 @@ mod tests {
         assert_eq!(topology(&app), before_table, "拓扑表不变，无半改");
         assert_eq!(line_points(&app, &before_table).len(), 2);
     }
+
+    // ── 撤销：三条路径都必须把拓扑表一起退回去 ─────────────────────────────
+
+    /// `MOVE` 命令平移阀门后 undo：阀门、两段 `Line` 几何、拓扑表端点
+    /// 三方都回基线（容差 1e-6）。
+    ///
+    /// 回归 `fix-m5-refill-undo-and-align` 的 Blocking 1：`apply_geometry`
+    /// 除了改管段实体，还整 key 重写 `PID_AUTHOR_TOPOLOGY` XRecord —— 那是
+    /// `document.objects` 里的对象，只登记实体镜像的 delta 撤销管不到它，
+    /// 于是几何回退了、拓扑表停在 126/154。
+    #[test]
+    fn undo_after_a_move_restores_the_topology_table_with_the_geometry() {
+        let mut app = app();
+        let (valve, _, _) = line_with_valve_at_midpoint(&mut app);
+        let baseline_table = topology(&app);
+        let baseline_point = insert_point(&app, valve);
+        let baseline_lines = line_points(&app, &baseline_table);
+        assert!(close(baseline_table.pipe_segments[0].end.point[0], 84.0));
+        assert!(close(baseline_table.pipe_segments[1].start.point[0], 116.0));
+
+        request(
+            &mut app,
+            json!({"op":"select","handles":[hex(valve)],"replace":true}),
+        );
+        let started = request(&mut app, json!({"op":"start","cmd":"MOVE"}));
+        assert_eq!(started["status"], "waiting_input", "{started}");
+        for point in [[100.0, 0.0, 0.0], [140.0, 0.0, 0.0]] {
+            let fed = request(
+                &mut app,
+                json!({"op":"input","kind":"point","point":point,"space":"wcs"}),
+            );
+            assert_eq!(fed["ok"], true, "{fed}");
+        }
+        let moved_table = topology(&app);
+        assert!(close(moved_table.pipe_segments[0].end.point[0], 126.0), "补位先生效");
+        assert!(close(moved_table.pipe_segments[1].start.point[0], 154.0), "补位先生效");
+
+        let undone = request(&mut app, json!({"op":"undo"}));
+        assert_eq!(undone["ok"], true, "{undone}");
+
+        assert_eq!(insert_point(&app, valve), baseline_point, "阀门回基线");
+        let table = topology(&app);
+        assert!(
+            close(table.pipe_segments[0].end.point[0], baseline_table.pipe_segments[0].end.point[0]),
+            "拓扑表段 A 内侧端点回基线：{:?} vs {:?}",
+            table.pipe_segments[0].end.point,
+            baseline_table.pipe_segments[0].end.point
+        );
+        assert!(
+            close(table.pipe_segments[1].start.point[0], baseline_table.pipe_segments[1].start.point[0]),
+            "拓扑表段 B 内侧端点回基线：{:?} vs {:?}",
+            table.pipe_segments[1].start.point,
+            baseline_table.pipe_segments[1].start.point
+        );
+        assert_eq!(line_points(&app, &table), baseline_lines, "管段几何回基线");
+        // 三方一致：实体几何 == 拓扑表端点。
+        let geometry = line_points(&app, &table);
+        for (index, (start, end)) in geometry.iter().enumerate() {
+            let record = &table.pipe_segments[index];
+            assert!(close(start[0], record.start.point[0]), "{geometry:?}");
+            assert!(close(end[0], record.end.point[0]), "{geometry:?}");
+        }
+    }
+
+    /// `grip_drag` op 拖动阀门后 undo：三方都回基线（容差 1e-6）。
+    #[test]
+    fn undo_after_a_grip_drag_restores_the_topology_table_with_the_geometry() {
+        let mut app = app();
+        let (valve, _, _) = line_with_valve_at_midpoint(&mut app);
+        frame_the_pipe(&mut app);
+        let baseline_table = topology(&app);
+        let baseline_point = insert_point(&app, valve);
+        let baseline_lines = line_points(&app, &baseline_table);
+
+        let dragged = request(
+            &mut app,
+            json!({
+                "op":"grip_drag",
+                "handle": hex(valve),
+                "grip_id": 0,
+                "point": [140.0, 0.0, 0.0],
+            }),
+        );
+        assert_eq!(dragged["ok"], true, "{dragged}");
+        assert!(near(topology(&app).pipe_segments[0].end.point[0], 126.0), "补位先生效");
+
+        let undone = request(&mut app, json!({"op":"undo"}));
+        assert_eq!(undone["ok"], true, "{undone}");
+
+        assert_eq!(insert_point(&app, valve), baseline_point, "阀门回基线");
+        let table = topology(&app);
+        assert!(
+            close(table.pipe_segments[0].end.point[0], baseline_table.pipe_segments[0].end.point[0]),
+            "拓扑表段 A 内侧端点回基线：{:?}",
+            table.pipe_segments[0].end.point
+        );
+        assert!(
+            close(table.pipe_segments[1].start.point[0], baseline_table.pipe_segments[1].start.point[0]),
+            "拓扑表段 B 内侧端点回基线：{:?}",
+            table.pipe_segments[1].start.point
+        );
+        assert_eq!(line_points(&app, &table), baseline_lines, "管段几何回基线");
+    }
+
+    /// REST 通道（`entities_transform`）的 undo 也回退拓扑表 —— 它走全量
+    /// 结构快照，改动前后都该如此。
+    #[test]
+    fn undo_after_a_control_transform_restores_the_topology_table() {
+        let mut app = app();
+        let (valve, _, _) = line_with_valve_at_midpoint(&mut app);
+        let baseline_table = topology(&app);
+        assert_eq!(move_valve(&mut app, valve, 40.0)["ok"], true);
+        assert!(close(topology(&app).pipe_segments[0].end.point[0], 126.0));
+
+        let undone = request(&mut app, json!({"op":"undo"}));
+        assert_eq!(undone["ok"], true, "{undone}");
+        assert!(close(insert_point(&app, valve)[0], 100.0), "阀门回基线");
+        let table = topology(&app);
+        assert!(
+            close(table.pipe_segments[0].end.point[0], baseline_table.pipe_segments[0].end.point[0]),
+            "拓扑表回基线：{:?}",
+            table.pipe_segments[0].end.point
+        );
+        assert!(
+            close(table.pipe_segments[1].start.point[0], baseline_table.pipe_segments[1].start.point[0]),
+            "拓扑表回基线：{:?}",
+            table.pipe_segments[1].start.point
+        );
+    }
+
+    // ── ALIGN：纯平移补位生效；旋转/缩放明确拒绝 ───────────────────────────
+
+    /// ALIGN 一对点（纯平移，`+10` 不越界）：阀门移动 **且** 两侧管段补位。
+    ///
+    /// 回归 Blocking 2 的用例 A：ALIGN 的 `Affine` 矩阵只含平移时，归一化成
+    /// `Translate` 再走 checked 预演，否则补位完全不发生。
+    #[test]
+    fn align_with_one_pair_refills_like_a_translation() {
+        let mut app = app();
+        let (valve, _, _) = line_with_valve_at_midpoint(&mut app);
+        request(
+            &mut app,
+            json!({"op":"select","handles":[hex(valve)],"replace":true}),
+        );
+        let started = request(&mut app, json!({"op":"start","cmd":"ALIGN"}));
+        assert_eq!(started["status"], "waiting_input", "{started}");
+        // 源点1 (100,0) → 目标点1 (110,0)，再 Enter 表示只平移。
+        for point in [[100.0, 0.0, 0.0], [110.0, 0.0, 0.0]] {
+            let fed = request(
+                &mut app,
+                json!({"op":"input","kind":"point","point":point,"space":"wcs"}),
+            );
+            assert_eq!(fed["ok"], true, "{fed}");
+        }
+        let done = request(&mut app, json!({"op":"input","kind":"enter"}));
+        assert_eq!(done["ok"], true, "{done}");
+
+        assert!(close(insert_point(&app, valve)[0], 110.0), "阀门移到 110");
+        let table = topology(&app);
+        assert!(
+            close(table.pipe_segments[0].end.point[0], 96.0),
+            "段 A 内侧端点跟随阀门端口：{:?}",
+            table.pipe_segments[0].end.point
+        );
+        assert!(
+            close(table.pipe_segments[1].start.point[0], 124.0),
+            "段 B 内侧端点跟随阀门端口：{:?}",
+            table.pipe_segments[1].start.point
+        );
+        assert_eq!(table.pipe_runs[0].segments.len(), 2, "管段数不变");
+        let geometry = line_points(&app, &table);
+        assert!(close(geometry[0].1[0], 96.0), "{geometry:?}");
+        assert!(close(geometry[1].0[0], 124.0), "{geometry:?}");
+    }
+
+    /// ALIGN 一对点越界平移（`+300`）：命令报错，几何与拓扑表都不变。
+    ///
+    /// 回归 Blocking 2 的用例 B：改动前它返回 `ok=true` 并输出
+    /// `ALIGN: applied.`，阀门却跑到 410 而管段完全不动。
+    #[test]
+    fn align_with_one_pair_refuses_an_out_of_range_translation() {
+        let mut app = app();
+        let (valve, _, _) = line_with_valve_at_midpoint(&mut app);
+        let before_table = topology(&app);
+        let before_point = insert_point(&app, valve);
+        let before_lines = line_points(&app, &before_table);
+
+        request(
+            &mut app,
+            json!({"op":"select","handles":[hex(valve)],"replace":true}),
+        );
+        let started = request(&mut app, json!({"op":"start","cmd":"ALIGN"}));
+        assert_eq!(started["status"], "waiting_input", "{started}");
+        for point in [[100.0, 0.0, 0.0], [400.0, 0.0, 0.0]] {
+            let _ = request(
+                &mut app,
+                json!({"op":"input","kind":"point","point":point,"space":"wcs"}),
+            );
+        }
+        let done = request(&mut app, json!({"op":"input","kind":"enter"}));
+        assert_eq!(done["ok"], false, "越界 ALIGN 必须报错：{done}");
+        let message = done["error"].as_str().unwrap_or_default();
+        assert!(message.contains("补位"), "错误要说明补位被拒：{done}");
+
+        assert_eq!(insert_point(&app, valve), before_point, "阀门不动");
+        assert_eq!(topology(&app), before_table, "拓扑表不变，无半改");
+        assert_eq!(line_points(&app, &before_table), before_lines, "管段几何不变");
+    }
 }

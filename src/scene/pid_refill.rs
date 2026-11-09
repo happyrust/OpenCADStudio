@@ -25,10 +25,12 @@
 //! 补位不重建管段、不重绑端口、不改位号 —— `VAL-PIPE-021` 断言这三件事
 //! 在移动前后完全相同。
 
+use crate::pid::graph_data::PID_AUTHOR_TOPOLOGY;
 use crate::pid::symbols::{block_point_locations, place};
 use crate::pid::topology::{
     handle_text, parse_handle, SegmentEnd, TopologyTable, VALVE_PORT_NAMES,
 };
+use codec::objects::ObjectType;
 use codec::{Document, Handle};
 use glam::DVec3;
 use serde_json::{json, Value};
@@ -271,6 +273,41 @@ pub(crate) fn plan_refill(
     }
 
     Ok(plan)
+}
+
+/// 拓扑表 XRecord 在 `document.objects` 里的当前镜像：`(记录 handle, 对象)`。
+///
+/// 补位除了改管段 `Line` 几何，还会 [`TopologyTable::store`] 整 key 重写
+/// `PID_AUTHOR_TOPOLOGY` XRecord —— 那是 `document.objects` 里的对象，
+/// `record_undo_before` 登记的实体镜像覆盖不到它。调用方在写表**之前**取
+/// 一次本函数的结果交给 `record_undo_object_before`，撤销才能把表一起退回去。
+///
+/// 表不存在时返回 `None`。补位只会在表里已有 `fittings` 记录时发生
+/// （[`plan_refill`] 从表里挑管件），所以「计划非空」必然伴随 `Some`。
+pub(crate) fn topology_record_image(document: &Document) -> Option<(Handle, ObjectType)> {
+    let owner = document.header.model_space_block_handle;
+    let dictionary_handle = document.extension_dictionary_handle(owner)?;
+    let record_handle = match document.objects.get(&dictionary_handle) {
+        Some(ObjectType::Dictionary(dictionary)) => dictionary.get(PID_AUTHOR_TOPOLOGY)?,
+        _ => return None,
+    };
+    let before = document.objects.get(&record_handle)?.clone();
+    matches!(before, ObjectType::XRecord(_)).then_some((record_handle, before))
+}
+
+/// `handles` 里是否有**绑定过管段端口**的管件（阀门）。
+///
+/// 组合变换（含旋转/缩放的 ALIGN）不能安全补位，命令层用这条判据决定是
+/// 「拒绝并提示用 MOVE」还是「按无补位执行」。
+pub(crate) fn binds_pipe_segments(document: &Document, handles: &[Handle]) -> bool {
+    if handles.is_empty() {
+        return false;
+    }
+    let table = TopologyTable::load(document);
+    let selected: Vec<String> = handles.iter().map(|handle| handle_text(*handle)).collect();
+    table.fittings.iter().any(|fitting| {
+        selected.contains(&fitting.handle) && fitting.ports.values().any(|slot| slot.is_some())
+    })
 }
 
 /// 把预演结果落到拓扑表与管段几何上，返回被改写的管段 handle。
