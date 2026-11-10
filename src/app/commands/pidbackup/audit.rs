@@ -666,6 +666,119 @@ fn walk_text(
     send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
 }
 
+/// What the files of the backup's drawings hold beside their items, added
+/// up over the drawings.
+#[derive(Default)]
+struct DataTally {
+    /// Drawings the tree hangs the rows under, and how many rows that is.
+    drawings: usize,
+    nodes: usize,
+    process_points: usize,
+    /// Process points on a connector that is one of the drawing's items.
+    named_connectors: usize,
+    branch_points: usize,
+    piping_branch_points: usize,
+    representations: usize,
+    /// Representations of an item of the drawing, of a branch point drawn
+    /// on a run, and of an item the drawing does not publish.
+    of_items: usize,
+    on_runs: usize,
+    of_unpublished: usize,
+    stats: crate::io::pid_backup_browse::drawing_data::ReadStats,
+    /// The first drawing that shows the rows: the one the pictures are of.
+    first: Option<usize>,
+}
+
+/// The rows the tree hangs under the open drawing `at` for what its file
+/// holds beside the items: there when the read gave any of it, each with
+/// details, and a list's table as long as the read says the list is.
+fn walk_drawing_data(
+    app: &OpenCADStudio,
+    at: usize,
+    items: &crate::io::pid_backup_browse::DrawingItems,
+    tally: &mut DataTally,
+    empty: &mut Vec<String>,
+) {
+    let data = &items.data;
+    let rows: Vec<Row> = rows_under(app, &NodeId::Drawing(at))
+        .into_iter()
+        .filter(|row| matches!(row.id, NodeId::Section(..)))
+        .collect();
+    if data.is_empty() {
+        assert!(
+            rows.is_empty(),
+            "drawing {at} gave nothing beside its items and shows {rows:?}"
+        );
+        return;
+    }
+    let lists = [
+        (crate::t!("Process points"), Some(data.process_points.len())),
+        (crate::t!("Branch points"), Some(data.branch_points.len())),
+        (crate::t!("Representations"), Some(data.representations.len())),
+        (crate::t!("Ports, connections, OPC and pipelines"), None),
+        (crate::t!("Read statistics"), None),
+    ];
+    assert_eq!(rows.len(), lists.len(), "the rows under drawing {at}: {rows:?}");
+    for (row, (title, count)) in rows.iter().zip(&lists) {
+        let details = details_of(app, &row.id, empty);
+        let Some(count) = count else {
+            assert_eq!(row.label, *title);
+            continue;
+        };
+        assert_eq!(row.label, format!("{title} ({count})"));
+        // The drawing's name, then the list: a table with a line for its
+        // titles and one for each row, or the line that says there is none.
+        if *count == 0 {
+            assert_eq!(
+                details.last().map(|(key, _)| key.as_str()),
+                Some(crate::t!("The drawing has none.").as_ref()),
+                "{} of drawing {at}",
+                row.label
+            );
+        } else {
+            assert_eq!(
+                details.get(1).map(|(_, rows)| rows.clone()),
+                Some(crate::tf!("{} row(s)", count).into_owned()),
+                "{} of drawing {at}",
+                row.label
+            );
+            assert_eq!(details.len(), count + 2, "{} of drawing {at}", row.label);
+        }
+    }
+    tally.drawings += 1;
+    tally.nodes += rows.len();
+    tally.first.get_or_insert(at);
+    tally.process_points += data.process_points.len();
+    tally.named_connectors += data
+        .process_points
+        .iter()
+        .filter(|point| point.connector.is_some())
+        .count();
+    tally.branch_points += data.branch_points.len();
+    tally.piping_branch_points += data
+        .branch_points
+        .iter()
+        .filter(|point| point.class == "PIDPipingBranchPoint")
+        .count();
+    tally.representations += data.representations.len();
+    for representation in &data.representations {
+        match (&representation.item, &representation.item_uid) {
+            (Some(_), _) => tally.of_items += 1,
+            (None, None) => tally.on_runs += 1,
+            (None, Some(_)) => tally.of_unpublished += 1,
+        }
+    }
+    let (total, stats) = (&mut tally.stats, &data.stats);
+    total.attribute_records += stats.attribute_records;
+    total.undecoded_records += stats.undecoded_records;
+    total.label_values += stats.label_values;
+    total.label_values_reached += stats.label_values_reached;
+    total.label_values_published += stats.label_values_published;
+    total.conflicting_attributes += stats.conflicting_attributes;
+    total.nominal_diameter_not_emitted += stats.nominal_diameter_not_emitted;
+    total.instruments_classed_by_library += stats.instruments_classed_by_library;
+}
+
 fn millis(duration: Duration) -> String {
     format!("{:.1} ms", duration.as_secs_f64() * 1000.0)
 }
@@ -1026,6 +1139,7 @@ fn a_real_backup_is_walked_node_by_node() {
     let mut silent: Vec<String> = Vec::new();
     let mut slowest = (Duration::ZERO, String::new());
     let mut item_time = Duration::ZERO;
+    let mut data_tally = DataTally::default();
     audit.line("  items per drawing (name | items | types | attributes | read):");
     for (at, drawing) in index.drawings.iter().enumerate() {
         if drawing.is_missing() {
@@ -1068,6 +1182,7 @@ fn a_real_backup_is_walked_node_by_node() {
                 }
                 total_items += items.item_count;
                 total_attributes += attributes;
+                walk_drawing_data(&app, at, &items, &mut data_tally, &mut empty);
                 if took > slowest.0 {
                     slowest = (took, drawing.name.clone());
                 }
@@ -1131,6 +1246,70 @@ fn a_real_backup_is_walked_node_by_node() {
         ));
     }
     audit.shot(&app, "drawing-items-open");
+
+    // ── What the files hold beside the items ─────────────────────────────
+    audit.line(format!(
+        "== drawing data: {} drawing(s) show what their file holds beside the items, in {} node(s) ==",
+        data_tally.drawings, data_tally.nodes
+    ));
+    audit.line(format!(
+        "  process points: {} ({} on a connector the drawing names)",
+        data_tally.process_points, data_tally.named_connectors
+    ));
+    audit.line(format!(
+        "  branch points: {} ({} piping, {} signal)",
+        data_tally.branch_points,
+        data_tally.piping_branch_points,
+        data_tally.branch_points - data_tally.piping_branch_points
+    ));
+    audit.line(format!(
+        "  representations: {} ({} of an item, {} of a branch point on a run, {} of an item the drawing does not publish)",
+        data_tally.representations,
+        data_tally.of_items,
+        data_tally.on_runs,
+        data_tally.of_unpublished
+    ));
+    let read = &data_tally.stats;
+    audit.line(format!(
+        "  read: {} attribute records, {} not decoded; {} label values, {} reach an item, {} published; {} attributes left out for conflicting labels; {} nominal diameter labels not published; {} instruments classed by their symbol's folder",
+        read.attribute_records,
+        read.undecoded_records,
+        read.label_values,
+        read.label_values_reached,
+        read.label_values_published,
+        read.conflicting_attributes,
+        read.nominal_diameter_not_emitted,
+        read.instruments_classed_by_library
+    ));
+    if let Some(at) = data_tally.first {
+        // The first drawing is still open; any other is opened for its
+        // pictures and folded again.
+        if at != 0 {
+            send(&mut app, PidBackupMsg::Toggle(NodeId::Drawing(at))).unwrap();
+        }
+        let rows: Vec<Row> = rows_under(&app, &NodeId::Drawing(at))
+            .into_iter()
+            .filter(|row| matches!(row.id, NodeId::Section(..)))
+            .collect();
+        for (row, name) in rows.iter().zip([
+            "drawing-data-process-points",
+            "drawing-data-branch-points",
+            "drawing-data-representations",
+            "drawing-data-database",
+            "drawing-data-statistics",
+        ]) {
+            send(&mut app, PidBackupMsg::Select(row.id.clone())).unwrap();
+            let details = detail_rows(&app.pid_backup_browser, &row.id);
+            audit.line(format!("  {} [{} detail line(s)]", row.label, details.len()));
+            for (key, value) in details.iter().take(4) {
+                audit.line(format!("      {key} = {value}"));
+            }
+            audit.shot(&app, name);
+        }
+        if at != 0 {
+            send(&mut app, PidBackupMsg::Toggle(NodeId::Drawing(at))).unwrap();
+        }
+    }
     if let Some(ItemsState::Ready(items)) = app.pid_backup_browser.items.get(&0).cloned() {
         // A type's details list its items as a table.
         if !items.groups.is_empty() {

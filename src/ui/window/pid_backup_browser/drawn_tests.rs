@@ -46,6 +46,7 @@ fn three_instruments() -> DrawingItems {
             ],
         }],
         item_count: 3,
+        ..DrawingItems::default()
     }
 }
 

@@ -22,6 +22,7 @@
 //! rows under a row of the tree and states the details of its nodes.
 
 mod database;
+mod drawing_data;
 #[cfg(test)]
 mod drawn_tests;
 mod goto;
@@ -1599,6 +1600,7 @@ mod tests {
                 }],
             }],
             item_count: 1,
+            ..DrawingItems::default()
         }
     }
 

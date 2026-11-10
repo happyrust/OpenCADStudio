@@ -18,9 +18,11 @@
 //! Matching a row to a file is [`match_drawings`]: a pure function over the
 //! rows and the `.pid` paths, testable without an Oracle dump.
 //!
-//! What a drawing holds -- its model items and their published attributes --
-//! is [`load_items`], read on demand when the panel first expands a drawing.
+//! What a drawing holds -- its model items and their published attributes,
+//! and what its file states beside them ([`drawing_data`]) -- is
+//! [`load_items`], read on demand when the panel first expands a drawing.
 
+pub mod drawing_data;
 pub mod export_log;
 pub mod labels;
 pub mod loose_files;
@@ -857,6 +859,9 @@ pub struct DrawingItems {
     pub groups: Vec<ItemGroup>,
     /// How many items the groups hold together.
     pub item_count: usize,
+    /// What the file holds beside the items: connection points, the graphic
+    /// each item is drawn as, and how much of the file was read.
+    pub data: drawing_data::DrawingData,
 }
 
 /// One `ModelItemType` of a drawing and the items of that type.
@@ -954,12 +959,32 @@ fn index_stopped_error() -> String {
 /// Group a loaded drawing's items by `ModelItemType`: type-name sorted
 /// between the groups, and inside each ordered and labelled for the tree.
 pub fn group_items(drawing: PidPublishDrawing) -> DrawingItems {
-    let (groups, item_count) = group_published_items(drawing.items);
+    let PidPublishDrawing {
+        drawing_uid,
+        drawing_name,
+        items,
+        process_points,
+        branch_points,
+        representations,
+        stats,
+        ..
+    } = drawing;
+    let (groups, item_count) = group_published_items(items);
+    // The rest of the file names items by UID; the groups know what the
+    // tree calls them.
+    let data = drawing_data::drawing_data(
+        &process_points,
+        &branch_points,
+        &representations,
+        stats,
+        &groups,
+    );
     DrawingItems {
-        drawing_uid: drawing.drawing_uid,
-        drawing_name: drawing.drawing_name,
+        drawing_uid,
+        drawing_name,
         groups,
         item_count,
+        data,
     }
 }
 
