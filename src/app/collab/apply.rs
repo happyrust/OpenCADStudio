@@ -17,18 +17,47 @@ impl OpenCADStudio {
     /// edit (`architecture.md` §5.3), so no per-command hook can be missed.
     pub(in crate::app) fn broadcast_history_delta(
         &mut self,
+        i: usize,
         delta: &crate::app::tab_document::DeltaSnapshot,
     ) {
-        self.broadcast_changes(broadcast::collect_changes(&delta.entities));
+        self.broadcast_changes(i, broadcast::collect_changes(&delta.entities));
     }
 
-    /// Queue one `op` carrying `changes`, or stay quiet. Three things silence
-    /// it:
+    /// The tab holding the drawing the session speaks for, if it is open.
+    ///
+    /// Which tab that is gets settled the first time the session needs a
+    /// document — to send an edit, or to take a peer's — and it is the drawing
+    /// in front at that moment: the one the editor was started on. From then
+    /// on it is that tab whatever is in front, until the tab is closed; a
+    /// session whose drawing was closed has no document, and says so rather
+    /// than move on to the next one.
+    pub(in crate::app) fn collab_tab(&mut self) -> Option<usize> {
+        if let Some(id) = self.collab.document {
+            return self.tabs.iter().position(|tab| tab.id == id);
+        }
+        let i = self.active_tab;
+        if self.tabs.get(i).is_some_and(|tab| !tab.is_start) {
+            self.collab.document = Some(self.tabs[i].id);
+            return Some(i);
+        }
+        None
+    }
+
+    /// Whether tab `i` holds the session's drawing, settling it on `i` when
+    /// the session has no document yet and `i` is the drawing in front.
+    fn is_collab_tab(&mut self, i: usize) -> bool {
+        self.collab_tab() == Some(i)
+    }
+
+    /// Queue one `op` carrying the `changes` made on tab `i`, or stay quiet.
+    /// Four things silence it:
     ///
     /// * no live session — the offline-first invariant (`VAL-CLI-017`);
     /// * the changes come from a remote op being folded in
     ///   (`applying_remote`), which must not echo back to the peer that sent
     ///   it;
+    /// * tab `i` is not the session's drawing: an edit to another sheet is
+    ///   that sheet's own, and would reach the room as a change to this one;
     /// * the session is read-only, which may not write. The command gate
     ///   refuses a write before it happens, so a change that got here anyway
     ///   came in by a door the gate does not watch; it stays in this drawing
@@ -36,13 +65,16 @@ impl OpenCADStudio {
     ///
     /// Everything handed over in one call goes out as one op, which the server
     /// takes or refuses as a whole.
-    pub(in crate::app) fn broadcast_changes(&mut self, changes: Vec<broadcast::Change>) {
+    pub(in crate::app) fn broadcast_changes(&mut self, i: usize, changes: Vec<broadcast::Change>) {
         if self.applying_remote || !self.collab.connected {
             return;
         }
         let Some(payload) = broadcast::payload_for(&changes) else {
             return;
         };
+        if !self.is_collab_tab(i) {
+            return;
+        }
         if self.collab.readonly {
             self.command_line.push_warning(&format!(
                 "协同：当前会话只读，本地的 {} 项变更没有广播，本图与其他人的图已不一致",
@@ -79,11 +111,16 @@ impl OpenCADStudio {
             return;
         }
         let pending = std::mem::take(&mut self.collab.pending_remote);
-        let i = self.active_tab;
-        if self.tabs[i].is_start {
-            self.report_apply_error("当前标签页不是图纸，远端变更未应用".to_owned());
+        // The session's drawing, wherever it is among the tabs — not the tab
+        // in front, which may be another sheet carrying the same tags.
+        let Some(i) = self.collab_tab() else {
+            self.report_apply_error(if self.collab.document.is_some() {
+                "协同的图纸已经关闭，远端变更未应用".to_owned()
+            } else {
+                "当前标签页不是图纸，远端变更未应用".to_owned()
+            });
             return;
-        }
+        };
         let mut total = 0usize;
         let mut failure: Option<String> = None;
         // Raised for as long as a step opened here can still reach
@@ -158,8 +195,16 @@ impl OpenCADStudio {
     ///
     /// `PIDTAG` is the one verb whose argument count changes its meaning: one
     /// word jumps to a tag (a read), two rename it (a write).
+    ///
+    /// The gate is on the session's drawing. Another drawing open beside it
+    /// is not in the session, and its commands are its own; while the session
+    /// has no document yet, the drawing in front is the one it would take.
     pub(in crate::app) fn readonly_refuses_command(&self, cmd: &str) -> bool {
         if !self.collab.readonly {
+            return false;
+        }
+        let in_front = self.tabs.get(self.active_tab).map(|tab| tab.id);
+        if self.collab.document.is_some() && self.collab.document != in_front {
             return false;
         }
         let words: Vec<&str> = cmd.split_whitespace().collect();
@@ -520,5 +565,132 @@ mod tests {
         let author =
             PidAuthor::load(&app.tabs[app.active_tab].scene.document, handle).expect("author");
         assert_eq!(author.tag, "P-1001", "只读拒绝后位号不得改写");
+    }
+
+    /// Open another drawing in a tab of its own, put a vessel carrying `tag`
+    /// on it and bring it to the front. Returns the tab and the vessel.
+    fn another_drawing_in_front(app: &mut OpenCADStudio, tag: &str) -> (usize, document::Handle) {
+        let id = app.push_test_document();
+        let tab = app
+            .tabs
+            .iter()
+            .position(|tab| tab.id == id)
+            .expect("the new tab");
+        let document = &mut app.tabs[tab].scene.document;
+        let handle = document
+            .add_entity(document::EntityType::Insert(Insert::new(
+                "PID_SYM_equipment_vessel",
+                Vector3::ZERO,
+            )))
+            .expect("entity");
+        PidAuthor {
+            type_code: "EQUIPMENT".to_owned(),
+            tag: tag.to_owned(),
+            tag_source: "auto".to_owned(),
+            tag_status: "ok".to_owned(),
+            ..PidAuthor::default()
+        }
+        .store(document, handle);
+        app.active_tab = tab;
+        (tab, handle)
+    }
+
+    fn remote_retag(app: &mut OpenCADStudio, op_id: &str, revision: i64, old: &str, new: &str) {
+        app.collab.apply(CollabEvent::OpApplied {
+            op_id: op_id.to_owned(),
+            revision,
+            changes: vec![serde_json::json!({
+                "kind": "set_tag",
+                "object_ref": old,
+                "field": "tag",
+                "value": new,
+            })],
+        });
+        app.apply_remote_changes();
+    }
+
+    /// The session speaks for one drawing. A peer's change belongs on the tab
+    /// holding that drawing, not on whichever tab is in front when it
+    /// arrives — which may well carry the same tag: it can be a copy of the
+    /// same sheet.
+    #[test]
+    fn a_remote_change_lands_on_the_sessions_drawing_not_on_the_tab_in_front() {
+        let (mut app, vessel) = app_with_vessel("P-1001");
+        let session_tab = app.active_tab;
+        // The first change arrives with the session's drawing in front.
+        remote_retag(&mut app, "op-peer-a", 1, "P-1001", "P-1005");
+        assert_eq!(
+            PidAuthor::load(&app.tabs[session_tab].scene.document, vessel)
+                .expect("author")
+                .tag,
+            "P-1005"
+        );
+
+        // Then the person opens a copy of the sheet and works in that.
+        let (copy_tab, copy_vessel) = another_drawing_in_front(&mut app, "P-1005");
+        remote_retag(&mut app, "op-peer-b", 2, "P-1005", "P-1009");
+
+        assert_eq!(
+            PidAuthor::load(&app.tabs[copy_tab].scene.document, copy_vessel)
+                .expect("author")
+                .tag,
+            "P-1005",
+            "the tab in front is not the session's drawing and must be left alone"
+        );
+        assert_eq!(
+            PidAuthor::load(&app.tabs[session_tab].scene.document, vessel)
+                .expect("author")
+                .tag,
+            "P-1009",
+            "the session's drawing takes the change while it is in the background"
+        );
+        assert_eq!(app.collab.last_apply_error, None);
+    }
+
+    /// And the other way: an edit made on another drawing is that drawing's
+    /// business. Broadcast, it would tell the room the session's drawing
+    /// changed.
+    #[test]
+    fn an_edit_on_another_drawing_is_not_broadcast_as_the_sessions() {
+        let (mut app, _) = app_with_vessel("P-1001");
+        app.collab.connected = true;
+        app.collab.session_id = Some("s-1".to_owned());
+        let _ = app.run_command_line("PIDTAG P-1001 P-1005");
+        app.finish_all_pending_history();
+        assert_eq!(app.collab.own_ops.len(), 1, "the session's drawing");
+
+        let (copy_tab, copy_vessel) = another_drawing_in_front(&mut app, "P-2001");
+        let _ = app.run_command_line("PIDTAG P-2001 P-2009");
+        app.finish_all_pending_history();
+        assert_eq!(
+            PidAuthor::load(&app.tabs[copy_tab].scene.document, copy_vessel)
+                .expect("author")
+                .tag,
+            "P-2009",
+            "the edit itself goes through"
+        );
+        assert_eq!(
+            app.collab.own_ops.len(),
+            1,
+            "an edit to another drawing went out as this session's: {:?}",
+            app.collab.own_ops
+        );
+    }
+
+    /// A read-only session may not write to its drawing. Another drawing
+    /// open beside it is not in the session and stays writable.
+    #[test]
+    fn a_readonly_session_leaves_other_drawings_writable() {
+        let (mut app, _) = app_with_vessel("P-1001");
+        // Settle which drawing the session is about, then lose write access.
+        remote_retag(&mut app, "op-peer-a", 1, "P-1001", "P-1005");
+        app.collab.readonly = true;
+        assert!(app.readonly_refuses_command("PIDTAG P-1005 P-1009"));
+
+        let _ = another_drawing_in_front(&mut app, "P-2001");
+        assert!(
+            !app.readonly_refuses_command("PIDTAG P-2001 P-2009"),
+            "a drawing outside the session was refused a write"
+        );
     }
 }

@@ -165,7 +165,7 @@ impl OpenCADStudio {
         // `redo_steps`. Read the semantic diff off the delta before the
         // snapshot is moved onto the stack.
         if let HistorySnapshot::Delta(delta) = &snapshot {
-            self.broadcast_history_delta(delta);
+            self.broadcast_history_delta(i, delta);
         }
         self.tabs[i].history.undo_stack.push(snapshot);
         self.tabs[i].edit_revision = self.tabs[i].edit_revision.wrapping_add(1);
@@ -1631,7 +1631,7 @@ impl OpenCADStudio {
             &changes,
         );
         self.restore_history_view(i, step_view);
-        self.broadcast_changes(undone);
+        self.broadcast_changes(i, undone);
         if report {
             self.command_line
                 .push_output(crate::tf!("Undo: {last_label}").as_ref());
@@ -1737,7 +1737,7 @@ impl OpenCADStudio {
             &changes,
         );
         self.restore_history_view(i, step_view);
-        self.broadcast_changes(redone);
+        self.broadcast_changes(i, redone);
         self.command_line
             .push_output(crate::tf!("Redo: {last_label}").as_ref());
     }

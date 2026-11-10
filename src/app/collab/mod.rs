@@ -147,6 +147,15 @@ pub(super) struct State {
     /// document. `apply()` cannot do it: it holds no document. The app drains
     /// this right after every event (`OpenCADStudio::apply_remote_changes`).
     pub pending_remote: Vec<RemoteChange>,
+    /// The tab holding the drawing this session speaks for, by document id.
+    ///
+    /// A session is about one drawing (`--drawing`); an editor has many tabs.
+    /// A peer's change goes onto this tab and nowhere else, and only this
+    /// tab's edits go out — otherwise a change meant for one sheet lands on
+    /// whichever sheet is in front, which may carry the same tags. `None`
+    /// until the session first needs a document; see
+    /// `OpenCADStudio::collab_tab`.
+    pub document: Option<u64>,
 }
 
 /// One remote `op_applied` waiting to be applied to the local document.
@@ -371,6 +380,7 @@ impl State {
             "applied_ops": self.applied_ops,
             "pending_remote": self.pending_remote.len(),
             "last_apply_error": self.last_apply_error,
+            "document_id": self.document,
         })
     }
 
