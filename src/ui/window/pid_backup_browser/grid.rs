@@ -34,6 +34,9 @@ const CELL_PAD: f32 = 5.0;
 /// The narrowest and the widest a column gets; longer text is cut with "…".
 const COLUMN_MIN: f32 = 36.0;
 const COLUMN_MAX: f32 = 420.0;
+/// The widest a column of a table in file order gets: its cells are the
+/// lines of a file, cut to rows beforehand, and are shown whole.
+const LINE_COLUMN_MAX: f32 = 2400.0;
 /// Rows built beyond either end of the view.
 const SPARE_ROWS: usize = 6;
 /// Rows built while the view has not said how tall it is. A view reports
@@ -87,7 +90,7 @@ impl Table {
     /// A table of `rows` under `columns`. A row shorter than the header is
     /// read as ending in empty cells; cells beyond it are not shown.
     pub fn new(columns: Vec<Column>, rows: Vec<Vec<String>>) -> Self {
-        let widths = column_widths(&columns, &rows);
+        let widths = column_widths(&columns, &rows, COLUMN_MAX);
         Table {
             columns,
             rows,
@@ -96,9 +99,11 @@ impl Table {
         }
     }
 
-    /// The same table with its rows kept in the order they were given.
+    /// The same table with its rows kept in the order they were given, and
+    /// its columns as wide as their longest cell: the lines of a file.
     pub fn in_file_order(mut self) -> Self {
         self.sortable = false;
+        self.widths = column_widths(&self.columns, &self.rows, LINE_COLUMN_MAX);
         self
     }
 
@@ -131,6 +136,9 @@ impl Table {
     }
 }
 
+/// How many cells of a column are measured for its width.
+const MEASURED: usize = 6;
+
 /// The widest of `texts` as the UI font draws it: measuring every cell of a
 /// long table would cost more than drawing it, so the candidates are the few
 /// longest by a cheap estimate, and only those are measured.
@@ -145,7 +153,7 @@ fn widest(texts: impl Iterator<Item = impl AsRef<str>>) -> f32 {
     for text in texts {
         let text = text.as_ref();
         let size = estimate(text);
-        if longest.len() < 3 {
+        if longest.len() < MEASURED {
             longest.push((size, text.to_string()));
         } else if let Some(shortest) = longest.iter_mut().min_by_key(|(size, _)| *size) {
             if size > shortest.0 {
@@ -159,7 +167,7 @@ fn widest(texts: impl Iterator<Item = impl AsRef<str>>) -> f32 {
         .fold(0.0, f32::max)
 }
 
-fn column_widths(columns: &[Column], rows: &[Vec<String>]) -> Vec<f32> {
+fn column_widths(columns: &[Column], rows: &[Vec<String>], widest_column: f32) -> Vec<f32> {
     columns
         .iter()
         .enumerate()
@@ -167,7 +175,7 @@ fn column_widths(columns: &[Column], rows: &[Vec<String>]) -> Vec<f32> {
             let title = crate::ui::style::text_metrics::width(&column.title, TEXT, false)
                 + SORT_MARK_W;
             let cells = widest(rows.iter().filter_map(|row| row.get(at)));
-            (title.max(cells) + 2.0 * CELL_PAD).clamp(COLUMN_MIN, COLUMN_MAX)
+            (title.max(cells) + 2.0 * CELL_PAD).clamp(COLUMN_MIN, widest_column)
         })
         .collect()
 }
@@ -578,6 +586,32 @@ mod tests {
         // A short row reads as ending in empty cells.
         assert_eq!(table.cell(0, 5), "");
         assert_eq!(table.cell(9, 0), "");
+    }
+
+    #[test]
+    fn the_lines_of_a_file_are_as_wide_as_the_longest_of_them() {
+        // A row of a text file is up to 160 columns: far past what a column
+        // of a data table gets, and shown whole all the same.
+        let longest = "<Attribute name=\"x\" ".repeat(8);
+        let lines = Table::new(
+            vec![Column::number("#"), Column::text("Text")],
+            vec![
+                vec!["1".to_string(), "<?xml?>".to_string()],
+                vec!["2".to_string(), longest.clone()],
+                // Fewer characters, but wide ones: the estimate that picks
+                // the cells to measure counts them double.
+                vec!["3".to_string(), "图".repeat(90)],
+            ],
+        );
+        assert_eq!(lines.widths[1], COLUMN_MAX);
+        let lines = lines.in_file_order();
+        let needed = [longest.as_str(), &"图".repeat(90)]
+            .iter()
+            .map(|text| crate::ui::style::text_metrics::width(text, TEXT, false))
+            .fold(0.0, f32::max);
+        assert!(needed > COLUMN_MAX, "{needed}");
+        assert_eq!(lines.widths[1], needed + 2.0 * CELL_PAD);
+        assert!(!lines.is_sortable());
     }
 
     #[derive(Debug, Clone, PartialEq)]

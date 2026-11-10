@@ -20,7 +20,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 /// Written last into a finished restore folder; holds the source's cache key.
-const DONE_MARKER: &str = ".ocs-restored";
+pub(crate) const DONE_MARKER: &str = ".ocs-restored";
 
 /// How deep under the restore folder `.pid` drawings are looked for. A backup
 /// files them two plant-group levels down (`00/00/<name>.pid`).

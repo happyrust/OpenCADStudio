@@ -27,9 +27,18 @@
 
 use super::*;
 use crate::io::pid_backup_browse::{BackupIndex, GroupNode, RefNode};
-use crate::ui::window::pid_backup_browser::{detail_rows, visible_rows, ItemsState, NodeId};
-use std::collections::BTreeMap;
+use crate::ui::window::pid_backup_browser::{
+    detail_rows, visible_rows, ItemsState, NodeId, Row, SectionLoad,
+};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
+
+thread_local! {
+    /// Every key and value the walk has seen in a node's details, and how
+    /// many nodes that was: what a credential must not turn up in.
+    static SHOWN: RefCell<(String, usize)> = RefCell::new((String::new(), 0));
+}
 
 /// The plant test backup the two reading tests of `io::pid_backup*` use.
 const DEFAULT_BACKUP: &str = r"D:\work\plant-code\cad\pid-test-data";
@@ -160,7 +169,345 @@ fn details_of(
     if rows.is_empty() {
         empty.push(format!("{id:?}"));
     }
+    SHOWN.with(|shown| {
+        let mut shown = shown.borrow_mut();
+        shown.1 += 1;
+        for (key, value) in &rows {
+            shown.0.push_str(key);
+            shown.0.push('\n');
+            shown.0.push_str(value);
+            shown.0.push('\n');
+        }
+    });
     rows
+}
+
+/// Open everything the sections hang under `host`, level by level, as a user
+/// working down the branch would: select each node (which starts whatever
+/// read it needs), report its details, unfold it. Returns how many nodes
+/// that was. `host` is folded again afterwards.
+fn walk_sections(
+    app: &mut OpenCADStudio,
+    audit: &mut Audit,
+    host: &NodeId,
+    empty: &mut Vec<String>,
+) -> usize {
+    send(app, PidBackupMsg::Toggle(host.clone())).unwrap();
+    let mut seen: HashSet<NodeId> = HashSet::new();
+    loop {
+        let rows = visible_rows(&app.pid_backup_browser);
+        let Some(at) = rows.iter().position(|row| row.id == *host) else {
+            break;
+        };
+        let depth = rows[at].depth;
+        let next: Option<Row> = rows[at + 1..]
+            .iter()
+            .take_while(|row| row.depth > depth)
+            .find(|row| matches!(row.id, NodeId::Section(..)) && !seen.contains(&row.id))
+            .cloned();
+        let Some(row) = next else {
+            break;
+        };
+        seen.insert(row.id.clone());
+        send(app, PidBackupMsg::Select(row.id.clone())).unwrap();
+        let details = details_of(app, &row.id, empty);
+        let indent = "  ".repeat(row.depth - depth);
+        let cut = |text: &str| -> String {
+            if text.chars().count() > 96 {
+                format!("{}…", text.chars().take(96).collect::<String>())
+            } else {
+                text.to_string()
+            }
+        };
+        audit.line(format!("{indent}{} [{} detail line(s)]", row.label, details.len()));
+        for (key, value) in details.iter().take(6) {
+            audit.line(format!("{indent}    {} = {}", cut(key), cut(value)));
+        }
+        if row.expandable && !row.expanded {
+            send(app, PidBackupMsg::Toggle(row.id.clone())).unwrap();
+        }
+    }
+    send(app, PidBackupMsg::Toggle(host.clone())).unwrap();
+    seen.len()
+}
+
+/// The values of `Manifest.txt` that are credentials: every obfuscated
+/// field, the fields that hold a password by their position, and the
+/// password of a login in the export command. Read from the file itself, so
+/// the check does not depend on the code it checks.
+fn manifest_credentials(backup_root: &Path) -> Vec<(String, String)> {
+    let Ok(bytes) = std::fs::read(backup_root.join("Manifest.txt")) else {
+        return Vec::new();
+    };
+    let manifest = pid_parse::backup::parse_manifest_bytes(&bytes);
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut add = |key: &str, value: &str| {
+        // A value a few characters long is not looked for: it would turn up
+        // everywhere by accident, and no password of the samples is.
+        if value.chars().count() >= 6 && !found.iter().any(|(_, known)| known == value) {
+            found.push((key.to_string(), value.to_string()));
+        }
+    };
+    for line in &manifest.lines {
+        for (at, field) in line.fields.iter().enumerate() {
+            let by_position = match line.key.as_str() {
+                "DBPwds" => true,
+                "SiteConnInfo" => at == 0 || at == 4,
+                "PlantConnInfo" => at == 4,
+                "TableSpace" => at == 1,
+                _ => false,
+            };
+            if by_position || field.contains("###") {
+                add(&line.key, field);
+            }
+            for word in field.split(' ') {
+                if let (Some(slash), Some(sign)) = (word.find('/'), word.rfind('@')) {
+                    if slash > 0 && sign > slash + 1 && sign + 1 < word.len() {
+                        add(&line.key, &word[slash + 1..sign]);
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// What selecting a file node showed of the file's content.
+enum Content {
+    /// Its lines: the encoding, how many, and what the panel remarks.
+    Text {
+        encoding: String,
+        lines: String,
+        notes: Vec<String>,
+    },
+    /// The panel says it is not a text file.
+    NotText,
+    /// Nothing was read: the node has no text of its own.
+    NotRead,
+    /// The read failed, and the details say why.
+    Failed(String),
+}
+
+/// Select `id` as a click on its row does, wait for the read that starts,
+/// and say what the details show of the file's content.
+fn read_file_node(app: &mut OpenCADStudio, id: &NodeId, empty: &mut Vec<String>) -> Content {
+    send(app, PidBackupMsg::Select(id.clone())).unwrap();
+    let rows = details_of(app, id, empty);
+    let value = |key: &str| {
+        rows.iter()
+            .find(|(found, _)| found == key)
+            .map(|(_, value)| value.clone())
+    };
+    if let Some(encoding) = value(&crate::t!("Text encoding")) {
+        // The remarks stand between the line count and the lines.
+        let from = rows
+            .iter()
+            .position(|(key, _)| *key == crate::t!("Line count"))
+            .map_or(rows.len(), |at| at + 1);
+        let notes = rows[from..]
+            .iter()
+            .take_while(|(_, value)| value.is_empty())
+            .map(|(key, _)| key.clone())
+            .collect();
+        return Content::Text {
+            encoding,
+            lines: value(&crate::t!("Line count")).unwrap_or_default(),
+            notes,
+        };
+    }
+    if value(&crate::t!("Not a text file; its content is not shown.")).is_some() {
+        return Content::NotText;
+    }
+    let read = app
+        .pid_backup_browser
+        .section_data
+        .iter()
+        .find(|((_, node), _)| node == id)
+        .map(|(_, load)| load.clone());
+    match read {
+        None => Content::NotRead,
+        Some(SectionLoad::Failed(error)) => {
+            assert!(
+                rows.iter().any(|(key, _)| *key == error),
+                "a read that failed says so in the details: {error}"
+            );
+            Content::Failed(error)
+        }
+        Some(other) => panic!("the read of {id:?} is left in {other:?}"),
+    }
+}
+
+/// How many files of one kind showed what, and the report lines of the ones
+/// that are text.
+#[derive(Default)]
+struct ContentTally {
+    text: Vec<String>,
+    not_text: usize,
+    not_read: usize,
+    failed: Vec<String>,
+}
+
+impl ContentTally {
+    fn add(&mut self, label: &str, content: Content) {
+        match content {
+            Content::Text {
+                encoding,
+                lines,
+                notes,
+            } => {
+                let mut line = format!("{label} | {encoding} | {lines} line(s)");
+                for note in notes {
+                    line.push_str(" | ");
+                    line.push_str(&note);
+                }
+                self.text.push(line);
+            }
+            Content::NotText => self.not_text += 1,
+            Content::NotRead => self.not_read += 1,
+            Content::Failed(error) => self.failed.push(format!("{label}: {error}")),
+        }
+    }
+
+    fn report(&self, audit: &mut Audit, what: &str, not_read: &str) {
+        audit.line(format!(
+            "  {what}: {} text, {} not text, {} {not_read}, {} could not be read",
+            self.text.len(),
+            self.not_text,
+            self.not_read,
+            self.failed.len()
+        ));
+        for line in &self.text {
+            audit.line(format!("    {line}"));
+        }
+        for line in &self.failed {
+            audit.line(format!("    could not be read: {line}"));
+        }
+    }
+}
+
+/// The content of every file the tree names: each backup file, each member
+/// of the archives, each reference file, selected in turn as a click on its
+/// row would. What is text is read and shown; the report says which.
+fn walk_text(
+    app: &mut OpenCADStudio,
+    audit: &mut Audit,
+    index: &BackupIndex,
+    empty: &mut Vec<String>,
+) {
+    let started = Instant::now();
+    audit.line("== text of the files (read when a file is selected) ==");
+    send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
+    let labels: Vec<String> = {
+        let rows = visible_rows(&app.pid_backup_browser);
+        (0..index.files.len())
+            .map(|at| {
+                rows.iter()
+                    .find(|row| row.id == NodeId::File(at))
+                    .map_or_else(|| index.files[at].name.clone(), |row| row.label.clone())
+            })
+            .collect()
+    };
+    let mut files = ContentTally::default();
+    let mut members = ContentTally::default();
+    // The first of each kind, for the pictures.
+    let mut text_file = None;
+    let mut text_member = None;
+    let mut binary_file = None;
+    for (at, file) in index.files.iter().enumerate() {
+        let id = NodeId::File(at);
+        let content = read_file_node(app, &id, empty);
+        match &content {
+            Content::Text { .. } if text_file.is_none() && file.record.is_some() => {
+                text_file = Some(id.clone());
+            }
+            Content::NotText if binary_file.is_none() => binary_file = Some(id.clone()),
+            _ => {}
+        }
+        files.add(&labels[at], content);
+        for (member, name) in file.members.iter().enumerate() {
+            let id = NodeId::FileMember(at, member);
+            let content = read_file_node(app, &id, empty);
+            if matches!(content, Content::Text { .. }) && text_member.is_none() {
+                text_member = Some((at, id.clone()));
+            }
+            members.add(&format!("{} > {name}", file.name), content);
+        }
+    }
+    files.report(
+        audit,
+        "backup files",
+        "with no text of their own (the manifest, the dump, archives, missing files)",
+    );
+    members.report(audit, "archive members", "folders");
+
+    let mut reference = ContentTally::default();
+    let mut text_reference = None;
+    let mut dirs = vec![Vec::new()];
+    dirs.extend(ref_dir_paths(&index.ref_tree));
+    for path in &dirs {
+        let node = ref_dir(&index.ref_tree, path);
+        let folder: Vec<&str> = path
+            .iter()
+            .scan(&index.ref_tree, |node, at| {
+                let next = &node.dirs[*at];
+                *node = next;
+                Some(next.name.as_str())
+            })
+            .collect();
+        for (at, file) in node.files.iter().enumerate() {
+            let id = NodeId::RefFile(path.clone(), at);
+            let content = read_file_node(app, &id, empty);
+            if matches!(content, Content::Text { .. }) && text_reference.is_none() {
+                text_reference = Some((path.clone(), id.clone()));
+            }
+            let mut label = folder.join("\\");
+            if !label.is_empty() {
+                label.push('\\');
+            }
+            label.push_str(&file.name);
+            reference.add(&label, content);
+        }
+    }
+    reference.report(audit, "reference files", "not read");
+    audit.line(format!(
+        "  all selected and read in {}",
+        millis(started.elapsed())
+    ));
+
+    // The pictures: a text file, the export log, a member of an archive, a
+    // file that is not text, a reference file.
+    if let Some(id) = text_file {
+        send(app, PidBackupMsg::Select(id)).unwrap();
+        audit.shot(app, "text-file");
+    }
+    if let Some(at) = index.files.iter().position(|file| file.name == "Export.log") {
+        send(app, PidBackupMsg::Select(NodeId::File(at))).unwrap();
+        audit.shot(app, "text-export-log");
+    }
+    if let Some(id) = binary_file {
+        send(app, PidBackupMsg::Select(id)).unwrap();
+        audit.shot(app, "text-not-a-text-file");
+    }
+    if let Some((at, id)) = text_member {
+        send(app, PidBackupMsg::Toggle(NodeId::File(at))).unwrap();
+        send(app, PidBackupMsg::Select(id)).unwrap();
+        audit.shot(app, "text-archive-member");
+        send(app, PidBackupMsg::Toggle(NodeId::File(at))).unwrap();
+    }
+    send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
+    if let Some((path, id)) = text_reference {
+        send(app, PidBackupMsg::Toggle(NodeId::Ref)).unwrap();
+        for depth in 1..=path.len() {
+            send(app, PidBackupMsg::Toggle(NodeId::RefDir(path[..depth].to_vec()))).unwrap();
+        }
+        send(app, PidBackupMsg::Select(id)).unwrap();
+        audit.shot(app, "text-reference-file");
+        for depth in (1..=path.len()).rev() {
+            send(app, PidBackupMsg::Toggle(NodeId::RefDir(path[..depth].to_vec()))).unwrap();
+        }
+        send(app, PidBackupMsg::Toggle(NodeId::Ref)).unwrap();
+    }
+    send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
 }
 
 fn millis(duration: Duration) -> String {
@@ -222,6 +569,70 @@ fn walk_index(
         send(app, PidBackupMsg::Select(NodeId::File(at))).unwrap();
         audit.shot(app, "file-missing");
     }
+
+    // What the sections hang under the backup files: the manifest's parts,
+    // and whatever later ones add.
+    audit.line("== sections under the backup files ==");
+    let mut nodes = 0;
+    for (at, file) in index.files.iter().enumerate() {
+        let host = NodeId::File(at);
+        let hosted = visible_rows(&app.pid_backup_browser)
+            .iter()
+            .any(|row| row.id == host && row.expandable && file.members.is_empty());
+        if !hosted {
+            continue;
+        }
+        audit.line(format!("  {}", file.name));
+        nodes += walk_sections(app, audit, &host, empty);
+    }
+    audit.line(format!("  {nodes} section node(s), each with details"));
+    // The manifest's parts, drawn.
+    if let Some(at) = index
+        .files
+        .iter()
+        .position(|file| file.kind == crate::io::pid_backup_browse::FileKind::Manifest)
+    {
+        let host = NodeId::File(at);
+        let section_row = |app: &OpenCADStudio, nth: usize| -> Option<Row> {
+            let rows = visible_rows(&app.pid_backup_browser);
+            let at = rows.iter().position(|row| row.id == host)?;
+            let depth = rows[at].depth;
+            rows[at + 1..]
+                .iter()
+                .take_while(|row| row.depth > depth)
+                .filter(|row| row.depth == depth + 1)
+                .nth(nth)
+                .cloned()
+        };
+        send(app, PidBackupMsg::Toggle(host.clone())).unwrap();
+        for (nth, name) in [
+            (0, "manifest-summary"),
+            (2, "manifest-file-register"),
+            (3, "manifest-connections"),
+        ] {
+            if let Some(row) = section_row(app, nth) {
+                send(app, PidBackupMsg::Select(row.id)).unwrap();
+                audit.shot(app, name);
+            }
+        }
+        if let Some(objects) = section_row(app, 1) {
+            // The walk above left it open.
+            if !objects.expanded {
+                send(app, PidBackupMsg::Toggle(objects.id.clone())).unwrap();
+            }
+            let rows = visible_rows(&app.pid_backup_browser);
+            if let Some(tables) = rows
+                .iter()
+                .position(|row| row.id == objects.id)
+                .and_then(|at| rows.get(at + 1))
+            {
+                send(app, PidBackupMsg::Select(tables.id.clone())).unwrap();
+                audit.shot(app, "manifest-tables");
+            }
+            send(app, PidBackupMsg::Toggle(objects.id)).unwrap();
+        }
+        send(app, PidBackupMsg::Toggle(host)).unwrap();
+    }
     send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
 
     // The reference data tree.
@@ -259,7 +670,12 @@ fn walk_index(
         send(app, PidBackupMsg::Select(NodeId::RefDir(first.clone()))).unwrap();
     }
     audit.shot(app, "ref-open");
+    if let Some(first) = dirs.first() {
+        send(app, PidBackupMsg::Toggle(NodeId::RefDir(first.clone()))).unwrap();
+    }
     send(app, PidBackupMsg::Toggle(NodeId::Ref)).unwrap();
+
+    walk_text(app, audit, index, empty);
 }
 
 #[test]
@@ -686,6 +1102,58 @@ fn a_real_backup_is_walked_node_by_node() {
         millis(slowest_import.0)
     ));
 
+    // ── Credentials ──────────────────────────────────────────────────────
+    // A manifest carries passwords: obfuscated ones, and one in clear text
+    // in the export command. None may be anywhere a person, a script or a
+    // log could read it. Which value turned up is not printed either.
+    let credentials = manifest_credentials(&index.backup_root);
+    // The check has teeth only if the values are what the file holds: each
+    // must be found in the manifest's own text.
+    if let Ok(bytes) = std::fs::read(index.backup_root.join("Manifest.txt")) {
+        let raw = if bytes.starts_with(&[0xFF, 0xFE]) {
+            let units: Vec<u16> = bytes[2..]
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
+            String::from_utf16_lossy(&units)
+        } else {
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        assert!(
+            credentials.iter().all(|(_, value)| raw.contains(value.as_str())),
+            "a value the walk looks for is not in Manifest.txt"
+        );
+    }
+    let (shown, shown_nodes) = SHOWN.with(|shown| shown.borrow().clone());
+    let places = [
+        ("the details of a node", shown),
+        ("the report", audit.report.join("\n")),
+        (
+            "the command line",
+            app.command_line
+                .history
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        ("the index", format!("{index:?}")),
+        ("the panel's state", format!("{:?}", app.pid_backup_browser)),
+    ];
+    let mut leaked: Vec<String> = Vec::new();
+    for (key, value) in &credentials {
+        for (place, text) in &places {
+            if text.contains(value.as_str()) {
+                leaked.push(format!("a {key} value in {place}"));
+            }
+        }
+    }
+    audit.line(format!(
+        "== credentials: {} value(s) of Manifest.txt looked for in the details of {shown_nodes} node(s), the report, the command line, the index and the panel's state: {} found ==",
+        credentials.len(),
+        leaked.len()
+    ));
+
     // ── Closing ──────────────────────────────────────────────────────────
     send(&mut app, PidBackupMsg::Close).unwrap();
     assert!(visible_rows(&app.pid_backup_browser).is_empty());
@@ -719,4 +1187,5 @@ fn a_real_backup_is_walked_node_by_node() {
         silent.is_empty(),
         "drawings whose items failed to read without saying so: {silent:?}"
     );
+    assert!(leaked.is_empty(), "credentials shown: {leaked:?}");
 }

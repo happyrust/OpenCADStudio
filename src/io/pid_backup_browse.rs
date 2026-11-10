@@ -22,6 +22,9 @@
 //! is [`load_items`], read on demand when the panel first expands a drawing.
 
 pub mod labels;
+pub mod loose_files;
+pub mod manifest;
+pub mod text_file;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -47,7 +50,7 @@ const REF_SEARCH_DEPTH: usize = 16;
 const REFDATA_SCHEMA: u32 = 4;
 
 /// One backup, indexed for the browser panel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BackupIndex {
     /// The zip or folder the user picked.
     pub source: PathBuf,
@@ -70,6 +73,25 @@ pub struct BackupIndex {
     pub ref_tree: RefNode,
     /// Everything the panel should tell the user went wrong or was skipped.
     pub warnings: Vec<String>,
+    /// All of `Manifest.txt`, sorted for the panel, its credentials hidden.
+    pub manifest_model: Option<manifest::ManifestModel>,
+    /// The folder [`BackupIndex::ref_tree`] was read from.
+    pub ref_root: PathBuf,
+}
+
+impl BackupIndex {
+    /// Where file `file` of the `Ref` directory at `dirs` -- the child
+    /// indices from the tree's root -- is on disk.
+    pub fn ref_file_path(&self, dirs: &[usize], file: usize) -> Option<PathBuf> {
+        let mut node = &self.ref_tree;
+        let mut path = self.ref_root.clone();
+        for at in dirs {
+            node = node.dirs.get(*at)?;
+            path.push(&node.name);
+        }
+        path.push(&node.files.get(file)?.name);
+        Some(path)
+    }
 }
 
 /// The `Manifest.txt` fields a backup always carries.
@@ -83,11 +105,12 @@ pub struct ManifestSummary {
 }
 
 /// One file in the backup root, with its format and archive members.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BackupFile {
     /// File name as it appears on disk.
     pub name: String,
-    /// What the file is: `Manifest`, `Export.dmp`, `RefData` or `PlantData`.
+    /// What the file is: `Manifest`, `Export.dmp`, `RefData`, `PlantData`,
+    /// or a file the export left beside them.
     pub kind: FileKind,
     /// Human-readable format, e.g. `Oracle exp (EXPORT:V12.01.00)`.
     pub format: String,
@@ -100,15 +123,22 @@ pub struct BackupFile {
     /// `true` for an archive `Manifest.txt` names but the backup does not
     /// carry: the export logged the file as failed and wrote nothing.
     pub missing: bool,
+    /// The manifest's `File` line for this file: what it was on the plant's
+    /// server before the backup stored it under a number.
+    pub record: Option<manifest::FileRecord>,
 }
 
 /// Which of the backup's file families a [`BackupFile`] belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum FileKind {
+    #[default]
     Manifest,
     ExportDump,
     RefData,
     PlantData,
+    /// A file of the backup folder that is none of the above: the dump's
+    /// log, the plant's configuration (see [`loose_files`]).
+    Other,
 }
 
 /// One node of the plant-group (or, degraded, folder) tree.
@@ -204,8 +234,16 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
         .map_err(|error| crate::tf!("cannot scan {}: {}", backup_root.display(), error))?;
 
     let mut warnings = Vec::new();
-    let files = describe_files(&backup_root, &scan, &mut warnings);
+    let mut files = describe_files(&backup_root, &scan, &mut warnings);
     let manifest = scan.manifest.as_ref().map(manifest_summary);
+    let manifest_model = scan.manifest.as_ref().map(manifest::manifest_model);
+    if let Some(model) = &manifest_model {
+        attach_file_records(&mut files, model);
+    }
+    // What the export left beside its numbered files.
+    let loose = loose_files::loose_files(&backup_root, &files);
+    let at = loose_files::insert_at(&files);
+    files.splice(at..at, loose);
 
     let mut drawings = Vec::new();
     let mut group_paths = Vec::new();
@@ -240,11 +278,13 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
     // A backup folder carries its own `Ref`; a restore of an archive has one
     // copied beside the drawings, which is the one to show when the backup
     // root has none.
-    let mut ref_tree = read_ref_tree(&backup_root.join("Ref"));
+    let mut ref_root = backup_root.join("Ref");
+    let mut ref_tree = read_ref_tree(&ref_root);
     if ref_tree.dirs.is_empty() && ref_tree.files.is_empty() {
         let restored_ref = restored.root.join("Ref");
         if restored_ref.is_dir() {
             ref_tree = read_ref_tree(&restored_ref);
+            ref_root = restored_ref;
         }
     }
 
@@ -259,7 +299,35 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
         drawings,
         ref_tree,
         warnings,
+        manifest_model,
+        ref_root,
     })
+}
+
+/// Tell each backup file what the manifest says it is. A single file stored
+/// under a number (`RefData~4~703` is `exportlayer.xlsx`) takes its format
+/// from its real name, and has no members: what a zip listing finds inside
+/// an `.xlsx` are the parts of one document, not files of the backup.
+fn attach_file_records(files: &mut [BackupFile], model: &manifest::ManifestModel) {
+    for record in &model.files {
+        let name = record
+            .stored_name()
+            .map(str::to_string)
+            .unwrap_or_else(|| record.expected_name());
+        let Some(file) = files
+            .iter_mut()
+            .find(|file| file.name.eq_ignore_ascii_case(&name))
+        else {
+            continue;
+        };
+        if record.backed_up && record.kind == manifest::FileRecordKind::SingleFile {
+            if let Some(format) = manifest::format_of(&record.original) {
+                file.format = format;
+            }
+            file.members.clear();
+        }
+        file.record = Some(record.clone());
+    }
 }
 
 /// Whether `dir` looks like the folder of a backup: it holds the manifest, the
@@ -337,6 +405,7 @@ fn describe_files(
             members: Vec::new(),
             version_line: None,
             missing: false,
+            ..BackupFile::default()
         });
     }
     if let Some(export) = &scan.export {
@@ -352,6 +421,7 @@ fn describe_files(
             members,
             version_line: None,
             missing: false,
+            ..BackupFile::default()
         });
     }
     for plant in &scan.plant_data {
@@ -364,6 +434,7 @@ fn describe_files(
             members,
             version_line: None,
             missing: false,
+            ..BackupFile::default()
         });
     }
     if let Some(manifest) = &scan.manifest {
@@ -437,6 +508,7 @@ fn declared_refdata(
             members: Vec::new(),
             version_line: None,
             missing: true,
+            ..BackupFile::default()
         });
     }
     missing
@@ -461,6 +533,7 @@ fn export_file(export: &ExportDumpScan) -> BackupFile {
         members: Vec::new(),
         version_line,
         missing: false,
+        ..BackupFile::default()
     }
 }
 
@@ -1550,6 +1623,67 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("RefData~4~824")), "{:?}", index.warnings);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `RefData~4~703` is a spreadsheet: one file under another name, and a
+    /// zip only in the sense every `.xlsx` is one. The manifest says so, and
+    /// the index believes it rather than the bytes.
+    #[test]
+    fn a_file_stored_under_a_number_is_named_and_typed_by_the_manifest() {
+        let root = scratch("file-records");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(
+            backup.join("Manifest.txt"),
+            "Name<<|>>SQPlant\n\
+             DBPwds<<|>>Zz#####a-made-up-obfuscated-value#####\n\
+             File<<|>>4<<|>>1<<|>>681<<|>>20681<<|>>\\\\host\\P\\Ref\\Symbols<<|>>1<<|>>RefData~4~681.zip\n\
+             FileSize<<|>>4<<|>>681<<|>>1<<|>>1<<|>>40960\n\
+             File<<|>>4<<|>>2<<|>>703<<|>>20703<<|>>\\\\host\\P\\Ref\\exportlayer.xlsx<<|>>1<<|>>RefData~4~703\n\
+             File<<|>>4<<|>>2<<|>>824<<|>>20824<<|>>\\\\host\\P\\Ref\\Jacket.XML<<|>>2<<|>>Failed to access file.\n",
+        )
+        .unwrap();
+        write_zip(&backup.join("RefData~4~681.zip"), &[("Symbols/valve.sym", b"s")]);
+        write_zip(
+            &backup.join("RefData~4~703"),
+            &[("[Content_Types].xml", b"x"), ("xl/workbook.xml", b"y")],
+        );
+        let index = build_index(&backup, None).unwrap();
+        let file = |name: &str| {
+            index
+                .files
+                .iter()
+                .find(|file| file.name == name)
+                .unwrap_or_else(|| panic!("{name} is listed"))
+        };
+
+        let sheet = file("RefData~4~703");
+        assert_eq!(sheet.format, "XLSX");
+        assert!(sheet.members.is_empty(), "the parts of a document are not members");
+        assert_eq!(
+            sheet.record.as_ref().map(|record| record.original.as_str()),
+            Some("Ref\\exportlayer.xlsx")
+        );
+        // A folder is the archive it looks like.
+        let symbols = file("RefData~4~681.zip");
+        assert_eq!(symbols.format, "Zip");
+        assert_eq!(symbols.members, ["Symbols/valve.sym"]);
+        let record = symbols.record.as_ref().expect("the manifest names it");
+        assert_eq!(record.original, "Ref\\Symbols");
+        assert_eq!(record.bytes, Some(40960));
+        // The file the backup failed to read is known by what it was, too.
+        let missing = file("RefData~4~824");
+        assert!(missing.missing);
+        assert_eq!(
+            missing.record.as_ref().map(|record| record.original.as_str()),
+            Some("Ref\\Jacket.XML")
+        );
+        // The whole manifest is in the index, minus its credentials.
+        let model = index.manifest_model.as_ref().expect("the manifest's model");
+        assert_eq!(model.files.len(), 3);
+        assert_eq!(model.hidden, 1);
+        assert!(!format!("{index:?}").contains("a-made-up-obfuscated-value"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

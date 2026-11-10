@@ -25,7 +25,9 @@
 mod drawn_tests;
 mod goto;
 pub mod grid;
+mod manifest;
 mod section;
+mod text_preview;
 
 pub use goto::take_outcome as take_goto_outcome;
 pub use section::{SectionData, SectionLoad};
@@ -413,6 +415,20 @@ fn group_label(name: &str) -> String {
     }
 }
 
+/// A backup file's row: the name it is stored under and, when the manifest
+/// says what it was on the plant's server, that (`RefData~4~680 —
+/// Ref\rules.rul`). The stored name alone tells no one what the file is.
+fn file_label(file: &crate::io::pid_backup_browse::BackupFile) -> String {
+    match file
+        .record
+        .as_ref()
+        .filter(|record| !record.original.is_empty())
+    {
+        Some(record) => format!("{} — {}", file.name, record.original),
+        None => file.name.clone(),
+    }
+}
+
 fn push_files(state: &PidBackupBrowser, index: &BackupIndex, rows: &mut Vec<Row>) {
     let expanded = state.expanded.contains(&NodeId::Files);
     rows.push(Row {
@@ -432,7 +448,7 @@ fn push_files(state: &PidBackupBrowser, index: &BackupIndex, rows: &mut Vec<Row>
         rows.push(Row {
             id,
             depth: 2,
-            label: file.name.clone(),
+            label: file_label(file),
             expandable: !file.members.is_empty(),
             expanded: open,
             disabled: false,
@@ -905,7 +921,12 @@ impl DetailLine {
                 let titles = join(&mut table.columns().iter().map(|column| column.title.as_str()));
                 let mut pairs = vec![(titles, row_count_label(table.rows().len()))];
                 for at in 0..table.rows().len() {
-                    let rest = join(&mut (1..table.columns().len()).map(|column| table.cell(at, column)));
+                    // A row shorter than the header ends where its cells do.
+                    let filled = (1..table.columns().len())
+                        .rev()
+                        .find(|column| !table.cell(at, *column).is_empty())
+                        .map_or(0, |last| last + 1);
+                    let rest = join(&mut (1..filled.max(1)).map(|column| table.cell(at, column)));
                     pairs.push((table.cell(at, 0).to_string(), rest));
                 }
                 pairs
@@ -986,11 +1007,17 @@ fn details<'a>(state: &'a PidBackupBrowser, width: f32) -> Element<'a, Message> 
             .height(Fill)
             .into();
     };
+    // How many rows a table of data has. The lines of a file say how many
+    // they are among the fields above them.
+    if table.is_sortable() {
+        body = body.push(
+            text(row_count_label(table.rows().len()))
+                .size(DETAIL_TEXT)
+                .style(muted),
+        );
+    }
     column![
         body,
-        text(row_count_label(table.rows().len()))
-            .size(DETAIL_TEXT)
-            .style(muted),
         grid::view(&table, &state.grid, grid_key(id), |msg| {
             PidBackupMsg::Grid(msg).message()
         }),
@@ -1072,10 +1099,15 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
                     t!("File size").into_owned(),
                     human_size(file.size),
                 ));
-                lines.push(DetailLine::Field(
-                    t!("Members").into_owned(),
-                    file.members.len().to_string(),
-                ));
+                // Only an archive has members: a count of zero under a
+                // manifest or a single reference file says nothing.
+                if !file.members.is_empty() || file.format.to_ascii_lowercase().starts_with("zip") {
+                    lines.push(DetailLine::Field(
+                        t!("Members").into_owned(),
+                        file.members.len().to_string(),
+                    ));
+                }
+                manifest::file_record_lines(index, *at, &mut lines);
                 if let Some(line) = &file.version_line {
                     lines.push(DetailLine::Field(
                         t!("Version line").into_owned(),
@@ -1405,6 +1437,7 @@ mod tests {
             members: members.iter().map(|m| m.to_string()).collect(),
             version_line: None,
             missing: false,
+            ..BackupFile::default()
         }
     }
 
@@ -1458,6 +1491,7 @@ mod tests {
             ],
             ref_tree,
             warnings: vec!["no usable Export.dmp".to_string()],
+            ..BackupIndex::default()
         })
     }
 
@@ -2022,6 +2056,7 @@ mod tests {
                     members: Vec::new(),
                     version_line: Some("EXPORT:V12.01.00".to_string()),
                     missing: false,
+                    ..BackupFile::default()
                 },
                 BackupFile {
                     name: "PlantData~2~711.zip".to_string(),
@@ -2031,6 +2066,7 @@ mod tests {
                     members: vec!["00/00/a.pid".to_string(), "00/00/b.pid".to_string()],
                     version_line: None,
                     missing: false,
+                    ..BackupFile::default()
                 },
                 BackupFile {
                     name: "RefData~4~824.zip".to_string(),
@@ -2040,6 +2076,7 @@ mod tests {
                     members: Vec::new(),
                     version_line: None,
                     missing: true,
+                    ..BackupFile::default()
                 },
             ],
             plant_groups: vec![root, unregistered, ungrouped],
@@ -2091,6 +2128,7 @@ mod tests {
                 "no usable Export.dmp".to_string(),
                 "one declared file is missing".to_string(),
             ],
+            ..BackupIndex::default()
         })
     }
 
@@ -2189,7 +2227,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_details_show_its_name_format_size_members_and_version_line() {
+    fn a_dump_file_details_show_its_name_format_size_and_version_line() {
         let state = detail_state();
         assert_eq!(
             detail_rows_of(&state, &NodeId::File(0)),
@@ -2200,13 +2238,12 @@ mod tests {
                     plain("Oracle exp (EXPORT:V12.01.00)")
                 ),
                 (t!("File size").into_owned(), human_size(2048)),
-                (t!("Members").into_owned(), plain("0")),
                 (
                     t!("Version line").into_owned(),
                     plain("EXPORT:V12.01.00")
                 ),
             ],
-            "the dump carries its EXPORT line"
+            "the dump carries its EXPORT line, and is no archive: it counts no members"
         );
     }
 

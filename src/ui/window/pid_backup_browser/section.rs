@@ -19,18 +19,16 @@
 //! runs [`Section::load`] on a worker thread, and the result comes back as
 //! [`super::PidBackupMsg::SectionLoaded`] for the section to draw.
 
-// Nothing is registered yet, so outside the tests half of this is unused.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{DetailLine, Effect, NodeId, PidBackupBrowser, Row};
+use super::{manifest, text_preview, DetailLine, Effect, NodeId, PidBackupBrowser, Row};
 use crate::io::pid_backup_browse::BackupIndex;
 
 /// The sections of the browser, in the order their rows and detail lines
 /// appear. A section's position here is the slot its nodes carry.
-pub(super) static SECTIONS: &[&dyn Section] = &[];
+pub(super) static SECTIONS: &[&dyn Section] =
+    &[&manifest::ManifestSection, &text_preview::TextPreview];
 
 /// The sections a panel state works with: [`SECTIONS`], unless a test gave
 /// the state its own.
@@ -92,7 +90,8 @@ pub(super) struct Cx<'a> {
     /// The section's own slot, for the ids of its nodes.
     pub slot: usize,
     /// The search box's text, trimmed and lowercased; empty when nothing
-    /// narrows the tree.
+    /// narrows the tree. No section of the panel narrows its rows by it yet.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub filter: &'a str,
 }
 
@@ -174,6 +173,15 @@ pub(super) trait Section: Sync {
     /// alone: the panel state stays with the UI.
     fn load(&self, _index: &BackupIndex, _node: &NodeId) -> Result<SectionData, String> {
         Err(crate::t!("this node has nothing to read").into_owned())
+    }
+
+    /// Whether what this section read is kept for the selected node only. A
+    /// section that reads something big about every node the user visits
+    /// (the text of a file) says so: the panel lets go of what it read about
+    /// the others as the selection moves on, and reads again on the way
+    /// back.
+    fn keeps_only_selected(&self) -> bool {
+        false
     }
 }
 
@@ -264,6 +272,15 @@ pub(super) fn after(state: &mut PidBackupBrowser, kind: EventKind, node: &NodeId
     let Some(index) = state.index().cloned() else {
         return Effect::None;
     };
+    // The selection moved on: what was read for the node it left goes.
+    if kind == EventKind::Selected {
+        state.section_data.retain(|(slot, kept), _| {
+            kept == node
+                || !sections
+                    .get(*slot)
+                    .is_some_and(|section| section.keeps_only_selected())
+        });
+    }
     let filter = filter_of(state);
     let event = Event { kind, node };
     let mut effect = Effect::None;
@@ -299,7 +316,8 @@ fn request(state: &mut PidBackupBrowser, slot: usize, node: NodeId) -> Effect {
 }
 
 /// File what a worker thread read. A read started for a backup the panel has
-/// since let go of is dropped: its node would name something else by now.
+/// since let go of is dropped: its node would name something else by now. So
+/// is one whose node is no longer waited for.
 pub(super) fn loaded(
     state: &mut PidBackupBrowser,
     generation: u64,
@@ -310,11 +328,17 @@ pub(super) fn loaded(
     if generation != state.generation {
         return;
     }
+    // Nobody waits for it either when the selection left the node of a
+    // section that keeps only the selected one's data.
+    let key = (section, node);
+    if !state.section_data.contains_key(&key) {
+        return;
+    }
     let load = match result {
         Ok(data) => SectionLoad::Ready(data),
         Err(error) => SectionLoad::Failed(error),
     };
-    state.section_data.insert((section, node), load);
+    state.section_data.insert(key, load);
 }
 
 /// Two effects as one.
@@ -370,10 +394,16 @@ pub(super) async fn load_in_background(
 pub(crate) mod fake {
     use super::*;
 
-    pub(crate) struct Fake;
+    pub(crate) struct Fake {
+        /// Whether it keeps what it read for the selected node only.
+        forgetful: bool,
+    }
 
     /// The registry a test state uses instead of [`SECTIONS`].
-    pub(crate) static FAKE_SECTIONS: &[&dyn Section] = &[&Fake];
+    pub(crate) static FAKE_SECTIONS: &[&dyn Section] = &[&Fake { forgetful: false }];
+
+    /// The same section, keeping what it read for the selected node only.
+    pub(crate) static FORGETFUL_SECTIONS: &[&dyn Section] = &[&Fake { forgetful: true }];
 
     /// What [`Fake`] reads for its first node.
     pub(crate) const LOADED: &str = "read off the UI thread";
@@ -463,12 +493,16 @@ pub(crate) mod fake {
                 _ => Err("not a fake node".to_string()),
             }
         }
+
+        fn keeps_only_selected(&self) -> bool {
+            self.forgetful
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fake::{FAILING, FAKE_SECTIONS, LOADED};
+    use super::fake::{FAILING, FAKE_SECTIONS, FORGETFUL_SECTIONS, LOADED};
     use super::*;
     use crate::app::Message;
     use crate::ui::dock::Chrome;
@@ -678,6 +712,95 @@ mod tests {
             detail_rows(&state, &node),
             [("fake path".to_string(), "[1, 0]".to_string())]
         );
+    }
+
+    /// Select `node` and hand the panel what its section reads for it.
+    fn select_and_read(state: &mut PidBackupBrowser, node: &NodeId) {
+        let Effect::LoadSection {
+            generation,
+            section,
+            node: asked,
+        } = update(state, PidBackupMsg::Select(node.clone()))
+        else {
+            panic!("selecting {node:?} asks for its data");
+        };
+        let index = state.index().cloned().expect("a ready index");
+        let result = iced::futures::executor::block_on(load_in_background(
+            state.sections,
+            index,
+            section,
+            asked.clone(),
+        ));
+        update(
+            state,
+            PidBackupMsg::SectionLoaded {
+                generation,
+                section,
+                node: asked,
+                result,
+            },
+        );
+    }
+
+    fn has_data(state: &PidBackupBrowser, node: &NodeId) -> bool {
+        detail_rows(state, node)
+            .iter()
+            .any(|(key, _)| key == "fake data")
+    }
+
+    #[test]
+    fn a_section_keeps_what_it_read_unless_it_says_otherwise() {
+        let (first, second) = (fake(&[1, 0]), fake(&[0, 0]));
+        // The default: both nodes keep their data, and neither is read again.
+        let mut state = ready();
+        select_and_read(&mut state, &first);
+        select_and_read(&mut state, &second);
+        assert!(has_data(&state, &first) && has_data(&state, &second));
+        assert_eq!(update(&mut state, PidBackupMsg::Select(first.clone())), Effect::None);
+
+        // A section that keeps the selected node's data only: the first
+        // node's goes when the second is selected, and is read again on the
+        // way back.
+        let mut state = ready();
+        state.sections = Registry(FORGETFUL_SECTIONS);
+        select_and_read(&mut state, &first);
+        assert!(has_data(&state, &first));
+        // Selecting the node it is on keeps what it has.
+        assert_eq!(update(&mut state, PidBackupMsg::Select(first.clone())), Effect::None);
+        assert!(has_data(&state, &first));
+        select_and_read(&mut state, &second);
+        assert!(!has_data(&state, &first) && has_data(&state, &second));
+        assert_eq!(state.section_data.len(), 1);
+        select_and_read(&mut state, &first);
+        assert!(has_data(&state, &first) && !has_data(&state, &second));
+        // A node no section reads anything for lets go of it too.
+        update(&mut state, PidBackupMsg::Select(NodeId::Files));
+        assert!(state.section_data.is_empty());
+    }
+
+    #[test]
+    fn a_read_that_lands_after_the_selection_left_is_not_kept() {
+        let (first, second) = (fake(&[1, 0]), fake(&[0, 0]));
+        let mut state = ready();
+        state.sections = Registry(FORGETFUL_SECTIONS);
+        let Effect::LoadSection { generation, .. } =
+            update(&mut state, PidBackupMsg::Select(first.clone()))
+        else {
+            panic!("selecting the node asks for its data");
+        };
+        // The user moves on while the first read is in flight.
+        select_and_read(&mut state, &second);
+        update(
+            &mut state,
+            PidBackupMsg::SectionLoaded {
+                generation,
+                section: 0,
+                node: first.clone(),
+                result: Ok(SectionData::new("late".to_string())),
+            },
+        );
+        assert!(!has_data(&state, &first) && has_data(&state, &second));
+        assert_eq!(state.section_data.len(), 1);
     }
 
     #[test]
