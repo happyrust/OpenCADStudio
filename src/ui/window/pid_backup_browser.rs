@@ -22,6 +22,7 @@
 //! rows under a row of the tree and states the details of its nodes.
 
 mod database;
+mod datamap;
 mod drawing_data;
 #[cfg(test)]
 mod drawn_tests;

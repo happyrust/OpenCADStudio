@@ -372,6 +372,253 @@ fn walk_database(app: &mut OpenCADStudio, audit: &mut Audit, index: &BackupIndex
     send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
 }
 
+/// The tables the reader has a view of (`pid_backup_browser::database`).
+const TYPED_TABLES: [&str; 6] = [
+    "T_PIPERUN",
+    "T_PIPINGPOINT",
+    "T_SIGNALPOINT",
+    "T_NOZZLE",
+    "T_ITEMNOTE",
+    "CODELISTS",
+];
+
+/// Where what a section reads about `node` is.
+fn section_load(app: &OpenCADStudio, node: &NodeId) -> Option<SectionLoad> {
+    app.pid_backup_browser
+        .section_data
+        .iter()
+        .find(|((_, found), _)| found == node)
+        .map(|(_, load)| load.clone())
+}
+
+/// The views the reader has of the dump's tables. Each typed table is
+/// selected, which reads the dump the first time: it then shows its rows,
+/// or says why the reader has none. A dump the panel does not read says so
+/// on every one of them, and nothing is read.
+fn walk_dump_views(
+    app: &mut OpenCADStudio,
+    audit: &mut Audit,
+    index: &BackupIndex,
+    empty: &mut Vec<String>,
+) {
+    let Some(catalog) = &index.table_catalog else {
+        return;
+    };
+    let Some(dump) = index
+        .files
+        .iter()
+        .position(|file| file.kind == crate::io::pid_backup_browse::FileKind::ExportDump)
+        .map(NodeId::File)
+    else {
+        return;
+    };
+    let unreadable = index.dump_unreadable();
+    audit.line(format!(
+        "== views of the database: the {} tables the reader knows{} ==",
+        TYPED_TABLES.len(),
+        unreadable
+            .as_ref()
+            .map_or(String::new(), |why| format!("; not read: {why}"))
+    ));
+    send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
+    send(app, PidBackupMsg::Toggle(dump.clone())).unwrap();
+    let schemas = rows_under(app, &dump);
+    let mut read = 0;
+    let mut refused = 0;
+    for name in TYPED_TABLES {
+        let Some(at) = catalog.first_schema_with(name) else {
+            audit.line(format!("  {name}: the backup names no such table"));
+            continue;
+        };
+        let schema_row = schemas[at].clone();
+        send(app, PidBackupMsg::Toggle(schema_row.id.clone())).unwrap();
+        let tables = rows_under(app, &schema_row.id);
+        let table_at = catalog.schemas[at]
+            .tables
+            .iter()
+            .position(|table| table.name.eq_ignore_ascii_case(name))
+            .expect("the schema has the table");
+        let row = tables[table_at].clone();
+        let started = Instant::now();
+        send(app, PidBackupMsg::Select(row.id.clone())).unwrap();
+        let took = started.elapsed();
+        let details = details_of(app, &row.id, empty);
+        // The lines after the catalog's own: schema, name, and the count
+        // when the log has one.
+        let own = details
+            .iter()
+            .position(|(key, _)| *key == crate::t!("Row count"))
+            .or_else(|| {
+                details
+                    .iter()
+                    .position(|(key, _)| *key == crate::t!("Table name"))
+            })
+            .map_or(0, |at| at + 1);
+        let shown = |text: &str| details.iter().any(|(key, _)| key == text);
+        match (section_load(app, &row.id), &unreadable) {
+            (None, Some(why)) => {
+                assert!(shown(why), "{name} does not say why the dump is not read");
+                audit.line(format!("  {}.{name}: {why}", catalog.schemas[at].name));
+            }
+            (Some(SectionLoad::Ready(_)), None) => {
+                read += 1;
+                // The view is a table: its titles, with how many rows.
+                let table = details
+                    .iter()
+                    .skip(own)
+                    .find(|(titles, _)| titles.contains(" | "))
+                    .unwrap_or_else(|| panic!("{name} shows no table: {details:?}"));
+                audit.line(format!(
+                    "  {}.{name}: [{}] {} (selected in {})",
+                    catalog.schemas[at].name,
+                    table.0,
+                    table.1,
+                    millis(took)
+                ));
+                for (note, _) in details
+                    .iter()
+                    .skip(own)
+                    .take_while(|(titles, _)| !titles.contains(" | "))
+                {
+                    audit.line(format!("      {note}"));
+                }
+                if matches!(name, "T_PIPERUN" | "CODELISTS") {
+                    audit.shot(app, &format!("dump-view-{}", name.to_lowercase()));
+                }
+            }
+            (Some(SectionLoad::Failed(why)), None) => {
+                refused += 1;
+                assert!(shown(&why), "{name} failed without saying so: {why}");
+                audit.line(format!("  {}.{name}: {why}", catalog.schemas[at].name));
+            }
+            (state, _) => panic!("{name} was left in {state:?}"),
+        }
+        send(app, PidBackupMsg::Toggle(schema_row.id)).unwrap();
+    }
+    if unreadable.is_none() {
+        let dump_read = index.dump_if_read().expect("selecting a view reads the dump");
+        audit.line(format!(
+            "  the dump ({} bytes) was read in {}; {read} view(s) shown, {refused} the reader has none of{}",
+            dump_read.bytes,
+            millis(dump_read.read_in),
+            dump_read
+                .partial()
+                .map_or(String::new(), |why| format!(" (not read whole: {why})"))
+        ));
+        // A dump the reader followed to the end has every view.
+        if dump_read.partial().is_none() {
+            assert_eq!(refused, 0, "a view is missing of a dump that was read whole");
+        }
+        // The dump's own details say how long the read took.
+        let details = detail_rows(&app.pid_backup_browser, &dump);
+        assert!(
+            details.iter().any(|(key, _)| *key == crate::t!("Dump read in")),
+            "the dump's details do not say it was read"
+        );
+    }
+    send(app, PidBackupMsg::Toggle(dump)).unwrap();
+    send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
+    send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
+}
+
+/// The data maps of the reference data: each file is unfolded, which reads
+/// it, and the row under it selected. It shows the enumerations the file
+/// maps, or says why it could not be read.
+fn walk_data_maps(
+    app: &mut OpenCADStudio,
+    audit: &mut Audit,
+    index: &BackupIndex,
+    empty: &mut Vec<String>,
+) {
+    // Every data map of the tree: the directories down to it, and its place.
+    fn collect(node: &RefNode, dirs: &mut Vec<usize>, found: &mut Vec<(Vec<usize>, usize, String)>) {
+        for (at, file) in node.files.iter().enumerate() {
+            if crate::io::pid_backup_browse::datamap::is_data_map(&file.name) {
+                found.push((dirs.clone(), at, file.name.clone()));
+            }
+        }
+        for (at, dir) in node.dirs.iter().enumerate() {
+            dirs.push(at);
+            collect(dir, dirs, found);
+            dirs.pop();
+        }
+    }
+    let mut maps = Vec::new();
+    collect(&index.ref_tree, &mut Vec::new(), &mut maps);
+    audit.line(format!(
+        "== data maps: {} file(s) of the reference data ==",
+        maps.len()
+    ));
+    if maps.is_empty() {
+        return;
+    }
+    // Unfold a node unless it is open already; what was unfolded here is
+    // folded again on the way out.
+    fn open(app: &mut OpenCADStudio, id: NodeId, opened: &mut Vec<NodeId>) {
+        if !app.pid_backup_browser.expanded.contains(&id) {
+            send(app, PidBackupMsg::Toggle(id.clone())).unwrap();
+            opened.push(id);
+        }
+    }
+    let mut opened: Vec<NodeId> = Vec::new();
+    open(app, NodeId::Ref, &mut opened);
+    let mut pictured = false;
+    for (dirs, file, name) in &maps {
+        for depth in 1..=dirs.len() {
+            open(app, NodeId::RefDir(dirs[..depth].to_vec()), &mut opened);
+        }
+        let host = NodeId::RefFile(dirs.clone(), *file);
+        let started = Instant::now();
+        open(app, host.clone(), &mut opened);
+        let took = started.elapsed();
+        let rows = rows_under(app, &host);
+        assert_eq!(rows.len(), 1, "the rows under {name}: {rows:?}");
+        let row = rows[0].clone();
+        send(app, PidBackupMsg::Select(row.id.clone())).unwrap();
+        let details = details_of(app, &row.id, empty);
+        match section_load(app, &row.id) {
+            Some(SectionLoad::Ready(_)) => {
+                let lists = details
+                    .iter()
+                    .find(|(key, _)| *key == crate::t!("Enumeration lists"))
+                    .map_or("?", |(_, lists)| lists.as_str());
+                audit.line(format!(
+                    "  {name}: {} of {lists} list(s), read in {}",
+                    row.label,
+                    millis(took)
+                ));
+                // The row's count is the table's.
+                if let Some((_, count)) = details.iter().find(|(titles, _)| titles.contains(" | ")) {
+                    assert!(
+                        row.label.ends_with(&format!(
+                            "({})",
+                            count.split_whitespace().next().unwrap_or_default()
+                        )),
+                        "{} shows {count}",
+                        row.label
+                    );
+                }
+                if !pictured {
+                    for (key, value) in details.iter().skip(3).take(4) {
+                        audit.line(format!("      {key} = {value}"));
+                    }
+                    audit.shot(app, "data-map-enumerations");
+                    pictured = true;
+                }
+            }
+            Some(SectionLoad::Failed(why)) => {
+                assert!(details.iter().any(|(key, _)| *key == why), "{details:?}");
+                audit.line(format!("  {name}: {why}"));
+            }
+            other => panic!("the map of {name} was left in {other:?}"),
+        }
+    }
+    for id in opened.into_iter().rev() {
+        send(app, PidBackupMsg::Toggle(id)).unwrap();
+    }
+    send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
+}
+
 /// The values of `Manifest.txt` that are credentials: every obfuscated
 /// field, the fields that hold a password by their position, and the
 /// password of a login in the export command. Read from the file itself, so
@@ -779,6 +1026,104 @@ fn walk_drawing_data(
     total.instruments_classed_by_library += stats.instruments_classed_by_library;
 }
 
+/// What the database knows of the backup's drawings, added up.
+#[derive(Default)]
+struct DatabaseTally {
+    /// Drawings whose database row was opened, and those it gave views for.
+    drawings: usize,
+    read: usize,
+    /// Rows of each view over the drawings: ports, connections, nozzles and
+    /// notes, off-page connectors, pipelines.
+    rows: [usize; 5],
+    /// Drawings a view was not there for, and the first reason given.
+    missing: [usize; 5],
+    why: [Option<String>; 5],
+    /// Drawings the read failed for altogether, and the first reason.
+    failed: usize,
+    failure: Option<String>,
+    /// How long opening the rows took together, and the slowest.
+    time: Duration,
+    slowest: (Duration, String),
+}
+
+/// The database's row under the open drawing `at`: muted and saying why
+/// when the panel does not read the dump; otherwise opened, which reads
+/// the drawing's side of the database, and every view under it visited.
+fn walk_drawing_database(
+    app: &mut OpenCADStudio,
+    index: &BackupIndex,
+    at: usize,
+    tally: &mut DatabaseTally,
+    empty: &mut Vec<String>,
+) {
+    let title = crate::t!("Ports, connections, OPC and pipelines");
+    let Some(row) = rows_under(app, &NodeId::Drawing(at))
+        .into_iter()
+        .find(|row| row.label == title)
+    else {
+        return;
+    };
+    if let Some(why) = index.dump_unreadable() {
+        assert!(!row.expandable && row.disabled, "{row:?}");
+        let details = details_of(app, &row.id, empty);
+        assert!(details.iter().any(|(key, _)| *key == why), "{details:?}");
+        return;
+    }
+    assert!(row.expandable && !row.disabled, "{row:?}");
+    tally.drawings += 1;
+    let started = Instant::now();
+    send(app, PidBackupMsg::Toggle(row.id.clone())).unwrap();
+    let took = started.elapsed();
+    tally.time += took;
+    if took > tally.slowest.0 {
+        tally.slowest = (took, index.drawings[at].name.clone());
+    }
+    let details = details_of(app, &row.id, empty);
+    match section_load(app, &row.id) {
+        Some(SectionLoad::Ready(_)) => {
+            tally.read += 1;
+            let views = rows_under(app, &row.id);
+            assert_eq!(views.len(), 5, "the views under {}: {views:?}", row.label);
+            for (view_at, view) in views.iter().enumerate() {
+                let shown = details_of(app, &view.id, empty);
+                // A view with rows carries their count in its label; one
+                // the reader has none of says why in its details.
+                let count = view
+                    .label
+                    .rsplit_once(" (")
+                    .and_then(|(_, count)| count.strip_suffix(')'))
+                    .and_then(|count| count.parse::<usize>().ok());
+                match count {
+                    Some(count) => {
+                        tally.rows[view_at] += count;
+                        if count > 0 {
+                            let stated = crate::tf!("{} row(s)", count).into_owned();
+                            assert!(
+                                shown.iter().any(|(_, rows)| *rows == stated),
+                                "{} of drawing {at}: {shown:?}",
+                                view.label
+                            );
+                        }
+                    }
+                    None => {
+                        tally.missing[view_at] += 1;
+                        let why = shown.last().map(|(why, _)| why.clone()).unwrap_or_default();
+                        assert!(!why.is_empty(), "{} of drawing {at} says nothing", view.label);
+                        tally.why[view_at].get_or_insert(why);
+                    }
+                }
+            }
+        }
+        Some(SectionLoad::Failed(why)) => {
+            tally.failed += 1;
+            assert!(details.iter().any(|(key, _)| *key == why), "{details:?}");
+            tally.failure.get_or_insert(why);
+        }
+        other => panic!("the database row of drawing {at} was left in {other:?}"),
+    }
+    send(app, PidBackupMsg::Toggle(row.id)).unwrap();
+}
+
 fn millis(duration: Duration) -> String {
     format!("{:.1} ms", duration.as_secs_f64() * 1000.0)
 }
@@ -964,6 +1309,8 @@ fn walk_index(
 
     walk_text(app, audit, index, empty);
     walk_database(app, audit, index);
+    walk_dump_views(app, audit, index, empty);
+    walk_data_maps(app, audit, index, empty);
     walk_split(app, audit, index);
 }
 
@@ -1140,6 +1487,7 @@ fn a_real_backup_is_walked_node_by_node() {
     let mut slowest = (Duration::ZERO, String::new());
     let mut item_time = Duration::ZERO;
     let mut data_tally = DataTally::default();
+    let mut database_tally = DatabaseTally::default();
     audit.line("  items per drawing (name | items | types | attributes | read):");
     for (at, drawing) in index.drawings.iter().enumerate() {
         if drawing.is_missing() {
@@ -1183,6 +1531,7 @@ fn a_real_backup_is_walked_node_by_node() {
                 total_items += items.item_count;
                 total_attributes += attributes;
                 walk_drawing_data(&app, at, &items, &mut data_tally, &mut empty);
+                walk_drawing_database(&mut app, &index, at, &mut database_tally, &mut empty);
                 if took > slowest.0 {
                     slowest = (took, drawing.name.clone());
                 }
@@ -1308,6 +1657,78 @@ fn a_real_backup_is_walked_node_by_node() {
         }
         if at != 0 {
             send(&mut app, PidBackupMsg::Toggle(NodeId::Drawing(at))).unwrap();
+        }
+    }
+
+    // ── What the database knows of the drawings ──────────────────────────
+    match index.dump_unreadable() {
+        Some(why) => audit.line(format!(
+            "== database side of the drawings: not read ({why}); the row says so under each of {} drawing(s) ==",
+            data_tally.drawings
+        )),
+        None => {
+            let tally = &database_tally;
+            audit.line(format!(
+                "== database side of the drawings: {} of {} drawing(s) read in {}, slowest {} ({}) ==",
+                tally.read,
+                tally.drawings,
+                millis(tally.time),
+                tally.slowest.1,
+                millis(tally.slowest.0)
+            ));
+            for (at, name) in ["ports", "connections", "nozzles and notes", "off-page connectors", "pipelines"]
+                .iter()
+                .enumerate()
+            {
+                audit.line(format!(
+                    "  {name}: {} row(s){}",
+                    tally.rows[at],
+                    tally.why[at].as_ref().map_or(String::new(), |why| format!(
+                        "; not there for {} drawing(s): {why}",
+                        tally.missing[at]
+                    ))
+                ));
+            }
+            if let Some(why) = &tally.failure {
+                audit.line(format!("  the read failed for {} drawing(s): {why}", tally.failed));
+            }
+            // No drawing is left without an answer.
+            assert_eq!(tally.read + tally.failed, tally.drawings);
+            // The pictures: the first drawing that has the rows.
+            if let Some(at) = data_tally.first {
+                if at != 0 {
+                    send(&mut app, PidBackupMsg::Toggle(NodeId::Drawing(at))).unwrap();
+                }
+                let title = crate::t!("Ports, connections, OPC and pipelines");
+                if let Some(row) = rows_under(&app, &NodeId::Drawing(at))
+                    .into_iter()
+                    .find(|row| row.label == title)
+                {
+                    send(&mut app, PidBackupMsg::Toggle(row.id.clone())).unwrap();
+                    send(&mut app, PidBackupMsg::Select(row.id.clone())).unwrap();
+                    audit.shot(&app, "drawing-database-open");
+                    let views = rows_under(&app, &row.id);
+                    for (view, name) in views.iter().zip([
+                        "drawing-database-ports",
+                        "drawing-database-connections",
+                        "drawing-database-relations",
+                        "drawing-database-opc",
+                        "drawing-database-pipelines",
+                    ]) {
+                        send(&mut app, PidBackupMsg::Select(view.id.clone())).unwrap();
+                        let details = detail_rows(&app.pid_backup_browser, &view.id);
+                        audit.line(format!("  {} [{} detail line(s)]", view.label, details.len()));
+                        for (key, value) in details.iter().take(4) {
+                            audit.line(format!("      {key} = {value}"));
+                        }
+                        audit.shot(&app, name);
+                    }
+                    send(&mut app, PidBackupMsg::Toggle(row.id)).unwrap();
+                }
+                if at != 0 {
+                    send(&mut app, PidBackupMsg::Toggle(NodeId::Drawing(at))).unwrap();
+                }
+            }
         }
     }
     if let Some(ItemsState::Ready(items)) = app.pid_backup_browser.items.get(&0).cloned() {
