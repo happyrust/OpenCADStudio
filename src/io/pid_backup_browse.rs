@@ -21,6 +21,8 @@
 //! What a drawing holds -- its model items and their published attributes --
 //! is [`load_items`], read on demand when the panel first expands a drawing.
 
+pub mod labels;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -752,7 +754,8 @@ pub struct DrawingItems {
     pub drawing_uid: String,
     /// The drawing name: the file stem.
     pub drawing_name: String,
-    /// Groups ordered by type name; items inside a group ordered by UID.
+    /// Groups ordered by type name; items inside a group ordered as the
+    /// tree shows them (see [`labels::label_items`]).
     pub groups: Vec<ItemGroup>,
     /// How many items the groups hold together.
     pub item_count: usize,
@@ -763,7 +766,7 @@ pub struct DrawingItems {
 pub struct ItemGroup {
     /// `ModelItemType`, e.g. `Instrument`.
     pub item_type: String,
-    /// The items of this type, UID-sorted.
+    /// The items of this type: the named ones by name, then the rest by UID.
     pub items: Vec<DrawingItem>,
 }
 
@@ -772,6 +775,9 @@ pub struct ItemGroup {
 pub struct DrawingItem {
     /// The model item UID (`ModelID`).
     pub uid: String,
+    /// What the tree calls the item: the name it publishes (`MM-222`), or
+    /// its type and number when it publishes none (`PipeRun #17`).
+    pub label: String,
     /// `ModelItemType`, repeated here so an item reads on its own.
     pub item_type: String,
     /// The published class, when the file decides it.
@@ -847,8 +853,8 @@ fn index_stopped_error() -> String {
     crate::t!("the backup index stopped before it finished").into_owned()
 }
 
-/// Group a loaded drawing's items by `ModelItemType`, UID-sorted inside each
-/// group and type-name sorted between them.
+/// Group a loaded drawing's items by `ModelItemType`: type-name sorted
+/// between the groups, and inside each ordered and labelled for the tree.
 pub fn group_items(drawing: PidPublishDrawing) -> DrawingItems {
     let (groups, item_count) = group_published_items(drawing.items);
     DrawingItems {
@@ -870,6 +876,8 @@ pub fn group_published_items(items: Vec<PidPublishItem>) -> (Vec<ItemGroup>, usi
             .or_default()
             .push(DrawingItem {
                 uid: item.uid,
+                // Set with the group's order, once the whole group is known.
+                label: String::new(),
                 item_type: item.model_item_type,
                 class: item.class.map(str::to_string),
                 attributes: item
@@ -886,7 +894,7 @@ pub fn group_published_items(items: Vec<PidPublishItem>) -> (Vec<ItemGroup>, usi
     let groups = by_type
         .into_iter()
         .map(|(item_type, mut items)| {
-            items.sort_by(|left, right| left.uid.cmp(&right.uid));
+            labels::label_items(&item_type, &mut items);
             ItemGroup { item_type, items }
         })
         .collect();
@@ -1481,6 +1489,15 @@ mod tests {
         );
         assert_eq!(groups[0].items[0].class, None);
         assert_eq!(groups[0].items[1].class.as_deref(), Some("PIDInstrument"));
+        // None of them publishes a name: each is its type and its number.
+        assert_eq!(
+            groups[0]
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Instrument #1", "Instrument #2", "Instrument #3"]
+        );
         assert_eq!(groups[1].item_type, "Pipe");
         assert_eq!(
             groups[1]

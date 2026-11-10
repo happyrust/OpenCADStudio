@@ -7393,6 +7393,8 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "the backup data read stopped before it finished" => Some(("pid-backup", "section-read-stopped")),
         "there is no \"{}\" under \"{}\"" => Some(("pid-backup", "no-such-node")),
         "PIDBACKUPOPEN: selected {}" => Some(("pid-backup", "selected-node")),
+        "Item name" => Some(("pid-backup", "item-name")),
+        "{} row(s)" => Some(("pid-backup", "row-count")),
         _ => None,
     }
 }

@@ -9027,6 +9027,8 @@ pid-backup =
     .section-read-stopped = 备份数据读取在完成前停止
     .no-such-node = “__ocs_fmt_1__”下没有“__ocs_fmt_0__”
     .selected-node = PIDBACKUPOPEN：已选中 __ocs_fmt_0__
+    .item-name = 图元名称
+    .row-count = __ocs_fmt_0__ 行
 
 block-flip-frame-feedback =
     .unavailable = 块参数坐标框不可用。

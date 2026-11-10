@@ -379,9 +379,16 @@ fn a_real_backup_is_walked_node_by_node() {
 
     // ── Every drawing's items ────────────────────────────────────────────
     let mut item_types: BTreeMap<String, usize> = BTreeMap::new();
+    // What the items of each type publish: how many carry each attribute,
+    // which is what a row's label and a search by tag can be built on.
+    let mut attribute_keys: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     let mut total_items = 0;
     let mut total_attributes = 0;
     let mut without_attributes = 0;
+    // How the rows of the items read: by the name the item publishes, or by
+    // its type and number when it publishes none.
+    let mut named = 0;
+    let mut numbered = 0;
     let mut failed: Vec<String> = Vec::new();
     let mut silent: Vec<String> = Vec::new();
     let mut slowest = (Duration::ZERO, String::new());
@@ -404,6 +411,23 @@ fn a_real_backup_is_walked_node_by_node() {
                     for (item_at, item) in group.items.iter().enumerate() {
                         details_of(&app, &NodeId::Item(at, group_at, item_at), &mut empty);
                         attributes += item.attributes.len();
+                        if item.label.starts_with(&format!("{} #", group.item_type)) {
+                            numbered += 1;
+                        } else {
+                            named += 1;
+                        }
+                        assert!(
+                            !item.label.is_empty() && item.label != item.uid,
+                            "an item's row is its name or its type and number, not its UID: {item:?}"
+                        );
+                        let keys = attribute_keys.entry(group.item_type.clone()).or_default();
+                        for attribute in &item.attributes {
+                            if !attribute.value.is_empty() {
+                                *keys
+                                    .entry(format!("{}.{}", attribute.interface, attribute.name))
+                                    .or_default() += 1;
+                            }
+                        }
                         if item.attributes.is_empty() {
                             without_attributes += 1;
                         }
@@ -458,9 +482,37 @@ fn a_real_backup_is_walked_node_by_node() {
         slowest.1,
         millis(slowest.0)
     ));
+    audit.line(format!(
+        "  item rows: {named} by the name the item publishes, {numbered} by type and number"
+    ));
     audit.line(format!("  item types across the backup: {item_types:?}"));
+    audit.line("  attributes with a value, by item type (attribute: items):");
+    for (item_type, keys) in &attribute_keys {
+        let mut keys: Vec<(&String, &usize)> = keys.iter().collect();
+        keys.sort_by(|left, right| right.1.cmp(left.1).then(left.0.cmp(right.0)));
+        let text: Vec<String> = keys.iter().map(|(key, count)| format!("{key}: {count}")).collect();
+        audit.line(format!(
+            "    {item_type} ({}): {}",
+            item_types.get(item_type).copied().unwrap_or(0),
+            text.join(", ")
+        ));
+    }
     audit.shot(&app, "drawing-items-open");
     if let Some(ItemsState::Ready(items)) = app.pid_backup_browser.items.get(&0).cloned() {
+        // A type's details list its items as a table.
+        if !items.groups.is_empty() {
+            send(&mut app, PidBackupMsg::Select(NodeId::ItemType(0, 0))).unwrap();
+            let rows = detail_rows(&app.pid_backup_browser, &NodeId::ItemType(0, 0));
+            audit.line(format!(
+                "== item type \"{}\" of the first drawing: table {} ==",
+                items.groups[0].item_type,
+                rows.get(2).map_or(String::new(), |(titles, count)| format!("[{titles}] {count}")),
+            ));
+            for (name, rest) in rows.iter().skip(3).take(4) {
+                audit.line(format!("  {name} | {rest}"));
+            }
+            audit.shot(&app, "item-type-table");
+        }
         // The first item that publishes attributes: its details are the
         // richest the panel has.
         let found = items.groups.iter().enumerate().find_map(|(group_at, group)| {

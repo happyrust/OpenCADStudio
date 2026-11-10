@@ -21,7 +21,10 @@
 //! backup holds is a [`section`]: a module beside this one that hangs its
 //! rows under a row of the tree and states the details of its nodes.
 
+#[cfg(test)]
+mod drawn_tests;
 mod goto;
+pub mod grid;
 mod section;
 
 pub use goto::take_outcome as take_goto_outcome;
@@ -138,6 +141,8 @@ pub enum PidBackupMsg {
     /// Go to the node at this path of labels (`a > b > c`), unfolding the
     /// levels on the way and selecting it: `PIDBACKUPOPEN Select`.
     Goto(String),
+    /// The table in the detail half: a title clicked, the rows scrolled.
+    Grid(grid::GridMsg),
 }
 
 /// What the application should do after [`update`] applied a message.
@@ -213,6 +218,8 @@ pub struct PidBackupBrowser {
     goto: Option<goto::Goto>,
     /// How the last walk ended, until the command line has reported it.
     goto_outcome: Option<goto::Outcome>,
+    /// Sort and scroll of the table in the selected node's details.
+    grid: grid::GridState,
 }
 
 impl PidBackupBrowser {
@@ -234,6 +241,7 @@ impl PidBackupBrowser {
         self.generation += 1;
         self.goto = None;
         self.goto_outcome = None;
+        self.grid = grid::GridState::default();
     }
 
     /// Browse with the test section instead of the real ones.
@@ -340,6 +348,12 @@ pub fn update(state: &mut PidBackupBrowser, msg: PidBackupMsg) -> Effect {
             goto::step(state)
         }
         PidBackupMsg::Goto(path) => goto::start(state, &path),
+        PidBackupMsg::Grid(msg) => {
+            let mut grid = std::mem::take(&mut state.grid);
+            grid::update(&mut grid, msg, || selected_table(state));
+            state.grid = grid;
+            Effect::None
+        }
         // The tree's own answer first, then whatever a section now wants
         // read about the node.
         PidBackupMsg::Toggle(id) => {
@@ -347,6 +361,10 @@ pub fn update(state: &mut PidBackupBrowser, msg: PidBackupMsg) -> Effect {
             section::both(own, section::after(state, section::EventKind::Toggled, &id))
         }
         PidBackupMsg::Select(id) => {
+            // Another node's table starts unsorted and from its top.
+            if state.selected.as_ref() != Some(&id) {
+                state.grid = grid::GridState::default();
+            }
             state.selected = Some(id.clone());
             section::after(state, section::EventKind::Selected, &id)
         }
@@ -563,10 +581,7 @@ fn push_drawing(
             rows.push(Row {
                 id: NodeId::Item(drawing, at, item),
                 depth: depth + 2,
-                label: match &entry.class {
-                    Some(class) => format!("{} ({class})", entry.uid),
-                    None => entry.uid.clone(),
-                },
+                label: entry.label.clone(),
                 expandable: false,
                 expanded: false,
                 disabled: false,
@@ -712,15 +727,49 @@ fn muted(theme: &Theme) -> iced::widget::text::Style {
     }
 }
 
+/// Size of the text in the detail half.
+const DETAIL_TEXT: f32 = 10.0;
+
+/// Space between a key and its value.
+const KEY_GAP: f32 = 6.0;
+
+/// Width of the key column of the detail half in a panel `width` wide: a
+/// good third of it, so a wider (floated) panel gives long keys more room.
+pub(crate) fn key_column_width(width: f32) -> f32 {
+    (width * 0.36).clamp(96.0, 240.0)
+}
+
+/// Whether `key` is too long for a key column `key_width` wide and gets a
+/// line to itself, its value below it.
+pub(crate) fn key_takes_its_own_line(key: &str, key_width: f32) -> bool {
+    crate::ui::style::text_metrics::width(key, DETAIL_TEXT, false) > key_width
+}
+
 /// One key/value line of the detail table.
-fn kv<'a>(key: String, value: String) -> Element<'a, Message> {
-    row![
-        text(key).size(10).width(Length::Fixed(96.0)).style(muted),
-        text(value).size(10).width(Fill),
-    ]
-    .spacing(4)
-    .align_y(iced::Top)
-    .into()
+///
+/// The value always starts at the value column, so the values line up. A key
+/// that fits the key column sits beside its value; one that does not (the
+/// published attributes are `Interface.Name`) takes the full width above
+/// it. Either way both texts wrap inside their boxes: nothing is drawn over
+/// anything else, however narrow the panel.
+fn kv<'a>(key: String, value: String, key_width: f32) -> Element<'a, Message> {
+    let wrap = iced::widget::text::Wrapping::WordOrGlyph;
+    let stacked = key_takes_its_own_line(&key, key_width);
+    let key = text(key).size(DETAIL_TEXT).style(muted).wrapping(wrap);
+    let value = text(value).size(DETAIL_TEXT).width(Fill).wrapping(wrap);
+    if stacked {
+        column![
+            key.width(Fill),
+            row![Space::new().width(Length::Fixed(key_width + KEY_GAP)), value],
+        ]
+        .spacing(1)
+        .into()
+    } else {
+        row![key.width(Length::Fixed(key_width)), value]
+            .spacing(KEY_GAP)
+            .align_y(iced::Top)
+            .into()
+    }
 }
 
 /// A byte count as the panel shows it.
@@ -765,8 +814,19 @@ fn group_drawing_count(node: &GroupNode) -> usize {
             .sum::<usize>()
 }
 
+/// How a tree row is drawn: the selected one on the palette's weak primary,
+/// as the sheet set and the layer list mark theirs.
+fn row_style(theme: &Theme, selected: bool) -> container::Style {
+    let weak = theme.palette().primary.weak;
+    container::Style {
+        background: selected.then_some(iced::Background::Color(weak.color)),
+        text_color: selected.then_some(weak.text),
+        ..container::Style::default()
+    }
+}
+
 /// One row of the tree: its indentation, its expand arrow and its label.
-fn tree_row<'a>(row: &Row, at: usize) -> Element<'a, Message> {
+fn tree_row<'a>(row: &Row, at: usize, selected: bool) -> Element<'a, Message> {
     let arrow: Element<'a, Message> = if row.expandable {
         let icon = if row.expanded {
             crate::ui::icons::themed_arrow_down(10.0)
@@ -796,17 +856,23 @@ fn tree_row<'a>(row: &Row, at: usize) -> Element<'a, Message> {
     // A press selects; the second press of a double click activates. The row
     // stays clickable when it is greyed (its details still explain why), and
     // `update` is what refuses to open a drawing with no file.
-    let area = mouse_area(container(line).width(Fill).padding([1, 4]))
-        .interaction(iced::mouse::Interaction::Pointer)
-        .on_press(PidBackupMsg::Select(row.id.clone()).message())
-        .on_double_click(PidBackupMsg::Activate(row.id.clone()).message());
+    let area = mouse_area(
+        container(line)
+            .width(Fill)
+            .padding([1, 4])
+            .style(move |theme| row_style(theme, selected)),
+    )
+    .interaction(iced::mouse::Interaction::Pointer)
+    .on_press(PidBackupMsg::Select(row.id.clone()).message())
+    .on_double_click(PidBackupMsg::Activate(row.id.clone()).message());
     crate::ui::wrap_bar::PosReport::owned(format!("{ROW_BOUNDS_PREFIX}{at}"), area).into()
 }
 
 /// One line of the detail half, before it is laid out.
 ///
-/// [`detail_rows`] projects these to `(key, value)` pairs so the content can
-/// be asserted without a window; [`details`] draws each kind its own way.
+/// The tests project these to `(key, value)` pairs (`detail_rows`), so the
+/// content is asserted without a window; [`details`] draws each kind its own
+/// way.
 enum DetailLine {
     /// A key/value field.
     Field(String, String),
@@ -816,77 +882,123 @@ enum DetailLine {
     Heading(String),
     /// The "open drawing" button for a drawing that has a file.
     OpenDrawing(String),
-}
-
-/// How [`details`] draws one line of the detail half.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DetailLineKind {
-    /// A key/value field.
-    Field,
-    /// A plain muted line: a warning, or "registered but missing".
-    Marker,
-    /// A section heading, set off from the fields above it.
-    Heading,
-    /// The "open drawing" button for a drawing that has a file.
-    OpenDrawing,
+    /// A table, drawn as a [`grid`] below the other lines. A node's details
+    /// hold at most one: it takes what is left of the detail half.
+    Table(std::sync::Arc<grid::Table>),
 }
 
 impl DetailLine {
-    /// The `(key, value)` pair this line shows.
-    fn into_pair(self) -> (String, String) {
+    /// The `(key, value)` pairs this line shows: one for every kind but a
+    /// table, which gives its titles (with its row count) and then a pair
+    /// per row, the first cell as the key and the others joined with ` | `.
+    #[cfg(test)]
+    fn into_pairs(self) -> Vec<(String, String)> {
         match self {
-            DetailLine::Field(key, value) => (key, value),
+            DetailLine::Field(key, value) => vec![(key, value)],
             DetailLine::Marker(key) | DetailLine::Heading(key) | DetailLine::OpenDrawing(key) => {
-                (key, String::new())
+                vec![(key, String::new())]
+            }
+            DetailLine::Table(table) => {
+                let join = |cells: &mut dyn Iterator<Item = &str>| -> String {
+                    cells.collect::<Vec<_>>().join(" | ")
+                };
+                let titles = join(&mut table.columns().iter().map(|column| column.title.as_str()));
+                let mut pairs = vec![(titles, row_count_label(table.rows().len()))];
+                for at in 0..table.rows().len() {
+                    let rest = join(&mut (1..table.columns().len()).map(|column| table.cell(at, column)));
+                    pairs.push((table.cell(at, 0).to_string(), rest));
+                }
+                pairs
             }
         }
     }
+}
 
-    fn kind(&self) -> DetailLineKind {
-        match self {
-            DetailLine::Field(..) => DetailLineKind::Field,
-            DetailLine::Marker(_) => DetailLineKind::Marker,
-            DetailLine::Heading(_) => DetailLineKind::Heading,
-            DetailLine::OpenDrawing(_) => DetailLineKind::OpenDrawing,
-        }
-    }
+/// "154 row(s)", above a table.
+fn row_count_label(rows: usize) -> String {
+    crate::tf!("{} row(s)", rows).into_owned()
+}
+
+/// The table in the details of the selected node, when they hold one.
+fn selected_table(state: &PidBackupBrowser) -> Option<std::sync::Arc<grid::Table>> {
+    let id = state.selected.as_ref()?;
+    detail_lines(state, id).into_iter().find_map(|line| match line {
+        DetailLine::Table(table) => Some(table),
+        _ => None,
+    })
+}
+
+/// What tells one node's table from another's, for the grid's scroll state.
+fn grid_key(id: &NodeId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The lower half: what the selected node is.
 ///
 /// Rendering only: the content and the shape of every line come from
-/// [`detail_rows`] and [`detail_lines`].
-fn details<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
+/// [`detail_lines`]. The lines scroll when they outgrow the half; a table
+/// among them is drawn as a grid that takes what the other lines leave, with
+/// scroll bars of its own.
+fn details<'a>(state: &'a PidBackupBrowser, width: f32) -> Element<'a, Message> {
+    let hint = |label: std::borrow::Cow<'static, str>| -> Element<'a, Message> {
+        text(label).size(11).style(muted).into()
+    };
     if state.index().is_none() {
-        return text(t!("No backup is open.")).size(11).style(muted).into();
+        return hint(t!("No backup is open."));
     }
     let Some(id) = state.selected.as_ref() else {
-        return text(t!("Select a node to see its details."))
-            .size(11)
-            .style(muted)
-            .into();
+        return hint(t!("Select a node to see its details."));
     };
-    let kinds: Vec<DetailLineKind> = detail_lines(state, id)
-        .into_iter()
-        .map(|line| line.kind())
-        .collect();
-    let mut body = column![].spacing(2);
-    for ((key, value), kind) in detail_rows(state, id).into_iter().zip(kinds) {
-        body = match kind {
-            DetailLineKind::Field => body.push(kv(key, value)),
-            DetailLineKind::Marker => body.push(text(key).size(10).style(muted)),
-            DetailLineKind::Heading => {
-                body = body.push(Space::new().height(4));
-                body.push(text(key).size(10))
+    let key_width = key_column_width(width);
+    let wrap = iced::widget::text::Wrapping::WordOrGlyph;
+    let mut body = column![].spacing(2).width(Fill);
+    let mut table = None;
+    for line in detail_lines(state, id) {
+        body = match line {
+            DetailLine::Field(key, value) => body.push(kv(key, value, key_width)),
+            DetailLine::Marker(note) => {
+                body.push(text(note).size(DETAIL_TEXT).style(muted).wrapping(wrap))
             }
-            DetailLineKind::OpenDrawing => body.push(
-                button(text(key).size(11))
+            DetailLine::Heading(title) => {
+                body = body.push(Space::new().height(4));
+                body.push(text(title).size(DETAIL_TEXT))
+            }
+            DetailLine::OpenDrawing(label) => body.push(
+                button(text(label).size(11))
                     .on_press(PidBackupMsg::Activate(id.clone()).message())
                     .padding([3, 10]),
             ),
+            DetailLine::Table(found) => {
+                table = Some(found);
+                body
+            }
         };
     }
-    body.into()
+    let Some(table) = table else {
+        return scrollable(body)
+            .direction(scrollable::Direction::Vertical(
+                scrollable::Scrollbar::default(),
+            ))
+            .width(Fill)
+            .height(Fill)
+            .into();
+    };
+    column![
+        body,
+        text(row_count_label(table.rows().len()))
+            .size(DETAIL_TEXT)
+            .style(muted),
+        grid::view(&table, &state.grid, grid_key(id), |msg| {
+            PidBackupMsg::Grid(msg).message()
+        }),
+    ]
+    .spacing(2)
+    .width(Fill)
+    .height(Fill)
+    .into()
 }
 
 /// The lines the detail half shows for `id`, in display order.
@@ -1065,6 +1177,26 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
                         t!("Item count").into_owned(),
                         group.items.len().to_string(),
                     ));
+                    // The items of the type side by side: what each is
+                    // called, what it is, and the UID the rows leave out.
+                    lines.push(DetailLine::Table(std::sync::Arc::new(grid::Table::new(
+                        vec![
+                            grid::Column::text(t!("Item name")),
+                            grid::Column::text(t!("Item class")),
+                            grid::Column::text(t!("Item UID")),
+                        ],
+                        group
+                            .items
+                            .iter()
+                            .map(|item| {
+                                vec![
+                                    item.label.clone(),
+                                    item.class.clone().unwrap_or_default(),
+                                    item.uid.clone(),
+                                ]
+                            })
+                            .collect(),
+                    ))));
                 }
             }
         }
@@ -1077,6 +1209,10 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
                 _ => None,
             };
             if let Some(entry) = found {
+                lines.push(DetailLine::Field(
+                    t!("Item name").into_owned(),
+                    entry.label.clone(),
+                ));
                 lines.push(DetailLine::Field(
                     t!("Item UID").into_owned(),
                     entry.uid.clone(),
@@ -1148,10 +1284,11 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
 /// The testable projection of [`detail_lines`]: an empty value marks a line
 /// that is not a plain field (a warning, a heading, "registered but missing",
 /// the "open drawing" action).
+#[cfg(test)]
 pub(crate) fn detail_rows(state: &PidBackupBrowser, id: &NodeId) -> Vec<(String, String)> {
     detail_lines(state, id)
         .into_iter()
-        .map(DetailLine::into_pair)
+        .flat_map(DetailLine::into_pairs)
         .collect()
 }
 
@@ -1209,7 +1346,8 @@ pub fn view<'a>(state: &'a PidBackupBrowser, width: f32, chrome: Chrome) -> Elem
             let rows = visible_rows(state);
             let mut list = column![].spacing(1);
             for (at, row) in rows.iter().enumerate() {
-                list = list.push(tree_row(row, at));
+                let selected = state.selected.as_ref() == Some(&row.id);
+                list = list.push(tree_row(row, at, selected));
             }
             scrollable(list)
                 .direction(scrollable::Direction::Vertical(
@@ -1221,10 +1359,7 @@ pub fn view<'a>(state: &'a PidBackupBrowser, width: f32, chrome: Chrome) -> Elem
         }
     };
 
-    let details = scrollable(details(state))
-        .direction(scrollable::Direction::Vertical(
-            scrollable::Scrollbar::default(),
-        ))
+    let details = container(details(state, width))
         .width(Fill)
         .height(Length::FillPortion(2));
 
@@ -1343,6 +1478,7 @@ mod tests {
                 item_type: item_type.to_string(),
                 items: vec![DrawingItem {
                     uid: uid.to_string(),
+                    label: "TT-101".to_string(),
                     item_type: item_type.to_string(),
                     class: Some("PIDInstrument".to_string()),
                     attributes: vec![ItemAttribute {
@@ -1615,7 +1751,8 @@ mod tests {
             .position(|row| row.id == NodeId::ItemType(0, 0))
             .expect("the type row");
         assert_eq!(rows[type_at + 1].id, NodeId::Item(0, 0, 0));
-        assert!(rows[type_at + 1].label.contains("UID-1"));
+        // The row is the item's name; its UID is in the details.
+        assert_eq!(rows[type_at + 1].label, "TT-101");
     }
 
     #[test]
@@ -1667,7 +1804,7 @@ mod tests {
     }
 
     /// A state whose tree is opened down to the three drawings.
-    fn ready_with_drawings_shown() -> PidBackupBrowser {
+    pub(super) fn ready_with_drawings_shown() -> PidBackupBrowser {
         let mut state = ready();
         update(&mut state, PidBackupMsg::Toggle(NodeId::Groups));
         update(&mut state, PidBackupMsg::Toggle(NodeId::Group(vec![0])));
@@ -2227,6 +2364,18 @@ mod tests {
             vec![
                 (t!("Item type").into_owned(), plain("Instrument")),
                 (t!("Item count").into_owned(), plain("1")),
+                // The items as a table: its titles and row count, then a
+                // pair per row.
+                (
+                    format!(
+                        "{} | {} | {}",
+                        t!("Item name"),
+                        t!("Item class"),
+                        t!("Item UID")
+                    ),
+                    crate::tf!("{} row(s)", 1).into_owned()
+                ),
+                (plain("TT-101"), plain("PIDInstrument | UID-1")),
             ]
         );
     }
@@ -2241,6 +2390,7 @@ mod tests {
         assert_eq!(
             detail_rows_of(&state, &NodeId::Item(0, 0, 0)),
             vec![
+                (t!("Item name").into_owned(), plain("TT-101")),
                 (t!("Item UID").into_owned(), plain("UID-1")),
                 (t!("Item type").into_owned(), plain("Instrument")),
                 (t!("Item class").into_owned(), plain("PIDInstrument")),

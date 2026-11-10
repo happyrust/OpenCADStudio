@@ -1224,6 +1224,8 @@ mod tests {
         "section-read-stopped",
         "no-such-node",
         "selected-node",
+        "item-name",
+        "row-count",
     ];
 
     /// The panel's own labels, the ones the dock title and the command share.

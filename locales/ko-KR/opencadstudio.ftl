@@ -9043,6 +9043,8 @@ pid-backup =
     .section-read-stopped = the backup data read stopped before it finished
     .no-such-node = there is no "__ocs_fmt_0__" under "__ocs_fmt_1__"
     .selected-node = PIDBACKUPOPEN: selected __ocs_fmt_0__
+    .item-name = Item name
+    .row-count = __ocs_fmt_0__ row(s)
 
 block-flip-frame-feedback =
     .unavailable = 블록 매개변수 프레임을 사용할 수 없습니다.
