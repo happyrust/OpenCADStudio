@@ -22,6 +22,7 @@
 //! and what its file states beside them ([`drawing_data`]) -- is
 //! [`load_items`], read on demand when the panel first expands a drawing.
 
+pub mod datamap;
 pub mod drawing_data;
 pub mod exp_views;
 pub mod export_log;

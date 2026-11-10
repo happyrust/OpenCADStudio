@@ -9195,6 +9195,15 @@ pid-backup =
     .side-connectors = Connectors
     .side-pipeline-uid = Pipeline UID
     .side-open-to-read = Open this row to read them; the first read of a dump takes a few seconds.
+    .map-enumeration-map = Enumeration map
+    .map-enumeration-lists = Enumeration lists
+    .map-enumeration-list = Enumeration list
+    .map-entry-uid = Entry UID
+    .map-entry-number = Entry number
+    .map-published-as = Published as
+    .map-what-it-is = Each entry of an enumeration list, with the value a published drawing carries for it.
+    .map-select-to-read = Select this row to read the map.
+    .map-empty = The file maps no enumeration.
 
 block-flip-frame-feedback =
     .unavailable = Система координат параметра блока недоступна.

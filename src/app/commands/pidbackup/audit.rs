@@ -521,6 +521,104 @@ fn walk_dump_views(
     send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
 }
 
+/// The data maps of the reference data: each file is unfolded, which reads
+/// it, and the row under it selected. It shows the enumerations the file
+/// maps, or says why it could not be read.
+fn walk_data_maps(
+    app: &mut OpenCADStudio,
+    audit: &mut Audit,
+    index: &BackupIndex,
+    empty: &mut Vec<String>,
+) {
+    // Every data map of the tree: the directories down to it, and its place.
+    fn collect(node: &RefNode, dirs: &mut Vec<usize>, found: &mut Vec<(Vec<usize>, usize, String)>) {
+        for (at, file) in node.files.iter().enumerate() {
+            if crate::io::pid_backup_browse::datamap::is_data_map(&file.name) {
+                found.push((dirs.clone(), at, file.name.clone()));
+            }
+        }
+        for (at, dir) in node.dirs.iter().enumerate() {
+            dirs.push(at);
+            collect(dir, dirs, found);
+            dirs.pop();
+        }
+    }
+    let mut maps = Vec::new();
+    collect(&index.ref_tree, &mut Vec::new(), &mut maps);
+    audit.line(format!(
+        "== data maps: {} file(s) of the reference data ==",
+        maps.len()
+    ));
+    if maps.is_empty() {
+        return;
+    }
+    // Unfold a node unless it is open already; what was unfolded here is
+    // folded again on the way out.
+    fn open(app: &mut OpenCADStudio, id: NodeId, opened: &mut Vec<NodeId>) {
+        if !app.pid_backup_browser.expanded.contains(&id) {
+            send(app, PidBackupMsg::Toggle(id.clone())).unwrap();
+            opened.push(id);
+        }
+    }
+    let mut opened: Vec<NodeId> = Vec::new();
+    open(app, NodeId::Ref, &mut opened);
+    let mut pictured = false;
+    for (dirs, file, name) in &maps {
+        for depth in 1..=dirs.len() {
+            open(app, NodeId::RefDir(dirs[..depth].to_vec()), &mut opened);
+        }
+        let host = NodeId::RefFile(dirs.clone(), *file);
+        let started = Instant::now();
+        open(app, host.clone(), &mut opened);
+        let took = started.elapsed();
+        let rows = rows_under(app, &host);
+        assert_eq!(rows.len(), 1, "the rows under {name}: {rows:?}");
+        let row = rows[0].clone();
+        send(app, PidBackupMsg::Select(row.id.clone())).unwrap();
+        let details = details_of(app, &row.id, empty);
+        match section_load(app, &row.id) {
+            Some(SectionLoad::Ready(_)) => {
+                let lists = details
+                    .iter()
+                    .find(|(key, _)| *key == crate::t!("Enumeration lists"))
+                    .map_or("?", |(_, lists)| lists.as_str());
+                audit.line(format!(
+                    "  {name}: {} of {lists} list(s), read in {}",
+                    row.label,
+                    millis(took)
+                ));
+                // The row's count is the table's.
+                if let Some((_, count)) = details.iter().find(|(titles, _)| titles.contains(" | ")) {
+                    assert!(
+                        row.label.ends_with(&format!(
+                            "({})",
+                            count.split_whitespace().next().unwrap_or_default()
+                        )),
+                        "{} shows {count}",
+                        row.label
+                    );
+                }
+                if !pictured {
+                    for (key, value) in details.iter().skip(3).take(4) {
+                        audit.line(format!("      {key} = {value}"));
+                    }
+                    audit.shot(app, "data-map-enumerations");
+                    pictured = true;
+                }
+            }
+            Some(SectionLoad::Failed(why)) => {
+                assert!(details.iter().any(|(key, _)| *key == why), "{details:?}");
+                audit.line(format!("  {name}: {why}"));
+            }
+            other => panic!("the map of {name} was left in {other:?}"),
+        }
+    }
+    for id in opened.into_iter().rev() {
+        send(app, PidBackupMsg::Toggle(id)).unwrap();
+    }
+    send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
+}
+
 /// The values of `Manifest.txt` that are credentials: every obfuscated
 /// field, the fields that hold a password by their position, and the
 /// password of a login in the export command. Read from the file itself, so
@@ -1212,6 +1310,7 @@ fn walk_index(
     walk_text(app, audit, index, empty);
     walk_database(app, audit, index);
     walk_dump_views(app, audit, index, empty);
+    walk_data_maps(app, audit, index, empty);
     walk_split(app, audit, index);
 }
 

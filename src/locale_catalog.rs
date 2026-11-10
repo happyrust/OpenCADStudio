@@ -7530,6 +7530,15 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "Connectors" => Some(("pid-backup", "side-connectors")),
         "Pipeline UID" => Some(("pid-backup", "side-pipeline-uid")),
         "Open this row to read them; the first read of a dump takes a few seconds." => Some(("pid-backup", "side-open-to-read")),
+        "Enumeration map" => Some(("pid-backup", "map-enumeration-map")),
+        "Enumeration lists" => Some(("pid-backup", "map-enumeration-lists")),
+        "Enumeration list" => Some(("pid-backup", "map-enumeration-list")),
+        "Entry UID" => Some(("pid-backup", "map-entry-uid")),
+        "Entry number" => Some(("pid-backup", "map-entry-number")),
+        "Published as" => Some(("pid-backup", "map-published-as")),
+        "Each entry of an enumeration list, with the value a published drawing carries for it." => Some(("pid-backup", "map-what-it-is")),
+        "Select this row to read the map." => Some(("pid-backup", "map-select-to-read")),
+        "The file maps no enumeration." => Some(("pid-backup", "map-empty")),
         _ => None,
     }
 }

@@ -9164,6 +9164,15 @@ pid-backup =
     .side-connectors = 连接器
     .side-pipeline-uid = 管线 UID
     .side-open-to-read = 展开这一行就去读；第一次读转储要几秒钟。
+    .map-enumeration-map = 枚举映射
+    .map-enumeration-lists = 枚举表数
+    .map-enumeration-list = 枚举表
+    .map-entry-uid = 条目 UID
+    .map-entry-number = 条目序号
+    .map-published-as = 发布值
+    .map-what-it-is = 枚举表的每个条目，以及发布出来的图纸里它对应的值。
+    .map-select-to-read = 选中这一行就读这份映射。
+    .map-empty = 这个文件里没有枚举映射。
 
 block-flip-frame-feedback =
     .unavailable = 块参数坐标框不可用。

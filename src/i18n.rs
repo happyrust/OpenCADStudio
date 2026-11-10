@@ -1361,6 +1361,15 @@ mod tests {
         "side-connectors",
         "side-pipeline-uid",
         "side-open-to-read",
+        "map-enumeration-map",
+        "map-enumeration-lists",
+        "map-enumeration-list",
+        "map-entry-uid",
+        "map-entry-number",
+        "map-published-as",
+        "map-what-it-is",
+        "map-select-to-read",
+        "map-empty",
     ];
 
     /// The panel's own labels, the ones the dock title and the command share.
