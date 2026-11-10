@@ -9083,6 +9083,15 @@ pid-backup =
     .kind-single-file = Single file
     .backed-up = Backed up
     .credentials-hidden = __ocs_fmt_0__ credential field(s) are hidden and shown as __ocs_fmt_1__
+    .text-encoding = Text encoding
+    .line-count = Line count
+    .line-number-column = Line #
+    .text-content = Text content
+    .text-cut = Only the first __ocs_fmt_0__ of __ocs_fmt_1__ is shown.
+    .not-text = Not a text file; its content is not shown.
+    .reading-file = Reading the file…
+    .member-not-found = __ocs_fmt_0__ is not in __ocs_fmt_1__
+    .text-credentials-hidden = __ocs_fmt_0__ credential-like value(s) in the text are hidden and shown as __ocs_fmt_1__
 
 block-flip-frame-feedback =
     .unavailable = Το πλαίσιο της παραμέτρου του μπλοκ δεν είναι διαθέσιμο.

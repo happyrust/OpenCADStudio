@@ -27,7 +27,9 @@
 
 use super::*;
 use crate::io::pid_backup_browse::{BackupIndex, GroupNode, RefNode};
-use crate::ui::window::pid_backup_browser::{detail_rows, visible_rows, ItemsState, NodeId, Row};
+use crate::ui::window::pid_backup_browser::{
+    detail_rows, visible_rows, ItemsState, NodeId, Row, SectionLoad,
+};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
@@ -270,6 +272,244 @@ fn manifest_credentials(backup_root: &Path) -> Vec<(String, String)> {
     found
 }
 
+/// What selecting a file node showed of the file's content.
+enum Content {
+    /// Its lines: the encoding, how many, and what the panel remarks.
+    Text {
+        encoding: String,
+        lines: String,
+        notes: Vec<String>,
+    },
+    /// The panel says it is not a text file.
+    NotText,
+    /// Nothing was read: the node has no text of its own.
+    NotRead,
+    /// The read failed, and the details say why.
+    Failed(String),
+}
+
+/// Select `id` as a click on its row does, wait for the read that starts,
+/// and say what the details show of the file's content.
+fn read_file_node(app: &mut OpenCADStudio, id: &NodeId, empty: &mut Vec<String>) -> Content {
+    send(app, PidBackupMsg::Select(id.clone())).unwrap();
+    let rows = details_of(app, id, empty);
+    let value = |key: &str| {
+        rows.iter()
+            .find(|(found, _)| found == key)
+            .map(|(_, value)| value.clone())
+    };
+    if let Some(encoding) = value(&crate::t!("Text encoding")) {
+        // The remarks stand between the line count and the lines.
+        let from = rows
+            .iter()
+            .position(|(key, _)| *key == crate::t!("Line count"))
+            .map_or(rows.len(), |at| at + 1);
+        let notes = rows[from..]
+            .iter()
+            .take_while(|(_, value)| value.is_empty())
+            .map(|(key, _)| key.clone())
+            .collect();
+        return Content::Text {
+            encoding,
+            lines: value(&crate::t!("Line count")).unwrap_or_default(),
+            notes,
+        };
+    }
+    if value(&crate::t!("Not a text file; its content is not shown.")).is_some() {
+        return Content::NotText;
+    }
+    let read = app
+        .pid_backup_browser
+        .section_data
+        .iter()
+        .find(|((_, node), _)| node == id)
+        .map(|(_, load)| load.clone());
+    match read {
+        None => Content::NotRead,
+        Some(SectionLoad::Failed(error)) => {
+            assert!(
+                rows.iter().any(|(key, _)| *key == error),
+                "a read that failed says so in the details: {error}"
+            );
+            Content::Failed(error)
+        }
+        Some(other) => panic!("the read of {id:?} is left in {other:?}"),
+    }
+}
+
+/// How many files of one kind showed what, and the report lines of the ones
+/// that are text.
+#[derive(Default)]
+struct ContentTally {
+    text: Vec<String>,
+    not_text: usize,
+    not_read: usize,
+    failed: Vec<String>,
+}
+
+impl ContentTally {
+    fn add(&mut self, label: &str, content: Content) {
+        match content {
+            Content::Text {
+                encoding,
+                lines,
+                notes,
+            } => {
+                let mut line = format!("{label} | {encoding} | {lines} line(s)");
+                for note in notes {
+                    line.push_str(" | ");
+                    line.push_str(&note);
+                }
+                self.text.push(line);
+            }
+            Content::NotText => self.not_text += 1,
+            Content::NotRead => self.not_read += 1,
+            Content::Failed(error) => self.failed.push(format!("{label}: {error}")),
+        }
+    }
+
+    fn report(&self, audit: &mut Audit, what: &str, not_read: &str) {
+        audit.line(format!(
+            "  {what}: {} text, {} not text, {} {not_read}, {} could not be read",
+            self.text.len(),
+            self.not_text,
+            self.not_read,
+            self.failed.len()
+        ));
+        for line in &self.text {
+            audit.line(format!("    {line}"));
+        }
+        for line in &self.failed {
+            audit.line(format!("    could not be read: {line}"));
+        }
+    }
+}
+
+/// The content of every file the tree names: each backup file, each member
+/// of the archives, each reference file, selected in turn as a click on its
+/// row would. What is text is read and shown; the report says which.
+fn walk_text(
+    app: &mut OpenCADStudio,
+    audit: &mut Audit,
+    index: &BackupIndex,
+    empty: &mut Vec<String>,
+) {
+    let started = Instant::now();
+    audit.line("== text of the files (read when a file is selected) ==");
+    send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
+    let labels: Vec<String> = {
+        let rows = visible_rows(&app.pid_backup_browser);
+        (0..index.files.len())
+            .map(|at| {
+                rows.iter()
+                    .find(|row| row.id == NodeId::File(at))
+                    .map_or_else(|| index.files[at].name.clone(), |row| row.label.clone())
+            })
+            .collect()
+    };
+    let mut files = ContentTally::default();
+    let mut members = ContentTally::default();
+    // The first of each kind, for the pictures.
+    let mut text_file = None;
+    let mut text_member = None;
+    let mut binary_file = None;
+    for (at, file) in index.files.iter().enumerate() {
+        let id = NodeId::File(at);
+        let content = read_file_node(app, &id, empty);
+        match &content {
+            Content::Text { .. } if text_file.is_none() && file.record.is_some() => {
+                text_file = Some(id.clone());
+            }
+            Content::NotText if binary_file.is_none() => binary_file = Some(id.clone()),
+            _ => {}
+        }
+        files.add(&labels[at], content);
+        for (member, name) in file.members.iter().enumerate() {
+            let id = NodeId::FileMember(at, member);
+            let content = read_file_node(app, &id, empty);
+            if matches!(content, Content::Text { .. }) && text_member.is_none() {
+                text_member = Some((at, id.clone()));
+            }
+            members.add(&format!("{} > {name}", file.name), content);
+        }
+    }
+    files.report(
+        audit,
+        "backup files",
+        "with no text of their own (the manifest, the dump, archives, missing files)",
+    );
+    members.report(audit, "archive members", "folders");
+
+    let mut reference = ContentTally::default();
+    let mut text_reference = None;
+    let mut dirs = vec![Vec::new()];
+    dirs.extend(ref_dir_paths(&index.ref_tree));
+    for path in &dirs {
+        let node = ref_dir(&index.ref_tree, path);
+        let folder: Vec<&str> = path
+            .iter()
+            .scan(&index.ref_tree, |node, at| {
+                let next = &node.dirs[*at];
+                *node = next;
+                Some(next.name.as_str())
+            })
+            .collect();
+        for (at, file) in node.files.iter().enumerate() {
+            let id = NodeId::RefFile(path.clone(), at);
+            let content = read_file_node(app, &id, empty);
+            if matches!(content, Content::Text { .. }) && text_reference.is_none() {
+                text_reference = Some((path.clone(), id.clone()));
+            }
+            let mut label = folder.join("\\");
+            if !label.is_empty() {
+                label.push('\\');
+            }
+            label.push_str(&file.name);
+            reference.add(&label, content);
+        }
+    }
+    reference.report(audit, "reference files", "not read");
+    audit.line(format!(
+        "  all selected and read in {}",
+        millis(started.elapsed())
+    ));
+
+    // The pictures: a text file, the export log, a member of an archive, a
+    // file that is not text, a reference file.
+    if let Some(id) = text_file {
+        send(app, PidBackupMsg::Select(id)).unwrap();
+        audit.shot(app, "text-file");
+    }
+    if let Some(at) = index.files.iter().position(|file| file.name == "Export.log") {
+        send(app, PidBackupMsg::Select(NodeId::File(at))).unwrap();
+        audit.shot(app, "text-export-log");
+    }
+    if let Some(id) = binary_file {
+        send(app, PidBackupMsg::Select(id)).unwrap();
+        audit.shot(app, "text-not-a-text-file");
+    }
+    if let Some((at, id)) = text_member {
+        send(app, PidBackupMsg::Toggle(NodeId::File(at))).unwrap();
+        send(app, PidBackupMsg::Select(id)).unwrap();
+        audit.shot(app, "text-archive-member");
+        send(app, PidBackupMsg::Toggle(NodeId::File(at))).unwrap();
+    }
+    send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
+    if let Some((path, id)) = text_reference {
+        send(app, PidBackupMsg::Toggle(NodeId::Ref)).unwrap();
+        for depth in 1..=path.len() {
+            send(app, PidBackupMsg::Toggle(NodeId::RefDir(path[..depth].to_vec()))).unwrap();
+        }
+        send(app, PidBackupMsg::Select(id)).unwrap();
+        audit.shot(app, "text-reference-file");
+        for depth in (1..=path.len()).rev() {
+            send(app, PidBackupMsg::Toggle(NodeId::RefDir(path[..depth].to_vec()))).unwrap();
+        }
+        send(app, PidBackupMsg::Toggle(NodeId::Ref)).unwrap();
+    }
+    send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
+}
+
 fn millis(duration: Duration) -> String {
     format!("{:.1} ms", duration.as_secs_f64() * 1000.0)
 }
@@ -430,7 +670,12 @@ fn walk_index(
         send(app, PidBackupMsg::Select(NodeId::RefDir(first.clone()))).unwrap();
     }
     audit.shot(app, "ref-open");
+    if let Some(first) = dirs.first() {
+        send(app, PidBackupMsg::Toggle(NodeId::RefDir(first.clone()))).unwrap();
+    }
     send(app, PidBackupMsg::Toggle(NodeId::Ref)).unwrap();
+
+    walk_text(app, audit, index, empty);
 }
 
 #[test]

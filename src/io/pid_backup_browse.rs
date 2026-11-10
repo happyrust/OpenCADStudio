@@ -22,7 +22,9 @@
 //! is [`load_items`], read on demand when the panel first expands a drawing.
 
 pub mod labels;
+pub mod loose_files;
 pub mod manifest;
+pub mod text_file;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -73,6 +75,23 @@ pub struct BackupIndex {
     pub warnings: Vec<String>,
     /// All of `Manifest.txt`, sorted for the panel, its credentials hidden.
     pub manifest_model: Option<manifest::ManifestModel>,
+    /// The folder [`BackupIndex::ref_tree`] was read from.
+    pub ref_root: PathBuf,
+}
+
+impl BackupIndex {
+    /// Where file `file` of the `Ref` directory at `dirs` -- the child
+    /// indices from the tree's root -- is on disk.
+    pub fn ref_file_path(&self, dirs: &[usize], file: usize) -> Option<PathBuf> {
+        let mut node = &self.ref_tree;
+        let mut path = self.ref_root.clone();
+        for at in dirs {
+            node = node.dirs.get(*at)?;
+            path.push(&node.name);
+        }
+        path.push(&node.files.get(file)?.name);
+        Some(path)
+    }
 }
 
 /// The `Manifest.txt` fields a backup always carries.
@@ -90,7 +109,8 @@ pub struct ManifestSummary {
 pub struct BackupFile {
     /// File name as it appears on disk.
     pub name: String,
-    /// What the file is: `Manifest`, `Export.dmp`, `RefData` or `PlantData`.
+    /// What the file is: `Manifest`, `Export.dmp`, `RefData`, `PlantData`,
+    /// or a file the export left beside them.
     pub kind: FileKind,
     /// Human-readable format, e.g. `Oracle exp (EXPORT:V12.01.00)`.
     pub format: String,
@@ -116,6 +136,9 @@ pub enum FileKind {
     ExportDump,
     RefData,
     PlantData,
+    /// A file of the backup folder that is none of the above: the dump's
+    /// log, the plant's configuration (see [`loose_files`]).
+    Other,
 }
 
 /// One node of the plant-group (or, degraded, folder) tree.
@@ -217,6 +240,10 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
     if let Some(model) = &manifest_model {
         attach_file_records(&mut files, model);
     }
+    // What the export left beside its numbered files.
+    let loose = loose_files::loose_files(&backup_root, &files);
+    let at = loose_files::insert_at(&files);
+    files.splice(at..at, loose);
 
     let mut drawings = Vec::new();
     let mut group_paths = Vec::new();
@@ -251,11 +278,13 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
     // A backup folder carries its own `Ref`; a restore of an archive has one
     // copied beside the drawings, which is the one to show when the backup
     // root has none.
-    let mut ref_tree = read_ref_tree(&backup_root.join("Ref"));
+    let mut ref_root = backup_root.join("Ref");
+    let mut ref_tree = read_ref_tree(&ref_root);
     if ref_tree.dirs.is_empty() && ref_tree.files.is_empty() {
         let restored_ref = restored.root.join("Ref");
         if restored_ref.is_dir() {
             ref_tree = read_ref_tree(&restored_ref);
+            ref_root = restored_ref;
         }
     }
 
@@ -271,6 +300,7 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
         ref_tree,
         warnings,
         manifest_model,
+        ref_root,
     })
 }
 

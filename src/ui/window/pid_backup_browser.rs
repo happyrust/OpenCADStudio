@@ -27,6 +27,7 @@ mod goto;
 pub mod grid;
 mod manifest;
 mod section;
+mod text_preview;
 
 pub use goto::take_outcome as take_goto_outcome;
 pub use section::{SectionData, SectionLoad};
@@ -1006,11 +1007,17 @@ fn details<'a>(state: &'a PidBackupBrowser, width: f32) -> Element<'a, Message> 
             .height(Fill)
             .into();
     };
+    // How many rows a table of data has. The lines of a file say how many
+    // they are among the fields above them.
+    if table.is_sortable() {
+        body = body.push(
+            text(row_count_label(table.rows().len()))
+                .size(DETAIL_TEXT)
+                .style(muted),
+        );
+    }
     column![
         body,
-        text(row_count_label(table.rows().len()))
-            .size(DETAIL_TEXT)
-            .style(muted),
         grid::view(&table, &state.grid, grid_key(id), |msg| {
             PidBackupMsg::Grid(msg).message()
         }),

@@ -150,7 +150,7 @@ fn hide_logins(text: &str) -> (String, bool) {
 }
 
 /// One field as it may be shown, counting what was hidden.
-fn shown(key: &str, at: usize, field: &str, hidden: &mut usize) -> String {
+pub(super) fn shown(key: &str, at: usize, field: &str, hidden: &mut usize) -> String {
     if key == "DBPwds" || credential_positions(key).contains(&at) || is_obfuscated(field) {
         // An empty field hides nothing.
         if field.is_empty() {

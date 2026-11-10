@@ -7422,6 +7422,15 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "Single file" => Some(("pid-backup", "kind-single-file")),
         "Backed up" => Some(("pid-backup", "backed-up")),
         "{} credential field(s) are hidden and shown as {}" => Some(("pid-backup", "credentials-hidden")),
+        "Text encoding" => Some(("pid-backup", "text-encoding")),
+        "Line count" => Some(("pid-backup", "line-count")),
+        "Line #" => Some(("pid-backup", "line-number-column")),
+        "Text content" => Some(("pid-backup", "text-content")),
+        "Only the first {} of {} is shown." => Some(("pid-backup", "text-cut")),
+        "Not a text file; its content is not shown." => Some(("pid-backup", "not-text")),
+        "Reading the file…" => Some(("pid-backup", "reading-file")),
+        "{} is not in {}" => Some(("pid-backup", "member-not-found")),
+        "{} credential-like value(s) in the text are hidden and shown as {}" => Some(("pid-backup", "text-credentials-hidden")),
         _ => None,
     }
 }

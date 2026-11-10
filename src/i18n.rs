@@ -1253,6 +1253,15 @@ mod tests {
         "kind-single-file",
         "backed-up",
         "credentials-hidden",
+        "text-encoding",
+        "line-count",
+        "line-number-column",
+        "text-content",
+        "text-cut",
+        "not-text",
+        "reading-file",
+        "member-not-found",
+        "text-credentials-hidden",
     ];
 
     /// The panel's own labels, the ones the dock title and the command share.

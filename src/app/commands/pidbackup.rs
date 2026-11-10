@@ -752,6 +752,75 @@ mod tests {
         assert!(matches!(app.pid_backup_browser.load, LoadState::Ready(_)));
     }
 
+    /// The whole way a script goes to read a file of a backup: open the
+    /// folder, walk to the file by its label, and the text is in the panel.
+    /// Nothing here uses a pointer, and the reads run on their own threads.
+    #[test]
+    fn a_file_reached_from_the_command_line_shows_its_text() {
+        let root = std::env::temp_dir()
+            .join(format!("ocs-pidbackup-command-text-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Manifest.txt"), "Name<<|>>SQPlant\n").unwrap();
+        std::fs::write(
+            root.join("Export.log"),
+            "Connected to: Oracle Database\nExport terminated successfully without warnings.\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("Styles.spp"), [0xD0, 0xCF, 0x11, 0xE0, 0, 0, 0, 0]).unwrap();
+
+        let mut app = app();
+        let task = app.run_command_line(&format!("PIDBACKUPOPEN {}", root.display()));
+        app.drive_headless_task(task)
+            .expect("indexing a folder needs no window");
+        let files = crate::t!("Backup files").into_owned();
+        let history = app.command_line.history.len();
+        let task = app.run_command_line(&format!("PIDBACKUPOPEN Select {files} > Export.log"));
+        app.drive_headless_task(task)
+            .expect("reading a file needs no window");
+        let selected = app
+            .pid_backup_browser
+            .selected
+            .clone()
+            .expect("the walk ends on the file");
+        assert!(matches!(selected, NodeId::File(_)), "{selected:?}");
+        let details = pid_backup_browser::detail_rows(&app.pid_backup_browser, &selected);
+        assert!(
+            details.contains(&(
+                "2".to_string(),
+                "Export terminated successfully without warnings.".to_string()
+            )),
+            "{details:?}"
+        );
+        // The walk is reported; a read that went well is not.
+        let said: Vec<&str> = app.command_line.history[history..]
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect();
+        assert!(
+            said.iter().any(|line| line.contains("Export.log")),
+            "{said:?}"
+        );
+        assert!(app.command_line.history[history..]
+            .iter()
+            .all(|entry| entry.kind != EntryKind::Error));
+
+        // A file that is not text says so instead.
+        let task = app.run_command_line(&format!("PIDBACKUPOPEN Select {files} > Styles.spp"));
+        app.drive_headless_task(task)
+            .expect("reading a file needs no window");
+        let selected = app.pid_backup_browser.selected.clone().expect("a file");
+        let details = pid_backup_browser::detail_rows(&app.pid_backup_browser, &selected);
+        assert!(
+            details.contains(&(
+                crate::t!("Not a text file; its content is not shown.").into_owned(),
+                String::new()
+            )),
+            "{details:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_section_read_for_a_backup_that_was_closed_is_not_reported() {
         let mut app = app_with_fake_section();

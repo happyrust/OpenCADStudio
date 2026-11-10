@@ -9056,6 +9056,15 @@ pid-backup =
     .kind-single-file = 单个文件
     .backed-up = 已备份
     .credentials-hidden = __ocs_fmt_0__ 个口令类字段已隐藏，显示为 __ocs_fmt_1__
+    .text-encoding = 文本编码
+    .line-count = 行数
+    .line-number-column = 行号
+    .text-content = 文本
+    .text-cut = 只显示前 __ocs_fmt_0__（共 __ocs_fmt_1__）。
+    .not-text = 不是文本文件，不显示内容。
+    .reading-file = 正在读取文件…
+    .member-not-found = __ocs_fmt_1__ 中没有 __ocs_fmt_0__
+    .text-credentials-hidden = 文本中有 __ocs_fmt_0__ 处口令类内容已隐藏，显示为 __ocs_fmt_1__
 
 block-flip-frame-feedback =
     .unavailable = 块参数坐标框不可用。
