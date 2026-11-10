@@ -9150,6 +9150,7 @@ pid-backup =
     .no-row-count = 导出日志里没有这张表的行数。
     .split-set = PIDBACKUPOPEN：树占面板高度的 __ocs_fmt_0__%
     .split-needs-percent = PIDBACKUPOPEN：Split 后面要一个 __ocs_fmt_0__ 到 __ocs_fmt_1__ 之间的百分比
+    .reference-folder = 参考数据目录
 
 block-flip-frame-feedback =
     .unavailable = 块参数坐标框不可用。

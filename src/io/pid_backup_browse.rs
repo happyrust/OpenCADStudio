@@ -287,18 +287,16 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
         }
     }
     let plant_groups = build_group_tree(&group_paths);
-    // A backup folder carries its own `Ref`; a restore of an archive has one
-    // copied beside the drawings, which is the one to show when the backup
-    // root has none.
-    let mut ref_root = backup_root.join("Ref");
-    let mut ref_tree = read_ref_tree(&ref_root);
-    if ref_tree.dirs.is_empty() && ref_tree.files.is_empty() {
-        let restored_ref = restored.root.join("Ref");
-        if restored_ref.is_dir() {
-            ref_tree = read_ref_tree(&restored_ref);
-            ref_root = restored_ref;
-        }
-    }
+    // The restore's own `Ref` is the whole of it: the backup's reference
+    // data volumes unpacked, and what a `Ref` folder beside the backup adds.
+    // A folder used where it lies has only what lies beside it.
+    let restored_ref = restored.root.join(crate::io::pid_backup::REFERENCE_DIR);
+    let ref_root = if restored.extracted && restored_ref.is_dir() {
+        restored_ref
+    } else {
+        backup_root.join(crate::io::pid_backup::REFERENCE_DIR)
+    };
+    let ref_tree = read_ref_tree(&ref_root);
 
     Ok(BackupIndex {
         source: source.to_path_buf(),
@@ -1711,6 +1709,70 @@ mod tests {
         assert_eq!(model.files.len(), 3);
         assert_eq!(model.hidden, 1);
         assert!(!format!("{index:?}").contains("a-made-up-obfuscated-value"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A backup as SmartPlant leaves it has no `Ref` folder: its reference
+    /// data is in numbered volumes. The index's reference tree is those
+    /// volumes, unpacked where the manifest says they came from.
+    #[test]
+    fn a_backup_without_a_ref_folder_lists_its_volumes_as_reference_data() {
+        let root = scratch("volumes");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(
+            backup.join("Manifest.txt"),
+            "Name<<|>>SQPlant\r\n\
+             File<<|>>2<<|>>1<<|>>711<<|>>1<<|>>\\\\host\\P\\Plant<<|>>1<<|>>PlantData~2~711.zip\r\n\
+             File<<|>>4<<|>>1<<|>>681<<|>>1<<|>>\\\\host\\P\\Ref\\Symbols<<|>>1<<|>>RefData~4~681.zip\r\n\
+             File<<|>>4<<|>>1<<|>>682<<|>>1<<|>>\\\\host\\P\\Ref\\Template Files<<|>>1<<|>>RefData~4~682.zip\r\n\
+             File<<|>>4<<|>>2<<|>>680<<|>>1<<|>>\\\\host\\P\\Ref\\rules.rul<<|>>1<<|>>RefData~4~680\r\n",
+        )
+        .unwrap();
+        write_zip(&backup.join("PlantData~2~711.zip"), &[("00/00/A.pid", b"a")]);
+        write_zip(
+            &backup.join("RefData~4~681.zip"),
+            &[("Piping/gate.sym", b"gate"), ("CatalogIndex.xml", b"<c/>")],
+        );
+        write_zip(
+            &backup.join("RefData~4~682.zip"),
+            &[("A1.igr", b"border"), ("A1.pid", b"template drawing")],
+        );
+        std::fs::write(backup.join("RefData~4~680"), b"rules").unwrap();
+        let target = root.join("out");
+        let index = build_index(&backup, Some(&target)).unwrap();
+
+        assert_eq!(index.ref_root, target.join("Ref"));
+        let names = |nodes: &[RefNode]| -> Vec<String> {
+            let mut names: Vec<String> = nodes.iter().map(|node| node.name.clone()).collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names(&index.ref_tree.dirs), ["Symbols", "Template Files"]);
+        assert_eq!(
+            index
+                .ref_tree
+                .files
+                .iter()
+                .map(|file| file.name.as_str())
+                .collect::<Vec<_>>(),
+            ["rules.rul"]
+        );
+        assert_eq!(index.ref_tree.file_count(), 5);
+        // A reference file is where the tree says it is.
+        let rules = index.ref_file_path(&[], 0).expect("rules.rul has a path");
+        assert_eq!(std::fs::read(&rules).unwrap(), b"rules");
+        // The template drawing is reference data, not a drawing of the plant.
+        assert_eq!(
+            index
+                .drawings
+                .iter()
+                .map(|drawing| drawing.name.as_str())
+                .collect::<Vec<_>>(),
+            ["A"]
+        );
+        // The backup folder itself is only read.
+        assert!(!backup.join("Ref").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

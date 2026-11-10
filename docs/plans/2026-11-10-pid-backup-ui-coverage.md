@@ -327,6 +327,7 @@ D1 按 (a)（仍在现有面板里，表格保持独立部件），D5 按 (a)（
 | 1 测试之间的竞争 | 「并行测试共用进程级状态造成的偶发失败：六条测试各自按根因修」 | 库测试并行跑时偶发失败的六条上游测试，根因是四种进程级状态被别的测试动了：字形图集（每条构造应用的测试都清空它）、语言代数（同样每次构造都加一）、quad 面板存储（两条测试共用插件名 `PLUGIN`）、插件错误队列（每个应用的 tick 都清空它）。另有一条是时间门限（一次指针移动处理超过 8 ms，下一次移动被合并）。只动测试代码；`sdf_atlas.rs` 加的是 `#[cfg(test)]` 的辅助函数，`plugin/mod.rs` 把错误队列的取用收成一个函数、测试构建里按线程各一份，产品构建的行为不变。修前修后的失败次数见 §6.5。 | 无 |
 | 口令：文本预览 | 「文本预览：Manifest 的副本与别的文件里的口令也遮住」 | 先确认：`Manifest.txt` 那一行从不被读成文本（内容只在它展开的子树里，口令已遮住），三个包的走查各有一条断言。再补两处漏洞（先红后绿）：一份行尾只有回车的 Manifest 副本，整份被当成一行，按位置认定的口令字段露了原文——现在回车、换行、回车加换行都算行尾；别的文件里叫作口令的值（`Password=…`、`<Pwd>…</Pwd>`、`"password": "…"`、`key="DbPassword" value="…"`、连接串里的 `Pwd=…;`）原样显示——现在一律换成 `•••` 并计数。三个包里能被预览打开的文本逐个扫过（脚本只报位置和长度）：除 `Manifest.txt` 本身外没有一处口令，新规则在真实文件上一处都没有遮（`ObjectAttrValidation.xml` 的 `PassValue` 不算口令）。 | 无 |
 | 2 详情区 | 「P&ID 备份面板：树与详情之间的分隔条可拖动，选中行自动滚入视野」 | 树和详情改成一个 pane grid 的两格，中间 7 px 的缝就是可拖的分隔条（悬停时高亮，详情顶上另有一条细线标出位置）；比例记在面板状态里（`split::Split`，默认仍是 3 : 2，范围 12%–88%，每一半不小于 48 px），打开、刷新、关闭备份都不改它。`PIDBACKUPOPEN Split <百分比>` 从命令行设比例，脚本和隐藏桌面上的真实窗口靠它。选中行滚入视野用的是一个控件操作（`split::reveal_selected`）：在排好版的面板里找到树的滚动区和选中行，行不在视野里才滚，滚到刚好露出整行；它读的是实际布局，折行的长标签也算得对。点选、`Select` 走到的节点都会触发。全厂包 `rules.rul`：889 px 高的真实窗口里默认比例露 4 行，`Split 30` 之后 14 行。 | 无（§6.3 的前两条） |
+| W8 | 「P&ID 备份：还原时把参考数据卷放回 Ref，原样的包也有参考数据、图框也画得出来」 | 新文件 `src/io/pid_backup/refdata.rs`，`restore` 里调用：按 Manifest 的 File 行，把备份自带的每个 RefData 卷放回它在服务器上的相对位置——目录卷解到 `<还原目录>\Ref\<原目录>`，单文件卷拷成原名。相对位置按各卷所在目录的共同部分算（那个共同目录在还原里一律叫 `Ref`，导入器认这个名字），只有一个卷时也保留卷自己的名字；路径越出 `Ref` 的卷不还原。包旁已有的 `Ref\` 先拷过来，再由卷覆盖同名文件。还原出的图框模板也是 `.pid`，它们属于参考数据，不算图纸。缓存键加入版本号、Manifest 与各卷的大小时间，旧缓存自动重做。「参考数据」节点的详情多一行「参考数据目录」。 | #30、#31、#38 在原样的包里也有了（状态不变，预览与结构化视图仍未接）；§1.3 第 6 条。导入的变化：全厂包带图框的图纸 0 → 45 张（4 366 个图框图元），DWG-0202 包 0 → 4 张（309 个），TEST02 包 1 → 1 张；三个包图纸自身的图元数不变（149 310 / 1 697 / 920）；参考文件 645 → 695、0 → 677、0 → 662；还原缓存 130 → 160 MB、1 → 69 MB、67 → 133 MB |
 
 ### 6.5 第 1 项：每条测试的根因与修前修后
 
@@ -345,3 +346,63 @@ D1 按 (a)（仍在现有面板里，表格保持独立部件），D5 按 (a)（
 同一机制、没见过失败、也没重现出来、一并套了同样保护的两条：`io::pdf_export::tests::text_grows_the_pdf_vs_no_text`（定向 0 → 0）、`scene::resident_patch_shorter_runs_tests::references_drawn_as_stubs_are_patched_when_a_layer_inside_switches`（定向 0 → 0）。
 
 没有处理的：`rapid_drawing_tests::throttle_axis_command_matches_authoritative_move` 在同时压三套全量时 20 遍里失败 1 遍（单独 0 / 20），同样是时间门限一类，全套里没出现过。协同传输那一组照旧失败，等主线那边的修正。
+
+### 6.6 交接记录（第二批进行中）
+
+写于 2026-11-11 01:10，W8 提交之后。给接手这个分支的人或会话看：做到哪了、怎么接着做、哪里会绊脚。之后每做完一项，在本节末尾的「进度」里补一两行，随那一项一起提交。
+
+工作树 `D:\work\plant-code\cad\ocs-upstream-20261110`，分支 `upstream-merge-20261110`，只做本地提交、不改写已有提交（主线已经并入过这个分支）。`src/app/mod.rs`、`src/app/update/mod.rs`、`src/app/commands/mod.rs` 三个文件和 `src/app/collab/*` 不动。
+
+**已完成（第二批）**
+
+| 项 | 提交 |
+|---|---|
+| 0 真实窗口工具（隐藏桌面） | `c2a7db496` |
+| 1 测试之间的竞争（§6.5） | `2271924a0` |
+| 口令：文本预览 | `36eeb97fe` |
+| 2 详情区：可拖的分隔条、选中行滚入视野 | `23eae5d00` |
+| W8 还原时把 RefData 卷放回 `Ref\` | `4d389009b` |
+
+**还剩**，按这个顺序，每项一个提交：W6（图内数据补全，#27）→ W5（库的类型化视图；先量读 74 MB 转储的时间和内存）→ W10（数据映射表）→ W12（解析诊断）→ W14（还原缓存：默认位置不变，加设置项和「清理缓存」，入口在根节点详情）→ W16（文案与图标）。收尾时全量跑一次，与 2a 的 6406 / 3 / 43 对照。W9、W7、W13 留给下一批；D3、D4、D7、W11、W15 不做。
+
+**怎么编译**
+
+- 工具链用 `rustup run stable cargo …`（1.99.1）；PATH 上那个 cargo 是改过的，不认 `CARGO_TARGET_DIR`。
+- 环境变量：`CARGO_TARGET_DIR=<工作树>\target`，`TEMP` 与 `TMP` 都指到 `<工作树>\target\tmp`（还原缓存和测试的临时目录都写在临时目录下，不能落到 C 盘），`LC_ALL=C`。
+- 平时改一轮跑一轮，只编库测试：`rustup run stable cargo test --workspace --lib --no-run --offline -j 4`。只有根 crate 变了的时候约 2 分钟（实测 80–135 s），产物是 `target\debug\deps\OpenCADStudio-<哈希>.exe`（约 268 MB），输出里 `Executable unittests src\lib.rs (…)` 那一行给出它的路径。
+- 真实窗口和全量测试要全部目标（`target\debug\OpenCADStudio.exe`、集成测试、示例）：`rustup run stable cargo test --workspace --no-run --offline -j 4`，在库测试编过之后再编约 2 分钟。
+- 不要用 `cargo build --workspace --lib`：那是另一套特性组合（不带开发依赖），iced 的各个 crate 会再编一遍，多出一份 832 MB 的 rlib 和约 2 GB 的增量目录。
+- cargo 每次构建都会改写 `Cargo.lock`，提交前 `git restore Cargo.lock`。
+- 每次提交之后的第一次构建会重编根 crate（`build.rs` 监视 HEAD 和分支引用），不是出了问题。
+
+**怎么跑测试**
+
+- 直接运行 `--no-run` 产出的可执行文件，不要再走 `cargo test`（每次都重编根 crate，见 §5.2）。工作目录是工作树根；环境变量 `RUST_MIN_STACK=67108864`、`ICED_TEST_BACKEND=tiny-skia`、`LC_ALL=C`、`CARGO_MANIFEST_DIR=<工作树>`（workspace 里其他 crate 的测试程序要指到各自的目录，工作目录也换过去），`TEMP` / `TMP` 同上。
+- 备份面板这一块：`<库测试程序> pid_backup`（168 条，不到 1 秒）、`pidbackup`（24 条）、`i18n::tests`（18 条，2 秒；新加的本地化键漏了任何一处它会失败）。
+- 走查三个真实包：环境变量见 §5.2；`OCS_PID_BACKUP_AUDIT_SKIP_IMPORT=1` 跳过逐张导入。带导入时全厂包约 65 秒（其中导入 40 秒上下），另外两个包各 15–20 秒。报告在输出目录的 `report.txt`，面板图片在旁边。
+- 全量：`--no-run` 的输出里列出 18 个测试可执行文件，逐个运行。
+- 本机的便利脚本在 `target\stage1-logs\`（不入库；丢了按上面的命令重写即可）：`b.ps1 [-All] -Jobs 4` 编译，`t.ps1 <过滤词…>` 跑库测试，`a.ps1 -Tag <名> [-Import] [-Only plant|dwg0202|test02]` 走查三个包（输出到 `target\ui-audit\stage2b\<名>\<包>\`），`run-tests.ps1 -Tag <名>` 全量，`fullruns.ps1 -Exe <库测试程序> -Tag <名> -Runs 8` 库测试连跑并统计每条失败几遍，`add_locale_keys.py <键.json>` 把新键加进 23 个 ftl 和两处键清单，`custom\plan_2b_row.py <行文件>` 往 §6.4 的表加一行。
+
+**怎么在隐藏桌面上驱动真实窗口**
+
+- 说明是 `docs/automation/guides/hidden-desktop.md`，脚本是 `docs/automation/hidden_steps.py`，步骤文件的例子是 `docs/automation/hidden_steps_example.json`。先编出 `target\debug\OpenCADStudio.exe`，然后：`python docs\automation\hidden_steps.py target\debug\OpenCADStudio.exe <输出目录> <步骤.json> --backend vulkan`。
+- 步骤里发 `PIDBACKUPOPEN <包路径>`、`PIDBACKUPOPEN Select 参考数据 > rules.rul`（按标签路径展开并选中）、`PIDBACKUPOPEN Split 30`（树占 30%），再 `capture`（整窗）和 `crop`（只截面板）。起窗口、五六步、截图，一轮约 35 秒。
+- 编辑器跑在另一个桌面上，不动指针、不抢前台，脚本自己核对运行前后的指针位置和前台窗口。代价是做不了指针操作：拖分隔条、悬停高亮、点面板里的行，这些靠 `iced_test` 按画出来的位置点击来验。
+- 这台机器上 DX12 视口不出图（D7），所以带 `--backend vulkan`。
+- 面板里还没有备份时，`PIDBACKUPOPEN` 后面带空格的内容会被命令行拆开逐词喂给提问：先发一条只带路径的 `PIDBACKUPOPEN <路径>`（路径里没有空格），之后的 `Select …`、`Split …` 才整行生效。要改得动 `src/app/command_driver/utilities.rs` 的整行命令清单，没有动。
+- 执行过 `ZOOM E` 的图纸会被标成已修改，收尾时脚本报「did not close … was ended」，是预期的。
+
+**踩过的坑**
+
+- **偶发失败。** 库测试并行跑，共用进程级状态：字形图集（每条构造应用的测试都清空它）、语言代数、quad 面板存储、插件错误队列，另有按时钟合并指针移动的门限。本分支修过的七条见 §6.5。主线后来又各见过一次的两条不在其中，同属字形图集一族，按约定由主线处理、本分支不修：`app::automation::tests::a_job_whose_text_the_atlas_no_longer_holds_is_laid_out_again`（自己清空图集之后断言「现场图集里一定没有这些键」，而键是瓦片位置，别的测试紧跟着烘进去的字形会占回同样的位置）和 `io::svg_export::tests::a_page_style_table_wins_over_the_job_wide_one`（比较两页的输出，两页各自在写出时从现场图集取快照，中间图集被清空或重排两页就不一样）。本分支修前修后各 8 遍全套里这两条都没有失败过。
+- **协同传输那一组**（`app::collab::transport`）在本分支上照旧失败 2–4 条，修正在主线上。
+- **内存。** 同一台机器上常有别的仓库在编译。rustc 或链接器报 `memory allocation of … failed` 的那一遍不算通过也不算失败，等一等重跑。构建用 `-j 4`；大构建之前看一眼可提交内存（`Win32_OperatingSystem.FreeVirtualMemory`），低于 20 GB 先等。
+- **磁盘。** 本工作树的 `target` 约 18 GB，其中增量缓存约 10 GB。D 盘低于 15 GB 就停。C 盘只有 8 GB 上下，`TEMP` / `TMP` 没指到 D 盘的话，每个包一次还原 70–160 MB 会落在 C 盘。`target\tmp\ocs-pid-backups\` 里 W8 之前的三个旧缓存（`ec348b5bfefd6425`、`c5fc2b87d4a3ade3`、`f9243fc51d4a5325`，约 198 MB）不会再被用到。
+- **两个会话同时改这棵树**（2026-11-11 00:28–00:58 出过一次）。上级看到一轮「中断」时，断的可能只是它那边的事件流，那一轮自己还在跑（这次是被一条后台任务结束的通知重新叫起来的）；上级再启动新的一轮，就有两个会话同时改文件、共用一个 `target`。接手时先看有没有不是自己起的 `cargo`、`rustc`、测试进程（按命令行里的工作树路径找），`src` 和 `target\stage1-logs` 里有没有刚被写过的文件。有的话先不要动手：这次是在 `target\stage1-logs` 里放了一份说明，并让 `b.ps1`、`t.ps1`、`a.ps1` 打印它的路径，对方读到后把手上的 W8 收完提交、写下交接就停了。
+- **用词与输出。** 上级猜测前两次中断与请求里的用词有关。代码、测试名、注释、提交说明用中性的词（「路径越出目标目录」「带盘符的路径」，测试用的文件名 `outside.txt`）；口令的原值、Manifest 的原文不要打到终端、日志、报告和截图里，要验证遮蔽就断言「原值不出现」或比较条数。
+- **PowerShell。** here-string 和带 `\"` 的参数容易被截断或改写，补丁脚本和 JSON 先写成文件再执行；双引号字符串里变量后面紧跟冒号要写成 `${名字}`。
+- **本地化。** 新标签都是 `pid-backup` 这条 Fluent 消息的属性，23 个 `locales/*/opencadstudio.ftl`、`src/locale_catalog.rs` 和 `src/i18n.rs` 的键清单要一起改，新键追加在各自的末尾。
+
+**进度**
+
+- W8（`4d389009b`）：三个包导入前后——带图框的图纸 0 → 45 张、0 → 4 张、1 → 1 张，图纸自身的图元数不变（149 310 / 1 697 / 920），未画出的源记录（9 / 0 / 49）和导不进的图纸（1 / 1 / 2）不变；修改前的数是拿 W8 之前的还原目录重量的（`target\ui-audit\stage2b\W8-before\`）。

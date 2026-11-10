@@ -1552,3 +1552,66 @@ fn a_linked_igr_overlays_its_drafting_on_pid_frame() {
         "every template entity names the .igr it came from"
     );
 }
+
+/// The importer finds a drawing's symbols by walking up from the drawing to
+/// a `Ref` folder. A backup as SmartPlant leaves it has none: its symbol
+/// library is a numbered volume. Restored, the volume is back under `Ref`
+/// beside the drawings, and the walk finds it.
+#[test]
+fn a_restored_backup_has_the_symbol_library_its_drawings_look_for() {
+    use std::io::Write;
+    // The name says nothing of symbols, and the restores lie two folders
+    // down: the walk goes five levels up from a drawing and takes every
+    // folder with "symbol" in its name for a library, the temp folder's too.
+    let root = std::env::temp_dir().join(format!("ocs-pid-restored-refdata-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let deep = root.join("a").join("b");
+    let backup = deep.join("backup");
+    std::fs::create_dir_all(&backup).unwrap();
+    let archive = |name: &str, members: &[(&str, &[u8])]| {
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(backup.join(name)).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for (member, bytes) in members {
+            writer.start_file(*member, options).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    };
+    std::fs::write(
+        backup.join("Manifest.txt"),
+        "Name<<|>>SQPlant\r\n\
+         File<<|>>2<<|>>1<<|>>711<<|>>1<<|>>\\\\host\\P\\Plant<<|>>1<<|>>PlantData~2~711.zip\r\n\
+         File<<|>>4<<|>>1<<|>>681<<|>>1<<|>>\\\\host\\P\\Ref\\Symbols<<|>>1<<|>>RefData~4~681.zip\r\n",
+    )
+    .unwrap();
+    archive("PlantData~2~711.zip", &[("00/00/A.pid", b"a")]);
+    archive("RefData~4~681.zip", &[("Piping/Valves/gate.sym", b"gate")]);
+
+    // The library roots the walk finds under `folder` (the environment may
+    // name others, which are not this test's business).
+    let found_under = |drawing: &Path, folder: &Path| -> Vec<PathBuf> {
+        super::symbols::discover_symbol_library(drawing)
+            .map(|library| {
+                library
+                    .roots()
+                    .iter()
+                    .filter(|root| root.starts_with(folder))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let target = deep.join("out");
+    let restored = crate::io::pid_backup::restore(&backup, Some(&target)).unwrap();
+    let drawing = restored.drawings.first().expect("the drawing is restored");
+    assert_eq!(found_under(drawing, &root), [target.join("Ref").join("Symbols")]);
+    assert!(target.join("Ref/Symbols/Piping/Valves/gate.sym").is_file());
+
+    // The same backup with its volume taken away: nothing to find.
+    std::fs::remove_file(backup.join("RefData~4~681.zip")).unwrap();
+    let bare = deep.join("bare");
+    let restored = crate::io::pid_backup::restore(&backup, Some(&bare)).unwrap();
+    let drawing = restored.drawings.first().expect("the drawing is restored");
+    assert!(found_under(drawing, &root).is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}

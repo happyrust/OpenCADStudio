@@ -816,6 +816,25 @@ fn walk_index(
         "== reference data: {} directories, {files} files ==",
         dirs.len()
     ));
+    // The backup's own reference data volumes, which a restore unpacks into
+    // the tree: a backup that carries any has a tree to show.
+    let volumes = index
+        .files
+        .iter()
+        .filter(|file| {
+            file.kind == crate::io::pid_backup_browse::FileKind::RefData && !file.missing
+        })
+        .count();
+    audit.line(format!(
+        "  read from {} ({volumes} reference data volume(s) in the backup)",
+        index.ref_root.display()
+    ));
+    if volumes > 0 && index.restored != index.source {
+        assert!(
+            files > 0,
+            "the backup carries {volumes} reference data volume(s) and the tree is empty"
+        );
+    }
     for dir in &index.ref_tree.dirs {
         audit.line(format!("  {}: {} files", dir.name, dir.file_count()));
     }
@@ -1249,6 +1268,13 @@ fn a_real_backup_is_walked_node_by_node() {
     let mut slowest_import = (Duration::ZERO, String::new());
     let mut entities = 0;
     let mut undrawn = 0;
+    // What the importer made of the reference data: symbol bodies drawn from
+    // the library, and the border templates overlaid.
+    let mut library_bodies = 0;
+    let mut cache_bodies = 0;
+    let mut bordered = 0;
+    let mut template_entities = 0;
+    let mut libraries: Vec<PathBuf> = Vec::new();
     // The slow half of the walk (a plant's drawings take half a minute), and
     // the one a change to the panel does not touch: a run that is only
     // after the panel can leave it out.
@@ -1274,6 +1300,15 @@ fn a_real_backup_is_walked_node_by_node() {
                 let summary = &import.summary;
                 entities += summary.drawn;
                 undrawn += summary.missing;
+                library_bodies += summary.library_bodies;
+                cache_bodies += summary.cache_bodies;
+                bordered += usize::from(summary.border_template.is_some());
+                template_entities += summary.template_entities;
+                for root in &summary.symbol_library {
+                    if !libraries.contains(root) {
+                        libraries.push(root.clone());
+                    }
+                }
                 if took > slowest_import.0 {
                     slowest_import = (took, drawing.name.clone());
                 }
@@ -1299,6 +1334,20 @@ fn a_real_backup_is_walked_node_by_node() {
         slowest_import.1,
         millis(slowest_import.0)
     ));
+    if import {
+        audit.line(format!(
+            "  reference data in the import: {library_bodies} symbol bodies from the library, {cache_bodies} from the drawings' own caches; {bordered} drawing(s) with their border template ({template_entities} entities); symbol library: {}",
+            if libraries.is_empty() {
+                "none found".to_string()
+            } else {
+                libraries
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }
+        ));
+    }
 
     // ── Credentials ──────────────────────────────────────────────────────
     // A manifest carries passwords: obfuscated ones, and one in clear text

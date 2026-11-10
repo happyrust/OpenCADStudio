@@ -597,6 +597,106 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A backup with no `Ref` folder beside it, as SmartPlant leaves one:
+    /// its reference data volumes are the reference tree. The arrow of
+    /// "Reference data" is where a press lands, and a click on a file of the
+    /// tree reads it.
+    #[test]
+    fn the_volumes_of_a_backup_are_its_reference_tree_drawn_and_clicked() {
+        let _guard = crate::headless_ui_lock();
+        let root = scratch("volumes");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(
+            backup.join("Manifest.txt"),
+            "Name<<|>>SQPlant\r\n\
+             File<<|>>2<<|>>1<<|>>711<<|>>1<<|>>\\\\host\\P\\Plant<<|>>1<<|>>PlantData~2~711.zip\r\n\
+             File<<|>>4<<|>>1<<|>>681<<|>>1<<|>>\\\\host\\P\\Ref\\Symbols<<|>>1<<|>>RefData~4~681.zip\r\n\
+             File<<|>>4<<|>>1<<|>>682<<|>>1<<|>>\\\\host\\P\\Ref\\Template Files<<|>>1<<|>>RefData~4~682.zip\r\n\
+             File<<|>>4<<|>>2<<|>>680<<|>>1<<|>>\\\\host\\P\\Ref\\rules.rul<<|>>1<<|>>RefData~4~680\r\n",
+        )
+        .unwrap();
+        write_zip(&backup.join("PlantData~2~711.zip"), &[("00/00/A.pid", b"a")]);
+        write_zip(
+            &backup.join("RefData~4~681.zip"),
+            &[("Piping/gate.sym", &[0xD0, 0xCF, 0x11, 0xE0, 0, 0, 0, 0])],
+        );
+        write_zip(&backup.join("RefData~4~682.zip"), &[("A1.igr", &[0xD0, 0xCF, 0, 0])]);
+        std::fs::write(
+            backup.join("RefData~4~680"),
+            b"\"Begin Rules\",2\n\"End Rules\"\n",
+        )
+        .unwrap();
+        let index = build_index(&backup, Some(&root.join("out"))).expect("the folder indexes");
+        let mut state = PidBackupBrowser::default();
+        update(&mut state, PidBackupMsg::Loaded(Ok(Arc::new(index))));
+
+        // The details of the group say where the tree was read from.
+        let rows = detail_rows(&state, &NodeId::Ref);
+        assert_eq!(value(&rows, &t!("Reference file count")), Some("3"));
+        assert_eq!(
+            value(&rows, &t!("Reference folder")),
+            Some(root.join("out").join("Ref").display().to_string().as_str())
+        );
+
+        fn press(state: &PidBackupBrowser, label: &str, left_of: bool) -> Vec<PidBackupMsg> {
+            let mut ui = iced_test::simulator::Simulator::with_size(
+                iced::Settings::default(),
+                (340.0, 700.0),
+                view(state, 340.0, Chrome::default()),
+            );
+            let bounds = ui
+                .find(label)
+                .unwrap_or_else(|error| panic!("the row of {label} is drawn: {error:?}"))
+                .visible_bounds()
+                .unwrap_or_else(|| panic!("the row of {label} is on screen"));
+            let x = if left_of {
+                bounds.x - 7.0
+            } else {
+                bounds.center_x()
+            };
+            ui.point_at(iced::Point::new(x, bounds.center_y()));
+            let _ = ui.simulate(iced_test::simulator::click());
+            ui.into_messages()
+                .filter_map(|message| match message {
+                    Message::PidBackup(message) => Some(message),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        let opened = press(&state, t!("Reference data").as_ref(), true);
+        assert!(
+            opened
+                .iter()
+                .any(|message| matches!(message, PidBackupMsg::Toggle(NodeId::Ref))),
+            "{opened:?}"
+        );
+        for message in opened {
+            update(&mut state, message);
+        }
+        let labels: Vec<String> = visible_rows(&state)
+            .into_iter()
+            .filter(|row| matches!(row.id, NodeId::RefDir(_) | NodeId::RefFile(..)))
+            .map(|row| row.label)
+            .collect();
+        assert_eq!(labels, ["Symbols", "Template Files", "rules.rul"]);
+
+        let clicked = press(&state, "rules.rul", false);
+        let rules = NodeId::RefFile(vec![], 0);
+        assert!(
+            clicked
+                .iter()
+                .any(|message| matches!(message, PidBackupMsg::Select(node) if *node == rules)),
+            "{clicked:?}"
+        );
+        assert!(select(&mut state, &rules));
+        let rows = detail_rows(&state, &rules);
+        assert_eq!(value(&rows, "1"), Some("\"Begin Rules\",2"));
+        assert_eq!(value(&rows, &t!("Line count")), Some("2"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// What a manifest's credentials look like in the panel: the row of
     /// `Manifest.txt` itself is never read as text (its content is the
     /// branch under it, hidden field by field), and a copy of the file is a
