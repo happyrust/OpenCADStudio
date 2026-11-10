@@ -125,7 +125,11 @@ pub mod codes {
     pub const PERM_UNKNOWN_SUBJECT: &str = "PERM_UNKNOWN_SUBJECT";
     pub const PERM_UNKNOWN_OPERATION: &str = "PERM_UNKNOWN_OPERATION";
     pub const PERM_INVALID_STATE: &str = "PERM_INVALID_STATE";
+    /// A deletion refused because other objects still hang on the object.
     pub const OBJECT_REFERENCED: &str = "OBJECT_REFERENCED";
+    /// A change to an object another session deleted after the change's
+    /// baseline. The deletion stands (`architecture.md` §3.3, object level).
+    pub const OBJECT_DELETED: &str = "OBJECT_DELETED";
     pub const INVALID_STATE_TRANSITION: &str = "INVALID_STATE_TRANSITION";
     /// The op was made against a revision the drawing has left, and it is of
     /// a kind the server cannot merge. Catch up and send it again.

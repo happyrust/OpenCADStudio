@@ -725,4 +725,47 @@ mission 的说明（`features.json`）：不同字段并发修改自动合并且
 | `VAL-CONF-004` | passed（服务器带 `--tie-window-ms 1500`） | `c01-004-conflicts.json`（各列与契约逐项相同）；`ws-c01c-s1.jsonl`、`ws-c01c-s2.jsonl`（双方的 `conflict`，`conflict_id` 与表中一致）；窗口过后两个 op 都没有 `op_applied`，修订仍是 0 |
 | `VAL-CONF-005` | passed | `ws-c01c-s2.jsonl`（`error` `OP_SUPERSEDED`）；`conflicts` 前后都是 1 行；`c01-005-objects.json`（DN50）；服务器日志 `c01-server-c-log.txt` |
 
-按字面不成立的：001 的证据一栏写的是 GUI 的 `GET /api/v1/entities/<handle>/xdata`，而这条断言全程只有 WS 会话、没有 GUI，字段值是从服务器的 `GET /drawing/PID-1101/objects` 读回的。其余四条逐句成立。场景脚本 `E7\c01_field_merge.py`，24 项检查全过（`ocs_collab` 71 条、`ocs_collab_server` 118 + 12 条单测通过，两个 crate 的 clippy 0 告警）。
+按字面不成立的：001 的证据一栏写的是 GUI 的 `GET /api/v1/entities/<handle>/xdata`，而这条断言全程只有 WS 会话、没有 GUI，字段值是从服务器的 `GET /drawing/PID-1101/objects` 读回的。其余四条逐句成立。场景脚本 `E7\c01_field_merge.py`，24 项检查全过（`ocs_collab` 71 条、`ocs_collab_server` 118 + 12 条单测通过，两个 crate 的 clippy 0 告警）。提交 `369dacba1`。
+
+#### 14.5.2 `conflict-object-topology`（`VAL-CONF-006`–`009`、`017`）
+
+mission 的说明：一方删除另一方仍提交修改时删除生效、修改方收到通知与被覆盖原值、不生成冲突条目而记入审计；拓扑级连接关系双方变更后生成待裁决条目且裁决前不改变任何一方拓扑；删除被引用对象返回 `OBJECT_REFERENCED`。前置里写的「`delete_object` op 类型已加入协议」没有做过，这一项里加。
+
+开工前：服务器只认 `set_property` / `set_tag`（上一项），别的 op 原样转发、基线必须等于当前修订；它不知道哪些对象存在、谁引用谁，也没有任何拓扑。
+
+| 断言 | 要点 | 准备怎样取证 |
+|---|---|---|
+| `VAL-CONF-006` | s1 删除 `P-1002`，得 `op_applied`；s2 没看到这次删除就改 `P-1002.设计压力`：s2 收到通知，含删除前的旧值；语义查询里不再有 `P-1002`；删除没有被回滚 | 两个 WS 会话的帧；`GET /drawing/PID-1101/objects` 前后；`audit_log` 里该对象的行 |
+| `VAL-CONF-007` | 上一条不进 `conflicts`（`object_ref='P-1002'` 0 行）；`audit_log` 至少新增 2 行（删除、被拒的修改），`change_text` 含旧值 | `select count(*) from conflicts where object_ref='P-1002'`；`GET /audit?tag=P-1002` |
+| `VAL-CONF-008` | s1 对管线 `L-1001` 提交 `add_pipe_run`，s2 同一基线提交同一管线上的 `insert_fitting`：`conflicts` 新增 1 行，`object_ref='L-1001'`、`field` 表示拓扑、`value_a` / `value_b` 非空、`status='待裁决'`；双方各收到 `conflict` | `select * from conflicts where object_ref='L-1001'`；双方的 `conflict` 帧（服务器带 `--tie-window-ms`，理由同 004） |
+| `VAL-CONF-009` | 裁决之前拓扑还是冲突前的样子，不是任何一方的版本；`status` 仍是 `待裁决` | 新增的服务器拓扑查询 `GET /drawing/PID-1101/topology`，冲突前后各读一次比对 |
+| `VAL-CONF-017` | `P-1003` 是 `L-1001` 某条管路的端点；删除它被拒，`code` 表示被引用（A.4 定的是 `OBJECT_REFERENCED`），`message` 列出引用方位号；对象仍在语义查询里；`audit_log` 记下这次被拒的尝试 | 删除 op 的入站帧；语义查询；`audit_log` 该行 |
+
+要定的线上形状（契约只给了 `add_pipe_run` 的 `line_tag` + `points`、`insert_fitting` 的 `run_tag` + `at`，没说端点怎样表达）：`add_pipe_run` 可带 `from` / `to` 两个位号表示两端接到哪个对象上；管路位号由 `tag` 给出，不给时服务器按 `{管线号}-{两位序号}` 取下一个。
+
+**做了什么**
+
+- `DrawingModel` 多记三样：被删的对象（连同删除时各字段的值）、管线的拓扑（管线 → 管路；管路的点、两端接到的对象、上面的管件；连接符）、每条管线的连接关系最后是谁在哪个修订改的。
+- 新认六种 op：`delete_object`、`insert_symbol`、`create_pipe_line`、`add_pipe_run`、`insert_fitting`、`create_connector`。此前它们只是原样转发。
+- **对象级**：对一个「在我的基线之后被别的会话删掉」的对象改字段，不生效；回 `error`，`code` 是新增的 `OBJECT_DELETED`，`message` 里有删除的修订、删除者和该字段删除前的值；审计记 `change_rejected_deleted`。删除本身照常生效，审计行里带上删除前各字段的值。不进 `conflicts`。看到了删除还照旧位号写，算重新建立这个对象。
+- **被引用**：`delete_object` 的对象若是某条管路的端点（`from` / `to`），拒绝；`error` `OBJECT_REFERENCED`，`message` 列出引用它的管线；审计记 `delete_refused`。管线删掉之后引用随之解除。
+- **拓扑级**：同一条管线的连接关系不逐字段合并。带并列窗口时，两个会话在同一基线上各改同一条管线（一个加管路、一个插管件），算并列：都不生效，`conflicts` 一行，`object_ref` 是管线位号，`field='topology'`，`value_a` / `value_b` 是两个 op 的原文。不带窗口时不会并列：后到的那个如果基线早于别人对这条管线的改动，回 `STALE_BASE_REVISION`，请它按现在的管线重来；别人没动过的管线照样合并。
+- `GET /drawing/{id}/topology`：已经生效的拓扑。还在窗口里的、被冲突条目压着的都不在里面。
+- 没带位号的管路由服务器取号（`L-1001-01`、`-02`…），写进广播与 `ops` 表，各端和重放得到的是同一个名字。
+
+**定下来的事**
+
+- 「被引用」现在只指管路端点。管路上的管件（比如带位号的阀门）被删时不拦——拦了的话，客户端本地已经删掉而服务器不认，两边就不一样了，而客户端删管件时怎样把管路接回去是 M5 的事，这一轮没有碰。
+- 只有改字段、改连接关系这两类 op 会在并列窗口里暂存。删除、插入符号、新建管线不争任何东西，到了就生效；它们之后才到期的暂存 op 按落后者处理（对象已删就走对象级）。
+
+**结果**
+
+| 断言 | 建议状态 | 证据（`E7\logs\`） |
+|---|---|---|
+| `VAL-CONF-006` | passed | `c02_object_topology.result.txt`；`ws-c02a-s1.jsonl`（删除的 `op_applied` revision=2）、`ws-c02a-s2.jsonl`（`error` `OBJECT_DELETED`，「…删除前的值 1.0MPa」）；`c02-006-objects-after.json`（没有 P-1002，修订停在 2） |
+| `VAL-CONF-007` | passed | `conflicts` 里 P-1002 为 0 行；`c02-006-audit.json`：新增 `delete_object`（「…删除前：设计压力=1.0MPa」）与 `change_rejected_deleted` 两行；`c02-007-audit-http.json` |
+| `VAL-CONF-008` | passed（服务器带 `--tie-window-ms 1500`） | `c02-008-conflicts.json`（`object_ref=L-1001`、`field=topology`、`status=待裁决`，两个值是两个 op 的原文）；`ws-c02b-s1.jsonl`、`ws-c02b-s2.jsonl` 里的 `conflict` |
+| `VAL-CONF-009` | passed | `c02-009-topology-before.json` 与 `c02-009-topology-after.json` 逐字相同（`pipe_runs` 为空、修订 1）；两个 op 都没有 `op_applied`；`status` 仍是 `待裁决` |
+| `VAL-CONF-017` | passed | `c02-017-topology.json`（P-1003 是 `L-1001-01` 的 `from`）；`ws-c02a-s2.jsonl`（`error` `OBJECT_REFERENCED`，「被 L-1001 引用为管路端点」）；语义查询里 P-1003 仍在；`c02-017-audit.json`（`delete_refused`，`user_id=u2`） |
+
+按字面不成立的：017 写「服务器返回 `ok=false`」，WS 的 `error` 帧没有 `ok` 这个键（`architecture.md` §3.1 的 `error` 是 `{code, message, level?}`）；错误码用的是 A.4 定的 `OBJECT_REFERENCED`，不是契约举例的 `REFERENCED_OBJECT`。其余逐句成立。场景脚本 `E7\c02_object_topology.py`，17 项检查全过；`c01_field_merge.py` 在新服务器上回归 24 项全过；`ocs_collab` 76 条、`ocs_collab_server` 123 + 12 条单测通过，clippy 0 告警。

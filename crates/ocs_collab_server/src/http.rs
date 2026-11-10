@@ -40,6 +40,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/permission/check", post(permission_check))
         .route("/drawing/{id}/state", post(drawing_state))
         .route("/drawing/{id}/objects", get(drawing_objects))
+        .route("/drawing/{id}/topology", get(drawing_topology))
         .with_state(state)
 }
 
@@ -518,6 +519,20 @@ async fn drawing_objects(
         })),
     )
         .into_response()
+}
+
+/// `GET /drawing/{id}/topology` → 200
+/// `{"drawing_id","revision","pipe_lines":[…],"pipe_runs":[…],"connectors":[…]}`:
+/// how the drawing's pipe lines are connected up, as the ops that took
+/// effect built it (`VAL-CONF-009`).
+async fn drawing_topology(
+    State(state): State<Arc<AppState>>,
+    Path(drawing_id): Path<String>,
+) -> Response {
+    let (revision, mut topology) = crate::ops::topology(&state, &drawing_id);
+    topology["drawing_id"] = json!(drawing_id);
+    topology["revision"] = json!(revision);
+    (StatusCode::OK, Json(topology)).into_response()
 }
 
 /// The audit log has no mutation path at all (invariant 7).

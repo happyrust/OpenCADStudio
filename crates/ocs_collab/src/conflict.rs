@@ -24,9 +24,17 @@ use serde_json::Value;
 /// Op kinds the judgment understands. Anything else is opaque to it.
 pub const KIND_SET_PROPERTY: &str = "set_property";
 pub const KIND_SET_TAG: &str = "set_tag";
+pub const KIND_DELETE_OBJECT: &str = "delete_object";
+pub const KIND_INSERT_SYMBOL: &str = "insert_symbol";
+pub const KIND_CREATE_PIPE_LINE: &str = "create_pipe_line";
+pub const KIND_ADD_PIPE_RUN: &str = "add_pipe_run";
+pub const KIND_INSERT_FITTING: &str = "insert_fitting";
+pub const KIND_CREATE_CONNECTOR: &str = "create_connector";
 
 /// The field a retag writes.
 pub const FIELD_TAG: &str = "tag";
+/// The "field" two changes to one pipe line's connections contend for.
+pub const FIELD_TOPOLOGY: &str = "topology";
 
 /// One change an op asks for, as read off its payload.
 #[derive(Debug, Clone, PartialEq)]
@@ -90,6 +98,40 @@ impl Change {
             && !self.field.is_empty()
     }
 
+    /// Whether this changes how a pipe line is connected up.
+    pub fn changes_topology(&self) -> bool {
+        matches!(
+            self.kind.as_str(),
+            KIND_ADD_PIPE_RUN | KIND_INSERT_FITTING | KIND_CREATE_CONNECTOR
+        )
+    }
+
+    /// Whether the judgment has a rule for this change. One it has none for
+    /// is taken or refused whole, by the op's baseline alone.
+    pub fn is_understood(&self) -> bool {
+        self.writes_a_field()
+            || self.changes_topology()
+            || (matches!(
+                self.kind.as_str(),
+                KIND_DELETE_OBJECT | KIND_INSERT_SYMBOL | KIND_CREATE_PIPE_LINE
+            ) && !self.subject().is_empty())
+    }
+
+    /// The tag of the object the change is about, for the kinds that name it
+    /// under another key: a symbol or a pipe line being created is named by
+    /// its `tag`.
+    pub fn subject(&self) -> String {
+        if !self.object_ref.is_empty() {
+            return self.object_ref.clone();
+        }
+        self.text("tag").unwrap_or_default()
+    }
+
+    /// A string the change carries under `key`.
+    pub fn text(&self, key: &str) -> Option<String> {
+        self.raw.get(key).and_then(Value::as_str).map(str::to_owned)
+    }
+
     /// The change as it goes out in `op_applied`, naming the object by the tag
     /// it has now and backfilling the canonical keys.
     pub fn broadcast_form(&self, object_ref: &str) -> Value {
@@ -144,16 +186,65 @@ pub enum Verdict {
         winner_revision: i64,
         winner_user: String,
     },
+    /// The object level: another session deleted the object after the
+    /// change's baseline. The deletion stands and the change does not happen;
+    /// `last_value` is what the field held when the object went.
+    Gone {
+        object_ref: String,
+        deleted_revision: i64,
+        deleted_by: String,
+        last_value: Option<String>,
+    },
+    /// A deletion of an object other objects still hang on: refused. `by`
+    /// names them.
+    Referenced { object_ref: String, by: Vec<String> },
+    /// A change to a pipe line's connections made before another session's
+    /// change to the same line. Connections do not merge field by field: the
+    /// sender has to look at the line as it now is and ask again.
+    BehindTopology { line_tag: String, touched_revision: i64 },
 }
 
-/// The semantic state of one drawing: its objects by tag, and the retags that
-/// let a change made against an older baseline still find its object.
+/// An object that was deleted, kept so that a change still on its way to it
+/// can be told what it missed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleted {
+    pub revision: i64,
+    pub session_id: String,
+    pub user_id: String,
+    /// What it carried when it went.
+    pub fields: BTreeMap<String, FieldState>,
+}
+
+/// One pipe run as the server knows it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Run {
+    pub line_tag: String,
+    pub points: Value,
+    /// The objects its two ends are connected to, by tag.
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// Each fitting as the op that inserted it described it.
+    pub fittings: Vec<Value>,
+}
+
+/// The semantic state of one drawing: its objects by tag, the retags that
+/// let a change made against an older baseline still find its object, what
+/// was deleted, and how the pipe lines are connected up.
 #[derive(Debug, Clone, Default)]
 pub struct DrawingModel {
     revision: i64,
     objects: BTreeMap<String, ObjectState>,
     /// `(old tag, new tag, revision)`, oldest first.
     renames: Vec<(String, String, i64)>,
+    deleted: BTreeMap<String, Deleted>,
+    /// Pipe line tag → its runs' tags, in the order they were added.
+    lines: BTreeMap<String, Vec<String>>,
+    runs: BTreeMap<String, Run>,
+    /// Each connector as the op that created it described it.
+    connectors: Vec<Value>,
+    /// Pipe line tag → the revision and session that last changed its
+    /// connections.
+    line_touched: BTreeMap<String, (i64, String)>,
 }
 
 impl DrawingModel {
@@ -211,7 +302,55 @@ impl DrawingModel {
     /// them, so a second edit sent before the first one's `op_applied` came
     /// back is still the newer intent, not a lagging one.
     pub fn judge(&self, change: &Change, base_revision: i64, session_id: &str) -> Verdict {
-        let object_ref = self.current_name(&change.object_ref, base_revision);
+        let object_ref = self.current_name(&change.subject(), base_revision);
+        if change.changes_topology() {
+            let line_tag = self.line_of(change);
+            return match self.line_touched.get(&line_tag) {
+                Some((revision, by)) if *revision > base_revision && by != session_id => {
+                    Verdict::BehindTopology {
+                        line_tag,
+                        touched_revision: *revision,
+                    }
+                }
+                _ => Verdict::Apply {
+                    object_ref: line_tag,
+                    replaces: None,
+                },
+            };
+        }
+        if change.kind == KIND_DELETE_OBJECT {
+            let by = self.referenced_by(&object_ref);
+            return if by.is_empty() {
+                Verdict::Apply {
+                    object_ref,
+                    replaces: None,
+                }
+            } else {
+                Verdict::Referenced { object_ref, by }
+            };
+        }
+        if !change.writes_a_field() {
+            // A symbol or a pipe line being created: nothing to be behind.
+            return Verdict::Apply {
+                object_ref,
+                replaces: None,
+            };
+        }
+        // The object level comes before the field level: a field of an
+        // object that is gone has nothing to be merged into.
+        if let Some(gone) = self.deleted.get(&object_ref) {
+            if gone.revision > base_revision && gone.session_id != session_id {
+                return Verdict::Gone {
+                    object_ref,
+                    deleted_revision: gone.revision,
+                    deleted_by: gone.user_id.clone(),
+                    last_value: gone
+                        .fields
+                        .get(&change.field)
+                        .map(|state| state.value.clone()),
+                };
+            }
+        }
         let current = self.field(&object_ref, &change.field);
         match current {
             Some(state)
@@ -248,15 +387,18 @@ impl DrawingModel {
         user_id: &str,
     ) {
         self.revision = self.revision.max(revision);
-        if !change.writes_a_field() {
-            return;
-        }
         let state = FieldState {
             value: change.value.clone(),
             revision,
             session_id: session_id.to_owned(),
             user_id: user_id.to_owned(),
         };
+        if !change.writes_a_field() {
+            self.commit_structure(change, object_ref, &state);
+            return;
+        }
+        // Written to again by someone who knows it was deleted: it is back.
+        self.deleted.remove(object_ref);
         if change.kind == KIND_SET_TAG {
             if change.value == object_ref || change.value.is_empty() {
                 return;
@@ -280,6 +422,205 @@ impl DrawingModel {
             .or_default()
             .fields
             .insert(change.field.clone(), state);
+    }
+}
+
+impl DrawingModel {
+    /// The pipe line a topology change is about: the one it names, or the
+    /// line of the run it names. A run the server has not seen is taken to
+    /// belong to the line its tag is built from (`{line}-{suffix}`).
+    pub fn line_of(&self, change: &Change) -> String {
+        if let Some(line) = change.text("line_tag") {
+            return line;
+        }
+        let run = change.text("run_tag").unwrap_or_default();
+        if let Some(known) = self.runs.get(&run) {
+            return known.line_tag.clone();
+        }
+        match run.rsplit_once('-') {
+            Some((line, suffix)) if !line.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) => {
+                line.to_owned()
+            }
+            _ => run,
+        }
+    }
+
+    /// The pipe lines that have `object_ref` at an end of one of their runs.
+    pub fn referenced_by(&self, object_ref: &str) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .runs
+            .values()
+            .filter(|run| {
+                run.from.as_deref() == Some(object_ref) || run.to.as_deref() == Some(object_ref)
+            })
+            .map(|run| run.line_tag.clone())
+            .collect();
+        lines.sort();
+        lines.dedup();
+        lines
+    }
+
+    /// What two changes contend for, and with what: `(object, field, value)`.
+    /// Field writes contend for the field; changes to one pipe line's
+    /// connections contend for the line's topology, each with its own
+    /// description. Anything else contends for nothing.
+    pub fn stake(&self, change: &Change) -> Option<(String, String, String)> {
+        if change.writes_a_field() {
+            return Some((
+                change.object_ref.clone(),
+                change.field.clone(),
+                change.value.clone(),
+            ));
+        }
+        change.changes_topology().then(|| {
+            (
+                self.line_of(change),
+                FIELD_TOPOLOGY.to_owned(),
+                change.raw.to_string(),
+            )
+        })
+    }
+
+    /// The change with what the server decides filled in: a pipe run that
+    /// came without a tag gets the line's next one (`{line}-{NN}`), so that
+    /// every client — and a replay of the log — calls it the same.
+    pub fn completed(&self, change: &Change) -> Change {
+        let mut change = change.clone();
+        if change.kind == KIND_ADD_PIPE_RUN && change.text("tag").is_none() {
+            let line = self.line_of(&change);
+            let taken = self.lines.get(&line).map_or(0, Vec::len);
+            let tag = (taken + 1..)
+                .map(|n| format!("{line}-{n:02}"))
+                .find(|tag| !self.runs.contains_key(tag))
+                .unwrap_or_default();
+            change.raw["tag"] = Value::String(tag);
+        }
+        change
+    }
+
+    /// An object that was deleted, by the tag it had.
+    pub fn deleted(&self, object_ref: &str) -> Option<&Deleted> {
+        self.deleted.get(object_ref)
+    }
+
+    /// The pipe topology, for the read-back endpoint.
+    pub fn topology(&self) -> Value {
+        let lines: Vec<Value> = self
+            .lines
+            .iter()
+            .map(|(tag, runs)| serde_json::json!({"tag": tag, "runs": runs}))
+            .collect();
+        let runs: Vec<Value> = self
+            .runs
+            .iter()
+            .map(|(tag, run)| {
+                serde_json::json!({
+                    "tag": tag,
+                    "line_tag": run.line_tag,
+                    "points": run.points,
+                    "from": run.from,
+                    "to": run.to,
+                    "fittings": run.fittings,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "pipe_lines": lines,
+            "pipe_runs": runs,
+            "connectors": self.connectors,
+        })
+    }
+
+    /// Record a change that took effect and is not a field write: an object
+    /// created or deleted, or a pipe line's connections changed.
+    fn commit_structure(&mut self, change: &Change, object_ref: &str, state: &FieldState) {
+        let stamp = |value: &str| FieldState {
+            value: value.to_owned(),
+            ..state.clone()
+        };
+        match change.kind.as_str() {
+            KIND_DELETE_OBJECT => {
+                let fields = self
+                    .objects
+                    .remove(object_ref)
+                    .map(|object| object.fields)
+                    .unwrap_or_default();
+                self.deleted.insert(
+                    object_ref.to_owned(),
+                    Deleted {
+                        revision: state.revision,
+                        session_id: state.session_id.clone(),
+                        user_id: state.user_id.clone(),
+                        fields,
+                    },
+                );
+                // A pipe line goes with its runs; a run leaves its line.
+                if let Some(runs) = self.lines.remove(object_ref) {
+                    for run in runs {
+                        self.runs.remove(&run);
+                    }
+                }
+                if let Some(run) = self.runs.remove(object_ref) {
+                    if let Some(runs) = self.lines.get_mut(&run.line_tag) {
+                        runs.retain(|tag| tag != object_ref);
+                    }
+                }
+            }
+            KIND_INSERT_SYMBOL | KIND_CREATE_PIPE_LINE => {
+                self.deleted.remove(object_ref);
+                let object = self.objects.entry(object_ref.to_owned()).or_default();
+                if let Some(type_code) = change.text("type") {
+                    object.fields.insert("type".to_owned(), stamp(&type_code));
+                }
+                if let Some(props) = change.raw.get("props").and_then(Value::as_object) {
+                    for (field, value) in props {
+                        object.fields.insert(field.clone(), stamp(&value_text(value)));
+                    }
+                }
+                if change.kind == KIND_CREATE_PIPE_LINE {
+                    self.lines.entry(object_ref.to_owned()).or_default();
+                }
+            }
+            KIND_ADD_PIPE_RUN => {
+                let Some(tag) = change.text("tag") else {
+                    return;
+                };
+                let runs = self.lines.entry(object_ref.to_owned()).or_default();
+                if !runs.contains(&tag) {
+                    runs.push(tag.clone());
+                }
+                self.runs.insert(
+                    tag,
+                    Run {
+                        line_tag: object_ref.to_owned(),
+                        points: change.raw.get("points").cloned().unwrap_or(Value::Null),
+                        from: change.text("from"),
+                        to: change.text("to"),
+                        fittings: Vec::new(),
+                    },
+                );
+            }
+            KIND_INSERT_FITTING => {
+                let run = change.text("run_tag").unwrap_or_default();
+                let runs = self.lines.entry(object_ref.to_owned()).or_default();
+                if !runs.contains(&run) {
+                    runs.push(run.clone());
+                }
+                let entry = self.runs.entry(run).or_insert_with(|| Run {
+                    line_tag: object_ref.to_owned(),
+                    ..Run::default()
+                });
+                entry.fittings.push(change.raw.clone());
+            }
+            KIND_CREATE_CONNECTOR => self.connectors.push(change.raw.clone()),
+            _ => return,
+        }
+        if change.changes_topology() {
+            self.line_touched.insert(
+                object_ref.to_owned(),
+                (state.revision, state.session_id.clone()),
+            );
+        }
     }
 }
 
@@ -528,5 +869,152 @@ mod tests {
         let bare = Change::list(&json!({"kind": "set_tag", "object_ref": "V-1", "value": "V-2"}))
             .remove(0);
         assert_eq!(bare.broadcast_form("V-1")["field"], Value::Null, "backfilled");
+    }
+
+    fn one(payload: Value) -> Change {
+        Change::list(&payload).remove(0)
+    }
+
+    fn delete(object_ref: &str) -> Change {
+        one(json!({"kind": KIND_DELETE_OBJECT, "object_ref": object_ref}))
+    }
+
+    /// Judge and, when it applies, commit — as the server does.
+    fn take(model: &mut DrawingModel, change: &Change, base: i64, revision: i64, session: &str) -> Verdict {
+        let change = model.completed(change);
+        let verdict = model.judge(&change, base, session);
+        if let Verdict::Apply { object_ref, .. } = &verdict {
+            model.commit(&change, object_ref, revision, session, session);
+        }
+        verdict
+    }
+
+    // The object level (`VAL-CONF-006`): s1 deletes P-1002 at revision 2; s2,
+    // who has not seen that, changes one of its fields. The deletion stands,
+    // and s2 is told what the field held.
+    #[test]
+    fn a_change_to_an_object_someone_else_deleted_since_the_baseline_does_not_happen() {
+        let mut model = DrawingModel::default();
+        model.commit(&set("P-1002", "设计压力", "1.0MPa"), "P-1002", 1, "s1", "u1");
+        assert!(applies(&take(&mut model, &delete("P-1002"), 1, 2, "s1")));
+        assert!(model.object("P-1002").is_none(), "gone from the drawing");
+        assert_eq!(model.deleted("P-1002").map(|gone| gone.revision), Some(2));
+
+        assert_eq!(
+            model.judge(&set("P-1002", "设计压力", "2.5MPa"), 1, "s2"),
+            Verdict::Gone {
+                object_ref: "P-1002".into(),
+                deleted_revision: 2,
+                deleted_by: "s1".into(),
+                last_value: Some("1.0MPa".into()),
+            }
+        );
+        // A field it never carried: still gone, with nothing to report.
+        match model.judge(&set("P-1002", "公称直径", "DN50"), 1, "s2") {
+            Verdict::Gone { last_value, .. } => assert_eq!(last_value, None),
+            other => panic!("expected Gone, got {other:?}"),
+        }
+        // Someone who has seen the deletion and writes P-1002 anyway is
+        // making it anew.
+        assert!(applies(&take(&mut model, &set("P-1002", "设计压力", "0.6MPa"), 2, 3, "s2")));
+        assert!(model.deleted("P-1002").is_none());
+        assert!(model.object("P-1002").is_some());
+    }
+
+    // `VAL-CONF-017`: P-1003 sits at an end of one of L-1001's runs. It
+    // cannot be deleted, and the refusal names what holds it.
+    #[test]
+    fn an_object_at_the_end_of_a_pipe_run_cannot_be_deleted() {
+        let mut model = DrawingModel::default();
+        let run = one(json!({"kind": KIND_ADD_PIPE_RUN, "line_tag": "L-1001",
+            "points": [[0, 0], [100, 0]], "from": "P-1003", "to": "V-1002"}));
+        assert!(applies(&take(&mut model, &run, 0, 1, "s1")));
+        assert_eq!(
+            model.judge(&delete("P-1003"), 1, "s2"),
+            Verdict::Referenced {
+                object_ref: "P-1003".into(),
+                by: vec!["L-1001".into()]
+            }
+        );
+        assert!(applies(&model.judge(&delete("P-1004"), 1, "s2")), "nothing holds it");
+        // With the line gone nothing holds P-1003 any more.
+        assert!(applies(&take(&mut model, &delete("L-1001"), 1, 2, "s1")));
+        assert!(applies(&model.judge(&delete("P-1003"), 2, "s2")));
+        assert_eq!(model.topology()["pipe_runs"], json!([]));
+    }
+
+    // A run that comes without a tag is given the line's next one, and the
+    // topology the server reports is what the ops built.
+    #[test]
+    fn pipe_runs_are_numbered_under_their_line_and_show_in_the_topology() {
+        let mut model = DrawingModel::default();
+        let line = one(json!({"kind": KIND_CREATE_PIPE_LINE, "tag": "L-1001",
+            "props": {"管道等级": "A1A"}}));
+        assert!(applies(&take(&mut model, &line, 0, 1, "s1")));
+        assert_eq!(model.field("L-1001", "管道等级").map(|f| f.value.as_str()), Some("A1A"));
+
+        let run = one(json!({"kind": KIND_ADD_PIPE_RUN, "line_tag": "L-1001", "points": [[0, 0], [100, 0]]}));
+        assert_eq!(model.completed(&run).text("tag").as_deref(), Some("L-1001-01"));
+        take(&mut model, &run, 1, 2, "s1");
+        assert_eq!(model.completed(&run).text("tag").as_deref(), Some("L-1001-02"));
+        let named = one(json!({"kind": KIND_ADD_PIPE_RUN, "line_tag": "L-1001", "tag": "L-1001-07", "points": []}));
+        assert_eq!(model.completed(&named).text("tag").as_deref(), Some("L-1001-07"), "a given tag is kept");
+
+        let fitting = one(json!({"kind": KIND_INSERT_FITTING, "run_tag": "L-1001-01",
+            "fitting_type": "gate_valve", "at": [50, 0]}));
+        assert_eq!(model.line_of(&fitting), "L-1001");
+        take(&mut model, &fitting, 2, 3, "s1");
+        let topology = model.topology();
+        assert_eq!(topology["pipe_lines"], json!([{"tag": "L-1001", "runs": ["L-1001-01"]}]));
+        assert_eq!(topology["pipe_runs"][0]["fittings"][0]["fitting_type"], "gate_valve");
+        // A run the server never saw belongs to the line its tag is built on.
+        let unseen = one(json!({"kind": KIND_INSERT_FITTING, "run_tag": "L-2002-03", "at": [1, 1]}));
+        assert_eq!(model.line_of(&unseen), "L-2002");
+    }
+
+    // The topology level. Connections do not merge field by field: a change
+    // made before another session's change to the same line is behind it,
+    // and two made against one baseline contend for the line as a whole
+    // (`VAL-CONF-008`).
+    #[test]
+    fn changes_to_one_lines_connections_contend_for_the_line() {
+        let mut model = DrawingModel::default();
+        let run = one(json!({"kind": KIND_ADD_PIPE_RUN, "line_tag": "L-1001", "points": [[0, 0], [100, 0]]}));
+        let fitting = one(json!({"kind": KIND_INSERT_FITTING, "run_tag": "L-1001-01", "at": [50, 0]}));
+
+        let (a, b) = (model.stake(&run).expect("stake"), model.stake(&fitting).expect("stake"));
+        assert_eq!((a.0.as_str(), a.1.as_str()), ("L-1001", FIELD_TOPOLOGY));
+        assert_eq!((b.0.as_str(), b.1.as_str()), ("L-1001", FIELD_TOPOLOGY));
+        assert_ne!(a.2, b.2, "each with its own description");
+        assert!(!a.2.is_empty() && !b.2.is_empty());
+        let elsewhere = one(json!({"kind": KIND_ADD_PIPE_RUN, "line_tag": "L-1002", "points": []}));
+        assert_ne!(model.stake(&elsewhere).expect("stake").0, a.0);
+        assert_eq!(model.stake(&delete("P-1")), None, "a deletion contends for nothing");
+
+        take(&mut model, &run, 0, 1, "s1");
+        assert_eq!(
+            model.judge(&fitting, 0, "s2"),
+            Verdict::BehindTopology {
+                line_tag: "L-1001".into(),
+                touched_revision: 1
+            }
+        );
+        assert!(applies(&model.judge(&fitting, 1, "s2")), "having seen it");
+        assert!(applies(&model.judge(&fitting, 0, "s1")), "its own change");
+        assert!(applies(&model.judge(&elsewhere, 0, "s2")), "another line");
+    }
+
+    #[test]
+    fn a_symbol_inserted_is_known_by_its_tag_with_its_type_and_props() {
+        let mut model = DrawingModel::default();
+        let insert = one(json!({"kind": KIND_INSERT_SYMBOL, "type": "VALVE", "tag": "V-1001",
+            "position": [100, 200], "props": {"公称直径": "DN50"}}));
+        assert!(insert.is_understood());
+        assert_eq!(insert.subject(), "V-1001");
+        assert!(applies(&take(&mut model, &insert, 0, 1, "s1")));
+        assert_eq!(model.field("V-1001", "type").map(|f| f.value.as_str()), Some("VALVE"));
+        assert_eq!(model.field("V-1001", "公称直径").map(|f| f.value.as_str()), Some("DN50"));
+        assert!(!one(json!({"kind": "something_else", "tag": "X"})).is_understood());
+        assert!(!one(json!({"kind": KIND_INSERT_SYMBOL})).is_understood(), "names nothing");
     }
 }

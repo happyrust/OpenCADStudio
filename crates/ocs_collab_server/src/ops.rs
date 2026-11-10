@@ -26,7 +26,7 @@
 
 use std::time::Duration;
 
-use ocs_collab::conflict::{collides, Change, DrawingModel, Verdict, KIND_SET_TAG};
+use ocs_collab::conflict::{Change, DrawingModel, Verdict, KIND_DELETE_OBJECT, KIND_SET_TAG};
 use ocs_collab::protocol::codes;
 use ocs_collab::{new_conflict_id, ServerMessage, Session};
 use serde_json::Value;
@@ -96,8 +96,8 @@ impl DrawingOps {
         }
     }
 
-    /// The value a held op of another session is about to give the field
-    /// `change` writes, when it differs.
+    /// A held op of another session that contends with `change` for the same
+    /// thing with something else, and the change of it that does.
     fn held_against(&self, change: &Change, session_id: &str) -> Option<(&HeldOp, &Change)> {
         self.held
             .iter()
@@ -105,9 +105,19 @@ impl DrawingOps {
             .find_map(|held| {
                 held.changes
                     .iter()
-                    .find(|theirs| collides(theirs, change))
+                    .find(|theirs| self.contend(theirs, change))
                     .map(|theirs| (held, theirs))
             })
+    }
+
+    /// Step 3's condition: both changes stake a claim to the same field of
+    /// the same object — or to the connections of the same pipe line — with
+    /// different values.
+    fn contend(&self, a: &Change, b: &Change) -> bool {
+        match (self.model.stake(a), self.model.stake(b)) {
+            (Some(a), Some(b)) => a.0 == b.0 && a.1 == b.1 && a.2 != b.2,
+            _ => false,
+        }
     }
 }
 
@@ -151,8 +161,8 @@ pub fn receive(
         return stale(&incoming, current);
     }
     let changes = Change::list(&payload);
-    if changes.is_empty() || !changes.iter().all(Change::writes_a_field) {
-        // Not something the three steps are defined for.
+    if changes.is_empty() || !changes.iter().all(Change::is_understood) {
+        // Not something the judgment has a rule for.
         if base_revision != current {
             return stale(&incoming, current);
         }
@@ -161,20 +171,26 @@ pub fn receive(
 
     if base_revision == current {
         // Step 3: another session's op made against this same revision is
-        // still inside the window and writes one of these fields otherwise.
+        // still inside the window and stakes a different claim to something
+        // this one stakes a claim to.
         let tied = drawing.held.iter().position(|held| {
             held.session.session_id != session.session_id
                 && held.base_revision == base_revision
                 && held
                     .changes
                     .iter()
-                    .any(|theirs| changes.iter().any(|ours| collides(theirs, ours)))
+                    .any(|theirs| changes.iter().any(|ours| drawing.contend(theirs, ours)))
         });
         if let Some(index) = tied {
             let first = drawing.held.remove(index);
             return tie(state, drawing, first, &incoming, changes);
         }
-        if !state.tie_window.is_zero() {
+        // Only what could tie waits: a deletion or a new symbol contends
+        // for nothing and commits at once.
+        let could_tie = changes
+            .iter()
+            .any(|change| drawing.model.stake(change).is_some());
+        if could_tie && !state.tie_window.is_zero() {
             println!(
                 "[ocs_collab_server] 入站 op session={} user={} op_id={op_id} base_revision={base_revision} -> 并列窗口内暂存 {} 毫秒 at={now}",
                 session.session_id,
@@ -304,6 +320,18 @@ pub fn objects(
     (drawing.model.revision(), items)
 }
 
+/// The drawing's pipe topology as the server knows it, for
+/// `GET /drawing/{id}/topology`: `(revision, {pipe_lines, pipe_runs,
+/// connectors})`. Ops still inside the tie window, and ops a conflict entry
+/// is holding back, are not in it: it is what has taken effect.
+pub fn topology(state: &AppState, drawing_id: &str) -> (i64, Value) {
+    let mut drawings = state.drawings.lock().expect("drawings mutex poisoned");
+    let drawing = drawings
+        .entry(drawing_id.to_owned())
+        .or_insert_with(|| DrawingOps::load(state, drawing_id));
+    (drawing.model.revision(), drawing.model.topology())
+}
+
 /// How often the flush loop looks, for a given window: often enough that an
 /// op is not held noticeably longer than asked.
 pub fn flush_interval(window: Duration) -> Duration {
@@ -387,11 +415,17 @@ fn judge_and_commit(
     let session = incoming.session;
     let mut reactions = Vec::new();
     let mut applied: Vec<(Change, String, Option<String>)> = Vec::new();
+    let mut behind_topology = None;
     for change in changes {
-        // A held op was made against a newer revision than this one: its
-        // value is the one this change is behind.
+        let change = drawing.model.completed(&change);
+        // A held op was made against a newer revision than this one: what
+        // it stakes its claim with is what this change is behind.
         if incoming.base_revision < drawing.model.revision() {
             if let Some((held, theirs)) = drawing.held_against(&change, &session.session_id) {
+                if change.changes_topology() {
+                    behind_topology = Some(drawing.model.revision());
+                    continue;
+                }
                 let object_ref = drawing
                     .model
                     .current_name(&change.object_ref, incoming.base_revision);
@@ -424,7 +458,47 @@ fn judge_and_commit(
                 &object_ref,
                 (winner, winner_revision, winner_user),
             )),
+            Verdict::Gone {
+                object_ref,
+                deleted_revision,
+                deleted_by,
+                last_value,
+            } => reactions.push(refused(
+                state,
+                incoming,
+                codes::OBJECT_DELETED,
+                "change_rejected_deleted",
+                &object_ref,
+                format!(
+                    "{} {object_ref}.{}: 提交 {} 未生效，对象已在修订 {deleted_revision} 被 {deleted_by} 删除；删除前的值 {}",
+                    change.kind,
+                    change.field,
+                    change.value,
+                    last_value.as_deref().unwrap_or("(未知)")
+                ),
+            )),
+            Verdict::Referenced { object_ref, by } => reactions.push(refused(
+                state,
+                incoming,
+                codes::OBJECT_REFERENCED,
+                "delete_refused",
+                &object_ref,
+                format!(
+                    "{} {object_ref}: 被 {} 引用为管路端点，不能删除",
+                    change.kind,
+                    by.join("、")
+                ),
+            )),
+            Verdict::BehindTopology {
+                touched_revision, ..
+            } => behind_topology = Some(touched_revision),
         }
+    }
+    if let Some(revision) = behind_topology {
+        // Connections do not merge: the sender looks at the line as it is
+        // now and asks again, like any op the server cannot merge.
+        let mut outcome = stale(incoming, revision.max(drawing.model.revision()));
+        reactions.append(&mut outcome.reactions);
     }
     if applied.is_empty() {
         return Outcome {
@@ -443,12 +517,30 @@ fn judge_and_commit(
                         described["old_value"] = Value::String(replaces.clone());
                     }
                 }
+                let mut text = ws::describe_change(&change.kind, object_ref, &described);
+                if change.kind == KIND_DELETE_OBJECT {
+                    // A deletion's record says what went with the object.
+                    let carried: Vec<String> = drawing
+                        .model
+                        .object(object_ref)
+                        .map(|object| {
+                            object
+                                .fields
+                                .iter()
+                                .map(|(field, state)| format!("{field}={}", state.value))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !carried.is_empty() {
+                        text = format!("{text}（删除前：{}）", carried.join("；"));
+                    }
+                }
                 ws::audit_row(
                     Some(store),
                     session,
                     &change.kind,
                     object_ref,
-                    ws::describe_change(&change.kind, object_ref, &described),
+                    text,
                     incoming.peer_addr,
                     incoming.now,
                 )
@@ -566,6 +658,39 @@ fn log_applied(incoming: &Incoming<'_>, first: &Value, revision: i64) {
     );
 }
 
+/// A change that does not happen for a reason the sender has to hear and the
+/// log has to keep: an `error` with `code` back to the sender, and one audit
+/// row under `action` with the same words.
+fn refused(
+    state: &AppState,
+    incoming: &Incoming<'_>,
+    code: &str,
+    action: &str,
+    object_ref: &str,
+    text: String,
+) -> Reaction {
+    let session = incoming.session;
+    if let Some(store) = &state.store {
+        let row = ws::audit_row(
+            Some(store),
+            session,
+            action,
+            object_ref,
+            text.clone(),
+            incoming.peer_addr,
+            incoming.now,
+        );
+        if let Err(err) = store.audit_append(&row) {
+            eprintln!("[ocs_collab_server] 写入拒绝审计失败：{err}");
+        }
+    }
+    println!(
+        "[ocs_collab_server] 入站 op session={} user={} op_id={} base_revision={} object_ref={object_ref} -> error {code} at={}",
+        session.session_id, session.user_id, incoming.op_id, incoming.base_revision, incoming.now
+    );
+    Reaction::Send(error(code, format!("操作 {}：{text}", incoming.op_id)))
+}
+
 /// Step 2's bookkeeping: the audit row saying what was not overwritten, and
 /// the `error` telling the sender.
 fn yielded(
@@ -642,20 +767,31 @@ fn tie(
     let mut reactions = Vec::new();
     let (mut first_rest, mut second_rest) = (Vec::new(), second_changes.clone());
     for ours in &first.changes {
-        let Some(theirs) = second_changes.iter().find(|theirs| collides(ours, theirs)) else {
+        let Some(theirs) = second_changes
+            .iter()
+            .find(|theirs| drawing.contend(ours, theirs))
+        else {
             first_rest.push(ours.clone());
             continue;
         };
         second_rest.retain(|change| change != theirs);
+        // What they contend for, and what each would have made of it: a
+        // field and two values, or a pipe line's connections and the two
+        // changes to them.
+        let (Some((object_ref, field, value_a)), Some((_, _, value_b))) =
+            (drawing.model.stake(ours), drawing.model.stake(theirs))
+        else {
+            continue;
+        };
         let conflict_id = new_conflict_id();
         if let Some(store) = &state.store {
             let row = ConflictRow {
                 conflict_id: conflict_id.clone(),
                 drawing_id: drawing_id.clone(),
-                object_ref: ours.object_ref.clone(),
-                field: ours.field.clone(),
-                value_a: ours.value.clone(),
-                value_b: theirs.value.clone(),
+                object_ref: object_ref.clone(),
+                field: field.clone(),
+                value_a: value_a.clone(),
+                value_b: value_b.clone(),
                 base_revision: first.base_revision,
                 status: STATUS_PENDING.to_owned(),
                 resolution: None,
@@ -666,19 +802,19 @@ fn tie(
                 eprintln!("[ocs_collab_server] 写入冲突条目失败：{err}");
             }
             // Both attempts go on record, each under the person who made it.
-            for (who, value, other) in [
-                (&first_incoming, &ours.value, &theirs.value),
-                (second, &theirs.value, &ours.value),
+            for (who, kind, value, other) in [
+                (&first_incoming, &ours.kind, &value_a, &value_b),
+                (second, &theirs.kind, &value_b, &value_a),
             ] {
                 let text = format!(
-                    "{} {}.{}: 提交 {value}，与 {other} 并列（基线 {}），待裁决 {conflict_id}",
-                    ours.kind, ours.object_ref, ours.field, first.base_revision
+                    "{kind} {object_ref}.{field}: 提交 {value}，与 {other} 并列（基线 {}），待裁决 {conflict_id}",
+                    first.base_revision
                 );
                 let row = ws::audit_row(
                     Some(store),
                     who.session,
                     "conflict",
-                    &ours.object_ref,
+                    &object_ref,
                     text,
                     who.peer_addr,
                     who.now,
@@ -694,9 +830,9 @@ fn tie(
             second.session.user_id,
             second.op_id,
             second.base_revision,
-            ours.kind,
-            ours.object_ref,
-            ours.field,
+            theirs.kind,
+            object_ref,
+            field,
             first.session.session_id,
             first.op_id,
             second.now
@@ -705,10 +841,10 @@ fn tie(
             drawing_id: drawing_id.clone(),
             message: ServerMessage::Conflict {
                 conflict_id,
-                object_ref: ours.object_ref.clone(),
-                field: ours.field.clone(),
-                value_a: ours.value.clone(),
-                value_b: theirs.value.clone(),
+                object_ref,
+                field,
+                value_a,
+                value_b,
             },
         });
     }
@@ -1106,11 +1242,213 @@ mod tests {
         let mut s1 = join(&state, "u1").await;
         let mut s2 = join(&state, "u2").await;
         submit(&state, &mut s1, 0, "op-1", set("设计压力", "1.6MPa")).await;
-        let insert = json!({"kind": "insert_symbol", "type": "VALVE", "tag": "V-1001"});
-        let behind = submit(&state, &mut s2, 0, "op-2", insert.clone()).await;
+        let unknown = json!({"kind": "set_legend_standard", "value": "HG/T 20519"});
+        let behind = submit(&state, &mut s2, 0, "op-2", unknown.clone()).await;
         assert_eq!(errors(&behind)[0].0, codes::STALE_BASE_REVISION);
-        let current = submit(&state, &mut s2, 1, "op-3", insert).await;
+        let current = submit(&state, &mut s2, 1, "op-3", unknown).await;
         assert_eq!(applied(&current).map(|(_, revision, _)| revision), Some(2));
+    }
+
+    fn audit_of(state: &AppState, object_ref: &str) -> Vec<crate::store::AuditRow> {
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .audit_query(&AuditQuery {
+                object_ref: Some(object_ref.into()),
+                ..AuditQuery::default()
+            })
+            .expect("audit")
+            .items
+    }
+
+    fn listed(state: &AppState, object_ref: &str) -> bool {
+        !objects(state, DRAWING, Some(object_ref)).1.is_empty()
+    }
+
+    // `VAL-CONF-006` and `-007`, the object level: s1 deletes P-1002; s2,
+    // who has not seen that, changes one of its fields. The deletion stands,
+    // s2 is told with the value the field held, there is no conflict entry,
+    // and the log has both the deletion and the change that did not happen.
+    #[tokio::test]
+    async fn a_change_to_an_object_deleted_meanwhile_does_not_happen() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        let on = |field: &str, value: &str| {
+            json!({"kind": "set_property", "object_ref": "P-1002", "field": field, "value": value})
+        };
+        submit(&state, &mut s1, 0, "op-1", on("设计压力", "1.0MPa")).await;
+        assert!(listed(&state, "P-1002"));
+
+        let delete = json!({"kind": "delete_object", "object_ref": "P-1002"});
+        let deleted = submit(&state, &mut s1, 1, "op-2", delete).await;
+        assert_eq!(applied(&deleted).map(|(_, revision, _)| revision), Some(2));
+
+        let late = submit(&state, &mut s2, 1, "op-3", on("设计压力", "2.5MPa")).await;
+        assert!(applied(&late).is_none(), "{late:?}");
+        let told = errors(&late);
+        assert_eq!(told.len(), 1, "{late:?}");
+        assert_eq!(told[0].0, codes::OBJECT_DELETED);
+        assert!(told[0].1.contains("1.0MPa"), "the value it held: {}", told[0].1);
+        assert!(!listed(&state, "P-1002"), "the deletion was not rolled back");
+
+        let store = state.store.as_ref().expect("store");
+        let about: Vec<ConflictRow> = conflict_rows(&state)
+            .into_iter()
+            .filter(|row| row.object_ref == "P-1002")
+            .collect();
+        assert!(about.is_empty(), "the object level makes no conflict entry");
+        let rows = audit_of(&state, "P-1002");
+        let deletion = rows
+            .iter()
+            .find(|row| row.action == "delete_object")
+            .expect("the deletion is on record");
+        assert_eq!(deletion.user_id, "u1");
+        assert!(deletion.change_text.contains("1.0MPa"), "{}", deletion.change_text);
+        let refusal = rows
+            .iter()
+            .find(|row| row.action == "change_rejected_deleted")
+            .expect("the change that did not happen is on record");
+        assert_eq!(refusal.user_id, "u2");
+        assert!(refusal.change_text.contains("1.0MPa"), "{}", refusal.change_text);
+        assert!(refusal.change_text.contains("2.5MPa"), "{}", refusal.change_text);
+        assert_eq!(store.drawing(DRAWING).expect("drawing").expect("row").2, 2);
+    }
+
+    // `VAL-CONF-017`: P-1003 is at an end of a run of L-1001. Deleting it is
+    // refused, the refusal names the line, the object stays, and the attempt
+    // is on record.
+    #[tokio::test]
+    async fn deleting_an_object_a_pipe_run_ends_on_is_refused() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        let vessel =
+            json!({"kind": "set_property", "object_ref": "P-1003", "field": "设计压力", "value": "1.0MPa"});
+        submit(&state, &mut s1, 0, "op-1", vessel).await;
+        let run = json!({"kind": "add_pipe_run", "line_tag": "L-1001",
+            "points": [[0, 0], [100, 0]], "from": "P-1003"});
+        let added = submit(&state, &mut s1, 1, "op-2", run).await;
+        let (_, revision, changes) = applied(&added).expect("the run is added");
+        assert_eq!(revision, 2);
+        assert_eq!(changes[0]["tag"], "L-1001-01", "the server names the run");
+        assert_eq!(changes[0]["object_ref"], "L-1001");
+
+        let delete = json!({"kind": "delete_object", "object_ref": "P-1003"});
+        let refused = submit(&state, &mut s2, 2, "op-3", delete).await;
+        assert!(applied(&refused).is_none(), "{refused:?}");
+        let told = errors(&refused);
+        assert_eq!(told[0].0, codes::OBJECT_REFERENCED);
+        assert!(told[0].1.contains("L-1001"), "names what holds it: {}", told[0].1);
+        assert!(listed(&state, "P-1003"), "still there");
+        let rows = audit_of(&state, "P-1003");
+        let attempt = rows
+            .iter()
+            .find(|row| row.action == "delete_refused")
+            .expect("the refused attempt is on record");
+        assert_eq!(attempt.user_id, "u2");
+        assert!(attempt.change_text.contains("L-1001"));
+    }
+
+    // `VAL-CONF-008` and `-009`, the topology level: with a tie window, s1
+    // adds a run to L-1001 and s2 inserts a fitting on the same line, both
+    // against one revision. One entry for the line's topology, the room is
+    // told, and the line is connected up exactly as it was before either.
+    #[tokio::test]
+    async fn two_changes_to_one_lines_connections_inside_the_window_make_a_conflict_entry() {
+        let state = windowed();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        let line = json!({"kind": "create_pipe_line", "tag": "L-1001", "props": {"管道等级": "A1A"}});
+        let created = submit(&state, &mut s1, 0, "op-0", line).await;
+        assert_eq!(
+            applied(&created).map(|(_, revision, _)| revision),
+            Some(1),
+            "creating the line contends for nothing and is not held"
+        );
+        let before = topology(&state, DRAWING);
+        assert_eq!(before.1["pipe_lines"], json!([{"tag": "L-1001", "runs": []}]));
+
+        let run = json!({"kind": "add_pipe_run", "line_tag": "L-1001", "points": [[0, 0], [100, 0]]});
+        let held = submit(&state, &mut s1, 1, "op-1", run).await;
+        assert!(held.is_empty(), "{held:?}");
+        let fitting = json!({"kind": "insert_fitting", "run_tag": "L-1001-01",
+            "fitting_type": "gate_valve", "at": [50, 0]});
+        let second = submit(&state, &mut s2, 1, "op-2", fitting).await;
+        assert!(applied(&second).is_none(), "{second:?}");
+        assert_eq!(conflicts_published(&second).len(), 1);
+
+        let rows: Vec<ConflictRow> = conflict_rows(&state)
+            .into_iter()
+            .filter(|row| row.object_ref == "L-1001")
+            .collect();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.field, "topology");
+        assert!(row.value_a.contains("add_pipe_run"), "{}", row.value_a);
+        assert!(row.value_b.contains("insert_fitting"), "{}", row.value_b);
+        assert_eq!(row.base_revision, 1);
+        assert_eq!(row.status, STATUS_PENDING);
+
+        // Neither side's version: the line is as it was, now and after the
+        // window has passed.
+        assert_eq!(topology(&state, DRAWING), before);
+        assert!(flush_due(&state, Instant::now() + Duration::from_secs(5)).is_empty());
+        assert_eq!(topology(&state, DRAWING), before);
+    }
+
+    // Without a window nothing ties, and connections do not merge either: a
+    // change made before another session's change to the same line is
+    // behind, and its sender is asked to look again.
+    #[tokio::test]
+    async fn a_connection_change_behind_another_on_the_same_line_is_stale() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        let run = json!({"kind": "add_pipe_run", "line_tag": "L-1001", "points": [[0, 0], [100, 0]]});
+        submit(&state, &mut s1, 0, "op-1", run).await;
+        let fitting = json!({"kind": "insert_fitting", "run_tag": "L-1001-01", "at": [50, 0]});
+
+        let behind = submit(&state, &mut s2, 0, "op-2", fitting.clone()).await;
+        assert_eq!(errors(&behind)[0].0, codes::STALE_BASE_REVISION);
+        assert!(conflict_rows(&state).is_empty());
+
+        let seen = submit(&state, &mut s2, 1, "op-3", fitting).await;
+        assert_eq!(applied(&seen).map(|(_, revision, _)| revision), Some(2));
+        // A line nobody else touched merges like a field nobody else wrote.
+        let elsewhere = json!({"kind": "add_pipe_run", "line_tag": "L-1002", "points": []});
+        let merged = submit(&state, &mut s2, 0, "op-4", elsewhere).await;
+        assert_eq!(applied(&merged).map(|(_, revision, _)| revision), Some(3));
+        let (_, shape) = topology(&state, DRAWING);
+        assert_eq!(shape["pipe_runs"].as_array().map(Vec::len), Some(2));
+        assert_eq!(shape["pipe_runs"][0]["fittings"][0]["at"], json!([50, 0]));
+    }
+
+    // The topology is in the op log like everything else.
+    #[tokio::test]
+    async fn the_topology_is_rebuilt_from_the_op_log() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let run = json!({"kind": "add_pipe_run", "line_tag": "L-1001",
+            "points": [[0, 0], [100, 0]], "from": "P-1003"});
+        submit(&state, &mut s1, 0, "op-1", run).await;
+        submit(
+            &state,
+            &mut s1,
+            1,
+            "op-2",
+            json!({"kind": "delete_object", "object_ref": "P-9"}),
+        )
+        .await;
+        let before = topology(&state, DRAWING);
+        state.drawings.lock().expect("drawings").clear();
+        assert_eq!(topology(&state, DRAWING), before);
+        // And the reference survived with it.
+        let mut s2 = join(&state, "u2").await;
+        let delete = json!({"kind": "delete_object", "object_ref": "P-1003"});
+        let refused = submit(&state, &mut s2, 2, "op-3", delete).await;
+        assert_eq!(errors(&refused)[0].0, codes::OBJECT_REFERENCED);
     }
 
     // One undo step is one op. What merges of it is applied and what is
