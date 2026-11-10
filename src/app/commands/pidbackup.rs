@@ -204,11 +204,13 @@ impl OpenCADStudio {
         ) {
             self.show_pid_backup_panel();
         }
-        // The command line reports what a finished load found; the panel's
-        // own state is the answer to everything else.
+        // The command line reports what a finished load found, and a read
+        // that failed -- the backup's or one drawing's items; the panel's own
+        // state is the answer to everything else.
         let (loaded, failure) = match &msg {
             PidBackupMsg::Loaded(Ok(_)) => (true, None),
-            PidBackupMsg::Loaded(Err(error)) => (false, Some(error.clone())),
+            PidBackupMsg::Loaded(Err(error))
+            | PidBackupMsg::ItemsLoaded(_, Err(error)) => (false, Some(error.clone())),
             _ => (false, None),
         };
         let effect = pid_backup_browser::update(&mut self.pid_backup_browser, msg);
@@ -501,6 +503,25 @@ mod tests {
             app.pid_backup_browser.load,
             LoadState::Idle
         ));
+    }
+
+    #[test]
+    fn a_drawing_whose_items_cannot_be_read_is_reported_as_an_error() {
+        let mut app = app();
+        let _ = app.on_pid_backup(PidBackupMsg::Loaded(Ok(index())));
+        let _ = app.on_pid_backup(PidBackupMsg::ItemsLoaded(
+            0,
+            Err("cannot read a.pid: no DrawingNo".to_string()),
+        ));
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Error);
+        assert!(last.text.contains("no DrawingNo"), "{}", last.text);
+        // One drawing's failure is not the backup's: the tree stays.
+        assert!(matches!(
+            app.pid_backup_browser.load,
+            LoadState::Ready(_)
+        ));
+        assert_eq!(row_labels(&app).len(), 4);
     }
 
     #[test]

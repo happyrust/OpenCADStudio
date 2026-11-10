@@ -433,7 +433,16 @@ fn push_drawing(
         id,
         depth,
         label: entry.name.clone(),
-        expandable: matches!(items, Some(ItemsState::Ready(items)) if !items.groups.is_empty()),
+        // The arrow is what starts the read of a drawing's items, so a
+        // drawing with a file has it before any item is known. It goes only
+        // once the read has shown there is nothing to unfold: no items, or a
+        // file that could not be read (its details say why).
+        expandable: entry.pid_path.is_some()
+            && match items {
+                None | Some(ItemsState::Loading) => true,
+                Some(ItemsState::Ready(items)) => !items.groups.is_empty(),
+                Some(ItemsState::Failed(_)) => false,
+            },
         expanded: open,
         disabled: entry.pid_path.is_none(),
     });
@@ -939,6 +948,11 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
                             t!("Registered but missing").into_owned(),
                         ));
                     }
+                }
+                // A drawing whose items could not be read has no subtree to
+                // show for it; the reason must not be lost with the arrow.
+                if let Some(ItemsState::Failed(error)) = state.items.get(drawing) {
+                    lines.push(DetailLine::Marker(error.clone()));
                 }
                 // Every `T_DRAWING` column, empty values included: the panel
                 // is the only place the backup's own metadata is visible.
@@ -1535,6 +1549,118 @@ mod tests {
             state.items.get(&0),
             Some(ItemsState::Failed(_))
         ));
+        // The arrow is gone, so the details are where the reason is read.
+        assert!(
+            detail_rows(&state, &NodeId::Drawing(0))
+                .contains(&("cannot read".to_string(), String::new())),
+            "{:?}",
+            detail_rows(&state, &NodeId::Drawing(0))
+        );
+        // A drawing whose items read carries no such line.
+        assert!(!detail_rows(&state, &NodeId::Drawing(1))
+            .iter()
+            .any(|(key, _)| key == "cannot read"));
+    }
+
+    /// The row of drawing `at` in the tree opened down to the drawings.
+    fn drawing_row(state: &PidBackupBrowser, at: usize) -> Row {
+        visible_rows(state)
+            .into_iter()
+            .find(|row| row.id == NodeId::Drawing(at))
+            .expect("the drawing row")
+    }
+
+    /// A state whose tree is opened down to the three drawings.
+    fn ready_with_drawings_shown() -> PidBackupBrowser {
+        let mut state = ready();
+        update(&mut state, PidBackupMsg::Toggle(NodeId::Groups));
+        update(&mut state, PidBackupMsg::Toggle(NodeId::Group(vec![0])));
+        update(
+            &mut state,
+            PidBackupMsg::Toggle(NodeId::Group(vec![0, 0])),
+        );
+        update(
+            &mut state,
+            PidBackupMsg::Toggle(NodeId::Group(vec![0, 0, 0])),
+        );
+        state
+    }
+
+    #[test]
+    fn a_drawing_with_a_file_keeps_its_arrow_until_its_items_are_known() {
+        let mut state = ready_with_drawings_shown();
+        // Nothing read yet: the arrow is the way in, so it has to be there.
+        let unread = drawing_row(&state, 0);
+        assert!(unread.expandable && !unread.expanded);
+        // A drawing with no file has nothing to read.
+        assert!(!drawing_row(&state, 2).expandable);
+
+        // While the read is in flight the row is open and still has it.
+        update(&mut state, PidBackupMsg::Toggle(NodeId::Drawing(0)));
+        let reading = drawing_row(&state, 0);
+        assert!(reading.expandable && reading.expanded);
+
+        // Items arrived: the arrow folds and unfolds them.
+        update(
+            &mut state,
+            PidBackupMsg::ItemsLoaded(0, Ok(Arc::new(items_of("UID-1", "Instrument")))),
+        );
+        assert!(drawing_row(&state, 0).expandable);
+
+        // A drawing that turns out to hold no item has nothing to unfold.
+        update(&mut state, PidBackupMsg::Toggle(NodeId::Drawing(1)));
+        update(
+            &mut state,
+            PidBackupMsg::ItemsLoaded(1, Ok(Arc::new(DrawingItems::default()))),
+        );
+        assert!(!drawing_row(&state, 1).expandable);
+    }
+
+    /// The pure tests above send `Toggle` themselves, which is how a panel
+    /// that never drew the arrow of an unread drawing went unnoticed: no
+    /// click could reach a drawing's items. This one presses where the arrow
+    /// is drawn.
+    #[test]
+    fn the_drawn_row_of_an_unread_drawing_carries_the_arrow_that_reads_it() {
+        let _guard = crate::headless_ui_lock();
+        let state = ready_with_drawings_shown();
+        let press_left_of = |label: &str| -> Vec<Message> {
+            let mut ui = iced_test::simulator::Simulator::with_size(
+                iced::Settings::default(),
+                (340.0, 600.0),
+                view(&state, 340.0, Chrome::default()),
+            );
+            let bounds = ui
+                .find(label)
+                .unwrap_or_else(|error| panic!("the row of {label} is drawn: {error:?}"))
+                .visible_bounds()
+                .expect("the row is on screen");
+            // The arrow (or the blank that stands in for it) sits just left
+            // of the label.
+            ui.point_at(iced::Point::new(bounds.x - 7.0, bounds.center_y()));
+            let _ = ui.simulate(iced_test::simulator::click());
+            ui.into_messages().collect()
+        };
+
+        let toggled = |messages: &[Message], drawing: usize| {
+            messages.iter().any(|message| {
+                matches!(
+                    message,
+                    Message::PidBackup(PidBackupMsg::Toggle(NodeId::Drawing(at))) if *at == drawing
+                )
+            })
+        };
+        assert!(
+            toggled(&press_left_of("A-101"), 0),
+            "pressing the arrow of an unread drawing asks for its items"
+        );
+        // A drawing without a file draws a blank there: the press selects.
+        let missing = press_left_of("C-303");
+        assert!(!toggled(&missing, 2), "a drawing without a file has no arrow");
+        assert!(missing.iter().any(|message| matches!(
+            message,
+            Message::PidBackup(PidBackupMsg::Select(NodeId::Drawing(2)))
+        )));
     }
 
     #[test]
