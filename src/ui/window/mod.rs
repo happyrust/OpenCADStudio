@@ -50,6 +50,7 @@ pub mod pdf_dialogs;
 /// the web build's dock branch says the panel is unavailable instead.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pid_backup_browser;
+pub mod pid_collab;
 pub mod pid_legend_list;
 pub mod pid_palette;
 pub mod pdf_shx_dialog;

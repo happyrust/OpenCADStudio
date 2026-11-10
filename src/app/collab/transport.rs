@@ -136,6 +136,97 @@ fn current_config() -> ClientConfig {
         .unwrap_or_default()
 }
 
+/// One outbound request the UI wants on the wire. The transport thread owns the
+/// socket, so the UI never writes to it directly: it enqueues here and the read
+/// loop drains the queue between reads (the 100 ms read timeout is the tick).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Outbound {
+    /// `claim`: ask the server for exclusive ownership of `tag`.
+    Claim { tag: String },
+    /// `release`: give `tag` back.
+    Release { tag: String },
+}
+
+impl Outbound {
+    /// How the request reads in a message ("claim P-1001").
+    pub(super) fn describe(&self) -> String {
+        match self {
+            Outbound::Claim { tag } => format!("claim {tag}"),
+            Outbound::Release { tag } => format!("release {tag}"),
+        }
+    }
+}
+
+/// Outbound queue shared between the UI thread (producer) and the socket
+/// thread (consumer). A `Mutex<VecDeque>` is enough: claim traffic is
+/// human-paced, never a hot path.
+fn outbox() -> &'static Mutex<std::collections::VecDeque<Outbound>> {
+    static OUTBOX: OnceLock<Mutex<std::collections::VecDeque<Outbound>>> = OnceLock::new();
+    OUTBOX.get_or_init(|| Mutex::new(std::collections::VecDeque::new()))
+}
+
+fn push_outbound(request: Outbound) {
+    if let Ok(mut queue) = outbox().lock() {
+        queue.push_back(request);
+    }
+}
+
+/// Take everything queued since the last drain.
+fn drain_outbound() -> Vec<Outbound> {
+    outbox()
+        .lock()
+        .map(|mut queue| queue.drain(..).collect())
+        .unwrap_or_default()
+}
+
+/// Queue a `claim` for `tag`. The `session_id` is checked against the live
+/// session by the caller (`State::request_claim`), so the queue itself only
+/// carries the intent.
+pub(super) fn request_claim(session_id: &str, tag: &str) -> Result<(), String> {
+    let _ = session_id;
+    if tag.trim().is_empty() {
+        return Err("位号为空".to_owned());
+    }
+    push_outbound(Outbound::Claim {
+        tag: tag.trim().to_owned(),
+    });
+    Ok(())
+}
+
+/// Queue a `release` for `tag`.
+pub(super) fn request_release(session_id: &str, tag: &str) -> Result<(), String> {
+    let _ = session_id;
+    if tag.trim().is_empty() {
+        return Err("位号为空".to_owned());
+    }
+    push_outbound(Outbound::Release {
+        tag: tag.trim().to_owned(),
+    });
+    Ok(())
+}
+
+/// Forget queued requests. Called when a session ends so a reconnect never
+/// replays a claim the user made against the old session.
+pub(super) fn clear_outbound() {
+    if let Ok(mut queue) = outbox().lock() {
+        queue.clear();
+    }
+}
+
+/// Turn one queued request into the wire message for `session_id`.
+fn outbound_message(request: &Outbound, session_id: &str) -> ClientMessage {
+    match request {
+        Outbound::Claim { tag } => ClientMessage::Claim {
+            session_id: session_id.to_owned(),
+            tag: tag.clone(),
+        },
+        Outbound::Release { tag } => ClientMessage::Release {
+            session_id: session_id.to_owned(),
+            tag: tag.clone(),
+        },
+    }
+}
+
 /// Why one session ended.
 enum Ended {
     /// The server closed the conversation cleanly.
@@ -268,6 +359,9 @@ fn run_session(
     sender: &mut mpsc::Sender<CollabEvent>,
     config: &ClientConfig,
 ) -> Result<Ended, String> {
+    // A request queued against a session that has since ended must not be
+    // replayed into this one: the tag may belong to somebody else by now.
+    clear_outbound();
     let mut ws = connect(&config.server_url)?;
     let hello = ClientMessage::Hello {
         user_id: config.user_id.clone(),
@@ -341,6 +435,22 @@ fn run_session(
                 let reason = describe_read_error(&error);
                 close(&mut ws);
                 return Ok(Ended::Closed(reason));
+            }
+        }
+
+        // Drain the outbound queue: claim / release requests the UI queued
+        // since the last tick. Sending here (rather than from the UI thread)
+        // keeps every write to the socket on the thread that owns it.
+        if let Some(session_id) = session_id.clone() {
+            for request in drain_outbound() {
+                let message = outbound_message(&request, &session_id);
+                if let Err(error) = send_json(&mut ws, &message) {
+                    // A failed write means the socket is gone; the retry ladder
+                    // takes over and the queued request is dropped with it.
+                    let reason = format!("{} 发送失败：{error}", request.describe());
+                    close(&mut ws);
+                    return Ok(Ended::Closed(reason));
+                }
             }
         }
 
@@ -818,5 +928,93 @@ mod tests {
             "cancellation took {elapsed:?}, over the 200 ms budget"
         );
         let _ = server.join();
+    }
+
+    /// VAL-CLI-004 / 007: the queued `claim` and `release` reach the wire as
+    /// the protocol's frames, carrying the session id from `welcome`.
+    #[test]
+    fn queued_claims_and_releases_reach_the_wire_with_the_session_id() {
+        let _guard = config_lock();
+        let (url, seen, _closed, server) = recording_server();
+        set_client_config(ClientConfig {
+            server_url: url,
+            user_id: "u1".to_owned(),
+            drawing_id: "PID-1101".to_owned(),
+            mode: "协同编辑".to_owned(),
+            client_version: "test".to_owned(),
+        });
+        clear_outbound();
+
+        let (mut sender, receiver) = mpsc::channel::<CollabEvent>(64);
+        let worker = std::thread::spawn(move || {
+            let _ = run_client(&mut sender);
+        });
+
+        let mut receiver = receiver;
+        let mut connected = false;
+        for _ in 0..60 {
+            match receiver.try_next() {
+                Ok(Some(CollabEvent::Connected { .. })) => {
+                    connected = true;
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        assert!(connected, "the client never reported a session");
+
+        request_claim("s-test", "P-1001").expect("claim queues");
+        request_release("s-test", "P-1001").expect("release queues");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let frames = loop {
+            let frames: Vec<String> = seen.lock().expect("frame log").clone();
+            let claim = frames
+                .iter()
+                .any(|frame| frame.contains("\"type\":\"claim\""));
+            let release = frames
+                .iter()
+                .any(|frame| frame.contains("\"type\":\"release\""));
+            if (claim && release) || Instant::now() >= deadline {
+                break frames;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let claim = frames
+            .iter()
+            .find(|frame| frame.contains("\"type\":\"claim\""))
+            .unwrap_or_else(|| panic!("no claim frame on the wire: {frames:?}"));
+        assert!(claim.contains("P-1001"), "{claim}");
+        assert!(claim.contains("s-test"), "{claim}");
+        let release = frames
+            .iter()
+            .find(|frame| frame.contains("\"type\":\"release\""))
+            .unwrap_or_else(|| panic!("no release frame on the wire: {frames:?}"));
+        assert!(release.contains("P-1001"), "{release}");
+        assert!(release.contains("s-test"), "{release}");
+
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+    }
+
+    /// A session that ends before its queued request is sent must not carry the
+    /// request into the next session: the tag may belong to somebody else by
+    /// then.
+    #[test]
+    fn a_new_session_starts_with_an_empty_outbox() {
+        request_claim("s-old", "P-1001").expect("claim queues");
+        clear_outbound();
+        assert!(drain_outbound().is_empty());
+    }
+
+    #[test]
+    fn an_empty_tag_is_refused_before_it_reaches_the_queue() {
+        clear_outbound();
+        assert!(request_claim("s-1", "   ").is_err());
+        assert!(request_release("s-1", "").is_err());
+        assert!(drain_outbound().is_empty());
     }
 }

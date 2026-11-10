@@ -2546,6 +2546,20 @@ pub struct CountDisplay {
     pub error_color: [f32; 4],
 }
 
+/// The stroke colour of a tag another session holds (see
+/// [`Scene::set_claim_display`]). Amber, apart from the blue selection, the
+/// orange rollover and the red tag-group frame, so "someone else owns this
+/// tag" reads as its own state instead of as a pick.
+pub const CLAIM_COLOR: [f32; 4] = [1.0, 0.70, 0.10, 1.0];
+
+/// The entities whose tag a remote session currently holds, and the colour
+/// they draw in: see [`Scene::claim_display`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaimDisplay {
+    pub handles: HashSet<Handle>,
+    pub color: [f32; 4],
+}
+
 pub struct Scene {
     pub camera: Rc<RefCell<Camera>>,
     /// View saved immediately before the latest navigation operation. ZOOM
@@ -2668,6 +2682,10 @@ pub struct Scene {
     /// duplicates in COUNTERRORCOLOR, everything else faded. `None` outside
     /// count mode.
     pub count_display: Option<CountDisplay>,
+    /// Entities whose tag a *remote* collaboration session holds, drawn in
+    /// [`CLAIM_COLOR`] so the drawing shows what somebody else owns. `None`
+    /// when no remote claim applies (offline, or only this session's own).
+    pub claim_display: Option<ClaimDisplay>,
     /// Entity drawn with the selection-highlight colour without being part
     /// of the real selection — used to preview a row in the cycling list box.
     pub hover_highlight: Option<Handle>,
@@ -3399,6 +3417,7 @@ impl Scene {
             refedit_keep: None,
             refedit_lock: false,
             count_display: None,
+            claim_display: None,
             hover_highlight: None,
             constraint_hover_highlights: HashSet::default(),
             box_hover_highlights: HashSet::default(),
@@ -5493,6 +5512,41 @@ impl Scene {
         [r, g, b, color[3]]
     }
 
+    /// Recolour the wires of entities whose tag a remote session holds, so the
+    /// drawing shows the claim in [`CLAIM_COLOR`] as well as the panel does.
+    /// The geometry is untouched, so picking, snapping and hit-testing keep
+    /// working on the recoloured entities. Applied after the REFEDIT/COUNT
+    /// recolouring, which may otherwise fade or tint the same wires.
+    fn apply_claim_colors(&self, wires: &mut [WireModel]) {
+        let Some(claim) = &self.claim_display else {
+            return;
+        };
+        for wire in wires.iter_mut() {
+            let Some(handle) = Self::handle_from_wire_name(&wire.name) else {
+                continue;
+            };
+            if !claim.handles.contains(&handle) {
+                continue;
+            }
+            wire.color = claim.color;
+            for vertex in &mut wire.text_verts {
+                vertex.color = claim.color;
+            }
+        }
+    }
+
+    /// Publish the entities whose tag a remote session holds. A no-op when the
+    /// set is unchanged; otherwise the resident assembly is rebuilt so the new
+    /// tint shows (claim events are rare, so the cost is paid once per event).
+    pub fn set_claim_display(&mut self, display: Option<ClaimDisplay>) {
+        if self.claim_display == display {
+            return;
+        }
+        self.claim_display = display;
+        self.hatch_cache.borrow_mut().clear();
+        self.bump_geometry_no_blocks();
+    }
+
     /// Fade the colours of wires that belong to entities outside the REFEDIT
     /// keep set (no-op when not editing). The geometry is untouched, so
     /// hit-testing still works on faded entities. In count mode the counted
@@ -5501,6 +5555,7 @@ impl Scene {
         // Block copies kept as stubs draw in their prototype's colour; while
         // copies are recoloured one by one they are expanded instead.
         if (self.count_display.is_some()
+            || self.claim_display.is_some()
             || self.refedit_keep.is_some()
             || self.block_visibility_reveal)
             && wires.iter().any(|wire| wire.stub.is_some())
@@ -5540,27 +5595,29 @@ impl Scene {
                 }
             }
         }
-        let Some(keep) = &self.refedit_keep else {
-            return;
-        };
-        for w in wires.iter_mut() {
-            let handle = Self::handle_from_wire_name(&w.name);
-            // A DWF underlay's page stays as it is outside the working set,
-            // like an image or a PDF page; only its frame fades. A DGN
-            // underlay's content fades with everything else.
-            let dwf_page = w.is_display_only()
-                && handle.is_some_and(|h| {
-                    matches!(
-                        self.document.get_entity(h),
-                        Some(EntityType::Underlay(u))
-                            if u.underlay_type == codec::entities::UnderlayType::Dwf
-                    )
-                });
-            let keep_bright = dwf_page || handle.is_some_and(|h| keep.contains(&h));
-            if !keep_bright {
-                w.color = crate::scene::cache::block_cache::refedit_fade(w.color, bg);
+        if let Some(keep) = &self.refedit_keep {
+            for w in wires.iter_mut() {
+                let handle = Self::handle_from_wire_name(&w.name);
+                // A DWF underlay's page stays as it is outside the working set,
+                // like an image or a PDF page; only its frame fades. A DGN
+                // underlay's content fades with everything else.
+                let dwf_page = w.is_display_only()
+                    && handle.is_some_and(|h| {
+                        matches!(
+                            self.document.get_entity(h),
+                            Some(EntityType::Underlay(u))
+                                if u.underlay_type == codec::entities::UnderlayType::Dwf
+                        )
+                    });
+                let keep_bright = dwf_page || handle.is_some_and(|h| keep.contains(&h));
+                if !keep_bright {
+                    w.color = crate::scene::cache::block_cache::refedit_fade(w.color, bg);
+                }
             }
         }
+        // Last, so a claim colour beats the fade/tint decisions above: the
+        // claim is what the other user sees, not a display preference.
+        self.apply_claim_colors(wires);
     }
 
     /// Switch the active layout without pretending the document geometry
@@ -8563,6 +8620,7 @@ impl Scene {
     /// recolours or replaces them after tessellation.
     fn resident_runs_match_memo(&self, block: Handle) -> bool {
         self.count_display.is_none()
+            && self.claim_display.is_none()
             && self.refedit_keep.is_none()
             && !self.block_visibility_reveal
             && self.active_live_section(block).is_none()

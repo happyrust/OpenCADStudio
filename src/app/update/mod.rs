@@ -1195,18 +1195,28 @@ impl OpenCADStudio {
             }
             Message::CollabEvent(event) => {
                 // The transport thread owns the socket; the UI only folds what
-                // it reported into the session state. Visible consequences
-                // (claims, peers, read-only) land in later M6 features; the
-                // connection lifecycle is narrated here so the command line
+                // it reported into the session state. The connection lifecycle
+                // and every claim outcome are narrated here so the command line
                 // says what happened instead of going quiet.
                 let was_connected = self.collab.connected;
                 self.collab.apply(event.clone());
+                self.sync_claim_colors();
+                self.refresh_collab_view();
                 match &event {
                     super::collab::CollabEvent::Connected { session_id, .. } => {
                         self.command_line.push_info(&format!(
                             "协同：已连接 {}（会话 {session_id}）",
                             self.collab.server_url
                         ));
+                        // The first live session brings the panel out where the
+                        // layout has it: a claim is only useful if the roster
+                        // and the held tags are on screen. Once only, so a
+                        // person who closes it keeps it closed across
+                        // reconnects.
+                        if !self.pid_collab_auto_shown {
+                            self.pid_collab_auto_shown = true;
+                            return self.show_pid_collab_panel();
+                        }
                     }
                     super::collab::CollabEvent::Disconnected { reason, will_retry } => {
                         if was_connected || !*will_retry {
@@ -1217,10 +1227,29 @@ impl OpenCADStudio {
                         self.command_line
                             .push_warning(&format!("协同：只读降级（{reason}）"));
                     }
+                    super::collab::CollabEvent::ClaimGranted { tag } => {
+                        self.command_line
+                            .push_info(&format!("协同：已占用位号 {tag}"));
+                    }
+                    super::collab::CollabEvent::ClaimDenied {
+                        tag,
+                        holder,
+                        expires_at,
+                    } => {
+                        self.command_line.push_warning(&format!(
+                            "协同：位号 {tag} 已被 {holder} 占用，到期 {expires_at}"
+                        ));
+                    }
+                    super::collab::CollabEvent::ClaimReleased { tag, reason } => {
+                        self.command_line
+                            .push_info(&format!("协同：位号 {tag} 占用已释放（{reason}）"));
+                    }
                     _ => {}
                 }
                 Task::none()
             }
+            Message::CollabClaim { tag, claim } => self.on_collab_claim(&tag, claim),
+            Message::PidCollab(m) => self.on_pid_collab(m),
             #[cfg(target_arch = "wasm32")]
             Message::PollWebControl => {
                 let control = if let Some(request) = super::control::web_request() {

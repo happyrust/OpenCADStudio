@@ -1432,6 +1432,18 @@ pub(super) struct OpenCADStudio {
     /// id exists on both builds so the persisted layout is the same; only the
     /// web build's body is a hint instead of a tree.
     pub(crate) show_pid_backup: bool,
+    /// Docked collaboration panel visibility (PIDCOLLAB): the peer roster and
+    /// the tag claims, with their claim/release buttons.
+    pub(crate) show_pid_collab: bool,
+    /// The cached projection of the collaboration session the panel draws.
+    /// Rebuilt by `refresh_collab_view` after every collab event, so the panel
+    /// never holds state of its own.
+    pub(crate) pid_collab_view: crate::ui::window::pid_collab::CollabView,
+    /// Whether the panel's claims list is expanded.
+    pub(crate) pid_collab_claims_open: bool,
+    /// Whether the first live session has already brought the panel out. One
+    /// shot, so closing it by hand is not undone by the next reconnect.
+    pub(crate) pid_collab_auto_shown: bool,
     /// The backup the browser shows: its load state, the open rows, the
     /// selected node and the items read so far. App-level, not per tab, so
     /// switching documents leaves the tree where the user left it.
@@ -3418,6 +3430,15 @@ pub enum Message {
     ControlRequest(control::Envelope),
     /// One event from the collaboration transport thread (`src/app/collab`).
     CollabEvent(collab::CollabEvent),
+    /// The collaboration panel asked to claim (`claim: true`) or release a
+    /// tag. The app checks it is in a session, queues the frame, and narrates
+    /// the outcome when the server answers.
+    CollabClaim {
+        tag: String,
+        claim: bool,
+    },
+    /// An interaction inside the docked collaboration panel.
+    PidCollab(crate::ui::window::pid_collab::PidCollabMsg),
     PollWebControl,
     ControlStep(String, Box<Message>),
     ControlTaskDone(String),
@@ -6351,6 +6372,10 @@ impl OpenCADStudio {
             show_pid_palette: false,
             pid_palette: Default::default(),
             show_pid_backup: false,
+            show_pid_collab: false,
+            pid_collab_view: Default::default(),
+            pid_collab_claims_open: true,
+            pid_collab_auto_shown: false,
             #[cfg(not(target_arch = "wasm32"))]
             pid_backup_browser: Default::default(),
             pid_symbols: crate::pid::symbols::SymbolLibrary::load_from_env(),

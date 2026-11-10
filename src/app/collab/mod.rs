@@ -7,13 +7,18 @@
 //! needs to know arrives as a [`CollabEvent`] on the subscription channel, so
 //! no collab code ever touches the socket from the UI thread.
 //!
-//! This module owns *state* only. Claim/broadcast behaviour lands in later
-//! features; the transport here already carries the whole server→client
-//! message set so those features only have to react to the events.
+//! This module owns *state* only, plus the outbound request queue that lets the
+//! UI ask the transport thread to send `claim` / `release` frames. Claims are
+//! the first outbound traffic the GUI originates; broadcast (`op`) lands in a
+//! later feature.
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+// The claim commands and the panel glue are shared by both builds (the panel
+// exists on the web build as a hint); only the transport itself is desktop-only,
+// so `request_claim` / `request_release` carry a web stub below.
+mod claims;
 #[cfg(not(target_arch = "wasm32"))]
 mod messages;
 #[cfg(not(target_arch = "wasm32"))]
@@ -110,6 +115,9 @@ pub(super) struct State {
     pub last_error: Option<String>,
     /// How many reconnect attempts have failed since the last live session.
     pub reconnect_attempts: u32,
+    /// Last claim/release outcome worth telling the user: a `claim_denied`
+    /// names who holds the tag and until when, and the panel shows it.
+    pub last_claim_message: Option<String>,
 }
 
 impl State {
@@ -124,6 +132,31 @@ impl State {
     /// URL nothing connects — the offline-first invariant of `VAL-CLI-017`.
     pub(super) fn wanted(&self) -> bool {
         !self.server_url.trim().is_empty()
+    }
+
+    /// Turn the holder a denial names into the user the panel should show.
+    ///
+    /// The server names the holding *session* (`VAL-SRV-011`), while the panel
+    /// and `VAL-CLI-005` speak of the holding *user*: the roster already maps
+    /// session → user, so resolve through it and fall back to the raw value
+    /// when the holder is not (or no longer) on the drawing.
+    ///
+    /// The user id wins over the display name: `GET /api/v1/collab/status`
+    /// publishes `tag → user id`, and `VAL-CLI-005` accepts either, so keeping
+    /// one spelling everywhere is what lets the panel and the endpoint agree.
+    fn resolve_holder(&self, holder: &str) -> String {
+        if let Some(peer) = self.peers.iter().find(|peer| peer.session_id == holder) {
+            if !peer.user_id.is_empty() {
+                return peer.user_id.clone();
+            }
+            if !peer.display_name.is_empty() {
+                return peer.display_name.clone();
+            }
+        }
+        if self.session_id.as_deref() == Some(holder) && !self.user_id.is_empty() {
+            return self.user_id.clone();
+        }
+        holder.to_owned()
     }
 
     /// Take the config the transport thread will use.
@@ -203,6 +236,7 @@ impl State {
             }
             CollabEvent::ClaimGranted { tag } => {
                 let holder = self.user_id.clone();
+                self.last_claim_message = Some(format!("已占用位号 {tag}"));
                 self.claims.insert(tag, holder);
             }
             CollabEvent::ClaimDenied {
@@ -212,10 +246,14 @@ impl State {
             } => {
                 // The claim stays with its holder; record who it is so the
                 // panel can grey the row out and say until when.
+                let holder = self.resolve_holder(&holder);
+                self.last_claim_message =
+                    Some(format!("位号 {tag} 已被 {holder} 占用，到期时间 {expires_at}"));
                 self.last_error = Some(format!("位号 {tag} 已被占用，到期时间 {expires_at}"));
                 self.claims.insert(tag, holder);
             }
-            CollabEvent::ClaimReleased { tag, .. } => {
+            CollabEvent::ClaimReleased { tag, reason } => {
+                self.last_claim_message = Some(format!("位号 {tag} 占用已释放（{reason}）"));
                 self.claims.remove(&tag);
             }
             CollabEvent::ReadonlyDowngrade { reason, holder } => {
@@ -261,7 +299,42 @@ impl State {
             "readonly_holder": self.readonly_holder,
             "reconnect_attempts": self.reconnect_attempts,
             "last_error": self.last_error,
+            "last_claim_message": self.last_claim_message,
         })
+    }
+
+    /// Ask the transport to send one `claim` / `release` for `tag`.
+    ///
+    /// Returns why nothing was sent when the client is not in a session — the
+    /// caller reports that instead of leaving the click silently ignored. The
+    /// request travels through the transport's outbound queue; the server's
+    /// answer arrives later as a `CollabEvent`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn request_claim(&self, tag: &str) -> Result<(), String> {
+        let Some(session_id) = self.session_id.clone() else {
+            return Err("未连接协同服务器".to_owned());
+        };
+        transport::request_claim(&session_id, tag)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn request_release(&self, tag: &str) -> Result<(), String> {
+        let Some(session_id) = self.session_id.clone() else {
+            return Err("未连接协同服务器".to_owned());
+        };
+        transport::request_release(&session_id, tag)
+    }
+
+    /// The web build has no collaboration socket, so a claim request can never
+    /// be sent. Reported as an error rather than ignored, so the panel says why.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn request_claim(&self, _tag: &str) -> Result<(), String> {
+        Err("网页版不支持协同占用".to_owned())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn request_release(&self, _tag: &str) -> Result<(), String> {
+        Err("网页版不支持协同占用".to_owned())
     }
 }
 
@@ -424,5 +497,95 @@ mod tests {
             reason: "released".to_owned(),
         });
         assert!(!state.claims.contains_key("P-1001"));
+    }
+
+    /// VAL-CLI-004: a granted claim puts this session's own user id in the
+    /// published `claims` map, which is exactly what `/collab/status` reads.
+    #[test]
+    fn a_granted_claim_publishes_this_sessions_user_id() {
+        let mut state = State::new();
+        state.user_id = "u1".to_owned();
+        state.apply(CollabEvent::ClaimGranted {
+            tag: "P-1001".to_owned(),
+        });
+        let status = state.status_json();
+        assert_eq!(status["claims"]["P-1001"], "u1");
+        assert!(state.last_claim_message.is_some());
+    }
+
+    /// VAL-CLI-005: a denial names the holder, so the panel can grey the row
+    /// and say who owns it — and the map keeps that holder, not this session.
+    #[test]
+    fn a_denied_claim_records_the_holder_and_never_claims_it_for_us() {
+        let mut state = State::new();
+        state.user_id = "u2".to_owned();
+        state.apply(CollabEvent::ClaimDenied {
+            tag: "P-1001".to_owned(),
+            holder: "u1".to_owned(),
+            expires_at: 1_700_000_300,
+        });
+        assert_eq!(state.claims.get("P-1001").map(String::as_str), Some("u1"));
+        let message = state.last_claim_message.as_deref().unwrap();
+        assert!(message.contains("u1"), "{message}");
+        assert!(message.contains("1700000300"), "{message}");
+    }
+
+    /// The server names the holding *session*; the panel and the published
+    /// `claims` map speak of the holding *user*, so the roster resolves it.
+    #[test]
+    fn a_denial_naming_a_session_publishes_that_sessions_user() {
+        let mut state = State::new();
+        state.user_id = "u2".to_owned();
+        state.apply(CollabEvent::Connected {
+            session_id: "s-2".to_owned(),
+            base_revision: 0,
+            peers: vec![
+                peer("s-2", "u2"),
+                peer("s-1", "u1"),
+            ],
+            claims: Vec::new(),
+        });
+        state.apply(CollabEvent::ClaimDenied {
+            tag: "P-1001".to_owned(),
+            holder: "s-1".to_owned(),
+            expires_at: 1_700_000_300,
+        });
+        assert_eq!(state.claims.get("P-1001").map(String::as_str), Some("u1"));
+        assert_eq!(state.status_json()["claims"]["P-1001"], "u1");
+    }
+
+    /// VAL-CLI-006 / 007: either release path drops the tag from the map, and
+    /// the reason survives in the message the panel shows.
+    #[test]
+    fn a_release_clears_the_tag_and_keeps_its_reason() {
+        for reason in ["released", "expired"] {
+            let mut state = State::new();
+            state.user_id = "u1".to_owned();
+            state.apply(CollabEvent::ClaimGranted {
+                tag: "P-1001".to_owned(),
+            });
+            state.apply(CollabEvent::ClaimReleased {
+                tag: "P-1001".to_owned(),
+                reason: reason.to_owned(),
+            });
+            assert!(!state.claims.contains_key("P-1001"), "{reason}");
+            assert!(
+                state
+                    .last_claim_message
+                    .as_deref()
+                    .is_some_and(|message| message.contains(reason)),
+                "{reason}: {:?}",
+                state.last_claim_message
+            );
+        }
+    }
+
+    /// A claim request without a session is refused rather than silently
+    /// dropped: the panel reports why the click did nothing.
+    #[test]
+    fn a_claim_without_a_session_is_refused_with_a_reason() {
+        let state = State::new();
+        assert!(state.request_claim("P-1001").is_err());
+        assert!(state.request_release("P-1001").is_err());
     }
 }

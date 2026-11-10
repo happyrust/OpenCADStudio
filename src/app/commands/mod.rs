@@ -843,6 +843,12 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_pidconnector(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_pidcollab(cmd, i) {
+            return Some(t);
+        }
+        if let Some(t) = self.dispatch_pidclaim(cmd, i) {
+            return Some(t);
+        }
         None
     }
 
@@ -1479,6 +1485,8 @@ inventory::submit!(crate::command::CommandRegistration {
         // backup.
         "PIDBACKUPOPEN",
         "PIDBREAK",
+        "PIDCLAIM",
+        "PIDCOLLAB",
         "PIDCONNECTOR",
         "PIDFITTING",
         "PIDGROUP",
@@ -1489,6 +1497,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "PIDPALETTE",
         "PIDPIPE",
         "PIDPLOT",
+        "PIDRELEASE",
         "PIDTAG",
         "PIDTOPOLOGY",
         "PLOT",

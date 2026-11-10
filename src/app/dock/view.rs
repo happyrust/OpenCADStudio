@@ -542,6 +542,11 @@ impl OpenCADStudio {
                 chrome,
             ),
             crate::ui::dock::PanelId::PidBackup => pid_backup_panel(self, width, chrome),
+            crate::ui::dock::PanelId::PidCollab => crate::ui::window::pid_collab::view(
+                &self.pid_collab_view,
+                width,
+                chrome,
+            ),
             crate::ui::dock::PanelId::ExternalReferences => {
                 self.xref_manager
                     .view(width, chrome, tab.xref_missing, &tab.scene.document)

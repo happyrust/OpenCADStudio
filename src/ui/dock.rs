@@ -118,6 +118,9 @@ pub enum PanelId {
     /// The SmartPlant P&ID backup browser (PIDBACKUPOPEN): the backup's files,
     /// its plant groups and drawings, their model items and its `Ref` data.
     PidBackup,
+    /// The collaboration panel (PIDCOLLAB): who is on the drawing and which
+    /// tags they hold, with the claim/release buttons.
+    PidCollab,
     /// Block Editor authoring tools.
     AuthoringPalettes,
     /// The Block Editor's Parameters Manager.
@@ -147,13 +150,14 @@ pub enum PanelId {
 
 impl PanelId {
     /// Every panel, in the order the pallet menu lists them.
-    pub const ALL: [PanelId; 18] = [
+    pub const ALL: [PanelId; 19] = [
         PanelId::Properties,
         PanelId::GraphicAttributes,
         PanelId::BlockPalette,
         PanelId::PidLegend,
         PanelId::PidPalette,
         PanelId::PidBackup,
+        PanelId::PidCollab,
         PanelId::AuthoringPalettes,
         PanelId::ParametersManager,
         PanelId::ExternalReferences,
@@ -177,6 +181,7 @@ impl PanelId {
             PanelId::PidLegend => "P&ID 图例",
             PanelId::PidPalette => "P&ID 符号",
             PanelId::PidBackup => "P&ID Backup",
+            PanelId::PidCollab => "协同",
             PanelId::AuthoringPalettes => "Authoring Palettes",
             PanelId::ParametersManager => "Parameters Manager",
             PanelId::ExternalReferences => "External References",
@@ -207,6 +212,9 @@ impl PanelId {
             // needs an icon of its own; the closed folder is the one folder
             // shape no other panel uses.
             PanelId::PidBackup => crate::ui::icons::FOLDER,
+            // Two overlapping figures: "who else is on this drawing". No other
+            // panel uses the people shape.
+            PanelId::PidCollab => include_bytes!("../../assets/icons/ui/collab.svg"),
             PanelId::AuthoringPalettes => include_bytes!("../../assets/icons/tool_palettes.svg"),
             PanelId::ParametersManager => include_bytes!("../../assets/icons/table.svg"),
             PanelId::ExternalReferences => crate::ui::icons::FOLDER_OPEN,
@@ -232,6 +240,7 @@ impl PanelId {
             PanelId::PidLegend => 280.0,
             PanelId::PidPalette => 300.0,
             PanelId::PidBackup => 340.0,
+            PanelId::PidCollab => 260.0,
             PanelId::AuthoringPalettes => 260.0,
             PanelId::ParametersManager => 420.0,
             PanelId::ExternalReferences => 460.0,
@@ -1942,8 +1951,9 @@ mod tests {
 
     #[test]
     fn the_backup_browser_is_a_panel_of_its_own() {
-        assert_eq!(PanelId::ALL.len(), 18);
+        assert_eq!(PanelId::ALL.len(), 19);
         assert!(PanelId::ALL.contains(&PanelId::PidBackup));
+        assert!(PanelId::ALL.contains(&PanelId::PidCollab));
         // The persisted layout names the panel, so the id has to round trip.
         let json = serde_json::to_string(&PanelId::PidBackup).unwrap();
         assert_eq!(json, "\"pid_backup\"");

@@ -581,6 +581,16 @@ impl OpenCADStudio {
                         }
                         self.show_pid_backup = true;
                     }
+                    PanelId::PidCollab => {
+                        if self.dock.location(PanelId::PidCollab).is_none() {
+                            self.dock.dock(
+                                PanelId::PidCollab,
+                                crate::app::config::DockSide::Right,
+                                0,
+                            );
+                        }
+                        self.show_pid_collab = true;
+                    }
                     PanelId::ParametersManager => {
                         self.show_parameters_manager = true;
                         self.dock_open_at_default(id);
@@ -642,6 +652,19 @@ impl OpenCADStudio {
             // The backup stays loaded: closing the pallet hides the tree, and
             // reopening it (or PIDBACKUPOPEN again) shows the same backup.
             PanelId::PidBackup => self.show_pid_backup = false,
+            // The collaboration panel keeps no state of its own, so closing it
+            // loses nothing; reopening shows the live session again. Its
+            // reported rectangles go with it, or a bounds reader would keep
+            // seeing rows for a panel that is no longer drawn.
+            PanelId::PidCollab => {
+                self.show_pid_collab = false;
+                crate::ui::wrap_bar::forget_bounds(
+                    crate::ui::window::pid_collab::ROW_BOUNDS_PREFIX,
+                );
+                crate::ui::wrap_bar::forget_bounds(
+                    crate::ui::window::pid_collab::PANEL_BOUNDS_ID,
+                );
+            }
             PanelId::AuthoringPalettes => {
                 self.show_authoring_palettes = false;
             }
@@ -783,6 +806,7 @@ impl OpenCADStudio {
             PanelId::PidLegend => self.show_pid_legend_list,
             PanelId::PidPalette => self.show_pid_palette,
             PanelId::PidBackup => self.show_pid_backup,
+            PanelId::PidCollab => self.show_pid_collab,
             PanelId::ParametersManager => {
                 self.show_parameters_manager
                     && self.tabs[self.active_tab]
