@@ -13,9 +13,9 @@
 //! no longer the active modal after its message was closed or replaced.
 
 use super::{Message, ModalKind, OpenCADStudio};
-use iced::widget::{mouse_area, Space};
 #[cfg(not(target_arch = "wasm32"))]
 use iced::widget::{column, container, row, text};
+use iced::widget::{mouse_area, Space};
 use iced::{Element, Fill, Point, Size, Task, Vector};
 
 /// Where a tool dialog's state lives, which decides what a tab switch does.
@@ -90,6 +90,9 @@ pub(crate) struct ToolWindow {
     /// Desktop: asked to go into (or reopen in) a window of its own.
     #[cfg(not(target_arch = "wasm32"))]
     pub wants_window: bool,
+    /// Desktop: the window it was opened from, which gets the focus back.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub opener: Option<iced::window::Id>,
 }
 
 impl ToolWindow {
@@ -113,8 +116,10 @@ pub(crate) struct ToolDrag {
     pub last: Option<Point>,
 }
 
-/// Where a window of its own last was, in screen logical pixels. A NaN
-/// position (not placed yet) is written as `null` and read back as NaN.
+/// Where a window of its own last was: its position in physical screen
+/// pixels, which mean the same on every screen whatever its scale, and its
+/// size in logical pixels. A NaN position (not placed yet) is written as
+/// `null` and read back as NaN.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WindowPlacement {
     #[serde(deserialize_with = "nan_when_null")]
@@ -145,6 +150,31 @@ pub(crate) struct OsWindow {
     pub id: iced::window::Id,
     pub content: Detached,
     pub placement: WindowPlacement,
+    /// The scale of the screen the window is on.
+    pub scale: f32,
+    /// Opened at a guessed scale; moved to its place once its own is known.
+    pub placing: bool,
+    /// The window a dialog was opened from.
+    pub opener: Option<iced::window::Id>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl OsWindow {
+    fn new(
+        id: iced::window::Id,
+        content: Detached,
+        placement: WindowPlacement,
+        opener: Option<iced::window::Id>,
+    ) -> Self {
+        Self {
+            id,
+            content,
+            placement,
+            scale: crate::ui::icons::scale_factor(),
+            placing: placement.x.is_finite() && placement.y.is_finite(),
+            opener,
+        }
+    }
 }
 
 /// The key a tool dialog's placement is remembered under.
@@ -268,17 +298,30 @@ impl OpenCADStudio {
         let Some(kind) = self.active_modal else {
             return;
         };
-        let geometry = (self.modal_offset, self.modal_resize, self.modal_content_size);
-        let cascade = self.tool_windows.iter().filter(|tool| tool.in_canvas()).count() as f32;
+        let geometry = (
+            self.modal_offset,
+            self.modal_resize,
+            self.modal_content_size,
+        );
+        let cascade = self
+            .tool_windows
+            .iter()
+            .filter(|tool| tool.in_canvas())
+            .count() as f32;
         match self.tool_windows.iter().position(|tool| tool.kind == kind) {
             // Swapped in for a message: it stays where it was moved to.
             Some(index) if self.tool_focus == Some(kind) => {
                 let tool = &mut self.tool_windows[index];
                 (tool.offset, tool.resize, tool.content_size) = geometry;
             }
-            // Opened again while open: it comes to the front where it is.
+            // Opened again while open: it comes to the front where it is,
+            // its own window too (it may be behind the main window).
             Some(index) => {
                 let tool = self.tool_windows.remove(index);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.tool_window_to_raise = tool.window;
+                }
                 self.tool_windows.push(tool);
                 self.keyboard_tool = Some(kind);
             }
@@ -293,6 +336,8 @@ impl OpenCADStudio {
                 // Desktop: a dialog opens in a window of its own.
                 #[cfg(not(target_arch = "wasm32"))]
                 let wants_window = self.main_window.is_some();
+                #[cfg(not(target_arch = "wasm32"))]
+                let opener = self.dialog_opener();
                 // A dialog that just opened has the keyboard, as a modal had.
                 self.keyboard_tool = Some(kind);
                 let tab = self.tabs.get(self.active_tab).map(|tab| tab.id);
@@ -306,6 +351,8 @@ impl OpenCADStudio {
                     window: None,
                     #[cfg(not(target_arch = "wasm32"))]
                     wants_window,
+                    #[cfg(not(target_arch = "wasm32"))]
+                    opener,
                 });
             }
         }
@@ -342,15 +389,21 @@ impl OpenCADStudio {
             self.park_active_tool();
         }
         self.tool_focus = None;
-        if self
-            .keyboard_tool
-            .is_some_and(|kind| !self.tool_windows.iter().any(|tool| tool.kind == kind && tool.in_canvas()))
-        {
+        if self.keyboard_tool.is_some_and(|kind| {
+            !self
+                .tool_windows
+                .iter()
+                .any(|tool| tool.kind == kind && tool.in_canvas())
+        }) {
             self.keyboard_tool = None;
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.reconcile_os_windows()
+            let reconciled = self.reconcile_os_windows();
+            match self.tool_window_to_raise.take() {
+                Some(id) => Task::batch([reconciled, iced::window::gain_focus(id)]),
+                None => reconciled,
+            }
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -436,6 +489,26 @@ impl OpenCADStudio {
         self.float_pallet_centred(id);
     }
 
+    /// Bring pallet `id`'s window of its own to the front and give it the
+    /// focus. `None` when it has no such window.
+    pub(crate) fn raise_pallet_window(
+        &self,
+        id: crate::ui::dock::PanelId,
+    ) -> Option<Task<Message>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.os_windows
+                .iter()
+                .find(|window| window.content == Detached::Panel(id))
+                .map(|window| iced::window::gain_focus(window.id))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = id;
+            None
+        }
+    }
+
     /// Float pallet `id` over the middle of the drawing (where it floated
     /// last, when it did), out of the dock.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -467,7 +540,11 @@ impl OpenCADStudio {
             .map(|tool| tool.kind)
             .collect();
         for kind in kinds {
-            if self.enter_tool(kind) {
+            // A dialog of the same kind that the drawing now shown has just
+            // opened (a second drawing's missing-fonts prompt) is active but
+            // not the parked tool: drop only the stale tool and leave it up.
+            let fresh = self.active_modal == Some(kind) && self.tool_focus != Some(kind);
+            if !fresh && self.enter_tool(kind) {
                 self.close_active_modal();
                 if self.active_modal == Some(kind) {
                     self.active_modal = None;
@@ -479,7 +556,10 @@ impl OpenCADStudio {
     }
 
     pub(crate) fn on_tool_grab(&mut self, kind: ModalKind, resizing: bool) -> Task<Message> {
-        if self.active_modal.is_some_and(|active| !self.tool_open(active)) {
+        if self
+            .active_modal
+            .is_some_and(|active| !self.tool_open(active))
+        {
             return Task::none();
         }
         if let Some(index) = self.tool_windows.iter().position(|tool| tool.kind == kind) {
@@ -536,7 +616,10 @@ impl OpenCADStudio {
 
     /// The open tools' frames over `base`, back to front, plus the pointer
     /// capture of a drag. Tools in a window of their own are drawn there.
-    pub(crate) fn with_tool_windows<'a>(&'a self, base: Element<'a, Message>) -> Element<'a, Message> {
+    pub(crate) fn with_tool_windows<'a>(
+        &'a self,
+        base: Element<'a, Message>,
+    ) -> Element<'a, Message> {
         let mut layers: Vec<Element<'a, Message>> = vec![base];
         for tool in self.tool_windows.iter().filter(|tool| tool.in_canvas()) {
             let kind = tool.kind;
@@ -620,6 +703,34 @@ impl OpenCADStudio {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl OpenCADStudio {
+    /// The window of its own a dialog opening now was opened from. The main
+    /// window counts as none: nothing can come between it and its dialog.
+    fn dialog_opener(&self) -> Option<iced::window::Id> {
+        let focused = self.focused_window?;
+        let window = self.os_windows.iter().find(|w| w.id == focused)?;
+        match window.content {
+            // A dialog that gave way to this one (Layer States to its
+            // editor): the new one returns to where that one would have.
+            Detached::Tool(kind) if !self.tool_open(kind) => window.opener,
+            _ => Some(focused),
+        }
+    }
+
+    /// Dialog window `window` is closing: the focus goes back to the window
+    /// it was opened from. A dialog closed while the user works elsewhere
+    /// takes nothing with it.
+    fn focus_opener(&self, window: &OsWindow) -> Task<Message> {
+        match window.opener {
+            Some(opener)
+                if self.focused_window == Some(window.id)
+                    && self.os_windows.iter().any(|w| w.id == opener) =>
+            {
+                iced::window::gain_focus(opener)
+            }
+            _ => Task::none(),
+        }
+    }
+
     /// Move dock pallet `id` into a window of its own.
     pub(crate) fn detach_panel(&mut self, id: crate::ui::dock::PanelId) -> Task<Message> {
         // A pallet floating short in the main window still opens a window
@@ -651,7 +762,12 @@ impl OpenCADStudio {
     /// A pallet window's "back to the main window" button: it floats in the
     /// main window again.
     pub(crate) fn return_os_window(&mut self, id: iced::window::Id) -> Task<Message> {
-        let Some(window) = self.os_windows.iter().find(|window| window.id == id).copied() else {
+        let Some(window) = self
+            .os_windows
+            .iter()
+            .find(|window| window.id == id)
+            .copied()
+        else {
             return Task::none();
         };
         let Detached::Panel(panel) = window.content else {
@@ -659,7 +775,10 @@ impl OpenCADStudio {
         };
         self.dock.detached.remove(&panel);
         let (ww, wh) = self.dock_workspace_size();
-        let (w, h) = (window.placement.w, (window.placement.h - HEADER_H).max(160.0));
+        let (w, h) = (
+            window.placement.w,
+            (window.placement.h - HEADER_H).max(160.0),
+        );
         let (x, y) = (((ww - w) * 0.5).max(0.0), ((wh - h) * 0.5).max(0.0));
         self.dock
             .float(crate::ui::dock::FloatPanel::new(panel, x, y, w, h));
@@ -672,7 +791,12 @@ impl OpenCADStudio {
     /// The window manager's close button on a window of its own: a tool
     /// closes (its next open comes back in a window), a pallet hides.
     pub(crate) fn os_window_close_requested(&mut self, id: iced::window::Id) -> Task<Message> {
-        let Some(window) = self.os_windows.iter().find(|window| window.id == id).copied() else {
+        let Some(window) = self
+            .os_windows
+            .iter()
+            .find(|window| window.id == id)
+            .copied()
+        else {
             return iced::window::close(id);
         };
         let task = match window.content {
@@ -685,9 +809,10 @@ impl OpenCADStudio {
             }
             Detached::Panel(panel) => self.dock_set_open(panel, false),
         };
+        let back = self.focus_opener(&window);
         self.os_windows.retain(|window| window.id != id);
         self.save_config();
-        Task::batch([task, iced::window::close(id)])
+        Task::batch([task, iced::window::close(id), back])
     }
 
     /// Esc or Enter in a window of its own: its dialog answers it, as it
@@ -722,11 +847,34 @@ impl OpenCADStudio {
 
     pub(crate) fn os_window_moved(&mut self, id: iced::window::Id, at: Point) {
         if let Some(window) = self.os_windows.iter_mut().find(|window| window.id == id) {
-            window.placement.x = at.x;
-            window.placement.y = at.y;
+            if window.placing {
+                // The window's own move to its place is still to come.
+                return;
+            }
+            window.placement.x = at.x * window.scale;
+            window.placement.y = at.y * window.scale;
             let placement = window.placement;
             self.remember_placement(window_content(&self.os_windows, id), placement);
         }
+    }
+
+    /// A window of its own learned the scale of its screen. A window opened at
+    /// a remembered place is moved there now: the place is in physical pixels,
+    /// and only the window's own scale turns it into the logical position
+    /// the system expects (#2621).
+    pub(crate) fn os_window_scale(&mut self, id: iced::window::Id, scale: f32) -> Task<Message> {
+        let Some(window) = self.os_windows.iter_mut().find(|window| window.id == id) else {
+            return Task::none();
+        };
+        if !(scale.is_finite() && scale > 0.0) {
+            return Task::none();
+        }
+        window.scale = scale;
+        if !std::mem::take(&mut window.placing) {
+            return Task::none();
+        }
+        let at = Point::new(window.placement.x / scale, window.placement.y / scale);
+        iced::window::move_to(id, at)
     }
 
     fn remember_placement(&mut self, content: Option<Detached>, placement: WindowPlacement) {
@@ -764,6 +912,12 @@ impl OpenCADStudio {
             })
             .map(|window| window.id)
             .collect();
+        let closing: Vec<OsWindow> = self
+            .os_windows
+            .iter()
+            .filter(|window| stale.contains(&window.id))
+            .copied()
+            .collect();
         for id in stale {
             self.os_windows.retain(|window| window.id != id);
             for tool in &mut self.tool_windows {
@@ -773,38 +927,45 @@ impl OpenCADStudio {
             }
             tasks.push(iced::window::close(id));
         }
+        // Once all have gone: an opener closing too gets no focus.
+        for window in &closing {
+            tasks.push(self.focus_opener(window));
+        }
         if self.main_window.is_none() {
             return Task::batch(tasks);
         }
         // Open what should be up.
         // A dialog's window opens once its content was measured (off screen,
         // see `with_tool_windows`), at the size it needs.
-        let tools: Vec<(ModalKind, Size, Vector)> = self
+        type ToWindow = (ModalKind, Size, Vector, Option<iced::window::Id>);
+        let tools: Vec<ToWindow> = self
             .tool_windows
             .iter()
             .filter(|tool| tool.wants_window && tool.window.is_none())
-            .filter_map(|tool| Some((tool.kind, tool.content_size?, tool.resize)))
+            .filter_map(|tool| Some((tool.kind, tool.content_size?, tool.resize, tool.opener)))
             .collect();
-        for (kind, size, resize) in tools {
-            let placement = self.dock.tool_windows.get(&tool_key(kind)).copied().unwrap_or(
-                WindowPlacement {
+        for (kind, size, resize, opener) in tools {
+            let placement = self
+                .dock
+                .tool_windows
+                .get(&tool_key(kind))
+                .copied()
+                .unwrap_or(WindowPlacement {
                     x: f32::NAN,
                     y: f32::NAN,
                     // Whole pixels and a little slack: text laid out a
                     // fraction narrower than measured wraps a line lower.
                     w: size.width.ceil() + 2.0 * WINDOW_PAD + WINDOW_SLACK + resize.x,
                     h: size.height.ceil() + 2.0 * WINDOW_PAD + WINDOW_SLACK + resize.y,
-                },
-            );
-            let (id, open) = open_window(placement, self.modal_title_for(kind));
+                });
+            // A dialog opened from another dialog's window comes up in front
+            // of it, not behind the window that was clicked (#2750).
+            let (id, open) = open_window(placement, self.modal_title_for(kind), true);
             if let Some(tool) = self.tool_windows.iter_mut().find(|tool| tool.kind == kind) {
                 tool.window = Some(id);
             }
-            self.os_windows.push(OsWindow {
-                id,
-                content: Detached::Tool(kind),
-                placement,
-            });
+            self.os_windows
+                .push(OsWindow::new(id, Detached::Tool(kind), placement, opener));
             tasks.push(open);
         }
         let panels: Vec<(crate::ui::dock::PanelId, WindowPlacement)> = self
@@ -821,12 +982,9 @@ impl OpenCADStudio {
             .map(|(panel, placement)| (*panel, *placement))
             .collect();
         for (panel, placement) in panels {
-            let (id, open) = open_window(placement, panel.title().to_string());
-            self.os_windows.push(OsWindow {
-                id,
-                content: Detached::Panel(panel),
-                placement,
-            });
+            let (id, open) = open_window(placement, panel.title().to_string(), false);
+            self.os_windows
+                .push(OsWindow::new(id, Detached::Panel(panel), placement, None));
             tasks.push(open);
         }
         Task::batch(tasks)
@@ -869,10 +1027,7 @@ impl OpenCADStudio {
                 let extra = Vector::new(
                     (window.placement.w - natural.width.ceil() - 2.0 * WINDOW_PAD - WINDOW_SLACK)
                         .max(0.0),
-                    (window.placement.h
-                        - natural.height.ceil()
-                        - 2.0 * WINDOW_PAD
-                        - WINDOW_SLACK)
+                    (window.placement.h - natural.height.ceil() - 2.0 * WINDOW_PAD - WINDOW_SLACK)
                         .max(0.0),
                 );
                 let content = self.modal_content_for(kind, extra)?;
@@ -884,7 +1039,8 @@ impl OpenCADStudio {
                 // The colour picker a dialog opened is drawn over that dialog.
                 match self.color_picker.as_ref() {
                     Some(picker)
-                        if self.active_modal == Some(kind) && picker.eyedropper_view().is_none() =>
+                        if self.active_modal == Some(kind)
+                            && picker.eyedropper_view().is_none() =>
                     {
                         crate::ui::modal::modal(
                             body,
@@ -900,7 +1056,11 @@ impl OpenCADStudio {
             }
             Detached::Panel(panel) => {
                 let tab = self.tabs.get(self.active_tab)?;
-                column![header, self.panel_body(panel, window.placement.w, true, tab)].into()
+                column![
+                    header,
+                    self.panel_body(panel, window.placement.w, true, tab)
+                ]
+                .into()
             }
         };
         Some(
@@ -940,14 +1100,24 @@ const WINDOW_SLACK: f32 = 8.0;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn window_content(windows: &[OsWindow], id: iced::window::Id) -> Option<Detached> {
-    windows.iter().find(|window| window.id == id).map(|window| window.content)
+    windows
+        .iter()
+        .find(|window| window.id == id)
+        .map(|window| window.content)
 }
 
 /// Open a window of its own at `placement` (centred when it has no place).
 #[cfg(not(target_arch = "wasm32"))]
-fn open_window(placement: WindowPlacement, _title: String) -> (iced::window::Id, Task<Message>) {
+fn open_window(
+    placement: WindowPlacement,
+    _title: String,
+    focus: bool,
+) -> (iced::window::Id, Task<Message>) {
+    // The main window's scale is the best guess before the window exists;
+    // `os_window_scale` puts it right once it knows its own.
     let position = if placement.x.is_finite() && placement.y.is_finite() {
-        iced::window::Position::Specific(Point::new(placement.x, placement.y))
+        let scale = crate::ui::icons::scale_factor();
+        iced::window::Position::Specific(Point::new(placement.x / scale, placement.y / scale))
     } else {
         iced::window::Position::Centered
     };
@@ -967,7 +1137,12 @@ fn open_window(placement: WindowPlacement, _title: String) -> (iced::window::Id,
         },
         ..iced::window::Settings::default()
     });
-    (id, open.map(|_| Message::Noop))
+    let open = if focus {
+        open.then(iced::window::gain_focus)
+    } else {
+        open.map(|_| Message::Noop)
+    };
+    (id, open)
 }
 
 #[cfg(test)]
@@ -977,7 +1152,12 @@ mod tests {
     /// An unplaced window must not make the whole settings file unreadable.
     #[test]
     fn unplaced_window_round_trips_through_settings() {
-        let placement = WindowPlacement { x: f32::NAN, y: f32::NAN, w: 300.0, h: 200.0 };
+        let placement = WindowPlacement {
+            x: f32::NAN,
+            y: f32::NAN,
+            w: 300.0,
+            h: 200.0,
+        };
         let json = serde_json::to_string(&placement).unwrap();
         let back: WindowPlacement = serde_json::from_str(&json).unwrap();
         assert!(back.x.is_nan() && back.y.is_nan());
@@ -992,7 +1172,8 @@ mod tests {
             (1400.0, 900.0),
             element,
         );
-        ui.click(iced::widget::Id::new(id)).expect("the button is drawn");
+        ui.click(iced::widget::Id::new(id))
+            .expect("the button is drawn");
         ui.into_messages().collect()
     }
 
@@ -1034,7 +1215,9 @@ mod tests {
             text: (!text.is_empty()).then(|| text.into()),
             repeat: false,
         });
-        if let Some(msg) = crate::app::view::main_window_event(event, iced::event::Status::Ignored, main) {
+        if let Some(msg) =
+            crate::app::view::main_window_event(event, iced::event::Status::Ignored, main)
+        {
             let _ = app.update_root(msg);
         }
     }
@@ -1067,7 +1250,12 @@ mod tests {
         // warning, then closes it.
         let _ = app.update_root(Message::ToolWindowRaise(ModalKind::BlockDefinition));
         key(&mut app, Key::Named(Named::Escape), "");
-        assert!(app.block_definition.as_ref().unwrap().error_message.is_none());
+        assert!(app
+            .block_definition
+            .as_ref()
+            .unwrap()
+            .error_message
+            .is_none());
         assert!(app.tool_open(ModalKind::BlockDefinition));
         key(&mut app, Key::Named(Named::Escape), "");
         assert!(!app.tool_open(ModalKind::BlockDefinition));
@@ -1079,10 +1267,10 @@ mod tests {
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
         let i = app.active_tab;
-        app.tabs[i].scene.add_entity(codec::EntityType::Line(
-            codec::entities::Line::from_points(
-                codec::types::Vector3::ZERO,
-                codec::types::Vector3::UNIT_X,
+        app.tabs[i].scene.add_entity(document::EntityType::Line(
+            document::entities::Line::from_points(
+                document::types::Vector3::ZERO,
+                document::types::Vector3::UNIT_X,
             ),
         ));
         app.automation_op(r#"{"op":"run","cmd":"BLOCK"}"#);
@@ -1098,9 +1286,16 @@ mod tests {
         }
         // Enter takes "ALL", the next ends the selection.
         for _ in 0..2 {
-            key(&mut app, iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter), "\r");
+            key(
+                &mut app,
+                iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter),
+                "\r",
+            );
         }
-        assert!(app.tool_open(ModalKind::BlockDefinition), "back with the pick");
+        assert!(
+            app.tool_open(ModalKind::BlockDefinition),
+            "back with the pick"
+        );
         let state = app.block_definition.as_ref().unwrap();
         assert_eq!(state.selected_handles.len(), 1);
     }
@@ -1118,7 +1313,10 @@ mod tests {
             Box::new(Message::CloseModal),
         ));
         assert!(app.tool_open(ModalKind::Plot) && !app.tool_open(ModalKind::Plotstyle));
-        let _ = app.update_root(Message::ToolWindow(ModalKind::Plot, Box::new(Message::CloseModal)));
+        let _ = app.update_root(Message::ToolWindow(
+            ModalKind::Plot,
+            Box::new(Message::CloseModal),
+        ));
         // Insert Table › Table Style….
         app.automation_op(r#"{"op":"run","cmd":"TABLE"}"#);
         let _ = app.update_root(Message::Noop);
@@ -1152,7 +1350,11 @@ mod tests {
         let window = app.os_windows.first().copied().expect("its own window");
         assert_eq!(window.content, Detached::Tool(ModalKind::About));
         assert_eq!((window.placement.w, window.placement.h), (428.0, 328.0));
-        let tool = app.tool_windows.iter().find(|t| t.kind == ModalKind::About).unwrap();
+        let tool = app
+            .tool_windows
+            .iter()
+            .find(|t| t.kind == ModalKind::About)
+            .unwrap();
         assert!(tool.window == Some(window.id) && !tool.in_canvas());
         // A dialog's window is only the dialog: no way back into the main one.
         let view = app.os_window_view(window.id).unwrap();
@@ -1171,7 +1373,11 @@ mod tests {
         app.active_modal = Some(ModalKind::About);
         let _ = app.update_root(Message::Noop);
         let _ = app.update_root(measured.clone());
-        let window = app.os_windows.first().copied().expect("its own window again");
+        let window = app
+            .os_windows
+            .first()
+            .copied()
+            .expect("its own window again");
         let _ = app.update_root(Message::WindowCloseRequested(window.id));
         assert!(app.os_windows.is_empty());
         assert!(!app.tool_open(ModalKind::About));
@@ -1192,6 +1398,15 @@ mod tests {
             (placement.x, placement.y, placement.w, placement.h),
             (2400.0, 120.0, 700.0, 500.0)
         );
+        // #2621: on a 150 % screen the same place is 1600 logical pixels in;
+        // it is kept in physical pixels, so a screen of another scale reads
+        // it the same way.
+        let window = app.os_windows[0];
+        let _ = app.update_root(Message::OsWindowScale(window.id, 1.5));
+        assert!(!app.os_windows[0].placing, "moved to its place once");
+        let _ = app.update_root(Message::OsWindowMoved(window.id, Point::new(1600.0, 80.0)));
+        let placement = app.os_windows[0].placement;
+        assert_eq!((placement.x, placement.y), (2400.0, 120.0));
     }
 
     /// The web's "window" for a manager: it floats over the drawing; the
@@ -1206,9 +1421,208 @@ mod tests {
         app.float_pallet_centred(PanelId::Layers);
         assert!(app.dock.float_rect(PanelId::Layers).is_some());
         assert!(app.dock.location(PanelId::Layers).is_none());
-        let _ = app.update_root(Message::Dock(DockMsg::EdgeMenuToggle(DockSide::Left, PanelId::Layers)));
-        assert_eq!(app.dock.location(PanelId::Layers).map(|(side, _)| side), Some(DockSide::Left));
+        let _ = app.update_root(Message::Dock(DockMsg::EdgeMenuToggle(
+            DockSide::Left,
+            PanelId::Layers,
+        )));
+        assert_eq!(
+            app.dock.location(PanelId::Layers).map(|(side, _)| side),
+            Some(DockSide::Left)
+        );
         assert!(app.dock.float_rect(PanelId::Layers).is_none());
+    }
+
+    /// The windows `task` gives the focus to, and the messages it answers.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn drain(task: Task<Message>) -> (Vec<iced::window::Id>, Vec<Message>) {
+        use iced::futures::{FutureExt, StreamExt};
+        use iced_runtime::{window::Action as Window, Action};
+        let Some(mut stream) = iced_runtime::task::into_stream(task) else {
+            return (Vec::new(), Vec::new());
+        };
+        let (mut targets, mut messages) = (Vec::new(), Vec::new());
+        // Only what is ready: a window opening waits for an answer that no
+        // runtime gives here.
+        while let Some(Some(action)) = stream.next().now_or_never() {
+            match action {
+                Action::Window(Window::GainFocus(id)) => targets.push(id),
+                Action::Output(message) => messages.push(message),
+                _ => {}
+            }
+        }
+        (targets, messages)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn focus_targets(task: Task<Message>) -> Vec<iced::window::Id> {
+        drain(task).0
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn focus(app: &mut OpenCADStudio, id: iced::window::Id) {
+        let _ = app.update_root(Message::SpaceMouseFocus(id, true));
+    }
+
+    /// An app with the Layer manager open in a window of its own, focused.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn app_with_layer_manager_window() -> (OpenCADStudio, iced::window::Id) {
+        use crate::ui::dock::PanelId;
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        app.main_window = Some(iced::window::Id::unique());
+        let _ = app.dispatch_command("LAYERS");
+        let _ = app.update_root(Message::Noop);
+        let manager = app
+            .os_windows
+            .iter()
+            .find(|window| window.content == Detached::Panel(PanelId::Layers))
+            .expect("the manager's window")
+            .id;
+        focus(&mut app, manager);
+        (app, manager)
+    }
+
+    /// Dialog `kind` got its size and with it its window, which has the focus.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn dialog_window(app: &mut OpenCADStudio, kind: ModalKind) -> OsWindow {
+        let _ = app.update_root(Message::ToolWindow(
+            kind,
+            Box::new(Message::ModalContentResized(Size::new(400.0, 300.0))),
+        ));
+        let window = app
+            .os_windows
+            .iter()
+            .find(|window| window.content == Detached::Tool(kind))
+            .copied()
+            .expect("the dialog's window");
+        focus(app, window.id);
+        window
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_layer_states_from_manager(app: &mut OpenCADStudio) -> Vec<iced::window::Id> {
+        let (mut targets, messages) = drain(app.update_root(Message::LayerMoreRun(Box::new(
+            Message::Command("LAYERSTATE".into()),
+        ))));
+        for message in messages {
+            targets.extend(focus_targets(app.update_root(message)));
+        }
+        targets
+    }
+
+    /// Layer States opened from the Layer manager's window leaves the main
+    /// window where it is, and however it is closed the manager gets the
+    /// focus back.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_dialog_from_the_layer_manager_returns_to_it() {
+        type Close = fn(&mut OpenCADStudio, iced::window::Id) -> Task<Message>;
+        let closes: [Close; 3] = [
+            // The dialog's own Close button.
+            |app, _| {
+                app.update_root(Message::ToolWindow(
+                    ModalKind::LayerStateManager,
+                    Box::new(Message::CloseModal),
+                ))
+            },
+            |app, id| app.update_root(Message::OsWindowKey(id, "ESCAPE".into())),
+            |app, id| app.update_root(Message::WindowCloseRequested(id)),
+        ];
+        for close in closes {
+            let (mut app, manager) = app_with_layer_manager_window();
+            let raised = open_layer_states_from_manager(&mut app);
+            assert!(raised.is_empty(), "nothing goes to the front");
+            let dialog = dialog_window(&mut app, ModalKind::LayerStateManager);
+            assert_eq!(dialog.opener, Some(manager));
+            let closed = close(&mut app, dialog.id);
+            assert!(!app.tool_open(ModalKind::LayerStateManager));
+            assert_eq!(focus_targets(closed), vec![manager]);
+        }
+    }
+
+    /// Layer States giving way to its editor still answers to the manager.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_dialog_replaced_by_another_passes_on_its_opener() {
+        let (mut app, manager) = app_with_layer_manager_window();
+        let _ = app.dispatch_command("LAYERSTATE SAVE First");
+        let _ = open_layer_states_from_manager(&mut app);
+        let _ = dialog_window(&mut app, ModalKind::LayerStateManager);
+        let _ = app.update_root(Message::ToolWindow(
+            ModalKind::LayerStateManager,
+            Box::new(Message::LayerStateManagerEdit),
+        ));
+        let editor = dialog_window(&mut app, ModalKind::LayerStateEditor);
+        assert_eq!(editor.opener, Some(manager));
+    }
+
+    /// LAYERS, and the ribbon's toggle, bring up a manager that is behind
+    /// the main window: the same window, still open.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn layers_raises_the_managers_window() {
+        let (mut app, manager) = app_with_layer_manager_window();
+        let main = app.main_window.expect("main window");
+        focus(&mut app, main);
+        let windows = app.os_windows.len();
+        assert_eq!(focus_targets(app.dispatch_command("LAYERS")), vec![manager]);
+        assert_eq!(
+            focus_targets(app.update_root(Message::ToggleLayers)),
+            vec![manager]
+        );
+        assert!(app.show_layers);
+        assert_eq!(app.os_windows.len(), windows);
+        // Automation has no use for the raise and must not fail on it.
+        assert_eq!(
+            app.automation_op(r#"{"op":"run","cmd":"LAYERS"}"#)["ok"],
+            true
+        );
+    }
+
+    /// No focus goes to an opener that has gone, nor away from where the
+    /// user is working.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_closing_dialog_only_returns_the_focus_when_it_can() {
+        // The manager closed first.
+        let (mut app, manager) = app_with_layer_manager_window();
+        let _ = open_layer_states_from_manager(&mut app);
+        let dialog = dialog_window(&mut app, ModalKind::LayerStateManager);
+        let _ = app.update_root(Message::WindowCloseRequested(manager));
+        let closed = app.update_root(Message::WindowCloseRequested(dialog.id));
+        assert!(focus_targets(closed).is_empty());
+        // The user moved on to the main window.
+        let (mut app, _) = app_with_layer_manager_window();
+        let _ = open_layer_states_from_manager(&mut app);
+        let dialog = dialog_window(&mut app, ModalKind::LayerStateManager);
+        let main = app.main_window.expect("main window");
+        let _ = app.update_root(Message::SpaceMouseFocus(dialog.id, false));
+        focus(&mut app, main);
+        let closed = app.update_root(Message::WindowCloseRequested(dialog.id));
+        assert!(focus_targets(closed).is_empty());
+    }
+
+    /// A manager docked in the main window has no window to go back to, and
+    /// its toggle still closes it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_docked_layer_manager_changes_no_focus() {
+        use crate::ui::dock::PanelId;
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let main = iced::window::Id::unique();
+        app.main_window = Some(main);
+        app.dock_open_at_default(PanelId::Layers);
+        app.show_layers = true;
+        focus(&mut app, main);
+        assert!(focus_targets(app.dispatch_command("LAYERS")).is_empty());
+        let _ = open_layer_states_from_manager(&mut app);
+        let dialog = dialog_window(&mut app, ModalKind::LayerStateManager);
+        assert_eq!(dialog.opener, None);
+        let closed = app.update_root(Message::WindowCloseRequested(dialog.id));
+        assert!(focus_targets(closed).is_empty());
+        let _ = app.update_root(Message::ToggleLayers);
+        assert!(!app.show_layers);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1232,9 +1646,15 @@ mod tests {
         let id = app.os_windows[0].id;
         let _ = app.update_root(Message::WindowCloseRequested(id));
         assert!(!app.dock_panel_wanted(PanelId::Layers));
-        let _ = app.update_root(Message::Dock(DockMsg::EdgeMenuToggle(DockSide::Right, PanelId::Layers)));
+        let _ = app.update_root(Message::Dock(DockMsg::EdgeMenuToggle(
+            DockSide::Right,
+            PanelId::Layers,
+        )));
         assert!(!app.dock.is_separate(PanelId::Layers) && !in_window(&app));
-        assert_eq!(app.dock.location(PanelId::Layers).map(|(side, _)| side), Some(DockSide::Right));
+        assert_eq!(
+            app.dock.location(PanelId::Layers).map(|(side, _)| side),
+            Some(DockSide::Right)
+        );
         assert!(app.dock_panel_wanted(PanelId::Layers));
         // Its command while it shows as a pallet leaves it there.
         let _ = app.dispatch_command("LAYERS");
@@ -1265,7 +1685,9 @@ mod tests {
         for msg in sent {
             let _ = app.update_root(msg);
         }
-        assert!(app.dock.is_separate(PanelId::QuickCalc) && !app.dock.is_placed(PanelId::QuickCalc));
+        assert!(
+            app.dock.is_separate(PanelId::QuickCalc) && !app.dock.is_placed(PanelId::QuickCalc)
+        );
         let window = app.os_windows.first().copied().expect("its own window");
         assert_eq!(window.content, Detached::Panel(PanelId::QuickCalc));
         // Closed from the window manager it hides, and stays a window.
@@ -1276,7 +1698,11 @@ mod tests {
         let _ = app.update_root(Message::Dock(DockMsg::Close(PanelId::QuickCalc)));
         let _ = app.dock_set_open(PanelId::QuickCalc, true);
         let _ = app.update_root(Message::Noop);
-        let window = app.os_windows.first().copied().expect("reopened in its own window");
+        let window = app
+            .os_windows
+            .first()
+            .copied()
+            .expect("reopened in its own window");
         // Back into the main window, floating.
         let _ = app.update_root(Message::OsWindowReturn(window.id));
         assert!(app.os_windows.is_empty());
@@ -1325,9 +1751,15 @@ mod tests {
         let _ = app.update_root(Message::CommandEscape);
         assert!(!app.tool_open(ModalKind::Unsaved), "Esc went to the dialog");
         assert!(app.tool_open(ModalKind::About) && app.tool_open(ModalKind::DraftingSettings));
-        assert_eq!(app.keyboard_tool, None, "the keyboard is the drawing's again");
+        assert_eq!(
+            app.keyboard_tool, None,
+            "the keyboard is the drawing's again"
+        );
         let _ = app.update_root(Message::CommandEscape);
-        assert!(app.tool_open(ModalKind::About), "Esc on the drawing leaves tools open");
+        assert!(
+            app.tool_open(ModalKind::About),
+            "Esc on the drawing leaves tools open"
+        );
         // A press on a frame takes the keyboard; one on the drawing gives it back.
         let _ = app.update_root(Message::ToolWindowRaise(ModalKind::About));
         assert_eq!(app.keyboard_tool, Some(ModalKind::About));
@@ -1343,7 +1775,9 @@ mod tests {
         assert_eq!(app.active_modal, None);
         // Another drawing: tools on the outgoing one close.
         app.tabs
-            .push(crate::app::document::DocumentTab::new_drawing(app.tabs.len() + 1));
+            .push(crate::app::tab_document::DocumentTab::new_drawing(
+                app.tabs.len() + 1,
+            ));
         let other = app.tabs.len() - 1;
         let _ = app.update_root(Message::TabSwitch(other));
         assert!(!app.tool_open(ModalKind::DraftingSettings));

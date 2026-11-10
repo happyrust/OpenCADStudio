@@ -1,6 +1,6 @@
-use codec::entities::Insert;
-use codec::types::{Matrix3, Transform, Vector3};
-use codec::{Document, EntityType, Handle};
+use document::entities::Insert;
+use document::types::{Matrix3, Transform, Vector3};
+use document::{Document, EntityType, Handle};
 use glam::Vec3;
 
 use crate::command::EntityTransform;
@@ -23,7 +23,7 @@ const ATTRIBUTE_GRIP_BASE: usize = 1;
 /// attribute belongs to the block definition rather than this insert, and a
 /// locked position cannot be dragged. Visibility is a separate question: an
 /// invisible attribute that ATTMODE 2 displays is grippable while it shows.
-fn attribute_is_movable(att: &codec::entities::AttributeEntity) -> bool {
+fn attribute_is_movable(att: &document::entities::AttributeEntity) -> bool {
     !att.flags.constant && !att.lock_position && !att.flags.locked_position
 }
 
@@ -64,7 +64,7 @@ pub(crate) fn unscale_attribute_grip(
 fn attribute_is_render_visible(
     document: &Document,
     visibility: i16,
-    attribute: &codec::entities::AttributeEntity,
+    attribute: &document::entities::AttributeEntity,
 ) -> bool {
     let layer_visible = document
         .layers
@@ -98,7 +98,7 @@ fn insert_attribute_block_scale(
 
 fn scale_attribute_for_insert(
     insert: &Insert,
-    attribute: &mut codec::entities::AttributeEntity,
+    attribute: &mut document::entities::AttributeEntity,
     block_scale: f64,
 ) {
     if (block_scale - 1.0).abs() <= 1.0e-6 {
@@ -120,11 +120,19 @@ fn scale_attribute_for_insert(
     attribute.alignment_point = scale_about(attribute.alignment_point);
 }
 
+/// The insertion point grip drags the whole reference, attributes included.
+fn insert_point_grip(world: Vector3) -> GripDef {
+    GripDef {
+        is_midpoint: true,
+        ..square_grip(0, glam::DVec3::new(world.x, world.y, world.z))
+    }
+}
+
 fn grips(ins: &Insert) -> Vec<GripDef> {
     // `insert_point` is in the OCS defined by `normal`; the grip must sit at
     // the world placement, so map it through the OCS. Identity for +Z.
     let w = Matrix3::arbitrary_axis(ins.normal) * ins.insert_point;
-    let mut out = vec![square_grip(0, glam::DVec3::new(w.x, w.y, w.z))];
+    let mut out = vec![insert_point_grip(w)];
     // One grip per attribute, so an attribute can be moved off the place the
     // block definition put it without dragging the whole block (#1259).
     // Attributes are stored beside the block in world space — the same space
@@ -151,7 +159,7 @@ pub(crate) fn visible_attribute_grips(
     annotation_scale: f32,
 ) -> Vec<GripDef> {
     let w = Matrix3::arbitrary_axis(insert.normal) * insert.insert_point;
-    let mut out = vec![square_grip(0, glam::DVec3::new(w.x, w.y, w.z))];
+    let mut out = vec![insert_point_grip(w)];
     let visibility = document.header.attribute_visibility;
     let block_scale = insert_attribute_block_scale(
         insert,
@@ -253,7 +261,7 @@ fn apply_geom_prop(ins: &mut Insert, field: &str, value: &str) {
             }
             let delta = ocs * ins.insert_point - old_world;
             for att in &mut ins.attributes {
-                codec::Entity::translate(att, delta);
+                document::Entity::translate(att, delta);
             }
         }
         // Single Scale row shown while "Uniform scale" is checked (#427).
@@ -289,22 +297,22 @@ fn apply_grip(ins: &mut Insert, grip_id: usize, apply: GripApply) {
     let ocs = Matrix3::arbitrary_axis(ins.normal);
     let old_world = ocs * ins.insert_point;
     let world = match apply {
-        GripApply::Absolute(p) => Vector3::new(p.x as f64, p.y as f64, p.z as f64),
-        GripApply::Translate(d) => old_world + Vector3::new(d.x as f64, d.y as f64, d.z as f64),
+        GripApply::Absolute(p) => Vector3::new(p.x, p.y, p.z),
+        GripApply::Translate(d) => old_world + Vector3::new(d.x, d.y, d.z),
     };
     ins.insert_point = ocs.transpose() * world;
     // Attributes sit in world space beside the block, so move them by the same
     // world delta — otherwise a grip-drag leaves the attribute text behind (#255).
     let delta = world - old_world;
     for att in &mut ins.attributes {
-        codec::Entity::translate(att, delta);
+        document::Entity::translate(att, delta);
     }
 }
 
 fn apply_transform(ins: &mut Insert, t: &EntityTransform) {
     crate::scene::view::transform::apply_standard_entity_transform(ins, t, |entity, p1, p2| {
-        let dx = (p2.x - p1.x) as f64;
-        let dy = (p2.y - p1.y) as f64;
+        let dx = p2.x - p1.x;
+        let dy = p2.y - p1.y;
         let len = (dx * dx + dy * dy).sqrt();
         if len < 1e-12 {
             return;
@@ -312,7 +320,7 @@ fn apply_transform(ins: &mut Insert, t: &EntityTransform) {
 
         let ux = dx / len;
         let uy = dy / len;
-        let mirror = codec::types::Matrix4 {
+        let mirror = document::types::Matrix4 {
             m: [
                 [2.0 * ux * ux - 1.0, 2.0 * ux * uy, 0.0, 0.0],
                 [2.0 * ux * uy, 2.0 * uy * uy - 1.0, 0.0, 0.0],
@@ -320,14 +328,10 @@ fn apply_transform(ins: &mut Insert, t: &EntityTransform) {
                 [0.0, 0.0, 0.0, 1.0],
             ],
         };
-        let t = Transform::from_translation(Vector3::new(-(p1.x as f64), -(p1.y as f64), 0.0))
+        let t = Transform::from_translation(Vector3::new(-p1.x, -p1.y, 0.0))
             .then(&Transform::from_matrix(mirror))
-            .then(&Transform::from_translation(Vector3::new(
-                p1.x as f64,
-                p1.y as f64,
-                0.0,
-            )));
-        codec::Entity::apply_transform(entity, &t);
+            .then(&Transform::from_translation(Vector3::new(p1.x, p1.y, 0.0)));
+        document::Entity::apply_transform(entity, &t);
     });
 }
 
@@ -355,9 +359,10 @@ impl crate::entities::traits::FallbackTess for Insert {
     }
 }
 pub(crate) fn insert_attribute_entities(
-    document: &codec::Document,
-    insert: &codec::entities::Insert,
+    document: &document::Document,
+    insert: &document::entities::Insert,
     annotation_scale: f32,
+    annotation_scale_handle: Option<Handle>,
     scale_policy: crate::scene::BlockScalePolicy,
 ) -> Vec<EntityType> {
     let visibility = document.header.attribute_visibility;
@@ -375,7 +380,13 @@ pub(crate) fn insert_attribute_entities(
         .filter(|attribute| attribute_is_render_visible(document, visibility, attribute))
         .map(|attribute| {
             let mut attribute = attribute.clone();
-            scale_attribute_for_insert(insert, &mut attribute, block_scale);
+            if !crate::scene::annotative::place_attribute_for_annotation_scale(
+                document,
+                &mut attribute,
+                annotation_scale_handle,
+            ) {
+                scale_attribute_for_insert(insert, &mut attribute, block_scale);
+            }
             EntityType::AttributeEntity(attribute)
         })
         .collect()
@@ -383,8 +394,8 @@ pub(crate) fn insert_attribute_entities(
 
 pub(crate) fn append_insert_attribute_wires(
     wires: &mut Vec<WireModel>,
-    document: &codec::Document,
-    ins: &codec::entities::Insert,
+    document: &document::Document,
+    ins: &document::entities::Insert,
     insert_handle: Handle,
     sel: bool,
     ins_color: [f32; 4],
@@ -397,11 +408,13 @@ pub(crate) fn append_insert_attribute_wires(
     is_xref: bool,
     pslt_factor: f32,
     anno_scale: f32,
+    annotation_scale_handle: Option<Handle>,
 ) {
     let attributes = insert_attribute_entities(
         document,
         ins,
         anno_scale,
+        annotation_scale_handle,
         crate::scene::BlockScalePolicy::FromInsert,
     );
     for offset in crate::scene::render_graph::array_offsets(ins) {
@@ -474,9 +487,9 @@ pub(crate) fn append_insert_attribute_wires(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::entities::AttributeEntity;
-    use codec::tables::Layer;
-    use codec::xdata::ExtendedDataRecord;
+    use document::entities::AttributeEntity;
+    use document::tables::Layer;
+    use document::xdata::ExtendedDataRecord;
 
     fn attribute(tag: &str, x: f64, y: f64) -> AttributeEntity {
         let mut att = AttributeEntity::new(tag.to_string(), format!("{tag}-value"));
@@ -612,9 +625,161 @@ mod tests {
     /// A constant attribute is drawn by the definition it belongs to, which is
     /// why it gets no grip; the reference must not draw the same text a second
     /// time under it.
+    /// An attribute saved at 1:50 with its own placement at 1:100. Its scale
+    /// data lives under the attribute's own extension dictionary: an ATTRIB is
+    /// part of its INSERT, not a document entity.
+    fn annotative_attribute() -> (Document, Insert, Handle, Handle, Handle) {
+        use crate::scene::annotative::{create_annotation_context, ensure_scale_object};
+        use document::objects::{ObjectContextKind, ObjectType, Scale};
+        use document::types::Vector2;
+
+        let mut document = Document::new();
+        let at_50 = ensure_scale_object(&mut document, &Scale::new("1:50", 1.0, 50.0));
+        let at_100 = ensure_scale_object(&mut document, &Scale::new("1:100", 1.0, 100.0));
+        let other = ensure_scale_object(&mut document, &Scale::new("1:25", 1.0, 25.0));
+        let mut source = attribute("CIRCUITO", 10.2, 10.0);
+        source.height = 0.125;
+        let handle = document
+            .add_entity(EntityType::AttributeEntity(source))
+            .unwrap();
+        assert!(create_annotation_context(&mut document, handle, at_50));
+        assert!(create_annotation_context(&mut document, handle, at_100));
+        for object in document.objects.values_mut() {
+            if let ObjectType::ObjectContextData(leaf) = object {
+                if let (true, ObjectContextKind::MTextAttribute(value)) =
+                    (leaf.scale == at_100, &mut leaf.kind)
+                {
+                    value.insertion = Vector2::new(12.4, 10.0);
+                    value.alignment = Vector2::new(12.4, 10.0);
+                }
+            }
+        }
+        let Some(EntityType::AttributeEntity(mut placed)) = document.get_entity(handle).cloned()
+        else {
+            panic!("the attribute went missing");
+        };
+        // Its handle resolves to no document entity, as an INSERT's own ATTRIB.
+        placed.common.handle = document.allocate_handle();
+        (document, block_with(vec![placed]), at_50, at_100, other)
+    }
+
+    fn painted_attribute(document: &Document, insert: &Insert, scale: Handle) -> (f64, f64) {
+        let painted = insert_attribute_entities(
+            document,
+            insert,
+            1.0,
+            Some(scale),
+            crate::scene::BlockScalePolicy::FromInsert,
+        );
+        let [EntityType::AttributeEntity(attribute)] = painted.as_slice() else {
+            panic!("expected one attribute, got {painted:?}");
+        };
+        (attribute.insertion_point.x, attribute.height)
+    }
+
+    #[test]
+    fn an_annotative_attribute_takes_the_place_and_height_of_the_current_scale() {
+        let (document, insert, at_50, at_100, _) = annotative_attribute();
+        let (x, height) = painted_attribute(&document, &insert, at_100);
+        assert!((x - 12.4).abs() < 1e-9, "x = {x}");
+        assert!((height - 0.25).abs() < 1e-9, "height = {height}");
+
+        let (x, height) = painted_attribute(&document, &insert, at_50);
+        assert!((x - 10.2).abs() < 1e-9, "x = {x}");
+        assert!((height - 0.125).abs() < 1e-9, "height = {height}");
+    }
+
+    #[test]
+    fn a_nested_insert_places_its_annotative_attribute_for_the_current_scale() {
+        use document::tables::BlockRecord;
+
+        let (mut document, mut nested, at_50, at_100, _) = annotative_attribute();
+        nested.block_name = "INNER".to_string();
+        for name in ["INNER", "OUTER"] {
+            let mut record = BlockRecord::new(name);
+            record.handle = document.allocate_handle();
+            document.block_records.add(record).unwrap();
+        }
+        nested.common.owner_handle = document.block_records.get("OUTER").unwrap().handle;
+        document.add_entity(EntityType::Insert(nested)).unwrap();
+        let outer = Insert::new("OUTER", Vector3::ZERO);
+        document
+            .add_entity(EntityType::Insert(outer.clone()))
+            .unwrap();
+
+        let attribute_x = |scale: Handle| {
+            let cache = block_cache::BlockCache::build(
+                &document,
+                1.0,
+                Some(scale),
+                true,
+                [0.0, 0.0, 0.0, 1.0],
+                None,
+                &Default::default(),
+            );
+            let style = render::InheritStyle {
+                color: [1.0; 4],
+                pat_len: 0.0,
+                pat: [0.0; 8],
+                lw_px: 1.0,
+            };
+            let wires = block_cache::expand_insert(
+                &document,
+                &cache,
+                &outer,
+                Handle::new(0x40),
+                [1.0; 4],
+                7,
+                0.0,
+                [0.0; 8],
+                1.0,
+                style,
+                7,
+                true,
+                false,
+                1.0,
+                None,
+                None,
+                false,
+                [0.0, 0.0, 0.0, 1.0],
+                1.0,
+                crate::scene::BlockScalePolicy::FromInsert,
+                false,
+                1.0,
+            )
+            .expect("the block expands");
+            wires
+                .iter()
+                .flat_map(|wire| {
+                    let strokes = wire.points.iter().map(|p| p[0]);
+                    strokes.chain(wire.text_verts.iter().map(|v| v.pos[0]))
+                })
+                .filter(|x| x.is_finite())
+                .fold(f32::INFINITY, f32::min)
+        };
+        assert!((attribute_x(at_100) - 12.4).abs() < 0.1);
+        assert!((attribute_x(at_50) - 10.2).abs() < 0.1);
+    }
+
+    #[test]
+    fn an_annotative_attribute_without_the_current_scale_shows_its_default() {
+        let (document, insert, _, _, other) = annotative_attribute();
+        let mut attribute = insert.attributes[0].clone();
+        assert!(
+            crate::scene::annotative::place_attribute_for_annotation_scale(
+                &document,
+                &mut attribute,
+                Some(other),
+            )
+        );
+        let (x, height) = painted_attribute(&document, &insert, other);
+        assert!((x - 10.2).abs() < 1e-9, "x = {x}");
+        assert!((height - 0.125).abs() < 1e-9, "height = {height}");
+    }
+
     #[test]
     fn a_constant_attribute_is_painted_by_the_definition_only() {
-        use codec::EntityType;
+        use document::EntityType;
         let mut document = document_with_layers(Vec::new());
         document.header.attribute_visibility = 1;
         let mut constant = attribute("TAG_CONST", 1.0, 1.0);
@@ -624,6 +789,7 @@ mod tests {
             &document,
             &ins,
             1.0,
+            None,
             crate::scene::BlockScalePolicy::FromInsert,
         )
         .into_iter()
@@ -735,6 +901,7 @@ mod tests {
                 false,
                 1.0,
                 1.0,
+                None,
             );
 
             let mut geometry_xs = Vec::new();
@@ -798,8 +965,8 @@ mod attribute_width_tests {
     #[test]
     fn annotative_attribute_scales_its_wrap_width_with_its_height() {
         let insert = Insert::new("TITLE", Vector3::ZERO);
-        let mut attribute = codec::entities::AttributeEntity::new("TITLE".into(), "A B".into());
-        let mut mtext = codec::entities::MText::new();
+        let mut attribute = document::entities::AttributeEntity::new("TITLE".into(), "A B".into());
+        let mut mtext = document::entities::MText::new();
         mtext.rectangle_width = 15.0;
         attribute.embedded_mtext = Some(Box::new(mtext));
         let ratio = 15.0 / attribute.height;

@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap as HashMap;
 use std::cell::RefCell;
 use std::time::Duration;
 
-use codec::types::{Color as AcadColor, LineWeight};
+use document::types::{Color as AcadColor, LineWeight};
 use iced::advanced::{
     layout, mouse, overlay, renderer, text as advanced_text, widget, Layout, Shell, Widget,
 };
@@ -37,9 +37,11 @@ pub(super) struct ToggleState {
     pub ortho_mode: bool,
     pub show_viewcube: bool,
     pub show_ucs_icon: bool,
+    pub show_viewport_highlight: bool,
     pub show_properties: bool,
     pub show_count_palette: bool,
     pub show_graphic_attributes: bool,
+    pub show_tool_palettes: bool,
     pub show_authoring_palettes: bool,
     pub show_parameters_manager: bool,
     pub show_block_palette: bool,
@@ -347,6 +349,16 @@ pub(super) fn automatic_large_button<'a>(
     })
 }
 
+/// A large button whose label stays on one line, as wide as that line (a
+/// collapsed panel's title). A label without a line break is measured by
+/// `measure_split_width` as one unwrapped line.
+pub(super) fn automatic_one_line_button<'a>(
+    label: String,
+    content: Element<'a, Message>,
+) -> Element<'a, Message> {
+    automatic_split_button(label.replace('\n', " "), content)
+}
+
 /// A large split button sized to its label (see `measure_split_width`).
 fn automatic_split_button<'a>(
     label: String,
@@ -458,9 +470,11 @@ pub(super) fn is_active_tool(id: &str, active_tool: &Option<String>, state: &Tog
         "PERSP" => !state.ortho_mode,
         "NAVVCUBE" => state.show_viewcube,
         "UCSICON" => state.show_ucs_icon,
+        "VPHIGHLIGHT" => state.show_viewport_highlight,
         "PROPERTIES" => state.show_properties,
         "COUNTLIST" => state.show_count_palette,
         "GRAPHICATTRIBUTES" => state.show_graphic_attributes,
+        "TOOLPALETTES" => state.show_tool_palettes,
         "BAUTHORPALETTE" => state.show_authoring_palettes,
         // The id is the command name, and the Parametric tab carries a tool with
         // it too; the light follows the pane, which only exists in a session.
@@ -724,28 +738,32 @@ pub(super) fn make_tip(tip: String) -> Element<'static, Message> {
     text(tip).size(11).into()
 }
 
-/// The sentence the reference shows under a tool's name, where known.
-fn tool_description(id: &str) -> Option<&'static str> {
-    Some(match id {
-        "DCLINEAR" => "Constrains the horizontal or vertical distance between points",
-        "DCHORIZONTAL" => "Constrains the X-distance between points on an object, or between two points on different objects",
-        "DCVERTICAL" => "Constrains the Y-distance between points on an object, or between two points on different objects",
-        "DCALIGNED" => "Constrains the distance between two points on an object or between two points on different objects",
-        "DCRADIUS" => "Constrains the radius of a circle or arc",
-        "DCDIAMETER" => "Constrains the diameter of a circle or arc",
-        "DCANGULAR" => "Constrains the angle between line or polyline segments, the angle swept out by an arc or a polyline arc segment, or the angle between three points on objects",
-        "DCCONVERT" => "Convert dimensions to dimensional constraints",
-        _ => return None,
-    })
-}
-
 /// A tool's tooltip: its name, its description when one is known, and the
 /// command it runs.
-fn tool_tip_text(label: &str, id: &str) -> String {
+pub(super) fn tool_tip_text(label: &str, id: &str) -> String {
     // A macro (`PDFIMPORT;FILE`) shows the command it starts.
     let id = id.split(';').next().unwrap_or(id);
-    match tool_description(id) {
-        Some(description) => format!("{label}\n{}\n{} {id}", t!(description), t!("Command:")),
+    // A ribbon token (`ARC_3P`) falls back to its command's summary.
+    let summary = crate::command::command_summary(id)
+        .or_else(|| crate::command::command_summary(id.split('_').next()?));
+    match summary {
+        Some(description) => {
+            // Broken at word ends so a long summary stays a narrow tip.
+            let mut wrapped = String::new();
+            let mut line = 0;
+            for word in description.split(' ') {
+                if line > 0 && line + word.len() > 56 {
+                    wrapped.push('\n');
+                    line = 0;
+                } else if line > 0 {
+                    wrapped.push(' ');
+                    line += 1;
+                }
+                wrapped.push_str(word);
+                line += word.len();
+            }
+            format!("{label}\n{wrapped}\n{} {id}", t!("Command:"))
+        }
         None => format!("{label}\n{} {id}", t!("Command:")),
     }
 }
@@ -954,7 +972,7 @@ fn small_button<'a>(
                 .style(tip_style);
 
             PosReport::new(
-                *id,
+                id,
                 split_outline(
                     row![icon_with_tip, arr_with_tip]
                         .spacing(0)
@@ -1056,7 +1074,7 @@ fn small_button<'a>(
             .spacing(0)
             .width(Fill)
             .height(ROW_H);
-            PosReport::new(*id, split_outline(parts.into())).into()
+            PosReport::new(id, split_outline(parts.into())).into()
         }
 
         _ => text("").into(),
@@ -1366,7 +1384,7 @@ fn large_item<'a>(
             icon,
             items,
             default,
-        } => render_large_dropdown(*id, *icon, Some(*label), items, *default, ctx),
+        } => render_large_dropdown(id, *icon, Some(*label), items, default, ctx),
 
         RibbonItem::LabeledDropdown {
             id,
@@ -1374,7 +1392,7 @@ fn large_item<'a>(
             icon,
             items,
             default,
-        } => render_large_dropdown(*id, *icon, Some(*label), items, *default, ctx),
+        } => render_large_dropdown(id, *icon, Some(*label), items, default, ctx),
 
         RibbonItem::ToolGrid { columns } => columns
             .iter()
@@ -1405,7 +1423,7 @@ fn large_item<'a>(
             icon,
             items,
             default,
-        } => render_large_dropdown(*id, *icon, None, items, *default, ctx),
+        } => render_large_dropdown(id, *icon, None, items, default, ctx),
 
         RibbonItem::LayerComboGroup { row2, row3 } => {
             const TOOL_BUTTON_W: f32 = 26.0;
@@ -1643,7 +1661,11 @@ fn large_item<'a>(
                         style_ctx.mleader_layer,
                         style_ctx.mleader_layer_color,
                         open_dd.as_deref() == Some(MLEADER_LAYER_COMBO),
-                        format!("{}\n{} MLEADERLAYER", t!("Multileader Layer"), t!("Command:")),
+                        format!(
+                            "{}\n{} MLEADERLAYER",
+                            t!("Multileader Layer"),
+                            t!("Command:")
+                        ),
                     ))
                     .width(Fill)
                     .into(),
@@ -1775,9 +1797,13 @@ fn text_find_box<'a>(value: &str) -> Element<'a, Message> {
     .on_press(Message::RibbonTextFindSubmit)
     .style(move |theme: &Theme, status| tool_btn_style(theme, false, status))
     .padding(3);
-    let search = tooltip(search, make_tip(t!("Find text").into_owned()), TipPos::Bottom)
-        .delay(Duration::from_millis(400))
-        .style(tip_style);
+    let search = tooltip(
+        search,
+        make_tip(t!("Find text").into_owned()),
+        TipPos::Bottom,
+    )
+    .delay(Duration::from_millis(400))
+    .style(tip_style);
     row![input, search]
         .spacing(2)
         .align_y(iced::Center)
@@ -1796,7 +1822,11 @@ fn text_height_box<'a>(value: &str) -> Element<'a, Message> {
         .width(Fill);
     let input = tooltip(
         input,
-        make_tip(format!("{}\n{} TEXTSIZE", t!("Text Height"), t!("Command:"))),
+        make_tip(format!(
+            "{}\n{} TEXTSIZE",
+            t!("Text Height"),
+            t!("Command:")
+        )),
         TipPos::Bottom,
     )
     .delay(Duration::from_millis(400))

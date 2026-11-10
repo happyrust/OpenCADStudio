@@ -23,9 +23,9 @@
 //! 把同一 APPID 的记录整条替换（而不是追加）、并作废该 APPID 的 verbatim
 //! EED 块。
 
-use codec::objects::{XRecordEntry, XRecordValue};
-use codec::xdata::XDataValue;
-use codec::{Document, Handle};
+use document::objects::{XRecordEntry, XRecordValue};
+use document::xdata::XDataValue;
+use document::{Document, Handle};
 
 use crate::scene::view::dispatch::set_entity_xdata;
 
@@ -306,9 +306,9 @@ mod tests {
 
     use crate::command::EntityTransform;
     use crate::io::pid_legend;
-    use codec::entities::Line;
-    use codec::types::Vector3;
-    use codec::xdata::ExtendedDataRecord;
+    use document::entities::Line;
+    use document::types::Vector3;
+    use document::xdata::ExtendedDataRecord;
     use glam::DVec3;
 
     const EIGHT_KEYS: [&str; 8] = [
@@ -322,8 +322,8 @@ mod tests {
         "topology",
     ];
 
-    fn line(y: f64) -> codec::EntityType {
-        codec::EntityType::Line(Line::from_points(
+    fn line(y: f64) -> document::EntityType {
+        document::EntityType::Line(Line::from_points(
             Vector3::new(0.0, y, 0.0),
             Vector3::new(10.0, y, 0.0),
         ))
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn pid_author_app_id_registered_and_roundtrips() {
-        use codec::{Dwg, Format};
+        use document::{Dwg, Format};
 
         let mut doc = Document::new();
         let handle = doc.add_entity(line(0.0)).unwrap();

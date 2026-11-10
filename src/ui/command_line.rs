@@ -103,6 +103,12 @@ fn strip_option_listing(s: &str, options: &[CmdOption]) -> String {
     out.replace(" :", ":").trim().to_string()
 }
 
+/// Whether pasted command-line text holds SVG markup, which the copy commands
+/// put on the system clipboard beside their own copy.
+fn is_svg_markup(text: &str) -> bool {
+    text.contains("<svg")
+}
+
 /// An option label split around the letters typed to pick it: the capitals
 /// (`T` in `Ttr`, `RE` in `REpeat`, `X` in `eXit`), or the whole label when
 /// it has no lower case (`3P`).
@@ -116,7 +122,11 @@ fn option_shortcut(label: &str) -> (&str, &str, &str) {
     let len = label[start..]
         .find(|c: char| c.is_lowercase() || c.is_whitespace())
         .unwrap_or(label.len() - start);
-    (&label[..start], &label[start..start + len], &label[start + len..])
+    (
+        &label[..start],
+        &label[start..start + len],
+        &label[start + len..],
+    )
 }
 
 #[cfg(test)]
@@ -298,6 +308,9 @@ pub enum EntryKind {
     Output,
     Error,
     Info,
+    /// A row of a listing (`?` tables): drawn in a fixed-width font so its
+    /// space-padded columns line up.
+    Table,
 }
 
 /// Per-logical-line entry kinds for the selectable full-history editor.
@@ -471,19 +484,32 @@ impl CommandLine {
     /// The latest command echo shows only `cmd`: a value typed on the same
     /// line as a variable belongs to its prompt, not to the command line.
     pub fn restate_last_command(&mut self, cmd: &str) {
-        if let Some(entry) = self.history.iter_mut().rev().find(|e| e.kind == EntryKind::Command) {
+        if let Some(entry) = self
+            .history
+            .iter_mut()
+            .rev()
+            .find(|e| e.kind == EntryKind::Command)
+        {
             entry.text = format!("{COMMAND_PREFIX}{} {cmd}", t!("Command:"));
         }
     }
     /// An answer given to the prompt just shown is written after it on the
     /// same line (`Enter new value for X <1>: 0`), as the reference echoes it.
     pub fn answer_last_prompt(&mut self, answer: &str) {
-        if let Some(entry) = self.history.last_mut().filter(|e| e.text.trim_end().ends_with(':')) {
+        if let Some(entry) = self
+            .history
+            .last_mut()
+            .filter(|e| e.text.trim_end().ends_with(':'))
+        {
             entry.text = format!("{} {answer}", entry.text.trim_end());
         }
     }
     pub fn push_output(&mut self, msg: &str) {
         self.push(EntryKind::Output, msg.to_string());
+    }
+    /// One row of a space-aligned listing (`?` tables); see [`EntryKind::Table`].
+    pub fn push_table(&mut self, row: &str) {
+        self.push(EntryKind::Table, row.to_string());
     }
     pub fn push_error(&mut self, msg: &str) {
         self.error_revision = self.error_revision.wrapping_add(1);
@@ -500,6 +526,18 @@ impl CommandLine {
     pub fn push_error_coded(&mut self, code: &str, msg: &str) {
         self.push_error(msg);
         self.last_error_code = Some(code.to_owned());
+    }
+    /// A typed value or keyword the prompt refused (`Requires 0 or 1 only.`,
+    /// `Invalid option keyword.`): a plain line, as the reference prints it
+    /// before asking again. It still counts as a failed input for automation
+    /// (`last_error` / `error_revision`).
+    pub fn push_rejection(&mut self, msg: &str) {
+        self.error_revision = self.error_revision.wrapping_add(1);
+        self.last_error = Some(msg.to_owned());
+        // As `push_error`: a refusal names no code, so one left over from an
+        // earlier coded failure must not be reported with it.
+        self.last_error_code = None;
+        self.push(EntryKind::Output, msg.to_string());
     }
     /// Append an error unless it is already the latest history line. Repeated
     /// retry failures should refresh the concise message, not flood history
@@ -551,6 +589,7 @@ impl CommandLine {
             // A quiet machine replay (API v13) leaves no echo; errors pass.
             return;
         }
+        crate::app::commands::write_log_line(&text);
         self.history.push(HistoryEntry {
             kind,
             text,
@@ -758,7 +797,7 @@ impl CommandLine {
             .history
             .iter()
             .flat_map(|entry| {
-                std::iter::repeat(entry.kind.clone()).take(entry.text.split('\n').count())
+                std::iter::repeat_n(entry.kind.clone(), entry.text.split('\n').count())
             })
             .collect();
         HistoryHighlightSettings { line_kinds }
@@ -880,7 +919,7 @@ impl CommandLine {
                 text_editor::Style {
                     background: Background::Color(palette.background.base.color),
                     border: Border::default(),
-                    placeholder: palette.background.base.text.scale_alpha(0.72),
+                    placeholder: crate::ui::style::readable::hint_text(theme),
                     value: palette.background.base.text,
                     selection: palette.primary.base.color.scale_alpha(0.5),
                 }
@@ -892,10 +931,14 @@ impl CommandLine {
             ))
             .anchor_bottom();
         let tool = |icon: Element<'a, Message>, label: String, msg: Message| {
-            button(row![icon, text(label).size(11)].spacing(4).align_y(iced::Center))
-                .on_press(msg)
-                .style(header_btn_style)
-                .padding([2, 6])
+            button(
+                row![icon, text(label).size(11)]
+                    .spacing(4)
+                    .align_y(iced::Center),
+            )
+            .on_press(msg)
+            .style(header_btn_style)
+            .padding([2, 6])
         };
         let header = container(
             row![
@@ -970,6 +1013,8 @@ impl CommandLine {
                             weight: iced::font::Weight::Bold,
                             ..self.font
                         });
+                    } else if kind == EntryKind::Table {
+                        txt = txt.font(iced::Font::MONOSPACE);
                     }
                     txt
                 };
@@ -1005,7 +1050,10 @@ impl CommandLine {
                         {
                             row![part(before), part(short).style(accent), part(after)]
                         } else {
-                            row![part(&opt.label), part(&format!(" ({keyword})")).style(accent)]
+                            row![
+                                part(&opt.label),
+                                part(&format!(" ({keyword})")).style(accent)
+                            ]
                         };
                         let btn = button(label)
                             .on_press(Message::CommandOptionPick(opt.keyword.clone()))
@@ -1042,18 +1090,21 @@ impl CommandLine {
                     col.push(container(entry_text(entry.text.clone())).padding([1, 8]))
                 }
             });
-        let prompt = container(text(crate::tr!("command-line", "label")).size(self.font_size).font(self.font).style(
-            |theme: &Theme| {
-                let p = theme.palette();
-                let color = accessible_accent_threshold(
-                    p.success.base.color,
-                    p.background.base.color,
-                    p.background.base.text,
-                    4.5,
-                );
-                iced::widget::text::Style { color: Some(color) }
-            },
-        ))
+        let prompt = container(
+            text(crate::tr!("command-line", "label"))
+                .size(self.font_size)
+                .font(self.font)
+                .style(|theme: &Theme| {
+                    let p = theme.palette();
+                    let color = accessible_accent_threshold(
+                        p.success.base.color,
+                        p.background.base.color,
+                        p.background.base.text,
+                        4.5,
+                    );
+                    iced::widget::text::Style { color: Some(color) }
+                }),
+        )
         .padding([5, 8]);
         // Literal-space toggle: while active, every line behaves as if it
         // started with `>` — Space stays in the line instead of submitting, so
@@ -1096,6 +1147,13 @@ impl CommandLine {
         if !dyn_capturing {
             input = input
                 .on_input(Message::CommandInput)
+                .on_paste(|buffer| {
+                    if is_svg_markup(&buffer) {
+                        Message::CommandPasteMarkup
+                    } else {
+                        Message::CommandInput(buffer)
+                    }
+                })
                 .on_submit(Message::CommandSubmit);
         }
         let input = input
@@ -1150,7 +1208,7 @@ impl CommandLine {
                             ));
                         }
 
-                        if let Some(color) = details.color.clone() {
+                        if let Some(color) = details.color {
                             let swatch_color =
                                 crate::ui::window::layers::iced_color_from_acad(&color);
 
@@ -1174,11 +1232,9 @@ impl CommandLine {
                         // falling back to the target command's icon for aliases.
                         let icon_bytes =
                             crate::modules::registry::command_icon(cmd).or_else(|| {
-                                self.command_aliases
-                                    .get(cmd.as_str())
-                                    .and_then(|target| {
-                                        crate::modules::registry::command_icon(target)
-                                    })
+                                self.command_aliases.get(cmd.as_str()).and_then(|target| {
+                                    crate::modules::registry::command_icon(target)
+                                })
                             });
                         let icon: Element<'_, Message> = match icon_bytes {
                             Some(bytes) => crate::ui::icons::semantic(bytes, 14.0),
@@ -1189,6 +1245,29 @@ impl CommandLine {
                     }
 
                     label = label.push(text(cmd.clone()).size(11));
+                    if details.is_none() {
+                        let target = self.command_aliases.get(cmd.as_str()).map(String::as_str);
+                        if let Some(summary) =
+                            crate::command::command_summary(target.unwrap_or(cmd))
+                        {
+                            label = label.push(
+                                text(summary)
+                                    .size(11)
+                                    .wrapping(iced::widget::text::Wrapping::None)
+                                    .style(move |theme: &Theme| {
+                                        let palette = theme.palette();
+                                        let base = if is_selected {
+                                            palette.primary.weak.text
+                                        } else {
+                                            palette.background.base.text
+                                        };
+                                        iced::widget::text::Style {
+                                            color: Some(Color { a: 0.7, ..base }),
+                                        }
+                                    }),
+                            );
+                        }
+                    }
 
                     let row = button(label)
                         .on_press(Message::CommandSuggestionPick(cmd.clone()))
@@ -1300,8 +1379,8 @@ impl CommandLine {
             graph_btn,
             mcp_btn
         ]
-            .spacing(4)
-            .align_y(iced::Center);
+        .spacing(4)
+        .align_y(iced::Center);
 
         // Full backlog dropdown — appears ABOVE the input pill when open. The
         // whole log is rendered in ONE read-only `text_editor` (backed by
@@ -1328,7 +1407,7 @@ impl CommandLine {
                     text_editor::Style {
                         background: Background::Color(palette.background.base.color),
                         border: Border::default(),
-                        placeholder: palette.background.base.text.scale_alpha(0.72),
+                        placeholder: crate::ui::style::readable::hint_text(theme),
                         value: palette.background.base.text,
                         selection: palette.primary.base.color.scale_alpha(0.5),
                     }
@@ -1406,7 +1485,7 @@ impl CommandLine {
                     .align_x(iced::alignment::Horizontal::Left)
                     .align_y(iced::alignment::Vertical::Top),
             ];
-            opaque(panel).into()
+            opaque(panel)
         } else {
             container(column![]).height(0).into()
         };
@@ -1584,7 +1663,7 @@ fn history_color(theme: &Theme, kind: &EntryKind) -> Color {
     let palette = theme.palette();
     match kind {
         EntryKind::Command => text_color(theme),
-        EntryKind::Output => text_color(theme).scale_alpha(0.72),
+        EntryKind::Output | EntryKind::Table => text_color(theme).scale_alpha(0.72),
         EntryKind::Error => palette.danger.base.color,
         EntryKind::Info => user_text_color().unwrap_or_else(|| {
             accessible_accent_threshold(
@@ -1605,6 +1684,7 @@ fn history_highlight_format(
         color: Some(history_color(theme, kind)),
         font: match kind {
             EntryKind::Error => Some(iced::Font::DEFAULT.weight(iced::font::Weight::Bold)),
+            EntryKind::Table => Some(iced::Font::MONOSPACE),
             _ => None,
         },
     }
@@ -1944,4 +2024,16 @@ pub fn value_prompt_or_none(name: &str, current: &dyn std::fmt::Display) -> Stri
 /// [`value_prompt`] for a variable with no value to offer.
 pub fn value_prompt_bare(name: &str) -> String {
     crate::tf!("Enter new value for {name}:").into_owned()
+}
+
+#[cfg(test)]
+mod svg_paste_tests {
+    #[test]
+    fn copied_svg_is_markup_and_commands_are_not() {
+        assert!(super::is_svg_markup(
+            r#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>"#
+        ));
+        assert!(!super::is_svg_markup("LINE"));
+        assert!(!super::is_svg_markup("TEXT <value>"));
+    }
 }

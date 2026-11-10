@@ -14,6 +14,11 @@ macro_rules! draw_order_shader {
                 "/src/shaders/draw_order.wgsl"
             )),
             "\n",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/shaders/dash_layout.wgsl"
+            )),
+            "\n",
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/shaders/", $file))
         )
     };
@@ -21,6 +26,8 @@ macro_rules! draw_order_shader {
 
 mod analytic_slots;
 pub mod circle_gpu;
+#[cfg(test)]
+mod dash_gpu_tests;
 #[cfg(test)]
 mod depth_tests;
 mod device_capabilities;
@@ -306,7 +313,7 @@ pub struct Pipeline {
     /// GPU buffer. `Some(false)` = regular wires, `Some(true)` = mesh edges.
     pub(crate) wire_arena_fallback: std::sync::Arc<Vec<WireGpu>>,
     pub(crate) wire_arena_fallback_kind: Option<bool>,
-    pub(crate) wire_arena_fallback_handles: rustc_hash::FxHashSet<codec::Handle>,
+    pub(crate) wire_arena_fallback_handles: rustc_hash::FxHashSet<document::Handle>,
     /// The Model content id both arenas currently mirror (`u64::MAX` = none).
     pub(crate) wire_arena_id: u64,
     /// The draw-depth generation the arenas' slabs baked. A patch rewrites
@@ -366,13 +373,13 @@ pub struct Pipeline {
     /// repacked here, keeping the rest of a multi-million-triangle scene resident.
     gpu_mesh_dynamic: Vec<mesh_gpu::MeshBatchChunk>,
     mesh_disabled_chunks: rustc_hash::FxHashSet<usize>,
-    mesh_dynamic_handles: rustc_hash::FxHashSet<codec::Handle>,
+    mesh_dynamic_handles: rustc_hash::FxHashSet<document::Handle>,
     /// Wire content generation whose geometry the static+dynamic mesh state
     /// mirrors. It gates replay of the same per-entity journal handoff.
     pub cached_mesh_content_id: u64,
     /// Draw ranges for each entity inside the resident mesh chunks. Highlight
     /// overlays reuse these buffers instead of uploading duplicate geometry.
-    mesh_ranges_by_handle: rustc_hash::FxHashMap<codec::Handle, Vec<MeshResidentRange>>,
+    mesh_ranges_by_handle: rustc_hash::FxHashMap<document::Handle, Vec<MeshResidentRange>>,
     mesh_highlight_draws: Vec<MeshHighlightDraw>,
     /// `(geometry_epoch, selection_generation)` the highlight overlay was built for.
     pub cached_highlight_key: (u64, u64),
@@ -1199,14 +1206,13 @@ impl Pipeline {
         #[cfg(not(target_arch = "wasm32"))]
         if std::env::var_os("RUST_LOG").is_some() {
             eprintln!(
-                "renderer pipelines: wire={} hatch={} mesh={} (storage buffers/stage: {})",
+                "renderer pipelines: wire={} hatch={} mesh=vertex (storage buffers/stage: {})",
                 if wire_mode.uses_storage() {
                     "storage"
                 } else {
                     "packed"
                 },
                 hatch_gpu.backend_name(),
-                "vertex",
                 device.limits().max_storage_buffers_per_shader_stage
             );
         }
@@ -2843,8 +2849,11 @@ impl Pipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         instances: &[CircleInstance],
-        owners: &[codec::Handle],
-    ) -> (Vec<CircleGpu>, Vec<(codec::Handle, analytic_slots::CurveSlot)>) {
+        owners: &[document::Handle],
+    ) -> (
+        Vec<CircleGpu>,
+        Vec<(document::Handle, analytic_slots::CurveSlot)>,
+    ) {
         if instances.is_empty() {
             return (Vec::new(), Vec::new());
         }
@@ -2873,8 +2882,11 @@ impl Pipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         instances: &[EllipseInstance],
-        owners: &[codec::Handle],
-    ) -> (Vec<EllipseGpu>, Vec<(codec::Handle, analytic_slots::CurveSlot)>) {
+        owners: &[document::Handle],
+    ) -> (
+        Vec<EllipseGpu>,
+        Vec<(document::Handle, analytic_slots::CurveSlot)>,
+    ) {
         if instances.is_empty() {
             return (Vec::new(), Vec::new());
         }
@@ -2904,8 +2916,8 @@ impl Pipeline {
     pub(crate) fn record_analytic_slots(
         &mut self,
         blocks: Option<wire_gpu::BlockTracking>,
-        circles: Vec<(codec::Handle, analytic_slots::CurveSlot)>,
-        ellipses: Vec<(codec::Handle, analytic_slots::CurveSlot)>,
+        circles: Vec<(document::Handle, analytic_slots::CurveSlot)>,
+        ellipses: Vec<(document::Handle, analytic_slots::CurveSlot)>,
         depth_generation: u64,
     ) {
         self.analytic_slots = None;
@@ -2915,7 +2927,7 @@ impl Pipeline {
         if self.gpu_circles.len() > 1 || self.gpu_ellipses.len() > 1 {
             return;
         }
-        let mut by_handle: rustc_hash::FxHashMap<codec::Handle, analytic_slots::HandleSlots> =
+        let mut by_handle: rustc_hash::FxHashMap<document::Handle, analytic_slots::HandleSlots> =
             rustc_hash::FxHashMap::default();
         for (handle, slot) in blocks.slots {
             by_handle.entry(handle).or_default().blocks.push(slot);
@@ -2930,8 +2942,14 @@ impl Pipeline {
             by_handle,
             block_buffers: blocks.buffers,
             shapes: blocks.shapes,
-            circle_buffer: self.gpu_circles.first().map(|gpu| gpu.instance_buffer.clone()),
-            ellipse_buffer: self.gpu_ellipses.first().map(|gpu| gpu.instance_buffer.clone()),
+            circle_buffer: self
+                .gpu_circles
+                .first()
+                .map(|gpu| gpu.instance_buffer.clone()),
+            ellipse_buffer: self
+                .gpu_ellipses
+                .first()
+                .map(|gpu| gpu.instance_buffer.clone()),
             blocks_id: std::sync::Arc::as_ptr(&self.gpu_block_wires) as usize,
             circles_id: std::sync::Arc::as_ptr(&self.gpu_circles) as usize,
             ellipses_id: std::sync::Arc::as_ptr(&self.gpu_ellipses) as usize,
@@ -3181,8 +3199,8 @@ impl Pipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         wires: &[WireModel],
-        selected: &rustc_hash::FxHashSet<codec::Handle>,
-        hovered: &rustc_hash::FxHashSet<codec::Handle>,
+        selected: &rustc_hash::FxHashSet<document::Handle>,
+        hovered: &rustc_hash::FxHashSet<document::Handle>,
         annotation_context_wires: &[WireModel],
         depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
         selected_tint: Option<[f32; 4]>,
@@ -3364,8 +3382,8 @@ analytic={:.1} regular={:.1} blocks={:.1}",
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         wires: &[WireModel],
-        selected: &rustc_hash::FxHashSet<codec::Handle>,
-        hovered: &rustc_hash::FxHashSet<codec::Handle>,
+        selected: &rustc_hash::FxHashSet<document::Handle>,
+        hovered: &rustc_hash::FxHashSet<document::Handle>,
         annotation_context_wires: &[WireModel],
         depth_map: &rustc_hash::FxHashMap<u64, [f32; 2]>,
         selected_tint: Option<[f32; 4]>,
@@ -3687,11 +3705,11 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                 let mut sources = Vec::with_capacity(generators.len());
                 for generator in generators {
                     if let Some(transform) = source.instance_transform {
-                        let origin = transform.apply(codec::types::Vector3::ZERO);
+                        let origin = transform.apply(document::types::Vector3::ZERO);
                         let vectors = [
-                            transform.apply_rotation(codec::types::Vector3::UNIT_X),
-                            transform.apply_rotation(codec::types::Vector3::UNIT_Y),
-                            transform.apply_rotation(codec::types::Vector3::UNIT_Z),
+                            transform.apply_rotation(document::types::Vector3::UNIT_X),
+                            transform.apply_rotation(document::types::Vector3::UNIT_Y),
+                            transform.apply_rotation(document::types::Vector3::UNIT_Z),
                         ];
                         if let Some(transformed) = kernel::brep::mesh::transform_silhouette_affine(
                             &generator.source,
@@ -3887,9 +3905,7 @@ analytic={:.1} regular={:.1} blocks={:.1}",
         self.wipeout_skip_flags = self
             .gpu_wipeouts
             .iter()
-            .map(|h| {
-                aabb_offscreen(h.world_aabb.map(f64::from), view_rot, eye, clip_w, clip_h)
-            })
+            .map(|h| aabb_offscreen(h.world_aabb.map(f64::from), view_rot, eye, clip_w, clip_h))
             .collect();
     }
 
@@ -4002,7 +4018,10 @@ analytic={:.1} regular={:.1} blocks={:.1}",
                 if gpu_errors_seen() == errors_before {
                     cache.insert(
                         key,
-                        (std::sync::Arc::downgrade(meshes), std::sync::Arc::clone(&chunks)),
+                        (
+                            std::sync::Arc::downgrade(meshes),
+                            std::sync::Arc::clone(&chunks),
+                        ),
                     );
                 }
                 (chunks, triangles)
@@ -4109,7 +4128,7 @@ analytic={:.1} regular={:.1} blocks={:.1}",
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         meshes: &[MeshLodSet],
-        changes: &[(codec::Handle, crate::scene::ChangeKind)],
+        changes: &[(document::Handle, crate::scene::ChangeKind)],
     ) -> bool {
         let started = iced::time::Instant::now();
         if self.gpu_mesh_batch.is_empty() || changes.is_empty() {
@@ -4179,15 +4198,15 @@ analytic={:.1} regular={:.1} blocks={:.1}",
     /// chunk buffers; changing hover never allocates or uploads mesh geometry.
     pub fn update_mesh_highlight(
         &mut self,
-        selected: &rustc_hash::FxHashSet<codec::Handle>,
-        hovered: &rustc_hash::FxHashSet<codec::Handle>,
+        selected: &rustc_hash::FxHashSet<document::Handle>,
+        hovered: &rustc_hash::FxHashSet<document::Handle>,
         edge_wires: &[WireModel],
     ) {
-        let edge_handles: rustc_hash::FxHashSet<codec::Handle> = edge_wires
+        let edge_handles: rustc_hash::FxHashSet<document::Handle> = edge_wires
             .iter()
             .filter_map(|wire| wire.name.strip_prefix("mesh-edge:"))
             .filter_map(|value| value.parse::<u64>().ok())
-            .map(codec::Handle::new)
+            .map(document::Handle::new)
             .collect();
         let mut out = Vec::new();
         for handle in selected
@@ -4205,7 +4224,7 @@ analytic={:.1} regular={:.1} blocks={:.1}",
             .iter()
             .filter(|handle| !selected.contains(handle) && !edge_handles.contains(handle))
         {
-            if let Some(ranges) = self.mesh_ranges_by_handle.get(&handle) {
+            if let Some(ranges) = self.mesh_ranges_by_handle.get(handle) {
                 out.extend(ranges.iter().copied().map(|range| MeshHighlightDraw {
                     range,
                     kind: MeshHighlightKind::Hover,
@@ -4391,8 +4410,12 @@ analytic={:.1} regular={:.1} blocks={:.1}",
             shadow_sampler: &self.shadow_sampler,
         };
         let frame = frame_bind_group(device, &self.frame_bgl, &self.uniform_buffer, &views);
-        let selection =
-            frame_bind_group(device, &self.frame_bgl, &self.selection_uniform_buffer, &views);
+        let selection = frame_bind_group(
+            device,
+            &self.frame_bgl,
+            &self.selection_uniform_buffer,
+            &views,
+        );
         self.uniform_bind_group = frame;
         self.selection_uniform_bind_group = selection;
     }
@@ -4434,7 +4457,11 @@ analytic={:.1} regular={:.1} blocks={:.1}",
         selection.transparency_enable = 1.0;
         uniforms.highlight_widen = 0.0;
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-        queue.write_buffer(&self.selection_uniform_buffer, 0, bytemuck::bytes_of(&selection));
+        queue.write_buffer(
+            &self.selection_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&selection),
+        );
     }
 
     pub fn upload_background_images(
@@ -6008,7 +6035,7 @@ analytic={:.1} regular={:.1} blocks={:.1}",
 /// `alloc_size` — this is the mitigation for the Windows-Firefox freeze (#191).
 fn round_up_tex(n: u32) -> u32 {
     const GRID: u32 = 128;
-    ((n.max(1) + GRID - 1) / GRID) * GRID
+    n.max(1).div_ceil(GRID) * GRID
 }
 
 /// `true` when the world-XY AABB projects entirely outside the
@@ -6037,18 +6064,8 @@ fn aabb_offscreen(
     let h = clip_h as f32;
     // A corner behind the perspective eye mirrors across the screen, so the
     // projected union bounds nothing: never cull in that case (#64).
-    let corners = [
-        (x0, y0),
-        (x1, y0),
-        (x0, y1),
-        (x1, y1),
-    ]
-    .map(|(x, y)| {
-        crate::scene::view::projection::project_ndc(
-            view_rot,
-            eye,
-            glam::DVec3::new(x, y, 0.0),
-        )
+    let corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)].map(|(x, y)| {
+        crate::scene::view::projection::project_ndc(view_rot, eye, glam::DVec3::new(x, y, 0.0))
     });
     let mut min_px = f32::INFINITY;
     let mut max_px = f32::NEG_INFINITY;
@@ -6099,18 +6116,8 @@ fn aabb_below_pixel(
     let h = clip_h as f32;
     // Mirrored corners from behind the eye would fake a tiny or shifted box:
     // keep the draw call when any corner has no real projection (#64).
-    let corners = [
-        (x0, y0),
-        (x1, y0),
-        (x0, y1),
-        (x1, y1),
-    ]
-    .map(|(x, y)| {
-        crate::scene::view::projection::project_ndc(
-            view_rot,
-            eye,
-            glam::DVec3::new(x, y, 0.0),
-        )
+    let corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)].map(|(x, y)| {
+        crate::scene::view::projection::project_ndc(view_rot, eye, glam::DVec3::new(x, y, 0.0))
     });
     let mut min_px = f32::INFINITY;
     let mut max_px = f32::NEG_INFINITY;

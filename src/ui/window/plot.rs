@@ -211,13 +211,13 @@ pub struct PageSetupImportDraft {
     pub file: String,
     /// Each setup with whether it is ticked for import. The settings are
     /// carried along so the source file is read once.
-    pub setups: Vec<(String, codec::objects::PlotSettings, bool)>,
+    pub setups: Vec<(String, document::objects::PlotSettings, bool)>,
     /// Why the file gave nothing, when it did not.
     pub error: Option<String>,
 }
 
 impl PageSetupImportDraft {
-    pub fn selected(&self) -> impl Iterator<Item = (&str, &codec::objects::PlotSettings)> {
+    pub fn selected(&self) -> impl Iterator<Item = (&str, &document::objects::PlotSettings)> {
         self.setups
             .iter()
             .filter(|(_, _, on)| *on)
@@ -231,7 +231,7 @@ pub enum PageSetupImportMsg {
     /// Ask for the drawing to import from.
     Pick,
     /// The drawing was read (or could not be): its name and page setups.
-    Loaded(Result<(String, Vec<(String, codec::objects::PlotSettings)>), String>),
+    Loaded(Result<(String, Vec<(String, document::objects::PlotSettings)>), String>),
     /// Tick or untick one setup.
     Toggle(String),
     /// Tick or untick every setup.
@@ -1545,8 +1545,18 @@ pub fn view_window(
         let folder_choice = folders.get(s.output_folder as usize).cloned();
         let name_choice = names.get(s.output_name as usize).cloned();
         let dpi = row![
-            field_row(crate::tr!("plot", "raster-dpi").into(), &s.raster_dpi, PlotDlgMsg::RasterDpi, 60),
-            field_row(crate::tr!("plot", "vector-dpi").into(), &s.vector_dpi, PlotDlgMsg::VectorDpi, 60),
+            field_row(
+                crate::tr!("plot", "raster-dpi").into(),
+                &s.raster_dpi,
+                PlotDlgMsg::RasterDpi,
+                60
+            ),
+            field_row(
+                crate::tr!("plot", "vector-dpi").into(),
+                &s.vector_dpi,
+                PlotDlgMsg::VectorDpi,
+                60
+            ),
         ]
         .spacing(8);
         let name_row = drop_row(
@@ -2054,7 +2064,7 @@ mod sidebar_layout_tests {
         let mut renderer = iced::futures::executor::block_on(
             <iced::Renderer as iced_test::core::renderer::Headless>::new(
                 iced_test::core::renderer::Settings::default(),
-                None,
+                std::env::var("ICED_TEST_BACKEND").ok().as_deref(),
             ),
         )
         .expect("headless renderer");

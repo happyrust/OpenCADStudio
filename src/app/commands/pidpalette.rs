@@ -140,11 +140,11 @@ impl PidInsertCommand {
 
     /// The placement for a cursor at `cursor`, with the preview's rotation,
     /// scale and anchor.
-    fn insert_at(&self, cursor: DVec3) -> codec::entities::Insert {
+    fn insert_at(&self, cursor: DVec3) -> document::entities::Insert {
         let at = cursor - self.anchor_offset();
-        codec::entities::Insert::new(
+        document::entities::Insert::new(
             self.block.clone(),
-            codec::types::Vector3::new(at.x, at.y, at.z),
+            document::types::Vector3::new(at.x, at.y, at.z),
         )
         .with_uniform_scale(self.scale)
         .with_rotation(self.rotation)
@@ -308,7 +308,7 @@ impl CadCommand for PidInsertCommand {
         let Some(point) = self.point else {
             return CmdResult::NeedPoint;
         };
-        CmdResult::CommitAndExit(codec::EntityType::Insert(self.insert_at(point)))
+        CmdResult::CommitAndExit(document::EntityType::Insert(self.insert_at(point)))
     }
 }
 
@@ -326,10 +326,10 @@ const PID_TAG_FALLBACK_RISE: f64 = 15.0;
 
 /// Highest block-local y of the symbol's own geometry, so the label sits
 /// clear of it whatever the symbol's size.
-fn symbol_top(document: &codec::Document, block: &str) -> Option<f64> {
+fn symbol_top(document: &document::Document, block: &str) -> Option<f64> {
     document
         .entities_in_block(block)
-        .filter(|entity| !matches!(entity, codec::EntityType::Point(_)))
+        .filter(|entity| !matches!(entity, document::EntityType::Point(_)))
         .map(|entity| entity.as_entity().bounding_box().max.y)
         .filter(|y| y.is_finite())
         .reduce(f64::max)
@@ -340,16 +340,16 @@ fn symbol_top(document: &codec::Document, block: &str) -> Option<f64> {
 /// symbol. The label is an attribute of the reference, so it moves, rotates
 /// and is erased with the symbol, and it adds no entity of its own to the
 /// document. Returns whether the reference carries a P&ID tag label.
-pub(crate) fn sync_pid_tag_attribute(document: &mut codec::Document, handle: codec::Handle) -> bool {
-    use codec::entities::{AttributeEntity, HorizontalAlignment, VerticalAlignment};
-    use codec::types::Vector3;
+pub(crate) fn sync_pid_tag_attribute(document: &mut document::Document, handle: document::Handle) -> bool {
+    use document::entities::{AttributeEntity, HorizontalAlignment, VerticalAlignment};
+    use document::types::Vector3;
     let Some(author) = PidAuthor::load(document, handle) else {
         return false;
     };
     let display =
         crate::pid::tag_engine::TagView::new(author.tag, author.tag_source, author.tag_status)
             .display;
-    let Some(codec::EntityType::Insert(insert)) = document.get_entity(handle) else {
+    let Some(document::EntityType::Insert(insert)) = document.get_entity(handle) else {
         return false;
     };
     // ATTRIB geometry is stored in world coordinates, so the block-local
@@ -368,7 +368,7 @@ pub(crate) fn sync_pid_tag_attribute(document: &mut codec::Document, handle: cod
     let height = PID_TAG_HEIGHT * scale;
     let rotation = insert.rotation;
     let layer = insert.common.layer.clone();
-    let Some(codec::EntityType::Insert(insert)) = document.get_entity_mut(handle) else {
+    let Some(document::EntityType::Insert(insert)) = document.get_entity_mut(handle) else {
         return false;
     };
     let attribute = match insert
@@ -587,7 +587,7 @@ impl OpenCADStudio {
     /// failure is not fatal — [`crate::pid::tag_engine::TagView::empty`] is
     /// what the caller stores then (D14), which leaves a manual, `ok`, empty
     /// tag instead of a made-up one.
-    pub(in crate::app) fn write_pid_author(&mut self, i: usize, handle: codec::Handle, type_code: &str) {
+    pub(in crate::app) fn write_pid_author(&mut self, i: usize, handle: document::Handle, type_code: &str) {
         use crate::pid::tag_engine;
         let types = TypeLib::embedded();
         let view = tag_engine::generate(
@@ -598,7 +598,7 @@ impl OpenCADStudio {
         )
         .unwrap_or_else(|_| tag_engine::TagView::empty());
         let block = match self.tabs[i].scene.document.get_entity(handle) {
-            Some(codec::EntityType::Insert(insert)) => insert.block_name.clone(),
+            Some(document::EntityType::Insert(insert)) => insert.block_name.clone(),
             _ => String::new(),
         };
         let author = PidAuthor {
@@ -618,7 +618,7 @@ impl OpenCADStudio {
     /// placement path, re-run the uniqueness check across the document and
     /// redraw every tag label whose text may have changed. The caller owns
     /// the undo step.
-    pub(in crate::app) fn refresh_pid_tags(&mut self, i: usize, edited: &[codec::Handle]) {
+    pub(in crate::app) fn refresh_pid_tags(&mut self, i: usize, edited: &[document::Handle]) {
         let document = &mut self.tabs[i].scene.document;
         let mut touched =
             crate::pid::tag_engine::refresh_statuses(&TypeLib::embedded(), document, edited);
@@ -897,7 +897,7 @@ mod tests {
         document
             .entities()
             .filter_map(|entity| match entity {
-                codec::EntityType::Insert(insert) => Some((
+                document::EntityType::Insert(insert) => Some((
                     format!("{:X}", insert.common.handle.value()),
                     insert.block_name.clone(),
                     [
@@ -915,7 +915,7 @@ mod tests {
     /// `PID_SYM_*` 块内图元是符号自身的画法，不算本文档的实体。
     fn entity_count(app: &OpenCADStudio) -> usize {
         let document = &app.tabs[app.active_tab].scene.document;
-        let symbol_blocks: Vec<codec::Handle> = document
+        let symbol_blocks: Vec<document::Handle> = document
             .block_records
             .iter()
             .filter(|record| record.name.starts_with(crate::pid::symbols::BLOCK_PREFIX))
@@ -976,7 +976,7 @@ mod tests {
 
         let author = PidAuthor::load(
             &app.tabs[app.active_tab].scene.document,
-            codec::Handle::new(u64::from_str_radix(handle, 16).unwrap()),
+            document::Handle::new(u64::from_str_radix(handle, 16).unwrap()),
         )
         .expect("新实体必须带 PID_AUTHOR 记录");
         assert_eq!(
@@ -1018,7 +1018,7 @@ mod tests {
             .map(|(handle, _, _)| {
                 PidAuthor::load(
                     &app.tabs[app.active_tab].scene.document,
-                    codec::Handle::new(u64::from_str_radix(handle, 16).unwrap()),
+                    document::Handle::new(u64::from_str_radix(handle, 16).unwrap()),
                 )
                 .expect("每条记录都在")
                 .tag
@@ -1061,7 +1061,7 @@ mod tests {
         let mut app = app();
         let before = entity_count(&app);
         place(&mut app, "vessel", [200.0, 150.0, 0.0]);
-        let handle = codec::Handle::new(
+        let handle = document::Handle::new(
             u64::from_str_radix(&inserts(&app)[0].0, 16).expect("handle 是十六进制"),
         );
         assert!(PidAuthor::load(&app.tabs[app.active_tab].scene.document, handle).is_some());
@@ -1098,7 +1098,7 @@ mod tests {
         assert_eq!(inserted[0].1, "PID_SYM_valve_gate_valve");
         let author = PidAuthor::load(
             &app.tabs[app.active_tab].scene.document,
-            codec::Handle::new(u64::from_str_radix(&inserted[0].0, 16).unwrap()),
+            document::Handle::new(u64::from_str_radix(&inserted[0].0, 16).unwrap()),
         )
         .expect("阀门也带 PID_AUTHOR");
         assert_eq!(author.type_code, "VALVE");
@@ -1148,7 +1148,7 @@ mod tests {
             .map(|(handle, _, _)| {
                 PidAuthor::load(
                     &app.tabs[app.active_tab].scene.document,
-                    codec::Handle::new(u64::from_str_radix(handle, 16).unwrap()),
+                    document::Handle::new(u64::from_str_radix(handle, 16).unwrap()),
                 )
                 .expect("容器带记录")
                 .tag
@@ -1159,9 +1159,9 @@ mod tests {
 
     /// 落点实体上 `PID_TAG` 属性的显示值。
     fn tag_label(app: &OpenCADStudio, handle: &str) -> Option<String> {
-        let handle = codec::Handle::new(u64::from_str_radix(handle, 16).unwrap());
+        let handle = document::Handle::new(u64::from_str_radix(handle, 16).unwrap());
         match app.tabs[app.active_tab].scene.document.get_entity(handle) {
-            Some(codec::EntityType::Insert(insert)) => insert
+            Some(document::EntityType::Insert(insert)) => insert
                 .attributes
                 .iter()
                 .find(|attribute| attribute.tag == PID_TAG_ATTRIBUTE)
@@ -1190,7 +1190,7 @@ mod tests {
 
         let document = &app.tabs[app.active_tab].scene.document;
         for entity in document.entities() {
-            let codec::EntityType::Insert(insert) = entity else {
+            let document::EntityType::Insert(insert) = entity else {
                 continue;
             };
             let attribute = &insert.attributes[0];
@@ -1205,7 +1205,7 @@ mod tests {
         let rendered: usize = document
             .entities()
             .filter_map(|entity| match entity {
-                codec::EntityType::Insert(insert) => Some(insert),
+                document::EntityType::Insert(insert) => Some(insert),
                 _ => None,
             })
             .map(|insert| {
@@ -1213,6 +1213,7 @@ mod tests {
                     document,
                     insert,
                     1.0,
+                    None,
                     crate::scene::BlockScalePolicy::FromInsert,
                 )
                 .len()
@@ -1223,7 +1224,7 @@ mod tests {
         // 聚焦截图按实体框取景时要把标签框进去，否则标签落在视图边缘外。
         let scene = &app.tabs[app.active_tab].scene;
         for (handle, _, at) in &placed {
-            let handle = codec::Handle::new(u64::from_str_radix(handle, 16).unwrap());
+            let handle = document::Handle::new(u64::from_str_radix(handle, 16).unwrap());
             let (lo, hi) = scene.insert_attribute_bounds(handle).expect("标签有包围盒");
             assert!(lo.x < at[0] && hi.x > at[0], "标签框水平跨过符号中线");
             assert!(lo.y > at[1] && hi.y < at[1] + 40.0, "标签框在符号上方");
@@ -1241,7 +1242,7 @@ mod tests {
         }
         let placed = inserts(&app);
         let (first, second) = (placed[0].0.clone(), placed[1].0.clone());
-        let handle = codec::Handle::new(u64::from_str_radix(&second, 16).unwrap());
+        let handle = document::Handle::new(u64::from_str_radix(&second, 16).unwrap());
         let mut author =
             PidAuthor::load(&app.tabs[app.active_tab].scene.document, handle).unwrap();
         author.tag = "P-1001".into();
@@ -1249,7 +1250,7 @@ mod tests {
         let data: Vec<serde_json::Value> = crate::pid::persist::encode(&author)
             .iter()
             .filter_map(|value| match value {
-                codec::xdata::XDataValue::String(text) => {
+                document::xdata::XDataValue::String(text) => {
                     Some(serde_json::json!({"code":1000,"value":text}))
                 }
                 _ => None,
@@ -1287,7 +1288,7 @@ mod tests {
         let (handle, _, _) = inserted.last().expect("至少插入过一个符号");
         PidAuthor::load(
             &app.tabs[app.active_tab].scene.document,
-            codec::Handle::new(u64::from_str_radix(handle, 16).unwrap()),
+            document::Handle::new(u64::from_str_radix(handle, 16).unwrap()),
         )
         .expect("落点实体必须带 PID_AUTHOR")
     }
@@ -1541,7 +1542,7 @@ mod tests {
         let rotations: Vec<f64> = document
             .entities()
             .filter_map(|entity| match entity {
-                codec::EntityType::Insert(insert) => Some(insert.rotation),
+                document::EntityType::Insert(insert) => Some(insert.rotation),
                 _ => None,
             })
             .collect();

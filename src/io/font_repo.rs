@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use codec::Document;
+use document::Document;
 
 /// The community folder's GitHub contents API (lists name + download URL).
 #[cfg(not(target_arch = "wasm32"))]
@@ -172,17 +172,20 @@ pub fn folder_shx_fonts() -> Vec<String> {
 pub fn local_font_file(name: &str) -> Option<PathBuf> {
     let file = name.rsplit(['/', '\\']).next()?;
     let lower = file.to_ascii_lowercase();
-    fonts_dir().into_iter().chain(support_folder()).find_map(|dir| {
-        let direct = dir.join(file);
-        if direct.is_file() {
-            return Some(direct);
-        }
-        std::fs::read_dir(&dir)
-            .ok()?
-            .filter_map(|entry| entry.ok())
-            .find(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase() == lower)
-            .map(|entry| entry.path())
-    })
+    fonts_dir()
+        .into_iter()
+        .chain(support_folder())
+        .find_map(|dir| {
+            let direct = dir.join(file);
+            if direct.is_file() {
+                return Some(direct);
+            }
+            std::fs::read_dir(&dir)
+                .ok()?
+                .filter_map(|entry| entry.ok())
+                .find(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase() == lower)
+                .map(|entry| entry.path())
+        })
 }
 
 /// List the community folder through the GitHub contents API.
@@ -367,7 +370,7 @@ mod tests {
         std::fs::write(dir.join("exists.shx"), b"stub").unwrap();
         let mut doc = Document::new();
         let mk = |name: &str, file: &str| {
-            let mut style = codec::TextStyle::new(name);
+            let mut style = document::TextStyle::new(name);
             style.font_file = file.into();
             style
         };

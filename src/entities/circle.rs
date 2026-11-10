@@ -1,5 +1,5 @@
 use crate::t;
-use codec::entities::Circle;
+use document::entities::Circle;
 
 use crate::command::EntityTransform;
 use crate::entities::common::{
@@ -135,11 +135,11 @@ fn to_render(circle: &Circle) -> RenderEntity {
 
 /// Zoom-aware render converter for EntityType::Circle.
 pub fn relative_render(
-    entity: &codec::EntityType,
-    _document: &codec::Document,
+    entity: &document::EntityType,
+    _document: &document::Document,
     wpp: Option<f32>,
 ) -> Option<RenderEntity> {
-    let codec::EntityType::Circle(circle) = entity else {
+    let document::EntityType::Circle(circle) = entity else {
         return None;
     };
     Some(to_render_with_wpp(circle, wpp))
@@ -175,9 +175,21 @@ fn properties(circle: &Circle) -> Vec<PropSection> {
             edit(t!("Diameter").as_ref(), "diameter", r * 2.0),
             edit(t!("Circumference").as_ref(), "circumference", 2.0 * PI * r),
             edit(t!("Area").as_ref(), "area", PI * r * r),
-            ro(t!("Normal X").as_ref(), "normal_x", format_decimal(circle.normal.x)),
-            ro(t!("Normal Y").as_ref(), "normal_y", format_decimal(circle.normal.y)),
-            ro(t!("Normal Z").as_ref(), "normal_z", format_decimal(circle.normal.z)),
+            ro(
+                t!("Normal X").as_ref(),
+                "normal_x",
+                format_decimal(circle.normal.x),
+            ),
+            ro(
+                t!("Normal Y").as_ref(),
+                "normal_y",
+                format_decimal(circle.normal.y),
+            ),
+            ro(
+                t!("Normal Z").as_ref(),
+                "normal_z",
+                format_decimal(circle.normal.z),
+            ),
         ],
     }]
 }
@@ -256,7 +268,7 @@ fn apply_transform(circle: &mut Circle, t: &EntityTransform) {
 }
 
 impl RenderConvertible for Circle {
-    fn to_render(&self, _document: &codec::Document) -> Option<RenderEntity> {
+    fn to_render(&self, _document: &document::Document) -> Option<RenderEntity> {
         Some(to_render(self))
     }
 }

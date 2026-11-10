@@ -13,7 +13,7 @@
 //! rebuild would only re-tessellate the centrelines that `ingest_batch` has
 //! already added as entities.
 
-use codec::{Document, Handle};
+use document::{Document, Handle};
 
 use crate::scene::model::mesh_model::MeshLodSet;
 use crate::scene::Scene;

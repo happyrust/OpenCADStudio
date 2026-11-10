@@ -251,7 +251,7 @@ impl Scene {
             .iter()
             .copied()
             .filter(|&handle| {
-                let Some(codec::EntityType::Insert(insert)) = self.document.get_entity(handle)
+                let Some(document::EntityType::Insert(insert)) = self.document.get_entity(handle)
                 else {
                     return false;
                 };
@@ -440,7 +440,7 @@ impl Scene {
             boundary_exterior: None,
             boundary_sources: None,
             boundary_paths: None,
-            style: codec::entities::HatchStyleType::Normal,
+            style: document::entities::HatchStyleType::Normal,
             pattern: HatchPattern::Solid,
             name: "AREA_PREVIEW".into(),
             color: [0.0; 4],
@@ -523,7 +523,7 @@ impl Scene {
         self.selection.borrow_mut().gesture.preview_box = None;
     }
 
-    pub fn wire_models_for(&self, handles: &[codec::Handle]) -> Vec<WireModel> {
+    pub fn wire_models_for(&self, handles: &[document::Handle]) -> Vec<WireModel> {
         let wires = handles
             .iter()
             .flat_map(|h| {
@@ -545,7 +545,7 @@ impl Scene {
     /// Current candidate geometry for a hot grip. Solid-history candidates
     /// live outside the document until placement; ordinary entities continue
     /// to use their current tessellation.
-    pub fn grip_wire_models_for(&self, handles: &[codec::Handle]) -> Vec<WireModel> {
+    pub fn grip_wire_models_for(&self, handles: &[document::Handle]) -> Vec<WireModel> {
         handles
             .iter()
             .flat_map(|handle| {
@@ -674,10 +674,7 @@ impl Scene {
         Self::matchprop_glow_with_layers(wires, [(8.0, 0.035), (5.0, 0.065), (2.5, 0.11)])
     }
 
-    fn matchprop_glow_with_layers(
-        wires: &[WireModel],
-        layers: [(f32, f32); 3],
-    ) -> Vec<WireModel> {
+    fn matchprop_glow_with_layers(wires: &[WireModel], layers: [(f32, f32); 3]) -> Vec<WireModel> {
         let mut glow = Vec::with_capacity(wires.len() * 3);
         for wire in wires {
             // Layer translucent, widened copies over the resident entity. Its
@@ -702,7 +699,7 @@ impl Scene {
     ) -> Option<(Vec<WireModel>, Vec<HatchModel>)> {
         let source_entity = self.document.get_entity(source)?.clone();
         let mut target_entity = self.document.get_entity(target)?.clone();
-        let opts = crate::entities::match_props::MatchOpts::current();
+        let opts = crate::entities::match_props::MatchOpts::for_document(&self.document);
         crate::entities::match_props::match_properties_kernel(
             &source_entity,
             &mut target_entity,
@@ -720,6 +717,15 @@ impl Scene {
             match crate::entities::hatch::background_color(source_hatch) {
                 Some(color) => crate::entities::hatch::set_background_color(target_hatch, &color),
                 None => crate::entities::hatch::clear_background_color(target_hatch),
+            }
+        }
+        // A centre line is rebuilt on its own sources, as the click does.
+        if let (true, EntityType::Line(line)) = (
+            opts.has(crate::entities::match_props::MatchOpts::CENTER),
+            &target_entity,
+        ) {
+            if let Some(rebuilt) = self.centerline_with_extensions_of(&source_entity, line) {
+                target_entity = EntityType::Line(rebuilt);
             }
         }
 
@@ -747,7 +753,7 @@ impl Scene {
     /// Entities need not be in the document — they are tessellated directly.
     /// Resolve cached block copies before consumers transform or count their
     /// points, just like the handle-based edit preview snapshots.
-    pub fn wires_for_entities(&self, entities: &[codec::EntityType]) -> Vec<WireModel> {
+    pub fn wires_for_entities(&self, entities: &[document::EntityType]) -> Vec<WireModel> {
         let wires = entities
             .iter()
             .flat_map(|e| self.tessellate_one(e))
@@ -766,7 +772,7 @@ impl Scene {
     /// expand through the block cache; invisible members (another visibility
     /// state) are left out, as on the canvas. Unknown / empty block → `vec![]`.
     pub(crate) fn block_preview_wires(&self, name: &str) -> Vec<WireModel> {
-        use codec::EntityType;
+        use document::EntityType;
         let Some(br) = self.document.block_records.get(name) else {
             return vec![];
         };
@@ -775,9 +781,7 @@ impl Scene {
             let Some(e) = self.document.get_entity(eh) else {
                 continue;
             };
-            if matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_))
-                || e.common().invisible
-            {
+            if matches!(e, EntityType::Block(_) | EntityType::BlockEnd(_)) || e.common().invisible {
                 continue;
             }
             out.extend(self.tessellate_one(e));
@@ -789,9 +793,9 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::entities::Line;
-    use codec::types::Vector3;
-    use codec::EntityType;
+    use document::entities::Line;
+    use document::types::Vector3;
+    use document::EntityType;
 
     #[test]
     fn block_preview_wires_tessellates_block_entities() {
@@ -823,15 +827,14 @@ const INDICATOR_BAND: [f32; 4] = [173.0 / 255.0, 173.0 / 255.0, 173.0 / 255.0, 1
 const INDICATOR_PICKED: [f32; 4] = [1.0, 213.0 / 255.0, 141.0 / 255.0, 1.0];
 const INDICATOR_SELECTED: [f32; 4] = [117.0 / 255.0, 147.0 / 255.0, 208.0 / 255.0, 1.0];
 const INDICATOR_TEXT: [f32; 4] = [0.04, 0.04, 0.04, 1.0];
+/// The cells a fill drag reaches: the picked colour, see-through.
+const INDICATOR_FILL_SPAN: [f32; 4] = [1.0, 213.0 / 255.0, 141.0 / 255.0, 0.35];
 const INDICATOR_EDGE: [f32; 4] = [235.0 / 255.0, 235.0 / 255.0, 235.0 / 255.0, 1.0];
 
 impl Scene {
     /// Row and column labels round every selected table, and the picked
     /// range's outline in the table whose cells are picked. Screen only.
-    pub(super) fn table_indicator_overlay(
-        &self,
-        pixel: f64,
-    ) -> (Vec<WireModel>, Vec<HatchModel>) {
+    pub(super) fn table_indicator_overlay(&self, pixel: f64) -> (Vec<WireModel>, Vec<HatchModel>) {
         let mut wires = Vec::new();
         let mut hatches = Vec::new();
         let picked = self.table_cells_handle();
@@ -839,7 +842,11 @@ impl Scene {
             let Some(EntityType::Table(table)) = self.document.get_entity(handle) else {
                 continue;
             };
-            if self.entity_temporarily_hidden(handle) {
+            // A fill drag hides the table behind its grip preview; the
+            // range it reaches is the cue, so it stays drawn.
+            let fill_drag =
+                self.table_fill_drag == Some(handle) && self.preview_hidden.contains(&handle);
+            if self.entity_temporarily_hidden(handle) && !fill_drag {
                 continue;
             }
             let range = (picked == Some(handle))
@@ -870,11 +877,22 @@ impl Scene {
                 edges.push(a.to_array());
                 edges.push(b.to_array());
             }
-            let edge_color = if cell_mode { INDICATOR_EDGE } else { self.selection_color };
+            let edge_color = if cell_mode {
+                INDICATOR_EDGE
+            } else {
+                self.selection_color
+            };
             let mut edge_wire = WireModel::solid(name.clone(), edges, edge_color, false);
             edge_wire.plot_visible = false;
             edge_wire.text_verts = Self::indicator_text(&indicator);
             wires.push(edge_wire);
+            if fill_drag {
+                for corners in &indicator.outlines {
+                    if let Some(model) = Self::indicator_box(corners, INDICATOR_FILL_SPAN) {
+                        hatches.push(model);
+                    }
+                }
+            }
             for corners in &indicator.outlines {
                 // A band inside each edge of the range: a quarter of the
                 // label text height wide, never thinner than 4 pixels.
@@ -895,6 +913,77 @@ impl Scene {
             }
         }
         (wires, hatches)
+    }
+
+    /// ANNOMONITOR 1: a yellow alert badge with an exclamation bar beside
+    /// the text of every dimension whose association no longer resolves
+    /// (measured: 17 x 11 px, 5 px right of the text, a quarter of the text
+    /// height above its middle; nothing at 0, -1 or -2). Screen size.
+    pub(super) fn anno_monitor_overlay(&self, pixel: f64) -> Vec<HatchModel> {
+        if crate::scene::annotative::anno_monitor() != 1 {
+            return Vec::new();
+        }
+        let block = self.content_render_block_handle();
+        let dimensions: Vec<Handle> = self
+            .document
+            .objects
+            .values()
+            .filter_map(|object| match object {
+                document::objects::ObjectType::Associative(object) => match &object.data {
+                    document::objects::AssociativeData::DimensionAssociation(association) => {
+                        Some(association.dimension)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let mut out = Vec::new();
+        for handle in dimensions {
+            let Some(entity) = self.document.get_entity(handle) else {
+                continue;
+            };
+            if entity.common().owner_handle != block || self.entity_temporarily_hidden(handle) {
+                continue;
+            }
+            let broken = self
+                .dimension_association_status(handle)
+                .iter()
+                .any(|(_, status)| !matches!(status, crate::scene::dimension_assoc::ReferenceStatus::Resolved));
+            if !broken {
+                continue;
+            }
+            let Some((middle, width, height)) = crate::entities::dimension::as_dimension(entity)
+                .and_then(|dim| crate::entities::dimension::text_box(dim, &self.document))
+            else {
+                continue;
+            };
+            let left = middle.x + width * 0.5 + 5.0 * pixel;
+            let centre = middle.y + 0.25 * height;
+            let rect = |x0: f64, y0: f64, x1: f64, y1: f64| {
+                let z = middle.z as f32;
+                [
+                    glam::Vec3::new(x0 as f32, y0 as f32, z),
+                    glam::Vec3::new(x1 as f32, y0 as f32, z),
+                    glam::Vec3::new(x1 as f32, y1 as f32, z),
+                    glam::Vec3::new(x0 as f32, y1 as f32, z),
+                ]
+            };
+            let badge = rect(left, centre - 5.5 * pixel, left + 17.0 * pixel, centre + 5.5 * pixel);
+            let bar = rect(
+                left + 7.0 * pixel,
+                centre - 2.5 * pixel,
+                left + 10.0 * pixel,
+                centre + 4.5 * pixel,
+            );
+            if let Some(model) = Self::indicator_box(&badge, [0.996, 0.851, 0.004, 1.0]) {
+                out.push(model);
+            }
+            if let Some(model) = Self::indicator_box(&bar, [0.08, 0.08, 0.08, 1.0]) {
+                out.push(model);
+            }
+        }
+        out
     }
 
     fn indicator_box(corners: &[glam::Vec3; 4], color: [f32; 4]) -> Option<HatchModel> {
@@ -956,5 +1045,57 @@ impl Scene {
             }
         }
         verts
+    }
+}
+
+#[cfg(test)]
+mod table_fill_cue_tests {
+    use super::*;
+
+    /// A fill drag hides the table behind its grip preview; the cells it
+    /// reaches stay drawn in the picked colour, with a see-through span.
+    #[test]
+    fn a_fill_drag_keeps_the_picked_range_drawn_over_the_grip_preview() {
+        let mut scene = Scene::new();
+        let table =
+            document::entities::Table::new(document::types::Vector3::new(0.0, 0.0, 0.0), 5, 4);
+        let handle = scene.add_entity(EntityType::Table(Box::new(table)));
+        scene.select_table_cells(crate::scene::TableCellSelection {
+            table: handle,
+            anchor: (2, 1),
+            end: (4, 1),
+        });
+        let span = |scene: &Scene| {
+            scene
+                .table_indicator_overlay(0.01)
+                .1
+                .iter()
+                .filter(|hatch| hatch.color == INDICATOR_FILL_SPAN)
+                .count()
+        };
+        let picked = |scene: &Scene| {
+            scene
+                .table_indicator_overlay(0.01)
+                .1
+                .iter()
+                .filter(|hatch| hatch.color == INDICATOR_PICKED)
+                .count()
+        };
+        assert!(picked(&scene) > 0, "picked cells show their range");
+        assert_eq!(span(&scene), 0, "no span outside a fill drag");
+
+        scene.preview_hidden.insert(handle);
+        assert_eq!(picked(&scene), 0, "a hidden table draws no range");
+
+        scene.table_fill_drag = Some(handle);
+        assert!(picked(&scene) > 0, "the fill drag keeps the range drawn");
+        assert_eq!(span(&scene), 1, "and lays a see-through span over it");
+
+        scene.preview_hidden.remove(&handle);
+        assert_eq!(
+            span(&scene),
+            0,
+            "a stale drag mark adds nothing once the drag ends"
+        );
     }
 }

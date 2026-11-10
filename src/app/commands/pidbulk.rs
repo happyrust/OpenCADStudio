@@ -152,16 +152,16 @@ fn point_or(req: &Value, key: &str, default: [f64; 3]) -> Result<DVec3, Value> {
 #[cfg(not(target_arch = "wasm32"))]
 fn add_placements(
     scene: &mut crate::scene::Scene,
-    entities: Vec<codec::EntityType>,
-) -> Vec<codec::Handle> {
+    entities: Vec<document::EntityType>,
+) -> Vec<document::Handle> {
     scene.add_entities(entities)
 }
 
 #[cfg(target_arch = "wasm32")]
 fn add_placements(
     scene: &mut crate::scene::Scene,
-    entities: Vec<codec::EntityType>,
-) -> Vec<codec::Handle> {
+    entities: Vec<document::EntityType>,
+) -> Vec<document::Handle> {
     entities
         .into_iter()
         .map(|entity| scene.add_entity(entity))
@@ -233,13 +233,13 @@ impl OpenCADStudio {
         let types = TypeLib::embedded();
         let mut sequence = TagSequencer::new(&types, &self.tabs[i].scene.document);
 
-        let entities: Vec<codec::EntityType> = points
+        let entities: Vec<document::EntityType> = points
             .iter()
             .map(|at| {
-                codec::EntityType::Insert(
-                    codec::entities::Insert::new(
+                document::EntityType::Insert(
+                    document::entities::Insert::new(
                         block.clone(),
-                        codec::types::Vector3::new(at.x, at.y, at.z),
+                        document::types::Vector3::new(at.x, at.y, at.z),
                     )
                     .with_uniform_scale(scale),
                 )
@@ -252,7 +252,7 @@ impl OpenCADStudio {
         let props = std::collections::BTreeMap::new();
         let mut created = 0usize;
         let mut tagged = 0usize;
-        let mut changed: Vec<(codec::Handle, ChangeKind)> = Vec::with_capacity(handles.len());
+        let mut changed: Vec<(document::Handle, ChangeKind)> = Vec::with_capacity(handles.len());
         {
             let document = &mut self.tabs[i].scene.document;
             for handle in handles.iter().copied() {
@@ -388,7 +388,7 @@ mod tests {
         let at: Vec<[f64; 2]> = document
             .entities()
             .filter_map(|entity| match entity {
-                codec::EntityType::Insert(insert) => {
+                document::EntityType::Insert(insert) => {
                     Some([insert.insert_point.x, insert.insert_point.y])
                 }
                 _ => None,
@@ -419,7 +419,7 @@ mod tests {
         let at: Vec<[f64; 2]> = document
             .entities()
             .filter_map(|entity| match entity {
-                codec::EntityType::Insert(insert) => {
+                document::EntityType::Insert(insert) => {
                     Some([insert.insert_point.x, insert.insert_point.y])
                 }
                 _ => None,

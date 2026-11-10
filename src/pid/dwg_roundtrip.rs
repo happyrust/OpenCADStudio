@@ -8,7 +8,7 @@
 //! 2. 保存前自建 [`Snapshot`]，读回后再抓一次，[`diff`] 出 [`LossItem`]；
 //! 3. 断言丢失数为 0，失败时打印逐项明细（handle / 键名 / 原值 / 读回值）。
 //!
-//! **`io::*` 与 `codec::Format` 的 `losses` 恒为空，不能当零丢失证据。**
+//! **`io::*` 与 `document::Format` 的 `losses` 恒为空，不能当零丢失证据。**
 //! `codec` 的 `Dwg::write` / `Dwg::read` 一律 `Ok((.., Vec::new()))`，那个
 //! 字段只说明「转换器没报诊断」，不说明「数据没丢」。真正的判据是本文的
 //! 逐项比对。
@@ -42,8 +42,8 @@
 // 供后续 P&ID feature（属性下传、拓扑校验）复用，而不是压成测试私有。
 #![allow(dead_code)]
 
-use codec::types::Vector3;
-use codec::{Document, DxfVersion, EntityType, Handle};
+use document::types::Vector3;
+use document::{Document, DxfVersion, EntityType, Handle};
 
 use crate::pid::graph_data::{
     PID_AUTHOR_CONNECTORS, PID_AUTHOR_TAG_RULES, PID_AUTHOR_TOPOLOGY, PID_AUTHOR_TYPE_LIB,
@@ -77,8 +77,8 @@ const GRAPH_KEYS: [&str; 4] = [
 ///
 /// 判定**按类型名**，不按组码数字猜：`Real` 是 1040、`Distance` 是 1041、
 /// `ScaleFactor` 是 1042，组码写错就会漏判。
-fn transform_sensitive_name(value: &codec::xdata::XDataValue) -> Option<&'static str> {
-    use codec::xdata::XDataValue;
+fn transform_sensitive_name(value: &document::xdata::XDataValue) -> Option<&'static str> {
+    use document::xdata::XDataValue;
     match value {
         XDataValue::Position3D(_) => Some("Position3D(1011)"),
         XDataValue::Displacement3D(_) => Some("Displacement3D(1012)"),
@@ -182,8 +182,8 @@ struct Snapshot {
 /// 一条 XRecord 条目的规范化文本：`<组码>:<类型>:<值>`。
 ///
 /// 用文本而不是 `PartialEq` 直接比，是为了让失败明细能原样打印出差异。
-fn entry_repr(entry: &codec::objects::XRecordEntry) -> String {
-    use codec::objects::XRecordValue;
+fn entry_repr(entry: &document::objects::XRecordEntry) -> String {
+    use document::objects::XRecordValue;
     match &entry.value {
         XRecordValue::String(text) => format!("{}:s:{text}", entry.code),
         XRecordValue::Double(value) => format!("{}:d:{:016X}", entry.code, value.to_bits()),
@@ -350,13 +350,13 @@ fn define_block(doc: &mut Document, name: &str, entities: Vec<EntityType>) {
     }
     let record_handle = doc.allocate_handle();
     let block_handle = doc.allocate_handle();
-    let mut record = codec::tables::BlockRecord::new(name);
+    let mut record = document::tables::BlockRecord::new(name);
     record.handle = record_handle;
     record.block_entity_handle = block_handle;
     if doc.block_records.add(record).is_err() {
         return;
     }
-    let mut block = codec::entities::Block::new(name, Vector3::ZERO);
+    let mut block = document::entities::Block::new(name, Vector3::ZERO);
     block.common.handle = block_handle;
     block.common.owner_handle = record_handle;
     let _ = doc.add_entity(EntityType::Block(block));
@@ -365,7 +365,7 @@ fn define_block(doc: &mut Document, name: &str, entities: Vec<EntityType>) {
         let _ = doc.add_entity(entity);
     }
     let end_handle = doc.allocate_handle();
-    let mut end = codec::entities::BlockEnd::new();
+    let mut end = document::entities::BlockEnd::new();
     end.common.handle = end_handle;
     end.common.owner_handle = record_handle;
     let _ = doc.add_entity(EntityType::BlockEnd(end));
@@ -376,7 +376,7 @@ fn define_block(doc: &mut Document, name: &str, entities: Vec<EntityType>) {
 
 /// 一个符号块的占位几何：一个圆，足够让块定义在 DWG 里有实体。
 fn symbol_geometry() -> Vec<EntityType> {
-    vec![EntityType::Circle(codec::entities::Circle::from_center_radius(
+    vec![EntityType::Circle(document::entities::Circle::from_center_radius(
         Vector3::ZERO,
         0.5,
     ))]
@@ -407,7 +407,7 @@ fn fixture() -> (Document, Vec<Handle>) {
     }
 
     let insert = |doc: &mut Document, block: &str, x: f64, y: f64| -> Handle {
-        doc.add_entity(EntityType::Insert(codec::entities::Insert::new(
+        doc.add_entity(EntityType::Insert(document::entities::Insert::new(
             block,
             Vector3::new(x, y, 0.0),
         )))

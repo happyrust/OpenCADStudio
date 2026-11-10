@@ -166,6 +166,13 @@ impl OpenCADStudio {
             .iter()
             // The reference's hidden system layers (`*ADSK_CONSTRAINTS`) stay out.
             .filter(|l| !l.name.starts_with('*'))
+            // With the option on, only the Layer manager's chosen node's
+            // layers, and always the current one (#2610 LM-25).
+            .filter(|l| {
+                !self.ribbon_layers_follow_filter
+                    || l.name.eq_ignore_ascii_case(&active)
+                    || self.tabs[i].layers.in_chosen_node(l)
+            })
             .map(|l| crate::ui::ribbon::LayerInfo {
                 stored_color: l.color,
                 name: l.name.clone(),
@@ -252,7 +259,7 @@ impl OpenCADStudio {
             .objects
             .values()
             .filter_map(|o| {
-                if let codec::objects::ObjectType::MultiLeaderStyle(mls) = o {
+                if let document::objects::ObjectType::MultiLeaderStyle(mls) = o {
                     Some(mls.name.clone())
                 } else {
                     None
@@ -272,7 +279,7 @@ impl OpenCADStudio {
             .objects
             .values()
             .filter_map(|o| {
-                if let codec::objects::ObjectType::TableStyle(ts) = o {
+                if let document::objects::ObjectType::TableStyle(ts) = o {
                     Some(ts.name.clone())
                 } else {
                     None
@@ -304,7 +311,7 @@ impl OpenCADStudio {
 /// The catalog linetypes the drawing lacks, offered after its own; a pick
 /// loads the one chosen (`ensure_catalog_linetype`).
 pub(super) fn catalog_linetype_items(
-    document: &codec::Document,
+    document: &document::Document,
 ) -> impl Iterator<Item = ui::properties::LinetypeItem> {
     crate::io::linetypes::catalog_missing_from(document)
         .into_iter()

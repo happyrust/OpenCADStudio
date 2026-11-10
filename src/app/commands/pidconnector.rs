@@ -119,10 +119,10 @@ struct LineHit {
 /// 判据是实体的 `PID_AUTHOR` 记录：`topology` 为 `pipe_line` 或
 /// `signal_line` 的 `Line` 实体。两者都不进 `pipe_segments`，所以不能靠
 /// 拓扑表反查。
-fn find_line_at(doc: &codec::Document, point: DVec3) -> Option<LineHit> {
+fn find_line_at(doc: &document::Document, point: DVec3) -> Option<LineHit> {
     let mut best: Option<(f64, LineHit)> = None;
     for entity in doc.entities() {
-        let codec::EntityType::Line(line) = entity else {
+        let document::EntityType::Line(line) = entity else {
             continue;
         };
         let handle = entity.common().handle;
@@ -232,12 +232,12 @@ impl OpenCADStudio {
         }
 
         self.push_undo_snapshot(i, "PIDCONNECTOR");
-        let mut circle = codec::entities::Circle::new();
-        circle.center = codec::types::Vector3::new(point.x, point.y, point.z);
+        let mut circle = document::entities::Circle::new();
+        circle.center = document::types::Vector3::new(point.x, point.y, point.z);
         circle.radius = CONNECTOR_RADIUS;
         let handle = self.tabs[i]
             .scene
-            .add_entity(codec::EntityType::Circle(circle));
+            .add_entity(document::EntityType::Circle(circle));
 
         // `type` 键是四者可区分性的唯一载体（`VAL-PIPE-023`）：管道两枚
         // 落 `PIPE_LINE`，信号线两枚落 `SIGNAL_LINE`；`topology` 只分流入/流出。
@@ -353,7 +353,7 @@ impl OpenCADStudio {
     pub(in crate::app) fn pair_connectors(
         &mut self,
         i: usize,
-        handle: codec::Handle,
+        handle: document::Handle,
         peer: &str,
     ) -> Result<(), (&'static str, String)> {
         let Some((peer_drawing, peer_handle)) = parse_peer(peer) else {
@@ -485,7 +485,7 @@ impl OpenCADStudio {
     }
 
     /// 给一个连接符实体写 `connector_peer` XDATA（只改该键）。
-    fn write_connector_peer(&mut self, i: usize, handle: codec::Handle, peer: &str) {
+    fn write_connector_peer(&mut self, i: usize, handle: document::Handle, peer: &str) {
         let Some(mut author) = PidAuthor::load(&self.tabs[i].scene.document, handle) else {
             return;
         };
@@ -562,7 +562,7 @@ impl OpenCADStudio {
     }
 
     /// `PIDPAIR`：事后配对两个已存在的连接符。
-    fn control_pid_pair(&mut self, i: usize, handle: codec::Handle, peer: &str) -> Option<String> {
+    fn control_pid_pair(&mut self, i: usize, handle: document::Handle, peer: &str) -> Option<String> {
         self.push_undo_snapshot(i, "PIDPAIR");
         match self.pair_connectors(i, handle, peer) {
             Ok(()) => Some(format!(
@@ -579,7 +579,7 @@ impl OpenCADStudio {
 
     /// `xdata_set` 写了连接符的 `connector_peer` 之后，把拓扑表与属性传递
     /// 一起对齐。非连接符实体一律跳过。
-    pub(in crate::app) fn sync_connectors_after_xdata(&mut self, i: usize, handles: &[codec::Handle]) {
+    pub(in crate::app) fn sync_connectors_after_xdata(&mut self, i: usize, handles: &[document::Handle]) {
         for &handle in handles {
             let Some(author) = PidAuthor::load(&self.tabs[i].scene.document, handle) else {
                 continue;
@@ -598,9 +598,9 @@ impl OpenCADStudio {
 }
 
 /// 按位号找本图里承载该位号的线体实体（管线或信号线）。
-fn line_entity_of_tag(doc: &codec::Document, tag: &str) -> Option<codec::Handle> {
+fn line_entity_of_tag(doc: &document::Document, tag: &str) -> Option<document::Handle> {
     doc.entities().find_map(|entity| {
-        let codec::EntityType::Line(_) = entity else {
+        let document::EntityType::Line(_) = entity else {
             return None;
         };
         let handle = entity.common().handle;
@@ -739,18 +739,18 @@ mod tests {
         app.tabs[app.active_tab].scene.document.entities().count()
     }
 
-    fn author_of(app: &OpenCADStudio, handle: codec::Handle) -> PidAuthor {
+    fn author_of(app: &OpenCADStudio, handle: document::Handle) -> PidAuthor {
         PidAuthor::load(&app.tabs[app.active_tab].scene.document, handle)
             .expect("带 PID_AUTHOR")
     }
 
     /// 按位号找本图线体实体。
-    fn line_of(app: &OpenCADStudio, tag: &str) -> codec::Handle {
+    fn line_of(app: &OpenCADStudio, tag: &str) -> document::Handle {
         line_entity_of_tag(&app.tabs[app.active_tab].scene.document, tag)
             .unwrap_or_else(|| panic!("文档里没有线体 {tag}"))
     }
 
-    fn put_props(app: &mut OpenCADStudio, handle: codec::Handle, pairs: &[(&str, &str)]) {
+    fn put_props(app: &mut OpenCADStudio, handle: document::Handle, pairs: &[(&str, &str)]) {
         let mut props = serde_json::Map::new();
         for (key, value) in pairs {
             props.insert((*key).to_string(), json!(value));
@@ -768,7 +768,7 @@ mod tests {
         assert_eq!(done["ok"], true, "写 props 应成功：{done}");
     }
 
-    fn props_of(app: &OpenCADStudio, handle: codec::Handle) -> std::collections::BTreeMap<String, String> {
+    fn props_of(app: &OpenCADStudio, handle: document::Handle) -> std::collections::BTreeMap<String, String> {
         crate::pid::propagate::props_of(&app.tabs[app.active_tab].scene.document, handle)
     }
 
@@ -792,7 +792,7 @@ mod tests {
             ("PIDCONNECTOR signal_in", [40.0, 100.0, 0.0], "connector_in", "SIGNAL_LINE"),
             ("PIDCONNECTOR signal_out", [80.0, 100.0, 0.0], "connector_out", "SIGNAL_LINE"),
         ];
-        let mut handles: Vec<codec::Handle> = Vec::new();
+        let mut handles: Vec<document::Handle> = Vec::new();
         for (cmd, point, role, type_code) in cases {
             let done = draw(&mut app, cmd, &[point]);
             assert_eq!(done["status"], "completed", "{cmd}: {done}");

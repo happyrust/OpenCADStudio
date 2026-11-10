@@ -36,8 +36,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use codec::xdata::XDataValue;
-use codec::{Document, Handle};
+use document::xdata::XDataValue;
+use document::{Document, Handle};
 
 use super::persist::{decode, encode, PidAuthor, PID_AUTHOR_APP};
 use super::tag_engine::{
@@ -486,8 +486,8 @@ pub fn apply(doc: &mut Document, batch: &PropagationBatch) {
 mod tests {
     use super::*;
     use crate::pid::persist::PidAuthor;
-    use codec::entities::Line;
-    use codec::types::Vector3;
+    use document::entities::Line;
+    use document::types::Vector3;
 
     const LINE: &str = "PIPE_LINE";
     const RUN: &str = "PIPE_RUN";
@@ -495,8 +495,8 @@ mod tests {
     const NOZZLE: &str = "NOZZLE";
     const EQUIPMENT: &str = "EQUIPMENT";
 
-    fn line(y: f64) -> codec::EntityType {
-        codec::EntityType::Line(Line::from_points(
+    fn line(y: f64) -> document::EntityType {
+        document::EntityType::Line(Line::from_points(
             Vector3::new(0.0, y, 0.0),
             Vector3::new(10.0, y, 0.0),
         ))
@@ -762,11 +762,13 @@ mod tests {
         let failure = crate::io::save_owned_as_version_atomic(
             doc.clone(),
             &target,
-            codec::DxfVersion::AC1032,
+            document::DxfVersion::AC1032,
             true,
             None,
             None,
             false,
+            false,
+            None,
         )
         .expect_err("duplicated tag must block the real save path");
         assert_eq!(
@@ -786,7 +788,7 @@ mod tests {
         );
 
         // (2) 字符串包装（`io::save` 的上游）：同样被拒，且错误串带错误码。
-        let message = crate::io::save_as_version(&doc, &target, codec::DxfVersion::AC1032)
+        let message = crate::io::save_as_version(&doc, &target, document::DxfVersion::AC1032)
             .expect_err("string save wrapper must refuse too");
         assert!(
             message.contains("TAG_DUPLICATED_BLOCKS_SAVE"),
@@ -796,7 +798,7 @@ mod tests {
         assert_eq!(std::fs::read(&backup).expect("bak readable"), backup_bytes);
 
         // (3) 字节缓冲包装（web 保存路径）同样被拒。
-        let bytes_error = crate::io::save_to_bytes(&doc, "dwg", codec::DxfVersion::AC1032)
+        let bytes_error = crate::io::save_to_bytes(&doc, "dwg", document::DxfVersion::AC1032)
             .expect_err("byte-buffer save wrapper must refuse too");
         assert!(
             bytes_error.contains("TAG_DUPLICATED_BLOCKS_SAVE"),
@@ -812,11 +814,13 @@ mod tests {
         crate::io::save_owned_as_version_atomic(
             doc.clone(),
             &target,
-            codec::DxfVersion::AC1032,
+            document::DxfVersion::AC1032,
             true,
             None,
             None,
             false,
+            false,
+            None,
         )
         .expect("cleared conflict saves through the same wrapper");
         assert!(target.exists(), "成功保存必须落目标文件");

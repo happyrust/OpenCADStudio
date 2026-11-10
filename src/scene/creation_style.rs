@@ -1,6 +1,6 @@
-use codec::objects::ObjectType;
-use codec::tables::{DimStyle, TextStyle};
-use codec::{Document, EntityType, Handle};
+use document::objects::ObjectType;
+use document::tables::{DimStyle, TextStyle};
+use document::{Document, EntityType, Handle};
 
 #[derive(Debug, Clone)]
 pub struct TextCreationDefaults {
@@ -374,8 +374,28 @@ pub fn apply_drawing_dimdli(doc: &Document, entity: &mut EntityType) {
         crate::entities::dim_override::set_on_entity(
             entity,
             crate::entities::dim_override::DIMDLI,
-            Some(codec::xdata::XDataValue::Real(drawing)),
+            Some(document::xdata::XDataValue::Real(drawing)),
         );
+    }
+}
+
+/// The command-line dimension variables of `overrides` go on a new dimension
+/// or leader as its overrides, while their style is still the current one.
+pub fn apply_dim_overrides(
+    doc: &Document,
+    overrides: Option<&(String, Vec<(i16, document::xdata::XDataValue)>)>,
+    entity: &mut EntityType,
+) {
+    let Some((style, values)) = overrides else {
+        return;
+    };
+    if !matches!(entity, EntityType::Dimension(_) | EntityType::Leader(_))
+        || !style.eq_ignore_ascii_case(&doc.header.current_dimstyle_name)
+    {
+        return;
+    }
+    for (code, value) in values {
+        crate::entities::dim_override::set_on_entity(entity, *code, Some(value.clone()));
     }
 }
 
@@ -393,8 +413,8 @@ pub(crate) fn transparency_options() -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn parse_current_transparency(value: &str) -> Option<codec::types::Transparency> {
-    use codec::types::Transparency;
+pub(crate) fn parse_current_transparency(value: &str) -> Option<document::types::Transparency> {
+    use document::types::Transparency;
     match value.trim().to_ascii_uppercase().as_str() {
         "BYLAYER" | "-1" => Some(Transparency::ByLayer),
         "BYBLOCK" | "-2" => Some(Transparency::ByBlock),
@@ -406,8 +426,8 @@ pub(crate) fn parse_current_transparency(value: &str) -> Option<codec::types::Tr
     }
 }
 
-pub(crate) fn current_transparency_label(value: codec::types::Transparency) -> String {
-    use codec::types::Transparency;
+pub(crate) fn current_transparency_label(value: document::types::Transparency) -> String {
+    use document::types::Transparency;
     match value {
         Transparency::ByLayer => "ByLayer".into(),
         Transparency::ByBlock => "ByBlock".into(),
@@ -418,7 +438,7 @@ pub(crate) fn current_transparency_label(value: codec::types::Transparency) -> S
 #[cfg(test)]
 mod transparency_tests {
     use super::*;
-    use codec::types::Transparency;
+    use document::types::Transparency;
 
     #[test]
     fn parses_supported_current_transparency_values() {

@@ -490,7 +490,7 @@ fn attach_template_provenance(
     template_name: &str,
     template_layer: Option<&str>,
 ) {
-    use codec::xdata::{ExtendedDataRecord, XDataValue};
+    use document::xdata::{ExtendedDataRecord, XDataValue};
     let mut record = ExtendedDataRecord::new(PID_SEMANTICS_XDATA_APP);
     record.add_value(XDataValue::String(format!("template={template_name}")));
     if let Some(layer) = template_layer {

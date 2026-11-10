@@ -53,6 +53,10 @@ pub enum DockMsg {
     /// Open (`Some`) the pallet menu of an edge's icon strip (its + button),
     /// or close it (`None`).
     EdgeMenu(Option<DockSide>),
+    /// Right-click on the icon strip: open its pallet menu at the pointer.
+    EdgeMenuAtPointer(DockSide),
+    /// The pointer moved over the icon strip, at this point in it.
+    StripPointer(iced::Point),
     /// Pallet menu pick: hide `panel` when it shows, else open it docked on
     /// the edge (as a new group unless it already has a group there).
     EdgeMenuToggle(DockSide, PanelId),
@@ -123,6 +127,8 @@ pub enum PanelId {
     PidCollab,
     /// Block Editor authoring tools.
     AuthoringPalettes,
+    /// Reusable block tools (TOOLPALETTES / TP).
+    ToolPalettes,
     /// The Block Editor's Parameters Manager.
     ParametersManager,
     ExternalReferences,
@@ -150,7 +156,7 @@ pub enum PanelId {
 
 impl PanelId {
     /// Every panel, in the order the pallet menu lists them.
-    pub const ALL: [PanelId; 19] = [
+    pub const ALL: [PanelId; 20] = [
         PanelId::Properties,
         PanelId::GraphicAttributes,
         PanelId::BlockPalette,
@@ -158,6 +164,7 @@ impl PanelId {
         PanelId::PidPalette,
         PanelId::PidBackup,
         PanelId::PidCollab,
+        PanelId::ToolPalettes,
         PanelId::AuthoringPalettes,
         PanelId::ParametersManager,
         PanelId::ExternalReferences,
@@ -182,6 +189,7 @@ impl PanelId {
             PanelId::PidPalette => "P&ID 符号",
             PanelId::PidBackup => "P&ID Backup",
             PanelId::PidCollab => "协同",
+            PanelId::ToolPalettes => "Tool Palettes",
             PanelId::AuthoringPalettes => "Authoring Palettes",
             PanelId::ParametersManager => "Parameters Manager",
             PanelId::ExternalReferences => "External References",
@@ -215,7 +223,8 @@ impl PanelId {
             // Two overlapping figures: "who else is on this drawing". No other
             // panel uses the people shape.
             PanelId::PidCollab => include_bytes!("../../assets/icons/ui/collab.svg"),
-            PanelId::AuthoringPalettes => include_bytes!("../../assets/icons/tool_palettes.svg"),
+            PanelId::ToolPalettes => include_bytes!("../../assets/icons/tool_palettes.svg"),
+            PanelId::AuthoringPalettes => crate::ui::icons::AUTHORING_PALETTES,
             PanelId::ParametersManager => include_bytes!("../../assets/icons/table.svg"),
             PanelId::ExternalReferences => crate::ui::icons::FOLDER_OPEN,
             PanelId::Browser => include_bytes!("../../assets/icons/content_browser.svg"),
@@ -241,6 +250,7 @@ impl PanelId {
             PanelId::PidPalette => 300.0,
             PanelId::PidBackup => 340.0,
             PanelId::PidCollab => 260.0,
+            PanelId::ToolPalettes => 260.0,
             PanelId::AuthoringPalettes => 260.0,
             PanelId::ParametersManager => 420.0,
             PanelId::ExternalReferences => 460.0,
@@ -1163,8 +1173,12 @@ pub const DOCK_FLOAT_BAR_W: f32 = 28.0;
 pub const DOCK_STRIP_W: f32 = 40.0;
 /// Height of one pallet icon in the strip.
 pub const STRIP_CELL_H: f32 = 32.0;
-/// Shortest pallet cell of a labelled strip.
-pub const STRIP_LABEL_MIN_H: f32 = 96.0;
+/// Size of a pallet icon in the strip.
+pub const RAIL_ICON: f32 = 20.0;
+/// Text size of a strip tab's name.
+pub const STRIP_LABEL_SIZE: f32 = 13.0;
+/// Space after a strip tab's name.
+const STRIP_LABEL_PAD: f32 = 12.0;
 /// Height of the + button below a strip's groups.
 pub const STRIP_PLUS_H: f32 = 28.0;
 /// Space above and below a group's icons, inside the group.
@@ -1181,7 +1195,7 @@ pub const STRIP_GRIP_W: f32 = 8.0;
 const STRIP_NEW_GROUP_SLOP: f32 = 4.0;
 
 /// Where one group sits in an edge's icon strip, top to bottom.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StripGroup {
     /// Group index on the edge.
     pub group: usize,
@@ -1189,16 +1203,19 @@ pub struct StripGroup {
     pub top: f32,
     /// Top of the group's first icon.
     pub icons_top: f32,
-    /// Number of icons (open pallets).
-    pub icons: usize,
-    /// Height of one pallet's cell.
-    pub cell_h: f32,
+    /// Height of each open pallet's tab, top to bottom.
+    pub cells: Vec<f32>,
 }
 
 impl StripGroup {
+    /// Top of the tab at `index` (the bottom of the last one past the end).
+    pub fn cell_top(&self, index: usize) -> f32 {
+        self.icons_top + self.cells.iter().take(index).sum::<f32>()
+    }
+
     /// Bottom of the group's last icon.
     pub fn icons_bottom(&self) -> f32 {
-        self.icons_top + self.icons as f32 * self.cell_h
+        self.cell_top(self.cells.len())
     }
 
     /// Bottom of the group's row (where its divider starts).
@@ -1207,26 +1224,54 @@ impl StripGroup {
     }
 }
 
-/// Lay out the icon strip for `groups` = (group index, open pallet count)
-/// with `cell_h` tall pallet cells, returning each group's place and the top
-/// of the + button below them.
-pub fn strip_layout(groups: &[(usize, usize)], cell_h: f32) -> (Vec<StripGroup>, f32) {
+/// Lay out the icon strip for `groups` = (group index, tab height of each
+/// open pallet), returning each group's place and the top of the + button
+/// below them.
+pub fn strip_layout(groups: &[(usize, Vec<f32>)]) -> (Vec<StripGroup>, f32) {
     let mut y = 0.0;
     let placed = groups
         .iter()
-        .map(|&(group, icons)| {
+        .map(|(group, cells)| {
             let g = StripGroup {
-                group,
+                group: *group,
                 top: y,
                 icons_top: y + STRIP_PAD,
-                icons,
-                cell_h,
+                cells: cells.clone(),
             };
             y = g.bottom() + STRIP_DIVIDER_H;
             g
         })
         .collect();
     (placed, y + STRIP_PLUS_GAP)
+}
+
+/// Where the + button goes for a natural top of `plus_top` on a strip
+/// `strip_h` tall: below the tabs, or pinned to the strip's end when the tabs
+/// overflow it. A strip not measured yet (`strip_h` 0) is left alone.
+pub fn strip_plus_top(plus_top: f32, strip_h: f32) -> f32 {
+    if strip_h <= 0.0 {
+        return plus_top;
+    }
+    plus_top.min((strip_h - STRIP_PLUS_H - STRIP_PLUS_GAP).max(STRIP_PLUS_GAP))
+}
+
+/// Top of a menu `menu_h` tall wanted at `y`, kept on a strip `strip_h` tall.
+pub fn strip_menu_top(y: f32, menu_h: f32, strip_h: f32) -> f32 {
+    if strip_h <= 0.0 {
+        return y;
+    }
+    y.min(strip_h - menu_h).max(0.0)
+}
+
+/// Length of a pallet's tab in the strip: the icon alone, or labelled, the
+/// icon followed by its name read upward, as long as the name is.
+pub fn strip_tab_h(title: &str, labelled: bool) -> f32 {
+    if !labelled {
+        return STRIP_CELL_H;
+    }
+    STRIP_CELL_H - 4.0
+        + crate::ui::style::text_metrics::width(title, STRIP_LABEL_SIZE, false).ceil()
+        + STRIP_LABEL_PAD
 }
 
 /// What a dragged pallet released at height `y` over the icon strip joins.
@@ -1247,7 +1292,14 @@ pub fn strip_hit(y: f32, layout: &[StripGroup]) -> StripHit {
             return StripHit::NewGroup(Some(g.group));
         }
         if y < g.icons_bottom() - STRIP_NEW_GROUP_SLOP {
-            let index = (((y - g.icons_top) / g.cell_h).round().max(0.0) as usize).min(g.icons);
+            // The tab boundary nearest the pointer.
+            let index = (0..=g.cells.len())
+                .min_by(|&a, &b| {
+                    (g.cell_top(a) - y)
+                        .abs()
+                        .total_cmp(&(g.cell_top(b) - y).abs())
+                })
+                .unwrap_or(0);
             return StripHit::Join {
                 group: g.group,
                 index,
@@ -1377,11 +1429,14 @@ pub fn detach_button<'a>(id: PanelId, tip: tooltip::Position) -> Element<'a, Mes
     .on_press(Message::Dock(DockMsg::Detach(id)))
     .style(button::subtle)
     .padding([3, 5]);
-    let detach =
-        container(detach).id(iced::widget::Id::new(crate::ui::modal::DETACH_BUTTON_ID));
-    tooltip(detach, text(crate::t!("Open in its own window")).size(10), tip)
-        .gap(4)
-        .into()
+    let detach = container(detach).id(iced::widget::Id::new(crate::ui::modal::DETACH_BUTTON_ID));
+    tooltip(
+        detach,
+        text(crate::t!("Open in its own window")).size(10),
+        tip,
+    )
+    .gap(4)
+    .into()
 }
 
 pub fn close_button<'a>(id: PanelId, tip: tooltip::Position) -> Element<'a, Message> {
@@ -1489,8 +1544,8 @@ impl iced::widget::canvas::Program<crate::app::Message> for VerticalLabel {
             frame.fill_text(iced::widget::canvas::Text {
                 content: self.text.clone(),
                 position: iced::Point::new(start, 0.0),
-                color: theme.palette().background.base.text.scale_alpha(0.72),
-                size: iced::Pixels(13.0),
+                color: crate::ui::style::readable::muted_text(theme),
+                size: iced::Pixels(STRIP_LABEL_SIZE),
                 align_x,
                 align_y: iced::alignment::Vertical::Center,
                 shaping: iced::advanced::text::Shaping::Advanced,
@@ -1809,11 +1864,25 @@ mod tests {
     }
 
     #[test]
+    fn plus_button_and_menu_stay_on_a_short_strip() {
+        // Tabs that fit: the + stays right below them.
+        assert_eq!(strip_plus_top(300.0, 800.0), 300.0);
+        // Tabs that overflow: the + is pinned inside the strip (#2718).
+        let pinned = strip_plus_top(1800.0, 800.0);
+        assert!(pinned + STRIP_PLUS_H <= 800.0, "{pinned}");
+        assert_eq!(strip_plus_top(1800.0, 0.0), 1800.0, "not measured yet");
+        assert_eq!(strip_menu_top(100.0, 300.0, 800.0), 100.0);
+        assert_eq!(strip_menu_top(700.0, 300.0, 800.0), 500.0);
+        assert_eq!(strip_menu_top(700.0, 900.0, 800.0), 0.0);
+    }
+
+    #[test]
     fn strip_hit_maps_dividers_icons_and_the_end() {
         // Two groups: three icons, then one.
-        let (layout, plus_top) = strip_layout(&[(0, 3), (2, 1)], STRIP_CELL_H);
-        let g0 = layout[0];
-        let g1 = layout[1];
+        let (layout, plus_top) =
+            strip_layout(&[(0, vec![STRIP_CELL_H; 3]), (2, vec![STRIP_CELL_H])]);
+        let g0 = layout[0].clone();
+        let g1 = layout[1].clone();
         assert_eq!(g0.icons_top, STRIP_PAD);
         assert_eq!(g1.top, g0.bottom() + STRIP_DIVIDER_H);
         assert_eq!(plus_top, g1.bottom() + STRIP_DIVIDER_H + STRIP_PLUS_GAP);
@@ -1951,7 +2020,7 @@ mod tests {
 
     #[test]
     fn the_backup_browser_is_a_panel_of_its_own() {
-        assert_eq!(PanelId::ALL.len(), 19);
+        assert_eq!(PanelId::ALL.len(), 20);
         assert!(PanelId::ALL.contains(&PanelId::PidBackup));
         assert!(PanelId::ALL.contains(&PanelId::PidCollab));
         // The persisted layout names the panel, so the id has to round trip.

@@ -4,9 +4,9 @@
 
 use super::*;
 use crate::ui::font_picker::{FontChoice, FontPickerEvent};
-use codec::entities::{AttributeDefinition, AttributeEntity, EntityType, Insert, MText, Text};
-use codec::tables::{BlockRecord, TextStyle};
-use codec::types::{Handle, Vector3};
+use document::entities::{AttributeDefinition, AttributeEntity, EntityType, Insert, MText, Text};
+use document::tables::{BlockRecord, TextStyle};
+use document::types::{Handle, Vector3};
 
 fn exact_style(name: &str) -> TextStyle {
     let mut style = TextStyle::new(name);
@@ -87,7 +87,10 @@ fn open_apply_switch_and_close_keep_the_style_exact() {
     assert_eq!(stored(&app, "Exact"), Some(expected));
     // Not only the style: nothing in the drawing changed.
     assert!(app.tabs[i].scene.document == before, "the drawing changed");
-    assert!(!app.tabs[i].dirty, "an untouched Apply must not dirty the tab");
+    assert!(
+        !app.tabs[i].dirty,
+        "an untouched Apply must not dirty the tab"
+    );
     assert_eq!(app.tabs[i].history.undo_stack.len(), depth);
 }
 
@@ -168,7 +171,10 @@ fn rename_start_keeps_the_typed_value() {
         field: "height",
         value: "5".to_string(),
     });
-    let _ = app.update(Message::StyleRenameStart(StyleKind::Text, "Exact".to_string()));
+    let _ = app.update(Message::StyleRenameStart(
+        StyleKind::Text,
+        "Exact".to_string(),
+    ));
     assert_eq!(app.textstyle_draft.height.text, "5.0000");
 }
 

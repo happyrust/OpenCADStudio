@@ -14,10 +14,10 @@
 
 use std::collections::HashMap;
 
-use codec::entities::{EntityType, Line, Point, Polyline3D, Vertex3DPolyline};
-use codec::types::{Matrix4, Transform, Vector3};
-use codec::xdata::{ExtendedDataRecord, XDataValue};
-use codec::Document;
+use document::entities::{EntityType, Line, Point, Polyline3D, Vertex3DPolyline};
+use document::types::{Matrix4, Transform, Vector3};
+use document::xdata::{ExtendedDataRecord, XDataValue};
+use document::Document;
 
 use crate::io::E3D_SEMANTICS_XDATA_APP;
 use crate::scene::model::mesh_model::{MeshLodSet, MeshModel};
@@ -57,7 +57,7 @@ pub struct E3dIngestIndex {
 }
 
 /// Codec handle newtype alias kept local so this file reads as scene handles.
-type HandleKey = codec::Handle;
+type HandleKey = document::Handle;
 
 /// Counts from one full ingest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,11 +152,11 @@ fn ensure_dashed_linetype(document: &mut Document) {
     if document.line_types.contains(E3D_DASH_LINETYPE) {
         return;
     }
-    let mut linetype = codec::tables::LineType::new(E3D_DASH_LINETYPE);
+    let mut linetype = document::tables::LineType::new(E3D_DASH_LINETYPE);
     linetype.handle = document.allocate_handle();
     linetype.description = "E3D invalid tube (dashed diagnostic)".to_string();
-    linetype.add_element(codec::tables::LineTypeElement::dash(DASH_MM));
-    linetype.add_element(codec::tables::LineTypeElement::space(GAP_MM));
+    linetype.add_element(document::tables::LineTypeElement::dash(DASH_MM));
+    linetype.add_element(document::tables::LineTypeElement::space(GAP_MM));
     linetype.pattern_length = DASH_MM + GAP_MM;
     let _ = document.line_types.add(linetype);
 }
@@ -514,7 +514,7 @@ mod tests {
             None,
             None,
             None,
-            false,
+            None,
             &rustc_hash::FxHashSet::default(),
         );
         wires.iter().map(|wire| wire.pattern_length).sum()

@@ -41,9 +41,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use codec::objects::{XRecordEntry, XRecordValue};
-use codec::xdata::XDataValue;
-use codec::{Document, EntityType, Handle};
+use document::objects::{XRecordEntry, XRecordValue};
+use document::xdata::XDataValue;
+use document::{Document, EntityType, Handle};
 
 /// Synthetic CAD layer holding entities from hidden Smart P&ID sheet layers.
 /// Shared across native `.pid` import and the cross-platform `pid_view_filter`.
@@ -429,7 +429,7 @@ fn remove_xrecord(doc: &mut Document, owner: Handle) {
     let Some(dictionary_handle) = doc.extension_dictionary_handle(owner) else {
         return;
     };
-    let Some(codec::objects::ObjectType::Dictionary(dictionary)) =
+    let Some(document::objects::ObjectType::Dictionary(dictionary)) =
         doc.objects.get_mut(&dictionary_handle)
     else {
         return;
@@ -448,9 +448,9 @@ fn remove_xrecord(doc: &mut Document, owner: Handle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::entities::Line;
-    use codec::types::Vector3;
-    use codec::xdata::ExtendedDataRecord;
+    use document::entities::Line;
+    use document::types::Vector3;
+    use document::xdata::ExtendedDataRecord;
 
     #[test]
     fn hidden_sheet_layer_names_are_trimmed_case_folded_and_space_insensitive() {
@@ -659,7 +659,7 @@ mod tests {
             line_with(&["sheet_layer=HiddenObjects", "role=geometry"]),
             line_with(&["role=frame"]),
         ]);
-        let mut hidden = codec::tables::layer::Layer::new(LAYER_HIDDEN);
+        let mut hidden = document::tables::layer::Layer::new(LAYER_HIDDEN);
         hidden.flags.off = true;
         doc.layers
             .add(hidden)

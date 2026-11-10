@@ -132,7 +132,7 @@ pub fn hatch(
         boundary_exterior: None,
         boundary_sources: None,
         boundary_paths: None,
-        style: codec::entities::HatchStyleType::Normal,
+        style: document::entities::HatchStyleType::Normal,
         pattern,
         name: name.into(),
         color,

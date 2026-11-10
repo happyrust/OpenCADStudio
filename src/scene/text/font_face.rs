@@ -104,17 +104,16 @@ impl Face {
         // LFF substitutes only cover names we can't load.
         if font_name.to_ascii_lowercase().ends_with(".shx")
             && std::path::Path::new(font_name).is_file()
+            && shx::font_metrics(font_name).is_some()
         {
-            if shx::font_metrics(font_name).is_some() {
-                let word = shx::font_glyph(font_name, ' ' as u16)
-                    .map(|g| g.advance)
-                    .filter(|a| *a > 0.0)
-                    .unwrap_or(4.5);
-                return Face::Shx {
-                    path: font_name.to_string(),
-                    word,
-                };
-            }
+            let word = shx::font_glyph(font_name, ' ' as u16)
+                .map(|g| g.advance)
+                .filter(|a| *a > 0.0)
+                .unwrap_or(4.5);
+            return Face::Shx {
+                path: font_name.to_string(),
+                word,
+            };
         }
         let is_builtin = lff::is_builtin(font_name);
         // A missing `.shx` file draws with a stroke substitute, never with a
@@ -197,10 +196,12 @@ impl Face {
                 Some(_) => ttf_glyph::glyph_source(family, ch),
                 None => ttf_glyph::fallback_source(ch),
             },
-            Face::Shx { path, .. } => match shx::font_glyph(path, ch as u16).or_else(|| shx_missing_glyph(path, ch)) {
-                Some(_) => None,
-                None => ttf_glyph::fallback_source(ch),
-            },
+            Face::Shx { path, .. } => {
+                match shx::font_glyph(path, ch as u16).or_else(|| shx_missing_glyph(path, ch)) {
+                    Some(_) => None,
+                    None => ttf_glyph::fallback_source(ch),
+                }
+            }
             Face::WithBig { primary, big } => {
                 if ttf_glyph::is_full_width(ch) && shx::bigfont_glyph(big, ch).is_some() {
                     return None;

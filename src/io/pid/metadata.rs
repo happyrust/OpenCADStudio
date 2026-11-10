@@ -33,7 +33,7 @@ pub(super) fn attach_pid_metadata(
     style: Option<&str>,
     measures: Option<&PlacementMeasures>,
 ) {
-    use codec::xdata::{ExtendedDataRecord, XDataValue};
+    use document::xdata::{ExtendedDataRecord, XDataValue};
 
     fn push_pair(record: &mut ExtendedDataRecord, key: &str, value: &str) {
         if !value.is_empty() {

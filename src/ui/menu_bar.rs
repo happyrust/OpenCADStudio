@@ -229,7 +229,7 @@ const MENUS: &[(&str, &[Entry])] = &[
     (
         "Format",
         &[
-            Cmd("Layer...", "LAYER", ""),
+            Cmd("Layer...", "LAYERS", ""),
             Cmd("Layer States Manager...", "LAYERSTATE", ""),
             Cmd("Layer Walk...", "LAYWALK", ""),
             Sub(
@@ -282,11 +282,9 @@ const MENUS: &[(&str, &[Entry])] = &[
             Sub(
                 "Workspaces",
                 &[
-                    Cmd("2D Drafting", "WSCURRENT 2D", ""),
-                    Cmd("3D Modeling", "WSCURRENT 3D", ""),
+                    Cmd("Ribbon", "WSCURRENT RIBBON", ""),
+                    Cmd("Classic", "WSCURRENT CLASSIC", ""),
                     Sep,
-                    Cmd("Save Current As...", "WSSAVE", ""),
-                    Cmd("Workspace Settings...", "WSSETTINGS", ""),
                     Cmd("Customize...", "CUI", ""),
                 ],
             ),
@@ -294,7 +292,7 @@ const MENUS: &[(&str, &[Entry])] = &[
                 "Palettes",
                 &[
                     Cmd("Properties", "PROPERTIES", "Ctrl+1"),
-                    Cmd("Layers", "LAYER", ""),
+                    Cmd("Layers", "LAYERS", ""),
                     Cmd("Design Center", "ADCENTER", "Ctrl+2"),
                     Cmd("Tool Palettes", "TOOLPALETTES", "Ctrl+3"),
                     Cmd("Sheet Set Manager", "SHEETSET", "Ctrl+4"),
@@ -308,7 +306,14 @@ const MENUS: &[(&str, &[Entry])] = &[
             Cmd("Clean Screen", "CLEANSCREEN", "Ctrl+0"),
             Sep,
             Cmd("Spelling", "SPELL", ""),
+            Sep,
+            // Selection (#2611 mockup, Menus): saved filters are in FILTER's
+            // list and the drawing's right-click menu.
             Cmd("Quick Select...", "QSELECT", ""),
+            Cmd("Filter...", "FILTER", ""),
+            Cmd("Select Similar", "SELECTSIMILAR", ""),
+            Cmd("Select All", "SELECTALL", "Ctrl+A"),
+            Sep,
             Sub(
                 "Draw Order",
                 &[
@@ -656,6 +661,7 @@ const MENUS: &[(&str, &[Entry])] = &[
             Cmd("Keyboard Shortcuts", "SHORTCUTS", ""),
             Cmd("Send Feedback", "FEEDBACK", ""),
             Sep,
+            Cmd("Check for Updates...", "CHECKFORUPDATES", ""),
             Cmd("About Open CAD Studio", "ABOUT", ""),
         ],
     ),
@@ -779,7 +785,13 @@ pub fn keyboard_menu(
     let menus = menu_rows(aliases);
     let rows = menus.get(index)?;
     fn item(row: &Row) -> Option<crate::ui::popup::context_menu::MenuItem> {
-        let Row::Cmd { icon, label, tail, on_press } = row else {
+        let Row::Cmd {
+            icon,
+            label,
+            tail,
+            on_press,
+        } = row
+        else {
             return None;
         };
         let line = match on_press.as_deref() {

@@ -4,7 +4,7 @@
 fn main() {
     for path in std::env::args().skip(1) {
         let started = std::time::Instant::now();
-        let doc = codec::io::dwg::DwgReader::from_file(&path)
+        let doc = document::io::dwg::DwgReader::from_file(&path)
             .unwrap()
             .read()
             .unwrap();
@@ -13,7 +13,7 @@ fn main() {
             started.elapsed().as_secs_f64() * 1000.0
         );
         for e in doc.entities() {
-            if let codec::EntityType::Table(t) = e {
+            if let document::EntityType::Table(t) = e {
                 let cells: usize = t.rows.iter().map(|r| r.cells.len()).sum();
                 println!(
                     "  TABLE {:#X} rows={} columns={} cells={}",

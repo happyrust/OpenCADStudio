@@ -1,5 +1,5 @@
 use crate::t;
-use codec::{EntityType, Handle, Transparency};
+use document::{EntityType, Handle, Transparency};
 
 use crate::scene::model::object::{PropSection, PropValue, Property};
 
@@ -34,7 +34,7 @@ pub fn general_section(entity: &EntityType) -> PropSection {
         .map(|link| link.label())
         .unwrap_or_default();
 
-    let section = PropSection {
+    PropSection {
         title: t!("General").into_owned(),
         props: vec![
             Property {
@@ -90,9 +90,7 @@ pub fn general_section(entity: &EntityType) -> PropSection {
                 value: PropValue::Hyperlink(hyperlink),
             },
         ],
-    };
-
-    section
+    }
 }
 
 /// The "P&ID" group: identity a `.pid` import or P&ID legend recognition
@@ -118,7 +116,7 @@ pub fn pid_semantics_section(entity: &EntityType) -> Option<PropSection> {
     let mut sheet_layer = None;
     let mut sheet_layer_oid = None;
     for value in &record.values {
-        let codec::xdata::XDataValue::String(text) = value else {
+        let document::xdata::XDataValue::String(text) = value else {
             continue;
         };
         let Some((key, val)) = text.split_once('=') else {
@@ -325,7 +323,7 @@ pub fn visualization_section(entity: &EntityType) -> Option<PropSection> {
     ) || matches!(
         entity,
         EntityType::Extended(extended)
-            if matches!(extended.data, codec::entities::ExtendedEntityData::PointCloudEx(_))
+            if matches!(extended.data, document::entities::ExtendedEntityData::PointCloudEx(_))
     ) {
         return None;
     }
@@ -373,8 +371,8 @@ pub fn fallback_properties(_handle: Handle, entity: &EntityType) -> PropSection 
 #[cfg(test)]
 mod pid_semantics_tests {
     use super::*;
-    use codec::entities::Line;
-    use codec::xdata::{ExtendedDataRecord, XDataValue};
+    use document::entities::Line;
+    use document::xdata::{ExtendedDataRecord, XDataValue};
 
     fn entity(values: &[&str]) -> EntityType {
         let mut entity = EntityType::Line(Line::new());

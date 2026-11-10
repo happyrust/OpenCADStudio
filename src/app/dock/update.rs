@@ -144,7 +144,15 @@ impl OpenCADStudio {
                     self.save_config();
                 }
             }
-            DockMsg::EdgeMenu(side) => self.dock_edge_menu = side,
+            DockMsg::EdgeMenu(side) => {
+                self.dock_edge_menu = side;
+                self.dock_edge_menu_y = None;
+            }
+            DockMsg::EdgeMenuAtPointer(side) => {
+                self.dock_edge_menu = Some(side);
+                self.dock_edge_menu_y = Some(self.dock_strip_pointer_y);
+            }
+            DockMsg::StripPointer(p) => self.dock_strip_pointer_y = p.y,
             DockMsg::StripLabels(on) => {
                 self.dock_edge_menu = None;
                 self.dock.strip_labels = on;
@@ -593,12 +601,19 @@ impl OpenCADStudio {
                     }
                     PanelId::ParametersManager => {
                         self.show_parameters_manager = true;
-                        self.dock_open_at_default(id);
+                        self.dock_open_above_palettes(id);
                         self.save_config();
                     }
                     PanelId::AuthoringPalettes => {
                         self.show_authoring_palettes = true;
                         self.dock_open_at_default(id);
+                        self.save_config();
+                    }
+                    PanelId::ToolPalettes => {
+                        self.show_tool_palettes = true;
+                        self.refresh_tool_palettes();
+                        self.dock_open_at_default(id);
+                        self.ribbon.show_tool_palettes = !self.tabs[self.active_tab].is_start;
                         self.save_config();
                     }
                     PanelId::ExternalReferences => {
@@ -615,6 +630,7 @@ impl OpenCADStudio {
                     PanelId::Layers => {
                         self.sync_ribbon_layers();
                         self.show_layers = true;
+                        self.save_config();
                     }
                     // The walk session is the pallet's state, so opening from
                     // a collapsed tab starts a walk exactly like LAYWALK does.
@@ -637,6 +653,14 @@ impl OpenCADStudio {
                             }
                         }
                     }
+                }
+            }
+            if self.clean_screen {
+                match id {
+                    PanelId::ParametersManager => self.clean_screen_parameters_manager = true,
+                    PanelId::AuthoringPalettes => self.clean_screen_authoring_palettes = true,
+                    PanelId::ToolPalettes => self.clean_screen_tool_palettes = true,
+                    _ => {}
                 }
             }
             self.dock_reveal(id);
@@ -666,9 +690,18 @@ impl OpenCADStudio {
                 );
             }
             PanelId::AuthoringPalettes => {
+                self.clean_screen_authoring_palettes = false;
                 self.show_authoring_palettes = false;
             }
+            PanelId::ToolPalettes => {
+                self.clean_screen_tool_palettes = false;
+                self.show_tool_palettes = false;
+                self.tool_palettes.placing = None;
+                self.ribbon.show_tool_palettes = false;
+                self.save_config();
+            }
             PanelId::ParametersManager => {
+                self.clean_screen_parameters_manager = false;
                 // Closing the pane moves the click off an open cell, which is how
                 // every other route out of a cell applies what was typed. A cell
                 // left on another definition is not this pane's to apply, so it
@@ -687,7 +720,13 @@ impl OpenCADStudio {
                     let _ = self.commit_parameters_manager(false);
                 }
                 self.show_parameters_manager = false;
-                self.tabs[i].parameters_panel = Default::default();
+                // The column choice is the pane's own setting, not the
+                // transient state of this opening: it survives the close.
+                let columns = self.tabs[i].parameters_panel.columns;
+                self.tabs[i].parameters_panel = crate::ui::window::parameters_manager::Panel {
+                    columns,
+                    ..Default::default()
+                };
             }
             PanelId::ExternalReferences => self.show_external_references = false,
             PanelId::Browser => self.show_browser = false,
@@ -712,6 +751,7 @@ impl OpenCADStudio {
             PanelId::Layers => {
                 self.show_layers = false;
                 self.ribbon.deactivate_tool_if("LAYERS");
+                self.save_config();
             }
             PanelId::Laywalk => self.close_layer_walk(false),
             PanelId::QuickCalc => self.quick_calc.show = false,
@@ -748,9 +788,19 @@ impl OpenCADStudio {
     /// Show `id` where the layout has it, first docking it on the right edge
     /// when it has no place yet (opened for the first time, or never moved).
     pub(crate) fn dock_open_at_default(&mut self, id: crate::ui::dock::PanelId) {
+        self.dock_open_at(id, usize::MAX);
+    }
+
+    /// Dock `id` at the top of the right edge when it has no place yet, so it
+    /// lists above palettes docked later.
+    pub(crate) fn dock_open_above_palettes(&mut self, id: crate::ui::dock::PanelId) {
+        self.dock_open_at(id, 0);
+    }
+
+    fn dock_open_at(&mut self, id: crate::ui::dock::PanelId, index: usize) {
         if !self.dock.is_placed(id) {
             self.dock
-                .dock(id, crate::app::config::DockSide::Right, usize::MAX);
+                .dock(id, crate::app::config::DockSide::Right, index);
         }
         self.dock_reveal(id);
     }
@@ -772,6 +822,7 @@ impl OpenCADStudio {
         }
         self.dock.raise_float(PanelId::Layers);
         self.dock_reveal(PanelId::Layers);
+        self.save_config();
     }
 
     /// Stop revealing `id` (it closed).
@@ -789,8 +840,17 @@ impl OpenCADStudio {
         if self.tabs[self.active_tab].is_start {
             return false;
         }
-        if self.clean_screen && !(id == PanelId::Properties && self.clean_screen_properties) {
-            return false;
+        if self.clean_screen {
+            let reopened = match id {
+                PanelId::Properties => self.clean_screen_properties,
+                PanelId::ParametersManager => self.clean_screen_parameters_manager,
+                PanelId::AuthoringPalettes => self.clean_screen_authoring_palettes,
+                PanelId::ToolPalettes => self.clean_screen_tool_palettes,
+                _ => false,
+            };
+            if !reopened {
+                return false;
+            }
         }
         self.dock_panel_wanted(id)
     }
@@ -807,6 +867,7 @@ impl OpenCADStudio {
             PanelId::PidPalette => self.show_pid_palette,
             PanelId::PidBackup => self.show_pid_backup,
             PanelId::PidCollab => self.show_pid_collab,
+            PanelId::ToolPalettes => self.show_tool_palettes,
             PanelId::ParametersManager => {
                 self.show_parameters_manager
                     && self.tabs[self.active_tab]
@@ -831,15 +892,17 @@ impl OpenCADStudio {
             // comes back when the pick ends or is cancelled.
             PanelId::Laywalk => {
                 let tab = &self.tabs[self.active_tab];
-                tab.layer_walk.is_some()
-                    && !(tab.layer_walk_picking && tab.active_cmd.is_some())
+                tab.layer_walk.is_some() && !(tab.layer_walk_picking && tab.active_cmd.is_some())
             }
             PanelId::QuickCalc => self.quick_calc.show,
             PanelId::CommandHistory => self.show_command_history,
             PanelId::GraphicAttributes => self.show_graphic_attributes,
             PanelId::Plugin(num) => {
                 if let Some(panel_id) = self.plugin_panel_by_num.get(&num) {
-                    self.plugin_panels.get(panel_id).map(|p| p.visible).unwrap_or(false)
+                    self.plugin_panels
+                        .get(panel_id)
+                        .map(|p| p.visible)
+                        .unwrap_or(false)
                 } else {
                     false
                 }
@@ -889,19 +952,20 @@ impl OpenCADStudio {
             .collect()
     }
 
-    /// The group `side` draws: the one it shows, or the first with an open
-    /// pallet when that one has none.
-    /// Whether open pallet `id` is drawn: floating, or in the shown group of
-    /// an expanded edge.
+    /// Whether open pallet `id` is drawn: in a window of its own, floating
+    /// unless it collapsed itself, or in the shown group of an expanded edge.
     pub(crate) fn dock_panel_on_screen(&self, id: crate::ui::dock::PanelId) -> bool {
         match self.dock.location(id) {
             Some((side, group)) => {
                 self.dock_shown_group(side) == Some(group) && self.dock_edge_expanded(side)
             }
-            None => true,
+            None if self.dock.is_separate(id) => true,
+            None => !self.dock.auto_collapse(id) || self.dock_peek == Some(id),
         }
     }
 
+    /// The group `side` draws: the one it shows, or the first with an open
+    /// pallet when that one has none.
     pub(crate) fn dock_shown_group(&self, side: crate::app::config::DockSide) -> Option<usize> {
         let visible = self.dock_visible_groups(side);
         let shown = self.dock.shown(side);
@@ -944,29 +1008,24 @@ impl OpenCADStudio {
         &self,
         side: crate::app::config::DockSide,
     ) -> (Vec<crate::ui::dock::StripGroup>, f32) {
-        let groups: Vec<(usize, usize)> = self
+        let labelled = self.dock.strip_labels;
+        let groups: Vec<(usize, Vec<f32>)> = self
             .dock_visible_groups(side)
             .into_iter()
-            .map(|gi| (gi, self.dock_group_visible(side, gi).len()))
+            .map(|gi| {
+                let cells = self
+                    .dock_group_visible(side, gi)
+                    .into_iter()
+                    .map(|id| crate::ui::dock::strip_tab_h(&crate::t!(id.title()), labelled))
+                    .collect();
+                (gi, cells)
+            })
             .collect();
-        crate::ui::dock::strip_layout(&groups, self.dock_strip_cell_h(&groups))
-    }
-
-    /// Height of a pallet cell in an icon strip holding `groups`: fixed for
-    /// icons only; labelled, the edge's height shared between the pallets.
-    fn dock_strip_cell_h(&self, groups: &[(usize, usize)]) -> f32 {
-        use crate::ui::dock::{
-            STRIP_CELL_H, STRIP_DIVIDER_H, STRIP_LABEL_MIN_H, STRIP_PAD, STRIP_PLUS_GAP, STRIP_PLUS_H,
-        };
-        if !self.dock.strip_labels {
-            return STRIP_CELL_H;
-        }
-        let pallets: usize = groups.iter().map(|&(_, icons)| icons).sum();
-        let fixed = groups.len() as f32 * (2.0 * STRIP_PAD + STRIP_DIVIDER_H)
-            + STRIP_PLUS_GAP
-            + STRIP_PLUS_H
-            + STRIP_PAD;
-        ((self.dock_workspace_size().1 - fixed) / pallets.max(1) as f32).max(STRIP_LABEL_MIN_H)
+        let (layout, plus_top) = crate::ui::dock::strip_layout(&groups);
+        (
+            layout,
+            crate::ui::dock::strip_plus_top(plus_top, self.dock_workspace_size().1),
+        )
     }
 
     /// The open pallets of `side`'s shown group, each as (position in the
@@ -1204,5 +1263,27 @@ impl OpenCADStudio {
             _ => bar,
         };
         crate::ui::dock::DropTarget::Float { x, y, bar }
+    }
+}
+
+#[cfg(test)]
+mod ui_state_tests {
+    use crate::app::{Message, OpenCADStudio};
+
+    /// #2616: the Layer Manager and the file tabs come back as they were left.
+    #[test]
+    fn layers_pallet_and_file_tabs_survive_a_restart() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        app.open_layers_pallet();
+        let _ = app.update(Message::ToggleFileTabs);
+        let saved = app.current_config();
+        assert!(saved.show_layers);
+        assert!(!saved.show_file_tabs);
+
+        let mut again = OpenCADStudio::new_for_test();
+        again.apply_config(saved);
+        assert!(again.show_layers);
+        assert!(!again.show_file_tabs);
     }
 }

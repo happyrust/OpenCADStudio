@@ -232,9 +232,9 @@ pub fn page_thumbs(path: &str) -> Vec<PageThumb> {
 }
 
 /// Thumbnails of a file's pages (PDF), sheets (DWF) or models (DGN).
-pub fn item_thumbs(kind: codec::entities::UnderlayType, path: &str) -> Vec<PageThumb> {
+pub fn item_thumbs(kind: document::entities::UnderlayType, path: &str) -> Vec<PageThumb> {
     use crate::scene::model::underlay_vector;
-    if kind == codec::entities::UnderlayType::Pdf {
+    if kind == document::entities::UnderlayType::Pdf {
         return page_thumbs(path);
     }
     underlay_vector::item_names(kind, path)
@@ -368,14 +368,11 @@ pub(crate) fn chip<'a>(label: String, on: bool, message: Message) -> Element<'a,
     // The tick is an SVG: the web build's font has no check-mark glyph.
     let mut content = row![].spacing(4).align_y(iced::Center);
     if on {
-        content = content.push(
-            iced::widget::svg(crate::ui::icons::themed_handle(crate::ui::icons::CHECK))
-                .width(11.0)
-                .height(11.0)
-                .style(|theme: &Theme, _| iced::widget::svg::Style {
-                    color: Some(theme.palette().primary.base.text),
-                }),
-        );
+        content = content.push(crate::ui::icons::tinted(
+            crate::ui::icons::CHECK,
+            11.0,
+            |theme: &Theme| theme.palette().primary.base.text,
+        ));
     }
     button(content.push(text(label).size(11)))
         .on_press(message)
@@ -506,7 +503,7 @@ fn page_tiles<'a>(
                             color: Some(if chosen {
                                 theme.palette().primary.base.color
                             } else {
-                                theme.palette().background.base.text.scale_alpha(0.68)
+                                crate::ui::style::readable::muted_text(theme)
                             }),
                         })
                 ]
@@ -565,7 +562,7 @@ pub static ATTACH_MEMORY: std::sync::Mutex<Option<AttachMemory>> = std::sync::Mu
 
 pub struct PdfAttachState {
     /// PDF pages, DWF sheets or DGN models.
-    pub kind: codec::entities::UnderlayType,
+    pub kind: document::entities::UnderlayType,
     /// DGN: sub units chosen (the scale then turns them into master units).
     pub sub_units: bool,
     /// DGN: sub units per master unit of the chosen model.
@@ -601,7 +598,7 @@ impl PdfAttachState {
             .unwrap_or_default();
         let names = existing.iter().map(|(name, _)| name.clone()).collect();
         Self {
-            kind: codec::entities::UnderlayType::Pdf,
+            kind: document::entities::UnderlayType::Pdf,
             sub_units: false,
             sub_per_master: 1.0,
             path: String::new(),
@@ -661,7 +658,7 @@ pub fn view_attach<'a>(
     .size(12)
     .padding([5, 8])
     .width(Fill);
-    use codec::entities::UnderlayType;
+    use document::entities::UnderlayType;
     let count_text = match state.kind {
         UnderlayType::Pdf => crate::tf!("{count} pages", count = state.pages.len()),
         UnderlayType::Dwf => crate::tf!("{count} sheets", count = state.pages.len()),
@@ -1046,7 +1043,7 @@ pub fn view_point_cloud_attach<'a>(
 #[derive(Clone)]
 pub struct LayerTarget {
     pub name: String,
-    pub handle: codec::Handle,
+    pub handle: document::Handle,
     pub layers: Vec<String>,
     pub hidden: Vec<String>,
 }
@@ -1296,7 +1293,9 @@ fn t2m_switch<'a>(
     row![
         switch,
         name,
-        text(hint).size(11).style(if enabled { muted_style } else { dim }),
+        text(hint)
+            .size(11)
+            .style(if enabled { muted_style } else { dim }),
     ]
     .spacing(8)
     .align_y(iced::Center)
@@ -1379,14 +1378,16 @@ pub fn view_txt2mtxt_settings<'a>(
                 Some(PdfDialogMsg::T2mCombine),
             ),
             column![
-                text(crate::tr!("txt2mtxt", "order")).size(11).style(muted_style),
+                text(crate::tr!("txt2mtxt", "order"))
+                    .size(11)
+                    .style(muted_style),
                 t2m_order(s.select_order, s.combine),
             ]
             .spacing(6)
             .padding(iced::Padding::ZERO.left(44)),
             text(crate::tr!("txt2mtxt", "combine-note"))
-            .size(11)
-            .style(muted_style),
+                .size(11)
+                .style(muted_style),
         ]
         .spacing(8),
     );
@@ -1397,7 +1398,8 @@ pub fn view_txt2mtxt_settings<'a>(
                 crate::tr!("txt2mtxt", "wrap"),
                 crate::tr!("txt2mtxt", "wrap-hint"),
                 s.word_wrap,
-                s.combine.then_some(PdfDialogMsg::T2mWrap as fn(bool) -> PdfDialogMsg),
+                s.combine
+                    .then_some(PdfDialogMsg::T2mWrap as fn(bool) -> PdfDialogMsg),
             ),
             t2m_switch(
                 crate::tr!("txt2mtxt", "uniform"),
@@ -1426,7 +1428,9 @@ pub fn view_txt2mtxt_settings<'a>(
     let preview = container(
         row![
             column![
-                text(crate::tr!("txt2mtxt", "selected")).size(11).style(muted_style),
+                text(crate::tr!("txt2mtxt", "selected"))
+                    .size(11)
+                    .style(muted_style),
                 t2m_sample(sample, false, 190.0)
             ]
             .spacing(4),
@@ -1502,8 +1506,14 @@ pub fn view_matchprop_settings<'a>(
         (M::LAYER, crate::tr!("matchprop-settings", "layer")),
         (M::LTYPE, crate::tr!("matchprop-settings", "linetype")),
         (M::LTSCALE, crate::tr!("matchprop-settings", "ltscale")),
-        (M::LINEWEIGHT, crate::tr!("matchprop-settings", "lineweight")),
-        (M::TRANSPARENCY, crate::tr!("matchprop-settings", "transparency")),
+        (
+            M::LINEWEIGHT,
+            crate::tr!("matchprop-settings", "lineweight"),
+        ),
+        (
+            M::TRANSPARENCY,
+            crate::tr!("matchprop-settings", "transparency"),
+        ),
         (M::THICKNESS, crate::tr!("matchprop-settings", "thickness")),
         (M::PLOTSTYLE, crate::tr!("matchprop-settings", "plotstyle")),
     ];
@@ -1521,9 +1531,15 @@ pub fn view_matchprop_settings<'a>(
             let name = if enabled { name } else { name.style(dim) };
             let mut shown = row![].spacing(6).align_y(iced::Center);
             if let (M::COLOR, Some([r, g, b])) = (bit, s.swatch) {
-                shown = shown.push(crate::ui::color_select::swatch(iced::Color::from_rgb8(r, g, b)));
+                shown = shown.push(crate::ui::color_select::swatch(iced::Color::from_rgb8(
+                    r, g, b,
+                )));
             }
-            shown = shown.push(text(value.as_str()).size(11).style(if enabled { muted_style } else { dim }));
+            shown = shown.push(text(value.as_str()).size(11).style(if enabled {
+                muted_style
+            } else {
+                dim
+            }));
             if !enabled {
                 shown = shown.push(
                     text(crate::tr!("matchprop-settings", "plotstyle-off"))
@@ -1577,9 +1593,13 @@ pub fn view_matchprop_settings<'a>(
     let mut chips = special.into_iter().peekable();
     while chips.peek().is_some() {
         let line = chips.by_ref().take(3).map(|(bit, label)| {
-            container(chip(label, s.mode & bit != 0, msg(PdfDialogMsg::MpToggle(bit))))
-                .width(Fill)
-                .into()
+            container(chip(
+                label,
+                s.mode & bit != 0,
+                msg(PdfDialogMsg::MpToggle(bit)),
+            ))
+            .width(Fill)
+            .into()
         });
         grid = grid.push(iced::widget::Row::with_children(line.collect::<Vec<_>>()).spacing(6));
     }
@@ -1837,7 +1857,7 @@ pub struct MapSlot {
 /// a chosen cloud, its intensity and elevation colouring.
 pub struct PointCloudColorMapState {
     /// The cloud edited; `None` edits the drawing's default schemes.
-    pub cloud: Option<codec::Handle>,
+    pub cloud: Option<document::Handle>,
     /// Elevation tab (else intensity).
     pub elevation_tab: bool,
     pub ramps: Vec<MapRamp>,
@@ -2088,16 +2108,10 @@ pub fn view_point_cloud_color_map<'a>(
         .on_press(msg(PdfDialogMsg::MapEven))
         .style(button_style(false))
         .padding([5, 6]);
-    let reverse = button(
-        iced::widget::svg(crate::ui::icons::themed_handle(include_bytes!(
-            "../../../assets/icons/modify_reverse.svg"
-        )))
-        .width(16.0)
-        .height(16.0),
-    )
-    .on_press(msg(PdfDialogMsg::MapReverse))
-    .style(button_style(false))
-    .padding([4, 6]);
+    let reverse = button(crate::ui::icons::tool(crate::ui::icons::SWAP, 16.0))
+        .on_press(msg(PdfDialogMsg::MapReverse))
+        .style(button_style(false))
+        .padding([4, 6]);
     let mut scheme_rows = column![
         row![scheme, small(t!("New"), PdfDialogMsg::MapNew)]
             .spacing(8)
@@ -3069,7 +3083,7 @@ fn adjust_card<'a>(state: &'a ViewBackgroundState) -> Element<'a, Message> {
 /// The Image Adjust dialog: brightness, contrast and fade (0–100) of the
 /// chosen raster images, with a before / after preview of the first.
 pub struct ImageAdjustState {
-    pub handles: Vec<codec::Handle>,
+    pub handles: Vec<document::Handle>,
     /// The first image's file name, shown over the preview.
     pub name: String,
     /// Brightness, contrast, fade.
@@ -3088,7 +3102,12 @@ pub struct ImageAdjustState {
 pub const IMAGE_ADJUST_DEFAULTS: [u8; 3] = [50, 50, 0];
 
 impl ImageAdjustState {
-    pub fn new(handles: Vec<codec::Handle>, path: &str, values: [u8; 3], canvas: [u8; 3]) -> Self {
+    pub fn new(
+        handles: Vec<document::Handle>,
+        path: &str,
+        values: [u8; 3],
+        canvas: [u8; 3],
+    ) -> Self {
         let name = std::path::Path::new(path.trim()).file_name().map_or_else(
             || path.trim().to_string(),
             |n| n.to_string_lossy().into_owned(),

@@ -45,10 +45,10 @@ impl OpenCADStudio {
             Some(K::RibbonCustomize) => crate::tr!("ribbon-customize", "window-title"),
             Some(K::BlockDefinition) => crate::t!("Block Definition").into_owned(),
             Some(K::PdfAttach) => match self.pdf_attach.as_ref().map(|s| s.kind) {
-                Some(codec::entities::UnderlayType::Dwf) => {
+                Some(document::entities::UnderlayType::Dwf) => {
                     crate::t!("Attach DWF Underlay").into_owned()
                 }
-                Some(codec::entities::UnderlayType::Dgn) => {
+                Some(document::entities::UnderlayType::Dgn) => {
                     crate::t!("Attach DGN Underlay").into_owned()
                 }
                 _ => crate::t!("Attach PDF Underlay").into_owned(),
@@ -85,6 +85,7 @@ impl OpenCADStudio {
             Some(K::TdsImport) => crate::tr!("import-3ds", "title"),
             Some(K::TdsMaterial) => crate::tr!("import-3ds-alert", "title"),
             Some(K::TdsMissingMap) => crate::tr!("import-3ds", "title"),
+            Some(K::HatchBoundaryWarning) => crate::tr!("hatch-warning", "title"),
             Some(K::ExtractionOutdated) => crate::tr!("extraction-outdated", "title"),
             Some(K::XrefAttach) => crate::t!("Attach External Reference").into_owned(),
             Some(K::WriteBlock) => crate::t!("Write Block").into_owned(),
@@ -111,7 +112,9 @@ impl OpenCADStudio {
             Some(K::InsertTable) => crate::t!("Insert Table").into_owned(),
             Some(K::DataLinkManager) => crate::t!("Data Link Manager").into_owned(),
             Some(K::DataExtraction) => crate::t!("Data Extraction Wizard").into_owned(),
-            Some(K::DataExtractionUnsaved) => crate::t!("Data Extraction - Unsaved Drawing").into_owned(),
+            Some(K::DataExtractionUnsaved) => {
+                crate::t!("Data Extraction - Unsaved Drawing").into_owned()
+            }
             Some(K::Plotstyle) => crate::tr!("modal", "plot-style-editor"),
             Some(K::TextStyle) => crate::tr!("modal", "text-style-manager"),
             Some(K::MlStyle) => crate::tr!("modal", "multiline-style-manager"),
@@ -130,9 +133,7 @@ impl OpenCADStudio {
             Some(K::SvgOverwrite) => t!("Replace existing files?").into_owned(),
             Some(K::LayerDeleteWarning) => crate::tr!("modal", "delete-layer"),
             Some(K::Unsaved) => crate::tr!("modal", "unsaved-changes"),
-            Some(K::BlockEditChanges) => {
-                crate::t!("Block - Save Parameter Changes?").into_owned()
-            }
+            Some(K::BlockEditChanges) => crate::t!("Block - Save Parameter Changes?").into_owned(),
             Some(K::BlockEditPicker) => crate::t!("Edit Block Definition").into_owned(),
             Some(K::Rename) => crate::tr!("rename-dialog", "title"),
             Some(K::Purge) => crate::tr!("purge-dialog", "title"),
@@ -188,7 +189,9 @@ impl OpenCADStudio {
         Some(match kind {
             super::super::ModalKind::StyleImport => sized_flow(ex, 540, 480, |flow| {
                 crate::ui::style::style_manager::import_view(
-                    self.style_import.as_ref().expect("style import dialog without draft"),
+                    self.style_import
+                        .as_ref()
+                        .expect("style import dialog without draft"),
                     &self.tabs[self.active_tab].scene.document,
                     flow,
                 )
@@ -212,7 +215,9 @@ impl OpenCADStudio {
                 })
             }
             super::super::ModalKind::BlockEditorSettings => {
-                crate::ui::window::block_editor_settings::view_window(self.block_editor_settings.as_ref()?)
+                crate::ui::window::block_editor_settings::view_window(
+                    self.block_editor_settings.as_ref()?,
+                )
             }
             super::super::ModalKind::BlockCycleOrder => {
                 crate::ui::window::block_cycle_order::view_window(self.block_cycle_order.as_ref()?)
@@ -389,7 +394,9 @@ impl OpenCADStudio {
             }),
             super::super::ModalKind::Overkill => {
                 let state = self.overkill_dialog.as_ref()?;
-                automatic_flow(ex, |flow| crate::ui::window::overkill::view_window(state, flow))
+                automatic_flow(ex, |flow| {
+                    crate::ui::window::overkill::view_window(state, flow)
+                })
             }
             super::super::ModalKind::FindReplace => automatic_flow(ex, |flow| {
                 crate::ui::window::find_replace::view_window(
@@ -494,11 +501,15 @@ impl OpenCADStudio {
             }
             super::super::ModalKind::Purge => {
                 let state = self.purge_dialog.as_ref()?;
-                sized_flow(ex, 460, 520, |flow| crate::ui::window::purge::view(state, flow))
+                sized_flow(ex, 460, 520, |flow| {
+                    crate::ui::window::purge::view(state, flow)
+                })
             }
             super::super::ModalKind::Rename => {
                 let state = self.rename_dialog.as_ref()?;
-                sized_flow(ex, 520, 420, |flow| crate::ui::window::rename::view(state, flow))
+                sized_flow(ex, 520, 420, |flow| {
+                    crate::ui::window::rename::view(state, flow)
+                })
             }
             super::super::ModalKind::BlockLookup => {
                 let state = self.block_lookup.as_ref()?;
@@ -605,7 +616,11 @@ impl OpenCADStudio {
             super::super::ModalKind::TableCellEntry => {
                 let entry = self.table_cell_entry.as_ref()?;
                 sized_flow(ex, 460, 300, |flow| {
-                    crate::ui::window::table_cell_dialog::view_entry(entry.cell_name(), &entry.text, flow)
+                    crate::ui::window::table_cell_dialog::view_entry(
+                        entry.cell_name(),
+                        &entry.text,
+                        flow,
+                    )
                 })
             }
             super::super::ModalKind::TableCellFormat => {
@@ -634,7 +649,9 @@ impl OpenCADStudio {
             }
             super::super::ModalKind::Spell => {
                 let state = self.spell.as_ref()?;
-                sized_flow(ex, 600, 620, |flow| crate::ui::window::spell_dialog::view(state, flow))
+                sized_flow(ex, 600, 620, |flow| {
+                    crate::ui::window::spell_dialog::view(state, flow)
+                })
             }
             super::super::ModalKind::Txt2MtxtSettings => {
                 let settings = self.txt2mtxt_dialog.as_ref()?;
@@ -684,6 +701,13 @@ impl OpenCADStudio {
                         prompt.count,
                         flow,
                     )
+                })
+            }
+            super::super::ModalKind::HatchBoundaryWarning => {
+                let state = self.hatch_boundary_warning.as_ref()?;
+                let height = if state.details { 300 } else { 230 };
+                sized_flow(ex, 480, height, |flow| {
+                    crate::ui::window::hatch_dialogs::view_warning(state, flow)
                 })
             }
             super::super::ModalKind::TdsMissingMap => {
@@ -853,12 +877,13 @@ impl OpenCADStudio {
                 })
             }
             super::super::ModalKind::ScaleManager => {
-                let tab = &self.tabs[self.active_tab];
+                let i = self.active_tab;
+                let tab = &self.tabs[i];
                 let scales: Vec<(String, String)> = tab
                     .scene
-                    .scale_list()
+                    .scale_names_in_list_order()
                     .into_iter()
-                    .map(|(name, _, _)| {
+                    .map(|name| {
                         let ratio = tab
                             .scene
                             .scale_paper_drawing(&name)
@@ -868,8 +893,39 @@ impl OpenCADStudio {
                     })
                     .collect();
                 let current = tab.scene.document.header.current_annotation_scale.clone();
-                sized_flow(ex, 520, 360, |flow| {
+                let selected = &self.scale_manager_selected;
+                let at = scales
+                    .iter()
+                    .position(|(name, _)| name.eq_ignore_ascii_case(selected));
+                let header = &tab.scene.document.header;
+                let paper_unit: i16 = if matches!(header.insertion_units, 1..=3 | 8..=10 | 21..=24)
+                {
+                    1
+                } else {
+                    4
+                };
+                let units = tab
+                    .scene
+                    .scale_paper_drawing(selected)
+                    .map(|(paper, drawing)| {
+                        crate::ui::style::scale_manager::units_line(
+                            paper,
+                            drawing,
+                            paper_unit,
+                            header.insertion_units,
+                        )
+                    })
+                    .unwrap_or_default();
+                let list = crate::ui::style::scale_manager::ListState {
+                    can_up: at.is_some_and(|at| at > 0),
+                    can_down: at.is_some_and(|at| at + 1 < scales.len()),
+                    can_delete: at.is_some() && !self.anno_scale_referenced(i, selected),
+                    units,
+                    reset_asking: self.scale_reset_asking,
+                };
+                sized_flow(ex, 620, 380, |flow| {
                     crate::ui::style::scale_manager::view_window(
+                        list.clone(),
                         &scales,
                         &self.scale_manager_selected,
                         &current,
@@ -883,43 +939,35 @@ impl OpenCADStudio {
             }
             super::super::ModalKind::AnnoObjectScale => {
                 let tab = &self.tabs[self.active_tab];
-                let entity = self.anno_object_scale_target;
-                // Which scales the object currently has a representation for.
-                let members: Vec<codec::types::Handle> = entity
-                    .map(|h| {
-                        crate::scene::annotative::object_scale_memberships(&tab.scene.document, h)
-                            .into_iter()
-                            .map(|(_, sh)| sh)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let label = entity
+                let objects = self.anno_object_scale.staged.len();
+                let label = self
+                    .anno_object_scale_target
                     .and_then(|h| tab.scene.document.get_entity(h))
                     .map(|e| match e {
-                        codec::EntityType::Text(_) => "TEXT",
-                        codec::EntityType::MText(_) => "MTEXT",
-                        codec::EntityType::Insert(_) => "BLOCK",
-                        codec::EntityType::MultiLeader(_) => "MULTILEADER",
+                        document::EntityType::Text(_) => "TEXT",
+                        document::EntityType::MText(_) => "MTEXT",
+                        document::EntityType::Insert(_) => "BLOCK",
+                        document::EntityType::MultiLeader(_) => "MULTILEADER",
                         _ => "OBJECT",
                     })
+                    .map(|label| if objects > 1 { "MULTIPLE" } else { label })
                     .unwrap_or("—");
-                let scales: Vec<(String, String, bool)> = tab
+                let scales: Vec<(String, f64, f64)> = tab
                     .scene
-                    .scale_list()
+                    .scale_names_in_list_order()
                     .into_iter()
-                    .map(|(name, _, _)| {
-                        let sh = tab.scene.scale_object_handle(&name);
-                        let ratio = tab
-                            .scene
-                            .scale_paper_drawing(&name)
-                            .map(|(p, d)| format!("{p}:{d}"))
-                            .unwrap_or_default();
-                        let is_member = sh.map(|h| members.contains(&h)).unwrap_or(false);
-                        (name, ratio, is_member)
+                    .filter_map(|name| {
+                        let (paper, drawing) = tab.scene.scale_paper_drawing(&name)?;
+                        Some((name, paper, drawing))
                     })
                     .collect();
-                sized_flow(ex, 360, 420, |flow| {
-                    crate::ui::style::anno_object_scale::view_window(&label, &scales, flow)
+                sized_flow(ex, 420, 420, |flow| {
+                    crate::ui::style::anno_object_scale::view_window(
+                        &self.anno_object_scale,
+                        label,
+                        &scales,
+                        flow,
+                    )
                 })
             }
             super::super::ModalKind::InsertTable => sized_flow(ex, 860, 560, |flow| {
@@ -971,7 +1019,8 @@ impl OpenCADStudio {
                 let ttf_flags = draft.style.true_type_font_flags;
                 let (listed, rows) = self.textstyle_list();
                 let preview = self.textstyle_preview(&edited);
-                let usage = crate::app::text_style_users::Usage::of(self.selected_textstyle_users());
+                let usage =
+                    crate::app::text_style_users::Usage::of(self.selected_textstyle_users());
                 let compare_opts: Vec<String> = styles
                     .iter()
                     .filter(|name| !name.eq_ignore_ascii_case(&self.textstyle_selected))
@@ -1038,13 +1087,13 @@ impl OpenCADStudio {
                             invalid_fields: draft.invalid_fields(),
                             use_big_font: draft.big_font_on,
                             font_picker: &self.textstyle_font_picker,
+                            bigfont_picker: &self.textstyle_bigfont_picker,
                             turned_off: draft.turned_off.clone(),
                             apply_summary: apply_summary.clone(),
                             preview: preview.clone(),
                             sample: &self.textstyle_sample,
                             bold: ttf_flags & crate::entities::text_support::TTF_FLAG_BOLD != 0,
-                            italic: ttf_flags & crate::entities::text_support::TTF_FLAG_ITALIC
-                                != 0,
+                            italic: ttf_flags & crate::entities::text_support::TTF_FLAG_ITALIC != 0,
                             backward: draft.style.flags.backward,
                             upside_down: draft.style.flags.upside_down,
                             vertical: draft.style.is_vertical,
@@ -1057,7 +1106,7 @@ impl OpenCADStudio {
                 })
             }
             super::super::ModalKind::MlStyle => {
-                use codec::objects::ObjectType;
+                use document::objects::ObjectType;
                 let tab = &self.tabs[self.active_tab];
                 let styles: Vec<String> = tab
                     .scene
@@ -1144,7 +1193,7 @@ impl OpenCADStudio {
                 })
             }
             super::super::ModalKind::TableStyle => {
-                use codec::objects::ObjectType;
+                use document::objects::ObjectType;
                 let tab = &self.tabs[self.active_tab];
                 let styles: Vec<String> = tab
                     .scene
@@ -1212,7 +1261,8 @@ impl OpenCADStudio {
                         || a.header_row_style != b.header_row_style
                         || a.title_row_style != b.title_row_style
                     {
-                        comparison_sections.push(crate::i18n::translate("Cell styles").into_owned());
+                        comparison_sections
+                            .push(crate::i18n::translate("Cell styles").into_owned());
                     }
                     if a.template().is_some() != b.template().is_some() {
                         comparison_sections
@@ -1273,7 +1323,7 @@ impl OpenCADStudio {
                 })
             }
             super::super::ModalKind::MLeaderStyle => {
-                use codec::objects::ObjectType;
+                use document::objects::ObjectType;
                 let tab = &self.tabs[self.active_tab];
                 let styles: Vec<String> = tab
                     .scene
@@ -1309,7 +1359,7 @@ impl OpenCADStudio {
                         .filter(|t| !t.is_shape_file)
                         .map(|t| t.name.clone()),
                 );
-                let opt_block = |h: Option<codec::types::Handle>| -> String {
+                let opt_block = |h: Option<document::types::Handle>| -> String {
                     match h {
                         Some(h) => doc
                             .block_records
@@ -1320,7 +1370,7 @@ impl OpenCADStudio {
                         None => "None".to_string(),
                     }
                 };
-                let opt_lt = |h: Option<codec::types::Handle>| -> String {
+                let opt_lt = |h: Option<document::types::Handle>| -> String {
                     match h {
                         Some(h) => doc
                             .line_types
@@ -1331,7 +1381,7 @@ impl OpenCADStudio {
                         None => "ByBlock".to_string(),
                     }
                 };
-                let opt_ts = |h: Option<codec::types::Handle>| -> String {
+                let opt_ts = |h: Option<document::types::Handle>| -> String {
                     match h {
                         Some(h) => doc
                             .text_styles
@@ -1348,7 +1398,7 @@ impl OpenCADStudio {
                             opt_lt(s.line_type_handle),
                             crate::entities::arrowheads::label(
                                 doc,
-                                s.arrowhead_handle.unwrap_or(codec::types::Handle::NULL),
+                                s.arrowhead_handle.unwrap_or(document::types::Handle::NULL),
                             ),
                             opt_ts(s.text_style_handle),
                             opt_block(s.block_content_handle),
@@ -1587,8 +1637,8 @@ impl OpenCADStudio {
                     .map(|style| style.height)
                     .filter(|height| *height > 0.0);
                 let blk_name =
-                    |h: codec::types::Handle| crate::entities::arrowheads::label(doc, h);
-                let lt_name = |h: codec::types::Handle| -> String {
+                    |h: document::types::Handle| crate::entities::arrowheads::label(doc, h);
+                let lt_name = |h: document::types::Handle| -> String {
                     if h.is_null() {
                         "ByBlock".to_string()
                     } else {
@@ -1603,7 +1653,7 @@ impl OpenCADStudio {
                 let read_only =
                     ds_sel.is_none_or(|style| style.xref_dependent || style.name.contains('|'));
                 let in_use = doc.entities().any(|entity| {
-                    matches!(entity, codec::EntityType::Dimension(dimension)
+                    matches!(entity, document::EntityType::Dimension(dimension)
                     if dimension.base().style_name.eq_ignore_ascii_case(&self.dimstyle_selected))
                 });
                 let compare_opts: Vec<String> = styles
@@ -1926,9 +1976,9 @@ impl OpenCADStudio {
                     conversion_loss_dialog_window(&self.conversion_losses, &target, flow)
                 })
             }
-            super::super::ModalKind::IfccadAlphaWarning => {
-                sized_flow(ex, 600, 480, |flow| ifccad_alpha_dialog(&self.conversion_losses, flow))
-            }
+            super::super::ModalKind::IfccadAlphaWarning => sized_flow(ex, 600, 480, |flow| {
+                ifccad_alpha_dialog(&self.conversion_losses, flow)
+            }),
             #[cfg(not(target_arch = "wasm32"))]
             super::super::ModalKind::FileInUse => {
                 let (path, error) = self
@@ -2056,7 +2106,7 @@ impl OpenCADStudio {
                 automatic_flow(ex, |flow| {
                     crate::ui::window::missing_fonts::view_window(
                         fonts,
-                        &font_source,
+                        font_source,
                         self.missing_fonts_downloading,
                         flow,
                     )
@@ -2101,7 +2151,6 @@ impl OpenCADStudio {
                 let state = self.plugin_dialog_state.as_ref()?;
                 automatic_flow(ex, |_flow| state.view())
             }
-
         })
     }
 
@@ -2114,23 +2163,22 @@ impl OpenCADStudio {
         );
         // Commands the dispatcher can't run: not a registered command,
         // plugin command, alias, or input action.
-        let valid: rustc_hash::FxHashSet<String> =
-            crate::command::all_registered_command_names()
-                .into_iter()
-                .map(str::to_uppercase)
-                .chain(
-                    self.command_line
-                        .dynamic_commands
-                        .iter()
-                        .map(|cmd| cmd.to_uppercase()),
-                )
-                .chain(self.command_aliases.keys().cloned())
-                .chain(
-                    crate::app::shortcuts::INPUT_ACTIONS
-                        .iter()
-                        .map(|action| action.to_string()),
-                )
-                .collect();
+        let valid: rustc_hash::FxHashSet<String> = crate::command::all_registered_command_names()
+            .into_iter()
+            .map(str::to_uppercase)
+            .chain(
+                self.command_line
+                    .dynamic_commands
+                    .iter()
+                    .map(|cmd| cmd.to_uppercase()),
+            )
+            .chain(self.command_aliases.keys().cloned())
+            .chain(
+                crate::app::shortcuts::INPUT_ACTIONS
+                    .iter()
+                    .map(|action| action.to_string()),
+            )
+            .collect();
         let unknown_set: rustc_hash::FxHashSet<String> = self
             .shortcut_editor_rows
             .iter()
@@ -2157,28 +2205,25 @@ impl OpenCADStudio {
     fn aliases_modal_content<'s>(&'s self, ex: iced::Vector) -> Element<'s, Message> {
         // Aliases claimed by two rows — the cells turn red and a persistent
         // warning names the command already using each alias.
-        let (duplicate_set, duplicate_conflicts) = duplicate_rows(
-            &self.alias_editor_rows,
-            |alias| alias.trim().to_uppercase(),
-        );
+        let (duplicate_set, duplicate_conflicts) =
+            duplicate_rows(&self.alias_editor_rows, |alias| alias.trim().to_uppercase());
         // Commands the dispatcher can't run: not a registered command,
         // plugin command, or input action.
-        let valid: rustc_hash::FxHashSet<String> =
-            crate::command::all_registered_command_names()
-                .into_iter()
-                .map(str::to_uppercase)
-                .chain(
-                    self.command_line
-                        .dynamic_commands
-                        .iter()
-                        .map(|cmd| cmd.to_uppercase()),
-                )
-                .chain(
-                    crate::app::shortcuts::INPUT_ACTIONS
-                        .iter()
-                        .map(|action| action.to_string()),
-                )
-                .collect();
+        let valid: rustc_hash::FxHashSet<String> = crate::command::all_registered_command_names()
+            .into_iter()
+            .map(str::to_uppercase)
+            .chain(
+                self.command_line
+                    .dynamic_commands
+                    .iter()
+                    .map(|cmd| cmd.to_uppercase()),
+            )
+            .chain(
+                crate::app::shortcuts::INPUT_ACTIONS
+                    .iter()
+                    .map(|action| action.to_string()),
+            )
+            .collect();
         let unknown_set: rustc_hash::FxHashSet<String> = self
             .alias_editor_rows
             .iter()
@@ -2284,7 +2329,7 @@ fn dialog_body_style(theme: &Theme) -> container::Style {
 
 fn dialog_muted_text_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
+        color: Some(crate::ui::style::readable::muted_text(theme)),
     }
 }
 
@@ -2331,9 +2376,13 @@ fn save_as_dialog_window<'a>(
         field_width,
     ));
     items.push(Space::new().height(16).into());
-    if crate::io::parse_save_format(format).0 == "ifcx" {
-        items.push(text(crate::tr!("ifccad-ui", "alpha-note"))
-            .size(11).style(dialog_muted_text_style).into());
+    if crate::io::parse_save_format(format).0 == "ifccad" {
+        items.push(
+            text(crate::tr!("ifccad-ui", "alpha-note"))
+                .size(11)
+                .style(dialog_muted_text_style)
+                .into(),
+        );
         items.push(Space::new().height(12).into());
     }
     items.push(
@@ -2371,8 +2420,6 @@ fn unsaved_changes_dialog_window(
     let block_edit = block_references.is_some();
     let prompt = if block_edit {
         column![
-            text(crate::tf!("Save changes to {}?", name).into_owned()).size(14),
-            iced::widget::Space::new().height(4),
             text(t!(
                 "Changes to parameters may update existing block references in ways that are not always obvious. What do you want to do?"
             ))
@@ -2702,32 +2749,51 @@ fn external_change_dialog_window(
 /// (AEC / application) objects that survive only as verbatim source-version
 /// bytes, so saving to a different version or to DXF would drop them. Offers to
 /// save in the source version (keep them) or proceed (drop them).
-fn ifccad_alpha_dialog<'a>(losses: &'a [String], sizing: crate::ui::modal::ModalSizing) -> Element<'a, Message> {
+fn ifccad_alpha_dialog<'a>(
+    losses: &'a [String],
+    sizing: crate::ui::modal::ModalSizing,
+) -> Element<'a, Message> {
     let mut body = column![text(crate::tr!("ifccad-ui", "alpha-body"))
-        .size(13).wrapping(iced::widget::text::Wrapping::WordOrGlyph)].spacing(8)
-        .padding(iced::Padding {
-            right: 14.0,
-            bottom: 1.0,
-            ..iced::Padding::ZERO
-        });
+        .size(13)
+        .wrapping(iced::widget::text::Wrapping::WordOrGlyph)]
+    .spacing(8)
+    .padding(iced::Padding {
+        right: 14.0,
+        bottom: 1.0,
+        ..iced::Padding::ZERO
+    });
     if !losses.is_empty() {
         body = body.push(text(crate::tr!("ifccad-ui", "conversion-title")).size(13));
         for loss in losses {
-            body = body.push(text(format!("• {loss}")).size(12)
-                .wrapping(iced::widget::text::Wrapping::WordOrGlyph));
+            body = body.push(
+                text(format!("• {loss}"))
+                    .size(12)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            );
         }
     }
-    container(column![
-        iced::widget::scrollable(body)
-            .width(sizing.width).height(sizing.height),
-        Space::new().height(16),
-        row![
-            dialog_button(t!("Save anyway"), Message::IfccadAlphaProceed, button::warning),
-            Space::new().width(8),
-            dialog_button(t!("Cancel"), Message::CloseModal, button::secondary),
-        ],
-    ].width(sizing.width).height(sizing.height))
-        .style(dialog_body_style).padding([20, 24]).into()
+    container(
+        column![
+            iced::widget::scrollable(body)
+                .width(sizing.width)
+                .height(sizing.height),
+            Space::new().height(16),
+            row![
+                dialog_button(
+                    t!("Save anyway"),
+                    Message::IfccadAlphaProceed,
+                    button::warning
+                ),
+                Space::new().width(8),
+                dialog_button(t!("Cancel"), Message::CloseModal, button::secondary),
+            ],
+        ]
+        .width(sizing.width)
+        .height(sizing.height),
+    )
+    .style(dialog_body_style)
+    .padding([20, 24])
+    .into()
 }
 
 fn conversion_loss_dialog_window<'a>(

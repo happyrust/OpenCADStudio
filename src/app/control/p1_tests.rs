@@ -469,7 +469,7 @@ fn entities_copy_to_another_open_document() {
         .to_owned();
     // A second document with its own layer table.
     app.tabs
-        .push(crate::app::document::DocumentTab::new_drawing(99));
+        .push(crate::app::tab_document::DocumentTab::new_drawing(99));
     let target = app.tabs[1].id;
 
     let r = app.automation_op(&format!(
@@ -490,6 +490,42 @@ fn entities_copy_to_another_open_document() {
     );
     assert_eq!(r["ok"], false);
     assert_eq!(r["code"], "document_closed");
+}
+
+/// The copy is recorded in the target before it lands there, so one undo in the
+/// target takes the whole pasted set back and leaves the source drawing alone.
+#[test]
+fn a_copy_to_another_document_undoes_in_the_target_only() {
+    let mut app = OpenCADStudio::new_for_test();
+    app.automation_op(r#"{"op":"new"}"#);
+    app.automation_op(r#"{"op":"run","cmd":"CIRCLE 5,5 2"}"#);
+    let handle = app.automation_op(r#"{"op":"query","type":"Circle","detail":"summary"}"#)
+        ["entities"][0]["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    app.tabs
+        .push(crate::app::tab_document::DocumentTab::new_drawing(99));
+    let target = app.tabs[1].id;
+    let r = app.automation_op(&format!(
+        r#"{{"protocol":1,"op":"entities_copy_to","request_id":"cu1","document_id":{target},"handles":["{handle}"]}}"#
+    ));
+    assert_eq!(r["ok"], true, "{}", r["error"]);
+
+    app.active_tab = 1;
+    assert_eq!(count_type(&mut app, "Circle"), 1, "the copy landed");
+    let _ = app.update(crate::app::Message::Undo);
+    assert_eq!(
+        count_type(&mut app, "Circle"),
+        0,
+        "one undo in the target takes the whole copy back"
+    );
+    app.active_tab = 0;
+    assert_eq!(
+        count_type(&mut app, "Circle"),
+        1,
+        "and the source keeps the entity it copied"
+    );
 }
 
 #[test]
@@ -520,7 +556,7 @@ fn a_copied_block_reference_arrives_with_its_definition() {
         .to_owned();
 
     app.tabs
-        .push(crate::app::document::DocumentTab::new_drawing(99));
+        .push(crate::app::tab_document::DocumentTab::new_drawing(99));
     let target = app.tabs[1].id;
     let r = app.automation_op(&format!(
         r#"{{"protocol":1,"op":"entities_copy_to","request_id":"xd2","document_id":{target},"handles":["{source}"]}}"#
@@ -574,6 +610,463 @@ fn a_copied_block_reference_arrives_with_its_definition() {
     );
 }
 
+/// A copied reference whose definition holds another reference brings both
+/// definitions, so the pasted block does not render with an empty member.
+#[test]
+fn a_copied_nested_reference_brings_both_definitions() {
+    let mut app = OpenCADStudio::new_for_test();
+    app.automation_op(r#"{"op":"new"}"#);
+    app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 10,0"}"#);
+    let line = app.automation_op(r#"{"op":"query","type":"Line","detail":"summary"}"#)["entities"]
+        [0]["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let doc = app.automation_op(r#"{"protocol":1,"op":"state"}"#)["document_id"]
+        .as_u64()
+        .unwrap();
+    let r = app.automation_op(&format!(
+        r#"{{"protocol":1,"op":"block_define","request_id":"n1","document_id":{doc},"name":"INNER","base":[0,0,0],"handles":["{line}"]}}"#
+    ));
+    assert_eq!(r["ok"], true, "{}", r["error"]);
+    let inner = app.automation_op(r#"{"op":"query","type":"Insert","detail":"summary"}"#)
+        ["entities"][0]["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let r = app.automation_op(&format!(
+        r#"{{"protocol":1,"op":"block_define","request_id":"n2","document_id":{doc},"name":"OUTER","base":[0,0,0],"handles":["{inner}"]}}"#
+    ));
+    assert_eq!(r["ok"], true, "{}", r["error"]);
+    let outer = app.automation_op(r#"{"op":"query","type":"Insert","detail":"full"}"#)["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entity| entity["block"] == "OUTER")
+        .and_then(|entity| entity["handle"].as_str())
+        .expect("the OUTER reference")
+        .to_owned();
+
+    app.tabs
+        .push(crate::app::tab_document::DocumentTab::new_drawing(99));
+    let target = app.tabs[1].id;
+    let r = app.automation_op(&format!(
+        r#"{{"protocol":1,"op":"entities_copy_to","request_id":"n3","document_id":{target},"handles":["{outer}"]}}"#
+    ));
+    assert_eq!(r["ok"], true, "{}", r["error"]);
+
+    app.active_tab = 1;
+    let names: Vec<String> = app.tabs[1]
+        .scene
+        .document
+        .block_records
+        .iter()
+        .map(|record| record.name.clone())
+        .collect();
+    assert!(
+        names.iter().any(|name| name == "OUTER") && names.iter().any(|name| name == "INNER"),
+        "the target needs the outer definition and the one its member names: {names:?}"
+    );
+    let outer_record = app.tabs[1]
+        .scene
+        .document
+        .block_records
+        .iter()
+        .find(|record| record.name == "OUTER")
+        .expect("the outer record travelled");
+    assert_eq!(outer_record.entity_handles.len(), 1);
+    let member = app.tabs[1]
+        .scene
+        .document
+        .get_entity(outer_record.entity_handles[0])
+        .expect("the outer definition holds its member");
+    let document::EntityType::Insert(member) = member else {
+        panic!("the outer definition's member is not a reference: {member:?}");
+    };
+    assert_eq!(
+        member.block_name, "INNER",
+        "and that member names the definition the copy brought with it"
+    );
+    let audit = app.automation_op(r#"{"op":"audit"}"#);
+    assert!(
+        !audit["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue["code"] == "missing_block"),
+        "the target holds every record the pasted reference names: {audit}"
+    );
+}
+
+/// A document that holds a reference to a definition it does not have keeps
+/// that reference when it is written and read back, so the missing record is
+/// still visible to the server's own audit after a round trip rather than
+/// being silently repaired or dropped on write.
+#[test]
+fn a_dangling_reference_survives_a_dxf_round_trip() {
+    use document::entities::Insert;
+    use document::types::Vector3;
+
+    let mut doc = document::Document::new();
+    doc.add_entity(document::EntityType::Insert(Insert::new(
+        "MISSING",
+        Vector3::ZERO,
+    )))
+    .expect("the seeded reference");
+    let bytes = document::DxfWriter::new(&doc)
+        .write_to_vec()
+        .expect("the drawing writes");
+    let reopened = document::DxfReader::from_reader(std::io::Cursor::new(bytes))
+        .expect("the drawing reads")
+        .read()
+        .expect("the drawing opens");
+    let reference = reopened
+        .entities()
+        .find_map(|entity| match entity {
+            document::EntityType::Insert(insert) if insert.block_name == "MISSING" => {
+                Some(insert.common.handle)
+            }
+            _ => None,
+        })
+        .expect("the reference is preserved on write");
+    assert!(
+        reopened.block_records.get("MISSING").is_none(),
+        "and the record it names is still absent, so the defect is not hidden"
+    );
+    assert!(
+        reopened.block_records.get("*Model_Space").is_some(),
+        "while the records the drawing does have still travel, so the absence is not vacuous"
+    );
+    assert!(matches!(
+        reopened.get_entity(reference),
+        Some(document::EntityType::Insert(_))
+    ));
+}
+
+/// A copied reference's attribute values point at a definition, and in the
+/// target that is the definition the copy brought, not the handle the source
+/// drawing gave it.
+#[test]
+fn a_copied_attribute_reference_points_at_the_targets_definition() {
+    use document::entities::{AttributeDefinition, AttributeEntity, EntityType, Insert, Line};
+    use document::types::Vector3;
+
+    let mut app = OpenCADStudio::new_for_test();
+    app.automation_op(r#"{"op":"new"}"#);
+    let mut definition = AttributeDefinition::new("TAG1".into(), "Tag one".into(), "first".into());
+    definition.insertion_point = Vector3::new(2.0, 1.0, 0.0);
+    app.tabs[0].scene.define_block_raw(
+        "ATTR_BLOCK",
+        Vector3::ZERO,
+        vec![
+            EntityType::Line(Line::from_points(
+                Vector3::ZERO,
+                Vector3::new(10.0, 0.0, 0.0),
+            )),
+            EntityType::AttributeDefinition(definition),
+        ],
+    );
+    let source_definition = app.tabs[0]
+        .scene
+        .document
+        .block_records
+        .get("ATTR_BLOCK")
+        .expect("the definition was created")
+        .entity_handles
+        .iter()
+        .copied()
+        .find(|handle| {
+            matches!(
+                app.tabs[0].scene.document.get_entity(*handle),
+                Some(EntityType::AttributeDefinition(_))
+            )
+        })
+        .expect("the definition holds its attribute definition");
+
+    let mut insert = Insert::new("ATTR_BLOCK", Vector3::ZERO);
+    let mut attribute = AttributeEntity::new("TAG1".into(), "first".into());
+    attribute.attdef_handle = source_definition;
+    insert.attributes.push(attribute);
+    let source = app.tabs[0]
+        .scene
+        .document
+        .add_entity(EntityType::Insert(insert))
+        .expect("the seeded reference");
+
+    app.tabs
+        .push(crate::app::tab_document::DocumentTab::new_drawing(99));
+    let target = app.tabs[1].id;
+    // Give the target a handle history of its own, so a source handle that
+    // leaks into the copy cannot pass for a target handle by coincidence.
+    for _ in 0..6 {
+        app.tabs[1].scene.document.allocate_handle();
+    }
+    let r = app.automation_op(&format!(
+        r#"{{"protocol":1,"op":"entities_copy_to","request_id":"at1","document_id":{target},"handles":["{:X}"]}}"#,
+        source.value()
+    ));
+    assert_eq!(r["ok"], true, "{}", r["error"]);
+    assert_eq!(r["result"]["count"], 1);
+
+    let doc = &app.tabs[1].scene.document;
+    let record = doc
+        .block_records
+        .get("ATTR_BLOCK")
+        .expect("the definition travelled");
+    let target_definition = record
+        .entity_handles
+        .iter()
+        .copied()
+        .find(|handle| {
+            matches!(doc.get_entity(*handle),
+                Some(EntityType::AttributeDefinition(definition)) if definition.tag == "TAG1")
+        })
+        .expect("the copied definition holds a TAG1 definition");
+    assert_ne!(
+        target_definition, source_definition,
+        "the target gives the definition its own handle"
+    );
+    let pasted = doc
+        .entities()
+        .find_map(|entity| match entity {
+            EntityType::Insert(insert) if insert.block_name == "ATTR_BLOCK" => Some(insert),
+            _ => None,
+        })
+        .expect("the reference arrived");
+    assert_eq!(pasted.attributes.len(), 1, "the attribute value travelled");
+    assert_eq!(pasted.attributes[0].tag, "TAG1");
+    assert_eq!(
+        pasted.attributes[0].attdef_handle, target_definition,
+        "the value points at the definition in this drawing, not the handle the source gave it"
+    );
+}
+
+/// A copied reference that shows its own evaluated copy brings both records —
+/// the anonymous copy it displays and the dynamic definition it was evaluated
+/// from — and keeps pointing at the definition in the target.
+#[test]
+fn a_copied_dynamic_reference_stays_dynamic_in_the_target() {
+    use crate::scene::block_visibility;
+    use document::entities::{EntityType, Insert, Line};
+    use document::types::Vector3;
+
+    let mut app = OpenCADStudio::new_for_test();
+    app.automation_op(r#"{"op":"new"}"#);
+    let i = app.active_tab;
+    app.tabs[i].scene.define_block_raw(
+        "DYN",
+        Vector3::ZERO,
+        vec![EntityType::Line(Line::from_points(
+            Vector3::ZERO,
+            Vector3::UNIT_X,
+        ))],
+    );
+    let reference = app.tabs[i]
+        .scene
+        .document
+        .add_entity(EntityType::Insert(Insert::new("DYN", Vector3::ZERO)))
+        .expect("the seeded reference");
+    let definition = app.tabs[i]
+        .scene
+        .document
+        .block_records
+        .get("DYN")
+        .unwrap()
+        .handle;
+    let member = app.tabs[i]
+        .scene
+        .document
+        .block_records
+        .get("DYN")
+        .unwrap()
+        .entity_handles[0];
+    {
+        let doc = &mut app.tabs[i].scene.document;
+        let parameter = block_visibility::create(doc, definition, Vector3::ZERO).unwrap();
+        block_visibility::add_state(doc, parameter, "Hidden", 0).unwrap();
+        block_visibility::set_visible(doc, parameter, 1, &[member], false);
+        block_visibility::finish_editing(doc, definition);
+    }
+
+    let name = app.tabs[i]
+        .scene
+        .visibility_representation(reference)
+        .expect("the reference gets its own evaluated copy");
+    assert!(name.starts_with("*U"), "and names it: {name}");
+
+    app.tabs
+        .push(crate::app::tab_document::DocumentTab::new_drawing(99));
+    let target = app.tabs[1].id;
+    // Give the target a handle history of its own, so the source's record
+    // handle cannot pass for the target's by coincidence.
+    for _ in 0..6 {
+        app.tabs[1].scene.document.allocate_handle();
+    }
+    let r = app.automation_op(&format!(
+        r#"{{"protocol":1,"op":"entities_copy_to","request_id":"dy1","document_id":{target},"handles":["{:X}"]}}"#,
+        reference.value()
+    ));
+    assert_eq!(r["ok"], true, "{}", r["error"]);
+    assert_eq!(r["result"]["count"], 1, "{r}");
+
+    let doc = &app.tabs[1].scene.document;
+    let pasted = doc
+        .entities()
+        .find_map(|entity| match entity {
+            EntityType::Insert(insert) if insert.block_name == name => Some(insert.common.handle),
+            _ => None,
+        })
+        .expect("the evaluated reference arrived");
+    let names: Vec<&str> = doc
+        .block_records
+        .iter()
+        .map(|record| record.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"DYN"),
+        "the dynamic definition travelled: {names:?}"
+    );
+    assert!(
+        names.contains(&name.as_str()),
+        "and so does the evaluated copy it displays: {names:?}"
+    );
+    let travelled = doc
+        .block_records
+        .get("DYN")
+        .expect("the definition travelled")
+        .handle;
+    assert_ne!(
+        travelled, definition,
+        "the target defines it under its own handle"
+    );
+    assert_eq!(
+        doc.dynamic_definition_for_insert(pasted),
+        Some(travelled),
+        "the reference still names the definition its copy was evaluated from, here in the target"
+    );
+    assert!(
+        doc.block_representations
+            .values()
+            .any(|&block| block == travelled),
+        "and the representation link is registered with this drawing"
+    );
+}
+
+/// A copied definition whose member reference carries attribute values points
+/// those values at the attribute definition inside the copied definition, not
+/// at the handle the source drawing gave it.
+#[test]
+fn a_copied_definition_points_its_nested_attribute_at_its_definition() {
+    use document::entities::{AttributeDefinition, AttributeEntity, EntityType, Insert, Line};
+    use document::types::Vector3;
+
+    let mut app = OpenCADStudio::new_for_test();
+    app.automation_op(r#"{"op":"new"}"#);
+    app.tabs[0].scene.define_block_raw(
+        "CHILD",
+        Vector3::ZERO,
+        vec![
+            EntityType::Line(Line::from_points(Vector3::ZERO, Vector3::UNIT_X)),
+            EntityType::AttributeDefinition(AttributeDefinition::new(
+                "PART".into(),
+                "Part".into(),
+                "A1".into(),
+            )),
+        ],
+    );
+    let child_definition = app.tabs[0]
+        .scene
+        .document
+        .block_records
+        .get("CHILD")
+        .expect("the child definition was created")
+        .entity_handles
+        .iter()
+        .copied()
+        .find(|handle| {
+            matches!(
+                app.tabs[0].scene.document.get_entity(*handle),
+                Some(EntityType::AttributeDefinition(_))
+            )
+        })
+        .expect("the child holds its attribute definition");
+    let mut child = Insert::new("CHILD", Vector3::ZERO);
+    let mut attribute = AttributeEntity::new("PART".into(), "A1".into());
+    attribute.attdef_handle = child_definition;
+    child.attributes.push(attribute);
+    let member = app.tabs[0]
+        .scene
+        .document
+        .add_entity(EntityType::Insert(child))
+        .expect("the seeded child reference");
+    let doc = app.automation_op(r#"{"protocol":1,"op":"state"}"#)["document_id"]
+        .as_u64()
+        .unwrap();
+    let r = app.automation_op(&format!(
+        r#"{{"protocol":1,"op":"block_define","request_id":"na1","document_id":{doc},"name":"OUTER","base":[0,0,0],"handles":["{:X}"]}}"#,
+        member.value()
+    ));
+    assert_eq!(r["ok"], true, "{}", r["error"]);
+    let outer = app.automation_op(r#"{"op":"query","type":"Insert","detail":"full"}"#)["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entity| entity["block"] == "OUTER")
+        .and_then(|entity| entity["handle"].as_str())
+        .expect("the OUTER reference")
+        .to_owned();
+
+    app.tabs
+        .push(crate::app::tab_document::DocumentTab::new_drawing(99));
+    let target = app.tabs[1].id;
+    // Give the target a handle history of its own, so a source handle that
+    // leaks into the copy cannot pass for a target handle by coincidence.
+    for _ in 0..6 {
+        app.tabs[1].scene.document.allocate_handle();
+    }
+    let r = app.automation_op(&format!(
+        r#"{{"protocol":1,"op":"entities_copy_to","request_id":"na2","document_id":{target},"handles":["{outer}"]}}"#
+    ));
+    assert_eq!(r["ok"], true, "{}", r["error"]);
+    assert_eq!(r["result"]["count"], 1, "{r}");
+
+    let doc = &app.tabs[1].scene.document;
+    let target_child = doc
+        .block_records
+        .get("CHILD")
+        .expect("the child definition travelled")
+        .entity_handles
+        .iter()
+        .copied()
+        .find(|handle| {
+            matches!(doc.get_entity(*handle),
+                Some(EntityType::AttributeDefinition(definition)) if definition.tag == "PART")
+        })
+        .expect("the copied child holds its attribute definition");
+    assert_ne!(
+        target_child, child_definition,
+        "the target gives the definition its own handle"
+    );
+    let outer_record = doc
+        .block_records
+        .get("OUTER")
+        .expect("the outer definition travelled");
+    let nested = outer_record
+        .entity_handles
+        .iter()
+        .filter_map(|handle| match doc.get_entity(*handle) {
+            Some(EntityType::Insert(insert)) if insert.block_name == "CHILD" => Some(insert),
+            _ => None,
+        })
+        .next()
+        .expect("the outer definition holds the child reference");
+    assert_eq!(nested.attributes.len(), 1, "the attribute value travelled");
+    assert_eq!(
+        nested.attributes[0].attdef_handle, target_child,
+        "the value points at the definition in this drawing, not the handle the source gave it"
+    );
+}
+
 /// A copied raster has to arrive registered in the target the way an
 /// interactive paste registers it: the target's own definition of its file,
 /// plus the reactor that links image and definition both ways. A copy that
@@ -581,7 +1074,7 @@ fn a_copied_block_reference_arrives_with_its_definition() {
 /// points at.
 #[test]
 fn a_copied_image_arrives_registered_in_the_target() {
-    use codec::objects::{ImageDefinition, ObjectType};
+    use document::objects::{ImageDefinition, ObjectType};
     let mut app = OpenCADStudio::new_for_test();
     app.automation_op(r#"{"op":"new"}"#);
     let definition = app.tabs[0].scene.document.allocate_handle();
@@ -593,16 +1086,16 @@ fn a_copied_image_arrives_registered_in_the_target() {
         .objects
         .insert(definition, ObjectType::ImageDefinition(image_definition));
     let mut image =
-        codec::entities::RasterImage::new("fx.bmp", codec::types::Vector3::ZERO, 8.0, 8.0);
+        document::entities::RasterImage::new("fx.bmp", document::types::Vector3::ZERO, 8.0, 8.0);
     image.definition_handle = Some(definition);
     let source = app.tabs[0]
         .scene
         .document
-        .add_entity(codec::EntityType::RasterImage(image))
+        .add_entity(document::EntityType::RasterImage(image))
         .expect("the seeded image");
 
     app.tabs
-        .push(crate::app::document::DocumentTab::new_drawing(99));
+        .push(crate::app::tab_document::DocumentTab::new_drawing(99));
     let target = app.tabs[1].id;
     let r = app.automation_op(&format!(
         r#"{{"protocol":1,"op":"entities_copy_to","request_id":"xi1","document_id":{target},"handles":["{:X}"]}}"#,
@@ -614,10 +1107,10 @@ fn a_copied_image_arrives_registered_in_the_target() {
     let doc = &app.tabs[1].scene.document;
     let pasted = doc
         .entities()
-        .find(|entity| matches!(entity, codec::EntityType::RasterImage(_)))
+        .find(|entity| matches!(entity, document::EntityType::RasterImage(_)))
         .map(|entity| entity.common().handle)
         .expect("the copied image is missing from the target");
-    let Some(codec::EntityType::RasterImage(image)) = doc.get_entity(pasted) else {
+    let Some(document::EntityType::RasterImage(image)) = doc.get_entity(pasted) else {
         unreachable!();
     };
     let Some(definition) = image
@@ -673,7 +1166,7 @@ fn group_create_and_selection_sets() {
     let objects = &app.tabs[app.active_tab].scene.document.objects;
     assert!(objects.values().any(|o| matches!(
         o,
-        codec::objects::ObjectType::Group(group) if group.name == "FRAME"
+        document::objects::ObjectType::Group(group) if group.name == "FRAME"
     )));
 
     let r = app.automation_op(&format!(
@@ -792,7 +1285,7 @@ fn diagnostic_layer_survives_plain_io_round_trip() {
     // Direct io round trip on a clone of the document.
     let doc = app.tabs[app.active_tab].scene.document.clone();
     let bytes =
-        crate::io::save_to_bytes(&doc, "dxf", codec::DxfVersion::AC1032).expect("save to bytes");
+        crate::io::save_to_bytes(&doc, "dxf", document::DxfVersion::AC1032).expect("save to bytes");
     let path = std::env::temp_dir().join(format!("ocs_diag_{}.dxf", std::process::id()));
     std::fs::write(&path, &bytes).unwrap();
     let loaded = crate::io::load_file(&path).expect("load back");
@@ -919,11 +1412,11 @@ fn wblock_normalize_shifts_the_export_to_the_origin() {
     let header = &app.tabs[app.active_tab].scene.document.header;
     assert_eq!(
         header.model_space_extents_min,
-        codec::types::Vector3::new(0.0, 0.0, 0.0)
+        document::types::Vector3::new(0.0, 0.0, 0.0)
     );
     assert_eq!(
         header.model_space_extents_max,
-        codec::types::Vector3::new(10.0, 10.0, 0.0)
+        document::types::Vector3::new(10.0, 10.0, 0.0)
     );
     let _ = std::fs::remove_file(&out);
 }
@@ -959,11 +1452,11 @@ fn wblock_export_carries_the_saved_header_values() {
     assert!(header.update_date_julian > 0.0, "update stamp");
     assert_eq!(
         header.model_space_extents_min,
-        codec::types::Vector3::new(0.0, 0.0, 0.0)
+        document::types::Vector3::new(0.0, 0.0, 0.0)
     );
     assert_eq!(
         header.model_space_extents_max,
-        codec::types::Vector3::new(10.0, 20.0, 0.0)
+        document::types::Vector3::new(10.0, 20.0, 0.0)
     );
     let _ = std::fs::remove_file(&out);
 }
@@ -1557,8 +2050,8 @@ fn a_fixed_entity_resists_bounds_alignment() {
 /// refusal as its numeric rows.
 #[test]
 fn a_fixed_curve_resists_a_boolean_and_a_choice() {
-    use codec::entities::{Polyline2D, Spline, Vertex2D};
-    use codec::types::Vector3;
+    use document::entities::{Polyline2D, Spline, Vertex2D};
+    use document::types::Vector3;
 
     let mut app = OpenCADStudio::new_for_test();
     app.automation_op(r#"{"op":"new"}"#);
@@ -1570,7 +2063,7 @@ fn a_fixed_curve_resists_a_boolean_and_a_choice() {
         .vertices
         .push(Vertex2D::new(Vector3::new(10.0, 0.0, 0.0)));
     let polyline_handle = app
-        .commit_entity_handle(codec::EntityType::Polyline2D(polyline))
+        .commit_entity_handle(document::EntityType::Polyline2D(polyline))
         .expect("the polyline commits");
     let mut spline = Spline::new();
     spline.control_points = vec![
@@ -1582,7 +2075,7 @@ fn a_fixed_curve_resists_a_boolean_and_a_choice() {
     spline.knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
     spline.weights = vec![1.0; 4];
     let spline_handle = app
-        .commit_entity_handle(codec::EntityType::Spline(spline.clone()))
+        .commit_entity_handle(document::EntityType::Spline(spline.clone()))
         .expect("the spline commits");
     for handle in [polyline_handle, spline_handle] {
         app.automation_op(&format!(
@@ -1613,7 +2106,7 @@ fn a_fixed_curve_resists_a_boolean_and_a_choice() {
         .document
         .get_entity(polyline_handle)
     {
-        Some(codec::EntityType::Polyline2D(polyline)) => {
+        Some(document::EntityType::Polyline2D(polyline)) => {
             assert!(!polyline.is_closed(), "the fixed polyline stayed open");
         }
         other => panic!("the polyline is still there: {other:?}"),
@@ -1642,7 +2135,7 @@ fn a_fixed_curve_resists_a_boolean_and_a_choice() {
         .document
         .get_entity(spline_handle)
     {
-        Some(codec::EntityType::Spline(after)) => {
+        Some(document::EntityType::Spline(after)) => {
             assert_eq!(
                 after.control_points, spline.control_points,
                 "the fixed spline kept its points"
@@ -1708,7 +2201,7 @@ fn a_fixed_entity_resists_a_stretch() {
 
     let before = app.command_line.history.len();
     let task = app.apply_cmd_result(CmdResult::StretchEntities {
-        handles: vec![codec::Handle::new(
+        handles: vec![document::Handle::new(
             u64::from_str_radix(&handle, 16).unwrap(),
         )],
         windows: vec![(
@@ -1753,7 +2246,7 @@ fn a_constraint_command_names_geometry_the_network_moves() {
     let mut long = None;
     let mut short = None;
     for entity in drawn["entities"].as_array().expect("the two lines") {
-        let handle = codec::Handle::new(
+        let handle = document::Handle::new(
             u64::from_str_radix(entity["handle"].as_str().unwrap(), 16).unwrap(),
         );
         if line_point(entity, "end").0 > 100.0 {
@@ -1817,7 +2310,7 @@ fn a_horizontal_command_names_geometry_the_network_moves() {
     let mut long = None;
     let mut slanted = None;
     for entity in drawn["entities"].as_array().expect("the two lines") {
-        let handle = codec::Handle::new(
+        let handle = document::Handle::new(
             u64::from_str_radix(entity["handle"].as_str().unwrap(), 16).unwrap(),
         );
         if line_point(entity, "end").0 > 100.0 {
@@ -1841,7 +2334,7 @@ fn a_horizontal_command_names_geometry_the_network_moves() {
     let _ = app.apply_cmd_result(CmdResult::AddHorizontalConstraint {
         kind: ConstraintKind::Horizontal,
         selection: HorizontalConstraintSelection::Reference(ParametricRef::whole(slanted)),
-        direction: codec::types::Vector3::new(1.0, 0.0, 0.0),
+        direction: document::types::Vector3::new(1.0, 0.0, 0.0),
         label: "Horizontal",
     });
     let said: Vec<String> = app.command_line.history[before..]
@@ -1875,7 +2368,7 @@ fn a_move_command_does_not_report_geometry_the_solve_moves() {
     let mut long = None;
     let mut slanted = None;
     for entity in drawn["entities"].as_array().expect("the two lines") {
-        let handle = codec::Handle::new(
+        let handle = document::Handle::new(
             u64::from_str_radix(entity["handle"].as_str().unwrap(), 16).unwrap(),
         );
         if line_point(entity, "end").0 > 100.0 {
@@ -1944,7 +2437,7 @@ fn a_converted_constraint_clamps_the_grip_that_moves_it() {
         .as_str()
         .expect("the drawn line has a handle")
         .to_owned();
-    let line = codec::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
+    let line = document::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
     let dimension = app.tabs[i].scene.add_entity(
         crate::modules::annotate::linear_dim::linear_dimension_entity(
             glam::DVec3::ZERO,
@@ -2000,7 +2493,7 @@ fn a_converted_constraint_clamps_the_grip_that_moves_a_level_line() {
         .as_str()
         .expect("the drawn line has a handle")
         .to_owned();
-    let line = codec::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
+    let line = document::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
     app.tabs[i]
         .scene
         .parametric_constraint_set_mut(ParametricScope::ModelSpace)
@@ -2042,6 +2535,130 @@ fn a_converted_constraint_clamps_the_grip_that_moves_a_level_line() {
     );
 }
 
+/// A created constraint's annotation is complete across a save: it measures
+/// the span the constraint was given, and the written file carries the
+/// anonymous block the live document leaves to the writer. Reopening resolves
+/// the dimension back to model space.
+#[test]
+fn a_created_dimension_is_a_complete_record_across_a_save() {
+    use crate::command::CmdResult;
+    use crate::scene::named_parameters::DrivingValue;
+    use crate::scene::parametric_constraints::{ConstraintKind, ParametricRef, ParametricScope};
+
+    let mut app = OpenCADStudio::new_for_test();
+    app.automation_op(r#"{"op":"new"}"#);
+    let i = app.active_tab;
+    app.automation_op(r#"{"op":"run","cmd":"LINE 700,200 700,240"}"#);
+    let handle = app.automation_op(r#"{"op":"query","type":"Line","detail":"summary"}"#)
+        ["entities"][0]["handle"]
+        .as_str()
+        .expect("the drawn line has a handle")
+        .to_owned();
+    let line = document::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
+    let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
+        kind: ConstraintKind::DistanceY,
+        first: ParametricRef::point(line, 0),
+        second: ParametricRef::point(line, 1),
+        first_point: glam::DVec3::new(700.0, 200.0, 0.0),
+        second_point: glam::DVec3::new(700.0, 240.0, 0.0),
+        location: glam::DVec3::new(740.0, 220.0, 0.0),
+        axis: glam::DVec3::Y,
+        direction: None,
+        name: "d1".to_string(),
+        expression: "40".to_string(),
+        renamed: false,
+        label: "Vertical distance constraint",
+    });
+    app.drive_headless_task(task).unwrap();
+
+    let set = app.tabs[i]
+        .scene
+        .parametric_constraint_set(ParametricScope::ModelSpace)
+        .expect("the drawing has a constraint set");
+    let id = set
+        .constraints
+        .iter()
+        .find(|constraint| {
+            matches!(&constraint.driving_param, Some(DrivingValue::Named(name)) if name == "d1")
+        })
+        .map(|constraint| constraint.id)
+        .expect("the created constraint is driven by the name it was given");
+    let dimension = set
+        .dimensions
+        .get(&id)
+        .copied()
+        .expect("the constraint drives a dimension");
+    let record = |document: &document::Document| {
+        let document::EntityType::Dimension(printed) = document
+            .get_entity(dimension)
+            .expect("the dimension is in the document")
+        else {
+            panic!("the constraint's dimension is a dimension");
+        };
+        (
+            printed.base().actual_measurement,
+            printed.base().block_name.clone(),
+            printed.base().common.entity_mode,
+        )
+    };
+    let (measured, block, mode) = record(&app.tabs[i].scene.document);
+    assert!(
+        (measured - 40.0).abs() < 1e-6,
+        "the annotation measures the span the constraint was given: {measured}"
+    );
+    assert!(
+        block.starts_with("*D"),
+        "the live record names the annotation block it draws: {block:?}"
+    );
+    assert_eq!(
+        mode,
+        Some(2),
+        "a dimension created in model space is a model-space record"
+    );
+    let live = app.tabs[i]
+        .scene
+        .document
+        .block_records
+        .get(&block)
+        .expect("the live document holds the block the dimension names");
+    assert!(
+        !live.entity_handles.is_empty(),
+        "the live annotation block holds the exploded geometry"
+    );
+
+    // The document prepared the way a worker save prepares it before writing.
+    let document = app.tabs[i].scene.document_for_save();
+    let version = document.version;
+    let prepared = crate::io::prepare_document_for_save(document, version);
+    let bytes = document::DxfWriter::new(&prepared).write_to_vec().unwrap();
+    let reopened = document::DxfReader::from_reader(std::io::Cursor::new(bytes))
+        .unwrap()
+        .read()
+        .unwrap();
+    let (saved_measured, saved_block, saved_mode) = record(&reopened);
+    assert!(
+        (saved_measured - 40.0).abs() < 1e-6,
+        "the measured span survives the save: {saved_measured}"
+    );
+    assert!(
+        saved_block.starts_with("*D"),
+        "the save bakes the annotation block: {saved_block:?}"
+    );
+    assert_eq!(
+        saved_mode,
+        Some(2),
+        "reopening resolves the dimension to model space"
+    );
+    let annotation = reopened
+        .block_records
+        .get(&saved_block)
+        .expect("the baked block is in the reopened document");
+    assert!(
+        !annotation.entity_handles.is_empty(),
+        "the annotation block holds the exploded geometry"
+    );
+}
+
 /// A dimensional constraint added by the constraint command owns the span its
 /// value names, so the grip that moves one of its participants is clamped by
 /// that drag rather than by whatever constraint command walks the network next.
@@ -2061,7 +2678,7 @@ fn a_created_constraint_clamps_the_grip_that_moves_it() {
         .as_str()
         .expect("the drawn line has a handle")
         .to_owned();
-    let line = codec::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
+    let line = document::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
     let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
         kind: ConstraintKind::DistanceX,
         first: ParametricRef::point(line, 0),
@@ -2103,7 +2720,7 @@ fn a_created_constraint_clamps_the_grip_that_moves_it() {
     );
     let span = |app: &OpenCADStudio| {
         let document = &app.tabs[app.active_tab].scene.document;
-        let codec::EntityType::Line(entity) = document.get_entity(line).unwrap() else {
+        let document::EntityType::Line(entity) = document.get_entity(line).unwrap() else {
             unreachable!("the participant is still a line");
         };
         entity.end.x - entity.start.x
@@ -2152,7 +2769,7 @@ fn a_deleted_constraint_stops_clamping_the_grip_that_moved_it() {
         .as_str()
         .expect("the drawn line has a handle")
         .to_owned();
-    let line = codec::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
+    let line = document::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
     let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
         kind: ConstraintKind::DistanceX,
         first: ParametricRef::point(line, 0),
@@ -2179,7 +2796,7 @@ fn a_deleted_constraint_stops_clamping_the_grip_that_moved_it() {
         .id;
     let span = |app: &OpenCADStudio| {
         let document = &app.tabs[app.active_tab].scene.document;
-        let codec::EntityType::Line(entity) = document.get_entity(line).unwrap() else {
+        let document::EntityType::Line(entity) = document.get_entity(line).unwrap() else {
             unreachable!("the participant is still a line");
         };
         entity.end.x - entity.start.x
@@ -2235,7 +2852,7 @@ fn the_delete_command_frees_the_grip_it_clamped() {
         .as_str()
         .expect("the drawn line has a handle")
         .to_owned();
-    let line = codec::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
+    let line = document::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
     let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
         kind: ConstraintKind::DistanceX,
         first: ParametricRef::point(line, 0),
@@ -2261,7 +2878,9 @@ fn the_delete_command_frees_the_grip_it_clamped() {
         .iter()
         .find(|entity| entity["handle"].as_str() != Some(handle.as_str()))
         .map(|entity| {
-            codec::Handle::new(u64::from_str_radix(entity["handle"].as_str().unwrap(), 16).unwrap())
+            document::Handle::new(
+                u64::from_str_radix(entity["handle"].as_str().unwrap(), 16).unwrap(),
+            )
         })
         .expect("the second line");
     let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
@@ -2279,9 +2898,9 @@ fn the_delete_command_frees_the_grip_it_clamped() {
         label: "Linear constraint",
     });
     app.drive_headless_task(task).unwrap();
-    let span = |app: &OpenCADStudio, target: codec::Handle| {
+    let span = |app: &OpenCADStudio, target: document::Handle| {
         let document = &app.tabs[app.active_tab].scene.document;
-        let codec::EntityType::Line(entity) = document.get_entity(target).unwrap() else {
+        let document::EntityType::Line(entity) = document.get_entity(target).unwrap() else {
             unreachable!("the participant is still a line");
         };
         entity.end.x - entity.start.x
@@ -2303,7 +2922,7 @@ fn the_delete_command_frees_the_grip_it_clamped() {
             .scene
             .parametric_constraint_set(ParametricScope::ModelSpace)
             .expect("the drawing keeps its constraint set");
-        let dimension = |entity: codec::Handle| {
+        let dimension = |entity: document::Handle| {
             set.constraints
                 .iter()
                 .filter(|constraint| constraint.refs.iter().any(|r| r.entity == entity))
@@ -2413,7 +3032,7 @@ fn erasing_a_constrained_line_takes_its_constraint_and_its_dimension() {
         .as_str()
         .expect("the drawn line has a handle")
         .to_owned();
-    let line = codec::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
+    let line = document::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
     let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
         kind: ConstraintKind::DistanceX,
         first: ParametricRef::point(line, 0),
@@ -2503,6 +3122,162 @@ fn erasing_a_constrained_line_takes_its_constraint_and_its_dimension() {
     );
 }
 
+/// Erasing one of two lines that share a named parameter leaves the parameter
+/// alone: the constraint on the line outside the selection still drives it, so
+/// the purge must not read the name from the deleted constraint alone.
+#[test]
+fn erasing_one_of_two_lines_that_share_a_parameter_keeps_the_parameter() {
+    use crate::command::CmdResult;
+    use crate::scene::named_parameters::DrivingValue;
+    use crate::scene::parametric_constraints::{ConstraintKind, ParametricRef, ParametricScope};
+
+    fn constrained(
+        app: &mut OpenCADStudio,
+        line: document::Handle,
+        x: f64,
+        name: &str,
+        size: f64,
+    ) -> document::Handle {
+        let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
+            kind: ConstraintKind::DistanceX,
+            first: ParametricRef::point(line, 0),
+            second: ParametricRef::point(line, 1),
+            first_point: glam::DVec3::new(x, 0.0, 0.0),
+            second_point: glam::DVec3::new(x + 40.0, 0.0, 0.0),
+            location: glam::DVec3::new(x + 20.0, -10.0, 0.0),
+            axis: glam::DVec3::X,
+            direction: None,
+            name: name.to_string(),
+            expression: size.to_string(),
+            renamed: false,
+            label: "Linear constraint",
+        });
+        app.drive_headless_task(task).unwrap();
+        let set = app.tabs[app.active_tab]
+            .scene
+            .parametric_constraint_set(ParametricScope::ModelSpace)
+            .expect("the constraint was added");
+        set.constraints
+            .iter()
+            .find(|constraint| {
+                matches!(
+                    &constraint.driving_param,
+                    Some(DrivingValue::Named(driven)) if driven == name
+                )
+            })
+            .and_then(|constraint| set.dimensions.get(&constraint.id).copied())
+            .expect("the constraint draws a dimension")
+    }
+
+    let mut app = OpenCADStudio::new_for_test();
+    app.automation_op(r#"{"op":"new"}"#);
+    let i = app.active_tab;
+    app.tabs[i].scene.selection.borrow_mut().view.vp_size = (1600.0, 800.0);
+    app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 40,0"}"#);
+    let first = app.automation_op(r#"{"op":"query","type":"Line","detail":"summary"}"#)["entities"]
+        [0]["handle"]
+        .as_str()
+        .expect("the drawn line has a handle")
+        .to_owned();
+    let line = document::Handle::new(u64::from_str_radix(&first, 16).unwrap());
+    let deleted_dimension = constrained(&mut app, line, 0.0, "d1", 100.0);
+    app.automation_op(r#"{"op":"run","cmd":"LINE 200,0 240,0"}"#);
+    let other = app.automation_op(r#"{"op":"query","type":"Line","detail":"summary"}"#)["entities"]
+        .as_array()
+        .expect("the read returns both lines")
+        .iter()
+        .find_map(|row| row["handle"].as_str().filter(|handle| **handle != first))
+        .map(|handle| document::Handle::new(u64::from_str_radix(handle, 16).unwrap()))
+        .expect("the second line has its own handle");
+    let survivor_dimension = constrained(&mut app, other, 200.0, "d2", 60.0);
+    // Adding or renaming rejects a duplicate, so sharing arises from loaded
+    // data or from a block set naming a drawing-level parameter.
+    {
+        let scene = &mut app.tabs[i].scene;
+        let set = scene
+            .parametric_constraints
+            .iter_mut()
+            .find(|set| set.scope == ParametricScope::ModelSpace)
+            .expect("the model-space set");
+        let survivor = set
+            .constraints
+            .iter_mut()
+            .find(|constraint| constraint.refs.iter().all(|r| r.entity == other))
+            .expect("the second line's constraint");
+        survivor.driving_param = Some(DrivingValue::Named("d1".to_string()));
+        scene.named_parameters_mut().remove("d2");
+    }
+    let shared = app.tabs[i]
+        .scene
+        .parametric_constraint_set(ParametricScope::ModelSpace)
+        .expect("the model-space set")
+        .constraints
+        .iter()
+        .find(|constraint| constraint.refs.iter().all(|r| r.entity == other))
+        .and_then(|constraint| match &constraint.driving_param {
+            Some(DrivingValue::Named(name)) => Some(name.clone()),
+            _ => None,
+        });
+    assert_eq!(
+        shared.as_deref(),
+        Some("d1"),
+        "both constraints drive d1 before the command runs"
+    );
+    assert!(
+        app.tabs[i].scene.named_parameters().contains("d1"),
+        "and d1 is defined before the command runs"
+    );
+
+    app.tabs[i].scene.select_entity(line, false);
+    let _ = app.dispatch_command("ERASE");
+
+    assert!(
+        app.tabs[i].scene.document.get_entity(line).is_none(),
+        "the selected line is erased"
+    );
+    assert!(
+        app.tabs[i].scene.named_parameters().contains("d1"),
+        "the shared parameter stays, because the line outside the selection still drives it"
+    );
+    assert!(
+        app.tabs[i]
+            .scene
+            .document
+            .get_entity(deleted_dimension)
+            .is_none(),
+        "the erased line's dimension goes with it"
+    );
+    assert!(
+        app.tabs[i]
+            .scene
+            .document
+            .get_entity(survivor_dimension)
+            .is_some(),
+        "and the surviving line keeps the dimension it draws"
+    );
+    let survivors = app.tabs[i]
+        .scene
+        .parametric_constraint_set(ParametricScope::ModelSpace)
+        .expect("the drawing keeps its constraint set")
+        .constraints
+        .clone();
+    assert_eq!(
+        survivors.len(),
+        1,
+        "only the second line's constraint stays"
+    );
+    assert!(
+        survivors.iter().all(|constraint| {
+            constraint.refs.iter().all(|r| r.entity == other)
+                && matches!(
+                    &constraint.driving_param,
+                    Some(DrivingValue::Named(name)) if name == "d1"
+                )
+        }),
+        "and it is the one that still drives the shared parameter"
+    );
+}
+
 /// The dimension a constraint draws belongs to the constraint, not to the
 /// user's layers: locking its layer does not keep it drawn over a line that is
 /// gone.
@@ -2523,7 +3298,7 @@ fn a_locked_layer_does_not_strand_the_dimension_of_an_erased_line() {
         .as_str()
         .expect("the drawn line has a handle")
         .to_owned();
-    let line = codec::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
+    let line = document::Handle::new(u64::from_str_radix(&handle, 16).unwrap());
     let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
         kind: ConstraintKind::DistanceX,
         first: ParametricRef::point(line, 0),
@@ -2601,11 +3376,11 @@ fn the_delete_command_keeps_a_parameter_a_surviving_constraint_still_drives() {
 
     fn constrained(
         app: &mut OpenCADStudio,
-        line: codec::Handle,
+        line: document::Handle,
         x: f64,
         name: &str,
         size: f64,
-    ) -> codec::Handle {
+    ) -> document::Handle {
         let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
             kind: ConstraintKind::DistanceX,
             first: ParametricRef::point(line, 0),
@@ -2647,7 +3422,7 @@ fn the_delete_command_keeps_a_parameter_a_surviving_constraint_still_drives() {
         .as_str()
         .expect("the drawn line has a handle")
         .to_owned();
-    let line = codec::Handle::new(u64::from_str_radix(&first, 16).unwrap());
+    let line = document::Handle::new(u64::from_str_radix(&first, 16).unwrap());
     let deleted_dimension = constrained(&mut app, line, 0.0, "d1", 100.0);
     app.automation_op(r#"{"op":"run","cmd":"LINE 200,0 240,0"}"#);
     let other = app.automation_op(r#"{"op":"query","type":"Line","detail":"summary"}"#)["entities"]
@@ -2655,7 +3430,7 @@ fn the_delete_command_keeps_a_parameter_a_surviving_constraint_still_drives() {
         .expect("the read returns both lines")
         .iter()
         .find_map(|row| row["handle"].as_str().filter(|handle| **handle != first))
-        .map(|handle| codec::Handle::new(u64::from_str_radix(handle, 16).unwrap()))
+        .map(|handle| document::Handle::new(u64::from_str_radix(handle, 16).unwrap()))
         .expect("the second line has its own handle");
     let survivor_dimension = constrained(&mut app, other, 200.0, "d2", 60.0);
     // Both constraints name the same parameter. Adding or renaming rejects a
@@ -2757,11 +3532,11 @@ fn erasing_the_dimension_on_its_own_leaves_the_constraint_set_clean() {
 
     fn constrained(
         app: &mut OpenCADStudio,
-        line: codec::Handle,
+        line: document::Handle,
         y: f64,
         name: &str,
         expression: &str,
-    ) -> codec::Handle {
+    ) -> document::Handle {
         let task = app.apply_cmd_result(CmdResult::AddDimensionalConstraint {
             kind: ConstraintKind::DistanceX,
             first: ParametricRef::point(line, 0),
@@ -2803,14 +3578,14 @@ fn erasing_the_dimension_on_its_own_leaves_the_constraint_set_clean() {
         .as_str()
         .expect("the drawn line has a handle")
         .to_owned();
-    let line = codec::Handle::new(u64::from_str_radix(&first, 16).unwrap());
+    let line = document::Handle::new(u64::from_str_radix(&first, 16).unwrap());
     app.automation_op(r#"{"op":"run","cmd":"LINE 0,20 40,20"}"#);
     let other = app.automation_op(r#"{"op":"query","type":"Line","detail":"summary"}"#)["entities"]
         .as_array()
         .expect("the read returns both lines")
         .iter()
         .find_map(|row| row["handle"].as_str().filter(|handle| **handle != first))
-        .map(|handle| codec::Handle::new(u64::from_str_radix(handle, 16).unwrap()))
+        .map(|handle| document::Handle::new(u64::from_str_radix(handle, 16).unwrap()))
         .expect("the second line has its own handle");
     let erased = constrained(&mut app, line, 0.0, "d1", "100");
     let kept = constrained(&mut app, other, 20.0, "d2", "60");
@@ -2895,7 +3670,7 @@ fn auto_coincident_names_geometry_the_network_moves() {
     let mut upright = None;
     let mut slanted = None;
     for entity in drawn["entities"].as_array().expect("the three lines") {
-        let handle = codec::Handle::new(
+        let handle = document::Handle::new(
             u64::from_str_radix(entity["handle"].as_str().unwrap(), 16).unwrap(),
         );
         let end = line_point(entity, "end");
@@ -2960,7 +3735,7 @@ fn a_parallel_command_names_geometry_the_network_moves() {
     let drawn = app.automation_op(r#"{"op":"query","type":"Line","detail":"geometry"}"#);
     let mut slanted = None;
     for entity in drawn["entities"].as_array().expect("the three lines") {
-        let handle = codec::Handle::new(
+        let handle = document::Handle::new(
             u64::from_str_radix(entity["handle"].as_str().unwrap(), 16).unwrap(),
         );
         if line_point(entity, "end").1 > 100.0 {
@@ -3016,7 +3791,7 @@ fn auto_constrain_names_geometry_the_network_moves() {
     let mut upright = None;
     let mut slanted = None;
     for entity in drawn["entities"].as_array().expect("the three lines") {
-        let handle = codec::Handle::new(
+        let handle = document::Handle::new(
             u64::from_str_radix(entity["handle"].as_str().unwrap(), 16).unwrap(),
         );
         let end = line_point(entity, "end");
@@ -3071,8 +3846,8 @@ fn auto_constrain_names_geometry_the_network_moves() {
 /// A block whose attributes an automation client fills by tag: WIDTH asks
 /// for a value, CONST carries a fixed one.
 fn define_attributed_block(app: &mut OpenCADStudio) {
-    use codec::entities::AttributeDefinition;
-    use codec::types::Vector3;
+    use document::entities::AttributeDefinition;
+    use document::types::Vector3;
     let definition = |tag: &str, value: &str, at: Vector3| {
         let mut definition =
             AttributeDefinition::new(tag.to_string(), format!("{tag}:"), value.to_string());
@@ -3087,12 +3862,12 @@ fn define_attributed_block(app: &mut OpenCADStudio) {
         "TAGGED",
         Vector3::ZERO,
         vec![
-            codec::EntityType::AttributeDefinition(definition(
+            document::EntityType::AttributeDefinition(definition(
                 "WIDTH",
                 "100",
                 Vector3::new(2.0, 3.0, 0.0),
             )),
-            codec::EntityType::AttributeDefinition(constant),
+            document::EntityType::AttributeDefinition(constant),
         ],
     );
 }
@@ -3118,7 +3893,7 @@ fn entities_create_insert_takes_attribute_values_by_tag() {
         .document
         .entities()
         .find_map(|entity| match entity {
-            codec::EntityType::Insert(insert) if insert.block_name == "TAGGED" => {
+            document::EntityType::Insert(insert) if insert.block_name == "TAGGED" => {
                 Some(insert.clone())
             }
             _ => None,
@@ -3132,7 +3907,7 @@ fn entities_create_insert_takes_attribute_values_by_tag() {
     assert_eq!(values, vec![("WIDTH", "250"), ("CONST", "fixed")]);
     assert_eq!(
         insert.attributes[0].insertion_point,
-        codec::types::Vector3::new(12.0, 3.0, 0.0),
+        document::types::Vector3::new(12.0, 3.0, 0.0),
         "the attribute is placed by the reference"
     );
     assert!(insert

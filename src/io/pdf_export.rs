@@ -19,6 +19,10 @@ pub use crate::io::plot_types::{
     PdfPageInput, PdfPlotOptions, PlotContent, PlotGroupSplits, PlotImage, PlotWire,
 };
 
+// The dash layout lives with the shared emitter; upstream's tests reach it
+// here.
+#[cfg(test)]
+pub(crate) use crate::io::plot_emit::dash_ranges;
 use crate::io::plot_emit::{
     emit_plot_content, BuiltinFace, FillRule, LineCap, LineJoin, PlotAssets, PlotBlend, PlotOp,
     PlotPage, PlotPoint, PlotSink,
@@ -98,7 +102,7 @@ fn write_pdf_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
         let _ = std::fs::remove_file(&temp_path);
         return Err(format!("Failed to write PDF data: {error}"));
     }
-    if let Err(error) = super::replace_save_file(&temp_path, path) {
+    if let Err(error) = super::replace_save_file(&temp_path, path, false) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(format!("Failed to replace PDF file: {error}"));
     }
@@ -609,6 +613,59 @@ mod tests {
     use crate::io::plot_style::PlotStyleTableExt;
     use crate::scene::WireModel;
 
+    #[test]
+    fn dash_ranges_align_a_run_on_its_end_dashes() {
+        let mut pattern = [0.0; 8];
+        pattern[0] = 20.0;
+        pattern[1] = -20.0;
+        // L = 110, k = 2, D = 25: 0-25, 45-65, 85-110.
+        let ranges = super::dash_ranges(0.0, 110.0, 110.0, 40.0, &pattern);
+        let expected = [[0.0, 25.0], [45.0, 65.0], [85.0, 110.0]];
+        assert_eq!(ranges.len(), expected.len(), "{ranges:?}");
+        for (range, want) in ranges.iter().zip(expected) {
+            assert!((range[0] * 110.0 - want[0]).abs() < 1e-2, "{ranges:?}");
+            assert!((range[1] * 110.0 - want[1]).abs() < 1e-2, "{ranges:?}");
+        }
+        // The same run in two segments, split inside its middle dash.
+        let first = super::dash_ranges(0.0, 55.0, 110.0, 40.0, &pattern);
+        assert_eq!(first.len(), 2);
+        assert!((first[1][1] - 1.0).abs() < 1e-4, "{first:?}");
+        let second = super::dash_ranges(55.0, 110.0, 110.0, 40.0, &pattern);
+        assert!(second[0][0].abs() < 1e-4, "{second:?}");
+        // A run no longer than a period is one dash.
+        assert_eq!(
+            super::dash_ranges(0.0, 30.0, 30.0, 40.0, &pattern),
+            vec![[0.0, 1.0]]
+        );
+    }
+
+    #[test]
+    fn dash_ranges_fit_a_closed_path() {
+        let mut pattern = [0.0; 8];
+        pattern[0] = 20.0;
+        pattern[1] = -20.0;
+        // L = 100 holds 2 periods of 50: 0-25, 50-75.
+        let ranges = super::dash_ranges(0.0, 100.0, -100.0, 40.0, &pattern);
+        let expected = [[0.0, 25.0], [50.0, 75.0]];
+        assert_eq!(ranges.len(), expected.len(), "{ranges:?}");
+        for (range, want) in ranges.iter().zip(expected) {
+            assert!((range[0] * 100.0 - want[0]).abs() < 1e-2, "{ranges:?}");
+            assert!((range[1] * 100.0 - want[1]).abs() < 1e-2, "{ranges:?}");
+        }
+        // Before the start of the pattern, as on a polyline's first segment:
+        // the gap that closes the last period, and the dash ahead of it.
+        assert!(super::dash_ranges(-25.0, 0.0, -100.0, 40.0, &pattern).is_empty());
+        assert_eq!(
+            super::dash_ranges(-50.0, -25.0, -100.0, 40.0, &pattern),
+            vec![[0.0, 1.0]]
+        );
+        // Shorter than a period: solid.
+        assert_eq!(
+            super::dash_ranges(0.0, 39.0, -39.0, 40.0, &pattern),
+            vec![[0.0, 1.0]]
+        );
+    }
+
     /// One A4 portrait page at 1:1 carrying `wires` and nothing else.
     fn test_page(wires: Vec<PlotWire>) -> PdfPageInput {
         PdfPageInput {
@@ -800,6 +857,39 @@ mod tests {
         widths.sort_by(|a, b| a.partial_cmp(b).unwrap());
         widths.dedup_by(|a, b| (*a - *b).abs() < 0.01);
         widths
+    }
+
+    #[test]
+    fn named_style_table_recolors_wires_through_normal() {
+        // An STB table applies its `Normal` object style to everything that
+        // does not name a style explicitly: objects carry no plot-style
+        // handle in this build, so Normal is the honoured style.
+        let make_page = || {
+            let mut wire = PlotWire {
+                wire: WireModel::solid(
+                    "test".into(),
+                    vec![[0.0, 0.0, 0.0], [50.0, 50.0, 0.0]],
+                    [1.0, 0.0, 0.0, 1.0],
+                    false,
+                ),
+                draw_depth: 0.0,
+            };
+            wire.wire.aci = 1;
+            test_page(vec![wire])
+        };
+        let mut named = PlotStyleTable::identity("Mono.stb");
+        named.is_stb = true;
+        let mut normal = crate::io::plot_style::PlotStyleEntry::default();
+        normal.name = "Normal".to_string();
+        normal.color = Some([0, 0, 0]);
+        normal.color_policy = 0;
+        normal.screening = 100;
+        named.named_entries.insert("Normal".to_string(), normal);
+        let styled = pdf_stream_text(&render_pdf_bytes(&[make_page()], Some(&named)).unwrap());
+        assert!(
+            !styled.contains("1 0 0 rg") && !styled.contains("1 0 0 RG"),
+            "STB Normal (black) must recolor the wire"
+        );
     }
 
     #[test]

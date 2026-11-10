@@ -116,6 +116,7 @@ impl OpenCADStudio {
         let i = self.active_tab;
         self.tabs[i].scene.clear();
         self.tabs[i].scene.document = document;
+        self.tabs[i].scene.sync_annotation_scale_from_header();
         self.tabs[i].scene.bump_layout_epoch();
         self.tabs[i].scene.bump_scale_epoch();
         self.tabs[i].scene.bump_ucs_epoch();
@@ -889,12 +890,14 @@ fn serve_socket_with_idle(
 
 /// The entities inside block definitions: owned by (or listed in) a block
 /// record that is not a layout's model or paper space.
-fn definition_members(document: &codec::Document) -> std::collections::HashSet<codec::Handle> {
-    let mut layouts: std::collections::HashSet<codec::Handle> = document
+fn definition_members(
+    document: &document::Document,
+) -> std::collections::HashSet<document::Handle> {
+    let mut layouts: std::collections::HashSet<document::Handle> = document
         .objects
         .values()
         .filter_map(|object| match object {
-            codec::objects::ObjectType::Layout(layout) if !layout.block_record.is_null() => {
+            document::objects::ObjectType::Layout(layout) if !layout.block_record.is_null() => {
                 Some(layout.block_record)
             }
             _ => None,
@@ -905,13 +908,13 @@ fn definition_members(document: &codec::Document) -> std::collections::HashSet<c
         (name.starts_with("*MODEL_SPACE") || name.starts_with("*PAPER_SPACE"))
             .then_some(record.handle)
     }));
-    let definitions: std::collections::HashSet<codec::Handle> = document
+    let definitions: std::collections::HashSet<document::Handle> = document
         .block_records
         .iter()
         .filter(|record| !layouts.contains(&record.handle))
         .map(|record| record.handle)
         .collect();
-    let mut members: std::collections::HashSet<codec::Handle> = document
+    let mut members: std::collections::HashSet<document::Handle> = document
         .block_records
         .iter()
         .filter(|record| definitions.contains(&record.handle))
@@ -935,7 +938,10 @@ fn err(msg: impl std::fmt::Display) -> Value {
 /// still honouring it. Built from the live constraint sets — the structure a
 /// document's `ASSOC2DCONSTRAINTGROUP` members decode to on load — so the read
 /// names the same constraints the solver enforces.
-pub(crate) fn constraint_records_json(scene: &crate::scene::Scene, entity: codec::Handle) -> Value {
+pub(crate) fn constraint_records_json(
+    scene: &crate::scene::Scene,
+    entity: document::Handle,
+) -> Value {
     let mut records = Vec::new();
     for set in &scene.parametric_constraints {
         for constraint in set.constraints_referencing(entity) {
@@ -972,11 +978,11 @@ pub(crate) fn constraint_records_json(scene: &crate::scene::Scene, entity: codec
     Value::Array(records)
 }
 
-fn v3(v: codec::types::Vector3) -> Value {
+fn v3(v: document::types::Vector3) -> Value {
     json!([v.x, v.y, v.z])
 }
 
-pub(crate) fn entity_type_matches(entity: &codec::EntityType, requested: &str) -> bool {
+pub(crate) fn entity_type_matches(entity: &document::EntityType, requested: &str) -> bool {
     if crate::entities::names::ui_name(entity).eq_ignore_ascii_case(requested) {
         return true;
     }
@@ -1003,12 +1009,12 @@ pub(crate) fn entity_type_matches(entity: &codec::EntityType, requested: &str) -
 /// `display_type` ("`<Label>` (`<Native>`)"), while `type` stays the raw
 /// native name so existing scripts and filters keep working.
 pub(crate) fn entity_json(
-    document: &codec::Document,
-    e: &codec::EntityType,
+    document: &document::Document,
+    e: &document::EntityType,
     detail: &str,
     custom_label: Option<String>,
 ) -> Value {
-    use codec::EntityType as E;
+    use document::EntityType as E;
     let c = e.common();
     let mut obj = json!({
         "handle": format!("{:X}", c.handle.value()),
@@ -1084,7 +1090,9 @@ pub(crate) fn entity_json(
             map.insert("value".into(), json!(t.value));
             map.insert(
                 "text".into(),
-                json!(codec::entities::mtext_format::parse_mtext(&t.value, true).to_plain_text()),
+                json!(
+                    document::entities::mtext_format::parse_mtext(&t.value, true).to_plain_text()
+                ),
             );
             map.insert("position".into(), v3(t.insertion_point));
             map.insert("height".into(), json!(t.height));
@@ -1138,11 +1146,13 @@ pub(crate) fn entity_json(
                     .edges
                     .iter()
                     .filter_map(|edge| match edge {
-                        codec::entities::BoundaryEdge::Polyline(polyline) => Some(json!(polyline
-                            .vertices
-                            .iter()
-                            .map(|v| [v.x, v.y])
-                            .collect::<Vec<_>>())),
+                        document::entities::BoundaryEdge::Polyline(polyline) => {
+                            Some(json!(polyline
+                                .vertices
+                                .iter()
+                                .map(|v| [v.x, v.y])
+                                .collect::<Vec<_>>()))
+                        }
                         _ => None,
                     })
                     .collect();
@@ -1189,7 +1199,7 @@ fn request_point(req: &Value, key: &str) -> Option<[f64; 2]> {
     (x.is_finite() && y.is_finite()).then_some([x, y])
 }
 
-fn request_handle(value: &Value) -> Option<codec::Handle> {
+fn request_handle(value: &Value) -> Option<document::Handle> {
     value
         .as_str()
         .and_then(|value| {
@@ -1199,7 +1209,7 @@ fn request_handle(value: &Value) -> Option<codec::Handle> {
                 .unwrap_or(value);
             u64::from_str_radix(value, 16).ok()
         })
-        .map(codec::Handle::new)
+        .map(document::Handle::new)
 }
 
 fn projected_fields(mut entity: Value, fields: Option<&Vec<Value>>) -> Value {
@@ -1220,7 +1230,7 @@ pub(super) struct SaveLosses {
 }
 
 impl SaveLosses {
-    pub fn of(doc: &codec::Document, version: codec::DxfVersion, is_dxf: bool) -> Self {
+    pub fn of(doc: &document::Document, version: document::DxfVersion, is_dxf: bool) -> Self {
         Self {
             dropped: crate::io::dropped_on_save_count(doc, version, is_dxf),
             mtext: crate::io::mtext_losses_on_save(doc, version, is_dxf),
@@ -1263,10 +1273,10 @@ impl SaveLosses {
 
 pub(super) fn requested_save_target(
     req: &Value,
-    default_version: codec::DxfVersion,
+    default_version: document::DxfVersion,
     default_is_dxf: bool,
     path: Option<&std::path::Path>,
-) -> Result<(codec::DxfVersion, bool), String> {
+) -> Result<(document::DxfVersion, bool), String> {
     let version = match req["target_version"].as_str() {
         Some(value) => crate::io::parse_target_version(value)?,
         None => default_version,
@@ -1309,7 +1319,10 @@ fn is_generated_dimension_block_name(name: &str) -> bool {
 /// Save-time baking materializes a Dimension's graphics in an anonymous
 /// `*D<n>` block. Those members are derived display geometry, not additional
 /// logical drawing entities; named block members remain part of the manifest.
-fn is_dimension_display_entity(document: &codec::Document, entity: &codec::EntityType) -> bool {
+fn is_dimension_display_entity(
+    document: &document::Document,
+    entity: &document::EntityType,
+) -> bool {
     let owner = entity.common().owner_handle;
     document
         .block_records
@@ -1326,7 +1339,7 @@ fn is_dimension_display_entity(document: &codec::Document, entity: &codec::Entit
 /// logical entity a placement adds is the `Insert`; counting the definition's
 /// interior as drawing entities would make the drawing's entity count depend on
 /// how many lines a symbol happens to be drawn with.
-fn is_pid_symbol_block_member(document: &codec::Document, entity: &codec::EntityType) -> bool {
+fn is_pid_symbol_block_member(document: &document::Document, entity: &document::EntityType) -> bool {
     let owner = entity.common().owner_handle;
     document
         .block_records
@@ -1338,11 +1351,11 @@ fn is_pid_symbol_block_member(document: &codec::Document, entity: &codec::Entity
 
 /// Entities that are derived display geometry rather than logical drawing
 /// content: generated dimension blocks and P&ID symbol definitions.
-fn is_derived_display_entity(document: &codec::Document, entity: &codec::EntityType) -> bool {
+fn is_derived_display_entity(document: &document::Document, entity: &document::EntityType) -> bool {
     is_dimension_display_entity(document, entity) || is_pid_symbol_block_member(document, entity)
 }
 
-fn document_manifest(document: &codec::Document) -> Value {
+fn document_manifest(document: &document::Document) -> Value {
     let mut by_type: BTreeMap<String, u64> = BTreeMap::new();
     let mut by_layer: BTreeMap<String, u64> = BTreeMap::new();
     let mut total = 0u64;
@@ -1378,7 +1391,7 @@ fn audit_ascii_dxf_references(path: &std::path::Path) -> Result<Value, String> {
     }
     let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
     let lines: Vec<&str> = text.lines().collect();
-    if lines.len() % 2 != 0 {
+    if !lines.len().is_multiple_of(2) {
         return Ok(
             json!({"ok":false,"malformed_pairs":true,"duplicate_handles":[],"dangling_handles":[]}),
         );
@@ -1409,9 +1422,7 @@ fn audit_ascii_dxf_references(path: &std::path::Path) -> Result<Value, String> {
         if code == 0 {
             record_has_handle = false;
         } else if code == 5 || code == 105 {
-            if !std::mem::replace(&mut record_has_handle, true)
-                && !declared.insert(value.clone())
-            {
+            if !std::mem::replace(&mut record_has_handle, true) && !declared.insert(value.clone()) {
                 duplicate.insert(value.clone());
             }
         } else if [330, 340, 350, 360, 390].contains(&code) {
@@ -1602,14 +1613,14 @@ impl OpenCADStudio {
                     return err("Close the block editor before replacing the drawing.");
                 }
                 if let Some(template) = req["template"].as_str() {
-                    let purged = match self.apply_template(template) {
+                    match self.apply_template(template) {
                         Ok(purged) => purged,
                         Err(error) => return error,
                     };
                     let mut summary = self.entity_summary();
                     if let Some(obj) = summary.as_object_mut() {
                         obj.insert("template".into(), json!(template));
-                        obj.insert("purged".into(), json!(purged));
+                        obj.insert("purged".into(), json!(()));
                     }
                     return summary;
                 }
@@ -1712,10 +1723,9 @@ impl OpenCADStudio {
             "text_search" => self.automation_text_search(&req),
             "text_audit" => self.automation_text_audit(&req),
             "text_replace" => self.automation_text_replace(&req),
-            "blocks"
-            | "block_instances"
-            | "cad_get_blocks"
-            | "cad_extract_block_instances" => self.automation_blocks(&req),
+            "blocks" | "block_instances" | "cad_get_blocks" | "cad_extract_block_instances" => {
+                self.automation_blocks(&req)
+            }
             "records" => self.record_query(&req),
             "record_schema" => self.record_schema(&req),
             "capabilities" => self.record_capabilities(),
@@ -1787,7 +1797,7 @@ impl OpenCADStudio {
                 // By explicit handles (hex, as returned by `query`). An entity
                 // inside a block definition is not selectable on its own,
                 // except in the definition the editor has open.
-                let explicit: Vec<codec::Handle> = req["handles"]
+                let explicit: Vec<document::Handle> = req["handles"]
                     .as_array()
                     .map(|arr| {
                         arr.iter()
@@ -1797,7 +1807,7 @@ impl OpenCADStudio {
                                     .strip_prefix("0x")
                                     .or_else(|| h.strip_prefix("0X"))
                                     .unwrap_or(h);
-                                u64::from_str_radix(h, 16).ok().map(codec::Handle::new)
+                                u64::from_str_radix(h, 16).ok().map(document::Handle::new)
                             })
                             .collect()
                     })
@@ -1809,8 +1819,9 @@ impl OpenCADStudio {
                 // the viewport. Membership is the record's own list, so a
                 // child whose stored owner is null is still recognised, and
                 // every other definition's children stay out of reach.
-                let editing: std::collections::HashSet<codec::Handle> =
-                    scene.block_edit_block.map_or_else(Default::default, |definition| {
+                let editing: std::collections::HashSet<document::Handle> = scene
+                    .block_edit_block
+                    .map_or_else(Default::default, |definition| {
                         scene
                             .document
                             .block_records
@@ -1878,19 +1889,18 @@ impl OpenCADStudio {
                     // block definition is not selectable on its own.
                     let scene = &self.tabs[i].scene;
                     let space = scene.current_layout_block_handle_pub();
-                    let listed: std::collections::HashSet<codec::Handle> = scene
+                    let listed: std::collections::HashSet<document::Handle> = scene
                         .document
                         .block_records
                         .iter()
                         .find(|record| record.handle == space)
                         .map(|record| record.entity_handles.iter().copied().collect())
                         .unwrap_or_default();
-                    let handles: Vec<codec::Handle> = scene
+                    let handles: Vec<document::Handle> = scene
                         .document
                         .entities()
                         .filter(|e| {
-                            e.common().owner_handle == space
-                                || listed.contains(&e.common().handle)
+                            e.common().owner_handle == space || listed.contains(&e.common().handle)
                         })
                         .filter(|e| type_filter.is_none_or(|t| entity_type_matches(e, t)))
                         .filter(|e| layer_filter.is_none_or(|l| e.common().layer == l))
@@ -1960,7 +1970,7 @@ impl OpenCADStudio {
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 let result =
-                    self.save_tab_synchronously_protected_as(i, path.clone(), version, true);
+                    self.save_tab_synchronously_protected_as(i, path.clone(), version, true, false);
                 #[cfg(target_arch = "wasm32")]
                 let result = crate::io::save(&self.tabs[i].scene.document, &path)
                     .map_err(crate::io::SaveFailure::other);
@@ -2153,8 +2163,8 @@ impl OpenCADStudio {
     fn automation_groups_for_handles(
         &self,
         i: usize,
-        handles: &[codec::Handle],
-    ) -> Vec<codec::Handle> {
+        handles: &[document::Handle],
+    ) -> Vec<document::Handle> {
         let mut groups = Vec::new();
         for handle in handles {
             for group in self.tabs[i].scene.groups_containing(*handle) {
@@ -2167,9 +2177,9 @@ impl OpenCADStudio {
         groups
     }
 
-    fn automation_group_records(&self, i: usize, groups: &[codec::Handle]) -> Vec<Value> {
+    fn automation_group_records(&self, i: usize, groups: &[document::Handle]) -> Vec<Value> {
         use crate::io::pid_legend::TagSource;
-        use codec::objects::ObjectType;
+        use document::objects::ObjectType;
 
         let scene = &self.tabs[i].scene;
         let rules = crate::io::pid_legend::Rules::load();
@@ -2223,7 +2233,11 @@ impl OpenCADStudio {
                 }
                 Some(iced_runtime::Action::Widget(_))
                 | Some(iced_runtime::Action::Tick)
-                | Some(iced_runtime::Action::Reload) => {}
+                | Some(iced_runtime::Action::Reload)
+                // Raising a window is for the person at the screen.
+                | Some(iced_runtime::Action::Window(
+                    iced_runtime::window::Action::GainFocus(_),
+                )) => {}
                 Some(action) => return Err(format!("GUI runtime required for {action:?}")),
                 None => {
                     streams.pop();
@@ -2369,7 +2383,7 @@ impl OpenCADStudio {
             }
         }
 
-        let space_names: rustc_hash::FxHashMap<codec::Handle, String> = tab
+        let space_names: rustc_hash::FxHashMap<document::Handle, String> = tab
             .scene
             .document
             .block_records
@@ -2591,12 +2605,12 @@ impl OpenCADStudio {
             if !seen_handles.insert(common.handle.value()) {
                 duplicate_handles.insert(format!("{:X}", common.handle.value()));
             }
-            if let codec::EntityType::Insert(insert) = entity {
+            if let document::EntityType::Insert(insert) = entity {
                 if !block_names.contains(&insert.block_name.to_ascii_uppercase()) {
                     missing_blocks.insert(insert.block_name.clone());
                 }
             }
-            if matches!(entity, codec::EntityType::Unknown(_)) {
+            if matches!(entity, document::EntityType::Unknown(_)) {
                 unknown_entities += 1;
             }
             if let Err(error) = serde_json::to_value(entity) {
@@ -2783,6 +2797,9 @@ impl OpenCADStudio {
         // (still blockless) dimension trips a false semantic_mismatch.
         let mut baked_view = snapshot.clone();
         crate::modules::draw::modify::explode::bake_dimension_blocks(&mut baked_view);
+        if is_dxf {
+            ocs_save::prune_omitted_dxf_records(&mut baked_view);
+        }
         let before = document_manifest(&baked_view);
         // The verified-save path is a real save path too, so the P&ID gate must
         // fire here with its contract code before the checksum/audit work. The
@@ -2891,6 +2908,31 @@ impl OpenCADStudio {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn opening_a_dxf_draws_at_its_saved_annotation_scale() {
+        let mut document = document::Document::new();
+        let scale = document::objects::Scale::new("1:100", 1.0, 100.0);
+        crate::scene::annotative::ensure_scale_object(&mut document, &scale);
+        document.header.current_annotation_scale = "1:100".to_string();
+        let bytes =
+            crate::io::save_to_bytes(&document, "dxf", document::DxfVersion::AC1027).expect("save");
+        let path = std::env::temp_dir().join(format!(
+            "ocs_saved_annotation_scale_{}.dxf",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).expect("write");
+
+        let mut app = OpenCADStudio::new_for_test();
+        let request = serde_json::json!({"op": "open", "path": path}).to_string();
+        let opened = app.automation_op(&request);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(opened["ok"], true, "{opened}");
+
+        let scene = &app.tabs[app.active_tab].scene;
+        assert_eq!(scene.document.header.current_annotation_scale, "1:100");
+        assert!((scene.annotation_scale - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
     fn clayer_command_sets_layer_used_by_new_geometry() {
         let mut app = super::OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -2918,8 +2960,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn plugin_edit_publication_is_not_repeated_at_message_boundary() {
-        use codec::entities::Point;
-        use codec::EntityType;
+        use document::entities::Point;
+        use document::EntityType;
 
         let mut app = super::OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -2948,8 +2990,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn an_edit_dispatches_document_changed_once_per_epoch() {
-        use codec::entities::Point;
-        use codec::EntityType;
+        use document::entities::Point;
+        use document::EntityType;
 
         let mut app = super::OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -3000,7 +3042,7 @@ mod tests {
             .expect("the drawn line")
             .common()
             .handle;
-        let selection: rustc_hash::FxHashSet<codec::Handle> = std::iter::once(handle).collect();
+        let selection: rustc_hash::FxHashSet<document::Handle> = std::iter::once(handle).collect();
         app.tabs[i].scene.replace_selection(selection);
         app.notify_plugins_selection_changed();
 
@@ -3103,8 +3145,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn idempotent_designation_remarks_cannot_loop_the_dispatch() {
-        use codec::entities::Point;
-        use codec::EntityType;
+        use document::entities::Point;
+        use document::EntityType;
 
         // Models the consumer plugin's re-mark handler: on DocumentChanged it
         // re-marks its entities through the plugin host API. The write goes
@@ -3147,8 +3189,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn history_replay_emits_no_plugin_notifications_itself() {
-        use codec::entities::Point;
-        use codec::EntityType;
+        use document::entities::Point;
+        use document::EntityType;
 
         // Undo/redo replay never publishes: the notification boundary is the
         // only channel, so replaying history steps in isolation is silent.
@@ -3190,7 +3232,7 @@ mod tests {
         app.automation_op(r#"{"op":"new"}"#);
         let i = app.active_tab;
         let epoch = app.tabs[i].scene.geometry_epoch;
-        let selected: Vec<codec::Handle> = app.tabs[i].scene.selected.iter().copied().collect();
+        let selected: Vec<document::Handle> = app.tabs[i].scene.selected.iter().copied().collect();
 
         let _ = plugin_dispatch_log();
         app.notify_plugins_selection_changed();
@@ -3274,10 +3316,10 @@ mod tests {
 
     #[test]
     fn manifest_ignores_dimension_display_members_but_keeps_named_block_members() {
-        use codec::entities::{Dimension, DimensionLinear, Line};
-        use codec::tables::BlockRecord;
-        use codec::types::Vector3;
-        use codec::{Document, EntityType};
+        use document::entities::{Dimension, DimensionLinear, Line};
+        use document::tables::BlockRecord;
+        use document::types::Vector3;
+        use document::{Document, EntityType};
 
         let mut document = Document::new();
         let mut detail = BlockRecord::new("DETAIL");
@@ -3294,7 +3336,9 @@ mod tests {
         dimension.definition_point = Vector3::new(0.0, 5.0, 0.0);
         dimension.base.text_middle_point = Vector3::new(5.0, 5.0, 0.0);
         document
-            .add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dimension))))
+            .add_entity(EntityType::Dimension(Box::new(Dimension::Linear(
+                dimension,
+            ))))
             .unwrap();
         crate::modules::draw::modify::explode::bake_dimension_blocks(&mut document);
 
@@ -3306,8 +3350,8 @@ mod tests {
 
     #[test]
     fn save_verified_dimension_round_trip_ignores_generated_display_block() {
-        use codec::entities::{Dimension, DimensionLinear, EntityType};
-        use codec::types::Vector3;
+        use document::entities::{Dimension, DimensionLinear, EntityType};
+        use document::types::Vector3;
 
         let mut app = super::OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -3317,7 +3361,9 @@ mod tests {
         dimension.base.text_middle_point = Vector3::new(5.0, 5.0, 0.0);
         app.tabs[app.active_tab]
             .scene
-            .add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dimension))));
+            .add_entity(EntityType::Dimension(Box::new(Dimension::Linear(
+                dimension,
+            ))));
         let path = std::env::temp_dir().join(format!(
             "ocs_verified_dimension_{}_{}.dwg",
             std::process::id(),
@@ -3343,8 +3389,8 @@ mod tests {
 
     #[test]
     fn save_verified_refreshes_current_disk_fingerprint_for_follow_up_save() {
-        use codec::entities::{Dimension, DimensionLinear, EntityType};
-        use codec::types::Vector3;
+        use document::entities::{Dimension, DimensionLinear, EntityType};
+        use document::types::Vector3;
 
         let mut app = super::OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -3355,7 +3401,9 @@ mod tests {
         let i = app.active_tab;
         app.tabs[i]
             .scene
-            .add_entity(EntityType::Dimension(Box::new(Dimension::Linear(dimension))));
+            .add_entity(EntityType::Dimension(Box::new(Dimension::Linear(
+                dimension,
+            ))));
         let path = std::env::temp_dir().join(format!(
             "ocs_verified_dimension_follow_up_{}_{}.dwg",
             std::process::id(),
@@ -3366,7 +3414,7 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&path);
         let version = app.tabs[i].scene.document.version;
-        app.save_tab_synchronously_protected_as(i, path.clone(), version, true)
+        app.save_tab_synchronously_protected_as(i, path.clone(), version, true, false)
             .expect("initial protected save");
 
         let result = app
@@ -3393,8 +3441,8 @@ mod tests {
 
     #[test]
     fn save_verified_accepts_new_dimension_with_baked_block() {
-        use codec::entities::{Dimension, DimensionLinear};
-        use codec::{EntityType, Vector3};
+        use document::entities::{Dimension, DimensionLinear};
+        use document::{EntityType, Vector3};
 
         let mut app = super::OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -3432,11 +3480,11 @@ mod tests {
     fn explicit_target_version_parser_never_silently_defaults() {
         assert_eq!(
             crate::io::parse_target_version("R14").unwrap(),
-            codec::DxfVersion::AC1014
+            document::DxfVersion::AC1014
         );
         assert_eq!(
             crate::io::parse_target_version("AC1015").unwrap(),
-            codec::DxfVersion::AC1015
+            document::DxfVersion::AC1015
         );
         assert!(crate::io::parse_target_version("R12").is_err());
         assert!(crate::io::parse_target_version("future").is_err());
@@ -3467,7 +3515,11 @@ mod tests {
         assert_eq!(audit["duplicate_handles"], serde_json::json!([]), "{audit}");
         std::fs::write(&path, "  0\nTEXT\n  5\n2F\n  0\nLINE\n  5\n2F\n").unwrap();
         let audit = super::audit_ascii_dxf_references(&path).unwrap();
-        assert_eq!(audit["duplicate_handles"], serde_json::json!(["2F"]), "{audit}");
+        assert_eq!(
+            audit["duplicate_handles"],
+            serde_json::json!(["2F"]),
+            "{audit}"
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -3533,14 +3585,14 @@ mod tests {
         // silently lose: `emit_text` reads the process-wide SDF atlas, which
         // in the editor is warm from drawing the canvas (D6/R1).
         if label {
-            let text = codec::entities::Text::with_value(
+            let text = document::entities::Text::with_value(
                 "PLOT".to_string(),
-                codec::types::Vector3::new(20.0, 20.0, 0.0),
+                document::types::Vector3::new(20.0, 20.0, 0.0),
             )
             .with_height(8.0);
             app.tabs[app.active_tab]
                 .scene
-                .add_entity(codec::EntityType::Text(text));
+                .add_entity(document::EntityType::Text(text));
         }
         let save = format!(
             r#"{{"op":"save","path":{}}}"#,
@@ -3554,8 +3606,8 @@ mod tests {
     /// (ACI 3) 20 × 20 square at (30, 10), the one fill on the page.
     #[cfg(not(target_arch = "wasm32"))]
     fn drawing_with_hatch(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        use codec::entities::hatch::{BoundaryEdge, BoundaryPath, BoundaryPathFlags, PolylineEdge};
-        use codec::types::Vector2;
+        use document::entities::hatch::{BoundaryEdge, BoundaryPath, BoundaryPathFlags, PolylineEdge};
+        use document::types::Vector2;
 
         let dir = std::env::temp_dir().join(format!("ocs-plot-svg-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3568,8 +3620,8 @@ mod tests {
             app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 100,0 100,60 0,60 0,0"}"#)["ok"],
             true
         );
-        let mut hatch = codec::entities::Hatch::new();
-        hatch.common.color = codec::types::Color::Index(3);
+        let mut hatch = document::entities::Hatch::new();
+        hatch.common.color = document::types::Color::Index(3);
         let mut boundary = BoundaryPath::with_flags(BoundaryPathFlags::from_bits(
             BoundaryPathFlags::EXTERNAL.bits() | BoundaryPathFlags::OUTERMOST.bits(),
         ));
@@ -3585,7 +3637,7 @@ mod tests {
         hatch.paths.push(boundary);
         app.tabs[app.active_tab]
             .scene
-            .add_entity(codec::EntityType::Hatch(Box::new(hatch)));
+            .add_entity(document::EntityType::Hatch(Box::new(hatch)));
         let save = format!(
             r#"{{"op":"save","path":{}}}"#,
             serde_json::to_string(&path.to_string_lossy()).unwrap()
@@ -4584,14 +4636,14 @@ mod tests {
         let scene = &mut app.tabs[i].scene;
         scene.document.add_layout("Review").unwrap();
         scene.set_current_layout("Review".to_string());
-        let mut viewport = codec::entities::Viewport::new();
+        let mut viewport = document::entities::Viewport::new();
         viewport.id = 2;
         viewport.width = 100.0;
         viewport.height = 50.0;
         viewport.turn_on();
-        scene.add_entity(codec::EntityType::Viewport(Box::new(viewport)));
+        scene.add_entity(document::EntityType::Viewport(Box::new(viewport)));
         for entity in scene.document.entities_mut() {
-            if let codec::EntityType::Viewport(viewport) = entity {
+            if let document::EntityType::Viewport(viewport) = entity {
                 viewport.status.grid_on = true;
             }
         }
@@ -4784,7 +4836,7 @@ mod tests {
             .document
             .entities()
             .filter_map(|e| match e {
-                codec::EntityType::Text(t) => Some(t.value.clone()),
+                document::EntityType::Text(t) => Some(t.value.clone()),
                 _ => None,
             })
             .collect();
@@ -4853,8 +4905,8 @@ mod tests {
 
     #[test]
     fn pid_group_automation_creates_retags_and_dissolves_the_selection() {
-        use codec::entities::{EntityType, Line, Text};
-        use codec::types::Vector3;
+        use document::entities::{EntityType, Line, Text};
+        use document::types::Vector3;
 
         let mut app = OpenCADStudio::new_for_test();
         assert_eq!(app.automation_op(r#"{"op":"new"}"#)["ok"], true);
@@ -4915,8 +4967,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn pid_legend_automation_recognises_reports_and_exports_the_same_payload() {
-        use codec::entities::{EntityType, Line, Text};
-        use codec::types::Vector3;
+        use document::entities::{EntityType, Line, Text};
+        use document::types::Vector3;
         use serde_json::{json, Value};
 
         let mut app = OpenCADStudio::new_for_test();
@@ -5057,21 +5109,17 @@ mod tests {
         let r = app.automation_op(r#"{"op":"select","clear":true,"window":[3,3,12,12]}"#);
         assert_eq!(r["selected"], 0, "window only grazing the circle: {r}");
 
-        let r = app.automation_op(
-            r#"{"op":"select","clear":true,"window":[3,3,12,12],"crossing":true}"#,
-        );
-        assert_eq!(
-            r["selected"], 1,
-            "crossing box over the circle's edge: {r}"
-        );
+        let r = app
+            .automation_op(r#"{"op":"select","clear":true,"window":[3,3,12,12],"crossing":true}"#);
+        assert_eq!(r["selected"], 1, "crossing box over the circle's edge: {r}");
     }
 
     /// The third ask of the same reading: a block reference had to be picked
     /// with a viewport click because a scripted box found nothing in it.
     #[test]
     fn select_takes_a_block_reference_by_what_it_draws() {
-        use codec::entities::{EntityType, Insert, Line};
-        use codec::types::Vector3;
+        use document::entities::{EntityType, Insert, Line};
+        use document::types::Vector3;
 
         let mut app = OpenCADStudio::new_for_test();
         let _ = app.automation_op(r#"{"op":"new"}"#);
@@ -5104,10 +5152,56 @@ mod tests {
         );
     }
 
+    /// The read path answers for a reference with the same box the shared
+    /// measurement gives: the definition's geometry carried through the
+    /// insertion transform, not the insertion point.
+    #[test]
+    fn the_entity_read_reports_a_reference_box_from_the_geometry_it_draws() {
+        use document::entities::{EntityType, Insert, Line};
+        use document::types::Vector3;
+
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        app.tabs[i].scene.define_block_raw(
+            "READ_REF",
+            Vector3::ZERO,
+            vec![
+                EntityType::Line(Line::from_points(
+                    Vector3::ZERO,
+                    Vector3::new(20.0, 0.0, 0.0),
+                )),
+                EntityType::Line(Line::from_points(
+                    Vector3::ZERO,
+                    Vector3::new(0.0, 10.0, 0.0),
+                )),
+            ],
+        );
+        let mut insert = Insert::new("READ_REF".to_string(), Vector3::new(100.0, 100.0, 0.0))
+            .with_uniform_scale(2.0);
+        insert.rotation = 30.0_f64.to_radians();
+        app.tabs[i].scene.add_entity(EntityType::Insert(insert));
+
+        let r = app
+            .automation_op(r#"{"op":"query","type":"INSERT","detail":"full","fields":["bounds"]}"#);
+        let bounds = &r["entities"][0]["bounds"];
+        let at = |path: &str, axis: usize| bounds[path][axis].as_f64().unwrap();
+        assert!((at("min", 0) - 90.0).abs() < 1e-3, "box min x: {bounds}");
+        assert!((at("min", 1) - 100.0).abs() < 1e-3, "box min y: {bounds}");
+        assert!(
+            (at("max", 0) - 134.641_016_2).abs() < 1e-3,
+            "box max x: {bounds}"
+        );
+        assert!(
+            (at("max", 1) - 137.320_508_1).abs() < 1e-3,
+            "box max y: {bounds}"
+        );
+    }
+
     #[test]
     fn block_reference_query_exposes_instance_attributes() {
-        use codec::entities::{AttributeEntity, EntityType, Insert};
-        use codec::types::Vector3;
+        use document::entities::{AttributeEntity, EntityType, Insert};
+        use document::types::Vector3;
 
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -5152,8 +5246,8 @@ mod tests {
         use crate::command::CadCommand;
         use crate::modules::insert::insert_block::InsertBlockCommand;
         use crate::ui::window::insert_attr_dialog::InsertAttrMsg;
-        use codec::entities::{AttributeDefinition, EntityType, Line};
-        use codec::types::Vector3;
+        use document::entities::{AttributeDefinition, EntityType, Line};
+        use document::types::Vector3;
 
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -5218,7 +5312,7 @@ mod tests {
             "the insert's scale reaches the child's own height: {child}"
         );
         assert!(
-            (child["rotation"].as_f64().unwrap() - 0.523599).abs() < 1e-5,
+            (child["rotation"].as_f64().unwrap() - std::f64::consts::FRAC_PI_6).abs() < 1e-5,
             "the child carries its own rotation, in radians: {child}"
         );
     }
@@ -5330,15 +5424,15 @@ mod tests {
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
         let i = app.active_tab;
-        let mut line = codec::entities::Line::new();
-        line.start = codec::types::Vector3::new(0.0, 0.0, 0.0);
-        line.end = codec::types::Vector3::new(10.0, 0.0, 0.0);
+        let mut line = document::entities::Line::new();
+        line.start = document::types::Vector3::new(0.0, 0.0, 0.0);
+        line.end = document::types::Vector3::new(10.0, 0.0, 0.0);
         let handle = app.tabs[i]
             .scene
             .document
-            .add_entity(codec::EntityType::Line(line))
+            .add_entity(document::EntityType::Line(line))
             .unwrap();
-        let mut br = codec::tables::BlockRecord::new("A_CPT");
+        let mut br = document::tables::BlockRecord::new("A_CPT");
         br.handle = app.tabs[i].scene.document.allocate_handle();
         br.entity_handles = vec![handle];
         app.tabs[i].scene.document.block_records.add(br).unwrap();
@@ -5461,11 +5555,13 @@ mod tests {
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
         let i = app.active_tab;
-        let mtext =
-            codec::MText::with_value("\\A1;10.5000", codec::types::Vector3::new(10.0, 20.0, 0.0));
+        let mtext = document::MText::with_value(
+            "\\A1;10.5000",
+            document::types::Vector3::new(10.0, 20.0, 0.0),
+        );
         app.tabs[i]
             .scene
-            .add_entity(codec::EntityType::MText(Box::new(mtext)));
+            .add_entity(document::EntityType::MText(Box::new(mtext)));
 
         let q = app.automation_op(
             r#"{"op":"query","type":"MTEXT","detail":"full","fields":["value","text","height","bounds"]}"#,
@@ -5544,7 +5640,9 @@ mod tests {
         // Arc angles are degrees on the wire, radians in the entity.
         let q = app.automation_op(r#"{"op":"query","type":"Arc","detail":"full"}"#);
         let start = q["entities"][0]["start_angle"].as_f64().unwrap();
-        assert!((start - std::f64::consts::FRAC_PI_2).abs() < 1e-9 || true);
+        assert!(start.abs() < 1e-9);
+        let end = q["entities"][0]["end_angle"].as_f64().unwrap();
+        assert!((end - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
 
         // The named layer was created and the entities live on it.
         let layers = app.automation_op(r#"{"op":"layers"}"#);
@@ -5638,7 +5736,7 @@ mod tests {
             .document
             .entities()
             .find_map(|entity| match entity {
-                codec::EntityType::Solid(solid) => Some(solid),
+                document::EntityType::Solid(solid) => Some(solid),
                 _ => None,
             })
             .expect("triangle solid");
@@ -5659,7 +5757,7 @@ mod tests {
         app.automation_op(r#"{"op":"new"}"#);
         {
             let doc = &mut app.tabs[app.active_tab].scene.document;
-            let mut style = codec::tables::TextStyle::new("OCSM_GB");
+            let mut style = document::tables::TextStyle::new("OCSM_GB");
             style.handle = doc.allocate_handle();
             doc.text_styles.add(style).unwrap();
         }
@@ -5813,10 +5911,7 @@ mod tests {
             close(max[0].as_f64().unwrap(), 0.0),
             "it ends at x 0: {bounds}"
         );
-        assert!(
-            close(max[1].as_f64().unwrap(), 40.0),
-            "and y 40: {bounds}"
-        );
+        assert!(close(max[1].as_f64().unwrap(), 40.0), "and y 40: {bounds}");
     }
 
     #[test]
@@ -6030,8 +6125,16 @@ mod tests {
             .iter()
             .find(|entity| entity["space"] == "SPACE_SRC")
             .unwrap_or_else(|| panic!("the definition's line is missing: {q}"));
-        assert_eq!(in_definition["owner"], format!("{definition:X}"), "{in_definition}");
-        assert_ne!(in_definition["handle"], handles[1].as_str(), "{in_definition}");
+        assert_eq!(
+            in_definition["owner"],
+            format!("{definition:X}"),
+            "{in_definition}"
+        );
+        assert_ne!(
+            in_definition["handle"],
+            handles[1].as_str(),
+            "{in_definition}"
+        );
     }
 
     #[test]
@@ -6045,11 +6148,11 @@ mod tests {
         let _ = app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 10,0"}"#);
         let _ = app.automation_op(r#"{"op":"run","cmd":"LINE 0,5 10,5"}"#);
         let i = app.active_tab;
-        let lines: Vec<codec::Handle> = {
+        let lines: Vec<document::Handle> = {
             let document = &app.tabs[i].scene.document;
             let mut lines: Vec<_> = document
                 .entities()
-                .filter(|entity| matches!(entity, codec::EntityType::Line(_)))
+                .filter(|entity| matches!(entity, document::EntityType::Line(_)))
                 .map(|entity| entity.common().handle)
                 .collect();
             lines.sort_by_key(|handle| handle.value());
@@ -6072,7 +6175,7 @@ mod tests {
             );
             set.constraints.last_mut().expect("just added").enabled = false;
         }
-        let hex = |handle: codec::Handle| format!("{:X}", handle.value());
+        let hex = |handle: document::Handle| format!("{:X}", handle.value());
         let parallel = json!([{
             "kind": "Parallel",
             "participants": [hex(first), hex(second)],
@@ -6083,7 +6186,7 @@ mod tests {
 
         let q = app.automation_op(r#"{"op":"query","type":"Line","detail":"geometry"}"#);
         let entities = q["entities"].as_array().expect("query entities");
-        let find = |handle: codec::Handle| {
+        let find = |handle: document::Handle| {
             entities
                 .iter()
                 .find(|entity| entity["handle"] == hex(handle).as_str())
@@ -6171,15 +6274,23 @@ mod tests {
             .scene
             .document
             .entities()
-            .find(|entity| matches!(entity, codec::EntityType::Line(_)))
+            .find(|entity| matches!(entity, document::EntityType::Line(_)))
             .map(|entity| entity.common().handle)
             .expect("the line");
         {
             let set = app.tabs[i]
                 .scene
                 .parametric_constraint_set_mut(ParametricScope::ModelSpace);
-            set.add(ConstraintKind::Horizontal, vec![ParametricRef::whole(line)], None);
-            set.add(ConstraintKind::Horizontal, vec![ParametricRef::whole(line)], None);
+            set.add(
+                ConstraintKind::Horizontal,
+                vec![ParametricRef::whole(line)],
+                None,
+            );
+            set.add(
+                ConstraintKind::Horizontal,
+                vec![ParametricRef::whole(line)],
+                None,
+            );
         }
         app.tabs[i]
             .scene
@@ -6333,7 +6444,7 @@ mod tests {
             .document
             .entities()
             .find_map(|entity| match entity {
-                codec::EntityType::Line(line) => Some(line),
+                document::EntityType::Line(line) => Some(line),
                 _ => None,
             })
             .expect("LINE should create one segment");
@@ -6358,7 +6469,7 @@ mod tests {
             .document
             .entities()
             .find_map(|entity| match entity {
-                codec::EntityType::Circle(circle) => Some(circle),
+                document::EntityType::Circle(circle) => Some(circle),
                 _ => None,
             })
             .expect("CIRCLE should create one entity");
@@ -6370,6 +6481,32 @@ mod tests {
         assert!(close(circle.normal.x, 0.0));
         assert!(close(circle.normal.y, -1.0));
         assert!(close(circle.normal.z, 0.0));
+    }
+
+    #[test]
+    fn msltscale_command_reads_and_writes_the_drawing_variable() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        assert!(app.tabs[i].scene.model_linetype_scaling());
+
+        app.automation_op(r#"{"op":"run","cmd":"MSLTSCALE 0"}"#);
+        assert!(!app.tabs[i].scene.model_linetype_scaling());
+        assert_eq!(
+            app.tabs[i].scene.document.drawing_variable("MSLTSCALE"),
+            Some("0")
+        );
+
+        app.automation_op(r#"{"op":"run","cmd":"SETVAR MSLTSCALE 1"}"#);
+        assert!(app.tabs[i].scene.model_linetype_scaling());
+
+        // Anything else leaves it alone.
+        app.automation_op(r#"{"op":"run","cmd":"MSLTSCALE 2"}"#);
+        assert!(app.tabs[i].scene.model_linetype_scaling());
+        assert!(
+            app.tabs[i].active_cmd.is_none(),
+            "command must have finished"
+        );
     }
 
     #[test]
@@ -6564,8 +6701,7 @@ mod tests {
             // Deterministically simulate an intentional hold-to-lasso.
             // A fast click+move must no longer activate a lasso just
             // because the cursor crossed the old 24 px shortcut.
-            let held_since =
-                iced::time::Instant::now() - std::time::Duration::from_millis(260);
+            let held_since = iced::time::Instant::now() - std::time::Duration::from_millis(260);
             app.tabs[i]
                 .scene
                 .selection
@@ -6622,7 +6758,10 @@ mod tests {
         let _ = app.update(Message::ViewportMove(moved));
         {
             let sel = app.tabs[i].scene.selection.borrow();
-            assert!(!sel.input.left_dragging, "fast first click must win over lasso");
+            assert!(
+                !sel.input.left_dragging,
+                "fast first click must win over lasso"
+            );
             assert!(!sel.gesture.poly_active, "the lasso must not arm");
         }
         let _ = app.update(Message::ViewportLeftRelease);
@@ -6657,7 +6796,7 @@ mod tests {
     #[test]
     fn matchprop_uses_single_preselected_source_for_successive_destinations() {
         use crate::command::StepInput;
-        use codec::{entities::Line, types::Vector3, EntityType};
+        use document::{entities::Line, types::Vector3, EntityType};
 
         for command in ["MA", "MATCHPROP"] {
             let mut app = OpenCADStudio::new_for_test();
@@ -6763,7 +6902,7 @@ mod tests {
     #[test]
     fn matchprop_requests_source_without_a_single_preselected_object() {
         use crate::command::StepInput;
-        use codec::{entities::Line, EntityType};
+        use document::{entities::Line, EntityType};
 
         for preselect in [false, true] {
             let mut app = OpenCADStudio::new_for_test();
@@ -6820,7 +6959,7 @@ mod tests {
         // properties (style, height) to TEXT and MTEXT destinations, not just
         // the generic layer/color/linetype set. Regression for #361.
         use crate::command::StepInput;
-        use codec::{EntityType, MText, Text};
+        use document::{EntityType, MText, Text};
 
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -6840,7 +6979,9 @@ mod tests {
         let mut dst_mtext = MText::new();
         dst_mtext.value = "DSTM".into();
         dst_mtext.height = 2.0;
-        let dst_mtext_h = app.tabs[i].scene.add_entity(EntityType::MText(Box::new(dst_mtext)));
+        let dst_mtext_h = app.tabs[i]
+            .scene
+            .add_entity(EntityType::MText(Box::new(dst_mtext)));
 
         // Drive the interactive command exactly as the viewport does:
         // phase 1 source pick, phase 2 destination selection.
@@ -6877,7 +7018,7 @@ mod tests {
     #[test]
     fn matchprop_source_glow_survives_preview_refresh_and_destination_apply() {
         use crate::command::StepInput;
-        use codec::{entities::Line, types::Vector3, EntityType};
+        use document::{entities::Line, types::Vector3, EntityType};
 
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -6891,10 +7032,7 @@ mod tests {
         let mut destination = Line::new();
         destination.start = Vector3::new(30.0, 0.0, 0.0);
         destination.end = Vector3::new(40.0, 10.0, 0.0);
-        let destination_h = app
-            .tabs[i]
-            .scene
-            .add_entity(EntityType::Line(destination));
+        let destination_h = app.tabs[i].scene.add_entity(EntityType::Line(destination));
 
         let _ = app.run_command_line("MATCHPROP");
         let _ = app.feed_command(StepInput::EntityPick(source_h, glam::DVec3::ZERO));
@@ -6936,7 +7074,7 @@ mod tests {
 
         // Two tabs, the second holding the drawing; leave the first active.
         app.tabs
-            .push(crate::app::document::DocumentTab::new_drawing(99));
+            .push(crate::app::tab_document::DocumentTab::new_drawing(99));
         let target = app.tabs.len() - 1;
         app.tabs[target].current_path = Some(canon.clone());
         app.active_tab = 0;
@@ -6967,6 +7105,58 @@ mod tests {
         assert!(app.opening.is_none(), "still no second load");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_missing_fonts_prompt_survives_a_second_drawing_opened_after_it() {
+        // Several drawings dropped at once open one after another. Each one
+        // that lacks fonts asks for them, and the second one's prompt used to
+        // close the first's and then itself: the prompt is a tool of its
+        // drawing, and leaving that drawing closed every open tool of its
+        // kind, the fresh one included.
+        use crate::app::Message;
+        let mut app = OpenCADStudio::new_for_test();
+        let dir = std::env::temp_dir();
+        let (a, b) = (dir.join("ocs_mf_a.dwg"), dir.join("ocs_mf_b.dwg"));
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+        let finish = |app: &mut OpenCADStudio, path: &std::path::Path| {
+            let id = app.opening.as_ref().map(|o| o.id).expect("an open in flight");
+            let mut doc = document::CadDocument::default();
+            let mut style = document::tables::TextStyle::new("GONE");
+            style.font_file = "ocs_no_such_font.shx".into();
+            doc.text_styles.add(style).unwrap();
+            doc.source_path = Some(path.to_string_lossy().into_owned());
+            let doc: document::Document = doc.into();
+            let caches = crate::scene::build_derived_caches_with_progress(&doc, &|_| {}, None);
+            app.update_root(Message::FileOpened(
+                id,
+                Ok(("x".into(), path.to_path_buf(), doc, caches)),
+            ))
+        };
+        let prompt_open = |app: &OpenCADStudio| {
+            app.active_modal == Some(crate::app::ModalKind::MissingFonts)
+                || app.tool_open(crate::app::ModalKind::MissingFonts)
+        };
+
+        let _ = app.update_root(Message::FileDropped(a.clone()));
+        let _ = app.update_root(Message::FileDropped(b.clone()));
+        assert_eq!(app.pending_opens.front(), Some(&b), "the second drop waits");
+
+        let _ = finish(&mut app, &a);
+        assert!(prompt_open(&app), "the first drawing asks for its fonts");
+
+        // The queue hands the second drawing over once the first is in.
+        let _ = app.update_root(Message::OpenExternal(b.clone()));
+        let _ = finish(&mut app, &b);
+        assert!(
+            prompt_open(&app),
+            "the second drawing's prompt must still be up"
+        );
+        assert!(app.missing_fonts.is_some());
+
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
     }
 
     #[test]
@@ -7087,7 +7277,7 @@ mod tests {
     #[test]
     fn open_finalizes_like_the_ui_open_path() {
         let mut app = OpenCADStudio::new_for_test();
-        let stale = codec::Handle::from(9999);
+        let stale = document::Handle::from(9999);
         app.tabs[app.active_tab].scene.solid_models.insert(
             stale,
             kernel::brep::make::cuboid([0.0; 3], [1.0; 3]).unwrap(),
@@ -7098,11 +7288,11 @@ mod tests {
         ));
         let _ = std::fs::remove_file(&path);
 
-        let mut doc = codec::Document::new();
-        let mut good = codec::entities::Circle::new();
-        good.center = codec::types::Vector3::new(5.0, 5.0, 0.0);
+        let mut doc = document::Document::new();
+        let mut good = document::entities::Circle::new();
+        good.center = document::types::Vector3::new(5.0, 5.0, 0.0);
         good.radius = 2.0;
-        doc.add_entity(codec::EntityType::Circle(good)).unwrap();
+        doc.add_entity(document::EntityType::Circle(good)).unwrap();
         let bytes = crate::io::save_to_bytes(&doc, "dxf", doc.version).expect("save the fixture");
         std::fs::write(&path, bytes).unwrap();
 
@@ -7433,10 +7623,10 @@ mod tests {
     #[test]
     fn from_script_offset_uses_rotated_ucs() {
         let mut app = from_line_test_app();
-        let mut ucs = codec::tables::Ucs::new("FROM-test");
-        ucs.origin = codec::types::Vector3::new(100.0, 200.0, 0.0);
-        ucs.x_axis = codec::types::Vector3::new(0.0, 1.0, 0.0);
-        ucs.y_axis = codec::types::Vector3::new(-1.0, 0.0, 0.0);
+        let mut ucs = document::tables::Ucs::new("FROM-test");
+        ucs.origin = document::types::Vector3::new(100.0, 200.0, 0.0);
+        ucs.x_axis = document::types::Vector3::new(0.0, 1.0, 0.0);
+        ucs.y_axis = document::types::Vector3::new(-1.0, 0.0, 0.0);
         app.tabs[0].active_ucs = Some(ucs);
         for token in ["_FROM", "0,0", "@5,0"] {
             let _ = app.feed_active_cmd(token);
@@ -7713,17 +7903,17 @@ mod tests {
 
     #[test]
     fn entity_json_display_type_is_native_without_a_label() {
-        let entity = codec::EntityType::Point(codec::entities::Point::new());
-        let json = super::entity_json(&codec::Document::new(), &entity, "summary", None);
+        let entity = document::EntityType::Point(document::entities::Point::new());
+        let json = super::entity_json(&document::Document::new(), &entity, "summary", None);
         assert_eq!(json["type"], "Point");
         assert_eq!(json["display_type"], "Point");
     }
 
     #[test]
     fn entity_json_display_type_qualifies_the_label() {
-        let entity = codec::EntityType::Point(codec::entities::Point::new());
+        let entity = document::EntityType::Point(document::entities::Point::new());
         let json = super::entity_json(
-            &codec::Document::new(),
+            &document::Document::new(),
             &entity,
             "summary",
             Some("Survey Point".to_string()),
@@ -7741,9 +7931,9 @@ mod tests {
         let mut app = super::OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
         let i = app.active_tab;
-        let mut entity = codec::EntityType::Point(codec::entities::Point::new());
-        let mut record = codec::xdata::ExtendedDataRecord::new("CVIFC");
-        record.add_value(codec::xdata::XDataValue::String(
+        let mut entity = document::EntityType::Point(document::entities::Point::new());
+        let mut record = document::xdata::ExtendedDataRecord::new("CVIFC");
+        record.add_value(document::xdata::XDataValue::String(
             "CVIFC-CLASS:POINTMARK".to_string(),
         ));
         entity.common_mut().extended_data.add_record(record);
@@ -7770,7 +7960,7 @@ pub(super) fn source_format(path: Option<&std::path::Path>, source_is_dxf: bool)
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod mtext_loss_tests {
     use crate::app::OpenCADStudio;
-    use codec::{DxfVersion, EntityType};
+    use document::{DxfVersion, EntityType};
     use serde_json::json;
 
     const OLD_DWG_LOSSES: &str =
@@ -7780,10 +7970,12 @@ mod mtext_loss_tests {
     fn app() -> OpenCADStudio {
         let mut app = OpenCADStudio::new_for_test();
         app.tabs
-            .push(crate::app::document::DocumentTab::new_drawing(1));
+            .push(crate::app::tab_document::DocumentTab::new_drawing(1));
         app.active_tab = 1;
-        let mut text =
-            codec::entities::MText::with_value("rich", codec::types::Vector3::new(0., 0., 0.));
+        let mut text = document::entities::MText::with_value(
+            "rich",
+            document::types::Vector3::new(0., 0., 0.),
+        );
         text.column_data.column_type = 1;
         text.column_data.column_count = 2;
         text.rectangle_height = Some(30.);
@@ -7953,7 +8145,7 @@ mod type_name_tests {
     /// #2592: Objects By Type takes the names the node library shows.
     #[test]
     fn the_node_library_names_find_their_objects() {
-        let xline = codec::EntityType::XLine(Default::default());
+        let xline = document::EntityType::XLine(Default::default());
         assert!(super::entity_type_matches(&xline, "Construction Line"));
         assert!(super::entity_type_matches(&xline, "XLine"));
         assert!(!super::entity_type_matches(&xline, "Line"));
@@ -7970,7 +8162,7 @@ mod pid_save_gate_tests {
     use crate::app::OpenCADStudio;
     use crate::pid::persist::PidAuthor;
     use crate::pid::tag_engine::{TAG_STATUS_DUPLICATED, TAG_STATUS_OK};
-    use codec::{EntityType, Handle};
+    use document::{EntityType, Handle};
     use serde_json::json;
 
     fn scratch_dir() -> std::path::PathBuf {
@@ -7989,14 +8181,14 @@ mod pid_save_gate_tests {
     fn app_with_conflict(status: &str) -> (OpenCADStudio, Handle) {
         let mut app = OpenCADStudio::new_for_test();
         app.tabs
-            .push(crate::app::document::DocumentTab::new_drawing(1));
+            .push(crate::app::tab_document::DocumentTab::new_drawing(1));
         app.active_tab = 1;
         let handle = app.tabs[1]
             .scene
             .document
-            .add_entity(EntityType::Line(codec::entities::Line::from_points(
-                codec::types::Vector3::new(0., 0., 0.),
-                codec::types::Vector3::new(10., 0., 0.),
+            .add_entity(EntityType::Line(document::entities::Line::from_points(
+                document::types::Vector3::new(0., 0., 0.),
+                document::types::Vector3::new(10., 0., 0.),
             )))
             .unwrap();
         let mut author = PidAuthor::new("EQUIPMENT", "P-1001");

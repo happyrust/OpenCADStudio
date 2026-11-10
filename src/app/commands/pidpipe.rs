@@ -343,13 +343,13 @@ impl OpenCADStudio {
 
         // 一条折线代表一次拾取序列：每段一条 `Line`，这样每段都能独立
         // 被阀门拆分、被移动补位（M5 后续 feature 的前提）。
-        let segment_entities = |points: &[DVec3]| -> Vec<codec::EntityType> {
+        let segment_entities = |points: &[DVec3]| -> Vec<document::EntityType> {
             points
                 .windows(2)
                 .map(|pair| {
-                    codec::EntityType::Line(codec::entities::Line::from_points(
-                        codec::types::Vector3::new(pair[0].x, pair[0].y, pair[0].z),
-                        codec::types::Vector3::new(pair[1].x, pair[1].y, pair[1].z),
+                    document::EntityType::Line(document::entities::Line::from_points(
+                        document::types::Vector3::new(pair[0].x, pair[0].y, pair[0].z),
+                        document::types::Vector3::new(pair[1].x, pair[1].y, pair[1].z),
                     ))
                 })
                 .collect()
@@ -358,8 +358,8 @@ impl OpenCADStudio {
         self.push_undo_snapshot(i, "PIDPIPE");
 
         let props = std::collections::BTreeMap::new();
-        let mut changed: Vec<(codec::Handle, ChangeKind)> = Vec::new();
-        let mut all_handles: Vec<codec::Handle> = Vec::new();
+        let mut changed: Vec<(document::Handle, ChangeKind)> = Vec::new();
+        let mut all_handles: Vec<document::Handle> = Vec::new();
 
         let receipt = match &request.mode {
             PipeMode::Line => {
@@ -406,8 +406,8 @@ impl OpenCADStudio {
 
                 // 管路本体单独承载位号（放在起点），每两点一段 `Line` 作管段，
                 // 这样「2 点 → 1 管段」「3 点 → 2 管段」与契约口径一致。
-                let mut entities = vec![codec::EntityType::Point(codec::entities::Point::at(
-                    codec::types::Vector3::new(points[0].x, points[0].y, points[0].z),
+                let mut entities = vec![document::EntityType::Point(document::entities::Point::at(
+                    document::types::Vector3::new(points[0].x, points[0].y, points[0].z),
                 ))];
                 entities.extend(segment_entities(&points));
                 let handles = self.tabs[i].scene.add_entities(entities);
@@ -417,7 +417,7 @@ impl OpenCADStudio {
                     return None;
                 }
                 let run_handle = handles[0];
-                let segments: Vec<codec::Handle> = handles.iter().copied().skip(1).collect();
+                let segments: Vec<document::Handle> = handles.iter().copied().skip(1).collect();
                 all_handles.extend(handles.iter().copied());
 
                 let mut run_props = std::collections::BTreeMap::new();
@@ -600,10 +600,10 @@ impl OpenCADStudio {
         };
 
         self.push_undo_snapshot(i, "PIDFITTING");
-        let fitting_entity = codec::EntityType::Insert(
-            codec::entities::Insert::new(
+        let fitting_entity = document::EntityType::Insert(
+            document::entities::Insert::new(
                 symbol.block.clone(),
-                codec::types::Vector3::new(point.x, point.y, point.z),
+                document::types::Vector3::new(point.x, point.y, point.z),
             )
             .with_uniform_scale(symbol.scale),
         );
@@ -638,11 +638,11 @@ impl OpenCADStudio {
         let at_endpoint = point_is_endpoint(&segment, point);
         if at_endpoint {
             // 端点插管件不拆分（`VAL-PIPE-018`）：只绑一个端口。
-            let segment_handle = parse_handle(&segment.handle).unwrap_or(codec::Handle::NULL);
+            let segment_handle = parse_handle(&segment.handle).unwrap_or(document::Handle::NULL);
             fitting_ports.insert(VALVE_PORT_NAMES[0].to_string(), Some(handle_text(segment_handle)));
             fitting_ports.insert(VALVE_PORT_NAMES[1].to_string(), None);
         } else {
-            let first_handle = parse_handle(&segment.handle).unwrap_or(codec::Handle::NULL);
+            let first_handle = parse_handle(&segment.handle).unwrap_or(document::Handle::NULL);
             // 第二段继承原管段的 props（`PidAuthor::load` 在 `add_entity`
             // 之后仍读得到第一段自己的记录，先取出来避免在构造表达式里
             // 借文档）。
@@ -661,10 +661,10 @@ impl OpenCADStudio {
                 segment.start.point,
             );
 
-            let second = self.tabs[i].scene.add_entity(codec::EntityType::Line(
-                codec::entities::Line::from_points(
-                    codec::types::Vector3::new(inner_b[0], inner_b[1], 0.0),
-                    codec::types::Vector3::new(segment.end.point[0], segment.end.point[1], 0.0),
+            let second = self.tabs[i].scene.add_entity(document::EntityType::Line(
+                document::entities::Line::from_points(
+                    document::types::Vector3::new(inner_b[0], inner_b[1], 0.0),
+                    document::types::Vector3::new(segment.end.point[0], segment.end.point[1], 0.0),
                 ),
             ));
             PidAuthor {
@@ -700,10 +700,10 @@ impl OpenCADStudio {
                 SegmentEnd::open(end_point),
             );
             // 几何同步：第一段的 Line 终点收到端口 1。
-            if let Some(codec::EntityType::Line(line)) =
+            if let Some(document::EntityType::Line(line)) =
                 self.tabs[i].scene.document.get_entity_mut(first_handle)
             {
-                line.end = codec::types::Vector3::new(inner_a[0], inner_a[1], 0.0);
+                line.end = document::types::Vector3::new(inner_a[0], inner_a[1], 0.0);
             }
             self.tabs[i]
                 .scene
@@ -780,7 +780,7 @@ impl OpenCADStudio {
             .map(|run| run.handle.clone())
             .unwrap_or_default();
 
-        let first_handle = parse_handle(&segment.handle).unwrap_or(codec::Handle::NULL);
+        let first_handle = parse_handle(&segment.handle).unwrap_or(document::Handle::NULL);
         // 第二段继承原管段的 `props` / `owner`：管段无覆盖标记，始终取管路
         // 当前值，所以直接复制第一段现值即可（`VAL-PIPE-010`）。
         let first_author = PidAuthor::load(&self.tabs[i].scene.document, first_handle);
@@ -809,9 +809,9 @@ impl OpenCADStudio {
 
         // 打断符实体：一条跨过缝隙的斜线，独立实体、不引用符号库。
         let (mark_from, mark_to) = break_mark_points(inner_a, inner_b);
-        let marker = codec::EntityType::Line(codec::entities::Line::from_points(
-            codec::types::Vector3::new(mark_from[0], mark_from[1], 0.0),
-            codec::types::Vector3::new(mark_to[0], mark_to[1], 0.0),
+        let marker = document::EntityType::Line(document::entities::Line::from_points(
+            document::types::Vector3::new(mark_from[0], mark_from[1], 0.0),
+            document::types::Vector3::new(mark_to[0], mark_to[1], 0.0),
         ));
         let break_handle = self.tabs[i].scene.add_entity(marker);
         PidAuthor {
@@ -827,10 +827,10 @@ impl OpenCADStudio {
         .store(&mut self.tabs[i].scene.document, break_handle);
 
         // 第二段：新实体，起点在打断点右侧（无 peer），终点保持原管段终点。
-        let second = self.tabs[i].scene.add_entity(codec::EntityType::Line(
-            codec::entities::Line::from_points(
-                codec::types::Vector3::new(inner_b[0], inner_b[1], 0.0),
-                codec::types::Vector3::new(segment.end.point[0], segment.end.point[1], 0.0),
+        let second = self.tabs[i].scene.add_entity(document::EntityType::Line(
+            document::entities::Line::from_points(
+                document::types::Vector3::new(inner_b[0], inner_b[1], 0.0),
+                document::types::Vector3::new(segment.end.point[0], segment.end.point[1], 0.0),
             ),
         ));
         PidAuthor {
@@ -857,10 +857,10 @@ impl OpenCADStudio {
             SegmentEnd::open(end_point),
         );
         // 几何同步：第一段的 Line 终点收到打断点左侧。
-        if let Some(codec::EntityType::Line(line)) =
+        if let Some(document::EntityType::Line(line)) =
             self.tabs[i].scene.document.get_entity_mut(first_handle)
         {
-            line.end = codec::types::Vector3::new(inner_a[0], inner_a[1], 0.0);
+            line.end = document::types::Vector3::new(inner_a[0], inner_a[1], 0.0);
         }
 
         // 打断符在 `fittings` 里有一条记录，但 `ports` 为空 —— 它不绑定任何
@@ -918,7 +918,7 @@ fn resolve_line_tag<'a>(
 
 /// 文档里已有的最大 `S-{n}`，加一。信号线不占位号序号空间（它不是
 /// `PIPE_LINE`），所以按文档扫描自算。
-fn next_signal_tag(doc: &codec::Document) -> String {
+fn next_signal_tag(doc: &document::Document) -> String {
     let mut max = SIGNAL_START - 1;
     for entity in doc.entities() {
         let Some(author) = PidAuthor::load(doc, entity.common().handle) else {
@@ -938,7 +938,7 @@ fn next_signal_tag(doc: &codec::Document) -> String {
 
 /// 落点命中的管段。
 struct SegmentHit {
-    segment: codec::Handle,
+    segment: document::Handle,
 }
 
 /// 落点到各管段的最近距离；超出容差返回 `None`。
@@ -1192,12 +1192,12 @@ mod tests {
         TopologyTable::load(&app.tabs[app.active_tab].scene.document)
     }
 
-    fn author_of(app: &OpenCADStudio, handle: codec::Handle) -> Option<PidAuthor> {
+    fn author_of(app: &OpenCADStudio, handle: document::Handle) -> Option<PidAuthor> {
         PidAuthor::load(&app.tabs[app.active_tab].scene.document, handle)
     }
 
     /// 文档里的全部实体 handle（按创建序）。
-    fn handles(app: &OpenCADStudio) -> Vec<codec::Handle> {
+    fn handles(app: &OpenCADStudio) -> Vec<document::Handle> {
         app.tabs[app.active_tab]
             .scene
             .document
@@ -1295,7 +1295,7 @@ mod tests {
 
         // 删除第二条管路的全部实体。
         let second = table.pipe_runs[1].clone();
-        let mut to_erase: Vec<codec::Handle> = vec![parse_handle(&second.handle).unwrap()];
+        let mut to_erase: Vec<document::Handle> = vec![parse_handle(&second.handle).unwrap()];
         to_erase.extend(
             second
                 .segments
@@ -1542,7 +1542,7 @@ mod tests {
     }
 
     /// 某实体五字段的现值，按 `LINE_FIELDS` 顺序；缺键为空串。
-    fn five_of(app: &OpenCADStudio, handle: codec::Handle) -> Vec<String> {
+    fn five_of(app: &OpenCADStudio, handle: document::Handle) -> Vec<String> {
         let props = props_of(&app.tabs[app.active_tab].scene.document, handle);
         LINE_FIELDS
             .iter()
@@ -1550,7 +1550,7 @@ mod tests {
             .collect()
     }
 
-    fn marks_of(app: &OpenCADStudio, handle: codec::Handle) -> Vec<String> {
+    fn marks_of(app: &OpenCADStudio, handle: document::Handle) -> Vec<String> {
         overrides_of(&app.tabs[app.active_tab].scene.document, handle)
             .into_iter()
             .collect()
@@ -1558,7 +1558,7 @@ mod tests {
 
     /// 契约的属性写入口：`PUT /api/v1/entities/{h}/xdata/PID_AUTHOR`，
     /// 载荷只带 `props`（`VAL-PIPE-007` 的「等价 REST 通道」）。
-    fn put_props(app: &mut OpenCADStudio, handle: codec::Handle, pairs: &[(&str, &str)]) {
+    fn put_props(app: &mut OpenCADStudio, handle: document::Handle, pairs: &[(&str, &str)]) {
         let mut props = serde_json::Map::new();
         for (key, value) in pairs {
             props.insert((*key).to_string(), json!(value));
@@ -1577,14 +1577,14 @@ mod tests {
     }
 
     /// 画一条管线并返回它的 handle。
-    fn draw_line(app: &mut OpenCADStudio) -> codec::Handle {
+    fn draw_line(app: &mut OpenCADStudio) -> document::Handle {
         draw(app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
         let table = topology(app);
         parse_handle(&table.pipe_lines.last().expect("管线已建").handle).expect("handle")
     }
 
     /// 在最后一条管线上建一条管路，返回（管路 handle, 管段 handles）。
-    fn draw_run(app: &mut OpenCADStudio) -> (codec::Handle, Vec<codec::Handle>) {
+    fn draw_run(app: &mut OpenCADStudio) -> (document::Handle, Vec<document::Handle>) {
         draw(app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
         let table = topology(app);
         let run = table.pipe_runs.last().expect("管路已建");

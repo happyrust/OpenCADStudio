@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use codec::{Document, Handle};
+use document::{Document, Handle};
 use serde::{Deserialize, Serialize};
 
 use super::graph_data::{self, PID_AUTHOR_TOPOLOGY};
@@ -812,11 +812,11 @@ pub enum PipeCommit {
 mod tests {
     use super::*;
     use crate::pid::persist::PidAuthor;
-    use codec::entities::Line;
-    use codec::types::Vector3;
+    use document::entities::Line;
+    use document::types::Vector3;
 
-    fn line(y: f64) -> codec::EntityType {
-        codec::EntityType::Line(Line::from_points(
+    fn line(y: f64) -> document::EntityType {
+        document::EntityType::Line(Line::from_points(
             Vector3::new(0.0, y, 0.0),
             Vector3::new(200.0, y, 0.0),
         ))
@@ -1121,7 +1121,7 @@ mod tests {
             );
         }
 
-        let bytes = crate::io::save_to_bytes(&doc, "dwg", codec::DxfVersion::AC1032)
+        let bytes = crate::io::save_to_bytes(&doc, "dwg", document::DxfVersion::AC1032)
             .expect("save dwg");
         let back = crate::io::load_bytes("topology-roundtrip.dwg", bytes).expect("load dwg");
 

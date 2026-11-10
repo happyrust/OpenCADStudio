@@ -49,7 +49,7 @@ pub(crate) fn draw_som_badge(
     if num_digits == 0 {
         return;
     }
-    let text_w = num_digits * 5 + (num_digits - 1) * 1;
+    let text_w = num_digits * 5 + (num_digits - 1);
     let badge_w = (text_w + 8) as i32;
     let badge_h = 13i32;
 
@@ -97,7 +97,7 @@ pub(crate) fn draw_som_badge(
                     let row_bits = DIGITS_5X7[d][r];
                     for c in 0..5 {
                         if (row_bits & (1 << (4 - c))) != 0 {
-                            let px = cur_x + c as i32;
+                            let px = cur_x + c;
                             let py = cur_y + r as i32;
                             if px >= 0 && px < img_w && py >= 0 && py < img_h {
                                 image.put_pixel(px as u32, py as u32, text_col);
@@ -223,10 +223,10 @@ pub(crate) fn compute_grounding(
     let img_h = image_height as f32;
 
     struct Candidate {
-        handle: codec::Handle,
+        handle: document::Handle,
         entity_type: &'static str,
         layer: String,
-        owner: codec::Handle,
+        owner: document::Handle,
         space: Option<String>,
         screen_pixel: [i32; 2],
         screen_bounds: [i32; 4],
@@ -235,9 +235,9 @@ pub(crate) fn compute_grounding(
         area: f32,
     }
 
-    let selected_set: std::collections::HashSet<codec::Handle> =
+    let selected_set: std::collections::HashSet<document::Handle> =
         tab.scene.selected_handles_in_order().into_iter().collect();
-    let space_names: rustc_hash::FxHashMap<codec::Handle, String> = tab
+    let space_names: rustc_hash::FxHashMap<document::Handle, String> = tab
         .scene
         .document
         .block_records
@@ -598,10 +598,7 @@ mod tests {
                 .iter()
                 .find(|entity| entity["space"] == space)
                 .unwrap_or_else(|| {
-                    panic!(
-                        "{space} is not grounded: {:?}",
-                        grounding.visible_entities
-                    )
+                    panic!("{space} is not grounded: {:?}", grounding.visible_entities)
                 })
                 .clone()
         };
@@ -743,8 +740,8 @@ mod tests {
     /// described as sitting where nothing of it paints.
     #[test]
     fn the_capture_annotation_covers_where_a_reference_draws() {
-        use codec::entities::{EntityType, Insert, Line};
-        use codec::types::Vector3;
+        use document::entities::{EntityType, Insert, Line};
+        use document::types::Vector3;
 
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);

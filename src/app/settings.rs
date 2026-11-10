@@ -839,6 +839,14 @@ pub struct UserSettings {
     /// HATCH starts with the boundary method used last (0 pick internal
     /// point, 1 select objects, 2 draw).
     pub hatch_start_method: u8,
+    /// HATCH's draw mode is Path (else Area).
+    pub hatch_draw_path: bool,
+    /// HATCH's Path width.
+    pub hatch_path_width: f64,
+    /// HATCH's Path alignment (0 center, 1 inside, 2 outside).
+    pub hatch_path_alignment: u8,
+    /// "Do not show this message again" on the hatch boundary warning.
+    pub hatch_boundary_warning_off: bool,
     /// MENUBAR: the classic pull-down menus show above the ribbon.
     pub show_menu_bar: bool,
     /// RIBBONCLOSE hid the ribbon; RIBBON brings it back.
@@ -847,6 +855,9 @@ pub struct UserSettings {
     pub command_line_hidden: bool,
     /// The Layer Manager's column order; a hidden column is led by `-`.
     pub layer_columns: Vec<String>,
+    /// The ribbon's layer list shows the layers of the Layer manager's
+    /// chosen tree node only (#2610 LM-25).
+    pub ribbon_layers_follow_filter: bool,
     /// When true, double-clicking a block reference starts REFEDIT instead of BEDIT.
     pub double_click_block_refedit: bool,
     /// When true, double-clicking a block with attributes opens ATTEDIT.
@@ -876,7 +887,10 @@ pub struct UserSettings {
     /// QUADWIDTH: columns the expanded quad lays out (2..=12, default 6).
     /// The reader is the tolerant one above: a hand-written out-of-range
     /// number loads clamped instead of failing the whole config parse.
-    #[serde(default = "default_quad_width", deserialize_with = "deserialize_quad_width")]
+    #[serde(
+        default = "default_quad_width",
+        deserialize_with = "deserialize_quad_width"
+    )]
     pub quad_width: u8,
     /// QUADCOMMANDLAUNCH: a right-click over an entity without entering the
     /// quad launches the entity's default command directly.
@@ -885,7 +899,10 @@ pub struct UserSettings {
     /// appears, in milliseconds (0..=2000; 0 = immediately). The reader is
     /// the tolerant one above: a negative or oversized hand-written number
     /// loads clamped instead of failing the whole config parse.
-    #[serde(default = "default_quad_hover_delay_ms", deserialize_with = "deserialize_quad_hover_delay_ms")]
+    #[serde(
+        default = "default_quad_hover_delay_ms",
+        deserialize_with = "deserialize_quad_hover_delay_ms"
+    )]
     pub quad_hover_delay_ms: u64,
     /// GRIPOBJLIMIT: past this many selected objects, no grips are drawn at
     /// all. 0 means no limit. The drawing header carries no slot for it.
@@ -926,6 +943,18 @@ pub struct UserSettings {
     /// GROUPDISPLAYMODE: a picked group shows member grips (0), a centre
     /// grip (1) or a centre grip and a box (2).
     pub group_display_mode: i16,
+    /// SELECTIONANNODISPLAY: a selected annotative object shows its other
+    /// scale representations dimmed (1) or not (0).
+    pub selection_anno_display: i16,
+    /// ANNOMONITOR: the annotation monitor (-2 to 2).
+    pub anno_monitor: i16,
+    /// LOGFILEMODE: the command line is also written to a log file.
+    pub log_file_mode: bool,
+    /// LOGFILEPATH: the folder log files go to; empty for the default.
+    pub log_file_path: String,
+    /// SAVEFILEPATH: the folder recovery copies (`.sv$`) go to; empty for
+    /// the default.
+    pub save_file_path: String,
     /// OFFSETGAPTYPE: how a polyline offset outward closes its corners
     /// (0 extend, 1 fillet, 2 chamfer).
     pub offset_gap_type: u8,
@@ -1238,6 +1267,9 @@ pub struct UserSettings {
     /// QuickCalc: the global variables, the open sections and the angle mode.
     #[serde(default)]
     pub quick_calc: crate::ui::window::quick_calc::QuickCalcSettings,
+    /// Tool Palettes: reusable block tools, tabs and placement options.
+    #[serde(default)]
+    pub tool_palettes: crate::ui::window::tool_palettes::ToolPalettesData,
 }
 
 /// A block the Blocks palette lists from outside the current drawing (a
@@ -1478,10 +1510,15 @@ impl Default for UserSettings {
             hatch_associative: true,
             hatch_gap_tolerance: 0.0,
             hatch_start_method: 0,
+            hatch_draw_path: false,
+            hatch_path_width: 0.25,
+            hatch_path_alignment: 0,
+            hatch_boundary_warning_off: false,
             show_menu_bar: false,
             ribbon_closed: false,
             command_line_hidden: false,
             layer_columns: Vec::new(),
+            ribbon_layers_follow_filter: false,
             options_tab: crate::ui::window::options::OptionsTab::General,
             show_viewcube: true,
             show_ucs_icon: true,
@@ -1521,10 +1558,15 @@ impl Default for UserSettings {
             ole_hide: 0,
             ole_quality: 3,
             group_display_mode: 2,
+            selection_anno_display: 1,
+            anno_monitor: -2,
+            log_file_mode: false,
+            log_file_path: String::new(),
+            save_file_path: String::new(),
             offset_gap_type: 0,
             trim_extend_quick: true,
             match_mode: crate::entities::match_props::MatchOpts::DEFAULT_MODE,
-            measuregeom_quick: true,
+            measuregeom_quick: false,
             revcloud_create_mode: 1,
             revcloud_arc_variance: true,
             revcloud_grips: true,
@@ -1621,6 +1663,7 @@ impl Default for UserSettings {
             count_invalid_area: 0,
             sheet_set: Default::default(),
             quick_calc: Default::default(),
+            tool_palettes: Default::default(),
         }
     }
 }
@@ -1849,8 +1892,7 @@ mod tests {
 
         // Absent keys keep the in-code defaults (struct-level serde
         // default untouched).
-        let minimal: UserSettings =
-            serde_json::from_str(r#"{"pick_add": true}"#).unwrap();
+        let minimal: UserSettings = serde_json::from_str(r#"{"pick_add": true}"#).unwrap();
         assert_eq!(minimal.quad_width, 6);
         assert_eq!(minimal.quad_hover_delay_ms, 300);
     }

@@ -32,8 +32,16 @@ pub struct AppConfig {
     pub dock: crate::ui::dock::DockState,
     /// Whether the optional Graphic Attributes palette is visible.
     pub show_graphic_attributes: bool,
+    /// Whether the Tool Palettes panel is visible.
+    pub show_tool_palettes: bool,
     /// Whether the Command History pallet is open.
     pub show_command_history: bool,
+    /// Whether the Layer Manager pallet is open.
+    pub show_layers: bool,
+    /// Whether the document file tabs are shown (FILETAB).
+    pub show_file_tabs: bool,
+    /// Whether the layout tabs are shown (LAYOUTTAB).
+    pub show_layout_tabs: bool,
     /// Graphic Attributes creates fills on the current layer instead of the
     /// layer of the filled object.
     pub graphic_fills_on_current_layer: bool,
@@ -64,7 +72,11 @@ impl Default for AppConfig {
             statusbar: StatusBarConfig::default(),
             dock: crate::ui::dock::DockState::default(),
             show_graphic_attributes: false,
+            show_tool_palettes: false,
             show_command_history: false,
+            show_layers: false,
+            show_file_tabs: true,
+            show_layout_tabs: true,
             graphic_fills_on_current_layer: false,
             annotation_auto_scale: -4,
             ribbon: RibbonConfig::default(),
@@ -266,6 +278,7 @@ pub fn all_themes() -> Vec<iced::Theme> {
         .iter()
         .cloned()
         .chain(crate::ui::style::fusion_theme::fusion_themes())
+        .chain(crate::ui::style::studio_theme::studio_themes())
         .collect()
 }
 
@@ -342,6 +355,9 @@ pub const DEFAULT_PAPER_BG: [u8; 3] = [255, 255, 255];
 /// Standard paper space desk surround [138, 138, 138].
 pub const DEFAULT_DESK_BG: [u8; 3] = [138, 138, 138];
 
+/// Default VPHIGHLIGHTOPACITY: a soft outline that does not compete with the drawing.
+pub const DEFAULT_VIEWPORT_HOVER_OPACITY: u8 = 50;
+
 /// Persistent configuration for Model Space appearance and selection visual effects.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -399,6 +415,12 @@ pub struct ModelSpaceThemeConfig {
     pub grip_hover: u8,
     /// SNAPMARKERSIZE: object-snap marker half-size in pixels (1–20, default 5).
     pub snap_marker_size: u8,
+    /// VPHIGHLIGHT: outline the Model viewport under the cursor when the
+    /// view is split into several.
+    pub viewport_hover_highlight: bool,
+    /// VPHIGHLIGHTOPACITY: strength of that outline in percent (0–100);
+    /// the default keeps it barely visible.
+    pub viewport_hover_opacity: u8,
 }
 
 impl Default for ModelSpaceThemeConfig {
@@ -430,6 +452,8 @@ impl Default for ModelSpaceThemeConfig {
             grip_hot: 0,
             grip_hover: 0,
             snap_marker_size: 5,
+            viewport_hover_highlight: true,
+            viewport_hover_opacity: DEFAULT_VIEWPORT_HOVER_OPACITY,
         }
     }
 }
@@ -474,11 +498,12 @@ impl ModelSpaceThemeConfig {
 
     /// Resolve active selection highlight overlay color as [f32; 4].
     pub fn resolve_selection_color(&self) -> [f32; 4] {
-        let mut color = codec::types::aci_table::aci_to_rgb(self.selection_highlight_color)
+        let mut color = document::types::aci_table::aci_to_rgb(self.selection_highlight_color)
             .filter(|_| self.selection_highlight_color != 0)
-            .map_or(crate::scene::model::wire_model::WireModel::SELECTED, |(r, g, b)| {
-                [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
-            });
+            .map_or(
+                crate::scene::model::wire_model::WireModel::SELECTED,
+                |(r, g, b)| [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0],
+            );
         color[3] = f32::from(self.selection_highlight_opacity.clamp(10, 100)) / 100.0;
         color
     }
@@ -509,7 +534,9 @@ pub fn theme_canvas_background(theme: &iced::Theme) -> [u8; 3] {
         // rule: black chrome is paired with a white canvas, so falling
         // through to the palette below would paint model space black and
         // undo the whole point of the theme.
-        other => match crate::ui::style::fusion_theme::fusion_canvas(other) {
+        other => match crate::ui::style::fusion_theme::fusion_canvas(other)
+            .or_else(|| crate::ui::style::studio_theme::studio_canvas(other))
+        {
             Some(rgb) => rgb,
             None => color_to_rgb(other.palette().background.base.color),
         },
@@ -545,6 +572,7 @@ pub fn parse_theme_name(s: &str) -> Option<iced::Theme> {
         "FERRA" => Some(iced::Theme::Ferra),
         "FUSIONBLACK" => Some(crate::ui::style::fusion_theme::fusion_black()),
         "FUSIONWHITE" => Some(crate::ui::style::fusion_theme::fusion_white()),
+        "STUDIODARK" => Some(crate::ui::style::studio_theme::studio_dark()),
         _ => None,
     }
 }
@@ -911,6 +939,10 @@ mod tests {
         assert_eq!(
             parse_theme_name("Kanagawa_Lotus"),
             Some(iced::Theme::KanagawaLotus)
+        );
+        assert_eq!(
+            parse_theme_name("studio dark"),
+            Some(crate::ui::style::studio_theme::studio_dark())
         );
         assert_eq!(parse_theme_name("1"), None);
         assert_eq!(parse_theme_name("0"), None);

@@ -1,4 +1,4 @@
-use codec::Document;
+use document::Document;
 use std::path::PathBuf;
 use OpenCADStudio::io::{load_file, save_as_version};
 

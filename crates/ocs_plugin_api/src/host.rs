@@ -1,6 +1,6 @@
 //! Runtime host surface (`host` feature).
 //!
-//! [`HostApi`] is the `opencadcodec`-typed adapter a plugin uses at *dispatch* time
+//! [`HostApi`] is the `document`-typed adapter a plugin uses at *dispatch* time
 //! — document access, entity creation, XDATA, undo, and the command line. It is
 //! the stable counterpart to the dependency-free manifest/ribbon contract: a
 //! plugin's `dispatch` receives `&mut dyn HostApi` rather than the host's
@@ -19,17 +19,19 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::manifest::{EntityClasses, PluginManifest};
 use crate::ribbon::CadModule;
 
-// Re-export the opencadcodec crate and the types that appear in the HostApi trait
-// so out-of-tree plugins can use them without adding their own opencadcodec
+// Re-export the document crate and the types that appear in the HostApi trait
+// so out-of-tree plugins can use them without adding their own document
 // dependency (which would risk an ABI-mismatching version).
-pub use codec;
-pub use codec as acadrust;
-pub use codec::objects::{
+pub use document;
+pub use document as acadrust;
+// The name plugins used before the crate was renamed to document.
+pub use document as codec;
+pub use document::objects::{
     DictionaryCloningFlags, KnownXRecordKind, ProxyObjectReference, ProxyReferenceKind, XRecord,
     XRecordEntry, XRecordSection, XRecordValue, XRecordValueType,
 };
-pub use codec::xdata::{ExtendedDataRecord, XDataValue};
-pub use codec::{Document, EntityType, Handle};
+pub use document::xdata::{ExtendedDataRecord, XDataValue};
+pub use document::{Document, EntityType, Handle};
 
 use crate::ipc::protocol::{PluginRequest, PluginResponse};
 
@@ -565,14 +567,11 @@ impl Serialize for HostNotification {
                 value,
             } => {
                 bytes.push(12);
-                bincode::serialize_into(&mut bytes, panel_id)
-                    .map_err(serde::ser::Error::custom)?;
+                bincode::serialize_into(&mut bytes, panel_id).map_err(serde::ser::Error::custom)?;
                 bincode::serialize_into(&mut bytes, control_id)
                     .map_err(serde::ser::Error::custom)?;
-                bincode::serialize_into(&mut bytes, action)
-                    .map_err(serde::ser::Error::custom)?;
-                bincode::serialize_into(&mut bytes, value)
-                    .map_err(serde::ser::Error::custom)?;
+                bincode::serialize_into(&mut bytes, action).map_err(serde::ser::Error::custom)?;
+                bincode::serialize_into(&mut bytes, value).map_err(serde::ser::Error::custom)?;
             }
             HostNotification::QuadAction {
                 panel_id,
@@ -582,8 +581,7 @@ impl Serialize for HostNotification {
                 pick_point,
             } => {
                 bytes.push(13);
-                bincode::serialize_into(&mut bytes, panel_id)
-                    .map_err(serde::ser::Error::custom)?;
+                bincode::serialize_into(&mut bytes, panel_id).map_err(serde::ser::Error::custom)?;
                 bincode::serialize_into(&mut bytes, control_id)
                     .map_err(serde::ser::Error::custom)?;
                 bincode::serialize_into(&mut bytes, handles).map_err(serde::ser::Error::custom)?;
@@ -654,14 +652,14 @@ impl<'de> Deserialize<'de> for HostNotification {
             }
             12 => {
                 let mut cursor = std::io::Cursor::new(rest);
-                let panel_id: String = bincode::deserialize_from(&mut cursor)
-                    .map_err(serde::de::Error::custom)?;
-                let control_id: String = bincode::deserialize_from(&mut cursor)
-                    .map_err(serde::de::Error::custom)?;
-                let action: String = bincode::deserialize_from(&mut cursor)
-                    .map_err(serde::de::Error::custom)?;
-                let value: Option<crate::dialog::DialogValue> = bincode::deserialize_from(&mut cursor)
-                    .map_err(serde::de::Error::custom)?;
+                let panel_id: String =
+                    bincode::deserialize_from(&mut cursor).map_err(serde::de::Error::custom)?;
+                let control_id: String =
+                    bincode::deserialize_from(&mut cursor).map_err(serde::de::Error::custom)?;
+                let action: String =
+                    bincode::deserialize_from(&mut cursor).map_err(serde::de::Error::custom)?;
+                let value: Option<crate::dialog::DialogValue> =
+                    bincode::deserialize_from(&mut cursor).map_err(serde::de::Error::custom)?;
                 Ok(HostNotification::PanelAction {
                     panel_id,
                     control_id,
@@ -671,16 +669,16 @@ impl<'de> Deserialize<'de> for HostNotification {
             }
             13 => {
                 let mut cursor = std::io::Cursor::new(rest);
-                let panel_id: String = bincode::deserialize_from(&mut cursor)
-                    .map_err(serde::de::Error::custom)?;
-                let control_id: String = bincode::deserialize_from(&mut cursor)
-                    .map_err(serde::de::Error::custom)?;
-                let handles: Vec<Handle> = bincode::deserialize_from(&mut cursor)
-                    .map_err(serde::de::Error::custom)?;
-                let type_keys: Vec<String> = bincode::deserialize_from(&mut cursor)
-                    .map_err(serde::de::Error::custom)?;
-                let pick_point: [f64; 3] = bincode::deserialize_from(&mut cursor)
-                    .map_err(serde::de::Error::custom)?;
+                let panel_id: String =
+                    bincode::deserialize_from(&mut cursor).map_err(serde::de::Error::custom)?;
+                let control_id: String =
+                    bincode::deserialize_from(&mut cursor).map_err(serde::de::Error::custom)?;
+                let handles: Vec<Handle> =
+                    bincode::deserialize_from(&mut cursor).map_err(serde::de::Error::custom)?;
+                let type_keys: Vec<String> =
+                    bincode::deserialize_from(&mut cursor).map_err(serde::de::Error::custom)?;
+                let pick_point: [f64; 3] =
+                    bincode::deserialize_from(&mut cursor).map_err(serde::de::Error::custom)?;
                 Ok(HostNotification::QuadAction {
                     panel_id,
                     control_id,
@@ -996,7 +994,12 @@ pub trait InteractiveCommand: Send {
     }
 
     /// Pending panel updates buffered during interactive command execution (API v7, additive).
-    fn take_pending_panel_updates(&mut self) -> Vec<(String, std::collections::HashMap<String, crate::dialog::DialogValue>)> {
+    fn take_pending_panel_updates(
+        &mut self,
+    ) -> Vec<(
+        String,
+        std::collections::HashMap<String, crate::dialog::DialogValue>,
+    )> {
         Vec::new()
     }
 }
@@ -2026,6 +2029,19 @@ pub trait HostApi {
     fn unregister_quad_panels(&mut self, _plugin_id: &str, panel_ids: &[&str]) -> Vec<bool> {
         vec![false; panel_ids.len()]
     }
+
+    /// Validate a declared parametric chain without staging it (additive).
+    ///
+    /// Capable hosts run the same structural, seam, cap and chord-refinement
+    /// audit as staging, discarding the resulting display entities. This is a
+    /// pure read: no document, undo, publish, dirty or cache state changes.
+    fn validate_parametric_chain(
+        &self,
+        _chain: &ParametricChain,
+        _tolerance: f64,
+    ) -> Result<(), String> {
+        Err("Parametric chain validation is not supported by this host".to_owned())
+    }
 }
 
 /// **Parametric-chain staging types (api 14, the v2 generic shapes).**
@@ -2398,7 +2414,6 @@ impl PluginDisplayDescriptor {
     }
 }
 
-
 /// One XRecord addressed by dictionary path + name (API v13, additive).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct XRecordRead {
@@ -2418,14 +2433,14 @@ pub struct XRecordUpdate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LayerConfig {
     pub name: String,
-    pub color: Option<codec::types::Color>,
+    pub color: Option<document::types::Color>,
     pub linetype: Option<String>,
-    pub lineweight: Option<codec::types::LineWeight>,
+    pub lineweight: Option<document::types::LineWeight>,
     pub off: Option<bool>,
     pub frozen: Option<bool>,
     pub locked: Option<bool>,
     pub plottable: Option<bool>,
-    pub transparency: Option<codec::types::Transparency>,
+    pub transparency: Option<document::types::Transparency>,
     pub description: Option<String>,
 }
 

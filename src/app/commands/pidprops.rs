@@ -49,8 +49,8 @@ fn props_field(key: &str) -> &'static str {
 /// The `P&ID 属性` group for `handle`, or `None` when it carries no
 /// `PID_AUTHOR` record.
 pub(in crate::app) fn pid_author_section(
-    document: &codec::Document,
-    handle: codec::Handle,
+    document: &document::Document,
+    handle: document::Handle,
 ) -> Option<PropSection> {
     let author = PidAuthor::load(document, handle)?;
     let display = TagView::new(
@@ -95,7 +95,7 @@ impl OpenCADStudio {
     pub(in crate::app) fn commit_pid_author_property(
         &mut self,
         i: usize,
-        handles: &[codec::Handle],
+        handles: &[document::Handle],
         field: &str,
         value: &str,
     ) -> bool {
@@ -106,7 +106,7 @@ impl OpenCADStudio {
                 _ => return false,
             },
         };
-        let authored: Vec<(codec::Handle, PidAuthor)> = handles
+        let authored: Vec<(document::Handle, PidAuthor)> = handles
             .iter()
             .filter_map(|handle| {
                 PidAuthor::load(&self.tabs[i].scene.document, *handle).map(|a| (*handle, a))
@@ -115,7 +115,7 @@ impl OpenCADStudio {
         if authored.is_empty() {
             return false;
         }
-        let changed: Vec<(codec::Handle, PidAuthor)> = authored
+        let changed: Vec<(document::Handle, PidAuthor)> = authored
             .into_iter()
             .filter(|(_, author)| match &key {
                 None => {
@@ -158,7 +158,7 @@ impl OpenCADStudio {
                 }
             }
         }
-        let edited: Vec<codec::Handle> = changed.iter().map(|(handle, _)| *handle).collect();
+        let edited: Vec<document::Handle> = changed.iter().map(|(handle, _)| *handle).collect();
         self.refresh_pid_tags(i, &edited);
         // 手工改管路字段之后，管路当前值要立刻下传给它的管段
         // （`VAL-PIPE-010`）；改管线字段同理级联到管路再级联到管段。
@@ -178,12 +178,12 @@ impl OpenCADStudio {
     pub(in crate::app) fn propagate_pid_chain(
         &mut self,
         i: usize,
-        edited: &[codec::Handle],
-    ) -> Vec<codec::Handle> {
+        edited: &[document::Handle],
+    ) -> Vec<document::Handle> {
         if self.tabs[i].is_start {
             return Vec::new();
         }
-        let mut written: Vec<codec::Handle> = Vec::new();
+        let mut written: Vec<document::Handle> = Vec::new();
         {
             let document = &mut self.tabs[i].scene.document;
             let mut table = TopologyTable::load(document);
@@ -281,8 +281,8 @@ impl OpenCADStudio {
 /// （`VAL-PIPE-008`）。下传写入走 `PidAuthor::store`，不经这里，因此不会
 /// 被误打标记。
 pub(in crate::app) fn mark_manual_run_overrides(
-    document: &mut codec::Document,
-    handle: codec::Handle,
+    document: &mut document::Document,
+    handle: document::Handle,
     before: &std::collections::BTreeMap<String, String>,
 ) {
     let Some(author) = PidAuthor::load(document, handle) else {
@@ -335,7 +335,7 @@ mod tests {
     }
 
     /// A new drawing with one placed vessel carrying two props; its handle.
-    fn placed_vessel(app: &mut OpenCADStudio, x: f64) -> codec::Handle {
+    fn placed_vessel(app: &mut OpenCADStudio, x: f64) -> document::Handle {
         let started = request(app, json!({"op":"run","cmd":"PIDINSERT vessel"}));
         assert_eq!(started["ok"], true, "{started}");
         let picked = request(
@@ -348,7 +348,7 @@ mod tests {
         let handle = document
             .entities()
             .filter_map(|entity| match entity {
-                codec::EntityType::Insert(insert) => Some(insert.common.handle),
+                document::EntityType::Insert(insert) => Some(insert.common.handle),
                 _ => None,
             })
             .last()
@@ -365,11 +365,11 @@ mod tests {
         app
     }
 
-    fn hex(handle: codec::Handle) -> String {
+    fn hex(handle: document::Handle) -> String {
         format!("{:X}", handle.value())
     }
 
-    fn select(app: &mut OpenCADStudio, handle: codec::Handle) {
+    fn select(app: &mut OpenCADStudio, handle: document::Handle) {
         let _ = app.automation_op(r#"{"op":"select","clear":true}"#);
         let selected = request(app, json!({"op":"select","handles":[hex(handle)]}));
         assert_eq!(selected["ok"], true, "{selected}");
@@ -394,7 +394,7 @@ mod tests {
             .and_then(|row| row["value"].as_str().map(str::to_owned))
     }
 
-    fn author(app: &OpenCADStudio, handle: codec::Handle) -> PidAuthor {
+    fn author(app: &OpenCADStudio, handle: document::Handle) -> PidAuthor {
         PidAuthor::load(&app.tabs[app.active_tab].scene.document, handle).expect("author record")
     }
 
@@ -423,9 +423,9 @@ mod tests {
         assert!(rows.iter().any(|row| row["label"] == "设计压力"));
 
         let line = app
-            .commit_entity_handle(codec::EntityType::Line(codec::entities::Line::from_points(
-                codec::types::Vector3::ZERO,
-                codec::types::Vector3::new(10.0, 0.0, 0.0),
+            .commit_entity_handle(document::EntityType::Line(document::entities::Line::from_points(
+                document::types::Vector3::ZERO,
+                document::types::Vector3::new(10.0, 0.0, 0.0),
             )))
             .expect("line commits");
         select(&mut app, line);
@@ -498,9 +498,9 @@ mod tests {
         assert_eq!(label(&app, second).as_deref(), Some("？"));
     }
 
-    fn label(app: &OpenCADStudio, handle: codec::Handle) -> Option<String> {
+    fn label(app: &OpenCADStudio, handle: document::Handle) -> Option<String> {
         match app.tabs[app.active_tab].scene.document.get_entity(handle) {
-            Some(codec::EntityType::Insert(insert)) => insert
+            Some(document::EntityType::Insert(insert)) => insert
                 .attributes
                 .iter()
                 .find(|attribute| attribute.tag == super::super::pidpalette::PID_TAG_ATTRIBUTE)
@@ -526,14 +526,14 @@ mod tests {
         request(app, json!({"op":"input","kind":"enter"}));
     }
 
-    fn field(app: &OpenCADStudio, handle: codec::Handle, name: &str) -> String {
+    fn field(app: &OpenCADStudio, handle: document::Handle, name: &str) -> String {
         props_of(&app.tabs[app.active_tab].scene.document, handle)
             .get(name)
             .cloned()
             .unwrap_or_default()
     }
 
-    fn marks(app: &OpenCADStudio, handle: codec::Handle) -> Vec<String> {
+    fn marks(app: &OpenCADStudio, handle: document::Handle) -> Vec<String> {
         overrides_of(&app.tabs[app.active_tab].scene.document, handle)
             .into_iter()
             .collect()
@@ -581,7 +581,7 @@ mod tests {
 
     /// 契约的 `PUT /api/v1/entities/{h}/xdata/PID_AUTHOR` 等价写法：只发
     /// `props` 时按字段合并，其余八键与未提及的属性键都不丢。
-    fn put_props(app: &mut OpenCADStudio, handle: codec::Handle, pairs: &[(&str, &str)]) {
+    fn put_props(app: &mut OpenCADStudio, handle: document::Handle, pairs: &[(&str, &str)]) {
         let mut props = serde_json::Map::new();
         for (key, value) in pairs {
             props.insert((*key).to_string(), json!(value));

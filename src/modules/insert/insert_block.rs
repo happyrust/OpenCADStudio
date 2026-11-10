@@ -12,9 +12,9 @@
 //! option list `[Basepoint/Scale/X/Y/Z/Rotate]`.
 
 use crate::t;
-use codec::entities::{AttributeDefinition, AttributeEntity, Entity, Insert};
-use codec::types::Vector3;
-use codec::EntityType;
+use document::entities::{AttributeDefinition, AttributeEntity, Entity, Insert};
+use document::types::Vector3;
+use document::EntityType;
 use glam::DVec3;
 
 use crate::app::settings::BlockInsertOptions;
@@ -616,6 +616,32 @@ impl CadCommand for InsertBlockCommand {
                 .iter()
                 .map(|n| crate::command::CmdOption::new(n, n))
                 .collect(),
+            Step::Point => {
+                let mut opts = vec![
+                    crate::command::CmdOption::new("Basepoint", "B"),
+                    crate::command::CmdOption::new("Scale", "S"),
+                    crate::command::CmdOption::new("X", "X"),
+                    crate::command::CmdOption::new("Y", "Y"),
+                    crate::command::CmdOption::new("Z", "Z"),
+                    crate::command::CmdOption::new("Rotate", "R"),
+                ];
+                if self.mode == Mode::Classic {
+                    opts.push(crate::command::CmdOption::new("Explode", "E"));
+                    opts.push(crate::command::CmdOption::new("Repeat", "RE"));
+                }
+                opts
+            }
+            Step::ScaleX | Step::XyzX => {
+                let mut opts = vec![crate::command::CmdOption::new("Corner", "C")];
+                if matches!(self.step, Step::ScaleX) {
+                    opts.push(crate::command::CmdOption::new("XYZ", "XYZ"));
+                }
+                opts
+            }
+            Step::YesNo(_) => vec![
+                crate::command::CmdOption::new("Yes", "Y"),
+                crate::command::CmdOption::new("No", "N"),
+            ],
             _ => Vec::new(),
         }
     }
@@ -901,7 +927,11 @@ impl CadCommand for InsertBlockCommand {
             ),
             // The block stays at its point and turns with the cursor.
             Step::Rotation => match self.point {
-                Some(point) => (point, self.scale, self.plane.angle(point, pt).unwrap_or(0.0)),
+                Some(point) => (
+                    point,
+                    self.scale,
+                    self.plane.angle(point, pt).unwrap_or(0.0),
+                ),
                 None => return Vec::new(),
             },
             _ => return Vec::new(),
@@ -931,7 +961,7 @@ impl CadCommand for InsertBlockCommand {
     fn attreq_set_attdefs(
         &mut self,
         attdefs: Vec<AttributeDefinition>,
-    ) -> Option<codec::EntityType> {
+    ) -> Option<document::EntityType> {
         self.step = Step::FillAttr {
             attdefs,
             idx: 0,
@@ -940,7 +970,7 @@ impl CadCommand for InsertBlockCommand {
         self.advance_automatic_attributes()
     }
 
-    fn attreq_take_insert(&mut self) -> Option<codec::EntityType> {
+    fn attreq_take_insert(&mut self) -> Option<document::EntityType> {
         self.pending_insert.take().map(EntityType::Insert)
     }
 
@@ -1121,7 +1151,11 @@ mod cycling_tests {
             DVec3::new(p[0] as f64, p[1] as f64, 0.0)
         };
         assert!(at(0).distance(point) < 1e-5);
-        assert!(at(1).distance(DVec3::new(10.0, 11.0, 0.0)) < 1e-5, "{:?}", at(1));
+        assert!(
+            at(1).distance(DVec3::new(10.0, 11.0, 0.0)) < 1e-5,
+            "{:?}",
+            at(1)
+        );
     }
 
     #[test]

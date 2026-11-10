@@ -13,14 +13,14 @@
 /// (`app::plugin_host`) builds commands with it.
 pub(crate) const QUAD_PLUGIN_PREFIX: &str = "quadplugin:";
 
-#[cfg(not(target_arch = "wasm32"))]
-pub mod plugin_classes;
 pub mod entity_labels;
 pub mod external;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod grip_points;
 pub mod host;
 pub mod marketplace;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod plugin_classes;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod quad;
 pub mod registry;
@@ -33,13 +33,14 @@ pub mod v4_support {
         _control_id: String,
         _action: String,
         _value: Option<ocs_plugin_api::dialog::DialogValue>,
-    ) {}
+    ) {
+    }
 
     pub fn publish_quad_action(
         _plugin_id: &str,
         _panel_id: &str,
         _control_id: &str,
-        _handles: Vec<codec::Handle>,
+        _handles: Vec<document::Handle>,
         _type_keys: Vec<String>,
         _pick_point: [f64; 3],
     ) {

@@ -291,9 +291,7 @@ impl Ribbon {
             .chain((0..self.modules.len()).filter(|i| *i != self.active));
         for index in tabs {
             let module = &self.modules[index];
-            if module.id() == "layout"
-                || (module.id() == "block_editor" && self.block_editing.is_none())
-                || self.tab_hidden(index)
+            if module.id() == "layout" || self.contextual_off(module.id()) || self.tab_hidden(index)
             {
                 continue;
             }
@@ -331,7 +329,7 @@ impl Ribbon {
                                 (
                                     crate::t!(label).into_owned(),
                                     Some(command),
-                                    Some(icon.clone()),
+                                    Some(*icon),
                                     Message::DropdownSelectItem {
                                         dropdown_id: id,
                                         cmd: command,
@@ -350,7 +348,7 @@ impl Ribbon {
                         found.push((
                             label.clone(),
                             Some(command),
-                            Some(more.tool.icon.clone()),
+                            Some(more.tool.icon),
                             Message::DropdownSelectItem {
                                 dropdown_id: panel.id,
                                 cmd: command,
@@ -361,7 +359,7 @@ impl Ribbon {
                             found.push((
                                 format!("{label} › {}", crate::t!(option_label)),
                                 Some(option),
-                                Some(more.tool.icon.clone()),
+                                Some(more.tool.icon),
                                 Message::DropdownSelectItem {
                                     dropdown_id: panel.id,
                                     cmd: option,
@@ -789,7 +787,7 @@ impl Ribbon {
             self.search.flash = None;
             self.search.lit = None;
         } else {
-            self.search.lit = (phase % 2 == 0).then(|| id.to_string());
+            self.search.lit = phase.is_multiple_of(2).then(|| id.to_string());
         }
     }
 
@@ -1128,7 +1126,7 @@ impl Ribbon {
     fn result_row(&self, index: usize, selected: bool) -> Element<'_, Message> {
         let hit = &self.search.hits[index];
         let icon: Element<'_, Message> = match &hit.icon {
-            Some(icon) => make_icon(icon.clone(), metrics::SMALL_ICON),
+            Some(icon) => make_icon(*icon, metrics::SMALL_ICON),
             None => Space::new()
                 .width(metrics::SMALL_ICON)
                 .height(metrics::SMALL_ICON)
@@ -1196,7 +1194,7 @@ fn tool_found(
     (
         crate::t!(tool.label).into_owned(),
         command,
-        Some(tool.icon.clone()),
+        Some(tool.icon),
         Message::RibbonToolClick {
             tool_id: tool.id.to_string(),
             event: tool.event.clone(),

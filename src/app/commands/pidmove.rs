@@ -54,7 +54,7 @@ mod tests {
         TopologyTable::load(&app.tabs[app.active_tab].scene.document)
     }
 
-    fn hex(handle: codec::Handle) -> String {
+    fn hex(handle: document::Handle) -> String {
         handle_text(handle)
     }
 
@@ -70,7 +70,7 @@ mod tests {
     /// 一条 200 单位长的管路，中点上插一个闸阀。返回（阀门 handle, 段 A, 段 B）。
     fn line_with_valve_at_midpoint(
         app: &mut OpenCADStudio,
-    ) -> (codec::Handle, codec::Handle, codec::Handle) {
+    ) -> (document::Handle, document::Handle, document::Handle) {
         draw(app, "PIDPIPE", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
         draw(app, "PIDPIPE run", &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
         let done = draw(app, "PIDFITTING gate_valve", &[[100.0, 0.0, 0.0]]);
@@ -84,7 +84,7 @@ mod tests {
         (valve, a, b)
     }
 
-    fn move_valve(app: &mut OpenCADStudio, valve: codec::Handle, dx: f64) -> Value {
+    fn move_valve(app: &mut OpenCADStudio, valve: document::Handle, dx: f64) -> Value {
         request(
             app,
             json!({
@@ -96,9 +96,9 @@ mod tests {
         )
     }
 
-    fn insert_point(app: &OpenCADStudio, handle: codec::Handle) -> [f64; 3] {
+    fn insert_point(app: &OpenCADStudio, handle: document::Handle) -> [f64; 3] {
         match app.tabs[app.active_tab].scene.document.get_entity(handle) {
-            Some(codec::EntityType::Insert(insert)) => [
+            Some(document::EntityType::Insert(insert)) => [
                 insert.insert_point.x,
                 insert.insert_point.y,
                 insert.insert_point.z,
@@ -131,10 +131,10 @@ mod tests {
         assert!(close(b.start.point[0], ports[1].0) && close(b.start.point[1], ports[1].1));
     }
 
-    fn placed_ports(app: &OpenCADStudio, valve: codec::Handle) -> Vec<(f64, f64)> {
+    fn placed_ports(app: &OpenCADStudio, valve: document::Handle) -> Vec<(f64, f64)> {
         let document = &app.tabs[app.active_tab].scene.document;
         match document.get_entity(valve) {
-            Some(codec::EntityType::Insert(insert)) => {
+            Some(document::EntityType::Insert(insert)) => {
                 crate::pid::symbols::placed_ports(document, insert)
             }
             _ => Vec::new(),
@@ -366,7 +366,7 @@ mod tests {
             .filter_map(|segment| {
                 let handle = parse_handle(&segment.handle)?;
                 match app.tabs[app.active_tab].scene.document.get_entity(handle) {
-                    Some(codec::EntityType::Line(line)) => Some((
+                    Some(document::EntityType::Line(line)) => Some((
                         [line.start.x, line.start.y],
                         [line.end.x, line.end.y],
                     )),

@@ -20,8 +20,8 @@
 //! APPID. Only these two keys are ours; other text in the description is
 //! left as it was.
 
-use codec::objects::Group;
-use codec::Document;
+use document::objects::Group;
+use document::Document;
 
 use super::blocks::{compose_tag, lettering_value};
 use super::*;
@@ -306,7 +306,7 @@ pub fn derive_group_tag(doc: &Document, group: &Group, rules: &Rules) -> Option<
 /// default name shown by the GROUP prompt.
 pub fn derive_handles_tag(
     doc: &Document,
-    handles: &[codec::Handle],
+    handles: &[document::Handle],
     rules: &Rules,
 ) -> Option<TagRead> {
     let mut lettering: Vec<Lettering> = handles
@@ -363,10 +363,10 @@ pub(super) fn derive_tag_from_texts(texts: &[&str], rules: &Rules) -> Option<Tag
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::entities::{Line, Text};
-    use codec::objects::ObjectType;
-    use codec::types::Vector3;
-    use codec::{EntityType, Handle};
+    use document::entities::{Line, Text};
+    use document::objects::ObjectType;
+    use document::types::Vector3;
+    use document::{EntityType, Handle};
 
     fn read(texts: &[&str], shapes: &[&str]) -> Option<(String, TagHow)> {
         tag_from_lettering(texts, shapes).map(|r| (r.value, r.how))

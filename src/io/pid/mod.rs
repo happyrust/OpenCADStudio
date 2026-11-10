@@ -21,15 +21,15 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use codec::entities::hatch::{
+use document::entities::hatch::{
     BoundaryEdge, BoundaryPath, BoundaryPathFlags, CircularArcEdge, LineEdge,
 };
-use codec::entities::{
+use document::entities::{
     Circle, Hatch, Line, LwPolyline, Point, Text, TextHorizontalAlignment, TextVerticalAlignment,
 };
-use codec::tables::linetype::{LineType, LineTypeElement};
-use codec::types::{Color, LineWeight, Vector2, Vector3};
-use codec::{Document, EntityType, TableEntry};
+use document::tables::linetype::{LineType, LineTypeElement};
+use document::types::{Color, LineWeight, Vector2, Vector3};
+use document::{Document, EntityType, TableEntry};
 use pid_parse::style_link::{
     ComplexDash, DashPattern, LineStyleIndex, MarkerStatus, PointMarker, ResolvedFill,
     ResolvedLineStyle, StyleNameIndex, TextAlignment,
@@ -679,7 +679,7 @@ fn ensure_layer(doc: &mut Document, name: &str, colour: Color, visible: bool, pl
     if doc.layers.contains(name) {
         return;
     }
-    let mut layer = codec::tables::Layer::new(name);
+    let mut layer = document::tables::Layer::new(name);
     layer.handle = doc.allocate_handle();
     layer.color = colour;
     layer.flags.off = !visible;

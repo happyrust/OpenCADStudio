@@ -48,6 +48,7 @@ pub struct TextStyleView<'a> {
     pub invalid_fields: usize,
     pub use_big_font: bool,
     pub font_picker: &'a FontPickerState,
+    pub bigfont_picker: &'a FontPickerState,
     /// What the last font switch turned off.
     pub turned_off: Option<String>,
     /// What Apply does to every changed style.
@@ -370,20 +371,20 @@ fn properties<'a>(v: &TextStyleView<'a>) -> Element<'a, Message> {
         .into()
     };
     let mut font_rows = vec![labelled_row(
-                t!("Font"),
-                crate::ui::font_picker::view(crate::ui::font_picker::FontPicker {
-                    state: v.font_picker,
-                    selected: if ttf {
-                        FontChoice::TrueType(v.ttf_buf.to_string())
-                    } else {
-                        FontChoice::Stroke(v.font_buf.to_string())
-                    },
-                    file: v.font_buf.to_string(),
-                    width: Length::Fixed(300.0),
-                    read_only: v.read_only,
-                    on_event: Message::TextStyleFont,
-                }),
-            )];
+        t!("Font"),
+        crate::ui::font_picker::view(crate::ui::font_picker::FontPicker {
+            state: v.font_picker,
+            selected: if ttf {
+                FontChoice::TrueType(v.ttf_buf.to_string())
+            } else {
+                FontChoice::Stroke(v.font_buf.to_string())
+            },
+            file: v.font_buf.to_string(),
+            width: Length::Fixed(300.0),
+            read_only: v.read_only,
+            on_event: Message::TextStyleFont,
+        }),
+    )];
     if let Some(turned_off) = &v.turned_off {
         font_rows.push(
             container(text(turned_off.clone()).size(11))
@@ -394,23 +395,25 @@ fn properties<'a>(v: &TextStyleView<'a>) -> Element<'a, Message> {
         );
     }
     font_rows.extend([
-            labelled_row(t!("Font style"), face_style),
-            toggle(
-                t!("Use SHX Big Font"),
-                v.use_big_font,
-                "use_big_font",
-                v.read_only || ttf,
-            ),
-            number_row(
-                t!("Big Font file"),
-                "",
-                v.bigfont_buf,
-                "bigfont",
-                v.read_only || !v.use_big_font,
-                None,
-                None,
-            ),
-        ]);
+        labelled_row(t!("Font style"), face_style),
+        toggle(
+            t!("Use SHX Big Font"),
+            v.use_big_font,
+            "use_big_font",
+            v.read_only || ttf,
+        ),
+        labelled_row(
+            t!("Big Font file"),
+            crate::ui::font_picker::view(crate::ui::font_picker::FontPicker {
+                state: v.bigfont_picker,
+                selected: FontChoice::Stroke(v.bigfont_buf.to_string()),
+                file: v.bigfont_buf.to_string(),
+                width: Length::Fixed(300.0),
+                read_only: v.read_only || !v.use_big_font,
+                on_event: Message::TextStyleBigFont,
+            }),
+        ),
+    ]);
     let font = group(t!("Font"), font_rows);
     let size = group(
         t!("Size"),

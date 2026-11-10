@@ -1,6 +1,6 @@
-use super::document::DocumentTab;
-use super::document::DynComponent;
 use super::history::history_dropdown_labels;
+use super::tab_document::DocumentTab;
+use super::tab_document::DynComponent;
 use super::{ArrowKey, Message, OpenCADStudio};
 use crate::scene::pick::grip::{grips_to_screen, grips_to_screen_paper, grips_to_screen_rte};
 use crate::scene::view::viewport_pane::ViewportPane;
@@ -18,6 +18,8 @@ use iced_aw::ContextMenu;
 
 #[cfg(test)]
 mod select_similar_clipboard_tests;
+#[cfg(test)]
+mod table_inplace_widget_tests;
 
 /// Invisible event surface for accurate point picking. MouseArea emits a
 /// positionless press message; capturing the cursor in the actual button
@@ -374,9 +376,7 @@ pub(crate) fn main_window_event(
             crate::ui::ribbon::keytip_pointer_pressed();
             Some(Message::KeyTip(crate::ui::ribbon::KeyTipInput::Hide))
         }
-        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
-            iced::mouse::Button::Left,
-        )) => {
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
             crate::ui::ribbon::keytip_pointer_pressed();
             Some(Message::PropPointerPressed)
         }
@@ -391,9 +391,7 @@ pub(crate) fn main_window_event(
         iced::Event::Window(window::Event::CloseRequested) => {
             Some(Message::WindowCloseRequested(win_id))
         }
-        iced::Event::Window(window::Event::Closed) => {
-            Some(Message::OsWindowClosed(win_id))
-        }
+        iced::Event::Window(window::Event::Closed) => Some(Message::OsWindowClosed(win_id)),
         #[cfg(not(target_arch = "wasm32"))]
         iced::Event::Window(window::Event::Resized(sz))
             if !crate::app::tool_windows::is_main_window(win_id) =>
@@ -428,7 +426,19 @@ pub(crate) fn main_window_event(
             None
         }
         iced::Event::Window(window::Event::Resized(sz)) => {
-            Some(Message::WindowResized(sz.width as f32, sz.height as f32))
+            Some(Message::WindowResized(sz.width, sz.height))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        iced::Event::Window(window::Event::Opened { scale_factor, .. })
+            if !crate::app::tool_windows::is_main_window(win_id) =>
+        {
+            Some(Message::OsWindowScale(win_id, scale_factor))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        iced::Event::Window(window::Event::Rescaled(scale_factor))
+            if !crate::app::tool_windows::is_main_window(win_id) =>
+        {
+            Some(Message::OsWindowScale(win_id, scale_factor))
         }
         // The ribbon's arrows sit on whole physical pixels.
         iced::Event::Window(window::Event::Opened {
@@ -441,9 +451,7 @@ pub(crate) fn main_window_event(
             crate::ui::icons::set_scale_factor(scale_factor);
             None
         }
-        iced::Event::Window(window::Event::FileDropped(path)) => {
-            Some(Message::FileDropped(path))
-        }
+        iced::Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
         iced::Event::Keyboard(keyboard::Event::KeyReleased { key, .. }) => {
             crate::ui::ribbon::keytip_key_released(&key)
         }
@@ -464,9 +472,7 @@ pub(crate) fn main_window_event(
             repeat,
             ..
         }) => {
-            if let Some(keytip) =
-                crate::ui::ribbon::keytip_key_pressed(&key, modifiers, repeat)
-            {
+            if let Some(keytip) = crate::ui::ribbon::keytip_key_pressed(&key, modifiers, repeat) {
                 return keytip;
             }
             #[cfg(target_arch = "wasm32")]
@@ -486,9 +492,8 @@ pub(crate) fn main_window_event(
                 && modifiers.alt()
                 && !modifiers.control()
                 && !modifiers.logo();
-            let shortcut_modifier =
-                (modifiers.control() || modifiers.alt() || modifiers.logo())
-                    && !(types_glyph && (altgr || mac_option));
+            let shortcut_modifier = (modifiers.control() || modifiers.alt() || modifiers.logo())
+                && !(types_glyph && (altgr || mac_option));
             // Any key that produces a printable glyph types it,
             // even when its logical key resolves to navigation
             // (NumLock-on Numpad8 / Numpad2 arrive as
@@ -506,8 +511,7 @@ pub(crate) fn main_window_event(
                 && matches!(
                     physical_key,
                     keyboard::key::Physical::Code(
-                        keyboard::key::Code::NumpadDecimal
-                            | keyboard::key::Code::NumpadComma
+                        keyboard::key::Code::NumpadDecimal | keyboard::key::Code::NumpadComma
                     )
                 )
             {
@@ -515,9 +519,7 @@ pub(crate) fn main_window_event(
             }
             if !shortcut_modifier && status == Status::Ignored {
                 if let Some(t) = text.as_deref() {
-                    if !t.is_empty()
-                        && t.chars().all(|c| !c.is_control() && !c.is_whitespace())
-                    {
+                    if !t.is_empty() && t.chars().all(|c| !c.is_control() && !c.is_whitespace()) {
                         return Some(Message::CommandAppendChar(t.to_string()));
                     }
                 }
@@ -529,18 +531,10 @@ pub(crate) fn main_window_event(
                         .all(|ch| !ch.is_control() && !ch.is_whitespace())
             });
             let arrow = match &key {
-                keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {
-                    Some(ArrowKey::Up)
-                }
-                keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
-                    Some(ArrowKey::Down)
-                }
-                keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
-                    Some(ArrowKey::Left)
-                }
-                keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
-                    Some(ArrowKey::Right)
-                }
+                keyboard::Key::Named(keyboard::key::Named::ArrowUp) => Some(ArrowKey::Up),
+                keyboard::Key::Named(keyboard::key::Named::ArrowDown) => Some(ArrowKey::Down),
+                keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => Some(ArrowKey::Left),
+                keyboard::Key::Named(keyboard::key::Named::ArrowRight) => Some(ArrowKey::Right),
                 _ => None,
             };
             if !has_printable_text && status == Status::Ignored {
@@ -582,9 +576,7 @@ pub(crate) fn main_window_event(
             {
                 return None;
             }
-            if status == Status::Ignored
-                || crate::app::shortcuts::is_global_key(&shortcut)
-            {
+            if status == Status::Ignored || crate::app::shortcuts::is_global_key(&shortcut) {
                 return Some(Message::ShortcutPressed(shortcut));
             }
             // A text field captured the key. SPACE rebound away from
@@ -701,7 +693,7 @@ fn shortcut_key_name(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> Opt
 /// `ViewportRenderMode` enum carries the raw DXF integers, not a label,
 /// so wrap it locally with a friendly name renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct RenderModeChoice(pub codec::entities::ViewportRenderMode);
+pub(super) struct RenderModeChoice(pub document::entities::ViewportRenderMode);
 
 impl std::fmt::Display for RenderModeChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -712,10 +704,10 @@ impl std::fmt::Display for RenderModeChoice {
 /// A named style (Realistic, …) the active viewport draws as, by name.
 fn named_visual_style(
     scene: &crate::scene::Scene,
-    mode: codec::entities::ViewportRenderMode,
+    mode: document::entities::ViewportRenderMode,
 ) -> Option<String> {
     match scene.document.objects.get(&scene.active_visual_style()) {
-        Some(codec::objects::ObjectType::VisualStyle(style)) => {
+        Some(document::objects::ObjectType::VisualStyle(style)) => {
             match crate::modules::view::visual_style::mode_for_style_name(&style.description) {
                 Some((named_mode, true)) if named_mode == mode => {
                     Some(crate::t!(style.description.as_str()).into_owned())
@@ -954,7 +946,7 @@ impl OpenCADStudio {
                     .height(Fill)
                     .min_size(scene.model_pane_min_px())
                     .spacing(crate::scene::TILE_DIVIDER_PX)
-                    .on_resize(6.0, Message::PaneResized)
+                    .on_resize(crate::scene::TILE_RESIZE_LEEWAY_PX, Message::PaneResized)
                     .into(),
                 )
             };
@@ -1054,9 +1046,17 @@ bg={bg_ms:.1}ms n={view_count}"
             }
             let bg_lum = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
             let grid_style = crate::ui::overlay::GridStyle {
-                opacity: if in_block_editor { 38 } else { self.model_space.grid_opacity },
+                opacity: if in_block_editor {
+                    38
+                } else {
+                    self.model_space.grid_opacity
+                },
                 bg_luminance: bg_lum,
-                color: if in_block_editor { [0.27, 0.48, 0.91] } else { [0.80, 0.80, 0.80] },
+                color: if in_block_editor {
+                    [0.27, 0.48, 0.91]
+                } else {
+                    [0.80, 0.80, 0.80]
+                },
                 axes: self.grid_axes,
             };
             // Wipeouts hide the model-space grid (the grid is an
@@ -1088,168 +1088,179 @@ bg={bg_ms:.1}ms n={view_count}"
                     .is_some_and(|cmd| cmd.name() == "STRETCH");
 
             // Screen grips with the object they belong to, for the frames.
-            let mut owned_grips: Vec<(codec::Handle, iced::Point, crate::scene::model::object::GripShape)> =
-                Vec::new();
+            let mut owned_grips: Vec<(
+                document::Handle,
+                iced::Point,
+                crate::scene::model::object::GripShape,
+            )> = Vec::new();
             let mut grip_rubber: Option<(iced::Point, iced::Point)> = None;
             let (grips, group_boxes): (Vec<crate::ui::overlay::GripMarker>, Vec<Vec<iced::Point>>) =
-                if show_grips && !tab.selected_grips.is_empty()
-            {
-                let (vw, vh) = sel_ref.view.vp_size;
-                // Overlays project through the active tile's camera, so
-                // they must use the active tile's screen rectangle (with
-                // its canvas offset) — not the whole canvas — or they
-                // land in the wrong place in a tiled layout.
-                // Inside a floating viewport the pane is the viewport's own
-                // rect + camera; otherwise the active model tile.
-                let edit_frame = tab.scene.viewport_edit_frame((vw, vh));
-                let bounds = match &edit_frame {
-                    Some((_, full)) => *full,
-                    None => tab.scene.active_model_tile_bounds(vw, vh),
-                };
-                let sel_h = tab.selected_handle;
-                // Mark the Properties panel's current point grip hot.
-                let current_vertex_grip: Option<usize> = tab
-                    .properties
-                    .prop_vertex_indicator_active
-                    .then(|| sel_h)
-                    .flatten()
-                    .and_then(|h| {
-                        let indexed = match tab.scene.document.get_entity(h) {
-                            Some(codec::EntityType::LwPolyline(_))
-                            | Some(codec::EntityType::Polyline2D(_))
-                            | Some(codec::EntityType::Polyline3D(_))
-                            | Some(codec::EntityType::Spline(_))
-                            | Some(codec::EntityType::Face3D(_))
-                            | Some(codec::EntityType::PolygonMesh(_)) => true,
-                            _ => false,
-                        };
-                        indexed.then_some(tab.properties.prop_vertex)
-                    });
-                // In-viewport grips are model-space; project them with the
-                // viewport camera so they sit on the wire the GPU draws.
-                // Paper entities use the 2-D paper transform; the model tab
-                // uses the model camera.
-                let project = |list: &[crate::scene::model::object::GripDef]| {
-                    if let Some((cam, _)) = &edit_frame {
-                        grips_to_screen_rte(list, cam.view_proj_rte(bounds), cam.eye(), bounds)
-                    } else if is_paper {
-                        let cam = tab.scene.camera.borrow();
-                        let aspect = if vh > 0.0 { vw / vh } else { 1.0 };
-                        let half_h = cam.ortho_size();
-                        let half_w = half_h * aspect;
-                        let tx = cam.target.x as f32;
-                        let ty = cam.target.y as f32;
-                        drop(cam);
-                        grips_to_screen_paper(list, tx, ty, half_w, half_h, bounds)
-                    } else {
-                        let cam = tab.scene.camera.borrow();
-                        grips_to_screen(list, &cam, bounds)
-                    }
-                };
-                // A dragged grip stays where the drag started, and so does a
-                // frame through it; a rubber band runs from it to the cursor.
-                let screen_grips = match tab.active_grip.as_ref() {
-                    Some(edit) => {
-                        // Every grip stays where it was when the drag
-                        // started; the dragged one marks its start point.
-                        let list = match &tab.drag_start_grips {
-                            Some(((handle, id, start), list, owners))
-                                if (*handle, *id, *start)
-                                    == (edit.handle, edit.grip_id, edit.origin_world)
-                                    && list.len() == tab.selected_grips.len()
-                                    && owners == &tab.selected_grip_handles =>
-                            {
-                                list.clone()
-                            }
-                            _ => tab.selected_grips.clone(),
-                        };
-                        // A circle's quadrant stretches from its centre.
-                        let base = match tab.scene.document.get_entity(edit.handle) {
-                            Some(codec::EntityType::Circle(circle)) => {
-                                let centre = circle.center_wcs();
-                                glam::DVec3::new(centre.x, centre.y, centre.z)
-                            }
-                            _ => edit.origin_world,
-                        };
-                        let ends = project(&[
-                            crate::entities::common::square_grip(0, base),
-                            crate::entities::common::square_grip(1, edit.last_world),
-                        ]);
-                        if let [(_, from, ..), (_, to, ..)] = ends.as_slice() {
-                            grip_rubber = Some((*from, *to));
-                        }
-                        project(&list)
-                    }
-                    None => project(&tab.selected_grips),
-                };
-                owned_grips = screen_grips
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, (_, screen, _, shape, _))| {
-                        Some((*tab.selected_grip_handles.get(index)?, *screen, *shape))
-                    })
-                    .collect();
-                // GROUPDISPLAYMODE 2: each group box's four corners on screen.
-                let boxes: Vec<Vec<iced::Point>> = tab
-                    .group_boxes
-                    .iter()
-                    .map(|[min, max]| {
-                        let z = (min.z + max.z) * 0.5;
-                        let corners: Vec<crate::scene::model::object::GripDef> =
-                            [(min.x, min.y), (max.x, min.y), (max.x, max.y), (min.x, max.y)]
-                                .into_iter()
-                                .map(|(x, y)| crate::entities::common::square_grip(0, glam::DVec3::new(x, y, z)))
-                                .collect();
-                        project(&corners).into_iter().map(|grip| grip.1).collect()
-                    })
-                    .collect();
-                let markers = screen_grips
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(_, (_, screen, _, _, _))| {
-                        screen.x.is_finite()
-                            && screen.y.is_finite()
-                            && screen.x >= -bounds.width
-                            && screen.x <= bounds.width * 2.0
-                            && screen.y >= -bounds.height
-                            && screen.y <= bounds.height * 2.0
-                    })
-                    .map(|(index, (grip_id, screen, _is_midpoint, shape, dir))| {
-                        let owner = tab.selected_grip_handles.get(index).copied();
-                        let is_hot = owner.is_some_and(|handle| {
-                            tab.hot_grips.contains(&(handle, grip_id))
-                                || tab.active_grip.as_ref().is_some_and(|edit| {
-                                    edit.targets.iter().any(|target| {
-                                        target.handle == handle && target.grip_id == grip_id
-                                    })
-                                })
-                                || (Some(handle) == sel_h && Some(grip_id) == current_vertex_grip)
+                if show_grips && !tab.selected_grips.is_empty() {
+                    let (vw, vh) = sel_ref.view.vp_size;
+                    // Overlays project through the active tile's camera, so
+                    // they must use the active tile's screen rectangle (with
+                    // its canvas offset) — not the whole canvas — or they
+                    // land in the wrong place in a tiled layout.
+                    // Inside a floating viewport the pane is the viewport's own
+                    // rect + camera; otherwise the active model tile.
+                    let edit_frame = tab.scene.viewport_edit_frame((vw, vh));
+                    let bounds = match &edit_frame {
+                        Some((_, full)) => *full,
+                        None => tab.scene.active_model_tile_bounds(vw, vh),
+                    };
+                    let sel_h = tab.selected_handle;
+                    // Mark the Properties panel's current point grip hot.
+                    let current_vertex_grip: Option<usize> = tab
+                        .properties
+                        .prop_vertex_indicator_active
+                        .then_some(sel_h)
+                        .flatten()
+                        .and_then(|h| {
+                            let indexed = match tab.scene.document.get_entity(h) {
+                                Some(document::EntityType::LwPolyline(_))
+                                | Some(document::EntityType::Polyline2D(_))
+                                | Some(document::EntityType::Polyline3D(_))
+                                | Some(document::EntityType::Spline(_))
+                                | Some(document::EntityType::Face3D(_))
+                                | Some(document::EntityType::PolygonMesh(_)) => true,
+                                _ => false,
+                            };
+                            indexed.then_some(tab.properties.prop_vertex)
                         });
-                        let is_hovered = owner.is_some_and(|handle| {
-                            self.grip_hover.as_ref().is_some_and(|hover| {
-                                hover.handle == handle && hover.grip_id == grip_id
+                    // In-viewport grips are model-space; project them with the
+                    // viewport camera so they sit on the wire the GPU draws.
+                    // Paper entities use the 2-D paper transform; the model tab
+                    // uses the model camera.
+                    let project = |list: &[crate::scene::model::object::GripDef]| {
+                        if let Some((cam, _)) = &edit_frame {
+                            grips_to_screen_rte(list, cam.view_proj_rte(bounds), cam.eye(), bounds)
+                        } else if is_paper {
+                            let cam = tab.scene.camera.borrow();
+                            let aspect = if vh > 0.0 { vw / vh } else { 1.0 };
+                            let half_h = cam.ortho_size();
+                            let half_w = half_h * aspect;
+                            let tx = cam.target.x as f32;
+                            let ty = cam.target.y as f32;
+                            drop(cam);
+                            grips_to_screen_paper(list, tx, ty, half_w, half_h, bounds)
+                        } else {
+                            let cam = tab.scene.camera.borrow();
+                            grips_to_screen(list, &cam, bounds)
+                        }
+                    };
+                    // A dragged grip stays where the drag started, and so does a
+                    // frame through it; a rubber band runs from it to the cursor.
+                    let screen_grips = match tab.active_grip.as_ref() {
+                        Some(edit) => {
+                            // Every grip stays where it was when the drag
+                            // started; the dragged one marks its start point.
+                            let list = match &tab.drag_start_grips {
+                                Some(((handle, id, start), list, owners))
+                                    if (*handle, *id, *start)
+                                        == (edit.handle, edit.grip_id, edit.origin_world)
+                                        && list.len() == tab.selected_grips.len()
+                                        && owners == &tab.selected_grip_handles =>
+                                {
+                                    list.clone()
+                                }
+                                _ => tab.selected_grips.clone(),
+                            };
+                            // A circle's quadrant stretches from its centre.
+                            let base = match tab.scene.document.get_entity(edit.handle) {
+                                Some(document::EntityType::Circle(circle)) => {
+                                    let centre = circle.center_wcs();
+                                    glam::DVec3::new(centre.x, centre.y, centre.z)
+                                }
+                                _ => edit.origin_world,
+                            };
+                            let ends = project(&[
+                                crate::entities::common::square_grip(0, base),
+                                crate::entities::common::square_grip(1, edit.last_world),
+                            ]);
+                            if let [(_, from, ..), (_, to, ..)] = ends.as_slice() {
+                                grip_rubber = Some((*from, *to));
+                            }
+                            project(&list)
+                        }
+                        None => project(&tab.selected_grips),
+                    };
+                    owned_grips = screen_grips
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, (_, screen, _, shape, _))| {
+                            Some((*tab.selected_grip_handles.get(index)?, *screen, *shape))
+                        })
+                        .collect();
+                    // GROUPDISPLAYMODE 2: each group box's four corners on screen.
+                    let boxes: Vec<Vec<iced::Point>> = tab
+                        .group_boxes
+                        .iter()
+                        .map(|[min, max]| {
+                            let z = (min.z + max.z) * 0.5;
+                            let corners: Vec<crate::scene::model::object::GripDef> = [
+                                (min.x, min.y),
+                                (max.x, min.y),
+                                (max.x, max.y),
+                                (min.x, max.y),
+                            ]
+                            .into_iter()
+                            .map(|(x, y)| {
+                                crate::entities::common::square_grip(0, glam::DVec3::new(x, y, z))
                             })
-                        });
-                        crate::ui::overlay::GripMarker {
-                            pos: screen,
-                            shape,
-                            is_hot,
-                            is_hovered,
-                            dir,
-                            is_plugin: false,
-                            is_authoring: crate::app::block_authoring_edit::is_editor_grip(grip_id),
-                            is_dynamic: crate::app::block_actions::is_test_grip(grip_id)
-                                || grip_id == crate::app::visibility::VIS_GRIP_ID,
-                            is_filled: grip_id == crate::scene::GROUP_GRIP_ID,
-                        }
-                    })
-                    .collect();
-                (markers, boxes)
-            } else {
-                (vec![], vec![])
-            };
+                            .collect();
+                            project(&corners).into_iter().map(|grip| grip.1).collect()
+                        })
+                        .collect();
+                    let markers = screen_grips
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(_, (_, screen, _, _, _))| {
+                            screen.x.is_finite()
+                                && screen.y.is_finite()
+                                && screen.x >= -bounds.width
+                                && screen.x <= bounds.width * 2.0
+                                && screen.y >= -bounds.height
+                                && screen.y <= bounds.height * 2.0
+                        })
+                        .map(|(index, (grip_id, screen, _is_midpoint, shape, dir))| {
+                            let owner = tab.selected_grip_handles.get(index).copied();
+                            let is_hot = owner.is_some_and(|handle| {
+                                tab.hot_grips.contains(&(handle, grip_id))
+                                    || tab.active_grip.as_ref().is_some_and(|edit| {
+                                        edit.targets.iter().any(|target| {
+                                            target.handle == handle && target.grip_id == grip_id
+                                        })
+                                    })
+                                    || (Some(handle) == sel_h
+                                        && Some(grip_id) == current_vertex_grip)
+                            });
+                            let is_hovered = owner.is_some_and(|handle| {
+                                self.grip_hover.as_ref().is_some_and(|hover| {
+                                    hover.handle == handle && hover.grip_id == grip_id
+                                })
+                            });
+                            crate::ui::overlay::GripMarker {
+                                pos: screen,
+                                shape,
+                                is_hot,
+                                is_hovered,
+                                dir,
+                                is_plugin: false,
+                                is_authoring: crate::app::block_authoring_edit::is_editor_grip(
+                                    grip_id,
+                                ),
+                                is_dynamic: crate::app::block_actions::is_test_grip(grip_id)
+                                    || grip_id == crate::app::visibility::VIS_GRIP_ID,
+                                is_filled: grip_id == crate::scene::GROUP_GRIP_ID,
+                            }
+                        })
+                        .collect();
+                    (markers, boxes)
+                } else {
+                    (vec![], vec![])
+                };
             // API v11: plugin-declared custom grips render in the same overlay
-            // layer with a distinct accent (always-visible display state of a
+            // layer with native grip paint (always-visible display state of a
             // live declaring plugin; hover highlighting through the same
             // pipeline; the dragged grip is hot). Culling is the per-tab
             // uniform grid's view-rect query, not a scan of every grip.
@@ -1281,7 +1292,7 @@ bg={bg_ms:.1}ms n={view_count}"
             };
             // The frame of every selected CV spline and spline-fit 2D or 3D
             // polyline: its frame-vertex grips joined in order.
-            let mut framed: Vec<codec::Handle> = Vec::new();
+            let mut framed: Vec<document::Handle> = Vec::new();
             for (owner, _, _) in &owned_grips {
                 if !framed.contains(owner) {
                     framed.push(*owner);
@@ -1291,7 +1302,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 .into_iter()
                 .filter_map(|handle| {
                     let (closed, dotted, grip_shape) = match tab.scene.document.get_entity(handle) {
-                        Some(codec::EntityType::Spline(spline))
+                        Some(document::EntityType::Spline(spline))
                             if crate::entities::spline::shows_control_vertices(spline) =>
                         {
                             (
@@ -1300,7 +1311,7 @@ bg={bg_ms:.1}ms n={view_count}"
                                 crate::scene::model::object::GripShape::Circle,
                             )
                         }
-                        Some(codec::EntityType::Polyline2D(polyline))
+                        Some(document::EntityType::Polyline2D(polyline))
                             if polyline.flags.bits() & 4 != 0 =>
                         {
                             (
@@ -1309,9 +1320,9 @@ bg={bg_ms:.1}ms n={view_count}"
                                 crate::scene::model::object::GripShape::Square,
                             )
                         }
-                        Some(codec::EntityType::Polyline3D(polyline))
+                        Some(document::EntityType::Polyline3D(polyline))
                             if polyline.smooth_type
-                                != codec::entities::polyline3d::SmoothSurfaceType::None =>
+                                != document::entities::polyline3d::SmoothSurfaceType::None =>
                         {
                             (
                                 polyline.is_closed(),
@@ -1353,73 +1364,72 @@ bg={bg_ms:.1}ms n={view_count}"
             // Rotation-only projection (view_proj_rte): the icon shows axis
             // DIRECTIONS only, so the full view_proj's huge UTM translation would
             // cancel catastrophically in f32 and make the tripod jitter.
-            let ucs_icons: Vec<crate::ui::overlay::UcsIconParams> = if !self.show_ucs_icon
-                || tab.active_block_edit_session().is_some()
-            {
-                vec![]
-            } else if let Some((vp_cam, full)) = tab.scene.viewport_edit_frame((vw, vh)) {
-                let (_, ux, uy, uz) = tab.ucs_xform().axes();
-                let origin_screen = self
-                    .ucs_icon_at_origin
-                    .then(|| {
-                        vp_cam
-                            .project(tab.ucs_origin_world(), full)
-                            .map(|p| iced::Point::new(full.x + p.x, full.y + p.y))
-                    })
-                    .flatten();
-                vec![crate::ui::overlay::UcsIconParams {
-                    view_proj: vp_cam.view_proj_rte(full),
-                    bounds: full,
-                    axes: (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()),
-                    origin_screen,
-                    hover: self.ucs_icon_hover,
-                    selected: self.ucs_icon_selected,
-                }]
-            } else if !is_paper {
-                // One icon per Model pane — each at its own UCS origin, projected
-                // through that pane's camera at its pane rect. Only the active
-                // pane carries the interactive hover / selected grips.
-                let (_, ux, uy, uz) = tab.ucs_xform().axes();
-                let origin_w = tab.ucs_origin_world();
-                let active = tab.scene.active_model_tile.get();
-                let live = tab.scene.camera.borrow().clone();
-                tab.scene
-                    .model_tiles
-                    .borrow()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, t)| {
-                        let b = iced::Rectangle {
-                            x: t.rect.x * vw,
-                            y: t.rect.y * vh,
-                            width: (t.rect.width * vw).max(1.0),
-                            height: (t.rect.height * vh).max(1.0),
-                        };
-                        let cam = if i == active {
-                            live.clone()
-                        } else {
-                            t.camera.clone()
-                        };
-                        let origin_screen = self
-                            .ucs_icon_at_origin
-                            .then(|| {
-                                cam.project(origin_w, b)
-                                    .map(|p| iced::Point::new(b.x + p.x, b.y + p.y))
-                            })
-                            .flatten();
-                        crate::ui::overlay::UcsIconParams {
-                            view_proj: cam.view_proj_rte(b),
-                            bounds: b,
-                            axes: (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()),
-                            origin_screen,
-                            hover: i == active && self.ucs_icon_hover,
-                            selected: i == active && self.ucs_icon_selected,
-                        }
-                    })
-                    .collect()
-            } else {
-                vec![]
-            };
+            let ucs_icons: Vec<crate::ui::overlay::UcsIconParams> =
+                if !self.show_ucs_icon || tab.active_block_edit_session().is_some() {
+                    vec![]
+                } else if let Some((vp_cam, full)) = tab.scene.viewport_edit_frame((vw, vh)) {
+                    let (_, ux, uy, uz) = tab.ucs_xform().axes();
+                    let origin_screen = self
+                        .ucs_icon_at_origin
+                        .then(|| {
+                            vp_cam
+                                .project(tab.ucs_origin_world(), full)
+                                .map(|p| iced::Point::new(full.x + p.x, full.y + p.y))
+                        })
+                        .flatten();
+                    vec![crate::ui::overlay::UcsIconParams {
+                        view_proj: vp_cam.view_proj_rte(full),
+                        bounds: full,
+                        axes: (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()),
+                        origin_screen,
+                        hover: self.ucs_icon_hover,
+                        selected: self.ucs_icon_selected,
+                    }]
+                } else if !is_paper {
+                    // One icon per Model pane — each at its own UCS origin, projected
+                    // through that pane's camera at its pane rect. Only the active
+                    // pane carries the interactive hover / selected grips.
+                    let (_, ux, uy, uz) = tab.ucs_xform().axes();
+                    let origin_w = tab.ucs_origin_world();
+                    let active = tab.scene.active_model_tile.get();
+                    let live = tab.scene.camera.borrow().clone();
+                    tab.scene
+                        .model_tiles
+                        .borrow()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| {
+                            let b = iced::Rectangle {
+                                x: t.rect.x * vw,
+                                y: t.rect.y * vh,
+                                width: (t.rect.width * vw).max(1.0),
+                                height: (t.rect.height * vh).max(1.0),
+                            };
+                            let cam = if i == active {
+                                live.clone()
+                            } else {
+                                t.camera.clone()
+                            };
+                            let origin_screen = self
+                                .ucs_icon_at_origin
+                                .then(|| {
+                                    cam.project(origin_w, b)
+                                        .map(|p| iced::Point::new(b.x + p.x, b.y + p.y))
+                                })
+                                .flatten();
+                            crate::ui::overlay::UcsIconParams {
+                                view_proj: cam.view_proj_rte(b),
+                                bounds: b,
+                                axes: (ux.as_vec3(), uy.as_vec3(), uz.as_vec3()),
+                                origin_screen,
+                                hover: i == active && self.ucs_icon_hover,
+                                selected: i == active && self.ucs_icon_selected,
+                            }
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                };
 
             // OST tracking points → screen positions, projected relative-to-eye
             // so they stay precise at UTM-scale coordinates (the full
@@ -1590,6 +1600,13 @@ bg={bg_ms:.1}ms n={view_count}"
                 _ => (None, None),
             };
 
+            // VPHIGHLIGHT: faint outline of the Model viewport under the
+            // pointer (only with several viewports; none while it is away).
+            let pane_hover = if is_paper {
+                None
+            } else {
+                self.model_viewport_outline(tab)
+            };
             let hover_locked = tab
                 .scene
                 .hover_highlight
@@ -1647,8 +1664,15 @@ bg={bg_ms:.1}ms n={view_count}"
                     &tab.scene.document,
                     session.br_handle,
                 )?;
-                let native_point = crate::scene::block_grips::config::locations(&tab.scene.document, session.br_handle, parameter.handle).ok()
-                    .and_then(|grips| grips.into_iter().next()).map(|grip| grip.point).unwrap_or(parameter.def_point);
+                let native_point = crate::scene::block_grips::config::locations(
+                    &tab.scene.document,
+                    session.br_handle,
+                    parameter.handle,
+                )
+                .ok()
+                .and_then(|grips| grips.into_iter().next())
+                .map(|grip| grip.point)
+                .unwrap_or(parameter.def_point);
                 let location = glam::DVec3::new(native_point.x, native_point.y, native_point.z);
                 let point = tab.scene.camera.borrow().project(location, vp_bounds)?;
                 let point = iced::Point::new(vp_bounds.x + point.x, vp_bounds.y + point.y);
@@ -1670,7 +1694,7 @@ bg={bg_ms:.1}ms n={view_count}"
                         )
                         .into_iter()
                         .filter_map(|(handle, parameter)| {
-                            let project = |point: codec::types::Vector3| {
+                            let project = |point: document::types::Vector3| {
                                 let point = tab.scene.camera.borrow().project(
                                     glam::DVec3::new(point.x, point.y, point.z),
                                     vp_bounds,
@@ -1685,7 +1709,9 @@ bg={bg_ms:.1}ms n={view_count}"
                                 parameter.position_name.clone(),
                                 vp_bounds,
                                 tab.selected_authoring == Some(handle)
-                                    || tab.active_cmd.as_ref().is_some_and(|command| command.selection_marker_selected(handle)),
+                                    || tab.active_cmd.as_ref().is_some_and(|command| {
+                                        command.selection_marker_selected(handle)
+                                    }),
                             ))
                         })
                         .collect()
@@ -1782,7 +1808,7 @@ bg={bg_ms:.1}ms n={view_count}"
                     )
                     .chain(crate::scene::block_authoring::edit::items(&tab.scene.document, session.br_handle).into_iter().filter_map(|item| {
                         let native = tab.scene.document.objects.get(&item.handle)?;
-                        if matches!(native, codec::objects::ObjectType::DynamicBlock(object) if matches!(object.data, codec::objects::DynamicBlockData::PropertiesTable(_))) {
+                        if matches!(native, document::objects::ObjectType::DynamicBlock(object) if matches!(object.data, document::objects::DynamicBlockData::PropertiesTable(_))) {
                             Some((item.handle, item.graphic, item.grips.first()?.1))
                         } else { None }
                     }))
@@ -1816,7 +1842,7 @@ bg={bg_ms:.1}ms n={view_count}"
                     )
                     .filter_map(|(handle, mut graphic, marker_tail)| {
                         let native_grips = crate::scene::block_grips::config::apply_graphic(&tab.scene.document, session.br_handle, handle, &mut graphic);
-                        let project = |p: codec::types::Vector3| {
+                        let project = |p: document::types::Vector3| {
                             let p = tab
                                 .scene
                                 .camera
@@ -1904,6 +1930,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 dividers,
                 pane_move_rect,
                 pane_drop_rect,
+                pane_hover,
                 nav_cursor(tab),
                 self.ribbon.open_dropdown.is_some(),
                 hover_locked,
@@ -2035,8 +2062,12 @@ bg={bg_ms:.1}ms n={view_count}"
             .as_ref()
             .map(|c| c.needs_entity_pick() || c.needs_structure_point_pick())
             .unwrap_or(false);
+        #[cfg(not(target_arch = "wasm32"))]
+        let plugin_grip_active = tab.active_plugin_grip.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let plugin_grip_active = false;
         let dyn_input_overlay: Option<Element<'_, Message>> = if self.dyn_input
-            && (tab.active_cmd.is_some() || tab.active_grip.is_some())
+            && (tab.active_cmd.is_some() || tab.active_grip.is_some() || plugin_grip_active)
             && (!tab.dyn_fields.is_empty() || dyn_picks_object)
         {
             let w = tab.last_cursor_world;
@@ -2369,6 +2400,10 @@ bg={bg_ms:.1}ms n={view_count}"
                     self.render_mode_menu_open,
                     self.render_mode_preview,
                     style_name,
+                    (
+                        self.model_space.viewport_hover_highlight,
+                        self.model_space.viewport_hover_opacity,
+                    ),
                 );
                 // Adaptive: DensitySwap measures the bar's real width every frame
                 // (reported into `render_bar_w`, which the ViewCube reads to decide
@@ -2400,7 +2435,7 @@ bg={bg_ms:.1}ms n={view_count}"
             // clicks (the shader viewport sits below it). Positioned with
             // leading Spaces sized to the viewport's screen rectangle.
             mark("active_vp_rect");
-            let active_vp_rect: Option<(codec::Handle, iced::Rectangle)> =
+            let active_vp_rect: Option<(document::Handle, iced::Rectangle)> =
                 if is_paper && !tab.is_start {
                     tab.scene.active_viewport.and_then(|h| {
                         let (cw, ch) = tab.scene.selection.borrow().view.vp_size;
@@ -2449,7 +2484,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 let vp_mode = tab
                     .scene
                     .active_viewport_render_mode()
-                    .unwrap_or(codec::entities::ViewportRenderMode::Wireframe2D);
+                    .unwrap_or(document::entities::ViewportRenderMode::Wireframe2D);
                 // Adaptive (same as model): the picker measures its real width into
                 // `render_bar_w` and swaps to an empty spacer only when the viewport
                 // can't hold it; the ViewCube reads that width to decide overlap.
@@ -2462,6 +2497,7 @@ bg={bg_ms:.1}ms n={view_count}"
                     self.render_mode_menu_open,
                     self.render_mode_preview,
                     named_visual_style(&tab.scene, vp_mode),
+                    (false, 0),
                 );
                 let adaptive: Element<'_, Message> = DensitySwap::new(vec![
                     iced::widget::opaque(bar),
@@ -2547,23 +2583,46 @@ bg={bg_ms:.1}ms n={view_count}"
                 }
             }
 
-            // HATCH's settings float at the drawing's top left (HPDLGMODE).
-            if self.model_space.hatch_dialog_mode != 0 {
-                if let Some(settings) =
-                    tab.active_cmd.as_ref().and_then(|command| command.hatch_settings())
+            // HATCH's settings float at the drawing's top left (HPDLGMODE,
+            // or seTtings).
+            if self.model_space.hatch_dialog_mode != 0 || self.hatch_panel_shown {
+                if let Some(settings) = tab
+                    .active_cmd
+                    .as_ref()
+                    .and_then(|command| command.hatch_settings())
                 {
+                    let mut layers: Vec<String> = tab
+                        .scene
+                        .document
+                        .layers
+                        .iter()
+                        .map(|layer| layer.name.clone())
+                        .collect();
+                    layers.sort_by_key(|name| name.to_lowercase());
                     viewport_stack = viewport_stack.push(position_canvas_overlay(
                         iced::Point::new(12.0, 40.0),
-                        crate::ui::window::hatch_panel::view(settings, &self.hatch_drafts),
+                        crate::ui::window::hatch_panel::view(settings, &self.hatch_drafts, layers),
                     ));
                 }
             }
-            let (vw,vh)=tab.scene.selection.borrow().view.vp_size;
-            let bar_bounds=tab.scene.active_model_tile_bounds(vw,vh);
-            let bar_color=crate::ui::overlay::authoring::AuthoringVisualOptions::new(&self.block_editor_preferences,&tab.scene.document,crosshair_background(tab,is_paper)).action;
-            for (group,point,offset,width) in self.action_bar_layout(bar_bounds) {
-                let bar=crate::ui::window::block_action_bars::view(group,tab.selected_authoring,offset,width,tab.active_cmd.is_none(),bar_color);
-                viewport_stack=viewport_stack.push(position_canvas_overlay(point,bar));
+            let (vw, vh) = tab.scene.selection.borrow().view.vp_size;
+            let bar_bounds = tab.scene.active_model_tile_bounds(vw, vh);
+            let bar_color = crate::ui::overlay::authoring::AuthoringVisualOptions::new(
+                &self.block_editor_preferences,
+                &tab.scene.document,
+                crosshair_background(tab, is_paper),
+            )
+            .action;
+            for (group, point, offset, width) in self.action_bar_layout(bar_bounds) {
+                let bar = crate::ui::window::block_action_bars::view(
+                    group,
+                    tab.selected_authoring,
+                    offset,
+                    width,
+                    tab.active_cmd.is_none(),
+                    bar_color,
+                );
+                viewport_stack = viewport_stack.push(position_canvas_overlay(point, bar));
             }
             // The Test Block window keeps the definition's current
             // visibility state and lookup row on screen.
@@ -2572,12 +2631,9 @@ bg={bg_ms:.1}ms n={view_count}"
                     let height = test_block_widgets_height(&widgets);
                     if height > 0.0 {
                         let min_x = bar_bounds.x + 4.0;
-                        let max_x = (bar_bounds.x + bar_bounds.width
-                            - TEST_WIDGET_PANEL_W
-                            - 4.0)
+                        let max_x = (bar_bounds.x + bar_bounds.width - TEST_WIDGET_PANEL_W - 4.0)
                             .max(min_x);
-                        let x = (bar_bounds.x
-                            + (bar_bounds.width - TEST_WIDGET_PANEL_W) * 0.5)
+                        let x = (bar_bounds.x + (bar_bounds.width - TEST_WIDGET_PANEL_W) * 0.5)
                             .clamp(min_x, max_x);
                         let y = bar_bounds.y + bar_bounds.height
                             - height
@@ -2729,43 +2785,14 @@ bg={bg_ms:.1}ms n={view_count}"
             }
             if let Some(popup) = self.table_popup.as_ref() {
                 if !tab.is_start {
-                    let mut col = column![text(popup.header.clone())
-                        .size(12)
-                        .wrapping(iced::widget::text::Wrapping::None)]
-                    .spacing(2);
-                    for (idx, name) in popup.rows.iter().enumerate() {
-                        let mark: Element<'_, Message> = if popup.current == Some(idx) {
-                            crate::ui::icons::themed_check_cell(true)
-                        } else {
-                            Space::new().width(11).into()
-                        };
-                        col = col.push(
-                            button(
-                                row![container(mark).width(16), text(name).size(12).wrapping(iced::widget::text::Wrapping::None)]
-                                    .spacing(2)
-                                    .align_y(iced::Center),
-                            )
-                            .on_press(Message::TableRowPick(idx))
-                            .padding([3, 10])
-                            .width(Fill),
-                        );
-                    }
-                    let panel = container(
-                        iced::widget::scrollable(col)
-                            .height(iced::Length::Shrink)
-                            .width(iced::Length::Fixed(table_popup_width(
-                                &popup.header,
-                                &popup.rows,
-                            ))),
-                    )
-                    .padding(2);
+                    let panel = value_list_panel(popup);
                     let (cw, ch) = tab.scene.selection.borrow().view.vp_size;
                     let bounds = tab.scene.active_model_tile_bounds(cw, ch);
                     if let Some(anchor) = self.table_popup_anchor(i, bounds) {
                         viewport_stack = viewport_stack.push(position_canvas_overlay_near_cursor(
                             anchor,
                             command_line_inset(self),
-                            panel.into(),
+                            panel,
                         ));
                     }
                 }
@@ -2781,12 +2808,18 @@ bg={bg_ms:.1}ms n={view_count}"
             } else if tab.scene.table_cells_handle().is_some() {
                 {
                     let tools = crate::ui::ribbon::table_cell_tools();
-                    // Rows and columns, merging and locking, formats, inserts,
-                    // linked data and the cell's text, two to a row.
-                    crate::ui::side_toolbar::view_grid(
-                        &[&tools[..6], &tools[6..9], &tools[9..13], &tools[13..17], &tools[17..]],
-                        2,
-                    )
+                    let align = crate::ui::ribbon::table_cell_alignments();
+                    // Rows and columns, merging and locking, the nine
+                    // alignments three to a row, formats, inserts, linked
+                    // data and the cell's text, two to a row.
+                    crate::ui::side_toolbar::view_grid(&[
+                        (&tools[..6], 2),
+                        (&tools[6..9], 2),
+                        (&align[..], 3),
+                        (&tools[9..12], 2),
+                        (&tools[12..16], 2),
+                        (&tools[16..], 2),
+                    ])
                 }
             } else if self.ribbon.xref_context() {
                 crate::ui::side_toolbar::view(&crate::ui::ribbon::xref_tools())
@@ -2860,7 +2893,8 @@ bg={bg_ms:.1}ms n={view_count}"
             mark("chrome");
             let command_line_inset = command_line_inset(self);
             if let Some((cursor, tip)) = self.hovered_dynamic_grip_tip() {
-                viewport_stack = viewport_stack.push(overlay::grip_tip_overlay(cursor, command_line_inset, tip));
+                viewport_stack =
+                    viewport_stack.push(overlay::grip_tip_overlay(cursor, command_line_inset, tip));
             }
             if !tab.is_start {
                 if let Some(readout) = self.measurement_readout(self.active_tab) {
@@ -3088,7 +3122,17 @@ bg={bg_ms:.1}ms n={view_count}"
                 let canvas = tab.scene.selection.borrow().view.vp_size;
                 // The editor's modal would swallow the clicks of a pick that
                 // the Field dialog started from it, so it waits meanwhile.
-                if let Some(ed) = self.mtext_editor.as_ref().filter(|_| tab.active_cmd.is_none()) {
+                if let (Some(ed), Some(cell)) =
+                    (self.mtext_editor.as_ref(), self.table_cell_canvas())
+                {
+                    viewport_stack =
+                        viewport_stack.push(overlay::table_cell_editor_overlay(ed, cell, canvas));
+                }
+                if let Some(ed) = self
+                    .mtext_editor
+                    .as_ref()
+                    .filter(|_| tab.active_cmd.is_none() && self.table_cell_editor.is_none())
+                {
                     let styles: Vec<String> = tab
                         .scene
                         .document
@@ -3339,7 +3383,13 @@ bg={bg_ms:.1}ms n={view_count}"
                             viewport_scale_synced: tab.scene.viewport_annotation_scale_synced(),
                             viewport_locked: tab.scene.viewports_display_locked(),
                             lineweight_display: tab.scene.document.header.lineweight_display,
-                            constraint_status: tab.active_block_edit_session().map(|_| tab.scene.block_constraint_status_mode),
+                            constraint_status: tab
+                                .active_block_edit_session()
+                                .map(|_| tab.scene.block_constraint_status_mode),
+                            geo_system: tab
+                                .scene
+                                .geo_data()
+                                .map(crate::entities::object_data::geo_system_label),
                         },
                         crate::ui::statusbar::StatusBarModes {
                             ortho_mode: self.ortho_mode,
@@ -3454,9 +3504,18 @@ bg={bg_ms:.1}ms n={view_count}"
             iced::widget::Space::new().width(0).height(0).into()
         };
 
+        let filter_layer: Element<'_, Message> = match &self.filter_dialog {
+            Some(state) => self.filter_overlay(state),
+            None => iced::widget::Space::new().width(0).height(0).into(),
+        };
+        let layer_import_layer: Element<'_, Message> = match &self.layer_import {
+            Some(state) => self.layer_import_overlay(state),
+            None => iced::widget::Space::new().width(0).height(0).into(),
+        };
         let qselect_layer: Element<'_, Message> = if let Some(state) = &self.qselect {
             qselect_overlay(
                 state,
+                self.transparent_select.as_deref(),
                 &state.available_types,
                 &state.available_properties,
                 state.candidate_count,
@@ -3540,6 +3599,8 @@ bg={bg_ms:.1}ms n={view_count}"
             search_layer,
             ribbon_menu_layer,
             qselect_layer,
+            filter_layer,
+            layer_import_layer,
             snap_override_layer,
             open_progress_layer,
             keytip_layer,
@@ -3578,7 +3639,9 @@ bg={bg_ms:.1}ms n={view_count}"
         // A dialog in a window of its own is drawn there, also while it is
         // the active modal (the colour picker it opened holds it).
         let in_own_window = self.active_modal.is_some_and(|kind| {
-            self.tool_windows.iter().any(|tool| tool.kind == kind && !tool.in_canvas())
+            self.tool_windows
+                .iter()
+                .any(|tool| tool.kind == kind && !tool.in_canvas())
         });
         let base: Element<'_, Message> = match self.modal_content().filter(|_| !in_own_window) {
             Some(content) => {
@@ -3723,6 +3786,13 @@ impl OpenCADStudio {
         } else {
             Subscription::none()
         };
+        // A withheld move may be the last one: the pointer can stop, and then
+        // no further move arrives to answer it. Drive frames until it is.
+        let move_coalesce = if self.move_owed.is_some() {
+            crate::app::tool_windows::main_window_frames().map(|_| Message::MoveCoalesceTick)
+        } else {
+            Subscription::none()
+        };
         let snap_dwell = if self
             .snap_dwell
             .as_ref()
@@ -3761,7 +3831,8 @@ impl OpenCADStudio {
         // window) must not hold the save: a timer goes ahead without it.
         let thumbnail_capture = if self.thumbnail_capture_clean {
             Subscription::batch([
-                crate::app::tool_windows::main_window_frames().map(|_| Message::ThumbnailCaptureFrame),
+                crate::app::tool_windows::main_window_frames()
+                    .map(|_| Message::ThumbnailCaptureFrame),
                 iced::time::every(std::time::Duration::from_millis(300))
                     .map(|_| Message::ThumbnailCaptureFrame),
             ])
@@ -3773,7 +3844,8 @@ impl OpenCADStudio {
         // pending.
         let capture_frame = if self.control.capture_frame_pending {
             Subscription::batch([
-                crate::app::tool_windows::main_window_frames().map(|_| Message::ControlCaptureFrame { redrew: true }),
+                crate::app::tool_windows::main_window_frames()
+                    .map(|_| Message::ControlCaptureFrame { redrew: true }),
                 iced::time::every(std::time::Duration::from_millis(50))
                     .map(|_| Message::ControlCaptureFrame { redrew: false }),
             ])
@@ -3917,6 +3989,7 @@ impl OpenCADStudio {
             grip_dwell,
             hover_dwell,
             snap_dwell,
+            move_coalesce,
             nav_settle,
             gpu_probe,
             thumbnail_capture,
@@ -3937,6 +4010,9 @@ impl OpenCADStudio {
     }
 
     pub(super) fn focus_cmd_input(&self) -> Task<Message> {
+        if self.table_cell_editor.is_some() {
+            return self.unfocus_widgets();
+        }
         iced::widget::operation::focus(iced::widget::Id::new(crate::ui::command_line::CMD_INPUT_ID))
     }
 
@@ -4078,7 +4154,7 @@ pub(super) fn doc_tab_bar<'a>(
                     } else if is_hovered {
                         palette.background.weak.text
                     } else {
-                        palette.background.base.text.scale_alpha(0.72)
+                        crate::ui::style::readable::muted_text(theme)
                     },
                     border: Border::default(),
                     shadow: iced::Shadow::default(),
@@ -4117,7 +4193,7 @@ pub(super) fn doc_tab_bar<'a>(
                         } else if is_hovered {
                             palette.background.weak.text
                         } else {
-                            palette.background.base.text.scale_alpha(0.72)
+                            crate::ui::style::readable::muted_text(theme)
                         },
                         border: Border::default(),
                         shadow: iced::Shadow::default(),
@@ -4266,7 +4342,7 @@ pub(super) fn doc_tab_bar<'a>(
 //
 fn start_muted_style(theme: &Theme) -> iced::widget::text::Style {
     iced::widget::text::Style {
-        color: Some(theme.palette().background.base.text.scale_alpha(0.68)),
+        color: Some(crate::ui::style::readable::muted_text(theme)),
     }
 }
 
@@ -4285,15 +4361,15 @@ fn pane_mouse_area<'a>(idx: usize) -> Element<'a, Message> {
             .width(Fill)
             .height(Fill),
     ))
-        .on_press(Message::PanePress(idx))
-        .on_release(Message::PaneRelease(idx))
-        .on_right_press(Message::PaneRightPress(idx))
-        .on_right_release(Message::PaneRightRelease(idx))
-        .on_middle_press(Message::PaneMiddlePress(idx))
-        .on_middle_release(Message::PaneMiddleRelease(idx))
-        .on_scroll(move |d| Message::PaneScroll(idx, d))
-        .on_exit(Message::ViewportExit)
-        .into()
+    .on_press(Message::PanePress(idx))
+    .on_release(Message::PaneRelease(idx))
+    .on_right_press(Message::PaneRightPress(idx))
+    .on_right_release(Message::PaneRightRelease(idx))
+    .on_middle_press(Message::PaneMiddlePress(idx))
+    .on_middle_release(Message::PaneMiddleRelease(idx))
+    .on_scroll(move |d| Message::PaneScroll(idx, d))
+    .on_exit(Message::ViewportExit)
+    .into()
 }
 
 const START_ACTION_RADIUS: f32 = 6.0;
@@ -4970,7 +5046,7 @@ fn start_page_content<'a>(
                             background: pair.map(|p| Background::Color(p.color)),
                             text_color: pair
                                 .map(|p| p.text)
-                                .unwrap_or(palette.background.base.text.scale_alpha(0.68)),
+                                .unwrap_or(crate::ui::style::readable::muted_text(theme)),
                             border: Border {
                                 color: if is_active {
                                     palette.primary.base.color
@@ -5314,7 +5390,7 @@ pub(super) fn recent_files_panel<'a>(
                 button::Style {
                     background: matches!(status, button::Status::Hovered)
                         .then_some(Background::Color(palette.danger.weak.color)),
-                    text_color: palette.background.base.text.scale_alpha(0.68),
+                    text_color: crate::ui::style::readable::muted_text(theme),
                     border: Border {
                         color: Color::TRANSPARENT,
                         width: 0.0,
@@ -5405,6 +5481,48 @@ pub(super) fn recent_files_panel<'a>(
     .into()
 }
 
+/// The open value list: a heading and one row per table row, the chosen row
+/// marked. Its width comes from the lines it shows, never from the canvas.
+fn value_list_panel(popup: &crate::app::visibility::TablePopup) -> Element<'_, Message> {
+    let mut col = column![text(popup.header.clone())
+        .size(12)
+        .wrapping(iced::widget::text::Wrapping::None)]
+    .spacing(2);
+    for (idx, name) in popup.rows.iter().enumerate() {
+        let mark: Element<'_, Message> = if popup.current == Some(idx) {
+            crate::ui::icons::themed_check_cell(true)
+        } else {
+            Space::new().width(11).into()
+        };
+        col = col.push(
+            button(
+                row![
+                    container(mark).width(16),
+                    text(name)
+                        .size(12)
+                        .wrapping(iced::widget::text::Wrapping::None)
+                ]
+                .spacing(2)
+                .align_y(iced::Center),
+            )
+            .on_press(Message::TableRowPick(idx))
+            .padding([3, 10])
+            .width(Fill),
+        );
+    }
+    container(
+        iced::widget::scrollable(col)
+            .height(iced::Length::Shrink)
+            .width(iced::Length::Fixed(table_popup_width(
+                &popup.header,
+                &popup.rows,
+            ))),
+    )
+    .padding(2)
+    .id(iced::widget::Id::new("value-list"))
+    .into()
+}
+
 /// The value list is as wide as the widest line it shows, plus the marker
 /// column and the padding around it, and it has no opinion about the canvas.
 fn table_popup_width(header: &str, rows: &[String]) -> f32 {
@@ -5446,6 +5564,68 @@ mod tests {
         );
     }
 
+    /// The panel that actually paints for an open value list — heading, rows
+    /// and the chosen row's mark — takes the side of its grip that has room for
+    /// it and stays between the top of the canvas and the command line. A list
+    /// too tall for that band scrolls inside it instead of growing past both
+    /// edges, so its painted rectangle is the safe band at most.
+    #[test]
+    fn the_open_value_list_paints_beside_its_grip_inside_the_canvas() {
+        let short = crate::app::visibility::TablePopup {
+            insert_handle: document::Handle::new(1),
+            header: "Distance1".into(),
+            rows: vec!["5.0000".into(), "25.0000".into()],
+            current: Some(1),
+        };
+        let tall = crate::app::visibility::TablePopup {
+            insert_handle: document::Handle::new(1),
+            header: "Distance1, Distance2".into(),
+            rows: (0..40)
+                .map(|row| format!("{row}: 5.0000, 25.0000"))
+                .collect(),
+            current: Some(7),
+        };
+        for (popup, anchor, on_the_right) in [
+            (&short, iced::Point::new(60.0, 300.0), true),
+            (&short, iced::Point::new(760.0, 300.0), false),
+            (&tall, iced::Point::new(60.0, 300.0), true),
+            (&tall, iced::Point::new(760.0, 300.0), false),
+        ] {
+            let mut ui = iced_test::simulator::Simulator::with_size(
+                Default::default(),
+                iced::Size::new(800.0, 600.0),
+                super::position_canvas_overlay_near_cursor(
+                    anchor,
+                    90.0,
+                    super::value_list_panel(popup),
+                ),
+            );
+            let bounds = ui
+                .find(iced::widget::Id::new("value-list"))
+                .expect("the open value list is painted")
+                .visible_bounds()
+                .expect("the open value list is visible");
+            let width = super::table_popup_width(&popup.header, &popup.rows) + 4.0;
+            assert_eq!(
+                bounds.width, width,
+                "the panel is as wide as its own lines, not the canvas: {bounds:?}"
+            );
+            let expected_x = if on_the_right {
+                anchor.x + 12.0
+            } else {
+                anchor.x - 12.0 - width
+            };
+            assert_eq!(
+                bounds.x, expected_x,
+                "the list takes the side of the grip that has room for it: {bounds:?}"
+            );
+            assert!(
+                bounds.y >= 4.0 && bounds.y + bounds.height <= 506.0,
+                "the list stays between the top edge and the command line: {bounds:?}"
+            );
+        }
+    }
+
     /// The visibility dropdown draws its entries in one left-aligned column,
     /// with a fixed leading slot for the tick of the state in use.
     #[test]
@@ -5457,7 +5637,7 @@ mod tests {
         let mut app = crate::app::OpenCADStudio::new_for_test();
         let _ = app.automation_op(r#"{"op":"new"}"#);
         app.visibility_popup = Some(crate::app::visibility::VisibilityPopup {
-            insert_handle: codec::Handle::new(1),
+            insert_handle: document::Handle::new(1),
             anchor: iced::Point::new(400.0, 300.0),
             items: vec!["VisibilityState0".into(), "WindowHidden".into()],
             current: Some(1),
@@ -5466,7 +5646,7 @@ mod tests {
         let mut renderer = iced_test::futures::futures::executor::block_on(
             <iced::Renderer as iced_test::core::renderer::Headless>::new(
                 iced_test::core::renderer::Settings::default(),
-                None,
+                std::env::var("ICED_TEST_BACKEND").ok().as_deref(),
             ),
         )
         .expect("headless renderer");
@@ -5553,7 +5733,7 @@ mod tests {
 
     #[test]
     fn test_crosshair_background_paper_space() {
-        let tab = crate::app::document::DocumentTab::new_drawing(1);
+        let tab = crate::app::tab_document::DocumentTab::new_drawing(1);
         let bg = crosshair_background(&tab, true);
         assert_eq!(bg, tab.scene.paper_bg_color);
         assert!(crate::ui::style::common::canvas_is_light(bg));
@@ -5632,5 +5812,37 @@ impl OpenCADStudio {
             && !interactive_value_grip)
             || self.mtext_editor.as_ref().is_some_and(|e| e.show_preview)
             || self.text_inline.is_some()
+    }
+}
+
+impl OpenCADStudio {
+    /// VPHIGHLIGHT: the Model viewport to outline and the outline's alpha.
+    /// The one under the pointer (only with several viewports; none while
+    /// the pointer is away), or the active one while the pointer is on the
+    /// chip's outline switch, so each wheel step shows on it at once.
+    pub(in crate::app) fn model_viewport_outline(
+        &self,
+        tab: &DocumentTab,
+    ) -> Option<(iced::Rectangle, f32)> {
+        if !self.model_space.viewport_hover_highlight {
+            return None;
+        }
+        let selection = tab.scene.selection.borrow();
+        let (vw, vh) = selection.view.vp_size;
+        let input = &selection.input;
+        let cursor = (!input.pointer_away)
+            .then_some(input.last_move_pos)
+            .flatten();
+        let rect = if self.outline_switch_hover && tab.scene.model_tiles.borrow().len() > 1 {
+            Some(tab.scene.active_model_tile_bounds(vw, vh))
+        } else {
+            tab.scene.hovered_model_pane_px(vw, vh, cursor)
+        };
+        rect.map(|r| {
+            (
+                r,
+                f32::from(self.model_space.viewport_hover_opacity.min(100)) / 100.0,
+            )
+        })
     }
 }

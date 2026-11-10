@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 
-use codec::{Document, EntityType, Handle};
+use document::{Document, EntityType, Handle};
 use regex::Regex;
 use serde::Deserialize;
 

@@ -217,7 +217,7 @@ fn an_arcs_extent_is_the_sweep_it_draws_and_not_its_circle() {
     assert!(close(whole, (1.0, 2.0, 3.0, 4.0)), "{whole:?}");
     // The Manifold's end caps: two semicircles of r 35.59 facing outward
     // reach exactly the body's top and bottom and one end each.
-    let mut arc = codec::entities::Arc::new();
+    let mut arc = document::entities::Arc::new();
     arc.center = Vector3::new(10.0, 10.0, 0.0);
     arc.radius = 35.59;
     arc.start_angle = FRAC_PI_2;
@@ -292,7 +292,7 @@ fn a_body_drawn_away_from_its_anchor_is_named_beside_the_body() {
 /// built on covers the line work either way.
 #[test]
 fn an_extent_covers_an_arc_and_stops_at_a_text_insertion_point() {
-    let mut arc = codec::entities::Arc::new();
+    let mut arc = document::entities::Arc::new();
     arc.center = Vector3::new(10.0, 20.0, 0.0);
     arc.radius = 2.5;
     arc.start_angle = 0.0;
@@ -774,7 +774,7 @@ fn a_bodys_arc_is_drawn_as_the_counter_clockwise_arc_over_the_same_points() {
         end_angle: FRAC_PI_2,
         clockwise: false,
     };
-    let midpoint = |arc: &codec::entities::Arc| {
+    let midpoint = |arc: &document::entities::Arc| {
         let sweep = (arc.end_angle - arc.start_angle).rem_euclid(2.0 * PI);
         let angle = arc.start_angle + sweep / 2.0;
         (
@@ -1543,7 +1543,7 @@ fn a_linked_igr_overlays_its_drafting_on_pid_frame() {
                 .iter()
                 .flat_map(|record| record.values.iter())
                 .any(|value| {
-                    matches!(value, codec::xdata::XDataValue::String(s) if s == "template=CPE-SQ-A1.igr")
+                    matches!(value, document::xdata::XDataValue::String(s) if s == "template=CPE-SQ-A1.igr")
                 })
         })
         .count();

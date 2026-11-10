@@ -248,7 +248,7 @@ pub fn view<'a, 'b>(s: Scaffold<'a, 'b>) -> Element<'a, Message> {
 /// Choose source styles, then confirm each name collision individually.
 pub(crate) fn import_view<'a>(
     draft: &'a crate::app::StyleImportDraft,
-    target: &codec::Document,
+    target: &document::Document,
     sizing: crate::ui::modal::ModalSizing,
 ) -> Element<'a, Message> {
     let mut content = column![
@@ -259,13 +259,17 @@ pub(crate) fn import_view<'a>(
     if let Some(name) = &draft.conflict {
         content = content
             .push(text(name.clone()).size(14))
-            .push(text(t!("A style with this name already exists. Overwrite it?")))
-            .push(row![
-                button(text(t!("Overwrite"))).on_press(Message::StyleImportConfirm(true)),
-                button(text(t!("Skip"))).on_press(Message::StyleImportConfirm(false)),
-                button(text(t!("Cancel"))).on_press(Message::StyleImportCancel),
-            ]
-            .spacing(8));
+            .push(text(t!(
+                "A style with this name already exists. Overwrite it?"
+            )))
+            .push(
+                row![
+                    button(text(t!("Overwrite"))).on_press(Message::StyleImportConfirm(true)),
+                    button(text(t!("Skip"))).on_press(Message::StyleImportConfirm(false)),
+                    button(text(t!("Cancel"))).on_press(Message::StyleImportCancel),
+                ]
+                .spacing(8),
+            );
     } else {
         let mut rows = column![].spacing(4);
         for (name, on) in &draft.selected {
@@ -284,16 +288,19 @@ pub(crate) fn import_view<'a>(
         if draft.selected.is_empty() {
             rows = rows.push(text(t!("No styles found in this drawing.")));
         }
-        content = content
-            .push(scrollable(rows).height(sizing.height))
-            .push(row![
+        content = content.push(scrollable(rows).height(sizing.height)).push(
+            row![
                 button(text(t!("Import"))).on_press_maybe(
-                    draft.selected.iter().any(|(_, on)| *on)
+                    draft
+                        .selected
+                        .iter()
+                        .any(|(_, on)| *on)
                         .then_some(Message::StyleImportApply)
                 ),
                 button(text(t!("Cancel"))).on_press(Message::StyleImportCancel),
             ]
-            .spacing(8));
+            .spacing(8),
+        );
     }
     container(content)
         .padding(16)
@@ -332,8 +339,11 @@ pub fn comparison_row<'a>(comparison: Option<EditorComparison>) -> Element<'a, M
     match comparison {
         Some(comparison) if !comparison.options.is_empty() => row![
             text(t!("Compare with")).size(10).style(muted_text_style),
-            crate::ui::dropdown_list::pick_list(Some(comparison.selected), comparison.options, |value| value
-                .to_string(),)
+            crate::ui::dropdown_list::pick_list(
+                Some(comparison.selected),
+                comparison.options,
+                |value| value.to_string(),
+            )
             .on_select(comparison.on_select)
             .text_size(11)
             .width(150),
@@ -419,6 +429,20 @@ pub(crate) fn tb_button(
         .into()
 }
 
+/// `tb_button` that is greyed out without a message.
+pub(crate) fn tb_button_maybe(
+    label: impl Into<Cow<'static, str>>,
+    msg: Option<Message>,
+    accent: bool,
+) -> Element<'static, Message> {
+    let pad = if accent { [4, 14] } else { [4, 10] };
+    button(text(label.into()).size(11))
+        .on_press_maybe(msg)
+        .style(btn_s(accent))
+        .padding(pad)
+        .into()
+}
+
 /// A toolbar button: icon and name, or (`compact`) the icon with its name as
 /// a hint. `None` leaves it off.
 fn tool_button(
@@ -429,19 +453,20 @@ fn tool_button(
     compact: bool,
 ) -> Element<'static, Message> {
     let enabled = message.is_some();
-    let glyph = iced::widget::svg(crate::ui::icons::themed_handle(icon))
-        .width(14)
-        .height(14)
-        .opacity(if enabled { 1.0_f32 } else { 0.42 })
-        .style(move |theme: &Theme, _| iced::widget::svg::Style {
-            color: Some(if accent && enabled {
+    let glyph: Element<'static, Message> = crate::ui::icons::tinted_faded(
+        icon,
+        14.0,
+        if enabled { 1.0 } else { 0.42 },
+        move |theme: &Theme| {
+            if accent && enabled {
                 theme.palette().primary.base.text
             } else {
                 theme.palette().background.base.text
-            }),
-        });
+            }
+        },
+    );
     let content: Element<'static, Message> = if compact {
-        glyph.into()
+        glyph
     } else {
         row![glyph, text(label.clone()).size(11)]
             .spacing(5)

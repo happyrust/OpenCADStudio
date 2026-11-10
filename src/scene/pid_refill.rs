@@ -30,8 +30,8 @@ use crate::pid::symbols::{block_point_locations, place};
 use crate::pid::topology::{
     handle_text, parse_handle, SegmentEnd, TopologyTable, VALVE_PORT_NAMES,
 };
-use codec::objects::ObjectType;
-use codec::{Document, Handle};
+use document::objects::ObjectType;
+use document::{Document, Handle};
 use glam::DVec3;
 use serde_json::{json, Value};
 
@@ -136,7 +136,7 @@ pub(crate) fn plan_refill(
         let Some(handle) = parse_handle(&fitting.handle) else {
             continue;
         };
-        let Some(codec::EntityType::Insert(insert)) = document.get_entity(handle) else {
+        let Some(document::EntityType::Insert(insert)) = document.get_entity(handle) else {
             continue;
         };
         let delta = moved
@@ -327,9 +327,9 @@ pub(crate) fn apply_geometry(document: &mut Document, plan: &RefillPlan) -> Vec<
             record.end = end.clone();
         }
         // 几何同步：管段实体是 `Line`，端点跟拓扑表走。
-        if let Some(codec::EntityType::Line(line)) = document.get_entity_mut(*handle) {
-            line.start = codec::types::Vector3::new(start.point[0], start.point[1], line.start.z);
-            line.end = codec::types::Vector3::new(end.point[0], end.point[1], line.end.z);
+        if let Some(document::EntityType::Line(line)) = document.get_entity_mut(*handle) {
+            line.start = document::types::Vector3::new(start.point[0], start.point[1], line.start.z);
+            line.end = document::types::Vector3::new(end.point[0], end.point[1], line.end.z);
         }
         changed.push(*handle);
     }

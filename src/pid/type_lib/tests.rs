@@ -2,7 +2,7 @@
 //! 边界用例。
 
 use super::*;
-use codec::objects::XRecordValue;
+use document::objects::XRecordValue;
 
 // ── 夹具 ─────────────────────────────────────────────────────────────────
 
@@ -26,10 +26,10 @@ fn owner_of(doc: &Document) -> Handle {
 }
 
 /// 一个占位实体：位号生成只关心 `PidAuthor` XDATA，不关心几何。
-fn line() -> codec::EntityType {
-    use codec::entities::Line;
-    use codec::types::Vector3;
-    codec::EntityType::Line(Line::from_points(
+fn line() -> document::EntityType {
+    use document::entities::Line;
+    use document::types::Vector3;
+    document::EntityType::Line(Line::from_points(
         Vector3::new(0.0, 0.0, 0.0),
         Vector3::new(10.0, 0.0, 0.0),
     ))
@@ -472,7 +472,7 @@ fn storing_an_empty_library_removes_only_its_own_record() {
     let owner = owner_of(&doc);
     doc.ensure_xrecord(owner, "SOME_OTHER_KEY");
     if let Some(other) = doc.xrecord_mut(owner, "SOME_OTHER_KEY") {
-        other.entries.push(codec::objects::XRecordEntry::string(1, "keep me"));
+        other.entries.push(document::objects::XRecordEntry::string(1, "keep me"));
     }
 
     // 用只有一个节点的空壳库模拟「库为空」的落盘路径。

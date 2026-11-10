@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use codec::Handle;
+use document::Handle;
 
 use crate::io::plot_emit::PlotGroup;
 

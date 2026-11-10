@@ -8,11 +8,11 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use codec::entities::{Block, BlockEnd, Circle, Insert, Line, Point, Text};
-use codec::objects::{Group, ObjectType};
-use codec::tables::BlockRecord;
-use codec::types::{Color, Vector3};
-use codec::{Document, EntityType, Handle};
+use document::entities::{Block, BlockEnd, Circle, Insert, Line, Point, Text};
+use document::objects::{Group, ObjectType};
+use document::tables::BlockRecord;
+use document::types::{Color, Vector3};
+use document::{Document, EntityType, Handle};
 use OpenCADStudio::io;
 use OpenCADStudio::io::pid_legend::{self, Rules};
 use OpenCADStudio::io::pid_pipes;

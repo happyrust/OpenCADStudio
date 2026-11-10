@@ -365,7 +365,7 @@ pub(super) fn build_entities(
             end_angle,
             clockwise: _,
         } => {
-            let mut arc = codec::entities::Arc::new();
+            let mut arc = document::entities::Arc::new();
             arc.center = projection.point(center);
             arc.radius = projection.mm(*radius);
             // Radians on both sides -- see the angle-unit note by the layer

@@ -1,5 +1,5 @@
-use codec::entities::{MLine, MLineFlags, MLineSegment, MLineVertex};
-use codec::types::Vector3;
+use document::entities::{MLine, MLineFlags, MLineSegment, MLineVertex};
+use document::types::Vector3;
 use kernel::geom2d::{intersect::line_line, Vec2};
 use kernel::space::Plane;
 
@@ -14,7 +14,7 @@ use crate::t;
 /// One styled line or cap of a multiline.
 pub struct MLineLine {
     pub points: Vec<[f64; 3]>,
-    pub color: codec::types::Color,
+    pub color: document::types::Color,
     pub linetype: String,
 }
 
@@ -140,7 +140,7 @@ pub(crate) fn mline_miter_factor(vertex: &MLineVertex, normal: Vector3) -> f64 {
 
 fn adjusted_mline_endpoint(
     mline: &MLine,
-    style: &codec::objects::MLineStyle,
+    style: &document::objects::MLineStyle,
     vertex: usize,
     point: [f64; 3],
 ) -> [f64; 3] {
@@ -428,7 +428,7 @@ fn restore_shifted_mline_segment(
 pub(crate) fn normalize_scripted_mline(
     old: Option<&MLine>,
     new: &mut MLine,
-    document: &codec::Document,
+    document: &document::Document,
 ) -> Result<(), String> {
     let style = resolved_mline_style(new, document)
         .ok_or_else(|| format!("MLine style {:?} does not exist", new.style_name))?;
@@ -473,9 +473,9 @@ pub(crate) fn normalize_scripted_mline(
 /// Resolve a multiline into styled parallel lines in WCS.
 pub fn resolved_mline_style<'a>(
     m: &MLine,
-    document: &'a codec::Document,
-) -> Option<&'a codec::objects::MLineStyle> {
-    use codec::objects::ObjectType;
+    document: &'a document::Document,
+) -> Option<&'a document::objects::MLineStyle> {
+    use document::objects::ObjectType;
 
     m.style_handle
         .and_then(|handle| match document.objects.get(&handle) {
@@ -492,17 +492,86 @@ pub fn resolved_mline_style<'a>(
         })
 }
 
-pub fn mline_lines(m: &MLine, document: &codec::Document) -> Vec<MLineLine> {
+/// The linetype an element draws with: a ByLayer element follows the layer of its
+/// multiline (with that layer's override in `viewport`), whose own linetype plays
+/// no part.
+pub(crate) fn element_linetype_name<'a>(
+    document: &'a document::Document,
+    layer: &str,
+    element: &'a str,
+    viewport: Option<document::Handle>,
+) -> &'a str {
+    if element.is_empty() || element.eq_ignore_ascii_case("bylayer") {
+        crate::scene::view::render::layer_linetype_name_for_viewport(document, layer, viewport)
+    } else {
+        element
+    }
+}
+
+/// The line an element becomes: the multiline's own common with the element's
+/// colour and linetype as they are, ByLayer and ByBlock included. EXPLODE makes
+/// these lines, and the renderer draws each element as one of them.
+pub(crate) fn element_common(
+    m: &MLine,
+    color: document::types::Color,
+    linetype: &str,
+    document: &document::Document,
+) -> document::entities::EntityCommon {
+    let mut common = m.common.clone();
+    common.handle = document::Handle::NULL;
+    common.color = color;
+    common.color_name = None;
+    common.color_book_handle = None;
+    common.linetype = if linetype.is_empty() || linetype.eq_ignore_ascii_case("ByLayer") {
+        "ByLayer".to_string()
+    } else if linetype.eq_ignore_ascii_case("ByBlock") {
+        "ByBlock".to_string()
+    } else {
+        linetype.to_string()
+    };
+    common.linetype_handle = document
+        .line_types
+        .iter()
+        .find(|line_type| line_type.name.eq_ignore_ascii_case(&common.linetype))
+        .map(|line_type| line_type.handle);
+    common
+}
+
+/// How an element draws in `viewport`: its [`element_common`] line styled like
+/// any other entity, as `(colour, pattern length, pattern, ACI)`. A complex
+/// linetype is walked along the element rather than dashed, so it has no pattern.
+pub(crate) fn element_style(
+    document: &document::Document,
+    m: &MLine,
+    color: document::types::Color,
+    linetype: &str,
+    viewport: Option<document::Handle>,
+) -> ([f32; 4], f32, [f32; 8], u8) {
+    let common = element_common(m, color, linetype, document);
+    let (color, pattern_length, pattern, _, aci) =
+        crate::scene::view::render::render_style_for_common_viewport(document, &common, viewport);
+    let drawn = element_linetype_name(document, &m.common.layer, linetype, viewport);
+    if crate::io::linetypes::resolve_complex_lt(document, drawn).is_some() {
+        (color, 0.0, [0.0; 8], aci)
+    } else {
+        (color, pattern_length, pattern, aci)
+    }
+}
+
+pub fn mline_lines(m: &MLine, document: &document::Document) -> Vec<MLineLine> {
     mline_lines_resolved(m, resolved_mline_style(m, document))
 }
 
-pub fn mline_lines_with_style(m: &MLine, style: &codec::objects::MLineStyle) -> Vec<MLineLine> {
+pub fn mline_lines_with_style(m: &MLine, style: &document::objects::MLineStyle) -> Vec<MLineLine> {
     mline_lines_resolved(m, Some(style))
 }
 
-fn mline_lines_resolved(m: &MLine, style: Option<&codec::objects::MLineStyle>) -> Vec<MLineLine> {
-    use codec::entities::{MLineFlags, MLineJustification};
-    use codec::types::Color;
+fn mline_lines_resolved(
+    m: &MLine,
+    style: Option<&document::objects::MLineStyle>,
+) -> Vec<MLineLine> {
+    use document::entities::{MLineFlags, MLineJustification};
+    use document::types::Color;
 
     if m.vertices.is_empty() {
         return Vec::new();
@@ -758,7 +827,7 @@ fn semicircle_cap(
 
 pub fn mline_fill_triangles_with_style(
     m: &MLine,
-    style: &codec::objects::MLineStyle,
+    style: &document::objects::MLineStyle,
 ) -> Vec<[f64; 3]> {
     if !style.flags.fill_on || m.vertices.len() < 2 || style.elements.len() < 2 {
         return Vec::new();
@@ -793,9 +862,9 @@ pub fn mline_fill_triangles_with_style(
         .map(|element| element.offset)
         .fold(f64::NEG_INFINITY, f64::max);
     let shift = match m.justification {
-        codec::entities::MLineJustification::Top => -maximum,
-        codec::entities::MLineJustification::Zero => 0.0,
-        codec::entities::MLineJustification::Bottom => -minimum,
+        document::entities::MLineJustification::Top => -maximum,
+        document::entities::MLineJustification::Zero => 0.0,
+        document::entities::MLineJustification::Bottom => -minimum,
     };
     let offset_point = |vertex: usize, element: usize, endpoint: bool| -> [f64; 3] {
         let item = &m.vertices[vertex];
@@ -870,7 +939,7 @@ pub fn mline_fill_triangles_with_style(
 }
 
 impl RenderConvertible for MLine {
-    fn to_render(&self, document: &codec::Document) -> Option<RenderEntity> {
+    fn to_render(&self, document: &document::Document) -> Option<RenderEntity> {
         if self.vertices.is_empty() {
             return None;
         }
@@ -932,14 +1001,12 @@ impl Grippable for MLine {
             return;
         };
         let position = match apply {
-            GripApply::Translate(delta) => codec::types::Vector3::new(
-                vertex.position.x + delta.x as f64,
-                vertex.position.y + delta.y as f64,
-                vertex.position.z + delta.z as f64,
+            GripApply::Translate(delta) => document::types::Vector3::new(
+                vertex.position.x + delta.x,
+                vertex.position.y + delta.y,
+                vertex.position.z + delta.z,
             ),
-            GripApply::Absolute(point) => {
-                codec::types::Vector3::new(point.x as f64, point.y as f64, point.z as f64)
-            }
+            GripApply::Absolute(point) => document::types::Vector3::new(point.x, point.y, point.z),
         };
         let count = self.vertices.len();
         let segment_count = if self.is_closed() {
@@ -1201,9 +1268,9 @@ impl Grippable for MLine {
 impl PropertyEditable for MLine {
     fn geometry_properties(&self, _text_style_names: &[String]) -> Vec<PropSection> {
         let just_str = match self.justification {
-            codec::entities::MLineJustification::Top => "Top",
-            codec::entities::MLineJustification::Zero => "Zero",
-            codec::entities::MLineJustification::Bottom => "Bottom",
+            document::entities::MLineJustification::Top => "Top",
+            document::entities::MLineJustification::Zero => "Zero",
+            document::entities::MLineJustification::Bottom => "Bottom",
         };
         vec![PropSection {
             title: t!("Misc").into_owned(),
@@ -1229,13 +1296,13 @@ impl PropertyEditable for MLine {
         match field {
             "ml_closed" => {
                 let closed = if value == "toggle" {
-                    !self.flags.contains(codec::entities::MLineFlags::CLOSED)
+                    !self.flags.contains(document::entities::MLineFlags::CLOSED)
                 } else {
                     value == "true"
                 };
                 let offsets = mline_perpendicular_offsets(self);
                 self.flags.set(
-                    codec::entities::MLineFlags::CLOSED,
+                    document::entities::MLineFlags::CLOSED,
                     closed && self.vertices.len() >= 3,
                 );
                 rebuild_mline_geometry(self);
@@ -1244,9 +1311,9 @@ impl PropertyEditable for MLine {
             }
             "ml_justification" => {
                 self.justification = match value {
-                    "Top" => codec::entities::MLineJustification::Top,
-                    "Bottom" => codec::entities::MLineJustification::Bottom,
-                    _ => codec::entities::MLineJustification::Zero,
+                    "Top" => document::entities::MLineJustification::Top,
+                    "Bottom" => document::entities::MLineJustification::Bottom,
+                    _ => document::entities::MLineJustification::Zero,
                 };
                 return;
             }
@@ -1371,8 +1438,8 @@ impl Transformable for MLine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::entities::{MLineJustification, MLineVertex};
-    use codec::objects::{MLineStyle, MLineStyleElement};
+    use document::entities::{MLineJustification, MLineVertex};
+    use document::objects::{MLineStyle, MLineStyleElement};
 
     const TOLERANCE: f64 = 1.0e-9;
 

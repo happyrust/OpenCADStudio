@@ -24,7 +24,7 @@
 
 use std::io::BufRead;
 
-use codec::{Document, Handle};
+use document::{Document, Handle};
 
 /// One STYLE record's typeface as written in its `ACAD` xdata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +194,7 @@ pub(crate) fn fix_dxf_text_style_typefaces(doc: &mut Document, reader: impl BufR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::tables::TextStyle;
+    use document::tables::TextStyle;
     use std::io::Cursor;
 
     /// The STYLE table of `DWG-0100WS02-05`, trimmed to the records that matter,

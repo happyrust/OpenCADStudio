@@ -34,7 +34,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use codec::{Document, Handle};
+use document::{Document, Handle};
 
 use super::persist::PidAuthor;
 use super::tag_rule::{default_tag_rule, HierarchyMode, TagRule};
@@ -747,13 +747,13 @@ pub fn refresh_statuses(lib: &TypeLib, doc: &mut Document, edited: &[Handle]) ->
 mod tests {
     use super::*;
     use crate::pid::type_lib::{TypeNode, ValueType};
-    use codec::entities::Line;
-    use codec::types::Vector3;
+    use document::entities::Line;
+    use document::types::Vector3;
 
     // ── 夹具 ─────────────────────────────────────────────────────────────
 
-    fn line(y: f64) -> codec::EntityType {
-        codec::EntityType::Line(Line::from_points(
+    fn line(y: f64) -> document::EntityType {
+        document::EntityType::Line(Line::from_points(
             Vector3::new(0.0, y, 0.0),
             Vector3::new(10.0, y, 0.0),
         ))

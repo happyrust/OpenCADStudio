@@ -119,9 +119,9 @@ fn clearing_the_batch_removes_the_collected_meshes() {
 #[test]
 fn an_ordinary_invisible_point_stays_out_of_the_mesh_collection() {
     let mut scene = Scene::new();
-    let mut point = codec::entities::Point::at(codec::types::Vector3::new(0.0, 0.0, 0.0));
+    let mut point = document::entities::Point::at(document::types::Vector3::new(0.0, 0.0, 0.0));
     point.common.invisible = true;
-    let handle = scene.add_entity(codec::EntityType::Point(point));
+    let handle = scene.add_entity(document::EntityType::Point(point));
     let entity = scene.document.get_entity(handle).expect("point");
     assert!(!crate::scene::is_e3d_geometry_proxy(entity.common()));
 }

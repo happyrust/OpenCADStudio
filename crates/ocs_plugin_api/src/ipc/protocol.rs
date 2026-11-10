@@ -25,8 +25,8 @@ use crate::manifest::ApiVersion;
 use crate::ribbon::owned::{OwnedEntityClasses, OwnedPluginManifest, OwnedRibbonGroup};
 
 pub use crate::host::PreviewWire;
-pub use codec::xdata::{ExtendedDataRecord, XDataValue};
-pub use codec::{Document, EntityType, Handle};
+pub use document::xdata::{ExtendedDataRecord, XDataValue};
+pub use document::{Document, EntityType, Handle};
 
 /// Events the host forwards to an active plugin `InteractiveCommand`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -377,6 +377,11 @@ pub enum PluginRequest {
     UnregisterQuadPanels {
         panel_ids: Vec<String>,
     },
+    /// Additive: audit a declared chain without staging or mutating host state.
+    ValidateParametricChain {
+        chain: crate::host::ParametricChain,
+        tolerance: f64,
+    },
 }
 
 /// Responses the host sends back for `PluginRequest`.
@@ -451,9 +456,7 @@ pub enum PluginResponse {
     StagePluginClassInstanceResult(Result<Vec<Handle>, String>),
     /// V14 (additive): a class instance's declared parameter rows (the
     /// read half of the session's properties pair).
-    PluginClassInstancePropertiesResult(
-        Result<Vec<crate::host::PluginClassParameterRow>, String>,
-    ),
+    PluginClassInstancePropertiesResult(Result<Vec<crate::host::PluginClassParameterRow>, String>),
     DialogResult(crate::dialog::DialogResponse),
     PanelRegistered(bool),
     PanelUpdated(bool),
@@ -467,6 +470,8 @@ pub enum PluginResponse {
         ok: Vec<bool>,
         errors: Vec<String>,
     },
+    /// Additive: outcome of pure parametric-chain validation.
+    ValidateParametricChainResult(Result<(), String>),
 }
 
 /// Messages sent from the host to the plugin runner.

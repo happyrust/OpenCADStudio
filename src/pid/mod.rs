@@ -6,7 +6,7 @@
 //!
 //! 这一层是纯数据 + 纯函数，不依赖 iced / Scene，可以在无 GUI 环境下构造
 //! 与序列化；只有 [`TypeLib::store`] / [`TypeLib::load`] 需要一张
-//! [`codec::Document`]。
+//! [`document::Document`]。
 
 pub mod dwg_roundtrip;
 pub mod graph_data;

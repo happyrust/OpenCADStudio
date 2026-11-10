@@ -6,12 +6,12 @@
 // plot printed the block as bare monochrome outlines. `synced_hatch_models`
 // (the viewport) explodes visible INSERTs and materializes their fills; both
 // paths now share `exploded_insert_hatch_models`.
-use codec::entities::hatch::{
+use document::entities::hatch::{
     BoundaryEdge, BoundaryPath, BoundaryPathFlags, HatchPatternLine, LineEdge,
 };
-use codec::entities::Hatch;
-use codec::types::{Color as AcadColor, Transform, Vector2};
-use codec::EntityType;
+use document::entities::Hatch;
+use document::types::{Color as AcadColor, Transform, Vector2};
+use document::EntityType;
 use OpenCADStudio::scene::model::hatch_model::HatchPattern;
 use OpenCADStudio::scene::Scene;
 
@@ -144,7 +144,9 @@ fn far_from_origin_pattern_hatch_still_fills() {
     // the perpendicular index is |k| ≈ 4000·sin45°/0.3 ≈ 9400, well past the
     // 4096 clamp on both ends; the old absolute-index clamp inverts the range
     // (k_lo > k_hi) there and emits nothing.
-    scene.add_entity(EntityType::Hatch(Box::new(ansi31_stored_at(0.3, 1.0, 4000.0, 0.0))));
+    scene.add_entity(EntityType::Hatch(Box::new(ansi31_stored_at(
+        0.3, 1.0, 4000.0, 0.0,
+    ))));
     scene.populate_hatches_from_document();
 
     let hatches = scene.paper_plot_hatches();
@@ -253,7 +255,7 @@ fn app_created_hatch_roundtrips_catalog_spacing() {
         boundary_exterior: None,
         boundary_sources: None,
         boundary_paths: None,
-        style: codec::entities::HatchStyleType::Normal,
+        style: document::entities::HatchStyleType::Normal,
         pattern: entry.gpu.clone(),
         name: "ANSI31".into(),
         color: [0.75, 0.75, 0.75, 0.85],
@@ -314,7 +316,7 @@ fn nested_hatch_serializes_only_outer_as_external() {
         boundary_exterior: None,
         boundary_sources: None,
         boundary_paths: None,
-        style: codec::entities::HatchStyleType::Normal,
+        style: document::entities::HatchStyleType::Normal,
         pattern: HatchPattern::Solid,
         name: "SOLID".into(),
         color: [0.45, 0.45, 0.45, 0.60],

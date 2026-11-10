@@ -29,8 +29,8 @@
 //! 切成多条 `part=<序号>:<片段>` 条目，读回按出现顺序拼回一个对象。正常
 //! 图级数据远小于此，分片路径只是上限保险。
 
-use codec::objects::{ObjectType, XRecordEntry};
-use codec::{Document, Handle};
+use document::objects::{ObjectType, XRecordEntry};
+use document::{Document, Handle};
 
 use super::persist::{props_ref_of, PID_AUTHOR_APP};
 use super::type_lib::XRECORD_KEY;
@@ -327,13 +327,13 @@ fn flush_pending(pending: &mut String, items: &mut Vec<serde_json::Value>) {
 mod tests {
     use super::*;
     use crate::pid::persist::PidAuthor;
-    use codec::entities::Line;
-    use codec::types::Vector3;
+    use document::entities::Line;
+    use document::types::Vector3;
     use serde_json::json;
     use std::collections::BTreeMap;
 
-    fn line(y: f64) -> codec::EntityType {
-        codec::EntityType::Line(Line::from_points(
+    fn line(y: f64) -> document::EntityType {
+        document::EntityType::Line(Line::from_points(
             Vector3::new(0.0, y, 0.0),
             Vector3::new(10.0, y, 0.0),
         ))
@@ -567,7 +567,7 @@ mod tests {
     /// key 不受影响。同进程与 DWG 往返两种都测。
     #[test]
     fn pid_author_xrecord_removed_when_empty() {
-        use codec::{Dwg, Format};
+        use document::{Dwg, Format};
 
         let mut doc = Document::new();
         let handle = doc.add_entity(line(0.0)).unwrap();

@@ -1,11 +1,11 @@
+use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::io::plot_style::PlotStyleTableExt as _;
-use super::*;
 use crate::scene::model::object::PropValue;
 
-fn control_color(value: &Value) -> Result<codec::types::Color, Value> {
+fn control_color(value: &Value) -> Result<document::types::Color, Value> {
     if let Some(index) = value.as_i64().and_then(|v| i16::try_from(v).ok()) {
-        return Ok(codec::types::Color::from_index(index));
+        return Ok(document::types::Color::from_index(index));
     }
     if let Some(rgb) = value
         .get("rgb")
@@ -14,7 +14,7 @@ fn control_color(value: &Value) -> Result<codec::types::Color, Value> {
     {
         let component = |i: usize| rgb[i].as_u64().and_then(|v| u8::try_from(v).ok());
         return match (component(0), component(1), component(2)) {
-            (Some(r), Some(g), Some(b)) => Ok(codec::types::Color::from_rgb(r, g, b)),
+            (Some(r), Some(g), Some(b)) => Ok(document::types::Color::from_rgb(r, g, b)),
             _ => Err(failure(
                 "invalid_color",
                 "RGB components must be 0 through 255",
@@ -27,12 +27,12 @@ fn control_color(value: &Value) -> Result<codec::types::Color, Value> {
     ))
 }
 
-fn control_lineweight(value: &Value) -> Result<codec::types::LineWeight, Value> {
+fn control_lineweight(value: &Value) -> Result<document::types::LineWeight, Value> {
     let raw = value
         .as_i64()
         .and_then(|v| i16::try_from(v).ok())
         .ok_or_else(|| failure("invalid_lineweight", "Use the raw lineweight value"))?;
-    let candidate = codec::types::LineWeight::from_value(raw);
+    let candidate = document::types::LineWeight::from_value(raw);
     crate::ui::properties::lw_options()
         .iter()
         .any(|v| v.0 == candidate)
@@ -40,7 +40,7 @@ fn control_lineweight(value: &Value) -> Result<codec::types::LineWeight, Value> 
         .ok_or_else(|| failure("invalid_lineweight", "Value is not a standard lineweight"))
 }
 
-fn color_value(color: codec::types::Color) -> Value {
+fn color_value(color: document::types::Color) -> Value {
     if let Some((r, g, b)) = color.true_color_rgb() {
         json!({"rgb":[r,g,b]})
     } else {
@@ -114,13 +114,19 @@ pub(crate) fn property_json(p: &crate::scene::model::object::Property) -> Value 
         ),
         other => ("specialized", json!(format!("{other:?}")), Value::Null),
     };
-    let mut row = json!({"id":row_id(p),"label":p.label,"kind":kind,"value":value,"options":options});
-    if let PropValue::BlockNumber { key, description, .. }
-    | PropValue::BlockChoice { key, description, .. } = &p.value
+    let mut row =
+        json!({"id":row_id(p),"label":p.label,"kind":kind,"value":value,"options":options});
+    if let PropValue::BlockNumber {
+        key, description, ..
+    }
+    | PropValue::BlockChoice {
+        key, description, ..
+    } = &p.value
     {
         row["description"] = json!(description);
-        row["component"] =
-            json!(crate::scene::block_parameter_properties::component_id(&key.component));
+        row["component"] = json!(crate::scene::block_parameter_properties::component_id(
+            &key.component
+        ));
         row["parameter"] = json!(format!("{:X}", key.parameter.value()));
     }
     row
@@ -152,6 +158,8 @@ pub(super) const NAMES: &[&str] = &[
     "tds_import_dialog",
     "tds_material_dialog",
     "tds_map_dialog",
+    "hatch_panel",
+    "hatch_boundary_warning",
     "extraction_outdated",
     "print_all",
     "data_link_manager",
@@ -166,6 +174,7 @@ pub(super) const NAMES: &[&str] = &[
     "spell_dialog",
     "table_cell_tab",
     "command_submit",
+    "command_type",
     "pdf_shx_settings",
     "pdf_layer_toggle",
     "pc_manager_toggle",
@@ -184,6 +193,10 @@ pub(super) const NAMES: &[&str] = &[
     "dialog_discard",
     "dialog_cancel",
     "block_def_dialog",
+    // The Write Block dialog's fields: `source=block|entire|objects`,
+    // `block=<name>`, `object_mode=retain|convert|delete`,
+    // `base_point=x,y[,z]`, `file=<path>` and `unit=<code|meters|mm|feet>`.
+    "wblock_dialog",
     "table_insert_dialog",
     "table_style_dialog",
     "attdef_dialog",
@@ -202,6 +215,7 @@ pub(super) const NAMES: &[&str] = &[
     "mtext_cancel",
     "text_input",
     "text_commit",
+    "command_escape",
     "layer_visible",
     "layer_locked",
     "layer_frozen",
@@ -213,7 +227,7 @@ pub(super) const NAMES: &[&str] = &[
 ];
 
 /// Parse the `at` placement point for `embed_image`: `[x,y]` or `[x,y,z]`.
-fn embed_point(req: &Value) -> Result<codec::types::Vector3, Value> {
+fn embed_point(req: &Value) -> Result<document::types::Vector3, Value> {
     let values = req["at"]
         .as_array()
         .filter(|v| (2..=3).contains(&v.len()))
@@ -225,7 +239,7 @@ fn embed_point(req: &Value) -> Result<codec::types::Vector3, Value> {
             .filter(|v| v.is_finite())
             .ok_or_else(|| failure("invalid_point", "Expected finite coordinates"))?;
     }
-    Ok(codec::types::Vector3::new(p[0], p[1], p[2]))
+    Ok(document::types::Vector3::new(p[0], p[1], p[2]))
 }
 fn parse_point_2d(val: &Value) -> Result<[f64; 2], Value> {
     let arr = val
@@ -247,7 +261,7 @@ fn parse_calibrate(
     cal: &Value,
     pixel_width: u32,
     pixel_height: u32,
-) -> Result<(codec::types::Vector3, f64, f64), Value> {
+) -> Result<(document::types::Vector3, f64, f64), Value> {
     let pt_a = cal
         .get("point_a")
         .or_else(|| cal.get("pixel_a"))
@@ -293,7 +307,7 @@ fn parse_calibrate(
 
         let x_ll = align_to[0] - p1[0] * scale;
         let y_ll = align_to[1] - (pixel_height as f64 - p1[1]) * scale;
-        return Ok((codec::types::Vector3::new(x_ll, y_ll, 0.0), width, scale));
+        return Ok((document::types::Vector3::new(x_ll, y_ll, 0.0), width, scale));
     }
 
     if let (Some(src_pts), Some(tgt_pts)) = (
@@ -317,7 +331,7 @@ fn parse_calibrate(
             let width = pixel_width as f64 * scale;
             let x_ll = p_t1[0] - p_s1[0] * scale;
             let y_ll = p_t1[1] - (pixel_height as f64 - p_s1[1]) * scale;
-            return Ok((codec::types::Vector3::new(x_ll, y_ll, 0.0), width, scale));
+            return Ok((document::types::Vector3::new(x_ll, y_ll, 0.0), width, scale));
         }
     }
 
@@ -372,7 +386,7 @@ impl OpenCADStudio {
             self.push_undo_snapshot(i, "IMAGEATTACH");
             let handle = {
                 let document = &mut self.tabs[i].scene.document;
-                let mut entity = codec::entities::RasterImage::with_size(
+                let mut entity = document::entities::RasterImage::with_size(
                     path,
                     final_at,
                     image.pixel_width as f64,
@@ -383,7 +397,7 @@ impl OpenCADStudio {
                 if let Some(l_name) = layer_name {
                     entity.common.layer = l_name.to_string();
                     if !document.layers.contains(l_name) {
-                        let mut layer_record = codec::tables::Layer::new(l_name.to_string());
+                        let mut layer_record = document::tables::Layer::new(l_name.to_string());
                         layer_record.handle = document.allocate_handle();
                         if lock_layer {
                             layer_record.flags.locked = true;
@@ -397,7 +411,7 @@ impl OpenCADStudio {
                 }
                 let handle = self.tabs[i]
                     .scene
-                    .add_entity(codec::EntityType::RasterImage(entity));
+                    .add_entity(document::EntityType::RasterImage(entity));
                 if handle.is_null() {
                     return Err(failure("embed_failed", "Could not add image"));
                 }
@@ -434,7 +448,7 @@ impl OpenCADStudio {
         if let Some(l_name) = layer_name {
             let document = &mut self.tabs[i].scene.document;
             if !document.layers.contains(l_name) {
-                let mut layer_record = codec::tables::Layer::new(l_name.to_string());
+                let mut layer_record = document::tables::Layer::new(l_name.to_string());
                 layer_record.handle = document.allocate_handle();
                 if lock_layer {
                     layer_record.flags.locked = true;
@@ -502,7 +516,7 @@ impl OpenCADStudio {
                 None => crate::modules::insert::wblock::extract_block_to_doc(&document, block),
             }
         } else if let Some(listed) = req["handles"].as_array() {
-            let handles: Result<Vec<codec::Handle>, Value> = listed
+            let handles: Result<Vec<document::Handle>, Value> = listed
                 .iter()
                 .map(|v| {
                     u64::from_str_radix(
@@ -512,7 +526,7 @@ impl OpenCADStudio {
                             .trim_start_matches("0X"),
                         16,
                     )
-                    .map(codec::Handle::new)
+                    .map(document::Handle::new)
                     .map_err(|_| {
                         failure(
                             "invalid_handle",
@@ -525,16 +539,13 @@ impl OpenCADStudio {
                 Some(base) => {
                     let mut base = base.clone();
                     crate::modules::insert::wblock::extract_entities_into(
-                        &document,
-                        &handles?,
-                        &mut base,
+                        &document, &handles?, &mut base,
                     )?;
                     Ok(base)
                 }
-                None => crate::modules::insert::wblock::extract_entities_to_doc(
-                    &document,
-                    &handles?,
-                ),
+                None => {
+                    crate::modules::insert::wblock::extract_entities_to_doc(&document, &handles?)
+                }
             }
         } else {
             return Err(failure(
@@ -1086,7 +1097,7 @@ impl OpenCADStudio {
     pub(in crate::app) fn perform_grip_drag(
         &mut self,
         i: usize,
-        target: codec::Handle,
+        target: document::Handle,
         grip_id: usize,
         to: [f64; 3],
     ) -> Result<Task<Message>, (&'static str, &'static str)> {
@@ -1098,7 +1109,10 @@ impl OpenCADStudio {
         }
         // Picked cells of the target table stay picked: their grips are the
         // cell grips.
-        let cells = self.tabs[i].scene.table_cells.filter(|cells| cells.table == target);
+        let cells = self.tabs[i]
+            .scene
+            .table_cells
+            .filter(|cells| cells.table == target);
         self.tabs[i].scene.deselect_all();
         self.tabs[i].scene.select_entity(target, false);
         if let Some(cells) = cells {
@@ -1426,9 +1440,7 @@ impl OpenCADStudio {
                         let index = value.trim().parse::<usize>().ok()?;
                         (index < options.len()).then_some(index)
                     })
-                    .ok_or_else(|| {
-                        failure("invalid_choice", "Value is not an available option")
-                    })?;
+                    .ok_or_else(|| failure("invalid_choice", "Value is not an available option"))?;
                 self.update(Message::PropBlockChoice { key, index })
             }
             PropValue::ReadOnly(_) | PropValue::ReadOnlyWithTooltip { .. } => {
@@ -1479,9 +1491,7 @@ impl OpenCADStudio {
     pub(super) fn control_ui_action(&mut self, req: &Value) -> Result<Task<Message>, Value> {
         let name = string(req, "name")?;
         // Without a prompt there is no failed open to retry.
-        if name == "recovery_accept"
-            && !self.focus_dialog(crate::app::ModalKind::RecoveryPrompt)
-        {
+        if name == "recovery_accept" && !self.focus_dialog(crate::app::ModalKind::RecoveryPrompt) {
             return Ok(Task::none());
         }
         // The buttons of "the open dialog" press the front-most one when no
@@ -1525,6 +1535,9 @@ impl OpenCADStudio {
                 self.command_line.input = req["value"].as_str().unwrap_or("").to_string();
                 Message::CommandSubmit
             }
+            // Types into the command line without submitting, as the
+            // keyboard does, so the suggestion list follows the text.
+            "command_type" => Message::CommandInput(req["value"].as_str().unwrap_or("").into()),
             // Tab / Shift+Tab in a table cell editor: value "next" or "prev".
             "table_cell_tab" => match req["value"].as_str() {
                 Some("prev") => Message::DynTabPrev,
@@ -1629,7 +1642,7 @@ impl OpenCADStudio {
                 let value = string(req, "value")?;
                 let parsed = value.split_once(':').and_then(|(handle, row)| {
                     Some((
-                        codec::Handle::new(u64::from_str_radix(handle, 16).ok()?),
+                        document::Handle::new(u64::from_str_radix(handle, 16).ok()?),
                         Row::parse(row)?,
                     ))
                 });
@@ -1653,18 +1666,18 @@ impl OpenCADStudio {
                 Message::Count(match key {
                     "search" => M::Search(arg.into()),
                     "sort" => M::Sort(arg == "count"),
-                    "open" => M::Open(arg.into(), codec::count::CountKey::default()),
+                    "open" => M::Open(arg.into(), document::count::CountKey::default()),
                     "child" => {
                         let (name, n) = arg.rsplit_once(':').ok_or_else(bad)?;
                         let n: usize = n.parse().map_err(|_| bad())?;
                         let [l, s, m] = self.count_palette.expansion(name).ok_or_else(bad)?;
                         let i = self.active_tab;
                         let area = self.tabs[i].count.as_ref().and_then(|c| c.area.clone());
-                        let instances = codec::count::block_instances(
+                        let instances = document::count::block_instances(
                             &self.tabs[i].scene.document,
                             area.as_deref(),
                         );
-                        let (k, _) = codec::count::expanded_counts(&instances, name, l, s, m)
+                        let (k, _) = document::count::expanded_counts(&instances, name, l, s, m)
                             .into_iter()
                             .nth(n)
                             .ok_or_else(bad)?;
@@ -1680,7 +1693,7 @@ impl OpenCADStudio {
                             "mirror" => RowAction::Expand(2),
                             _ => return Err(bad()),
                         };
-                        M::Menu(name.into(), codec::count::CountKey::default(), action)
+                        M::Menu(name.into(), document::count::CountKey::default(), action)
                     }
                     "create_table" => M::CreateTable,
                     "check" => {
@@ -2030,7 +2043,10 @@ impl OpenCADStudio {
             // `select_objects`.
             "block_def_dialog" => {
                 if self.block_definition.is_none() {
-                    return Err(failure("no_dialog", "The Block Definition dialog is not open"));
+                    return Err(failure(
+                        "no_dialog",
+                        "The Block Definition dialog is not open",
+                    ));
                 }
                 let value = string(req, "value")?;
                 let (key, v) = value.split_once('=').unwrap_or((value, ""));
@@ -2042,7 +2058,111 @@ impl OpenCADStudio {
                     "objects_on_screen" => Message::BlockDefObjectsOnScreen(on),
                     "create_empty" => Message::BlockDefCreateEmpty,
                     "select_objects" => Message::BlockDefSelectObjects,
+                    "mode" => {
+                        use crate::ui::window::block_definition::BlockObjectMode;
+                        let mode = match v.to_ascii_lowercase().as_str() {
+                            "retain" => BlockObjectMode::Retain,
+                            "convert" => BlockObjectMode::Convert,
+                            "delete" => BlockObjectMode::Delete,
+                            _ => {
+                                return Err(failure(
+                                    "invalid_value",
+                                    "mode is retain, convert or delete",
+                                ))
+                            }
+                        };
+                        Message::BlockDefObjectMode(mode)
+                    }
+                    "annotative" => Message::BlockDefAnnotative(on),
+                    "match_orientation" => Message::BlockDefMatchOrientation(on),
+                    "scale_uniformly" => Message::BlockDefScaleUniformly(on),
+                    "allow_exploding" => Message::BlockDefAllowExploding(on),
+                    "unit" => {
+                        let unit = v
+                            .trim()
+                            .parse::<i16>()
+                            .or_else(|_| match v.to_ascii_lowercase().as_str() {
+                                "inch" | "inches" => Ok(1),
+                                "foot" | "feet" => Ok(2),
+                                "mm" => Ok(4),
+                                "cm" => Ok(5),
+                                "m" | "meter" | "meters" => Ok(6),
+                                _ => Err(()),
+                            })
+                            .map_err(|_| {
+                                failure("invalid_value", "unit is an insertion unit code or name")
+                            })?;
+                        Message::BlockDefUnit(unit)
+                    }
+                    "description" => Message::BlockDefDescription(v.to_string()),
+                    "hyperlink" => Message::BlockDefHyperlink,
                     _ => return Err(failure("invalid_value", "Unknown block definition field")),
+                }
+            }
+            "wblock_dialog" => {
+                if self.wblock.is_none() {
+                    return Err(failure("no_dialog", "The Write Block dialog is not open"));
+                }
+                let value = string(req, "value")?;
+                let (key, v) = value.split_once('=').unwrap_or((value, ""));
+                use crate::ui::window::wblock::{WblockObjectMode, WblockSourceMode};
+                match key {
+                    "source" => {
+                        let mode = match v.to_ascii_lowercase().as_str() {
+                            "block" => WblockSourceMode::Block,
+                            "entire" | "drawing" => WblockSourceMode::EntireDrawing,
+                            "objects" | "object" => WblockSourceMode::Objects,
+                            _ => {
+                                return Err(failure(
+                                    "invalid_value",
+                                    "source is block, entire or objects",
+                                ))
+                            }
+                        };
+                        Message::WblockSourceMode(mode)
+                    }
+                    "block" => Message::WblockBlockSelect(v.to_string()),
+                    "base_x" => Message::WblockBaseX(v.to_string()),
+                    "base_y" => Message::WblockBaseY(v.to_string()),
+                    "base_z" => Message::WblockBaseZ(v.to_string()),
+                    "object_mode" => {
+                        let mode = match v.to_ascii_lowercase().as_str() {
+                            "retain" => WblockObjectMode::Retain,
+                            "convert" => WblockObjectMode::Convert,
+                            "delete" => WblockObjectMode::Delete,
+                            _ => {
+                                return Err(failure(
+                                    "invalid_value",
+                                    "object_mode is retain, convert or delete",
+                                ))
+                            }
+                        };
+                        Message::WblockObjectMode(mode)
+                    }
+                    "file" => Message::WblockFilePath(v.to_string()),
+                    "unit" => {
+                        let unit = v
+                            .trim()
+                            .parse::<i16>()
+                            .or_else(|_| match v.to_ascii_lowercase().as_str() {
+                                "inch" | "inches" => Ok(1),
+                                "foot" | "feet" => Ok(2),
+                                "mm" => Ok(4),
+                                "cm" => Ok(5),
+                                "m" | "meter" | "meters" => Ok(6),
+                                _ => Err(()),
+                            })
+                            .map_err(|_| {
+                                failure("invalid_value", "unit is an insertion unit code or name")
+                            })?;
+                        Message::WblockUnit(unit)
+                    }
+                    _ => {
+                        return Err(failure(
+                            "invalid_value",
+                            "Unknown write block dialog field",
+                        ))
+                    }
                 }
             }
             // One field of the open attribute definition dialog: `tag=…`,
@@ -2235,12 +2355,14 @@ impl OpenCADStudio {
                     "select_object" => F::SelectObject,
                     "formula" => F::Formula(v.into()),
                     "formula_format" => {
-                        F::FormulaFormat(index(codec::fields::FORMULA_FORMATS.len())?)
+                        F::FormulaFormat(index(document::fields::FORMULA_FORMATS.len())?)
                     }
                     "precision" => F::FormulaPrecision(index(fd::FORMULA_PRECISIONS.len())?),
                     "link_text" => F::HyperlinkText(v.into()),
                     "link_url" => F::HyperlinkUrl(v.into()),
-                    "plot_scale" => F::PlotScale(index(codec::fields::PLOT_SCALE_FORMATS.len())?),
+                    "plot_scale" => {
+                        F::PlotScale(index(document::fields::PLOT_SCALE_FORMATS.len())?)
+                    }
                     "count" => F::CountExpression(v.into()),
                     "show_instances" => F::ShowCountInstances,
                     "ss_custom" => F::SsCustom(v.into()),
@@ -2266,9 +2388,11 @@ impl OpenCADStudio {
                     "ss_prop" => F::SsProp(v.into()),
                     "ss_href" => F::SsHref(v == "1"),
                     "ss_placeholder" => F::SsPlaceholder(index(fd::PLACEHOLDER_TYPES.len())?),
-                    "ss_scale" => F::SsScaleFormat(index(codec::fields::PLOT_SCALE_FORMATS.len())?),
+                    "ss_scale" => {
+                        F::SsScaleFormat(index(document::fields::PLOT_SCALE_FORMATS.len())?)
+                    }
                     "placeholder" => F::PlaceholderProperty(index(
-                        codec::fields::BLOCK_PLACEHOLDER_PROPERTIES.len(),
+                        document::fields::BLOCK_PLACEHOLDER_PROPERTIES.len(),
                     )?),
                     "table_function" => F::TableFunction(
                         ["Average", "Sum", "Count", "Cell"]
@@ -2445,8 +2569,8 @@ impl OpenCADStudio {
                             .locations
                             .iter()
                             .find(|(_, folder, _)| {
-                                codec::sheet_set::path_key(folder)
-                                    == codec::sheet_set::path_key(arg)
+                                document::sheet_set::path_key(folder)
+                                    == document::sheet_set::path_key(arg)
                             })
                             .map(|(id, _, _)| id.clone())
                             .ok_or_else(|| failure("invalid_value", "No such location"))?;
@@ -2477,7 +2601,7 @@ impl OpenCADStudio {
                             .into_iter()
                             .flat_map(|s| db.sheet_views(s))
                             .find(|v| {
-                                codec::sheet_set::number_and_title(v) == spec
+                                document::sheet_set::number_and_title(v) == spec
                                     || v.prop("Title") == Some(spec)
                             })
                             .map(|v| v.id().to_string())
@@ -2578,7 +2702,10 @@ impl OpenCADStudio {
             "spell_dialog" => {
                 use crate::ui::window::spell_dialog::{SpellMsg as S, SpellScope, SpellSetting};
                 if !self.focus_dialog(crate::app::ModalKind::Spell) {
-                    return Err(failure("no_dialog", "The Check Spelling window is not open"));
+                    return Err(failure(
+                        "no_dialog",
+                        "The Check Spelling window is not open",
+                    ));
                 }
                 let spec = string(req, "value")?;
                 let (key, value) = spec.split_once('=').unwrap_or((spec, ""));
@@ -2638,7 +2765,9 @@ impl OpenCADStudio {
             // "suffix=<s>", "decimal=0..2", "thousands=0..3",
             // "zero=4|8|1|2" (toggles); "ok" or "cancel".
             "table_cell_dialog" => {
-                use crate::ui::window::table_cell_dialog::{BorderSet as B, TableCellDialogMsg as T};
+                use crate::ui::window::table_cell_dialog::{
+                    BorderSet as B, TableCellDialogMsg as T,
+                };
                 if !matches!(
                     self.active_modal,
                     Some(crate::app::ModalKind::TableCellBorders)
@@ -2708,7 +2837,10 @@ impl OpenCADStudio {
             // "cancel" leaves the cells as they were.
             "table_cell_warning" => {
                 if !self.focus_dialog(crate::app::ModalKind::TableCellWarning) {
-                    return Err(failure("no_dialog", "The invalid data type warning is not open"));
+                    return Err(failure(
+                        "no_dialog",
+                        "The invalid data type warning is not open",
+                    ));
                 }
                 let spec = string(req, "value")?;
                 match spec {
@@ -2804,9 +2936,7 @@ impl OpenCADStudio {
                     "ok" => Message::HyperlinkApply,
                     "remove" => Message::HyperlinkRemove,
                     "cancel" => Message::HyperlinkCancel,
-                    _ => {
-                        return Err(failure("invalid_value", "Unknown Hyperlink window field"))
-                    }
+                    _ => return Err(failure("invalid_value", "Unknown Hyperlink window field")),
                 }
             }
             // The Edit Reference dialog, one field per call: "level=<n>" (0 =
@@ -2972,7 +3102,7 @@ impl OpenCADStudio {
                 let (key, value) = spec.split_once('=').unwrap_or((spec, ""));
                 let bad = || failure("invalid_value", spec);
                 if key == "cancel" {
-                    return Ok(Task::done(Message::CloseModal));
+                    return Ok(self.update(Message::CloseModal));
                 }
                 Message::PdfDialog(match key {
                     "ok" => P::ImportOk,
@@ -3000,7 +3130,7 @@ impl OpenCADStudio {
                 let (key, value) = spec.split_once('=').unwrap_or((spec, ""));
                 let bad = || failure("invalid_value", spec);
                 if key == "cancel" {
-                    return Ok(Task::done(Message::CloseModal));
+                    return Ok(self.update(Message::CloseModal));
                 }
                 Message::ImportDialog(match key {
                     "ok" => I::ImportOk,
@@ -3031,15 +3161,19 @@ impl OpenCADStudio {
             "tds_import_dialog" => {
                 use crate::ui::window::import_dialogs::ImportDialogMsg as I;
                 if !self.focus_dialog(crate::app::ModalKind::TdsImport) {
-                    return Err(failure("no_dialog", "The 3D Studio Import window is not open"));
+                    return Err(failure(
+                        "no_dialog",
+                        "The 3D Studio Import window is not open",
+                    ));
                 }
                 let spec = string(req, "value")?;
                 let (key, value) = spec.split_once('=').unwrap_or((spec, ""));
                 let bad = || failure("invalid_value", spec);
                 if key == "cancel" {
-                    return Ok(Task::done(Message::CloseModal));
+                    return Ok(self.update(Message::CloseModal));
                 }
-                let pick = |options: &[&str]| options.iter().position(|o| *o == value).ok_or_else(bad);
+                let pick =
+                    |options: &[&str]| options.iter().position(|o| *o == value).ok_or_else(bad);
                 Message::ImportDialog(match key {
                     "ok" => I::TdsOk,
                     "all" => I::TdsAll,
@@ -3049,7 +3183,11 @@ impl OpenCADStudio {
                             .import_dialogs
                             .tds
                             .as_ref()
-                            .and_then(|s| s.objects.iter().position(|(name, _, _)| name.eq_ignore_ascii_case(value)))
+                            .and_then(|s| {
+                                s.objects
+                                    .iter()
+                                    .position(|(name, _, _)| name.eq_ignore_ascii_case(value))
+                            })
                             .ok_or_else(bad)?;
                         I::TdsCheck(k, key == "check")
                     }
@@ -3068,7 +3206,10 @@ impl OpenCADStudio {
             "tds_material_dialog" => {
                 use crate::ui::window::import_dialogs::ImportDialogMsg as I;
                 if !self.focus_dialog(crate::app::ModalKind::TdsMaterial) {
-                    return Err(failure("no_dialog", "The multiple-material window is not open"));
+                    return Err(failure(
+                        "no_dialog",
+                        "The multiple-material window is not open",
+                    ));
                 }
                 let spec = string(req, "value")?;
                 let (key, value) = spec.split_once('=').unwrap_or((spec, ""));
@@ -3085,7 +3226,10 @@ impl OpenCADStudio {
                                 .tds_material
                                 .as_ref()
                                 .and_then(|s| s.queue.first())
-                                .and_then(|(_, m)| m.iter().position(|(name, _)| name.eq_ignore_ascii_case(value)))
+                                .and_then(|(_, m)| {
+                                    m.iter()
+                                        .position(|(name, _)| name.eq_ignore_ascii_case(value))
+                                })
                                 .map(|k| k + 1)
                                 .ok_or_else(bad)?
                         };
@@ -3097,7 +3241,7 @@ impl OpenCADStudio {
                         _ => return Err(bad()),
                     }),
                     "apply" | "ok" => I::TdsMatApply,
-                    "cancel" => return Ok(Task::done(Message::CloseModal)),
+                    "cancel" => return Ok(self.update(Message::CloseModal)),
                     _ => return Err(bad()),
                 })
             }
@@ -3113,7 +3257,10 @@ impl OpenCADStudio {
                     DataExtractionField as F, ExtractionBegin, ExtractionSource,
                 };
                 if !self.focus_dialog(crate::app::ModalKind::DataExtraction) {
-                    return Err(failure("no_dialog", "The Data Extraction wizard is not open"));
+                    return Err(failure(
+                        "no_dialog",
+                        "The Data Extraction wizard is not open",
+                    ));
                 }
                 let spec = string(req, "value")?;
                 let (key, value) = spec.split_once('=').unwrap_or((spec, ""));
@@ -3156,7 +3303,9 @@ impl OpenCADStudio {
                             .data_extraction
                             .properties
                             .iter()
-                            .position(|item| item.key == name || item.name.eq_ignore_ascii_case(name))
+                            .position(|item| {
+                                item.key == name || item.name.eq_ignore_ascii_case(name)
+                            })
                             .ok_or_else(bad)?;
                         Message::DataExtractionField(F::Property(index, on(state)?))
                     }
@@ -3269,9 +3418,92 @@ impl OpenCADStudio {
                     _ => return Err(failure("invalid_value", spec)),
                 }
             }
+            // The Hatch panel of a running HATCH / GRADIENT, one edit per
+            // call: "kind=solid|gradient|pattern|user", "pattern=<name>",
+            // "gradient=<label>", "color=<label>", "background=<label>",
+            // "angle=<deg>", "scale=<n>", "spacing=<n>", "double=on|off",
+            // "origin_x=<n>", "origin_y=<n>", "method=pick|select|draw",
+            // "associative=on|off", "separate=on|off", "keep=on|off",
+            // "island=normal|outer|ignore", "gap=<n>", "layer=<name>",
+            // "transparency=<0-90 or empty>", "color1=<label>",
+            // "color2=<label>", "draw_order=<0-4>", "annotative=on|off",
+            // "ok" or "cancel".
+            "hatch_panel" => {
+                use crate::ui::window::hatch_panel::HatchPanelMsg as H;
+                let i = self.active_tab;
+                if self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .and_then(|command| command.hatch_settings())
+                    .is_none()
+                {
+                    return Err(failure("no_dialog", "No HATCH or GRADIENT is running"));
+                }
+                let spec = string(req, "value")?;
+                let (key, value) = spec.split_once('=').unwrap_or((spec, ""));
+                let on = matches!(value, "on" | "1" | "true");
+                let text = value.to_string();
+                let code = |names: &[&str]| {
+                    names
+                        .iter()
+                        .position(|name| *name == value)
+                        .map(|code| code as u8)
+                        .ok_or_else(|| failure("invalid_value", spec))
+                };
+                let message = match key {
+                    "kind" => H::Kind(code(&["solid", "gradient", "pattern", "user"])?),
+                    "pattern" => H::Pattern(text),
+                    "gradient" => H::Gradient(text),
+                    "color" => H::Color(text),
+                    "background" => H::Background(text),
+                    "angle" => H::Angle(text),
+                    "scale" => H::Scale(text),
+                    "spacing" => H::Spacing(text),
+                    "double" => H::Double(on),
+                    "origin_x" => H::OriginX(text),
+                    "origin_y" => H::OriginY(text),
+                    "method" => H::Method(code(&["pick", "select", "draw"])?),
+                    "associative" => H::Associative(on),
+                    "separate" => H::Separate(on),
+                    "keep" => H::KeepBoundaries(on),
+                    "island" => H::Islands(code(&["normal", "outer", "ignore"])?),
+                    "gap" => H::Gap(text),
+                    "layer" => H::Layer(text),
+                    "transparency" => H::Transparency(text),
+                    "color1" => H::GradientColor1(text),
+                    "color2" => H::GradientColor2(text),
+                    "draw_order" => H::DrawOrder(code(&["0", "1", "2", "3", "4"])?),
+                    "annotative" => H::Annotative(on),
+                    "ok" => H::Accept,
+                    "cancel" => H::Cancel,
+                    _ => return Err(failure("invalid_value", spec)),
+                };
+                Message::HatchPanel(message)
+            }
+            // The boundary warning of an empty-area HATCH pick: "details",
+            // "dont_show" (ticks "Do not show this message again"), "close".
+            "hatch_boundary_warning" => {
+                use crate::ui::window::hatch_dialogs::HatchDialogMsg as H;
+                if !self.focus_dialog(crate::app::ModalKind::HatchBoundaryWarning) {
+                    return Err(failure(
+                        "no_dialog",
+                        "The hatch boundary warning is not open",
+                    ));
+                }
+                let state = self.hatch_boundary_warning.clone().unwrap_or_default();
+                match string(req, "value")? {
+                    "details" => Message::HatchDialog(H::WarningDetails(!state.details)),
+                    "dont_show" => Message::HatchDialog(H::WarningDontShow(true)),
+                    "close" => Message::HatchDialog(H::WarningClose),
+                    other => return Err(failure("invalid_value", other)),
+                }
+            }
             "tds_map_dialog" => {
                 if !self.focus_dialog(crate::app::ModalKind::TdsMissingMap) {
-                    return Err(failure("no_dialog", "The missing texture map window is not open"));
+                    return Err(failure(
+                        "no_dialog",
+                        "The missing texture map window is not open",
+                    ));
                 }
                 let spec = string(req, "value")?;
                 match spec {
@@ -3298,7 +3530,7 @@ impl OpenCADStudio {
                     _ => Err(bad()),
                 };
                 if key == "cancel" {
-                    return Ok(Task::done(Message::CloseModal));
+                    return Ok(self.update(Message::CloseModal));
                 }
                 Message::ImportDialog(match key {
                     "ok" => I::DgnOk,
@@ -3328,7 +3560,9 @@ impl OpenCADStudio {
                     }),
                     "existing" => I::DgnExisting(match value {
                         "prompt" => crate::modules::insert::dgn_import::ExistingReference::Prompt,
-                        "overwrite" => crate::modules::insert::dgn_import::ExistingReference::Overwrite,
+                        "overwrite" => {
+                            crate::modules::insert::dgn_import::ExistingReference::Overwrite
+                        }
                         "keep" => crate::modules::insert::dgn_import::ExistingReference::Keep,
                         _ => return Err(bad()),
                     }),
@@ -3508,6 +3742,8 @@ impl OpenCADStudio {
             // The open dialog's OK button.
             "dialog_ok" => match self.active_modal {
                 Some(crate::app::ModalKind::Unsaved) => Message::UnsavedDialogSave,
+                Some(crate::app::ModalKind::BlockEditChanges) => Message::BlockEditChangesSave,
+                Some(crate::app::ModalKind::WriteBlock) => Message::WblockApply,
                 Some(crate::app::ModalKind::XrefAttach) => {
                     Message::XrefAttach(crate::ui::window::xref_attach::XrefAttachMsg::Apply)
                 }
@@ -3543,28 +3779,25 @@ impl OpenCADStudio {
                         .as_ref()
                     {
                         Some(form) => &form.rows,
-                        None => {
-                            return Err(failure("no_dialog", "The attribute form is not open"))
-                        }
+                        None => return Err(failure("no_dialog", "The attribute form is not open")),
                     },
                     _ => return Err(failure("no_dialog", "The attribute form is not open")),
                 };
                 // A tag names a row outright; only when none does is a tag
                 // allowed to stand for the caption a row shows.
-                let Some(index) = rows
-                    .iter()
-                    .position(|row| row.tag == tag)
-                    .or_else(|| {
-                        rows.iter().position(|row| {
-                            row.label == tag
-                                || crate::ui::window::insert_attr_dialog::caption(&row.label) == tag
-                        })
+                let Some(index) = rows.iter().position(|row| row.tag == tag).or_else(|| {
+                    rows.iter().position(|row| {
+                        row.label == tag
+                            || crate::ui::window::insert_attr_dialog::caption(&row.label) == tag
                     })
-                else {
+                }) else {
                     return Err(failure("unknown_tag", "tag is not a row of the open form"));
                 };
                 Message::InsertAttrDialog(
-                    crate::ui::window::insert_attr_dialog::InsertAttrMsg::Value(index, value.to_string()),
+                    crate::ui::window::insert_attr_dialog::InsertAttrMsg::Value(
+                        index,
+                        value.to_string(),
+                    ),
                 )
             }
             // The attribute form's Cancel is the plain decline of the parked
@@ -3578,6 +3811,13 @@ impl OpenCADStudio {
                         Message::UnsavedDialogDiscard
                     } else {
                         Message::UnsavedDialogCancel
+                    }
+                }
+                Some(crate::app::ModalKind::BlockEditChanges) => {
+                    if name == "dialog_discard" {
+                        Message::BlockEditChangesDiscard
+                    } else {
+                        Message::BlockEditChangesCancel
                     }
                 }
                 _ => return Err(failure("no_dialog", "No dialog with that button is open")),
@@ -3615,6 +3855,9 @@ impl OpenCADStudio {
             "mtext_cancel" => Message::MTextCancel,
             "text_input" => Message::TextInlineInput(string(req, "value")?.into()),
             "text_commit" => Message::TextInlineOk,
+            // One Esc key press, as the keyboard gives it: a command that
+            // steps back on Esc (a sub-prompt) stays active.
+            "command_escape" => Message::CommandEscape,
             "pointer_move"
             | "pointer_press"
             | "pointer_release"

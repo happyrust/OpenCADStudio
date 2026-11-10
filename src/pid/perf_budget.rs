@@ -8,9 +8,9 @@ mod tests {
     use std::collections::{BTreeMap, HashSet};
     use std::time::{Duration, Instant};
 
-    use codec::entities::Line;
-    use codec::types::Vector3;
-    use codec::Document;
+    use document::entities::Line;
+    use document::types::Vector3;
+    use document::Document;
 
     use crate::pid::persist::PidAuthor;
     use crate::pid::tag_engine::TagSequencer;
@@ -24,8 +24,8 @@ mod tests {
     /// 采样次数：取中位数，减少单次抖动误判。
     const RUNS: usize = 3;
 
-    fn line() -> codec::EntityType {
-        codec::EntityType::Line(Line::from_points(
+    fn line() -> document::EntityType {
+        document::EntityType::Line(Line::from_points(
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(10.0, 0.0, 0.0),
         ))

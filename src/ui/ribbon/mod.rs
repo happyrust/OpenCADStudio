@@ -8,19 +8,19 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
 use rustc_hash::FxHashMap as HashMap;
 
-use codec::types::{Color as AcadColor, LineWeight};
+use document::types::{Color as AcadColor, LineWeight};
 use iced::widget::{button, column, container, mouse_area, row, text, Space};
 use iced::{Background, Border, Color, Element, Fill, Length, Padding, Theme};
 
 use crate::app::Message;
 use crate::modules::{CadModule, IconKind, RibbonGroup, RibbonItem, ToolDef};
 use crate::plugin::all_ribbon_modules;
-use crate::ui::properties::{LinetypeItem, linetype_display_name, lw_options};
+use crate::ui::properties::{linetype_display_name, lw_options, LinetypeItem};
 
 mod draw_panel;
 pub(crate) mod extras;
@@ -30,10 +30,11 @@ mod color_dropdown;
 mod context_tools;
 mod visibility_panel;
 pub use context_tools::{
-    UnderlayContext, pdf_underlay_tools, point_cloud_tools, table_cell_tools, xref_tools,
+    pdf_underlay_tools, point_cloud_tools, table_cell_alignments, table_cell_tools, xref_tools,
+    UnderlayContext,
 };
-pub(crate) use widgets::{REDO_HISTORY_ID, UNDO_HISTORY_ID};
 use widgets::{StyleContext, *};
+pub(crate) use widgets::{REDO_HISTORY_ID, UNDO_HISTORY_ID};
 mod app_menu;
 mod collapse;
 mod floating;
@@ -51,16 +52,17 @@ use crate::ui::style::{chrome, ribbon_metrics as metrics};
 use crate::ui::wrap_bar::{PosReport, WrapBar, WrapFlow};
 pub use app_menu::{works_without_drawing, APP_MENU_ID};
 pub use collapse::CollapseMode;
-pub use layout::CustomPanel;
 use collapse::{CollapsePanels, Panel};
 pub use draw_panel::SlideOutMsg;
 pub use floating::FloatMsg;
 pub use keytips::{
-    KeyTipInput, KeyTipStep, active as keytips_active, clear_alt_alone as keytip_clear_alt_alone,
+    active as keytips_active, clear_alt_alone as keytip_clear_alt_alone,
     key_pressed as keytip_key_pressed, key_released as keytip_key_released,
     note_command_finished as keytip_note_command_finished,
     note_focus_changed as keytip_note_focus_changed, pointer_pressed as keytip_pointer_pressed,
+    KeyTipInput, KeyTipStep,
 };
+pub use layout::CustomPanel;
 pub use layout::{
     default_qat, FloatingPanel, MinimizePref, QatBuiltin, QatItem, RibbonLayout, RibbonMinimize,
 };
@@ -184,6 +186,9 @@ fn panel_measure_key(
 ) -> u64 {
     let mut hasher = DefaultHasher::new();
     crate::sys::ui_font::generation().hash(&mut hasher);
+    // Panel titles and labels are measured translated, so a language switch
+    // has to measure them again.
+    crate::i18n::language_generation().hash(&mut hasher);
     groups.len().hash(&mut hasher);
     for group in groups {
         group.title.hash(&mut hasher);
@@ -326,7 +331,7 @@ const CONTEXTUAL_LINE: f32 = 2.0;
 /// Whether module `id`'s tab is contextual: shown only while its context
 /// lasts (a block being edited).
 fn is_contextual(id: &str) -> bool {
-    id == "block_editor"
+    matches!(id, "block_editor" | "table_cell")
 }
 
 // ── Ribbon state ───────────────────────────────────────────────────────────
@@ -341,6 +346,8 @@ pub struct Ribbon {
     pub show_viewcube: bool,
     /// UCS icon (UCSICON) visibility — drives the UCS Icon button highlight.
     pub show_ucs_icon: bool,
+    /// VPHIGHLIGHT: the hovered Model viewport is outlined.
+    pub show_viewport_highlight: bool,
     /// Properties panel (PROPERTIES) visibility — drives the Properties button highlight.
     pub show_properties: bool,
     /// The Count palette is open (View › Palettes › Count).
@@ -349,6 +356,7 @@ pub struct Ribbon {
     pub show_sheet_set: bool,
     /// Graphic Attributes panel visibility — drives its ribbon button highlight.
     pub show_graphic_attributes: bool,
+    pub show_tool_palettes: bool,
     pub show_authoring_palettes: bool,
     /// Parameters Manager visibility — drives its ribbon button highlight.
     pub show_parameters_manager: bool,
@@ -426,6 +434,9 @@ pub struct Ribbon {
     /// A block editor session is open: the tab that was active before the
     /// Block Editor tab took over.
     block_editing: Option<usize>,
+    /// While table cells are picked: the tab that was active before the
+    /// Table Cell tab came up.
+    table_cell_open: Option<usize>,
     block_testing: Option<usize>,
     /// XDWGFADECTL as the Reference slide-out shows it (negative = off).
     pub xref_fade: i32,
@@ -535,10 +546,12 @@ impl Ribbon {
             ortho_mode: true,
             show_viewcube: true,
             show_ucs_icon: true,
+            show_viewport_highlight: true,
             show_properties: true,
             show_count_palette: false,
             show_sheet_set: false,
             show_graphic_attributes: false,
+            show_tool_palettes: false,
             show_authoring_palettes: false,
             show_parameters_manager: false,
             show_file_tabs: true,
@@ -586,6 +599,7 @@ impl Ribbon {
             xref_ctx: false,
             point_cloud_ctx: None,
             block_editing: None,
+            table_cell_open: None,
             block_testing: None,
             xref_fade: 50,
             text_find: String::new(),
@@ -657,7 +671,8 @@ impl Ribbon {
         if !panels.is_empty() {
             self.modules.push(Box::new(UserModule::new(&panels)));
         }
-        if let Some(index) = active_id.and_then(|id| self.modules.iter().position(|m| m.id() == id)) {
+        if let Some(index) = active_id.and_then(|id| self.modules.iter().position(|m| m.id() == id))
+        {
             self.active = index;
         } else if self.active >= self.modules.len() {
             self.active = self.modules.len().saturating_sub(1);
@@ -785,6 +800,44 @@ impl Ribbon {
             }
             _ => {}
         }
+    }
+
+    /// Show the Table Cell tab while table cells are picked, and return to
+    /// the previous tab when the pick ends.
+    pub fn set_table_cell_context(&mut self, picked: bool) {
+        let Some(index) = self
+            .modules
+            .iter()
+            .position(|module| module.id() == "table_cell")
+        else {
+            return;
+        };
+        match (picked, self.table_cell_open) {
+            (true, None) => {
+                self.table_cell_open = Some(self.active);
+                self.active = index;
+            }
+            (false, Some(previous)) => {
+                self.table_cell_open = None;
+                if self.active == index {
+                    self.active = previous.min(self.modules.len().saturating_sub(1));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The id of the tab shown now, and whether the tab `id` is in the bar.
+    #[cfg(test)]
+    pub(crate) fn tab_state(&self, id: &str) -> (&'static str, bool) {
+        let shown = self.modules.iter().any(|m| m.id() == id) && !self.contextual_off(id);
+        (self.modules[self.active].id(), shown)
+    }
+
+    /// A contextual tab whose context is not on: it is not shown.
+    fn contextual_off(&self, id: &str) -> bool {
+        (id == "block_editor" && self.block_editing.is_none())
+            || (id == "table_cell" && self.table_cell_open.is_none())
     }
 
     pub fn set_block_testing(&mut self, testing: bool) {
@@ -968,9 +1021,11 @@ impl Ribbon {
             ortho_mode: self.ortho_mode,
             show_viewcube: self.show_viewcube,
             show_ucs_icon: self.show_ucs_icon,
+            show_viewport_highlight: self.show_viewport_highlight,
             show_properties: self.show_properties,
             show_count_palette: self.show_count_palette,
             show_graphic_attributes: self.show_graphic_attributes,
+            show_tool_palettes: self.show_tool_palettes,
             show_authoring_palettes: self.show_authoring_palettes,
             show_parameters_manager: self.show_parameters_manager,
             show_block_palette,
@@ -1217,9 +1272,7 @@ impl Ribbon {
             |mut acc, (i, module)| {
                 // The Layout module no longer has a ribbon tab — its paper-space
                 // tools live in the right-edge side toolbar (see ui::side_toolbar).
-                if module.id() == "layout"
-                    || (module.id() == "block_editor" && self.block_editing.is_none())
-                    || self.tab_hidden(i)
+                if module.id() == "layout" || self.contextual_off(module.id()) || self.tab_hidden(i)
                 {
                     return acc;
                 }
@@ -1400,7 +1453,9 @@ impl Ribbon {
             let line = self.layout.minimize == RibbonMinimize::Tabs;
             ribbon = ribbon.push(self.qat_below_row(is_start, undo_count, redo_count, line));
         }
-        keytips::ribbon_area(ribbon_menu::RightPress::new(PosReport::new(RIBBON_ID, ribbon)))
+        keytips::ribbon_area(ribbon_menu::RightPress::new(PosReport::new(
+            RIBBON_ID, ribbon,
+        )))
     }
 
     /// The menu row with the search box at its right end.
@@ -1683,10 +1738,7 @@ impl Ribbon {
             let (anchor, layer_name) = target
                 .split_once(':')
                 .unwrap_or((target, self.active_layer.as_str()));
-            let layer = self
-                .layer_infos
-                .iter()
-                .find(|l| l.name == layer_name)?;
+            let layer = self.layer_infos.iter().find(|l| l.name == layer_name)?;
             let color = layer.stored_color;
             let panel = color_dropdown::layer_color_dropdown_panel(
                 color,
@@ -1788,7 +1840,7 @@ impl Ribbon {
         );
         let (align_right, h_pad, top) = self.dd_anchor(open_id, panel_w, win.0);
         Some(dropdown_backdrop(position_ribbon_dropdown(
-            panel.into(),
+            panel,
             align_right,
             h_pad,
             top,
@@ -1864,7 +1916,8 @@ impl Ribbon {
             (on, DropdownRow::item(item, label, msg))
         };
         let mut initial_selected: Option<usize> = None;
-        let mut rows: Vec<DropdownRow<'_, Message>> = Vec::with_capacity(self.layer_infos.len() + 1);
+        let mut rows: Vec<DropdownRow<'_, Message>> =
+            Vec::with_capacity(self.layer_infos.len() + 1);
         let (on_cur, first_row) = entry(String::new(), t!("Use Current").into_owned(), None);
         if on_cur {
             initial_selected = Some(0);
@@ -1878,21 +1931,21 @@ impl Ribbon {
             rows.push(row);
         }
         let list_height = ((self.layer_infos.len() + 1) as f32 * 24.0).min(260.0);
-        let list = DropdownList::with_options(
-            rows,
-            Length::Fixed(list_height),
-            Length::Fill,
-            1.0,
-            0.0,
-        )
-        .selected(initial_selected)
-        .on_escape(Message::CloseRibbonDropdown);
+        let list =
+            DropdownList::with_options(rows, Length::Fixed(list_height), Length::Fill, 1.0, 0.0)
+                .selected(initial_selected)
+                .on_escape(Message::CloseRibbonDropdown);
         let panel = container(list)
             .style(popup_panel_style)
             .padding(2)
             .width(Length::Fixed(W));
         let (align_right, h_pad, top) = self.dd_anchor(id, W, win.0);
-        dropdown_backdrop(position_ribbon_dropdown(panel.into(), align_right, h_pad, top))
+        dropdown_backdrop(position_ribbon_dropdown(
+            panel.into(),
+            align_right,
+            h_pad,
+            top,
+        ))
     }
 
     /// The layer list under the layer combo `id` (the ribbon's or the Quick
@@ -2007,16 +2060,10 @@ impl Ribbon {
             .on_input(Message::RibbonLayerFilterChanged)
             .size(11)
             .padding([4, 6]);
-        let list = DropdownList::with_options(
-            rows,
-            Length::Fixed(list_h),
-            Length::Fill,
-            0.0,
-            0.0,
-        )
-        .selected(initial_selected)
-        .query(self.layer_filter.clone())
-        .on_escape(Message::CloseRibbonDropdown);
+        let list = DropdownList::with_options(rows, Length::Fixed(list_h), Length::Fill, 0.0, 0.0)
+            .selected(initial_selected)
+            .query(self.layer_filter.clone())
+            .on_escape(Message::CloseRibbonDropdown);
         let state_manager = button(
             row![
                 crate::ui::icons::themed_arrow_right(9.0),
@@ -2244,9 +2291,7 @@ impl Ribbon {
                 }
                 let check: Element<'_, Message> = crate::ui::icons::themed_check_cell(is_cur);
                 let disp = linetype_display_name(&lt.name);
-                let name_col = text(disp.clone())
-                    .size(11)
-                    .width(Length::Fixed(90.0));
+                let name_col = text(disp.clone()).size(11).width(Length::Fixed(90.0));
                 let art_col = text(lt.art.clone()).size(9).style(muted_text_style);
                 let msg = Message::RibbonLinetypeChanged(lt.name);
                 let btn = button(
@@ -2262,15 +2307,10 @@ impl Ribbon {
             })
             .collect();
 
-        let dd_list = DropdownList::with_options(
-            rows,
-            Length::Fixed(200.0),
-            Length::Fill,
-            0.0,
-            0.0,
-        )
-        .selected(initial_selected)
-        .on_escape(Message::CloseRibbonDropdown);
+        let dd_list =
+            DropdownList::with_options(rows, Length::Fixed(200.0), Length::Fill, 0.0, 0.0)
+                .selected(initial_selected)
+                .on_escape(Message::CloseRibbonDropdown);
         let list = container(dd_list)
             .style(popup_panel_style)
             .width(Length::Fixed(220.0));
@@ -2358,8 +2398,7 @@ fn dropdown_list<'a>(
     let mut rows: Vec<DropdownRow<Message>> = Vec::with_capacity(items.len() + 1);
     if let Some(header) = &header {
         rows.push(DropdownRow::header(
-            container(text(header.clone()).size(10).style(muted_text_style))
-                .padding([4, 10]),
+            container(text(header.clone()).size(10).style(muted_text_style)).padding([4, 10]),
         ));
     }
     let mut initial_selected: Option<usize> = None;
@@ -2488,7 +2527,13 @@ fn render_group<'a>(
                     RibbonItem::LabeledTool(_) | RibbonItem::LabeledDropdown { .. }
                 )
             }) {
-                below.push(widgets::render_row_item(next, active_tool, open_dd, last_cmd, state));
+                below.push(widgets::render_row_item(
+                    next,
+                    active_tool,
+                    open_dd,
+                    last_cmd,
+                    state,
+                ));
             }
             items_row.push(widgets::render_large_with(item, &ctx, below));
             continue;
@@ -2652,7 +2697,9 @@ pub(super) fn collapsed_button<'a>(
         // Narrow: as wide as the title's longest word.
         face.into()
     } else {
-        automatic_large_button(localized_title, face.into())
+        // The title is drawn on one line, so the button is as wide as that
+        // line; measured as a wrapping label it overlapped its neighbour.
+        automatic_one_line_button(localized_title, face.into())
     };
     let face = mouse_area(face)
         .on_enter(Message::RibbonMinimize(minimize::MinimizeMsg::EnterOpener(
@@ -2676,14 +2723,14 @@ impl Default for Ribbon {
 #[cfg(test)]
 mod tests {
     use super::widgets::is_active_tool;
-    use super::{CollapseMode, Ribbon, RibbonLayout, StyleContext, panel_measure_key};
+    use super::{panel_measure_key, CollapseMode, Ribbon, RibbonLayout, StyleContext};
     use crate::modules::{IconKind, ModuleEvent, RibbonGroup, RibbonItem, ToolDef};
     use rustc_hash::FxHashMap;
 
     #[test]
     fn ribbon_layer_color_list_swatch_targets_its_row_without_selecting_it() {
         use crate::app::{ColorPickTarget, Message};
-        use codec::types::Color as AcadColor;
+        use document::types::Color as AcadColor;
         use iced_test::simulator::Simulator;
 
         for (id, vp_frozen) in [
@@ -2787,6 +2834,57 @@ mod tests {
             measurement_key("TEST", "TEST"),
             measurement_key("TEST", "OTHER")
         );
+    }
+
+    /// A collapsed panel draws its title on one line, so its button has to
+    /// be at least as wide as that line or the title runs over the next one.
+    #[test]
+    fn collapsed_panel_button_is_as_wide_as_its_one_line_title() {
+        use iced::advanced::{layout::Limits, widget::Tree};
+        let _one = crate::headless_ui_lock();
+        let renderer = iced_test::futures::futures::executor::block_on(
+            <iced::Renderer as iced_test::core::renderer::Headless>::new(
+                iced_test::core::renderer::Settings::default(),
+                std::env::var("ICED_TEST_BACKEND").ok().as_deref(),
+            ),
+        )
+        .expect("headless renderer");
+        let width = |mut element: iced::Element<'static, crate::app::Message>| {
+            let mut tree = Tree::new(element.as_widget());
+            element.as_widget_mut().diff(&mut tree);
+            element
+                .as_widget_mut()
+                .layout(
+                    &mut tree,
+                    &renderer,
+                    &Limits::new(iced::Size::ZERO, iced::Size::new(f32::INFINITY, f32::INFINITY)),
+                )
+                .size()
+                .width
+        };
+        let title = "Linking & Extraction";
+        let line = width(
+            iced::widget::text(title)
+                .size(super::PANEL_TITLE_SIZE)
+                .wrapping(iced::advanced::text::Wrapping::None)
+                .into(),
+        );
+        let button = width(super::collapsed_button(
+            title, None, true, false, false, false,
+        ));
+        assert!(button >= line, "button {button} < title line {line}");
+    }
+
+    /// Panel widths are measured with translated labels, so switching the
+    /// language must not reuse the old measurements.
+    #[test]
+    fn panel_measure_fingerprint_changes_with_the_language() {
+        let before = measurement_key("TEST", "TEST");
+        // Reloading English bumps the language generation like any switch,
+        // without changing the locale other tests see.
+        crate::i18n::set_language(crate::i18n::Language::EnUs)
+            .expect("English locale must be available");
+        assert_ne!(before, measurement_key("TEST", "TEST"));
     }
 
     #[test]
@@ -2893,12 +2991,10 @@ mod tests {
             .iter()
             .position(|module| module.id() == "draw")
             .unwrap();
-        assert!(
-            !ribbon
-                .modules
-                .iter()
-                .any(|module| module.id() == "block_test")
-        );
+        assert!(!ribbon
+            .modules
+            .iter()
+            .any(|module| module.id() == "block_test"));
         let ordinary: Vec<_> = ribbon.groups_for(draw).map(|group| group.title).collect();
         assert!(!ordinary.contains(&"Close"));
         ribbon.set_block_editing(true);
@@ -3045,12 +3141,18 @@ impl UserModule {
                     .commands
                     .iter()
                     .map(|command| {
-                        let verb = command.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+                        let verb = command
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("")
+                            .to_ascii_uppercase();
                         let (label, icon) = known
                             .get(&command.to_ascii_uppercase())
                             .or_else(|| known.get(&verb))
                             .copied()
-                            .unwrap_or_else(|| (leak(command), IconKind::Svg(crate::ui::icons::LIST)));
+                            .unwrap_or_else(|| {
+                                (leak(command), IconKind::Svg(crate::ui::icons::LIST))
+                            });
                         RibbonItem::LargeTool(ToolDef {
                             id: leak(command),
                             label,

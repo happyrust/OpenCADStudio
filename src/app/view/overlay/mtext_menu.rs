@@ -7,7 +7,7 @@ use crate::app::mtext_editor::{
     EditorMenu, FractionPart, JustifyChoice, ListKind, MTextEditorState, MTextFmt, ParaNumber,
     Script,
 };
-use codec::entities::mtext_format::StackingType;
+use document::entities::mtext_format::StackingType;
 use iced::widget::column;
 pub(super) mod popup;
 
@@ -29,7 +29,7 @@ fn close() -> Message {
 
 /// Readable but clearly secondary: the panel text at reduced opacity.
 fn dim(theme: &Theme) -> Color {
-    theme.palette().background.base.text.scale_alpha(0.45)
+    crate::ui::style::readable::muted_text(theme)
 }
 
 fn item_style(theme: &Theme, status: button::Status) -> button::Style {
@@ -85,11 +85,7 @@ fn mark_cell(mark: Mark) -> Element<'static, Message> {
 }
 
 /// A menu row: check/icon column, then the label.
-fn row_button(
-    mark: impl Into<Mark>,
-    name: String,
-    on_press: Message,
-) -> Element<'static, Message> {
+fn row_button(mark: impl Into<Mark>, name: String, on_press: Message) -> Element<'static, Message> {
     button(
         row![
             mark_cell(mark.into()),
@@ -408,7 +404,7 @@ fn more_panel(ed: &MTextEditorState) -> Element<'static, Message> {
 
 fn paragraph_panel(ed: &MTextEditorState) -> Element<'static, Message> {
     let list = ed.list_kind();
-    let exact = ed.line_spacing_style == codec::entities::LineSpacingStyle::Exactly;
+    let exact = ed.line_spacing_style == document::entities::LineSpacingStyle::Exactly;
     let factor = ed
         .line_spacing_draft
         .clone()
@@ -564,29 +560,48 @@ fn justify_panel(ed: &MTextEditorState) -> Element<'static, Message> {
 
 pub(super) fn symbols() -> Vec<(&'static str, String)> {
     vec![
-        ("⌀", label!("diameter")),
         ("°", label!("degree")),
         ("±", label!("plus-minus")),
+        ("⌀", label!("diameter")),
+        ("≈", label!("approximately")),
+        ("∠", label!("angle")),
+        ("℄", label!("centerline")),
+        ("Δ", label!("delta")),
+        ("ɸ", label!("electrical-phase")),
+        ("≡", label!("identity")),
+        ("≠", label!("not-equal")),
+        ("Ω", label!("ohm")),
+        ("Ω", label!("omega")),
+        ("⅊", label!("property-line")),
+        ("₂", label!("subscript-2")),
         ("²", label!("squared")),
         ("³", label!("cubed")),
         ("×", label!("multiply")),
         ("÷", label!("divide")),
         ("≤", label!("less-equal")),
         ("≥", label!("greater-equal")),
-        ("≈", label!("approximately")),
+        // Shown as a gap in the list; it keeps two words on one line.
+        ("\u{a0}", label!("non-breaking-space")),
     ]
 }
 
+/// Two columns, so the whole list opens under its button.
 fn symbols_panel() -> Element<'static, Message> {
-    symbols()
+    let mut cells: Vec<Element<'static, Message>> = symbols()
         .into_iter()
-        .fold(
-            Panel::new(title(EditorMenu::Symbols), 220.0),
-            |panel, (symbol, name)| {
-                panel.push(item(symbol, name, Message::MTextInsert(symbol.into())))
-            },
-        )
-        .build()
+        .map(|(symbol, name)| item(symbol, name, Message::MTextInsert(symbol.into())))
+        .collect();
+    let mut panel = Panel::new(title(EditorMenu::Symbols), 440.0);
+    while !cells.is_empty() {
+        let left = cells.remove(0);
+        let right: Element<'static, Message> = if cells.is_empty() {
+            Space::new().width(Fill).into()
+        } else {
+            cells.remove(0)
+        };
+        panel = panel.push(row![container(left).width(Fill), container(right).width(Fill)].into());
+    }
+    panel.build()
 }
 
 fn find_panel(ed: &MTextEditorState) -> Element<'static, Message> {
@@ -703,20 +718,13 @@ fn fraction_panel(ed: &MTextEditorState) -> Element<'static, Message> {
 }
 
 /// A row that cannot act here, with the reason as its hint.
-fn inert(
-    mark: impl Into<Mark>,
-    name: String,
-    reason: String,
-) -> Element<'static, Message> {
+fn inert(mark: impl Into<Mark>, name: String, reason: String) -> Element<'static, Message> {
     iced::widget::tooltip(
         button(
-            row![
-                mark_cell(mark.into()),
-                text(name).size(11).width(Fill),
-            ]
-            .spacing(2)
-            .align_y(iced::Alignment::Center)
-            .height(Fill),
+            row![mark_cell(mark.into()), text(name).size(11).width(Fill),]
+                .spacing(2)
+                .align_y(iced::Alignment::Center)
+                .height(Fill),
         )
         .padding([0, 6])
         .width(Fill)
@@ -766,10 +774,7 @@ fn background_panel(ed: &MTextEditorState) -> Element<'static, Message> {
             scrollable(color_select::color_list(
                 color_select::ColorExtras::default(),
                 |color| Message::MTextMaskColor(Some(color)),
-                Message::OpenColorWindow(
-                    crate::app::ColorPickTarget::MTextMask,
-                    mask.color.clone(),
-                ),
+                Message::OpenColorWindow(crate::app::ColorPickTarget::MTextMask, mask.color),
             ))
             .height(Length::Shrink.max(220.0))
             .into(),
@@ -779,7 +784,7 @@ fn background_panel(ed: &MTextEditorState) -> Element<'static, Message> {
 
 /// Normal, vertical or by style set the MTEXT's own drawing direction.
 fn position_panel(ed: &MTextEditorState) -> Element<'static, Message> {
-    use codec::entities::DrawingDirection as D;
+    use document::entities::DrawingDirection as D;
     let panel = Panel::new(title(EditorMenu::Position), 240.0);
     let current = ed.direction_value();
     [

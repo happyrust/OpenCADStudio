@@ -1,10 +1,10 @@
 //! Dock drawing: the edges (icon strip and shown group), floating pallets,
 //! the + menu and the drag preview.
 
-use crate::app::document::DocumentTab;
+use crate::app::tab_document::DocumentTab;
 use crate::app::{Message, OpenCADStudio};
 use crate::t;
-use crate::ui::dock::{DOCK_DIVIDER_W, DOCK_FLOAT_BAR_W};
+use crate::ui::dock::{DOCK_DIVIDER_W, DOCK_FLOAT_BAR_W, RAIL_ICON};
 use iced::widget::{button, canvas, column, container, mouse_area, row, stack, text, Space};
 use iced::{Background, Border, Color, Element, Fill, Length, Theme};
 
@@ -94,10 +94,17 @@ impl OpenCADStudio {
                         .on_right_press(Message::Dock(crate::ui::dock::DockMsg::EdgeMenu(None)))
                         .into(),
                 );
+                // shortcut: estimated row height, measure the menu if rows change size.
+                let menu_h = (checked.len() + 2) as f32 * 29.0 + 12.0;
+                let y = crate::ui::dock::strip_menu_top(
+                    self.dock_edge_menu_y.unwrap_or(plus_top),
+                    menu_h,
+                    self.dock_workspace_size().1,
+                );
                 layers.push(place_at(
                     dock_edge_menu(side, &checked, self.dock.strip_labels),
                     x.max(0.0),
-                    plus_top,
+                    y,
                 ));
             }
         }
@@ -248,8 +255,7 @@ impl OpenCADStudio {
             DockMsg, DropTarget, DOCK_STRIP_W, STRIP_CELL_H, STRIP_DIVIDER_H, STRIP_GRIP_W,
             STRIP_PAD, STRIP_PLUS_GAP, STRIP_PLUS_H,
         };
-        let (layout, _) = self.dock_strip_layout(side);
-        let cell_h = layout.first().map_or(STRIP_CELL_H, |g| g.cell_h);
+        let (layout, plus_top) = self.dock_strip_layout(side);
         let labels = self.dock.strip_labels;
         // Only a group actually on screen is marked as shown: on an
         // auto-hiding edge nothing is, until a group is revealed.
@@ -271,26 +277,32 @@ impl OpenCADStudio {
             let group_dragged =
                 dragging && movement.is_some_and(|(_, group, _)| group == Some((side, gi)));
             let panels = self.dock_group_visible(side, gi);
-            let row_h = 2.0 * STRIP_PAD + panels.len() as f32 * cell_h;
+            let Some(placed) = layout.iter().find(|g| g.group == gi) else {
+                continue;
+            };
+            let row_h = placed.bottom() - placed.top;
 
             let mut icons: Vec<Element<'_, Message>> = vec![Space::new().height(STRIP_PAD).into()];
-            for id in panels {
+            for (id, &cell_h) in panels.into_iter().zip(&placed.cells) {
                 let faded = group_dragged
                     || (dragging
                         && movement
                             .is_some_and(|(panel, group, _)| group.is_none() && panel == id));
+                let art = id.icon();
                 let glyph = if faded {
-                    crate::ui::icons::themed_disabled(id.icon(), 20.0)
+                    crate::ui::icons::themed_disabled(art, RAIL_ICON)
                 } else if is_shown {
-                    crate::ui::icons::themed(id.icon(), 20.0)
+                    crate::ui::icons::themed(art, RAIL_ICON)
                 } else {
-                    crate::ui::icons::themed_secondary(id.icon(), 20.0)
+                    crate::ui::icons::themed_secondary(art, RAIL_ICON)
                 };
                 let hovered = !dragging && self.dock_icon_hover == Some(id);
                 // Labelled, the pallet's name reads upward under its icon.
                 let glyph: Element<'_, Message> = if labels {
                     column![
-                        container(glyph).center_x(Fill).height(Length::Fixed(STRIP_CELL_H - 4.0)),
+                        container(glyph)
+                            .center_x(Fill)
+                            .height(Length::Fixed(STRIP_CELL_H - 4.0)),
                         iced::widget::canvas(crate::ui::dock::VerticalLabel {
                             text: t!(id.title()).into_owned(),
                             centered: true,
@@ -300,7 +312,7 @@ impl OpenCADStudio {
                     ]
                     .into()
                 } else {
-                    glyph.into()
+                    glyph
                 };
                 let cell = container(glyph)
                     .center_x(Length::Fixed(STRIP_CELL_H))
@@ -320,7 +332,7 @@ impl OpenCADStudio {
                         .center_y(Length::Fixed(cell_h)),
                 )
                 .on_press(Message::Dock(DockMsg::IconPress(id)))
-                .on_right_press(Message::Dock(DockMsg::EdgeMenu(Some(side))))
+                .on_right_press(Message::Dock(DockMsg::EdgeMenuAtPointer(side)))
                 .on_enter(Message::Dock(DockMsg::Hover(id)))
                 .on_exit(Message::Dock(DockMsg::HoverEnd(id)))
                 .interaction(iced::mouse::Interaction::Pointer);
@@ -413,7 +425,6 @@ impl OpenCADStudio {
                     .into(),
             );
         }
-        items.push(Space::new().height(STRIP_PLUS_GAP).into());
         let plus = button(crate::ui::icons::themed_secondary(
             crate::ui::icons::PLUS,
             14.0,
@@ -435,8 +446,17 @@ impl OpenCADStudio {
         .width(Length::Fixed(STRIP_PLUS_H))
         .height(Length::Fixed(STRIP_PLUS_H))
         .padding(7);
-        items.push(container(plus).center_x(Length::Fixed(DOCK_STRIP_W)).into());
-        container(column(items))
+        // The tabs clip above the +, so overflowing ones never push it away.
+        let tabs = container(column(items))
+            .height(Length::Fixed(plus_top - STRIP_PLUS_GAP))
+            .clip(true);
+        let strip = column![
+            tabs,
+            Space::new().height(STRIP_PLUS_GAP),
+            container(plus).center_x(Length::Fixed(DOCK_STRIP_W)),
+        ];
+        let strip = mouse_area(strip).on_move(|p| Message::Dock(DockMsg::StripPointer(p)));
+        container(strip)
             .width(Length::Fixed(DOCK_STRIP_W))
             .height(Fill)
             .style(|theme: &Theme| container::Style {
@@ -493,7 +513,9 @@ impl OpenCADStudio {
                     self.parameter_placement_error("FLIP"),
                     if self.block_editor_preferences.action_bars {
                         Some("Use the Lookup parameter action bar, or set BACTIONBARMODE to 0.")
-                    } else { self.lookup_table_error() },
+                    } else {
+                        self.lookup_table_error()
+                    },
                     self.properties_table_error(),
                     self.action_error(Some(crate::scene::block_actions::Kind::Move)),
                     self.action_error(Some(crate::scene::block_actions::Kind::Scale)),
@@ -514,7 +536,7 @@ impl OpenCADStudio {
                             session.br_handle,
                         ),
                     ),
-                    None => (codec::Handle::NULL, Vec::new()),
+                    None => (document::Handle::NULL, Vec::new()),
                 };
                 crate::ui::window::parameters_manager::view(
                     &rows,
@@ -544,6 +566,13 @@ impl OpenCADStudio {
             crate::ui::dock::PanelId::PidBackup => pid_backup_panel(self, width, chrome),
             crate::ui::dock::PanelId::PidCollab => crate::ui::window::pid_collab::view(
                 &self.pid_collab_view,
+                width,
+                chrome,
+            ),
+            crate::ui::dock::PanelId::ToolPalettes => crate::ui::window::tool_palettes::view(
+                &self.tool_palettes,
+                &tab.scene.document,
+                &tab.scene.selected,
                 width,
                 chrome,
             ),
@@ -584,12 +613,14 @@ impl OpenCADStudio {
                     .scene
                     .active_viewport
                     .filter(|_| tab.scene.current_layout != "Model");
-                tab.layers.view_panel(self.layer_name_col_w, width, chrome, active_vp)
+                tab.layers
+                    .view_panel(self.layer_name_col_w, width, chrome, active_vp)
             }
             crate::ui::dock::PanelId::Laywalk => self.layer_walk_view(tab, width, chrome),
             crate::ui::dock::PanelId::QuickCalc => self.quick_calc_view(tab, width, chrome),
             crate::ui::dock::PanelId::CommandHistory => {
-                self.command_line.history_panel(&self.history_content, width, chrome)
+                self.command_line
+                    .history_panel(&self.history_content, width, chrome)
             }
             crate::ui::dock::PanelId::Plugin(num) => {
                 if let Some(panel_id) = self.plugin_panel_by_num.get(&num) {
@@ -922,7 +953,7 @@ impl OpenCADStudio {
                     .iter()
                     .filter(|p| self.dock_panel_visible(**p) || Some(**p) == dragged)
                     .count();
-                let y = g.icons_top + above as f32 * g.cell_h;
+                let y = g.cell_top(above);
                 marks.push(place_at(dock_insert_line(), strip_x + 7.0, y - 3.5));
             }
             DropTarget::Edge { index, .. } => {
@@ -1264,12 +1295,16 @@ fn dock_edge_menu(
             Space::new().width(12).height(12).into()
         };
         rows.push(
-            button(row![text(label).size(12).width(Fill), check].spacing(8).align_y(iced::Center))
-                .on_press(Message::Dock(DockMsg::StripLabels(on)))
-                .style(menu_row_style)
-                .padding([5, 8])
-                .width(Fill)
-                .into(),
+            button(
+                row![text(label).size(12).width(Fill), check]
+                    .spacing(8)
+                    .align_y(iced::Center),
+            )
+            .on_press(Message::Dock(DockMsg::StripLabels(on)))
+            .style(menu_row_style)
+            .padding([5, 8])
+            .width(Fill)
+            .into(),
         );
     }
     menu_frame(column(rows).spacing(1).padding(4).into())

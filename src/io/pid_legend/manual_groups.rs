@@ -6,8 +6,8 @@
 
 use std::collections::HashSet;
 
-use codec::objects::{Group, ObjectType};
-use codec::{Document, EntityType, Handle};
+use document::objects::{Group, ObjectType};
+use document::{Document, EntityType, Handle};
 
 use super::blocks::{grow, lettering_value, placed_block, skip_for_box};
 use super::tags::derive_tag_from_texts;

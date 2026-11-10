@@ -5,8 +5,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use codec::types::Vector3;
-use codec::{Document, EntityType, Handle};
+use document::types::Vector3;
+use document::{Document, EntityType, Handle};
 
 use super::blocks::{grow, sane};
 use super::pairing::match_pairs;

@@ -19,9 +19,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use codec::entities::{Arc, Circle, Insert, Line, LwPolyline, Point, Text};
-use codec::types::{Vector2, Vector3};
-use codec::{Document, EntityType, Handle};
+use document::entities::{Arc, Circle, Insert, Line, LwPolyline, Point, Text};
+use document::types::{Vector2, Vector3};
+use document::{Document, EntityType, Handle};
 
 use super::persist::PidAuthor;
 
@@ -760,7 +760,7 @@ pub fn insert_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codec::xdata::XDataValue;
+    use document::xdata::XDataValue;
 
     const VESSEL: &str = "PID_SYM_equipment_vessel";
     const PUMP: &str = "PID_SYM_equipment_pump";

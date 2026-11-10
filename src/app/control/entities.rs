@@ -37,8 +37,8 @@ fn author_slot<'a>(author: &'a mut PidAuthor, key: &str) -> Option<&'a mut Strin
 /// 「其余四个字段仍在 `props` 中且值未变」），整串替换会让它们凭空消失。
 fn merge_author_values(
     existing: Option<PidAuthor>,
-    incoming: Option<Vec<codec::xdata::XDataValue>>,
-) -> Option<Vec<codec::xdata::XDataValue>> {
+    incoming: Option<Vec<document::xdata::XDataValue>>,
+) -> Option<Vec<document::xdata::XDataValue>> {
     let incoming = incoming?;
     let Some(mut author) = existing else {
         return Some(incoming);
@@ -76,7 +76,7 @@ fn merge_props(existing: &str, incoming: &str) -> String {
     serde_json::Value::Object(base).to_string()
 }
 
-pub(super) fn hex_handles(req: &Value, key: &str) -> Parsed<Vec<codec::Handle>> {
+pub(super) fn hex_handles(req: &Value, key: &str) -> Parsed<Vec<document::Handle>> {
     let list = req[key]
         .as_array()
         .filter(|v| !v.is_empty())
@@ -95,7 +95,7 @@ pub(super) fn hex_handles(req: &Value, key: &str) -> Parsed<Vec<codec::Handle>> 
                     .trim_start_matches("0X"),
                 16,
             )
-            .map(codec::Handle::new)
+            .map(document::Handle::new)
             .map_err(|_| {
                 failure(
                     "invalid_handle",
@@ -109,8 +109,8 @@ pub(super) fn hex_handles(req: &Value, key: &str) -> Parsed<Vec<codec::Handle>> 
 /// Every handle must exist in the document; otherwise `entity_absent` naming
 /// the missing ones so the caller can refresh instead of guessing.
 pub(super) fn require_existing(
-    document: &codec::Document,
-    handles: &[codec::Handle],
+    document: &document::Document,
+    handles: &[document::Handle],
 ) -> Parsed<()> {
     let missing: Vec<String> = handles
         .iter()
@@ -136,7 +136,7 @@ impl OpenCADStudio {
             .as_array()
             .filter(|v| !v.is_empty())
             .ok_or_else(|| failure("entities_required", "Supply entities:[{type:…},…]"))?;
-        let built: Vec<codec::EntityType> = {
+        let built: Vec<document::EntityType> = {
             let document = &self.tabs[self.active_tab].scene.document;
             list.iter()
                 .map(|spec| build_entity(spec, Some(document)))
@@ -156,7 +156,7 @@ impl OpenCADStudio {
                     .map(|record| record.name.clone())
             }) {
                 for entity in &built {
-                    if let codec::EntityType::Insert(insert) = entity {
+                    if let document::EntityType::Insert(insert) = entity {
                         if crate::scene::block_service::would_create_cycle(
                             &scene.document,
                             &container,
@@ -188,7 +188,7 @@ impl OpenCADStudio {
                 if layer.is_empty() || document.layers.contains(&layer) {
                     continue;
                 }
-                let mut layer_record = codec::tables::Layer::new(layer.clone());
+                let mut layer_record = document::tables::Layer::new(layer.clone());
                 layer_record.handle = document.allocate_handle();
                 document
                     .layers
@@ -308,8 +308,8 @@ impl OpenCADStudio {
                             .filter(|f| f.is_finite())
                             .ok_or_else(|| failure("invalid_axis", "mirror axis points must be finite"))
                     };
-                    let p1 = glam::DVec3::new(coord(&a, 0)?, coord(&a, 1)?, 0.0);
-                    let p2 = glam::DVec3::new(coord(&b, 0)?, coord(&b, 1)?, 0.0);
+                    let p1 = glam::DVec3::new(coord(a, 0)?, coord(a, 1)?, 0.0);
+                    let p2 = glam::DVec3::new(coord(b, 0)?, coord(b, 1)?, 0.0);
                     if p1 == p2 {
                         return Err(failure(
                             "invalid_axis",
@@ -555,10 +555,10 @@ impl OpenCADStudio {
 
         // World → block space translates `base` onto the block origin; the
         // inverse places the Insert so entities keep their world position.
-        let world_to_block = codec::types::Transform::from_translation(codec::types::Vector3::new(
-            -base.x, -base.y, -base.z,
-        ));
-        let block_to_world = codec::types::Transform::from_translation(insert_at);
+        let world_to_block = document::types::Transform::from_translation(
+            document::types::Vector3::new(-base.x, -base.y, -base.z),
+        );
+        let block_to_world = document::types::Transform::from_translation(insert_at);
         self.push_undo_snapshot(i, "BLOCKDEFINE");
         // CF-01.3 (barcode re-import): `replace:true` drops the previous
         // definition — its children, markers and inserts — inside the same
@@ -585,12 +585,19 @@ impl OpenCADStudio {
         let name = string(req, "name")?.to_owned();
         let force = req["force"].as_bool().unwrap_or(false);
         let i = self.active_tab;
-        let open_edits: Vec<codec::Handle> = self.tabs[i]
+        let open_edits: Vec<document::Handle> = self.tabs[i]
             .block_edits
             .iter()
             .map(|session| session.br_handle)
             .collect();
-        self.push_undo_snapshot(i, crate::app::document::HistoryLabel::formatted(format!("Delete block {name}"), "delete-block", name.to_owned().into()));
+        self.push_undo_snapshot(
+            i,
+            crate::app::tab_document::HistoryLabel::formatted(
+                format!("Delete block {name}"),
+                "delete-block",
+                name.to_owned().into(),
+            ),
+        );
         let options = crate::scene::block_service::DeleteOptions {
             force,
             open_edits: &open_edits,
@@ -652,14 +659,14 @@ pub(crate) fn erase_block_definition(scene: &mut crate::scene::Scene, name: &str
     };
     let owner = record.handle;
     let block_markers = [record.block_entity_handle, record.block_end_handle];
-    let mut victims: Vec<codec::Handle> = scene
+    let mut victims: Vec<document::Handle> = scene
         .document
         .entities()
         .filter(|entity| {
             entity.common().owner_handle == owner
                 || matches!(
                     entity,
-                    codec::EntityType::Insert(insert)
+                    document::EntityType::Insert(insert)
                         if insert.block_name.eq_ignore_ascii_case(name)
                 )
         })
@@ -688,8 +695,8 @@ fn block_error_code(error: &crate::scene::block_service::BlockServiceError) -> &
 
 /// `data:[{code,value},…]` → typed XData values; an absent or empty list
 /// means "remove this application's record".
-fn parse_xdata_values(req: &Value) -> Parsed<Option<Vec<codec::xdata::XDataValue>>> {
-    use codec::xdata::XDataValue;
+fn parse_xdata_values(req: &Value) -> Parsed<Option<Vec<document::xdata::XDataValue>>> {
+    use document::xdata::XDataValue;
     let Some(list) = req["data"].as_array() else {
         return Ok(None);
     };
@@ -735,14 +742,14 @@ fn parse_xdata_values(req: &Value) -> Parsed<Option<Vec<codec::xdata::XDataValue
                 let raw = raw.trim_start_matches("0x").trim_start_matches("0X");
                 let handle = u64::from_str_radix(raw, 16)
                     .map_err(|_| failure("invalid_xdata", "code 1005 needs a valid hex handle"))?;
-                XDataValue::Handle(codec::Handle::new(handle))
+                XDataValue::Handle(document::Handle::new(handle))
             }
             1010..=1013 => {
                 let point = value.as_array().filter(|v| !v.is_empty()).ok_or_else(|| {
                     failure("invalid_xdata", "codes 1010-1013 need [x,y,z]")
                 })?;
                 let coord = |k: usize| point.get(k).and_then(Value::as_f64).unwrap_or(0.0);
-                let point = codec::types::Vector3::new(coord(0), coord(1), coord(2));
+                let point = document::types::Vector3::new(coord(0), coord(1), coord(2));
                 match code {
                     1010 => XDataValue::Point3D(point),
                     1011 => XDataValue::Position3D(point),
@@ -780,8 +787,8 @@ fn parse_xdata_values(req: &Value) -> Parsed<Option<Vec<codec::xdata::XDataValue
 }
 
 /// JSON shape for one stored XData value.
-fn xdata_value_json(value: &codec::xdata::XDataValue) -> Value {
-    use codec::xdata::XDataValue;
+fn xdata_value_json(value: &document::xdata::XDataValue) -> Value {
+    use document::xdata::XDataValue;
     match value {
         XDataValue::String(text)
         | XDataValue::ControlString(text)

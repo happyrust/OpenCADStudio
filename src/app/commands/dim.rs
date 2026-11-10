@@ -7,7 +7,78 @@ const TEXTMASK_APP: &str = "TEXTMASK";
 /// means the offset follows the text height (15% of it).
 const TEXTMASK_OFFSET_VAR: &str = "TEXTMASKOFFSET";
 
-fn selected_edge_body(app: &OpenCADStudio, tab: usize) -> Option<codec::Handle> {
+/// XPLODE's property overrides: the properties stamped on every object the
+/// exploded references become.
+#[derive(Default, Clone, Debug)]
+struct XplodeOverrides {
+    color: Option<document::types::Color>,
+    layer: Option<String>,
+    linetype: Option<String>,
+    line_weight: Option<document::types::LineWeight>,
+}
+
+impl XplodeOverrides {
+    /// Parse `COLOR <value> LAYER <name> LINETYPE <name> LINEWEIGHT <mm>` in
+    /// any order. Keywords are case-insensitive; a keyword without a value, or
+    /// a value the drawing cannot represent, is an error.
+    fn parse(rest: &str) -> Result<Self, String> {
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        let mut overrides = Self::default();
+        let mut index = 0;
+        while index < tokens.len() {
+            let key = tokens[index].to_ascii_uppercase();
+            let Some(value) = tokens.get(index + 1) else {
+                return Err(crate::tf!("XPLODE: {key} needs a value.").to_string());
+            };
+            match key.as_str() {
+                "COLOR" | "COLOUR" | "C" => {
+                    overrides.color = Some(
+                        crate::ui::window::attman_dialog::parse_color(value).ok_or_else(|| {
+                            crate::tf!("XPLODE: \"{value}\" is not a colour.").to_string()
+                        })?,
+                    );
+                }
+                "LAYER" | "LA" => overrides.layer = Some(value.to_string()),
+                "LINETYPE" | "LT" => overrides.linetype = Some(value.to_string()),
+                "LINEWEIGHT" | "LW" => {
+                    overrides.line_weight = Some(
+                        crate::ui::window::attman_dialog::parse_lineweight(value).ok_or_else(
+                            || crate::tf!("XPLODE: \"{value}\" is not a lineweight.").to_string(),
+                        )?,
+                    );
+                }
+                other => {
+                    return Err(crate::tf!(
+                        "XPLODE: unknown property \"{other}\" (COLOR, LAYER, LINETYPE, LINEWEIGHT)."
+                    )
+                    .to_string());
+                }
+            }
+            index += 2;
+        }
+        Ok(overrides)
+    }
+}
+
+/// Stamp the requested overrides onto one exploded object.
+fn apply_xplode_overrides(piece: &mut document::EntityType, overrides: &XplodeOverrides) {
+    let common = piece.common_mut();
+    if let Some(color) = overrides.color {
+        common.color = color;
+        common.color_name = None;
+    }
+    if let Some(layer) = &overrides.layer {
+        common.layer = layer.clone();
+    }
+    if let Some(linetype) = &overrides.linetype {
+        common.linetype = linetype.clone();
+    }
+    if let Some(line_weight) = overrides.line_weight {
+        common.line_weight = line_weight;
+    }
+}
+
+fn selected_edge_body(app: &OpenCADStudio, tab: usize) -> Option<document::Handle> {
     let scene = &app.tabs.get(tab)?.scene;
     let selected = scene.selected_handles_in_order();
     let [handle] = selected.as_slice() else {
@@ -16,7 +87,7 @@ fn selected_edge_body(app: &OpenCADStudio, tab: usize) -> Option<codec::Handle> 
 
     if matches!(
         scene.document.get_entity(*handle),
-        Some(codec::EntityType::Solid3D(_) | codec::EntityType::Surface(_))
+        Some(document::EntityType::Solid3D(_) | document::EntityType::Surface(_))
     ) {
         Some(*handle)
     } else {
@@ -27,7 +98,7 @@ fn selected_edge_body(app: &OpenCADStudio, tab: usize) -> Option<codec::Handle> 
 fn solid_edge_sources(
     app: &mut OpenCADStudio,
     tab: usize,
-) -> Vec<(codec::Handle, kernel::brep::Body)> {
+) -> Vec<(document::Handle, kernel::brep::Body)> {
     let handles = app.tabs[tab]
         .scene
         .document
@@ -35,7 +106,7 @@ fn solid_edge_sources(
         .filter_map(|entity| {
             matches!(
                 entity,
-                codec::EntityType::Solid3D(_) | codec::EntityType::Surface(_)
+                document::EntityType::Solid3D(_) | document::EntityType::Surface(_)
             )
             .then_some(entity.common().handle)
         })
@@ -151,7 +222,7 @@ impl OpenCADStudio {
             }
             cmd if cmd.starts_with("TCASE ") => {
                 let opt = cmd.split_whitespace().nth(1).unwrap_or("").to_uppercase();
-                let handles: Vec<codec::Handle> = self.tabs[i]
+                let handles: Vec<document::Handle> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .iter()
@@ -197,11 +268,11 @@ impl OpenCADStudio {
                         .find(|e| e.common().handle == *h)
                     {
                         match e {
-                            codec::EntityType::Text(t) => {
+                            document::EntityType::Text(t) => {
                                 t.value = conv(&t.value);
                                 n += 1;
                             }
-                            codec::EntityType::MText(m) => {
+                            document::EntityType::MText(m) => {
                                 m.value = conv(&m.value);
                                 n += 1;
                             }
@@ -245,20 +316,22 @@ impl OpenCADStudio {
                 let mut tokens = rest.split_whitespace();
                 let first = tokens.next().unwrap_or("");
                 if first.eq_ignore_ascii_case("OFF") || first.eq_ignore_ascii_case("REMOVE") {
-                    let handles: Vec<codec::Handle> = self.tabs[i]
+                    let handles: Vec<document::Handle> = self.tabs[i]
                         .scene
                         .selected_entities()
                         .iter()
                         .filter(|(_, e)| {
-                            matches!(e, codec::EntityType::Text(_) | codec::EntityType::MText(_))
+                            matches!(
+                                e,
+                                document::EntityType::Text(_) | document::EntityType::MText(_)
+                            )
                         })
                         .map(|(h, _)| *h)
                         .collect();
                     let scope = (!handles.is_empty()).then_some(handles);
                     let removed = self.remove_textmasks(i, scope);
-                    self.command_line.push_output(
-                        crate::tf!("TEXTMASK: removed {removed} mask(s).").as_ref(),
-                    );
+                    self.command_line
+                        .push_output(crate::tf!("TEXTMASK: removed {removed} mask(s).").as_ref());
                     return Some(Task::none());
                 }
                 if first.eq_ignore_ascii_case("OFFSET") {
@@ -270,9 +343,8 @@ impl OpenCADStudio {
                                 &value.to_string(),
                             );
                             self.tabs[i].dirty = true;
-                            self.command_line.push_output(
-                                crate::tf!("TEXTMASK offset = {value}").as_ref(),
-                            );
+                            self.command_line
+                                .push_output(crate::tf!("TEXTMASK offset = {value}").as_ref());
                         }
                         Some(_) => self.command_line.push_error(
                             crate::t!("TEXTMASK OFFSET: use a positive distance.").as_ref(),
@@ -289,12 +361,15 @@ impl OpenCADStudio {
                     return Some(Task::none());
                 }
 
-                let handles: Vec<codec::Handle> = self.tabs[i]
+                let handles: Vec<document::Handle> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .iter()
                     .filter(|(_, e)| {
-                        matches!(e, codec::EntityType::Text(_) | codec::EntityType::MText(_))
+                        matches!(
+                            e,
+                            document::EntityType::Text(_) | document::EntityType::MText(_)
+                        )
                     })
                     .map(|(h, _)| *h)
                     .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
@@ -335,11 +410,11 @@ impl OpenCADStudio {
                         return Some(Task::none());
                     }
                 };
-                let handles: Vec<codec::Handle> = self.tabs[i]
+                let handles: Vec<document::Handle> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .iter()
-                    .filter(|(_, e)| matches!(e, codec::EntityType::Text(_)))
+                    .filter(|(_, e)| matches!(e, document::EntityType::Text(_)))
                     .map(|(h, _)| *h)
                     .filter(|handle| !self.tabs[i].scene.is_layer_locked(*handle))
                     .collect();
@@ -363,7 +438,7 @@ impl OpenCADStudio {
                     if cur_w <= 1e-9 {
                         continue;
                     }
-                    if let Some(codec::EntityType::Text(t)) = self.tabs[i]
+                    if let Some(document::EntityType::Text(t)) = self.tabs[i]
                         .scene
                         .document
                         .entities_mut()
@@ -423,12 +498,14 @@ impl OpenCADStudio {
                     }
                 };
 
-                let mut texts: Vec<(codec::Handle, f64, f64)> = self.tabs[i]
+                let mut texts: Vec<(document::Handle, f64, f64)> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .iter()
                     .filter_map(|(h, e)| match e {
-                        codec::EntityType::Text(t) if !self.tabs[i].scene.is_layer_locked(*h) => {
+                        document::EntityType::Text(t)
+                            if !self.tabs[i].scene.is_layer_locked(*h) =>
+                        {
                             Some((*h, t.insertion_point.x, t.insertion_point.y))
                         }
                         _ => None,
@@ -454,7 +531,7 @@ impl OpenCADStudio {
                 let mut num = start;
 
                 for (h, _, _) in &texts {
-                    if let Some(codec::EntityType::Text(t)) = self.tabs[i]
+                    if let Some(document::EntityType::Text(t)) = self.tabs[i]
                         .scene
                         .document
                         .entities_mut()
@@ -508,7 +585,7 @@ impl OpenCADStudio {
                         .objects
                         .iter()
                         .find_map(|(handle, object)| match object {
-                            codec::objects::ObjectType::MultiLeaderStyle(style)
+                            document::objects::ObjectType::MultiLeaderStyle(style)
                                 if style.name.eq_ignore_ascii_case(&name) =>
                             {
                                 let mut style = style.clone();
@@ -566,7 +643,8 @@ impl OpenCADStudio {
                 self.place_command_line_link_table(&cmd["-TABLE _LINK ".len()..]);
             }
 
-            "TABLEDIT" => {
+            "TABLEDIT" | "-TABLEDIT" => {
+                self.table_edit_command_line = cmd == "-TABLEDIT" || self.script_running;
                 use crate::modules::annotate::table_cmd::TableditCommand;
                 let cmd = TableditCommand::new();
                 self.command_line.push_info(&cmd.prompt());
@@ -685,7 +763,7 @@ impl OpenCADStudio {
                 let mut cmd = MLeaderEditCommand::new(name);
                 // A single preselected multileader is the one edited.
                 let selected = self.tabs[i].scene.selected_entities();
-                if let [(handle, codec::EntityType::MultiLeader(ml))] = selected.as_slice() {
+                if let [(handle, document::EntityType::MultiLeader(ml))] = selected.as_slice() {
                     cmd = cmd.with_target(*handle, (**ml).clone());
                     self.tabs[i].scene.replace_selection(Default::default());
                 }
@@ -893,7 +971,7 @@ impl OpenCADStudio {
                         let win_min = glam::DVec3::new(min_x, min_y, f64::NEG_INFINITY);
                         let win_max = glam::DVec3::new(max_x, max_y, f64::INFINITY);
 
-                        let touches = |h: codec::Handle| -> bool {
+                        let touches = |h: document::Handle| -> bool {
                             let entity_wires = self.tabs[i].scene.wire_models_for(&[h]);
                             entity_wires.iter().any(|wire| {
                                 let [x0, y0, x1, y1] = wire.aabb.map(f64::from);
@@ -910,10 +988,22 @@ impl OpenCADStudio {
                                     let entity_wires = self.tabs[i].scene.wire_models_for(&[*h]);
                                     for w in &entity_wires {
                                         let [x0, y0, x1, y1] = w.aabb.map(f64::from);
-                                        if x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite() {
+                                        if x0.is_finite()
+                                            && y0.is_finite()
+                                            && x1.is_finite()
+                                            && y1.is_finite()
+                                        {
                                             windows.push((
-                                                glam::DVec3::new(x0 - 1e-4, y0 - 1e-4, f64::NEG_INFINITY),
-                                                glam::DVec3::new(x1 + 1e-4, y1 + 1e-4, f64::INFINITY),
+                                                glam::DVec3::new(
+                                                    x0 - 1e-4,
+                                                    y0 - 1e-4,
+                                                    f64::NEG_INFINITY,
+                                                ),
+                                                glam::DVec3::new(
+                                                    x1 + 1e-4,
+                                                    y1 + 1e-4,
+                                                    f64::INFINITY,
+                                                ),
                                             ));
                                         }
                                     }
@@ -1131,68 +1221,19 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
-            "EXPLODE" => {
-                use crate::modules::draw::modify::explode::{
-                    apply_explode_replacements, plan_explode_in_context,
-                };
-                let selected: Vec<_> = self.tabs[i]
-                    .scene
-                    .selected_entities()
-                    .into_iter()
-                    .filter(|(handle, _)| !self.tabs[i].scene.is_layer_locked(*handle))
-                    .collect();
-                if selected.is_empty() {
-                    use crate::modules::draw::select::SelectObjectsCommand;
-                    let cmd = SelectObjectsCommand::new("EXPLODE");
-                    self.command_line.push_info(&cmd.prompt());
-                    self.tabs[i].active_cmd = Some(Box::new(cmd));
-                } else {
-                    // EXPLMODE 0 keeps references that are not uniformly and
-                    // positively scaled whole.
-                    let selected: Vec<_> =
-                        if super::blockvars::explmode(&self.tabs[i].scene.document) == 0 {
-                            selected
-                                .into_iter()
-                                .filter(|(_, entity)| match entity {
-                                    codec::EntityType::Insert(ins) => {
-                                        let (x, y, z) =
-                                            (ins.x_scale(), ins.y_scale(), ins.z_scale());
-                                        let uniform = x > 0.0
-                                            && (x - y).abs() <= 1e-10
-                                            && (x - z).abs() <= 1e-10;
-                                        if !uniform {
-                                            self.command_line.push_output(
-                                            "The object is not uniformly and positively scaled.",
-                                        );
-                                        }
-                                        uniform
-                                    }
-                                    _ => true,
-                                })
-                                .collect()
-                        } else {
-                            selected
-                        };
-                    let replacements = plan_explode_in_context(
-                        &selected,
-                        &self.tabs[i].scene.document,
-                        self.tabs[i].scene.displayed_annotation_scale_handle(),
-                    );
-                    let exploded = replacements.len();
-                    if exploded > 0 {
-                        self.push_undo_snapshot(i, "EXPLODE");
-                    }
-                    apply_explode_replacements(&mut self.tabs[i].scene, replacements);
-                    if exploded > 0 {
-                        self.tabs[i].dirty = true;
-                        self.refresh_properties();
-                        self.command_line
-                            .push_output(crate::tf!("{exploded} object(s) exploded.").as_ref());
-                    } else {
-                        self.command_line.push_info(
-                            crate::t!("EXPLODE: no explodable objects selected.").as_ref(),
-                        );
-                    }
+            "EXPLODE" | "BURST" => {
+                self.explode_selection(i, cmd == "BURST");
+            }
+
+            // XPLODE — explode, then give every resulting object the
+            // properties named on the command line.
+            "XPLODE" => {
+                self.xplode_selection(i, &XplodeOverrides::default());
+            }
+            cmd if cmd.starts_with("XPLODE ") => {
+                match XplodeOverrides::parse(&cmd["XPLODE ".len()..]) {
+                    Ok(overrides) => self.xplode_selection(i, &overrides),
+                    Err(message) => self.command_line.push_error(&message),
                 }
             }
 
@@ -1290,39 +1331,40 @@ impl OpenCADStudio {
                 // for the hatch trim solver. A multiline is trimmed but never
                 // cuts (#2068).
                 let mut entities = self.tabs[i].scene.visible_entities_for_edit(|entity| {
-                    is_trim_boundary_entity(entity) || matches!(entity, codec::EntityType::MLine(_))
+                    is_trim_boundary_entity(entity)
+                        || matches!(entity, document::EntityType::MLine(_))
                 });
-                let mut seen: std::collections::HashSet<codec::Handle> =
+                let mut seen: std::collections::HashSet<document::Handle> =
                     entities.iter().map(|(handle, _)| *handle).collect();
                 for handle in self.tabs[i].scene.visible_hatch_handles_for_edit() {
                     if seen.insert(handle) {
-                        if let Some(entity) = self.tabs[i].scene.document.get_entity(handle).cloned() {
+                        if let Some(entity) =
+                            self.tabs[i].scene.document.get_entity(handle).cloned()
+                        {
                             entities.push((handle, entity));
                         }
                     }
                 }
-                let initial_edges: Vec<codec::Handle> = self.tabs[i]
+                let initial_edges: Vec<document::Handle> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .into_iter()
                     .filter(|(_, entity)| {
                         is_trim_boundary_entity(entity)
-                            || matches!(entity, codec::EntityType::Insert(_))
+                            || matches!(entity, document::EntityType::Insert(_))
                     })
                     .map(|(handle, _)| handle)
                     .collect();
                 let all_entities: Vec<_> = entities.into_iter().map(|(_, e)| e).collect();
-                let visible_inserts = self.tabs[i]
-                    .scene
-                    .visible_entities_for_edit(|entity| {
-                        matches!(entity, codec::EntityType::Insert(_))
-                    });
+                let visible_inserts = self.tabs[i].scene.visible_entities_for_edit(|entity| {
+                    matches!(entity, document::EntityType::Insert(_))
+                });
                 let document = &self.tabs[i].scene.document;
                 let block_boundaries = visible_inserts
                     .into_iter()
                     .filter_map(|entity| {
                         let (handle, entity) = entity;
-                        let codec::EntityType::Insert(insert) = entity else {
+                        let document::EntityType::Insert(insert) = entity else {
                             return None;
                         };
                         let children = insert.block_entities_from_document(document)?;
@@ -1333,7 +1375,7 @@ impl OpenCADStudio {
                             // fills and dimensions would only cost memory.
                             .filter(|child| {
                                 (is_trim_boundary_entity(child)
-                                    || matches!(child, codec::EntityType::Insert(_)))
+                                    || matches!(child, document::EntityType::Insert(_)))
                                     && !crate::scene::block_construction::is_construction(
                                         child.common(),
                                     )
@@ -1353,7 +1395,9 @@ impl OpenCADStudio {
 
             "EXTRIM" => {
                 use crate::modules::draw::modify::trim::{is_trim_boundary_entity, ExtrimCommand};
-                let all = self.tabs[i].scene.visible_entities_for_edit(is_trim_boundary_entity);
+                let all = self.tabs[i]
+                    .scene
+                    .visible_entities_for_edit(is_trim_boundary_entity);
                 let new_cmd = ExtrimCommand::new(all);
                 self.command_line.push_info(&new_cmd.prompt());
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
@@ -1361,9 +1405,10 @@ impl OpenCADStudio {
 
             "EXTEND" => {
                 use crate::modules::draw::modify::trim::{is_trim_boundary_entity, ExtendCommand};
-                let entities =
-                    self.tabs[i].scene.visible_entities_for_edit(is_trim_boundary_entity);
-                let initial_edges: Vec<codec::Handle> = self.tabs[i]
+                let entities = self.tabs[i]
+                    .scene
+                    .visible_entities_for_edit(is_trim_boundary_entity);
+                let initial_edges: Vec<document::Handle> = self.tabs[i]
                     .scene
                     .selected_entities()
                     .into_iter()
@@ -1390,8 +1435,8 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(c));
             }
             cmd if cmd.starts_with("ARCTEXT ") => {
-                use codec::entities::Text;
-                use codec::types::Vector3;
+                use document::entities::Text;
+                use document::types::Vector3;
                 let text = cmd.strip_prefix("ARCTEXT").unwrap_or("").trim().to_string();
                 if text.is_empty() {
                     self.command_line.push_info(
@@ -1408,7 +1453,7 @@ impl OpenCADStudio {
                         .selected_entities()
                         .iter()
                         .find_map(|(_, e)| match e {
-                            codec::EntityType::Arc(a) => Some(a.clone()),
+                            document::EntityType::Arc(a) => Some(a.clone()),
                             _ => None,
                         });
                 let Some(arc) = arc else {
@@ -1439,7 +1484,7 @@ impl OpenCADStudio {
                     let t = Text::with_value(ch.to_string(), pos)
                         .with_height(height)
                         .with_rotation(ang + std::f64::consts::FRAC_PI_2);
-                    self.tabs[i].scene.add_entity(codec::EntityType::Text(t));
+                    self.tabs[i].scene.add_entity(document::EntityType::Text(t));
                 }
                 self.tabs[i].dirty = true;
                 self.command_line.push_output(
@@ -1484,10 +1529,10 @@ impl OpenCADStudio {
                         }
                         let already = matches!(
                             self.tabs[i].scene.document.get_entity(*handle),
-                            Some(codec::EntityType::Dimension(dimension))
+                            Some(document::EntityType::Dimension(dimension))
                                 if dimension.base().style_name.eq_ignore_ascii_case(&style)
                         );
-                        if let Some(codec::EntityType::Dimension(dimension)) =
+                        if let Some(document::EntityType::Dimension(dimension)) =
                             self.tabs[i].scene.document.get_entity_mut(*handle)
                         {
                             dimension.base_mut().style_name = style.clone();
@@ -1533,7 +1578,7 @@ impl OpenCADStudio {
                     defaults: style
                         .as_ref()
                         .map(|style| {
-                            let block = |handle: codec::Handle| {
+                            let block = |handle: document::Handle| {
                                 document
                                     .block_records
                                     .iter()
@@ -1613,7 +1658,7 @@ impl OpenCADStudio {
                         (code, crate::entities::arrowheads::resolve(doc, &block))
                     };
                     if let Some(handle) = handle {
-                        resolved_handles.push((code, codec::xdata::XDataValue::Handle(handle)));
+                        resolved_handles.push((code, document::xdata::XDataValue::Handle(handle)));
                     }
                 }
                 let values = if spec.eq_ignore_ascii_case("CLEAR") {
@@ -1670,11 +1715,11 @@ impl OpenCADStudio {
             // without associations.
             "_DIMREASSOCIATE_DISASSOCIATED" => {
                 let scene = &self.tabs[i].scene;
-                let handles: Vec<codec::Handle> = scene
+                let handles: Vec<document::Handle> = scene
                     .document
                     .entities()
                     .filter_map(|entity| match entity {
-                        codec::EntityType::Dimension(dimension) => {
+                        document::EntityType::Dimension(dimension) => {
                             Some(dimension.base().common.handle)
                         }
                         _ => None,
@@ -1702,17 +1747,17 @@ impl OpenCADStudio {
                 use crate::scene::ChangeKind;
                 let (refreshed, broken, pictures, total, associated) = {
                     let scene = &mut self.tabs[i].scene;
-                    let dimensions: Vec<codec::Handle> = scene
+                    let dimensions: Vec<document::Handle> = scene
                         .document
                         .entities()
                         .filter_map(|entity| match entity {
-                            codec::EntityType::Dimension(dimension) => {
+                            document::EntityType::Dimension(dimension) => {
                                 Some(dimension.base().common.handle)
                             }
                             _ => None,
                         })
                         .collect();
-                    let associated: Vec<codec::Handle> = dimensions
+                    let associated: Vec<document::Handle> = dimensions
                         .iter()
                         .copied()
                         .filter(|handle| scene.dimension_association(*handle).is_some())
@@ -1722,7 +1767,7 @@ impl OpenCADStudio {
                     // their own table, not in `objects` (which holds the
                     // association records themselves), so walking objects
                     // would never match a source handle.
-                    let changes: Vec<(codec::Handle, ChangeKind)> = scene
+                    let changes: Vec<(document::Handle, ChangeKind)> = scene
                         .document
                         .entities()
                         .map(|entity| (entity.common().handle, ChangeKind::Modified))
@@ -1739,11 +1784,11 @@ impl OpenCADStudio {
                     }
                     // Pictures saved with a dimension bypass generated
                     // rendering, so they are dropped after a resolved solve.
-                    let pictures: Vec<codec::Handle> = scene
+                    let pictures: Vec<document::Handle> = scene
                         .document
                         .entities()
                         .filter(|entity| {
-                            matches!(entity, codec::EntityType::Dimension(d)
+                            matches!(entity, document::EntityType::Dimension(d)
                                 if !d.base().block_name.is_empty())
                         })
                         .map(|entity| entity.common().handle)
@@ -1803,7 +1848,11 @@ impl OpenCADStudio {
                             "Select objects or [Disassociated]:",
                             "Disassociated",
                             "D",
-                            || crate::command::CmdResult::Dispatch("_DIMREASSOCIATE_DISASSOCIATED".into()),
+                            || {
+                                crate::command::CmdResult::Dispatch(
+                                    "_DIMREASSOCIATE_DISASSOCIATED".into(),
+                                )
+                            },
                         )
                     };
                     self.command_line.push_info(&sel.prompt());
@@ -1824,7 +1873,7 @@ impl OpenCADStudio {
                         DimReassociateCommand, ReassociateKind,
                     };
                     let scene = &self.tabs[i].scene;
-                    let v = |p: codec::types::Vector3| glam::DVec3::new(p.x, p.y, p.z);
+                    let v = |p: document::types::Vector3| glam::DVec3::new(p.x, p.y, p.z);
                     let (items, points): (Vec<_>, Vec<_>) = handles
                         .iter()
                         .filter_map(|&handle| {
@@ -1833,34 +1882,36 @@ impl OpenCADStudio {
                                 .get_entity(handle)
                                 .and_then(crate::entities::dimension::as_dimension)?;
                             let points = match dimension {
-                                codec::entities::Dimension::Linear(d) => {
+                                document::entities::Dimension::Linear(d) => {
                                     vec![v(d.first_point), v(d.second_point)]
                                 }
-                                codec::entities::Dimension::Aligned(d) => {
+                                document::entities::Dimension::Aligned(d) => {
                                     vec![v(d.first_point), v(d.second_point)]
                                 }
-                                codec::entities::Dimension::Angular3Pt(d) => {
+                                document::entities::Dimension::Angular3Pt(d) => {
                                     vec![v(d.angle_vertex), v(d.first_point), v(d.second_point)]
                                 }
-                                codec::entities::Dimension::Ordinate(d) => {
+                                document::entities::Dimension::Ordinate(d) => {
                                     vec![v(d.feature_location)]
                                 }
                                 _ => Vec::new(),
                             };
                             let kind = match dimension {
-                                codec::entities::Dimension::Linear(_)
-                                | codec::entities::Dimension::Aligned(_) => ReassociateKind::Linear,
-                                codec::entities::Dimension::Angular3Pt(_) => {
+                                document::entities::Dimension::Linear(_)
+                                | document::entities::Dimension::Aligned(_) => {
+                                    ReassociateKind::Linear
+                                }
+                                document::entities::Dimension::Angular3Pt(_) => {
                                     ReassociateKind::Angular3
                                 }
-                                codec::entities::Dimension::Angular2Ln(_) => {
+                                document::entities::Dimension::Angular2Ln(_) => {
                                     ReassociateKind::Angular2
                                 }
-                                codec::entities::Dimension::Radius(_)
-                                | codec::entities::Dimension::Diameter(_) => {
+                                document::entities::Dimension::Radius(_)
+                                | document::entities::Dimension::Diameter(_) => {
                                     ReassociateKind::Radial
                                 }
-                                codec::entities::Dimension::Ordinate(_) => {
+                                document::entities::Dimension::Ordinate(_) => {
                                     ReassociateKind::Ordinate
                                 }
                                 _ => return None,
@@ -1883,14 +1934,154 @@ impl OpenCADStudio {
         Some(self.finish_dispatch(cmd))
     }
 
+    /// EXPLODE and BURST: break the selection into simple entities. BURST
+    /// keeps a block reference's attribute values as text.
+    fn explode_selection(&mut self, i: usize, keep_attributes: bool) {
+        use crate::modules::draw::modify::explode::{
+            apply_explode_replacements, plan_burst, plan_explode_in_context,
+        };
+        let selected: Vec<_> = self.tabs[i]
+            .scene
+            .selected_entities()
+            .into_iter()
+            .filter(|(handle, _)| !self.tabs[i].scene.is_layer_locked(*handle))
+            .collect();
+        if selected.is_empty() {
+            use crate::modules::draw::select::SelectObjectsCommand;
+            let cmd = SelectObjectsCommand::new(if keep_attributes { "BURST" } else { "EXPLODE" });
+            self.command_line.push_info(&cmd.prompt());
+            self.tabs[i].active_cmd = Some(Box::new(cmd));
+            return;
+        }
+        // EXPLMODE 0 keeps references that are not uniformly and positively
+        // scaled whole.
+        let selected: Vec<_> = if super::blockvars::explmode(&self.tabs[i].scene.document) == 0 {
+            selected
+                .into_iter()
+                .filter(|(_, entity)| match entity {
+                    document::EntityType::Insert(ins) => {
+                        let (x, y, z) = (ins.x_scale(), ins.y_scale(), ins.z_scale());
+                        let uniform = x > 0.0 && (x - y).abs() <= 1e-10 && (x - z).abs() <= 1e-10;
+                        if !uniform {
+                            self.command_line
+                                .push_output("The object is not uniformly and positively scaled.");
+                        }
+                        uniform
+                    }
+                    _ => true,
+                })
+                .collect()
+        } else {
+            selected
+        };
+        let replacements = if keep_attributes {
+            plan_burst(&selected, &self.tabs[i].scene.document)
+        } else {
+            plan_explode_in_context(
+                &selected,
+                &self.tabs[i].scene.document,
+                self.tabs[i].scene.displayed_annotation_scale_handle(),
+            )
+        };
+        let exploded = replacements.len();
+        if exploded > 0 {
+            self.push_undo_snapshot(i, if keep_attributes { "BURST" } else { "EXPLODE" });
+        }
+        apply_explode_replacements(&mut self.tabs[i].scene, replacements);
+        if exploded > 0 {
+            self.tabs[i].dirty = true;
+            self.refresh_properties();
+            self.command_line.push_output(
+                crate::tf!(
+                    "{exploded} object(s) {}.",
+                    if keep_attributes { "burst" } else { "exploded" }
+                )
+                .as_ref(),
+            );
+        } else if keep_attributes {
+            self.command_line
+                .push_info(crate::t!("BURST: no explodable objects selected.").as_ref());
+        } else {
+            self.command_line
+                .push_info(crate::t!("EXPLODE: no explodable objects selected.").as_ref());
+        }
+    }
+
+    /// XPLODE: explode the selection, then stamp the named properties on
+    /// every object that came out of it.
+    fn xplode_selection(&mut self, i: usize, overrides: &XplodeOverrides) {
+        let selected: Vec<_> = self.tabs[i]
+            .scene
+            .selected_entities()
+            .into_iter()
+            .filter(|(handle, _)| !self.tabs[i].scene.is_layer_locked(*handle))
+            .collect();
+        if selected.is_empty() {
+            use crate::modules::draw::select::SelectObjectsCommand;
+            let cmd = SelectObjectsCommand::new("XPLODE");
+            self.command_line.push_info(&cmd.prompt());
+            self.tabs[i].active_cmd = Some(Box::new(cmd));
+            return;
+        }
+
+        // A layer name is resolved to the layer's own spelling; a name no
+        // layer has is refused rather than written to the pieces.
+        let mut overrides = overrides.clone();
+        if let Some(name) = &overrides.layer {
+            let Some(layer) = self.tabs[i]
+                .scene
+                .document
+                .layers
+                .iter()
+                .find(|layer| layer.name.eq_ignore_ascii_case(name))
+            else {
+                self.command_line
+                    .push_error(crate::tf!("XPLODE: no layer named \"{name}\".").as_ref());
+                return;
+            };
+            overrides.layer = Some(layer.name.clone());
+        }
+
+        use crate::modules::draw::modify::explode::plan_explode_in_context;
+        let mut replacements = plan_explode_in_context(
+            &selected,
+            &self.tabs[i].scene.document,
+            self.tabs[i].scene.displayed_annotation_scale_handle(),
+        );
+        for (_, pieces) in &mut replacements {
+            for piece in pieces {
+                apply_xplode_overrides(piece, &overrides);
+            }
+        }
+        let exploded = replacements.len();
+        if exploded > 0 {
+            self.push_undo_snapshot(i, "XPLODE");
+        }
+        crate::modules::draw::modify::explode::apply_explode_replacements(
+            &mut self.tabs[i].scene,
+            replacements,
+        );
+        if exploded > 0 {
+            self.tabs[i].dirty = true;
+            self.refresh_properties();
+            self.command_line.push_output(
+                crate::tf!("{exploded} object(s) exploded with new properties.").as_ref(),
+            );
+        } else {
+            self.command_line
+                .push_info(crate::t!("XPLODE: no explodable objects selected.").as_ref());
+        }
+    }
+
     /// The selected dimensions that are not on a locked layer.
-    fn selected_editable_dimensions(&self, i: usize) -> Vec<codec::Handle> {
+    fn selected_editable_dimensions(&self, i: usize) -> Vec<document::Handle> {
         let scene = &self.tabs[i].scene;
         scene
             .selected_entities()
             .into_iter()
             .filter(|(handle, entity)| {
-                matches!(entity, codec::EntityType::Dimension(_)) && !scene.is_layer_locked(*handle)
+                matches!(entity, document::EntityType::Dimension(_))
+                    && !scene.is_layer_locked(*handle)
             })
             .map(|(handle, _)| handle)
             .collect()
@@ -1923,13 +2114,13 @@ impl OpenCADStudio {
     /// TXT2MTXT on the selection (in selection order), as one undo step.
     fn apply_txt2mtxt(&mut self, i: usize) {
         let scene = &self.tabs[i].scene;
-        let handles: Vec<codec::Handle> = scene
+        let handles: Vec<document::Handle> = scene
             .selected_handles_in_order()
             .into_iter()
             .filter(|handle| !scene.is_layer_locked(*handle))
             .collect();
         let plan = {
-            let selected: Vec<(codec::Handle, &codec::EntityType)> = handles
+            let selected: Vec<(document::Handle, &document::EntityType)> = handles
                 .iter()
                 .filter_map(|h| scene.document.get_entity(*h).map(|e| (*h, e)))
                 .collect();
@@ -1977,11 +2168,7 @@ impl OpenCADStudio {
 
     /// Screen-space bounds of one entity in the same coordinate space the
     /// WIPEOUT command uses.
-    fn textmask_bounds(
-        &self,
-        i: usize,
-        handle: codec::Handle,
-    ) -> Option<([f32; 3], [f32; 3])> {
+    fn textmask_bounds(&self, i: usize, handle: document::Handle) -> Option<([f32; 3], [f32; 3])> {
         let wires = self.tabs[i].scene.wire_models_for(&[handle]);
         let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
         for wire in &wires {
@@ -2000,19 +2187,14 @@ impl OpenCADStudio {
         // still be created and reported.
         let entity = self.tabs[i].scene.document.get_entity(handle)?;
         let (origin, width, height, rotation) = match entity {
-            codec::EntityType::Text(text) => {
+            document::EntityType::Text(text) => {
                 let width = text.value.chars().count() as f64
                     * text.height
                     * 0.6
                     * text.width_factor.abs().max(1e-6);
-                (
-                    text.insertion_point,
-                    width,
-                    text.height,
-                    text.rotation,
-                )
+                (text.insertion_point, width, text.height, text.rotation)
             }
-            codec::EntityType::MText(text) => {
+            document::EntityType::MText(text) => {
                 let width = if text.rectangle_width > 0.0 {
                     text.rectangle_width
                 } else if text.extents_width > 0.0 {
@@ -2047,13 +2229,13 @@ impl OpenCADStudio {
 
     /// The masks that belong to `text`, tracked through the TEXTMASK xdata
     /// record so they can be replaced or removed later.
-    fn textmask_masks_for(&self, i: usize, text: codec::Handle) -> Vec<codec::Handle> {
-        use codec::xdata::XDataValue;
+    fn textmask_masks_for(&self, i: usize, text: document::Handle) -> Vec<document::Handle> {
+        use document::xdata::XDataValue;
         self.tabs[i]
             .scene
             .document
             .entities()
-            .filter(|entity| matches!(entity, codec::EntityType::Wipeout(_)))
+            .filter(|entity| matches!(entity, document::EntityType::Wipeout(_)))
             .filter(|entity| {
                 entity
                     .common()
@@ -2073,8 +2255,8 @@ impl OpenCADStudio {
     /// (Re)create a mask for each text object with the current offset. Any
     /// previous mask for the same text is replaced so the offset can change
     /// without stacking wipeouts. Returns how many texts were masked.
-    fn apply_textmasks(&mut self, i: usize, handles: &[codec::Handle]) -> usize {
-        use codec::xdata::{ExtendedDataRecord, XDataValue};
+    fn apply_textmasks(&mut self, i: usize, handles: &[document::Handle]) -> usize {
+        use document::xdata::{ExtendedDataRecord, XDataValue};
         let offset = self.textmask_offset(i);
         let mut masked = 0usize;
         for handle in handles {
@@ -2087,21 +2269,20 @@ impl OpenCADStudio {
             };
             let height = (max[1] - min[1]) as f64;
             let pad = offset.unwrap_or((height * 0.15).max(0.0));
-            let c1 = codec::types::Vector3::new(
+            let c1 = document::types::Vector3::new(
                 min[0] as f64 - pad,
                 min[1] as f64 - pad,
                 min[2] as f64,
             );
-            let c2 = codec::types::Vector3::new(
+            let c2 = document::types::Vector3::new(
                 max[0] as f64 + pad,
                 max[1] as f64 + pad,
                 min[2] as f64,
             );
-            let mask = self
-                .tabs[i]
+            let mask = self.tabs[i]
                 .scene
-                .add_entity_clone(codec::EntityType::Wipeout(
-                    codec::entities::Wipeout::from_corners(c1, c2),
+                .add_entity_clone(document::EntityType::Wipeout(
+                    document::entities::Wipeout::from_corners(c1, c2),
                 ));
             if let Some(entity) = self.tabs[i].scene.document.get_entity_mut(mask) {
                 let mut record = ExtendedDataRecord::new(TEXTMASK_APP);
@@ -2121,18 +2302,14 @@ impl OpenCADStudio {
     /// Remove the masks for the given texts (or for every masked text when no
     /// scope is given) and drop the association record. Returns the number of
     /// masks removed.
-    fn remove_textmasks(
-        &mut self,
-        i: usize,
-        scope: Option<Vec<codec::Handle>>,
-    ) -> usize {
-        let texts: Vec<codec::Handle> = scope.unwrap_or_else(|| {
+    fn remove_textmasks(&mut self, i: usize, scope: Option<Vec<document::Handle>>) -> usize {
+        let texts: Vec<document::Handle> = scope.unwrap_or_else(|| {
             self.tabs[i]
                 .scene
                 .document
                 .entities()
                 .filter(|entity| {
-                    !matches!(entity, codec::EntityType::Wipeout(_))
+                    !matches!(entity, document::EntityType::Wipeout(_))
                         && entity
                             .common()
                             .extended_data
@@ -2142,7 +2319,7 @@ impl OpenCADStudio {
                 .map(|entity| entity.common().handle)
                 .collect()
         });
-        let masks: Vec<codec::Handle> = texts
+        let masks: Vec<document::Handle> = texts
             .iter()
             .flat_map(|text| self.textmask_masks_for(i, *text))
             .collect();

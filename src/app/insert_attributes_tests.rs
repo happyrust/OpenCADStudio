@@ -5,22 +5,27 @@ use super::{Message, ModalKind, OpenCADStudio};
 use crate::command::{CadCommand, CmdResult};
 use crate::modules::insert::insert_block::InsertBlockCommand;
 use crate::ui::window::insert_attr_dialog::InsertAttrMsg;
-use codec::entities::AttributeDefinition;
-use codec::types::Vector3;
-use codec::EntityType;
+use document::entities::AttributeDefinition;
+use document::types::Vector3;
+use document::EntityType;
 
 pub(super) fn askable(tag: &str, prompt: &str, default: &str) -> AttributeDefinition {
     AttributeDefinition::new(tag.to_string(), prompt.to_string(), default.to_string())
 }
 
 fn member_line() -> EntityType {
-    EntityType::Line(codec::entities::Line::from_points(
+    EntityType::Line(document::entities::Line::from_points(
         Vector3::ZERO,
         Vector3::new(20.0, 0.0, 0.0),
     ))
 }
 
-pub(super) fn define(app: &mut OpenCADStudio, tab: usize, name: &str, attdefs: Vec<AttributeDefinition>) {
+pub(super) fn define(
+    app: &mut OpenCADStudio,
+    tab: usize,
+    name: &str,
+    attdefs: Vec<AttributeDefinition>,
+) {
     let mut members = vec![member_line()];
     for (index, attdef) in attdefs.into_iter().enumerate() {
         members.push(EntityType::AttributeDefinition(AttributeDefinition {
@@ -52,7 +57,11 @@ pub(super) fn park_insert(app: &mut OpenCADStudio, tab: usize, block: &str) {
     });
 }
 
-pub(super) fn placed_attributes(app: &OpenCADStudio, tab: usize, block: &str) -> Vec<(String, String)> {
+pub(super) fn placed_attributes(
+    app: &OpenCADStudio,
+    tab: usize,
+    block: &str,
+) -> Vec<(String, String)> {
     app.tabs[tab]
         .scene
         .document
@@ -333,7 +342,12 @@ fn closing_the_tab_behind_the_form_leaves_no_form_behind() {
     let mut app = OpenCADStudio::new_for_test();
     let _ = app.automation_op(r#"{"op":"new"}"#);
     let i = app.active_tab;
-    define(&mut app, i, "ATTDIA_CLOSING", vec![askable("TAG1", "", "7")]);
+    define(
+        &mut app,
+        i,
+        "ATTDIA_CLOSING",
+        vec![askable("TAG1", "", "7")],
+    );
     park_insert(&mut app, i, "ATTDIA_CLOSING");
     assert_eq!(app.active_modal, Some(ModalKind::InsertAttributes));
 

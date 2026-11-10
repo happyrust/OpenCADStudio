@@ -1,6 +1,6 @@
-use codec::entities::{Helix, HelixConstraint, Spline};
-use codec::types::Vector3;
-use codec::EntityType;
+use document::entities::{Helix, HelixConstraint, Spline};
+use document::types::Vector3;
+use document::EntityType;
 use glam::DVec3;
 use kernel::space::{HelixCurve, HelixDirection, Vec3};
 
@@ -47,6 +47,12 @@ pub struct HelixCommand {
     counter_clockwise: bool,
     constraint: HelixConstraint,
     plane: WorkingPlane,
+}
+
+impl Default for HelixCommand {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HelixCommand {

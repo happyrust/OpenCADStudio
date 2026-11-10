@@ -80,7 +80,7 @@ impl OpenCADStudio {
         let wanted: std::collections::HashSet<&str> = tags.iter().map(String::as_str).collect();
         for tab in &mut self.tabs {
             let document = &tab.scene.document;
-            let handles: rustc_hash::FxHashSet<codec::Handle> = document
+            let handles: rustc_hash::FxHashSet<document::Handle> = document
                 .entities()
                 .filter_map(|entity| {
                     let handle = entity.common().handle;
@@ -305,8 +305,8 @@ mod tests {
         use crate::app::OpenCADStudio;
         use crate::pid::persist::PidAuthor;
         use crate::scene::CLAIM_COLOR;
-        use codec::entities::Insert;
-        use codec::types::Vector3;
+        use document::entities::Insert;
+        use document::types::Vector3;
 
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -316,13 +316,13 @@ mod tests {
         let (claimed, other) = {
             let document = &mut app.tabs[i].scene.document;
             let claimed = document
-                .add_entity(codec::EntityType::Insert(Insert::new(
+                .add_entity(document::EntityType::Insert(Insert::new(
                     "PID_SYM_equipment_vessel",
                     Vector3::ZERO,
                 )))
                 .unwrap();
             let other = document
-                .add_entity(codec::EntityType::Insert(Insert::new(
+                .add_entity(document::EntityType::Insert(Insert::new(
                     "PID_SYM_equipment_vessel",
                     Vector3::new(40.0, 0.0, 0.0),
                 )))
@@ -378,8 +378,8 @@ mod tests {
         use crate::app::collab::CollabEvent;
         use crate::app::OpenCADStudio;
         use crate::pid::persist::PidAuthor;
-        use codec::entities::Insert;
-        use codec::types::Vector3;
+        use document::entities::Insert;
+        use document::types::Vector3;
 
         let mut app = OpenCADStudio::new_for_test();
         app.automation_op(r#"{"op":"new"}"#);
@@ -389,7 +389,7 @@ mod tests {
         let claimed = {
             let document = &mut app.tabs[i].scene.document;
             let claimed = document
-                .add_entity(codec::EntityType::Insert(Insert::new(
+                .add_entity(document::EntityType::Insert(Insert::new(
                     "PID_SYM_equipment_vessel",
                     Vector3::ZERO,
                 )))

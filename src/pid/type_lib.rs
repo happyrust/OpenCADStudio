@@ -23,7 +23,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use codec::{Document, Handle};
+use document::{Document, Handle};
 
 /// 类型库在模型空间 block record 扩展字典里的 XRecord 名。
 pub const XRECORD_KEY: &str = "PID_AUTHOR_TYPE_LIB";
@@ -577,7 +577,7 @@ fn remove_xrecord(doc: &mut Document, owner: Handle) {
     let Some(dictionary_handle) = doc.extension_dictionary_handle(owner) else {
         return;
     };
-    let Some(codec::objects::ObjectType::Dictionary(dictionary)) =
+    let Some(document::objects::ObjectType::Dictionary(dictionary)) =
         doc.objects.get_mut(&dictionary_handle)
     else {
         return;
