@@ -28,10 +28,12 @@ mod goto;
 pub mod grid;
 mod manifest;
 mod section;
+pub mod split;
 mod text_preview;
 
 pub use goto::take_outcome as take_goto_outcome;
 pub use section::{SectionData, SectionLoad};
+pub use split::reveal_selected;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -146,6 +148,11 @@ pub enum PidBackupMsg {
     Goto(String),
     /// The table in the detail half: a title clicked, the rows scrolled.
     Grid(grid::GridMsg),
+    /// The bar between the tree and the details was dragged.
+    SplitDragged(iced::widget::pane_grid::ResizeEvent),
+    /// Give the tree this share of the height (0 to 1): `PIDBACKUPOPEN
+    /// Split`.
+    SetSplit(f32),
 }
 
 /// What the application should do after [`update`] applied a message.
@@ -223,6 +230,17 @@ pub struct PidBackupBrowser {
     goto_outcome: Option<goto::Outcome>,
     /// Sort and scroll of the table in the selected node's details.
     grid: grid::GridState,
+    /// How the height is shared between the tree and the details. It is the
+    /// user's: no backup coming or going changes it.
+    split: split::Split,
+    /// The selection moved and the tree has not been scrolled to it yet.
+    reveal: bool,
+}
+
+/// Whether the selection moved since this was last asked: the application
+/// then has the tree scroll to it ([`reveal_selected`]).
+pub fn take_reveal(state: &mut PidBackupBrowser) -> bool {
+    std::mem::take(&mut state.reveal)
 }
 
 impl PidBackupBrowser {
@@ -245,6 +263,12 @@ impl PidBackupBrowser {
         self.goto = None;
         self.goto_outcome = None;
         self.grid = grid::GridState::default();
+        self.reveal = false;
+    }
+
+    /// How the height is shared between the tree and the details.
+    pub fn split(&self) -> &split::Split {
+        &self.split
     }
 
     /// Browse with the test section instead of the real ones.
@@ -363,12 +387,22 @@ pub fn update(state: &mut PidBackupBrowser, msg: PidBackupMsg) -> Effect {
             let own = toggle(state, id.clone());
             section::both(own, section::after(state, section::EventKind::Toggled, &id))
         }
+        PidBackupMsg::SplitDragged(event) => {
+            state.split.dragged(event);
+            Effect::None
+        }
+        PidBackupMsg::SetSplit(share) => {
+            state.split.set_tree_share(share);
+            Effect::None
+        }
         PidBackupMsg::Select(id) => {
             // Another node's table starts unsorted and from its top.
             if state.selected.as_ref() != Some(&id) {
                 state.grid = grid::GridState::default();
             }
             state.selected = Some(id.clone());
+            // Wherever the selection came from, the tree shows it.
+            state.reveal = true;
             section::after(state, section::EventKind::Selected, &id)
         }
         PidBackupMsg::Activate(id) => {
@@ -873,12 +907,16 @@ fn tree_row<'a>(row: &Row, at: usize, selected: bool) -> Element<'a, Message> {
     // A press selects; the second press of a double click activates. The row
     // stays clickable when it is greyed (its details still explain why), and
     // `update` is what refuses to open a drawing with no file.
-    let area = mouse_area(
-        container(line)
-            .width(Fill)
-            .padding([1, 4])
-            .style(move |theme| row_style(theme, selected)),
-    )
+    let body = container(line)
+        .width(Fill)
+        .padding([1, 4])
+        .style(move |theme| row_style(theme, selected));
+    let body = if selected {
+        body.id(iced::widget::Id::new(split::SELECTED_ROW))
+    } else {
+        body
+    };
+    let area = mouse_area(body)
     .interaction(iced::mouse::Interaction::Pointer)
     .on_press(PidBackupMsg::Select(row.id.clone()).message())
     .on_double_click(PidBackupMsg::Activate(row.id.clone()).message());
@@ -1353,8 +1391,45 @@ pub fn view<'a>(state: &'a PidBackupBrowser, width: f32, chrome: Chrome) -> Elem
         .padding([3, 6]);
 
     // The upper half is the tree, built only from the rows the user opened;
-    // the lower half is what the selected node is.
-    let tree: Element<'a, Message> = match &state.load {
+    // the lower half is what the selected node is. The bar between them is
+    // the user's to drag.
+    let halves = iced::widget::pane_grid::PaneGrid::new(
+        state.split.panes(),
+        move |_, half, _| {
+            iced::widget::pane_grid::Content::new(match half {
+                split::Half::Tree => tree_half(state),
+                split::Half::Details => details_half(state, width),
+            })
+        },
+    )
+    .spacing(split::BAR)
+    .min_size(split::MIN_HALF)
+    .on_resize(split::GRAB, |event| {
+        PidBackupMsg::SplitDragged(event).message()
+    })
+    .width(Fill)
+    .height(Fill);
+
+    let content = column![toolbar, search, halves].spacing(4).height(Fill);
+    let reported = crate::ui::wrap_bar::PosReport::new(PANEL_BOUNDS_ID, content);
+    crate::ui::dock::frame(title_bar, reported, width)
+}
+
+/// The lower half: a rule that says where the bar is, then the details.
+fn details_half<'a>(state: &'a PidBackupBrowser, width: f32) -> Element<'a, Message> {
+    column![
+        iced::widget::rule::horizontal(1),
+        container(details(state, width)).width(Fill).height(Fill),
+    ]
+    .spacing(3)
+    .width(Fill)
+    .height(Fill)
+    .into()
+}
+
+/// The upper half: the tree, or what stands in for it while there is none.
+fn tree_half<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
+    match &state.load {
         LoadState::Idle => {
             let mut hint = column![
                 text(t!("No backup is open.")).size(11).style(muted),
@@ -1383,24 +1458,15 @@ pub fn view<'a>(state: &'a PidBackupBrowser, width: f32, chrome: Chrome) -> Elem
                 list = list.push(tree_row(row, at, selected));
             }
             scrollable(list)
+                .id(iced::widget::Id::new(split::TREE_SCROLL))
                 .direction(scrollable::Direction::Vertical(
                     scrollable::Scrollbar::default(),
                 ))
                 .width(Fill)
-                .height(Length::FillPortion(3))
+                .height(Fill)
                 .into()
         }
-    };
-
-    let details = container(details(state, width))
-        .width(Fill)
-        .height(Length::FillPortion(2));
-
-    let content = column![toolbar, search, tree, details]
-        .spacing(4)
-        .height(Fill);
-    let reported = crate::ui::wrap_bar::PosReport::new(PANEL_BOUNDS_ID, content);
-    crate::ui::dock::frame(title_bar, reported, width)
+    }
 }
 
 #[cfg(test)]

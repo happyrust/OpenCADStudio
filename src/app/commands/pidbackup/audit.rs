@@ -832,6 +832,48 @@ fn walk_index(
 
     walk_text(app, audit, index, empty);
     walk_database(app, audit, index);
+    walk_split(app, audit, index);
+}
+
+/// The bar between the tree and the details, moved from the command line as
+/// a script moves it: the share is the panel's, and with less for the tree
+/// a text file has room to be read.
+fn walk_split(app: &mut OpenCADStudio, audit: &mut Audit, index: &BackupIndex) {
+    let share = |app: &OpenCADStudio| app.pid_backup_browser.split().tree_share();
+    let default = share(app);
+    audit.line(format!("== split: the tree has {default:.2} of the panel's height =="));
+    // The first backup file that is text: the plant's rules, where there
+    // is one.
+    send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
+    let text = (0..index.files.len()).map(NodeId::File).find(|id| {
+        send(app, PidBackupMsg::Select(id.clone())).unwrap();
+        detail_rows(&app.pid_backup_browser, id)
+            .iter()
+            .any(|(key, _)| *key == crate::t!("Text encoding"))
+            && matches!(id, NodeId::File(at) if index.files[*at].record.is_some())
+    });
+    if text.is_some() {
+        audit.shot(app, "split-default-text-file");
+    }
+    let history = app.command_line.history.len();
+    let task = app.run_command_line("PIDBACKUPOPEN Split 30");
+    app.drive_headless_task(task).expect("moving the bar needs no window");
+    for entry in &app.command_line.history[history..] {
+        audit.line(format!("  command line [{:?}]: {}", entry.kind, entry.text));
+    }
+    assert_eq!(share(app), 0.3, "PIDBACKUPOPEN Split 30 gives the tree 30%");
+    if text.is_some() {
+        audit.shot(app, "split-30-text-file");
+    }
+    // Refreshing the backup keeps the bar where the user put it.
+    let task = app.run_command_line(&format!(
+        "PIDBACKUPOPEN Split {}",
+        (default * 100.0).round()
+    ));
+    app.drive_headless_task(task).expect("moving the bar needs no window");
+    assert_eq!(share(app), default);
+    send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
+    send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
 }
 
 #[test]
