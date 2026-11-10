@@ -19,18 +19,19 @@
 //! runs [`Section::load`] on a worker thread, and the result comes back as
 //! [`super::PidBackupMsg::SectionLoaded`] for the section to draw.
 
-// Nothing is registered yet, so outside the tests half of this is unused.
+// The first section draws from the index alone; what a section needs to read
+// data off the UI thread is unused outside the tests until one does.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{DetailLine, Effect, NodeId, PidBackupBrowser, Row};
+use super::{manifest, DetailLine, Effect, NodeId, PidBackupBrowser, Row};
 use crate::io::pid_backup_browse::BackupIndex;
 
 /// The sections of the browser, in the order their rows and detail lines
 /// appear. A section's position here is the slot its nodes carry.
-pub(super) static SECTIONS: &[&dyn Section] = &[];
+pub(super) static SECTIONS: &[&dyn Section] = &[&manifest::ManifestSection];
 
 /// The sections a panel state works with: [`SECTIONS`], unless a test gave
 /// the state its own.

@@ -528,6 +528,7 @@ mod tests {
                 members: Vec::new(),
                 version_line: None,
                 missing: false,
+                ..BackupFile::default()
             }],
             plant_groups: vec![root],
             drawings: vec![
@@ -536,6 +537,7 @@ mod tests {
             ],
             ref_tree: RefNode::default(),
             warnings: vec!["no usable Export.dmp".to_string()],
+            ..BackupIndex::default()
         })
     }
 
