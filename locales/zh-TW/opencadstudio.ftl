@@ -9039,6 +9039,8 @@ pid-backup =
     .nothing-to-read = this node has nothing to read
     .cannot-start-section = cannot start reading the backup data: __ocs_fmt_0__
     .section-read-stopped = the backup data read stopped before it finished
+    .no-such-node = there is no "__ocs_fmt_0__" under "__ocs_fmt_1__"
+    .selected-node = PIDBACKUPOPEN: selected __ocs_fmt_0__
 
 block-flip-frame-feedback =
     .unavailable = 圖塊參數座標框無法使用。

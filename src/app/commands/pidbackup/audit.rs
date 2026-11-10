@@ -497,6 +497,57 @@ fn a_real_backup_is_walked_node_by_node() {
     audit.shot(&app, "search");
     send(&mut app, PidBackupMsg::Filter(String::new())).unwrap();
 
+    // ── A node reached from the command line ─────────────────────────────
+    // `PIDBACKUPOPEN Select a > b > c`, as a script or the automation
+    // channel sends it: down to the first item of the first drawing that
+    // has one, by the labels the tree shows.
+    let readable = index.drawings.iter().enumerate().position(|(at, _)| {
+        matches!(
+            app.pid_backup_browser.items.get(&at),
+            Some(ItemsState::Ready(items)) if items.item_count > 0
+        )
+    });
+    if let Some(at) = readable {
+        let rows = visible_rows(&app.pid_backup_browser);
+        let row_at = rows
+            .iter()
+            .position(|row| row.id == NodeId::Drawing(at))
+            .expect("every group is open, so the drawing has a row");
+        // The labels above the row: the nearest row of each smaller depth.
+        let mut labels = vec![rows[row_at].label.clone()];
+        let mut depth = rows[row_at].depth;
+        for row in rows[..row_at].iter().rev() {
+            if row.depth < depth && row.depth > 0 {
+                labels.push(row.label.clone());
+                depth = row.depth;
+            }
+        }
+        labels.reverse();
+        let path = format!("{} > #1 > #1", labels.join(" > "));
+        let history = app.command_line.history.len();
+        let task = app.run_command_line(&format!("PIDBACKUPOPEN Select {path}"));
+        app.drive_headless_task(task).expect("a walk needs no window");
+        audit.line(format!("== select \"{path}\" =="));
+        for entry in &app.command_line.history[history..] {
+            audit.line(format!("  command line [{:?}]: {}", entry.kind, entry.text));
+        }
+        assert_eq!(
+            app.pid_backup_browser.selected,
+            Some(NodeId::Item(at, 0, 0)),
+            "the walk ends on the first item of the drawing's first type"
+        );
+        audit.shot(&app, "select-by-path");
+        // A path that names no node is refused where it stops.
+        let task = app.run_command_line(&format!(
+            "PIDBACKUPOPEN Select {} > no such node",
+            labels.join(" > ")
+        ));
+        app.drive_headless_task(task).expect("a walk needs no window");
+        let last = app.command_line.history.last().expect("the walk reports");
+        audit.line(format!("  command line [{:?}]: {}", last.kind, last.text));
+        assert_eq!(last.kind, crate::ui::command_line::EntryKind::Error);
+    }
+
     // ── A drawing opened from the panel ──────────────────────────────────
     if let Some((at, drawing)) = index
         .drawings

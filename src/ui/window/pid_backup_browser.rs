@@ -21,8 +21,10 @@
 //! backup holds is a [`section`]: a module beside this one that hangs its
 //! rows under a row of the tree and states the details of its nodes.
 
+mod goto;
 mod section;
 
+pub use goto::take_outcome as take_goto_outcome;
 pub use section::{SectionData, SectionLoad};
 
 use std::collections::{HashMap, HashSet};
@@ -133,6 +135,9 @@ pub enum PidBackupMsg {
     Close,
     /// The search box: narrow the tree to the drawings whose name matches.
     Filter(String),
+    /// Go to the node at this path of labels (`a > b > c`), unfolding the
+    /// levels on the way and selecting it: `PIDBACKUPOPEN Select`.
+    Goto(String),
 }
 
 /// What the application should do after [`update`] applied a message.
@@ -204,6 +209,10 @@ pub struct PidBackupBrowser {
     pub generation: u64,
     /// The sections this panel draws.
     sections: section::Registry,
+    /// A walk to a node that is waiting for a level to be read.
+    goto: Option<goto::Goto>,
+    /// How the last walk ended, until the command line has reported it.
+    goto_outcome: Option<goto::Outcome>,
 }
 
 impl PidBackupBrowser {
@@ -223,6 +232,8 @@ impl PidBackupBrowser {
         self.filter.clear();
         self.section_data.clear();
         self.generation += 1;
+        self.goto = None;
+        self.goto_outcome = None;
     }
 
     /// Browse with the test section instead of the real ones.
@@ -310,13 +321,14 @@ pub fn update(state: &mut PidBackupBrowser, msg: PidBackupMsg) -> Effect {
             state.error = Some(error);
             Effect::None
         }
+        // What a walk to a node was waiting for may be what just arrived.
         PidBackupMsg::ItemsLoaded(drawing, Ok(items)) => {
             state.items.insert(drawing, ItemsState::Ready(items));
-            Effect::None
+            goto::step(state)
         }
         PidBackupMsg::ItemsLoaded(drawing, Err(error)) => {
             state.items.insert(drawing, ItemsState::Failed(error));
-            Effect::None
+            goto::step(state)
         }
         PidBackupMsg::SectionLoaded {
             generation,
@@ -325,8 +337,9 @@ pub fn update(state: &mut PidBackupBrowser, msg: PidBackupMsg) -> Effect {
             result,
         } => {
             section::loaded(state, generation, section, node, result);
-            Effect::None
+            goto::step(state)
         }
+        PidBackupMsg::Goto(path) => goto::start(state, &path),
         // The tree's own answer first, then whatever a section now wants
         // read about the node.
         PidBackupMsg::Toggle(id) => {
@@ -1322,7 +1335,7 @@ mod tests {
         state
     }
 
-    fn items_of(uid: &str, item_type: &str) -> DrawingItems {
+    pub(super) fn items_of(uid: &str, item_type: &str) -> DrawingItems {
         DrawingItems {
             drawing_uid: "UID-1".to_string(),
             drawing_name: "A-101".to_string(),

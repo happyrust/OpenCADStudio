@@ -1222,6 +1222,8 @@ mod tests {
         "nothing-to-read",
         "cannot-start-section",
         "section-read-stopped",
+        "no-such-node",
+        "selected-node",
     ];
 
     /// The panel's own labels, the ones the dock title and the command share.

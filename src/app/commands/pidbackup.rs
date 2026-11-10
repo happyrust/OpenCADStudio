@@ -7,7 +7,14 @@
 //! PIDBACKUPOPEN <source> [<folder>]  show the panel and index <source> (a
 //!                                    backup zip or folder), restoring into
 //!                                    <folder> if given
+//! PIDBACKUPOPEN Select <a > b > c>   go to a node of the open backup by the
+//!                                    labels on the way to it, unfolding the
+//!                                    levels above it and selecting it
 //! ```
+//!
+//! `Select` is the panel without a pointer: a script, or a client on the
+//! automation channel, shows any node with it (the walk and its matching
+//! rules are `pid_backup_browser::goto`).
 //!
 //! The panel is the browser: its tree, the details of the selected node and
 //! the double click that opens a drawing all live in
@@ -48,6 +55,21 @@ enum Request {
     Zip,
     Folder,
     Restore(PathBuf, Option<PathBuf>),
+    /// Go to the node at this path of labels.
+    Select(String),
+}
+
+/// What follows `Select` (or `S`) when `rest` starts with that word.
+#[cfg(not(target_arch = "wasm32"))]
+fn select_path(rest: &str) -> Option<&str> {
+    let (word, path) = match rest.split_once(char::is_whitespace) {
+        Some((word, path)) => (word, path.trim()),
+        None => (rest, ""),
+    };
+    ["S", "SELECT"]
+        .iter()
+        .any(|keyword| word.eq_ignore_ascii_case(keyword))
+        .then_some(path)
 }
 
 /// Split `<source> [<folder>]`. A line that names an existing path whole is
@@ -74,6 +96,10 @@ fn parse_request(rest: &str, exists: impl Fn(&Path) -> bool) -> Option<Request> 
     let whole = unquoted(rest);
     if exists(Path::new(whole)) {
         return Some(Request::Restore(PathBuf::from(whole), None));
+    }
+    // After the path check: a backup that is really called `Select` wins.
+    if let Some(path) = select_path(rest) {
+        return Some(Request::Select(path.to_string()));
     }
     let mut words = Vec::new();
     let mut word = String::new();
@@ -166,6 +192,7 @@ impl OpenCADStudio {
         }
         match parse_request(rest, Path::exists) {
             Some(Request::Restore(source, target)) => self.load_pid_backup(source, target),
+            Some(Request::Select(path)) => self.on_pid_backup(PidBackupMsg::Goto(path)),
             Some(Request::Zip | Request::Folder) if on_command_line => {
                 // No dialogs here: the keyword is not a path either.
                 self.command_line
@@ -243,6 +270,17 @@ impl OpenCADStudio {
                     );
                 }
             }
+        }
+        // A walk to a node (`Select`) ends on the message that started it, or
+        // on the read it had to wait for: say where it got either way.
+        match pid_backup_browser::take_goto_outcome(&mut self.pid_backup_browser) {
+            Some(Ok(node)) => self
+                .command_line
+                .push_output(crate::tf!("PIDBACKUPOPEN: selected {}", node).as_ref()),
+            Some(Err(error)) => self
+                .command_line
+                .push_error(crate::tf!("PIDBACKUPOPEN: {}", error).as_ref()),
+            None => {}
         }
         self.run_pid_backup_effect(effect)
     }
@@ -394,6 +432,34 @@ mod tests {
         assert_eq!(
             parse_request("D:/my backups/plant", exists),
             Some(Request::Restore(PathBuf::from("D:/my backups/plant"), None))
+        );
+    }
+
+    #[test]
+    fn select_takes_the_rest_of_the_line_as_the_labels_of_a_node() {
+        assert_eq!(
+            parse_request("Select Plant groups > SQPlant > 00", none),
+            Some(Request::Select("Plant groups > SQPlant > 00".to_string()))
+        );
+        assert_eq!(
+            parse_request("s   A > B ", none),
+            Some(Request::Select("A > B".to_string()))
+        );
+        // The word alone selects the backup itself.
+        assert_eq!(
+            parse_request("SELECT", none),
+            Some(Request::Select(String::new()))
+        );
+        // A word that only starts like the keyword is a source, as before.
+        assert_eq!(
+            parse_request("selection.zip", none),
+            Some(Request::Restore(PathBuf::from("selection.zip"), None))
+        );
+        // And a backup that is really called `Select` is opened, not walked.
+        let exists = |path: &Path| path == Path::new("Select");
+        assert_eq!(
+            parse_request("Select", exists),
+            Some(Request::Restore(PathBuf::from("Select"), None))
         );
     }
 
@@ -558,6 +624,44 @@ mod tests {
             LoadState::Ready(_)
         ));
         assert_eq!(row_labels(&app).len(), 4);
+    }
+
+    #[test]
+    fn a_select_line_goes_to_the_node_and_reports_it() {
+        let mut app = app();
+        let _ = app.on_pid_backup(PidBackupMsg::Loaded(Ok(index())));
+        let groups = crate::t!("Plant groups").into_owned();
+        // As the command line and the automation channel send it: one line,
+        // words and all.
+        let task = app.run_command_line(&format!("PIDBACKUPOPEN Select {groups} > SQPlant > 00"));
+        app.drive_headless_task(task).expect("a walk needs no window");
+        assert_eq!(
+            app.pid_backup_browser.selected,
+            Some(NodeId::Group(vec![0, 0]))
+        );
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Output);
+        assert!(last.text.contains("SQPlant > 00"), "{}", last.text);
+        // The levels above it are open: the row is on screen.
+        let labels: Vec<String> = row_labels(&app).into_iter().map(|(label, _)| label).collect();
+        assert!(labels.contains(&"00".to_string()), "{labels:?}");
+    }
+
+    #[test]
+    fn a_select_line_that_names_no_node_is_reported_as_an_error() {
+        let mut app = app();
+        let _ = app.on_pid_backup(PidBackupMsg::Loaded(Ok(index())));
+        let _ = app.dispatch_command("PIDBACKUPOPEN Select nowhere > at all");
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Error);
+        assert!(last.text.contains("nowhere"), "{}", last.text);
+        assert_eq!(app.pid_backup_browser.selected, None);
+
+        // With no backup open there is nothing to walk.
+        let mut idle = self::app();
+        let _ = idle.dispatch_command("PIDBACKUPOPEN Select anything");
+        let last = idle.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Error);
     }
 
     /// An app whose panel browses [`index`] with the test section, which

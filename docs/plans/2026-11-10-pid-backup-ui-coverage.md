@@ -286,3 +286,4 @@ D1–D9 还没有拍板。第一批（2a）按 §4 的建议先走：D1 (a)、D2
 | 项 | 提交 | 做了什么 | 清点表的变化 |
 |---|---|---|---|
 | W0 | 「P&ID 备份面板：子树扩展点（section）」 | `pid_backup_browser/section.rs`：一支子树一个 `Section`（挂在哪一行下面、自己的行、节点详情与给别的节点追加的详情、要在后台读的数据），`NodeId::Section(槽位, 路径)`；`visible_rows` / `detail_lines` / `update` 各自在末尾转给注册表；后台读取走 `Effect::LoadSection` → `PidBackupMsg::SectionLoaded`，带代数，换了备份之后迟到的结果丢弃。注册表此时是空的，面板没有可见变化。 | 无 |
+| 附：`Select` | 「PIDBACKUPOPEN Select：命令行按标签路径定位节点」 | 方案里没有的一项，为的是不动鼠标也能看真实窗口：`PIDBACKUPOPEN Select 装置组 > SQPlant > test > U01 > D07 > #1 > #1` 逐级展开并选中，与逐级点击留下的状态相同（`pid_backup_browser/goto.rs`）；遇到要先读图元的图纸就等读完再接着走。真实窗口的检查因此可以只靠自动化通道发命令加 `/capture`。 | 无 |

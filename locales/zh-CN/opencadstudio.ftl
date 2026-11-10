@@ -9025,6 +9025,8 @@ pid-backup =
     .nothing-to-read = 该节点没有可读取的数据
     .cannot-start-section = 无法开始读取备份数据：__ocs_fmt_0__
     .section-read-stopped = 备份数据读取在完成前停止
+    .no-such-node = “__ocs_fmt_1__”下没有“__ocs_fmt_0__”
+    .selected-node = PIDBACKUPOPEN：已选中 __ocs_fmt_0__
 
 block-flip-frame-feedback =
     .unavailable = 块参数坐标框不可用。
