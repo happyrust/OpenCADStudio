@@ -12,9 +12,11 @@
 //! effect and goes on from [`step`] when the items arrive.
 //!
 //! A segment matches the first child whose label it equals, then the first
-//! whose label it equals ignoring case, then the first whose label starts
-//! with it ignoring case (`Instrument` finds `Instrument (15)`). `#3` is the
-//! third child, whatever it is called.
+//! whose label it equals ignoring case, then the first it names -- a row
+//! adds a count or a remark to the name of its node (`SQPlantpid (82)`,
+//! `T_DRAWING — 53 row(s)`), and the name alone is enough -- then the first
+//! whose label starts with it ignoring case (`Instr` finds `Instrument
+//! (15)`). `#3` is the third child, whatever it is called.
 
 use super::{update, visible_rows, Effect, NodeId, PidBackupBrowser, PidBackupMsg, Row};
 use crate::{t, tf};
@@ -137,9 +139,31 @@ fn find<'a>(children: &[&'a Row], segment: &str) -> Option<&'a Row> {
         .or_else(|| {
             children
                 .iter()
+                .find(|row| name_part(&row.label).to_lowercase() == lower)
+        })
+        .or_else(|| {
+            children
+                .iter()
                 .find(|row| row.label.to_lowercase().starts_with(&lower))
         })
         .copied()
+}
+
+/// The part of a row's label that names its node: what stands before the
+/// remark (`T_DRAWING — 53 row(s)`, `RefData~4~680 — Ref\rules.rul`) or
+/// the count (`SQPlantpid (82)`) the row adds to it.
+fn name_part(label: &str) -> &str {
+    let label = label.split(" — ").next().unwrap_or(label);
+    match label.rsplit_once(" (") {
+        Some((name, count))
+            if count.strip_suffix(')').is_some_and(|digits| {
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+            }) =>
+        {
+            name
+        }
+        _ => label,
+    }
 }
 
 /// Whether what `id` holds is on its way from a worker thread.
@@ -248,6 +272,42 @@ mod tests {
         let mut state = ready();
         start(&mut state, &format!("{groups} > SQPlant > 00 > 01"));
         assert_eq!(selected_label(&state).as_deref(), Some("01"));
+    }
+
+    #[test]
+    fn a_segment_names_a_row_without_its_count_or_its_remark() {
+        let row = |label: &str| Row {
+            id: NodeId::Files,
+            depth: 2,
+            label: label.to_string(),
+            expandable: false,
+            expanded: false,
+            disabled: false,
+        };
+        let rows = [
+            row("SQPlantpidd (25)"),
+            row("SQPlantpid (82)"),
+            row("RefData~4~680 — Ref\\rules.rul"),
+            row("T_DRAWING — 53 row(s)"),
+            row("Group (old) (3)"),
+        ];
+        let children: Vec<&Row> = rows.iter().collect();
+        let found = |segment: &str| find(&children, segment).map(|row| row.label.as_str());
+        // The name alone, not the longer name it is the start of.
+        assert_eq!(found("SQPlantpid"), Some("SQPlantpid (82)"));
+        assert_eq!(found("sqplantpidd"), Some("SQPlantpidd (25)"));
+        assert_eq!(
+            found("RefData~4~680"),
+            Some("RefData~4~680 — Ref\\rules.rul")
+        );
+        assert_eq!(found("t_drawing"), Some("T_DRAWING — 53 row(s)"));
+        // Only a count in brackets is taken off.
+        assert_eq!(found("Group (old)"), Some("Group (old) (3)"));
+        assert_eq!(name_part("Unit (north)"), "Unit (north)");
+        assert_eq!(name_part("Empty ()"), "Empty ()");
+        // The start of a label still finds it, after the names.
+        assert_eq!(found("SQPl"), Some("SQPlantpidd (25)"));
+        assert_eq!(found("nothing"), None);
     }
 
     #[test]
