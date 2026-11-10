@@ -670,6 +670,7 @@ fn plot_scene_content(
                         }));
                 }
                 plot_owner_aci(scene, &mut wire);
+                wire.resample_plot_curve();
                 crate::io::pdf_export::PlotWire { wire, draw_depth }
             })
             .collect::<Vec<_>>()
@@ -920,6 +921,7 @@ impl OpenCADStudio {
             options_tab: self.options_tab,
             show_viewcube: self.show_viewcube,
             show_ucs_icon: self.show_ucs_icon,
+            show_viewport_controls: self.show_viewport_controls,
             ucs_icon_at_origin: self.ucs_icon_at_origin,
             selection_cycling: self.selection_cycling,
             osnap_z: self.osnap_z,
@@ -1136,6 +1138,10 @@ impl OpenCADStudio {
         // restarting brought it straight back.
         self.show_viewcube = s.show_viewcube;
         self.show_ucs_icon = s.show_ucs_icon;
+        self.show_viewport_controls = s.show_viewport_controls;
+        // The ribbon's toggles keep their own copy of both.
+        self.ribbon.set_viewcube(self.show_viewcube);
+        self.ribbon.set_ucs_icon(self.show_ucs_icon);
         self.ucs_icon_at_origin = s.ucs_icon_at_origin;
         self.selection_cycling = s.selection_cycling;
         self.osnap_z = s.osnap_z;

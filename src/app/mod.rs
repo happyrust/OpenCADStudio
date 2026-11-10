@@ -109,6 +109,8 @@ mod text_style_font_picker_tests;
 #[cfg(test)]
 mod text_style_layout_tests;
 #[cfg(test)]
+mod linetype_manager_tests;
+#[cfg(test)]
 mod text_style_manager_tests;
 #[cfg(test)]
 mod text_style_pending_tests;
@@ -1519,6 +1521,8 @@ pub(super) struct OpenCADStudio {
     qselect_settings: Option<QSelectSettings>,
     /// Show the UCS icon in the bottom-left corner of model space (UCSICON).
     show_ucs_icon: bool,
+    /// Show the viewport controls in the drawing's corner (VPCONTROL).
+    show_viewport_controls: bool,
     /// Anchor the UCS icon to the projected UCS origin when it is on-screen,
     /// falling back to the corner otherwise (UCSICON ORigin / NOorigin).
     ucs_icon_at_origin: bool,
@@ -2042,6 +2046,18 @@ pub(super) struct OpenCADStudio {
     pub(super) plotstyle_panel_baseline: Option<Option<crate::io::plot_style::PlotStyleTable>>,
 
     // ── MLineStyle Dialog ─────────────────────────────────────────────────
+    linetype_selected: String,
+    linetype_tab: u8,
+    linetype_in_use_only: bool,
+    /// Up and Down step the list. Off once a field is typed in, so an arrow
+    /// there does not change the linetype; a press on a row turns it back on.
+    linetype_keys_active: bool,
+    /// `None` until the list reports a scroll position; a list that fits
+    /// never does.
+    linetype_list_view: Option<crate::ui::style::linetype::ListView>,
+    linetype_counts: rustc_hash::FxHashMap<String, usize>,
+    linetype_draft: crate::ui::style::linetype::LinetypeDraft,
+    linetype_library_status: String,
     mlstyle_selected: String,
     mlstyle_tab: u8,
     mlstyle_compare: String,
@@ -3408,6 +3424,7 @@ pub enum ModalKind {
     MlStyle,
     MLeaderStyle,
     DimStyle,
+    LinetypeManager,
     StyleImport,
     Unsaved,
     BlockEditChanges,
@@ -6049,6 +6066,7 @@ pub enum Message {
     /// Drop the style's starting table.
     TableStyleTemplateRemove,
     // ── MLineStyle Dialog ─────────────────────────────────────────────────
+    Linetype(crate::ui::style::linetype::LinetypeMsg),
     MlStyleDialogOpen,
     #[allow(dead_code)]
     MlStyleDialogClose,
@@ -6704,6 +6722,7 @@ impl OpenCADStudio {
             transparent_select: None,
             qselect_settings: None,
             show_ucs_icon: true,
+            show_viewport_controls: true,
             ucs_icon_at_origin: true,
             show_viewcube: true,
             render_bar_w: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -7059,6 +7078,14 @@ impl OpenCADStudio {
             ts_edge_spacing: Default::default(),
             ts_color_open: None,
             // MLineStyle dialog
+            linetype_selected: String::new(),
+            linetype_tab: 0,
+            linetype_in_use_only: false,
+            linetype_keys_active: true,
+            linetype_list_view: None,
+            linetype_counts: Default::default(),
+            linetype_draft: Default::default(),
+            linetype_library_status: String::new(),
             mlstyle_selected: "Standard".to_string(),
             mlstyle_tab: 0,
             mlstyle_compare: String::new(),
