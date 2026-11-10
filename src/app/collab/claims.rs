@@ -29,6 +29,13 @@ impl OpenCADStudio {
                     .session_id
                     .as_deref()
                     .is_some_and(|id| id == peer.session_id),
+                // The server names the holding session, so the same user's
+                // other session is not marked along with it.
+                is_holder: state.readonly
+                    && state
+                        .readonly_holder
+                        .as_deref()
+                        .is_some_and(|holder| holder == peer.session_id),
             })
             .collect();
         let claims: Vec<ClaimRow> = state
@@ -47,6 +54,17 @@ impl OpenCADStudio {
         if self.pid_collab_view.claims != claims {
             crate::ui::wrap_bar::forget_bounds(
                 crate::ui::window::pid_collab::ROW_BOUNDS_PREFIX,
+            );
+        }
+        // Likewise the read-only badge and the edit-right marker: a session
+        // that reconnects is no longer downgraded, and a reader of the bounds
+        // must not find a badge the panel stopped drawing.
+        if self.pid_collab_view.readonly != state.readonly || self.pid_collab_view.peers != peers {
+            crate::ui::wrap_bar::forget_bounds(
+                crate::ui::window::pid_collab::READONLY_BOUNDS_ID,
+            );
+            crate::ui::wrap_bar::forget_bounds(
+                crate::ui::window::pid_collab::HOLDER_BOUNDS_PREFIX,
             );
         }
         self.pid_collab_view = CollabView {
@@ -295,6 +313,106 @@ mod tests {
         assert_eq!(row.holder, "u2");
         assert!(!row.is_self, "别人的占用行不能提供「释放」");
         assert_eq!(view.remote_tags(), vec!["P-1001".to_string()]);
+    }
+
+    /// An app in a session of three: `u1` twice (`s-1`, `s-3`) and `u2`
+    /// (`s-2`), seen from `u2`.
+    fn app_as_u2_among_three() -> crate::app::OpenCADStudio {
+        use crate::app::collab::{CollabEvent, PeerInfo};
+
+        let mut app = crate::app::OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        app.collab.server_url = "ws://127.0.0.1:3240/ws".to_owned();
+        app.collab.user_id = "u2".to_owned();
+        let peer = |session: &str, user: &str| PeerInfo {
+            session_id: session.to_owned(),
+            user_id: user.to_owned(),
+            display_name: user.to_owned(),
+        };
+        app.collab.apply(CollabEvent::Connected {
+            session_id: "s-2".to_owned(),
+            base_revision: 0,
+            peers: vec![peer("s-1", "u1"), peer("s-2", "u2"), peer("s-3", "u1")],
+            claims: Vec::new(),
+        });
+        app.refresh_collab_view();
+        app
+    }
+
+    /// VAL-CLI-012: a downgraded session's panel says it is read-only and
+    /// marks who holds the edit right — the holding *session*, so the same
+    /// user's other session is not marked along with it.
+    #[test]
+    fn a_downgrade_marks_the_holding_session_in_the_panel() {
+        use crate::app::collab::CollabEvent;
+
+        let mut app = app_as_u2_among_three();
+        assert!(!app.pid_collab_view.readonly);
+        assert!(app.pid_collab_view.peers.iter().all(|peer| !peer.is_holder));
+
+        app.collab.apply(CollabEvent::ReadonlyDowngrade {
+            reason: "图纸已切换为只读".to_owned(),
+            holder: Some("s-1".to_owned()),
+        });
+        app.refresh_collab_view();
+
+        let view = &app.pid_collab_view;
+        assert!(view.readonly);
+        let marked: Vec<(&str, bool, bool)> = view
+            .peers
+            .iter()
+            .map(|peer| (peer.user_id.as_str(), peer.is_self, peer.is_holder))
+            .collect();
+        assert_eq!(
+            marked,
+            [("u1", false, true), ("u2", true, false), ("u1", false, false)]
+        );
+    }
+
+    /// A session that reconnects is no longer downgraded, so the badge and the
+    /// marker stop being drawn — and must stop reporting where they were.
+    #[test]
+    fn a_reconnect_stops_the_readonly_badge_reporting_its_rectangle() {
+        use crate::app::collab::{CollabEvent, PeerInfo};
+        use crate::ui::window::pid_collab::{
+            holder_bounds_id, HOLDER_BOUNDS_PREFIX, READONLY_BOUNDS_ID,
+        };
+
+        crate::ui::wrap_bar::forget_bounds("pid-collab-");
+        let mut app = app_as_u2_among_three();
+        app.collab.apply(CollabEvent::ReadonlyDowngrade {
+            reason: "图纸已切换为只读".to_owned(),
+            holder: Some("s-1".to_owned()),
+        });
+        app.refresh_collab_view();
+        let drawn = iced::Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        };
+        crate::ui::wrap_bar::set_drawn_bounds(READONLY_BOUNDS_ID, drawn);
+        crate::ui::wrap_bar::set_drawn_bounds(&holder_bounds_id("u1"), drawn);
+
+        app.collab.apply(CollabEvent::Connected {
+            session_id: "s-9".to_owned(),
+            base_revision: 0,
+            peers: vec![PeerInfo {
+                session_id: "s-9".to_owned(),
+                user_id: "u2".to_owned(),
+                display_name: "u2".to_owned(),
+            }],
+            claims: Vec::new(),
+        });
+        app.refresh_collab_view();
+
+        assert!(!app.pid_collab_view.readonly);
+        let left: Vec<String> = crate::ui::wrap_bar::recorded_bounds()
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| id == READONLY_BOUNDS_ID || id.starts_with(HOLDER_BOUNDS_PREFIX))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     /// VAL-CLI-008: the claimed tag draws in the claim colour on the entities

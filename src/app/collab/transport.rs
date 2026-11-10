@@ -150,7 +150,7 @@ pub(super) fn shutdown() {
     let Some(worker) = WORKER.lock().ok().and_then(|mut slot| slot.take()) else {
         return;
     };
-    eprintln!("[collab] 退出：请求关闭协同连接");
+    log("退出：请求关闭协同连接");
     worker.link.stop.store(true, Ordering::Relaxed);
     let deadline = Instant::now() + Duration::from_secs(3);
     while !worker.handle.is_finished() && Instant::now() < deadline {
@@ -187,6 +187,14 @@ pub(super) enum Outbound {
     Claim { tag: String },
     /// `release`: give `tag` back.
     Release { tag: String },
+    /// `op`: submit one P&ID semantic change. `base_revision` is captured when
+    /// the request is queued, not when it is sent, so a request that waits
+    /// behind a broadcast still states what the client believed.
+    Op {
+        base_revision: i64,
+        op_id: String,
+        payload: serde_json::Value,
+    },
 }
 
 impl Outbound {
@@ -195,8 +203,26 @@ impl Outbound {
         match self {
             Outbound::Claim { tag } => format!("claim {tag}"),
             Outbound::Release { tag } => format!("release {tag}"),
+            Outbound::Op {
+                op_id,
+                base_revision,
+                ..
+            } => format!("op {op_id} base_revision={base_revision}"),
         }
     }
+}
+
+/// One line on stderr, stamped with the wall clock in milliseconds.
+///
+/// What the client did on the wire is otherwise only visible from the far end
+/// — and not at all while the far end is down, which is exactly when the
+/// retry ladder's cadence has to be read off something (`VAL-CLI-014`).
+fn log(line: &str) {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    eprintln!("[collab] t={at} {line}");
 }
 
 /// Outbound queue of the app's client, shared between the UI thread
@@ -271,6 +297,51 @@ pub(super) fn request_release(session_id: &str, tag: &str) -> Result<(), String>
     queue_release(app_outbox(), tag)
 }
 
+/// Monotonic counter behind [`next_op_id`]. The id only has to be unique
+/// within this process's session; the server echoes it back verbatim.
+static OP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A fresh `op_id`. The room broadcast of our own change comes back with this
+/// id, which is how the app tells its own op from a peer's.
+pub(super) fn next_op_id() -> String {
+    let n = OP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("op-{}-{n}", std::process::id())
+}
+
+/// Put an `op` carrying one semantic change on `outbox`. `base_revision` is
+/// the revision the change was made against (`VAL-CLI-010`). An op with no id
+/// never gets there: the id is how its echo is told from a peer's change.
+fn queue_op(
+    outbox: &Outbox,
+    base_revision: i64,
+    op_id: &str,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    if op_id.trim().is_empty() {
+        return Err("操作 id 为空".to_owned());
+    }
+    push_outbound(
+        outbox,
+        Outbound::Op {
+            base_revision,
+            op_id: op_id.to_owned(),
+            payload,
+        },
+    );
+    Ok(())
+}
+
+/// Queue an `op` for the app's client.
+pub(super) fn request_op(
+    session_id: &str,
+    base_revision: i64,
+    op_id: &str,
+    payload: serde_json::Value,
+) -> Result<(), String> {
+    let _ = session_id;
+    queue_op(app_outbox(), base_revision, op_id, payload)
+}
+
 /// Turn one queued request into the wire message for `session_id`.
 fn outbound_message(request: &Outbound, session_id: &str) -> ClientMessage {
     match request {
@@ -281,6 +352,16 @@ fn outbound_message(request: &Outbound, session_id: &str) -> ClientMessage {
         Outbound::Release { tag } => ClientMessage::Release {
             session_id: session_id.to_owned(),
             tag: tag.clone(),
+        },
+        Outbound::Op {
+            base_revision,
+            op_id,
+            payload,
+        } => ClientMessage::Op {
+            session_id: session_id.to_owned(),
+            base_revision: *base_revision,
+            op_id: op_id.clone(),
+            payload: payload.clone(),
         },
     }
 }
@@ -310,6 +391,53 @@ pub(super) fn describe_read_error(error: &tungstenite::Error) -> String {
         tungstenite::Error::Io(io) => format!("read error: {:?} ({io})", io.kind()),
         tungstenite::Error::ConnectionClosed => "read error: ConnectionClosed".to_owned(),
         other => format!("read error: {other}"),
+    }
+}
+
+/// How one server frame reads in the log: its wire name and what it is about.
+fn describe_event(event: &CollabEvent) -> String {
+    match event {
+        CollabEvent::Connected {
+            session_id,
+            base_revision,
+            peers,
+            claims,
+        } => format!(
+            "welcome session={session_id} base_revision={base_revision} peers={} claims={}",
+            peers.len(),
+            claims.len()
+        ),
+        CollabEvent::PeerJoined(peer) => format!(
+            "peer_joined session={} user={}",
+            peer.session_id, peer.user_id
+        ),
+        CollabEvent::PeerLeft { session_id } => format!("peer_left session={session_id}"),
+        CollabEvent::ClaimGranted { tag } => format!("claim_granted tag={tag}"),
+        CollabEvent::ClaimDenied {
+            tag,
+            holder,
+            expires_at,
+        } => format!("claim_denied tag={tag} holder={holder} expires_at={expires_at}"),
+        CollabEvent::ClaimReleased { tag, reason } => {
+            format!("claim_released tag={tag} reason={reason}")
+        }
+        CollabEvent::ReadonlyDowngrade { reason, holder } => format!(
+            "readonly_downgrade holder={} reason={reason}",
+            holder.as_deref().unwrap_or("(无)")
+        ),
+        CollabEvent::OpApplied {
+            op_id,
+            revision,
+            changes,
+        } => format!(
+            "op_applied op_id={op_id} revision={revision} changes={}",
+            changes.len()
+        ),
+        CollabEvent::ServerError { code, message } => format!("error code={code} {message}"),
+        // Not frames: the transport makes these up itself.
+        CollabEvent::Connecting { .. } | CollabEvent::Disconnected { .. } => {
+            "(not a server frame)".to_owned()
+        }
     }
 }
 
@@ -387,37 +515,31 @@ pub(super) fn run_client(
         if emit(sender, CollabEvent::Connecting { attempt }).is_err() {
             return Ok(());
         }
-        match run_session(sender, &config, link) {
+        log(&format!(
+            "连接 {}（第 {} 次尝试）",
+            config.server_url,
+            attempt.saturating_add(1)
+        ));
+        let reason = match run_session(sender, &config, link) {
             Ok(Ended::SubscriptionGone) => return Ok(()),
             Ok(Ended::Quit) => return Ok(()),
-            Ok(Ended::Closed(reason)) => {
-                if emit(
-                    sender,
-                    CollabEvent::Disconnected {
-                        reason,
-                        will_retry: true,
-                    },
-                )
-                .is_err()
-                {
-                    return Ok(());
-                }
-            }
-            Err(error) => {
-                if emit(
-                    sender,
-                    CollabEvent::Disconnected {
-                        reason: error,
-                        will_retry: true,
-                    },
-                )
-                .is_err()
-                {
-                    return Ok(());
-                }
-            }
+            Ok(Ended::Closed(reason)) => reason,
+            Err(error) => error,
+        };
+        let delay = backoff_delay(attempt);
+        log(&format!("断开：{reason}；{} 毫秒后重连", delay.as_millis()));
+        if emit(
+            sender,
+            CollabEvent::Disconnected {
+                reason,
+                will_retry: true,
+            },
+        )
+        .is_err()
+        {
+            return Ok(());
         }
-        if wait_before_retry(sender, backoff_delay(attempt), link).is_err() {
+        if wait_before_retry(sender, delay, link).is_err() {
             return Ok(());
         }
         attempt = attempt.saturating_add(1);
@@ -451,6 +573,7 @@ fn run_session(
             // The app is quitting: say goodbye on the wire so the server
             // retires the session now instead of after the 90 s timeout.
             close(&mut ws);
+            log("退出：已发送 close 帧");
             return Ok(Ended::Quit);
         }
         if sender.is_closed() {
@@ -468,6 +591,7 @@ fn run_session(
                     {
                         session_id = Some(id.clone());
                     }
+                    log(&format!("收到 {}", describe_event(&event)));
                     if emit(sender, event).is_err() {
                         close(&mut ws);
                         return Ok(Ended::SubscriptionGone);
@@ -479,7 +603,7 @@ fn run_session(
                 }
                 Frame::Ignored => {}
                 Frame::Unreadable(error) => {
-                    eprintln!("[collab] 无法解析服务器帧：{error}");
+                    log(&format!("无法解析服务器帧：{error}"));
                 }
             },
             Ok(Message::Binary(_)) => {}
@@ -522,6 +646,7 @@ fn run_session(
                     close(&mut ws);
                     return Ok(Ended::Closed(reason));
                 }
+                log(&format!("发送 {}", request.describe()));
             }
         }
 
@@ -1148,5 +1273,79 @@ mod tests {
         // The app's own entry points refuse it the same way.
         assert!(request_claim("s-1", "   ").is_err());
         assert!(request_release("s-1", "").is_err());
+    }
+
+    /// VAL-CLI-009 / 010: a queued `op` reaches the wire as the protocol's
+    /// frame — the session id from `welcome`, the baseline it was queued
+    /// against, its id, and the payload untouched.
+    #[test]
+    fn a_queued_op_reaches_the_wire_with_the_baseline_it_was_queued_against() {
+        let (url, seen, _closed, server) = recording_server();
+        let link = Link::detached(config_for(url));
+
+        let (mut receiver, worker) = start_client(&link);
+        assert!(
+            session_came_up(&mut receiver),
+            "the client never reported a session"
+        );
+
+        let payload = serde_json::json!({
+            "kind": "set_tag",
+            "object_ref": "P-1001",
+            "field": "tag",
+            "value": "P-1009",
+        });
+        queue_op(&link.outbox, 7, "op-test-1", payload.clone()).expect("op queues");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let frame = loop {
+            let found = seen
+                .lock()
+                .expect("frame log")
+                .iter()
+                .find(|frame| frame.contains("\"type\":\"op\""))
+                .cloned();
+            if found.is_some() || Instant::now() >= deadline {
+                break found;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let frame = frame.expect("no op frame on the wire");
+        let sent: serde_json::Value = serde_json::from_str(&frame).expect("the frame is JSON");
+        assert_eq!(sent["session_id"], "s-test", "{frame}");
+        assert_eq!(sent["base_revision"], 7, "{frame}");
+        assert_eq!(sent["op_id"], "op-test-1", "{frame}");
+        assert_eq!(sent["payload"], payload, "{frame}");
+
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+    }
+
+    /// An op with no id could not be told from a peer's when it comes back, so
+    /// it never gets as far as the queue; and every id handed out is new.
+    #[test]
+    fn an_op_needs_an_id_and_every_id_is_new() {
+        let outbox = Outbox::default();
+        assert!(queue_op(&outbox, 0, "  ", serde_json::json!({})).is_err());
+        assert!(drain_outbound(&outbox).is_empty());
+        assert!(request_op("s-1", 0, "", serde_json::json!({})).is_err());
+
+        let first = next_op_id();
+        let second = next_op_id();
+        assert!(!first.is_empty());
+        assert_ne!(first, second);
+    }
+
+    /// What the log says of an op is the two things `VAL-CLI-010` reads off
+    /// it: which op, and the baseline it claims.
+    #[test]
+    fn an_op_describes_itself_by_id_and_baseline() {
+        let op = Outbound::Op {
+            base_revision: 1,
+            op_id: "op-9-3".to_owned(),
+            payload: serde_json::json!({}),
+        };
+        assert_eq!(op.describe(), "op op-9-3 base_revision=1");
     }
 }

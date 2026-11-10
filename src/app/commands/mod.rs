@@ -241,6 +241,17 @@ impl OpenCADStudio {
     }
 
     fn dispatch_command_inner(&mut self, cmd: &str, allow_suggest: bool) -> Task<Message> {
+        // The same read-only gate the command line applies, repeated here
+        // because the ribbon, plugins and the control surface reach
+        // `dispatch_command` directly and never pass through
+        // `run_command_line_impl` (`VAL-CLI-011`).
+        if self.readonly_refuses_command(cmd) {
+            self.command_line.push_error_coded(
+                "COLLAB_READONLY",
+                &format!("协同：当前会话只读，拒绝执行 {cmd}"),
+            );
+            return Task::none();
+        }
         self.try_dispatch_command(cmd, allow_suggest)
             .unwrap_or_else(|| {
                 self.command_line

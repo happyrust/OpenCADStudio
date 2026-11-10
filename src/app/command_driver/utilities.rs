@@ -1173,6 +1173,16 @@ impl OpenCADStudio {
             );
         }
         let i = self.active_tab;
+        // A read-only collaboration session refuses writes before anything is
+        // parsed, so no command path can slip past it (`VAL-CLI-011`). The
+        // refused command names itself with a code the control surface reports.
+        if self.readonly_refuses_command(cmd) {
+            self.command_line.push_error_coded(
+                "COLLAB_READONLY",
+                &format!("协同：当前会话只读，拒绝执行 {cmd}"),
+            );
+            return Task::none();
+        }
         self.command_line.unconsumed.clear();
         let tokens: Vec<&str> = cmd.split_whitespace().collect();
         if tokens.len() <= 1 {
@@ -1305,6 +1315,11 @@ impl OpenCADStudio {
             // ATTSYNC <block> names its block on the line; a bare ATTSYNC
             // still asks its [?/Name/Select] question.
             || (tokens[0].eq_ignore_ascii_case("ATTSYNC") && tokens.len() > 1)
+            // `PIDTAG <old> <new>` re-tags in one line. The one-word form is
+            // the jump-to-tag command and must keep going through the
+            // first-word path (bare `PIDTAG` prompts), so the condition names
+            // the three-token shape rather than the verb.
+            || (tokens[0].eq_ignore_ascii_case("PIDTAG") && tokens.len() == 3)
         {
             return self.dispatch_command(cmd);
         }

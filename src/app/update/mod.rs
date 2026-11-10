@@ -1324,6 +1324,10 @@ impl OpenCADStudio {
                 // says what happened instead of going quiet.
                 let was_connected = self.collab.connected;
                 self.collab.apply(event.clone());
+                // A remote change is folded into the open drawing on the same
+                // frame the baseline moves, so the drawing and
+                // `/collab/status` never disagree (`VAL-CLI-009`).
+                self.apply_remote_changes();
                 self.sync_claim_colors();
                 self.refresh_collab_view();
                 match &event {
@@ -1350,6 +1354,18 @@ impl OpenCADStudio {
                     super::collab::CollabEvent::ReadonlyDowngrade { reason, .. } => {
                         self.command_line
                             .push_warning(&format!("协同：只读降级（{reason}）"));
+                    }
+                    super::collab::CollabEvent::OpApplied { revision, .. } => {
+                        self.command_line
+                            .push_info(&format!("协同：修订已推进到 {revision}"));
+                    }
+                    // A refusal is the only answer a refused request gets —
+                    // an op turned down for a stale baseline is in this
+                    // drawing and in nobody else's — so it is said out loud.
+                    super::collab::CollabEvent::ServerError { code, message } => {
+                        self.command_line.push_warning(&format!(
+                            "协同：服务器拒绝了请求（{code}：{message}）"
+                        ));
                     }
                     super::collab::CollabEvent::ClaimGranted { tag } => {
                         self.command_line

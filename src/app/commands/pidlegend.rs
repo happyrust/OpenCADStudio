@@ -1126,6 +1126,20 @@ impl OpenCADStudio {
             self.tabs[i].active_cmd = Some(Box::new(c));
             return Some(self.finish_dispatch(cmd));
         }
+        // `PIDTAG <old> <new>` re-tags: the collaboration contract states a tag
+        // change as exactly this line (`VAL-CLI-009`), and it is the only
+        // command-line spelling of "set this symbol's tag" that exists. Two
+        // words make it a write; one word stays the jump-to-tag it always was.
+        let words: Vec<&str> = arg.split_whitespace().collect();
+        if words.len() == 2 {
+            return Some(self.retag_by_tag(i, words[0], words[1]));
+        }
+        if words.len() > 2 {
+            self.command_line.push_error(&format!(
+                "PIDTAG: 改位号只接受两个参数（旧位号 新位号），实得 \"{arg}\"。"
+            ));
+            return Some(Task::none());
+        }
         let receipt = if arg.is_empty() {
             let picked: Vec<u64> = self.tabs[i]
                 .scene
@@ -1160,6 +1174,54 @@ impl OpenCADStudio {
                 .push_info("PIDTAG: the picked entities belong to no recognised symbol."),
         }
         Some(Task::none())
+    }
+
+    /// `PIDTAG <old> <new>`: rename every symbol carrying `old` to `new`.
+    ///
+    /// The rename is the same write the properties panel's `pid_tag` row makes
+    /// (`PidAuthor.tag` + `tag_source = manual`, then the uniqueness pass and
+    /// the label refresh), so the two entry points cannot drift. It is one undo
+    /// step, which is also what makes it one broadcast op
+    /// (`push_undo_entry` → `broadcast_history_delta`).
+    fn retag_by_tag(&mut self, i: usize, old: &str, new: &str) -> Task<Message> {
+        use crate::pid::persist::PidAuthor;
+        let old_upper = old.to_uppercase();
+        let targets: Vec<document::Handle> = self.tabs[i]
+            .scene
+            .document
+            .entities()
+            .filter_map(|entity| {
+                let handle = entity.common().handle;
+                let author = PidAuthor::load(&self.tabs[i].scene.document, handle)?;
+                (author.tag.to_uppercase() == old_upper).then_some(handle)
+            })
+            .collect();
+        if targets.is_empty() {
+            self.command_line.push_error_coded(
+                "tag_absent",
+                &format!("PIDTAG: 本图上没有位号 \"{old}\" 的符号，未做改动。"),
+            );
+            return Task::none();
+        }
+        self.push_undo_snapshot(i, "PIDTAG");
+        {
+            let document = &mut self.tabs[i].scene.document;
+            for handle in &targets {
+                let Some(mut author) = PidAuthor::load(document, *handle) else {
+                    continue;
+                };
+                author.tag = new.to_owned();
+                author.tag_source = crate::pid::tag_engine::TAG_SOURCE_MANUAL.to_owned();
+                author.store(document, *handle);
+            }
+        }
+        self.refresh_pid_tags(i, &targets);
+        self.tabs[i].dirty = true;
+        self.command_line.push_output(&format!(
+            "PIDTAG: 位号 {old} → {new}，{} 个符号已改。",
+            targets.len()
+        ));
+        Task::none()
     }
 
     /// Select the entities of every recognised symbol `pick` admits -- each
@@ -1918,6 +1980,88 @@ mod tests {
             .last()
             .map(|entry| entry.text.clone())
             .unwrap_or_default()
+    }
+
+    /// `PIDTAG <old> <new>` renames the tag. The collaboration contract states
+    /// a tag change with exactly this line (`VAL-CLI-009`), so it must be a
+    /// real write: the stored tag, its source, its label, and one undo step.
+    #[test]
+    fn a_two_word_pidtag_renames_the_tag_in_one_undo_step() {
+        use crate::pid::persist::PidAuthor;
+
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let handle = {
+            let document = &mut app.tabs[i].scene.document;
+            let handle = document
+                .add_entity(document::EntityType::Insert(document::entities::Insert::new(
+                    "PID_SYM_equipment_vessel",
+                    document::types::Vector3::ZERO,
+                )))
+                .expect("entity");
+            PidAuthor {
+                type_code: "EQUIPMENT".to_owned(),
+                tag: "P-1001".to_owned(),
+                tag_source: "auto".to_owned(),
+                tag_status: "ok".to_owned(),
+                ..PidAuthor::default()
+            }
+            .store(document, handle);
+            handle
+        };
+
+        let undone_before = app.tabs[i].history.undo_stack.len();
+        let _ = app.run_command_line("PIDTAG P-1001 P-1009");
+        app.finish_all_pending_history();
+
+        let author = PidAuthor::load(&app.tabs[i].scene.document, handle).expect("author");
+        assert_eq!(author.tag, "P-1009");
+        assert_eq!(author.tag_source, "manual");
+        assert!(
+            app.tabs[i].history.undo_stack.len() > undone_before,
+            "改位号必须是一个可撤销步"
+        );
+        assert!(last_line(&app).contains("P-1009"), "{}", last_line(&app));
+
+        let _ = app.automation_op(r#"{"op":"undo"}"#);
+        let back = PidAuthor::load(&app.tabs[i].scene.document, handle).expect("author");
+        assert_eq!((back.tag.as_str(), back.tag_source.as_str()), ("P-1001", "auto"));
+    }
+
+    /// A tag nobody carries is refused with a code, and nothing is written.
+    #[test]
+    fn a_rename_of_an_absent_tag_is_refused_by_code() {
+        use crate::pid::persist::PidAuthor;
+
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let handle = {
+            let document = &mut app.tabs[i].scene.document;
+            let handle = document
+                .add_entity(document::EntityType::Insert(document::entities::Insert::new(
+                    "PID_SYM_equipment_vessel",
+                    document::types::Vector3::ZERO,
+                )))
+                .expect("entity");
+            PidAuthor {
+                type_code: "EQUIPMENT".to_owned(),
+                tag: "P-1001".to_owned(),
+                tag_source: "auto".to_owned(),
+                tag_status: "ok".to_owned(),
+                ..PidAuthor::default()
+            }
+            .store(document, handle);
+            handle
+        };
+        let _ = app.run_command_line("PIDTAG P-7777 P-1009");
+        assert_eq!(
+            app.command_line.last_error_code.as_deref(),
+            Some("tag_absent")
+        );
+        let author = PidAuthor::load(&app.tabs[i].scene.document, handle).expect("author");
+        assert_eq!(author.tag, "P-1001");
     }
 
     /// PIDTAG <tag>: the symbol's block reference and its tag lettering are

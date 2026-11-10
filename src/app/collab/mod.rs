@@ -8,9 +8,11 @@
 //! no collab code ever touches the socket from the UI thread.
 //!
 //! This module owns *state* only, plus the outbound request queue that lets the
-//! UI ask the transport thread to send `claim` / `release` frames. Claims are
-//! the first outbound traffic the GUI originates; broadcast (`op`) lands in a
-//! later feature.
+//! UI ask the transport thread to send `claim` / `release` / `op` frames. The
+//! semantic half of a broadcast — turning a local edit into an `op` payload and
+//! a peer's payload back into a local edit — lives in [`broadcast`], as pure
+//! functions over the document so both directions are testable without a
+//! socket.
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -18,6 +20,8 @@ use std::collections::BTreeMap;
 // The claim commands and the panel glue are shared by both builds (the panel
 // exists on the web build as a hint); only the transport itself is desktop-only,
 // so `request_claim` / `request_release` carry a web stub below.
+pub(super) mod broadcast;
+mod apply;
 mod claims;
 #[cfg(not(target_arch = "wasm32"))]
 mod messages;
@@ -65,8 +69,16 @@ pub enum CollabEvent {
         reason: String,
         holder: Option<String>,
     },
-    /// `op_applied`: the baseline moved forward.
-    BaseRevision { revision: i64 },
+    /// `op_applied`: the baseline moved forward, and — when somebody else made
+    /// the change — here is what changed, so the local document can follow
+    /// (`VAL-CLI-009`). An op this client sent comes back too (the room
+    /// broadcast includes the originator), which is why `op_id` travels with
+    /// it: the app recognises its own id and only moves the baseline.
+    OpApplied {
+        op_id: String,
+        revision: i64,
+        changes: Vec<Value>,
+    },
     ServerError { code: String, message: String },
 }
 
@@ -118,6 +130,30 @@ pub(super) struct State {
     /// Last claim/release outcome worth telling the user: a `claim_denied`
     /// names who holds the tag and until when, and the panel shows it.
     pub last_claim_message: Option<String>,
+    /// `op_id`s this session submitted, most recent last. An `op_applied`
+    /// carrying one of them is our own change coming back from the room
+    /// broadcast, so it must not be applied to the local document a second
+    /// time. Bounded: only the ids still in flight matter.
+    pub own_ops: std::collections::VecDeque<String>,
+    /// How many remote operations have been applied to the local document.
+    /// `VAL-CLI-009` reads this through `/collab/status` to tell "the broadcast
+    /// arrived" from "the broadcast was folded in".
+    pub applied_ops: u64,
+    /// Set when a remote change could not be applied (no drawing open, or a
+    /// change shape this client does not understand). The panel reports it
+    /// rather than silently diverging.
+    pub last_apply_error: Option<String>,
+    /// Remote operations the UI thread still has to fold into the open
+    /// document. `apply()` cannot do it: it holds no document. The app drains
+    /// this right after every event (`OpenCADStudio::apply_remote_changes`).
+    pub pending_remote: Vec<RemoteChange>,
+}
+
+/// One remote `op_applied` waiting to be applied to the local document.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteChange {
+    pub op_id: String,
+    pub changes: Vec<Value>,
 }
 
 impl State {
@@ -157,6 +193,19 @@ impl State {
             return self.user_id.clone();
         }
         holder.to_owned()
+    }
+
+    /// Who holds the edit right of a drawing this session was downgraded on,
+    /// as the user the roster knows the holding session by.
+    ///
+    /// `readonly_holder` keeps what the server sent — a session id, so the
+    /// same user's second session is not mistaken for the holder — while the
+    /// panel and whoever reads the status want the person
+    /// (`VAL-CLI-012`). `None` when nobody holds it, or nothing was downgraded.
+    pub(super) fn readonly_holder_user(&self) -> Option<String> {
+        self.readonly_holder
+            .as_deref()
+            .map(|holder| self.resolve_holder(holder))
     }
 
     /// Take the config the transport thread will use.
@@ -206,6 +255,8 @@ impl State {
                 self.readonly_holder = None;
                 self.reconnect_attempts = 0;
                 self.last_error = None;
+                // A queued op belonged to the old session and is gone with it.
+                self.own_ops.clear();
             }
             CollabEvent::Disconnected { reason, will_retry } => {
                 self.connected = false;
@@ -261,7 +312,23 @@ impl State {
                 self.readonly_holder = holder;
                 self.last_error = Some(format!("只读降级：{reason}"));
             }
-            CollabEvent::BaseRevision { revision } => {
+            CollabEvent::OpApplied {
+                op_id,
+                revision,
+                changes,
+            } => {
+                // The room broadcast reaches the originator too; its own op is
+                // already in the local document, so only the baseline moves.
+                let mine = self.own_ops.iter().any(|own| own == &op_id);
+                if mine {
+                    self.own_ops.retain(|own| own != &op_id);
+                } else {
+                    self.applied_ops = self.applied_ops.saturating_add(1);
+                    self.pending_remote.push(RemoteChange {
+                        op_id,
+                        changes,
+                    });
+                }
                 self.base_revision = revision;
             }
             CollabEvent::ServerError { code, message } => {
@@ -297,10 +364,45 @@ impl State {
                 .collect::<serde_json::Map<String, Value>>(),
             "readonly": self.readonly,
             "readonly_holder": self.readonly_holder,
+            "readonly_holder_user": self.readonly_holder_user(),
             "reconnect_attempts": self.reconnect_attempts,
             "last_error": self.last_error,
             "last_claim_message": self.last_claim_message,
+            "applied_ops": self.applied_ops,
+            "pending_remote": self.pending_remote.len(),
+            "last_apply_error": self.last_apply_error,
         })
+    }
+
+    /// Queue one `op` for the transport thread.
+    ///
+    /// `payload` is the P&ID semantic change (the same shape `op_applied`
+    /// echoes back in `changes`). `base_revision` is whatever the last
+    /// `welcome` / `op_applied` established — the server refuses a stale one
+    /// (`STALE_BASE_REVISION`), and the next broadcast repairs it.
+    ///
+    /// The op id is remembered so the room broadcast of our own change does not
+    /// get applied to the local document twice.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn request_op(&mut self, payload: Value) -> Result<(), String> {
+        let Some(session_id) = self.session_id.clone() else {
+            return Err("未连接协同服务器".to_owned());
+        };
+        if self.readonly {
+            return Err("只读会话不能提交变更".to_owned());
+        }
+        let op_id = transport::next_op_id();
+        transport::request_op(&session_id, self.base_revision, &op_id, payload)?;
+        if self.own_ops.len() >= 64 {
+            self.own_ops.pop_front();
+        }
+        self.own_ops.push_back(op_id);
+        Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn request_op(&mut self, _payload: Value) -> Result<(), String> {
+        Err("网页版不支持协同变更".to_owned())
     }
 
     /// Ask the transport to send one `claim` / `release` for `tag`.
@@ -480,6 +582,30 @@ mod tests {
         });
         assert!(state.readonly);
         assert_eq!(state.readonly_holder.as_deref(), Some("s-9"));
+    }
+
+    /// VAL-CLI-012: the server names the holding *session*; whoever reads the
+    /// status wants to know which *user* that is, so the roster resolves it and
+    /// the status publishes both.
+    #[test]
+    fn a_downgrade_publishes_the_holder_as_the_user_the_roster_knows() {
+        let mut state = State::new();
+        state.user_id = "u2".to_owned();
+        state.apply(CollabEvent::Connected {
+            session_id: "s-2".to_owned(),
+            base_revision: 0,
+            peers: vec![peer("s-1", "u1"), peer("s-2", "u2")],
+            claims: Vec::new(),
+        });
+        state.apply(CollabEvent::ReadonlyDowngrade {
+            reason: "图纸已切换为只读".to_owned(),
+            holder: Some("s-1".to_owned()),
+        });
+
+        let status = state.status_json();
+        assert_eq!(status["readonly"], true);
+        assert_eq!(status["readonly_holder"], "s-1");
+        assert_eq!(status["readonly_holder_user"], "u1");
     }
 
     #[test]

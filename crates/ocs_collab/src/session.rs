@@ -232,6 +232,24 @@ impl SessionRegistry {
         }
     }
 
+    /// Moves every live session on `drawing_id` to `revision`, returning how
+    /// many moved.
+    ///
+    /// The sessions of a drawing share one baseline (`architecture.md` §3.3):
+    /// an applied op is broadcast to the whole room, so the moment it lands
+    /// every live session on the drawing is at its revision. A session that
+    /// already went stale or was taken over stays where it stopped.
+    pub fn advance_base_revision(&mut self, drawing_id: &str, revision: i64) -> usize {
+        let mut moved = 0;
+        for session in self.sessions.iter_mut() {
+            if session.drawing_id == drawing_id && session.is_active() {
+                session.base_revision = revision;
+                moved += 1;
+            }
+        }
+        moved
+    }
+
     /// Marks every active session whose heartbeat is older than the timeout as
     /// stale, returning the affected session ids.
     pub fn sweep(&mut self, now: i64) -> Vec<String> {
@@ -515,6 +533,35 @@ mod tests {
         open(&mut registry, "s-2", "协同编辑", 1_000);
         registry.sweep(1_200);
         assert!(registry.active_peers("PID-1101").is_empty());
+    }
+
+    /// An applied op moves the baseline of the drawing's live sessions and of
+    /// nothing else: not another drawing's, not one that already went stale.
+    #[test]
+    fn advancing_the_baseline_moves_the_live_sessions_of_that_drawing_only() {
+        let mut registry = registry();
+        open(&mut registry, "s-stale", "协同编辑", 1_000);
+        registry.sweep(1_200);
+        open(&mut registry, "s-1", "协同编辑", 1_200);
+        open(&mut registry, "s-2", "只读", 1_200);
+        registry.open(OpenRequest {
+            session_id: "s-elsewhere",
+            drawing_id: "PID-2202",
+            user_id: "u1",
+            display_name: "工艺甲",
+            mode: "协同编辑",
+            workspace: "plant-a",
+            base_revision: 0,
+            now: 1_200,
+        });
+
+        assert_eq!(registry.advance_base_revision("PID-1101", 3), 2);
+
+        let base = |id: &str| registry.get(id).expect("registered").base_revision;
+        assert_eq!(base("s-1"), 3);
+        assert_eq!(base("s-2"), 3, "a read-only session follows the room too");
+        assert_eq!(base("s-elsewhere"), 0);
+        assert_eq!(base("s-stale"), 0);
     }
 
     #[test]

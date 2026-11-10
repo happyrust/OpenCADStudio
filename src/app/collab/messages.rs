@@ -59,9 +59,15 @@ pub(super) fn classify(text: &str) -> Frame {
         ServerMessage::ClaimReleased { tag, reason } => {
             Frame::Event(CollabEvent::ClaimReleased { tag, reason })
         }
-        ServerMessage::OpApplied { revision, .. } => {
-            Frame::Event(CollabEvent::BaseRevision { revision })
-        }
+        ServerMessage::OpApplied {
+            op_id,
+            revision,
+            changes,
+        } => Frame::Event(CollabEvent::OpApplied {
+            op_id,
+            revision,
+            changes,
+        }),
         ServerMessage::ReadonlyDowngrade { reason, holder } => {
             Frame::Event(CollabEvent::ReadonlyDowngrade { reason, holder })
         }
@@ -160,8 +166,35 @@ mod tests {
     fn op_applied_moves_the_baseline() {
         let frame = r#"{"type":"op_applied","op_id":"op-1","revision":4,"changes":[]}"#;
         match classify(frame) {
-            Frame::Event(CollabEvent::BaseRevision { revision }) => assert_eq!(revision, 4),
+            Frame::Event(CollabEvent::OpApplied {
+                op_id,
+                revision,
+                changes,
+            }) => {
+                assert_eq!(op_id, "op-1");
+                assert_eq!(revision, 4);
+                assert!(changes.is_empty());
+            }
             _ => panic!("op_applied must move the baseline"),
+        }
+    }
+
+    /// The change list is what a peer applies to its own document
+    /// (`VAL-CLI-009`), so it must survive the trip verbatim.
+    #[test]
+    fn op_applied_carries_the_change_list() {
+        let frame = r#"{"type":"op_applied","op_id":"op-7","revision":1,
+            "changes":[{"kind":"set_tag","object_ref":"P-1001","field":"tag",
+            "value":"P-1009","old_value":"P-1001","handle":"1A"}]}"#;
+        match classify(frame) {
+            Frame::Event(CollabEvent::OpApplied { changes, .. }) => {
+                assert_eq!(changes.len(), 1);
+                assert_eq!(changes[0]["object_ref"], "P-1001");
+                assert_eq!(changes[0]["value"], "P-1009");
+                assert_eq!(changes[0]["kind"], "set_tag");
+                assert_eq!(changes[0]["handle"], "1A");
+            }
+            _ => panic!("op_applied must map to OpApplied"),
         }
     }
 

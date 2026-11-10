@@ -3,7 +3,9 @@
 //! Two lists the user needs while a session is live:
 //!
 //! * **在线用户** — every peer on this drawing, this session marked, each row
-//!   showing the user id and, when the server sent one, the display name.
+//!   showing the user id and, when the server sent one, the display name. On
+//!   a drawing this session was downgraded on, the row of whoever holds the
+//!   edit right says so, and the banner above says this session is read-only.
 //! * **位号占用** — one row per held tag: the tag, who holds it, and a button
 //!   that claims it (free / held by somebody else) or releases it (held by
 //!   this session). The button is the mouse front of `PIDCLAIM` / `PIDRELEASE`,
@@ -50,12 +52,34 @@ pub fn row_bounds_id(tag: &str) -> String {
     format!("{ROW_BOUNDS_PREFIX}{tag}")
 }
 
+/// `PosReport` id of the read-only badge in the banner. Reported only while
+/// the session is read-only, so its presence is the state.
+pub const READONLY_BOUNDS_ID: &str = "pid-collab-readonly";
+
+/// `PosReport` id prefix of the edit-right marker on a peer row.
+pub const HOLDER_BOUNDS_PREFIX: &str = "pid-collab-holder-";
+
+/// `PosReport` id of the edit-right marker on `user_id`'s row, so a client
+/// can read off who the panel shows as the holder.
+pub fn holder_bounds_id(user_id: &str) -> String {
+    format!("{HOLDER_BOUNDS_PREFIX}{user_id}")
+}
+
+/// What the banner says of a read-only session.
+pub const READONLY_LABEL: &str = "只读";
+
+/// What a peer row says of the session holding the edit right.
+pub const HOLDER_LABEL: &str = "编辑权";
+
 /// One peer row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerRow {
     pub user_id: String,
     pub display_name: String,
     pub is_self: bool,
+    /// This session holds the edit right of a drawing that went read-only for
+    /// the others.
+    pub is_holder: bool,
 }
 
 /// One claim row.
@@ -136,8 +160,18 @@ fn status_dot<'a>(connected: bool) -> Element<'a, Message> {
         .into()
 }
 
-/// The peer list: this session first (marked 本机), then the others in the
-/// order the server reported them.
+/// The colour of what the panel wants noticed: the read-only badge and the
+/// edit-right marker. The amber the drawing tints an occupied tag with, so
+/// "somebody else has this" reads the same in both places.
+fn notice(_: &Theme) -> iced::widget::text::Style {
+    let [r, g, b, a] = crate::scene::CLAIM_COLOR;
+    iced::widget::text::Style {
+        color: Some(iced::Color::from_rgba(r, g, b, a)),
+    }
+}
+
+/// The peer list, in the order the server reported it: this session marked
+/// 本机, and whoever holds the edit right marked 编辑权.
 fn peer_rows<'a>(view: &'a CollabView) -> Element<'a, Message> {
     let mut rows = column![].spacing(2);
     if view.peers.is_empty() {
@@ -149,19 +183,19 @@ fn peer_rows<'a>(view: &'a CollabView) -> Element<'a, Message> {
         } else {
             format!("{}（{}）", peer.display_name, peer.user_id)
         };
-        let suffix = if peer.is_self { " 本机" } else { "" };
-        rows = rows.push(
-            container(
-                row![
-                    text(name).size(11),
-                    Space::new().width(Fill),
-                    text(suffix).size(10).style(muted),
-                ]
-                .align_y(iced::Center),
-            )
-            .width(Fill)
-            .padding([2, 2]),
-        );
+        let mut line = row![text(name).size(11), Space::new().width(Fill)]
+            .spacing(6)
+            .align_y(iced::Center);
+        if peer.is_holder {
+            line = line.push(crate::ui::wrap_bar::PosReport::owned(
+                holder_bounds_id(&peer.user_id),
+                text(HOLDER_LABEL).size(10).style(notice),
+            ));
+        }
+        if peer.is_self {
+            line = line.push(text("本机").size(10).style(muted));
+        }
+        rows = rows.push(container(line).width(Fill).padding([2, 2]));
     }
     rows.into()
 }
@@ -227,7 +261,10 @@ pub fn view<'a>(view: &'a CollabView, width: f32, chrome: Chrome) -> Element<'a,
     .spacing(5)
     .align_y(iced::Center);
     if view.readonly {
-        banner_items = banner_items.push(text("只读").size(10).style(muted));
+        banner_items = banner_items.push(crate::ui::wrap_bar::PosReport::new(
+            READONLY_BOUNDS_ID,
+            text(READONLY_LABEL).size(11).style(notice),
+        ));
     }
     let banner = container(banner_items).width(Fill).padding([2, 2]);
 
@@ -328,5 +365,95 @@ mod tests {
     fn row_bounds_ids_name_their_tag() {
         assert_eq!(row_bounds_id("P-1001"), "pid-collab-row-P-1001");
         assert!(row_bounds_id("P-1001").starts_with(ROW_BOUNDS_PREFIX));
+    }
+
+    /// The marker id carries the user, so a client can read off who the panel
+    /// shows as holding the edit right.
+    #[test]
+    fn holder_bounds_ids_name_their_user() {
+        assert_eq!(holder_bounds_id("u1"), "pid-collab-holder-u1");
+        assert!(holder_bounds_id("u1").starts_with(HOLDER_BOUNDS_PREFIX));
+    }
+
+    // ── The panel as it is drawn ─────────────────────────────────────────
+
+    /// The panel's docked width, and a height that fits what the tests show.
+    const WIDTH: f32 = 248.0;
+    const HEIGHT: f32 = 420.0;
+
+    type Ui<'a> = iced_test::simulator::Simulator<'a, Message>;
+
+    fn draw(view_model: &CollabView) -> Ui<'_> {
+        iced_test::simulator::Simulator::with_size(
+            iced::Settings::default(),
+            (WIDTH, HEIGHT),
+            view(view_model, WIDTH, Chrome::default()),
+        )
+    }
+
+    /// Where the text `label` is drawn, or `None` when it is not.
+    fn drawn(ui: &mut Ui<'_>, label: &str) -> Option<iced::Rectangle> {
+        ui.find(label).ok().and_then(|found| found.visible_bounds())
+    }
+
+    fn peer(user: &str, is_self: bool, is_holder: bool) -> PeerRow {
+        PeerRow {
+            user_id: user.to_owned(),
+            display_name: user.to_owned(),
+            is_self,
+            is_holder,
+        }
+    }
+
+    /// `u2`'s panel on a drawing `u1` holds the edit right of.
+    fn downgraded() -> CollabView {
+        CollabView {
+            readonly: true,
+            peers: vec![peer("u1", false, true), peer("u2", true, false)],
+            ..view_with(Vec::new())
+        }
+    }
+
+    /// VAL-CLI-012: a downgraded session's panel draws the read-only badge,
+    /// and draws the edit-right marker on the holder's row and no other.
+    #[test]
+    fn a_downgraded_session_draws_the_badge_and_marks_the_holders_row() {
+        let view_model = downgraded();
+        let mut ui = draw(&view_model);
+
+        let badge = drawn(&mut ui, READONLY_LABEL).expect("the read-only badge is drawn");
+        let marker = drawn(&mut ui, HOLDER_LABEL).expect("the edit-right marker is drawn");
+        let holder = drawn(&mut ui, "u1").expect("the holder's row is drawn");
+        let own = drawn(&mut ui, "u2").expect("this session's row is drawn");
+
+        let same_line = |a: iced::Rectangle, b: iced::Rectangle| {
+            (a.center_y() - b.center_y()).abs() < a.height.max(b.height) / 2.0
+        };
+        assert!(
+            same_line(marker, holder),
+            "the marker sits on the holder's row: marker {marker:?}, u1 {holder:?}"
+        );
+        assert!(
+            !same_line(marker, own),
+            "and not on this session's: marker {marker:?}, u2 {own:?}"
+        );
+        assert!(
+            badge.y < holder.y,
+            "the badge is in the banner, above the roster: badge {badge:?}, u1 {holder:?}"
+        );
+    }
+
+    /// A session that may write draws neither: the badge is the state, so it
+    /// must not be there when the state is not.
+    #[test]
+    fn a_session_that_may_write_draws_neither() {
+        let view_model = CollabView {
+            peers: vec![peer("u1", true, false), peer("u2", false, false)],
+            ..view_with(Vec::new())
+        };
+        let mut ui = draw(&view_model);
+        assert!(drawn(&mut ui, "u1").is_some(), "the roster itself is drawn");
+        assert_eq!(drawn(&mut ui, READONLY_LABEL), None);
+        assert_eq!(drawn(&mut ui, HOLDER_LABEL), None);
     }
 }

@@ -1574,6 +1574,10 @@ pub(super) struct OpenCADStudio {
     /// Whether the first live session has already brought the panel out. One
     /// shot, so closing it by hand is not undone by the next reconnect.
     pub(crate) pid_collab_auto_shown: bool,
+    /// Set while a remote `op_applied` is being folded into the document. The
+    /// undo step that fold opens must not be broadcast back to the room
+    /// (`src/app/collab/apply.rs`).
+    pub(crate) applying_remote: bool,
     /// The backup the browser shows: its load state, the open rows, the
     /// selected node and the items read so far. App-level, not per tab, so
     /// switching documents leaves the tree where the user left it.
@@ -6742,6 +6746,7 @@ impl OpenCADStudio {
             pid_collab_view: Default::default(),
             pid_collab_claims_open: true,
             pid_collab_auto_shown: false,
+            applying_remote: false,
             #[cfg(not(target_arch = "wasm32"))]
             pid_backup_browser: Default::default(),
             pid_symbols: crate::pid::symbols::SymbolLibrary::load_from_env(),

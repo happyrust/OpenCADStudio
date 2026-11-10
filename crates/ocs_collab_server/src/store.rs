@@ -415,8 +415,9 @@ impl Store {
         Ok(())
     }
 
-    /// One op's commit: the revision check, the increment and the audit insert
-    /// all happen under a single `lock()`.
+    /// One op's commit: the revision check, the increment, the move of the
+    /// drawing's live sessions to the new revision and the audit insert all
+    /// happen under a single `lock()`.
     ///
     /// The read-compare-write sequence used to be spread over several calls
     /// (`drawing` → compare → `set_drawing_revision` → `audit_append`), so two
@@ -460,15 +461,25 @@ impl Store {
             return Err(format!("begin op commit {drawing_id}: {err}"));
         }
 
-        // The revision bump and the audit row are one unit: neither may survive
-        // without the other. Nothing in here may call a `&self` method, because
-        // `lock()` is not reentrant.
+        // The revision bump, the sessions' baseline and the audit row are one
+        // unit: none may survive without the others. Nothing in here may call a
+        // `&self` method, because `lock()` is not reentrant.
         let written = (|| -> Result<i64, String> {
             conn.execute(
                 "UPDATE drawings SET revision = ?2 WHERE drawing_id = ?1",
                 params![drawing_id, next],
             )
             .map_err(|err| format!("bump revision of {drawing_id}: {err}"))?;
+
+            // The drawing's live sessions share its baseline: the op is
+            // broadcast to all of them, so all of them are at `next` now
+            // (`VAL-CLI-010`). The registry is moved by the caller.
+            conn.execute(
+                "UPDATE sessions SET base_revision = ?2
+                 WHERE drawing_id = ?1 AND status = ?3",
+                params![drawing_id, next, SessionStatus::Active.as_str()],
+            )
+            .map_err(|err| format!("move session baselines of {drawing_id}: {err}"))?;
 
             conn.execute(
                 "INSERT INTO audit_log

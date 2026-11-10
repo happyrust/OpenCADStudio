@@ -128,6 +128,30 @@ impl PidAuthor {
         }
         Some(author)
     }
+
+    /// 从一条实体快照读回，不碰文档。
+    ///
+    /// 撤销快照里保存的是 `Arc<EntityType>`（`before` / `after` 两个镜像），
+    /// 协同广播要在「历史步已经落栈之后」从这两个镜像里读出位号与属性的
+    /// 差异，那时已经没有可用的 `&Document` 句柄。`props_ref` 指向的
+    /// XRecord 无法在此解析（它挂在文档的扩展字典上），所以溢出记录读回的
+    /// `props` 是空串。空串不等于「没有属性」：比较属性之前先问
+    /// [`Self::props_are_inline`]，溢出的那一侧不能拿来比。
+    pub fn from_entity(entity: &document::EntityType) -> Option<Self> {
+        let record = entity.common().extended_data.get_record(PID_AUTHOR_APP)?;
+        decode(&record.values)
+    }
+
+    /// 这条实体快照的 `props` 是否就写在记录里（而不是溢出到 XRecord）。
+    ///
+    /// 没有 `PID_AUTHOR` 记录的实体也算「在记录里」：它没有属性可溢出。
+    pub fn props_are_inline(entity: &document::EntityType) -> bool {
+        entity
+            .common()
+            .extended_data
+            .get_record(PID_AUTHOR_APP)
+            .is_none_or(|record| props_ref_of(&record.values).is_none())
+    }
 }
 
 /// 九键 → XDATA 值序列。纯函数：不碰文档，不判溢出。

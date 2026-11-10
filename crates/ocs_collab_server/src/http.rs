@@ -325,11 +325,68 @@ async fn drawing_state(
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, codes::INVALID_MESSAGE, &err);
     }
 
+    if next_state == DrawingState::ReadOnly {
+        downgrade_all_but_the_holder(&state, &drawing_id, &active_editors, &user_id).await;
+    }
+
     (
         StatusCode::OK,
         Json(json!({ "drawing_id": drawing_id, "state": state_text })),
     )
         .into_response()
+}
+
+/// Tells every live session on a drawing that just became 只读 that it may no
+/// longer write — every session but the one holding the edit right, which
+/// goes on writing and is told nothing (`VAL-CLI-011`).
+///
+/// The holder is the earliest live editing session the drawing had when the
+/// state changed (`active_editors` is ordered by creation time), named by its
+/// session id so the same user's second session is not mistaken for it. With
+/// nobody editing there is no holder, and everybody is downgraded.
+///
+/// A downgrade is about one session's access, so it goes out on that
+/// session's own channel rather than to the room: the room would hand it to
+/// the holder as well.
+async fn downgrade_all_but_the_holder(
+    state: &AppState,
+    drawing_id: &str,
+    active_editors: &[(String, String)],
+    changed_by: &str,
+) {
+    let holder = active_editors
+        .first()
+        .map(|(session_id, _)| session_id.clone());
+    let downgraded: Vec<(String, String)> = state
+        .sessions
+        .lock()
+        .await
+        .active_peers(drawing_id)
+        .into_iter()
+        .filter(|session| Some(&session.session_id) != holder.as_ref())
+        .map(|session| (session.session_id, session.user_id))
+        .collect();
+    let message = ocs_collab::ServerMessage::ReadonlyDowngrade {
+        reason: "图纸已切换为只读".to_owned(),
+        holder: holder.clone(),
+    };
+    let holder_text = holder.as_deref().unwrap_or("(无)");
+    println!(
+        "[ocs_collab_server] 图纸切只读 drawing={drawing_id} by={changed_by} holder={holder_text} -> 降级 {} 个会话 at={}",
+        downgraded.len(),
+        chrono::Utc::now().timestamp()
+    );
+    let direct = state.direct.lock().expect("direct mutex poisoned");
+    for (session_id, user_id) in &downgraded {
+        // A session with no socket (opened over HTTP, or just disconnected)
+        // has nobody to tell; it learns its access the next time it asks.
+        let delivered = direct
+            .get(session_id)
+            .is_some_and(|sender| sender.send(message.clone()).is_ok());
+        println!(
+            "[ocs_collab_server] 单播 readonly_downgrade session={session_id} user={user_id} holder={holder_text} delivered={delivered}"
+        );
+    }
 }
 
 /// `(session_id, user_id)` of every live editing session on the drawing —
@@ -1090,5 +1147,129 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Opens a session on `d-a1-coop` the way a socket does, and hands back
+    /// the unicast channel `handle_socket` registers once the handshake is
+    /// through.
+    async fn live_session(
+        state: &AppState,
+        user_id: &str,
+        mode: &str,
+        now: i64,
+    ) -> (
+        String,
+        tokio::sync::mpsc::UnboundedReceiver<ocs_collab::ServerMessage>,
+    ) {
+        let mut conn = crate::ws::Connection::new("127.0.0.1");
+        crate::ws::handle_message(
+            state,
+            &mut conn,
+            ocs_collab::ClientMessage::Hello {
+                user_id: user_id.into(),
+                drawing_id: "d-a1-coop".into(),
+                mode: mode.into(),
+                client_version: "test".into(),
+                workspace: "plant-a".into(),
+            },
+            now,
+        )
+        .await;
+        let session_id = conn.session.expect("handshaken").session_id;
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        state
+            .direct
+            .lock()
+            .expect("direct mutex")
+            .insert(session_id.clone(), sender);
+        (session_id, receiver)
+    }
+
+    async fn switch_state(state: &Arc<AppState>, next: &str) -> StatusCode {
+        drawing_state(
+            State(state.clone()),
+            Path("d-a1-coop".into()),
+            Json(DrawingStateBody {
+                user_id: Some("u-admin".into()),
+                state: Some(next.into()),
+            }),
+        )
+        .await
+        .status()
+    }
+
+    /// VAL-CLI-011: a drawing switched to 只读 downgrades every live session on
+    /// it except the one holding the edit right — the earliest live editing
+    /// session — which is told nothing and goes on writing.
+    #[tokio::test]
+    async fn switching_to_readonly_downgrades_everyone_but_the_holder() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let (_viewer, mut viewer_rx) = live_session(&state, "u-view", "只读", now - 30).await;
+        let (holder, mut holder_rx) = live_session(&state, "u-proc", "协同编辑", now - 20).await;
+        let (_second, mut second_rx) =
+            live_session(&state, "u-admin", "协同编辑", now - 10).await;
+        let mut room = state.bus.subscribe("d-a1-coop");
+
+        assert_eq!(switch_state(&state, "只读").await, StatusCode::OK);
+
+        for (who, receiver) in [
+            ("the second editor", &mut second_rx),
+            ("the session that was read-only already", &mut viewer_rx),
+        ] {
+            match receiver.try_recv() {
+                Ok(ocs_collab::ServerMessage::ReadonlyDowngrade {
+                    reason,
+                    holder: named,
+                }) => {
+                    assert!(!reason.is_empty(), "{who}: the reason is stated");
+                    assert_eq!(named.as_deref(), Some(holder.as_str()), "{who}");
+                }
+                other => panic!("{who} must be downgraded, got {other:?}"),
+            }
+            assert!(receiver.try_recv().is_err(), "{who} is told once");
+        }
+        assert!(
+            holder_rx.try_recv().is_err(),
+            "the holder keeps the edit right and is told nothing"
+        );
+        assert!(
+            room.try_recv().is_none(),
+            "a downgrade is addressed to each session, never published to the room"
+        );
+    }
+
+    /// With nobody editing there is no edit right to hold: everybody on the
+    /// drawing is downgraded and the message names no holder.
+    #[tokio::test]
+    async fn switching_to_readonly_with_nobody_editing_names_no_holder() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let (_viewer, mut viewer_rx) = live_session(&state, "u-view", "只读", now - 5).await;
+
+        assert_eq!(switch_state(&state, "只读").await, StatusCode::OK);
+
+        match viewer_rx.try_recv() {
+            Ok(ocs_collab::ServerMessage::ReadonlyDowngrade { holder, .. }) => {
+                assert_eq!(holder, None)
+            }
+            other => panic!("the viewer must be downgraded, got {other:?}"),
+        }
+    }
+
+    /// Only 只读 takes write access away; any other state leaves every session
+    /// as it was.
+    #[tokio::test]
+    async fn a_state_other_than_readonly_downgrades_nobody() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let (_first, mut first_rx) = live_session(&state, "u-proc", "协同编辑", now - 20).await;
+        let (_second, mut second_rx) =
+            live_session(&state, "u-admin", "协同编辑", now - 10).await;
+
+        assert_eq!(switch_state(&state, "单人编辑").await, StatusCode::OK);
+
+        assert!(first_rx.try_recv().is_err());
+        assert!(second_rx.try_recv().is_err());
     }
 }

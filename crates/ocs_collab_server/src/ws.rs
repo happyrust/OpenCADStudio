@@ -106,6 +106,13 @@ pub enum Reaction {
 
 /// One socket's full lifecycle.
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, peer_addr: String) {
+    // One line per socket, before anything is said on it: a client that must
+    // not dial out at all (`VAL-CLI-017`) is shown by this line never
+    // appearing, which the session-level lines below cannot show.
+    println!(
+        "[ocs_collab_server] 入站连接 peer={peer_addr} at={}",
+        now_unix()
+    );
     let mut conn = Connection::new(peer_addr);
     let mut subscription: Option<Subscription> = None;
 
@@ -552,15 +559,20 @@ async fn hello(
     };
 
     match outcome {
-        OpenOutcome::Rejected { code, holder } => vec![
-            Reaction::Send(ServerMessage::Error {
-                code,
-                message: "该图面已有活动的编辑会话".to_owned(),
-                level: Some("state".to_owned()),
-                holder: Some(holder),
-            }),
-            Reaction::Close,
-        ],
+        OpenOutcome::Rejected { code, holder } => {
+            println!(
+                "[ocs_collab_server] 入站 hello user={user_id} drawing={drawing_id} mode={mode} -> 拒绝 code={code} holder={holder} at={now}"
+            );
+            vec![
+                Reaction::Send(ServerMessage::Error {
+                    code,
+                    message: "该图面已有活动的编辑会话".to_owned(),
+                    level: Some("state".to_owned()),
+                    holder: Some(holder),
+                }),
+                Reaction::Close,
+            ]
+        }
         OpenOutcome::Opened {
             session,
             taken_over,
@@ -613,7 +625,7 @@ async fn hello(
                 }
             }
 
-            let peers = {
+            let peers: Vec<Peer> = {
                 let sessions = state.sessions.lock().await;
                 sessions
                     .active_peers(drawing_id)
@@ -630,6 +642,11 @@ async fn hello(
             // `sweep_expired` would have sent.
             reactions.extend(expired_release_reactions(state, expired));
             let claims: Vec<ClaimInfo> = claims.iter().map(claim_info_of).collect();
+            println!(
+                "[ocs_collab_server] 入站 hello user={user_id} drawing={drawing_id} mode={mode} -> welcome session={session_id} base_revision={base_revision} peers={} claims={} at={now}",
+                peers.len(),
+                claims.len()
+            );
 
             conn.session = Some(session.clone());
             reactions.extend([
@@ -709,6 +726,10 @@ async fn claim(state: &AppState, session: &Session, tag: String, now: i64) -> Ve
                     eprintln!("[ocs_collab_server] 写入占用失败：{err}");
                 }
             }
+            println!(
+                "[ocs_collab_server] 入站 claim session={} user={} tag={tag} -> claim_granted expires_at={} at={now}",
+                session.session_id, session.user_id, occupancy.expires_at
+            );
             reactions.push(Reaction::Send(ServerMessage::ClaimGranted {
                 tag,
                 session_id: session.session_id.clone(),
@@ -716,6 +737,10 @@ async fn claim(state: &AppState, session: &Session, tag: String, now: i64) -> Ve
             reactions
         }
         ClaimOutcome::Denied { holder, expires_at } => {
+            println!(
+                "[ocs_collab_server] 入站 claim session={} user={} tag={tag} -> claim_denied holder={holder} expires_at={expires_at} at={now}",
+                session.session_id, session.user_id
+            );
             reactions.push(Reaction::Send(ServerMessage::ClaimDenied {
                 tag,
                 holder,
@@ -738,6 +763,7 @@ fn expired_release_reactions(state: &AppState, expired: Vec<Occupancy>) -> Vec<R
                 eprintln!("[ocs_collab_server] 清理过期占用失败：{err}");
             }
         }
+        log_claim_expired(&occupancy);
         reactions.push(Reaction::Publish {
             drawing_id: occupancy.drawing_id.clone(),
             message: ServerMessage::ClaimReleased {
@@ -747,6 +773,21 @@ fn expired_release_reactions(state: &AppState, expired: Vec<Occupancy>) -> Vec<R
         });
     }
     reactions
+}
+
+/// The line a claim's TTL running out leaves in the log, whichever path
+/// noticed it (`VAL-CLI-006`).
+fn log_claim_expired(occupancy: &Occupancy) {
+    println!(
+        "[ocs_collab_server] 占用到期回收 tag={} drawing={} session={} user={} expires_at={} -> 广播 claim_released reason={} at={}",
+        occupancy.tag,
+        occupancy.drawing_id,
+        occupancy.session_id,
+        occupancy.user_id,
+        occupancy.expires_at,
+        release_reasons::EXPIRED,
+        now_unix()
+    );
 }
 
 /// One voluntary `release`; broadcast so the originator sees it too
@@ -762,6 +803,13 @@ async fn release(state: &AppState, session: &Session, tag: String) -> Vec<Reacti
                     eprintln!("[ocs_collab_server] 删除占用失败：{err}");
                 }
             }
+            println!(
+                "[ocs_collab_server] 入站 release session={} user={} tag={tag} -> 广播 claim_released reason={} at={}",
+                session.session_id,
+                session.user_id,
+                release_reasons::RELEASED,
+                now_unix()
+            );
             vec![Reaction::Publish {
                 drawing_id: session.drawing_id.clone(),
                 message: ServerMessage::ClaimReleased {
@@ -805,6 +853,7 @@ async fn op(
             match store.commit_op(&session.drawing_id, base_revision, &row) {
                 Ok(OpCommit::Applied { revision, .. }) => revision,
                 Ok(OpCommit::Stale { current }) => {
+                    log_stale_op(session, &op_id, base_revision, current, now);
                     return vec![Reaction::Send(error_message(
                         codes::STALE_BASE_REVISION,
                         &format!("图面当前修订为 {current}，操作基于 {base_revision}"),
@@ -829,6 +878,7 @@ async fn op(
             let current = revisions.get(&session.drawing_id).copied().unwrap_or(0);
             if base_revision != current {
                 drop(revisions);
+                log_stale_op(session, &op_id, base_revision, current, now);
                 return vec![Reaction::Send(error_message(
                     codes::STALE_BASE_REVISION,
                     &format!("图面当前修订为 {current}，操作基于 {base_revision}"),
@@ -841,6 +891,27 @@ async fn op(
         }
     };
 
+    // The drawing's live sessions share its baseline, and the broadcast below
+    // is what moves them: every one of them is at `revision` from here on
+    // (`VAL-CLI-010`). `commit_op` moved the table rows inside its own
+    // transaction; this moves the registry those rows are rewritten from, so
+    // the next heartbeat does not put the old baseline back.
+    let moved = state
+        .sessions
+        .lock()
+        .await
+        .advance_base_revision(&session.drawing_id, revision);
+    println!(
+        "[ocs_collab_server] 入站 op session={} user={} op_id={op_id} base_revision={base_revision} kind={} object_ref={} -> 广播 op_applied revision={revision} sessions={moved} at={now}",
+        session.session_id,
+        session.user_id,
+        payload.get("kind").and_then(Value::as_str).unwrap_or("op"),
+        payload
+            .get("object_ref")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    );
+
     vec![Reaction::Publish {
         drawing_id: session.drawing_id.clone(),
         message: ServerMessage::OpApplied {
@@ -849,6 +920,17 @@ async fn op(
             changes: op_changes(&payload),
         },
     }]
+}
+
+/// The line a refused op leaves in the log: what the client believed, and what
+/// the drawing is actually at.
+fn log_stale_op(session: &Session, op_id: &str, base_revision: i64, current: i64, now: i64) {
+    println!(
+        "[ocs_collab_server] 入站 op session={} user={} op_id={op_id} base_revision={base_revision} -> error {} current={current} at={now}",
+        session.session_id,
+        session.user_id,
+        codes::STALE_BASE_REVISION
+    );
 }
 
 /// One housekeeping pass: mark timed-out sessions stale and expire claims.
@@ -902,6 +984,7 @@ pub async fn sweep_expired(state: &AppState, now: i64) -> Vec<Reaction> {
                 eprintln!("[ocs_collab_server] 清理过期占用失败：{err}");
             }
         }
+        log_claim_expired(&occupancy);
         reactions.push(Reaction::Publish {
             drawing_id: occupancy.drawing_id.clone(),
             message: ServerMessage::ClaimReleased {
@@ -1748,6 +1831,111 @@ mod tests {
         match &publishes(&reactions)[0] {
             ServerMessage::OpApplied { revision, .. } => assert_eq!(*revision, 2),
             other => panic!("expected op_applied, got {other:?}"),
+        }
+    }
+
+    /// VAL-CLI-010: the sessions of a drawing share one baseline, so an applied
+    /// op moves every live one of them to its revision — in the table, and in
+    /// the registry the table is rewritten from.
+    #[tokio::test]
+    async fn an_applied_op_moves_every_live_session_on_the_drawing_to_its_revision() {
+        let state = state();
+        let mut alice = opened_conn(&state, "u1", T0).await;
+        let mut bob = opened_conn(&state, "u2", T0 + 1).await;
+        // Somebody on another drawing shares nothing with this op.
+        let mut elsewhere = conn();
+        handle_message(
+            &state,
+            &mut elsewhere,
+            ClientMessage::Hello {
+                user_id: "u3".into(),
+                drawing_id: "PID-2202".into(),
+                mode: "协同编辑".into(),
+                client_version: "test".into(),
+                workspace: "plant-a".into(),
+            },
+            T0 + 2,
+        )
+        .await;
+
+        let alice_id = session_id(&alice);
+        let reactions = handle_message(
+            &state,
+            &mut alice,
+            ClientMessage::Op {
+                session_id: alice_id,
+                base_revision: 0,
+                op_id: "op-1".into(),
+                payload: json!({
+                    "kind": "set_tag",
+                    "object_ref": "P-1001",
+                    "field": "tag",
+                    "value": "P-1009",
+                }),
+            },
+            T0 + 3,
+        )
+        .await;
+        assert!(
+            matches!(
+                publishes(&reactions).first(),
+                Some(ServerMessage::OpApplied { revision: 1, .. })
+            ),
+            "the op must apply: {reactions:?}"
+        );
+
+        let stored = |conn: &Connection| {
+            store_of(&state)
+                .session_row(&session_id(conn))
+                .expect("lookup")
+                .expect("session row")
+                .base_revision
+        };
+        assert_eq!(stored(&alice), 1, "the session that sent the op");
+        assert_eq!(stored(&bob), 1, "its peer on the drawing");
+        assert_eq!(stored(&elsewhere), 0, "a session on another drawing");
+
+        // A heartbeat rewrites the row from the registry; it must not put the
+        // old baseline back.
+        let bob_id = session_id(&bob);
+        handle_message(
+            &state,
+            &mut bob,
+            ClientMessage::Heartbeat { session_id: bob_id },
+            T0 + 4,
+        )
+        .await;
+        assert_eq!(stored(&bob), 1, "a heartbeat must not rewind the baseline");
+    }
+
+    /// The same without a database: the registry is all there is.
+    #[tokio::test]
+    async fn an_applied_op_moves_the_registry_baseline_without_a_store() {
+        let state = storeless_state();
+        let mut alice = opened_conn(&state, "u1", T0).await;
+        let bob = opened_conn(&state, "u2", T0 + 1).await;
+        let alice_id = session_id(&alice);
+        handle_message(
+            &state,
+            &mut alice,
+            ClientMessage::Op {
+                session_id: alice_id,
+                base_revision: 0,
+                op_id: "op-1".into(),
+                payload: json!({"kind": "set_property", "object_ref": "V-1001"}),
+            },
+            T0 + 2,
+        )
+        .await;
+        let registry = state.sessions.lock().await;
+        for conn in [&alice, &bob] {
+            assert_eq!(
+                registry
+                    .get(&session_id(conn))
+                    .expect("registered")
+                    .base_revision,
+                1
+            );
         }
     }
 

@@ -158,6 +158,15 @@ impl OpenCADStudio {
                 delta.view = Some(Box::new(self.tabs[i].scene.camera.borrow().clone()));
             }
         }
+        // The single convergence point of every new undo step (about 60 call
+        // sites route here), which is why the collaboration broadcast hooks in
+        // here (`architecture.md` §5.3); undo and redo, which replay a step
+        // without passing through, broadcast from `undo_steps_reported` and
+        // `redo_steps`. Read the semantic diff off the delta before the
+        // snapshot is moved onto the stack.
+        if let HistorySnapshot::Delta(delta) = &snapshot {
+            self.broadcast_history_delta(delta);
+        }
         self.tabs[i].history.undo_stack.push(snapshot);
         self.tabs[i].edit_revision = self.tabs[i].edit_revision.wrapping_add(1);
         self.clear_redo_history(i);
@@ -1561,6 +1570,11 @@ impl OpenCADStudio {
         let mut native_graph_changed = false;
         let mut changes = Vec::new();
         let mut step_view = None;
+        // An undo moves a step to the redo stack without passing
+        // `push_undo_entry`, yet it changes the drawing as surely as the edit
+        // did: a retag taken back here has to be taken back in the room. The
+        // steps of one UNDO go out together, in the order they are taken back.
+        let mut undone = Vec::new();
         for _ in 0..steps {
             let Some(snapshot) = self.tabs[i].history.undo_stack.pop() else {
                 break;
@@ -1569,6 +1583,9 @@ impl OpenCADStudio {
             let step_label = snapshot.label().to_owned();
             match snapshot {
                 HistorySnapshot::Delta(mut d) => {
+                    undone.extend(super::collab::broadcast::collect_undone_changes(
+                        &d.entities,
+                    ));
                     native_graph_changed |=
                         !d.parametric_constraints.is_empty() || d.named_parameters.is_some();
                     // Symmetric: undo applies the before side, then the same
@@ -1614,6 +1631,7 @@ impl OpenCADStudio {
             &changes,
         );
         self.restore_history_view(i, step_view);
+        self.broadcast_changes(undone);
         if report {
             self.command_line
                 .push_output(crate::tf!("Undo: {last_label}").as_ref());
@@ -1666,6 +1684,8 @@ impl OpenCADStudio {
         let mut native_graph_changed = false;
         let mut changes = Vec::new();
         let mut step_view = None;
+        // Broadcast for the same reason an undo is (`undo_steps_reported`).
+        let mut redone = Vec::new();
         for _ in 0..steps {
             let Some(snapshot) = self.tabs[i].history.redo_stack.pop() else {
                 break;
@@ -1674,6 +1694,7 @@ impl OpenCADStudio {
             let step_label = snapshot.label().to_owned();
             match snapshot {
                 HistorySnapshot::Delta(mut d) => {
+                    redone.extend(super::collab::broadcast::collect_changes(&d.entities));
                     native_graph_changed |=
                         !d.parametric_constraints.is_empty() || d.named_parameters.is_some();
                     layer_panel_changed |= d.structure.as_ref().is_some_and(|structure| {
@@ -1716,6 +1737,7 @@ impl OpenCADStudio {
             &changes,
         );
         self.restore_history_view(i, step_view);
+        self.broadcast_changes(redone);
         self.command_line
             .push_output(crate::tf!("Redo: {last_label}").as_ref());
     }
