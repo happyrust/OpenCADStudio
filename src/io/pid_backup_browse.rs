@@ -21,6 +21,7 @@
 //! What a drawing holds -- its model items and their published attributes --
 //! is [`load_items`], read on demand when the panel first expands a drawing.
 
+pub mod export_log;
 pub mod labels;
 pub mod loose_files;
 pub mod manifest;
@@ -77,6 +78,9 @@ pub struct BackupIndex {
     pub manifest_model: Option<manifest::ManifestModel>,
     /// The folder [`BackupIndex::ref_tree`] was read from.
     pub ref_root: PathBuf,
+    /// The tables of the database the dump holds, with their row counts
+    /// when the backup carries its export log.
+    pub table_catalog: Option<export_log::TableCatalog>,
 }
 
 impl BackupIndex {
@@ -244,6 +248,14 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
     let loose = loose_files::loose_files(&backup_root, &files);
     let at = loose_files::insert_at(&files);
     files.splice(at..at, loose);
+    // The tables of the database: the manifest's names, the log's counts.
+    let export_log = read_export_log(&backup_root);
+    let table_catalog = export_log::table_catalog(
+        manifest_model
+            .as_ref()
+            .map_or(&[][..], |model| model.tables.as_slice()),
+        export_log.as_ref(),
+    );
 
     let mut drawings = Vec::new();
     let mut group_paths = Vec::new();
@@ -301,7 +313,22 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
         warnings,
         manifest_model,
         ref_root,
+        table_catalog,
     })
+}
+
+/// `Export.log` of the backup folder, when it is there and reads as text.
+fn read_export_log(backup_root: &Path) -> Option<export_log::ExportLog> {
+    let path = backup_root.join("Export.log");
+    if !path.is_file() {
+        return None;
+    }
+    match text_file::read_text_file(&path) {
+        Ok(text_file::Readable::Text(file)) => Some(export_log::parse_export_log(
+            file.lines().iter().map(String::as_str),
+        )),
+        _ => None,
+    }
 }
 
 /// Tell each backup file what the manifest says it is. A single file stored

@@ -21,6 +21,7 @@
 //! backup holds is a [`section`]: a module beside this one that hangs its
 //! rows under a row of the tree and states the details of its nodes.
 
+mod database;
 #[cfg(test)]
 mod drawn_tests;
 mod goto;

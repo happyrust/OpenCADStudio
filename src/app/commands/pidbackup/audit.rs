@@ -43,6 +43,9 @@ thread_local! {
 /// The plant test backup the two reading tests of `io::pid_backup*` use.
 const DEFAULT_BACKUP: &str = r"D:\work\plant-code\cad\pid-test-data";
 
+/// How many nodes of one branch the report shows in full.
+const SECTION_NODES_SHOWN: usize = 12;
+
 /// The docked panel's default width, and a height a 1080p window leaves it.
 const PANEL_W: f32 = 340.0;
 const PANEL_H: f32 = 900.0;
@@ -194,6 +197,8 @@ fn walk_sections(
 ) -> usize {
     send(app, PidBackupMsg::Toggle(host.clone())).unwrap();
     let mut seen: HashSet<NodeId> = HashSet::new();
+    // What the walk unfolded, to fold again when it is done.
+    let mut opened: Vec<NodeId> = Vec::new();
     loop {
         let rows = visible_rows(&app.pid_backup_browser);
         let Some(at) = rows.iter().position(|row| row.id == *host) else {
@@ -219,16 +224,152 @@ fn walk_sections(
                 text.to_string()
             }
         };
-        audit.line(format!("{indent}{} [{} detail line(s)]", row.label, details.len()));
-        for (key, value) in details.iter().take(6) {
-            audit.line(format!("{indent}    {} = {}", cut(key), cut(value)));
+        // Every node is selected and must have details; the report shows
+        // the first ones of a branch in full and counts the rest.
+        if seen.len() <= SECTION_NODES_SHOWN {
+            audit.line(format!("{indent}{} [{} detail line(s)]", row.label, details.len()));
+            for (key, value) in details.iter().take(6) {
+                audit.line(format!("{indent}    {} = {}", cut(key), cut(value)));
+            }
         }
         if row.expandable && !row.expanded {
             send(app, PidBackupMsg::Toggle(row.id.clone())).unwrap();
+            opened.push(row.id.clone());
         }
+    }
+    for id in opened.into_iter().rev() {
+        send(app, PidBackupMsg::Toggle(id)).unwrap();
+    }
+    if seen.len() > SECTION_NODES_SHOWN {
+        audit.line(format!(
+            "    ... and {} more node(s), each with details",
+            seen.len() - SECTION_NODES_SHOWN
+        ));
     }
     send(app, PidBackupMsg::Toggle(host.clone())).unwrap();
     seen.len()
+}
+
+/// The rows the tree shows directly under `host`, which must be open.
+fn rows_under(app: &OpenCADStudio, host: &NodeId) -> Vec<Row> {
+    let rows = visible_rows(&app.pid_backup_browser);
+    let Some(at) = rows.iter().position(|row| row.id == *host) else {
+        return Vec::new();
+    };
+    let depth = rows[at].depth;
+    rows[at + 1..]
+        .iter()
+        .take_while(|row| row.depth > depth)
+        .filter(|row| row.depth == depth + 1)
+        .cloned()
+        .collect()
+}
+
+/// The database branch under the dump: what the catalog holds, that the
+/// panel shows the same, and pictures of the dump, a schema and a table.
+fn walk_database(app: &mut OpenCADStudio, audit: &mut Audit, index: &BackupIndex) {
+    let Some(catalog) = &index.table_catalog else {
+        audit.line("== database tables: the backup names none ==");
+        return;
+    };
+    audit.line(format!(
+        "== database tables: {} schema(s), {} table(s), {} ==",
+        catalog.schemas.len(),
+        catalog.table_count(),
+        match catalog.rows() {
+            Some(rows) => format!("{rows} row(s) by Export.log"),
+            None => "no row counts (no Export.log)".to_string(),
+        }
+    ));
+    for schema in &catalog.schemas {
+        audit.line(format!(
+            "  {}: {} table(s), {} with rows, {}",
+            schema.name,
+            schema.tables.len(),
+            schema.filled(),
+            schema
+                .rows()
+                .map_or_else(|| "no row counts".to_string(), |rows| format!("{rows} row(s)")),
+        ));
+    }
+    let (manifest_only, log_only) = catalog.one_sided();
+    audit.line(format!(
+        "  named in Manifest.txt only: {manifest_only}; in Export.log only: {log_only}; export: {}; {} message(s)",
+        catalog.outcome.as_deref().unwrap_or("-"),
+        catalog.messages.len()
+    ));
+    let Some(dump) = index
+        .files
+        .iter()
+        .position(|file| file.kind == crate::io::pid_backup_browse::FileKind::ExportDump)
+        .map(NodeId::File)
+    else {
+        audit.line("  the backup has no Export.dmp to hang the tables under");
+        return;
+    };
+    // The panel says what the catalog holds.
+    let details = detail_rows(&app.pid_backup_browser, &dump);
+    let shown = |key: std::borrow::Cow<'static, str>| {
+        details
+            .iter()
+            .find(|(found, _)| *found == key)
+            .map(|(_, value)| value.clone())
+    };
+    assert_eq!(
+        shown(crate::t!("Table count")),
+        Some(catalog.table_count().to_string()),
+        "the dump's details total the tables"
+    );
+    assert_eq!(
+        shown(crate::t!("Row count")),
+        catalog.rows().map(|rows| rows.to_string()),
+        "the dump's details total the rows"
+    );
+    send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
+    send(app, PidBackupMsg::Toggle(dump.clone())).unwrap();
+    let schemas = rows_under(app, &dump);
+    assert_eq!(schemas.len(), catalog.schemas.len(), "a row per schema");
+    for (row, schema) in schemas.iter().zip(&catalog.schemas) {
+        // Fields, the table's titles, then a line per table.
+        let details = detail_rows(&app.pid_backup_browser, &row.id);
+        let fields = if catalog.has_log { 4 } else { 2 };
+        assert_eq!(
+            details.len(),
+            fields + 1 + schema.tables.len(),
+            "{} lists every table",
+            schema.name
+        );
+    }
+    send(app, PidBackupMsg::Select(dump.clone())).unwrap();
+    audit.shot(app, "database-schemas");
+    // The schema with the most tables, and its largest table.
+    let Some((at, schema)) = catalog
+        .schemas
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, schema)| schema.tables.len())
+    else {
+        return;
+    };
+    let schema_row = schemas[at].clone();
+    send(app, PidBackupMsg::Select(schema_row.id.clone())).unwrap();
+    audit.shot(app, "database-schema-tables");
+    send(app, PidBackupMsg::Toggle(schema_row.id.clone())).unwrap();
+    let tables = rows_under(app, &schema_row.id);
+    assert_eq!(tables.len(), schema.tables.len(), "a row per table");
+    let largest = schema
+        .tables
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, table)| table.rows.unwrap_or(0))
+        .map_or(0, |(at, _)| at);
+    send(app, PidBackupMsg::Select(tables[largest].id.clone())).unwrap();
+    audit.line(format!("  largest table of {}: {}", schema.name, tables[largest].label));
+    audit.shot(app, "database-table");
+    send(app, PidBackupMsg::Toggle(schema_row.id)).unwrap();
+    send(app, PidBackupMsg::Toggle(dump)).unwrap();
+    send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();
+    send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
 }
 
 /// The values of `Manifest.txt` that are credentials: every obfuscated
@@ -616,7 +757,6 @@ fn walk_index(
             }
         }
         if let Some(objects) = section_row(app, 1) {
-            // The walk above left it open.
             if !objects.expanded {
                 send(app, PidBackupMsg::Toggle(objects.id.clone())).unwrap();
             }
@@ -676,6 +816,7 @@ fn walk_index(
     send(app, PidBackupMsg::Toggle(NodeId::Ref)).unwrap();
 
     walk_text(app, audit, index, empty);
+    walk_database(app, audit, index);
 }
 
 #[test]

@@ -1262,6 +1262,21 @@ mod tests {
         "reading-file",
         "member-not-found",
         "text-credentials-hidden",
+        "schema-count",
+        "table-count",
+        "tables-with-rows",
+        "table-row-count",
+        "exported-from",
+        "character-sets",
+        "export-outcome",
+        "export-messages",
+        "no-export-log",
+        "tables-manifest-only",
+        "tables-log-only",
+        "table-manifest-only",
+        "table-log-only",
+        "table-rows-not-shown",
+        "no-row-count",
     ];
 
     /// The panel's own labels, the ones the dock title and the command share.

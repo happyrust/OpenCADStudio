@@ -58,6 +58,21 @@ pub struct TextFile {
     pub hidden: usize,
 }
 
+impl TextFile {
+    /// The lines whole: one continued over several rows is put together
+    /// again.
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::with_capacity(self.line_count);
+        for (number, text) in &self.rows {
+            match (number, lines.last_mut()) {
+                (None, Some(last)) => last.push_str(text),
+                _ => lines.push(text.clone()),
+            }
+        }
+        lines
+    }
+}
+
 /// What a file turned out to be.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Readable {
@@ -504,6 +519,8 @@ mod tests {
         assert_eq!(rows.concat(), wide);
         // A line of exactly a row stays one.
         assert_eq!(split_row(&"k".repeat(ROW_UNITS)).len(), 1);
+        // Put together again, the rows are the lines they were cut from.
+        assert_eq!(file.lines(), ["short", long.as_str(), "end"]);
     }
 
     /// What a credential looks like, made up for the tests.
