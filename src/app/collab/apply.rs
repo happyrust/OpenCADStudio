@@ -152,9 +152,16 @@ impl OpenCADStudio {
                 continue;
             }
             total += applied.handles.len();
+            // What hangs off the changed objects is this drawing's own to
+            // work out, as after a local edit: a pipe line's field goes down
+            // to its runs and their segments. The sender states only the
+            // tagged objects it changed — a segment has no tag to name it by
+            // — so without this the segments here keep the old values.
+            let carried_down = self.propagate_pid_chain(i, &applied.handles);
             let changes: Vec<(document::Handle, crate::scene::ChangeKind)> = applied
                 .handles
                 .iter()
+                .chain(&carried_down)
                 .map(|handle| (*handle, crate::scene::ChangeKind::Modified))
                 .collect();
             self.tabs[i].scene.bump_entities(&changes);

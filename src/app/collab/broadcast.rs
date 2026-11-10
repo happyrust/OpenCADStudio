@@ -20,6 +20,12 @@
 //! carries that tag here too. Handles are not shared identity: two clients
 //! that each inserted a symbol since they opened the file gave the same handle
 //! to different things.
+//!
+//! An object with no tag — a pipe segment, a break, a connector — therefore
+//! has no name on the wire, and nothing is said about it. What it carries is
+//! derived from a tagged object (a segment takes its run's values), and each
+//! drawing derives it for itself when the tagged change arrives
+//! (`apply_remote_changes` runs the same carry-down a local edit does).
 
 use document::{Document, EntityType, Handle};
 use serde_json::{json, Value};
@@ -32,6 +38,9 @@ use crate::pid::topology::parse_handle;
 /// Op kinds this client emits and understands.
 pub const KIND_SET_TAG: &str = "set_tag";
 pub const KIND_SET_PROPERTY: &str = "set_property";
+
+/// What a change naming no tag is called when it is reported as unresolved.
+pub const UNTAGGED: &str = "（无位号）";
 
 /// One change an op carries, as this module writes and reads it.
 ///
@@ -129,6 +138,12 @@ pub fn changes_of(
     ) else {
         return Vec::new();
     };
+    // An object the peers know by no tag cannot be named to them at all (see
+    // `resolve`), so nothing is stated about it — not even the tag it is
+    // being given, which they would have nothing to attach to.
+    if before_author.tag.is_empty() {
+        return Vec::new();
+    }
 
     let mut changes = Vec::new();
     if before_author.tag != after_author.tag {
@@ -142,6 +157,10 @@ pub fn changes_of(
         });
     }
 
+    // Retagged to nothing: from here on it has no name either.
+    if after_author.tag.is_empty() {
+        return changes;
+    }
     if !PidAuthor::props_are_inline(before) || !PidAuthor::props_are_inline(after) {
         return changes;
     }
@@ -256,14 +275,20 @@ impl Applied {
 /// under it carries the tag the change names — it then settles which of
 /// several same-tagged symbols is meant. Without that, exactly one symbol must
 /// carry the tag; none, or several, is no answer.
+///
+/// A change naming no tag names nothing. Pipe segments, breaks and connectors
+/// carry no tag, and "the untagged thing under handle H" is a different thing
+/// in every drawing that has had something drawn in it since it was opened.
+/// The comparison is the stored text exactly — case and surrounding blanks
+/// included — which is how the tag engine's own uniqueness check compares.
 fn resolve(doc: &Document, change: &Change) -> Option<Handle> {
+    if change.object_ref.is_empty() {
+        return None;
+    }
     if let Some(handle) = change.handle {
         if PidAuthor::load(doc, handle).is_some_and(|author| author.tag == change.object_ref) {
             return Some(handle);
         }
-    }
-    if change.object_ref.is_empty() {
-        return None;
     }
     let mut carrying = doc.entities().filter_map(|entity| {
         let handle = entity.common().handle;
@@ -277,12 +302,17 @@ fn resolve(doc: &Document, change: &Change) -> Option<Handle> {
 /// Whether a retag has been applied here already: nothing carries the old tag
 /// any more and something carries the new one. Re-reading the room after a
 /// reconnect must not report that as a missing object.
+///
+/// Both halves matter. With the old tag still here — on several symbols, so
+/// that it names none of them — the retag was not applied, whatever else
+/// happens to carry the new tag.
 fn already_retagged(doc: &Document, change: &Change) -> bool {
-    change.kind == KIND_SET_TAG
-        && doc.entities().any(|entity| {
-            PidAuthor::load(doc, entity.common().handle)
-                .is_some_and(|author| author.tag == change.value)
+    let carried = |tag: &str| {
+        doc.entities().any(|entity| {
+            PidAuthor::load(doc, entity.common().handle).is_some_and(|author| author.tag == tag)
         })
+    };
+    change.kind == KIND_SET_TAG && !carried(&change.object_ref) && carried(&change.value)
 }
 
 /// Write one change onto `doc`.
@@ -293,7 +323,9 @@ fn already_retagged(doc: &Document, change: &Change) -> bool {
 /// `applied.unresolved`.
 pub fn apply_change(doc: &mut Document, change: &Change, applied: &mut Applied) {
     let Some(handle) = resolve(doc, change) else {
-        if !already_retagged(doc, change) {
+        if change.object_ref.is_empty() {
+            applied.unresolved.push(UNTAGGED.to_owned());
+        } else if !already_retagged(doc, change) {
             applied.unresolved.push(change.object_ref.clone());
         }
         return;
@@ -809,5 +841,69 @@ mod tests {
         assert_eq!(parsed[0].object_ref, "P-1001");
         assert_eq!(parsed[1].object_ref, "P-1009");
         assert_eq!(parsed[1].field, "设计压力");
+    }
+
+    /// An object without a tag — a pipe segment, a break, a connector — has
+    /// no name a peer can check, and its handle is not one: a peer that drew
+    /// a pipe of its own since it opened the file has another untagged
+    /// segment under that very handle. A change naming no tag is applied to
+    /// nothing, whatever handle rides along.
+    #[test]
+    fn a_change_naming_no_tag_is_not_applied_by_its_handle_alone() {
+        let mut doc = Document::new();
+        let segment = add_author(&mut doc, "", r#"{"公称直径":"DN50"}"#);
+        let applied = apply_changes(
+            &mut doc,
+            &[change(
+                KIND_SET_PROPERTY,
+                "",
+                Some(segment),
+                "公称直径",
+                "DN80",
+            )],
+        );
+        assert!(applied.is_empty(), "{applied:?}");
+        assert_eq!(applied.unresolved, [UNTAGGED]);
+        assert_eq!(
+            PidAuthor::load(&doc, segment).expect("author").props,
+            r#"{"公称直径":"DN50"}"#,
+            "this drawing's own segment must be left alone"
+        );
+    }
+
+    /// So the sender does not state such a change at all. What an untagged
+    /// object carries is derived — a segment takes its run's values — and the
+    /// peer derives it again from the tagged change that caused it.
+    #[test]
+    fn a_change_to_an_untagged_object_is_not_stated() {
+        let (mut doc, handle) = doc_with_author("", r#"{"公称直径":"DN50"}"#);
+        let before = doc.get_entity_arc(handle).expect("before");
+        let mut author = PidAuthor::load(&doc, handle).expect("author");
+        author.props = r#"{"公称直径":"DN80"}"#.to_owned();
+        author.store(&mut doc, handle);
+        let after = doc.get_entity_arc(handle).expect("after");
+
+        let changes = changes_of(handle, Some(&before), Some(&after));
+        assert!(changes.is_empty(), "{changes:?}");
+    }
+
+    /// A retag whose old tag fits several symbols here names none of them.
+    /// That the new tag is already carried by something else does not make it
+    /// "applied already": the report must still be made.
+    #[test]
+    fn a_retag_fitting_several_symbols_is_reported_even_when_the_new_tag_exists() {
+        let mut doc = Document::new();
+        let first = add_author(&mut doc, "P-1001", "");
+        let second = add_author(&mut doc, "P-1001", "");
+        let other = add_author(&mut doc, "P-1009", "");
+        let applied = apply_changes(
+            &mut doc,
+            &[change(KIND_SET_TAG, "P-1001", None, "tag", "P-1009")],
+        );
+        assert!(applied.is_empty(), "{applied:?}");
+        assert_eq!(applied.unresolved, ["P-1001"]);
+        assert_eq!(tag_of(&doc, first), "P-1001");
+        assert_eq!(tag_of(&doc, second), "P-1001");
+        assert_eq!(tag_of(&doc, other), "P-1009");
     }
 }

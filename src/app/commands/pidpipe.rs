@@ -1598,6 +1598,48 @@ mod tests {
         (run_handle, segments)
     }
 
+    /// 协同：别人改了管线的字段，到这边只是「管线 L 的某字段 = 某值」这一处
+    /// 变更。管路与管段怎样跟着变，是本图自己的事，同本地改完之后一样由下传
+    /// 重算——管段没有位号，别人说不出它是哪一个，也不该替本图说。
+    #[test]
+    fn a_remote_line_change_is_carried_down_to_runs_and_segments() {
+        let mut app = app();
+        let line = draw_line(&mut app);
+        let (run, segments) = draw_run(&mut app);
+        assert!(!segments.is_empty(), "管路下应有管段");
+        let line_tag = crate::pid::persist::PidAuthor::load(
+            &app.tabs[app.active_tab].scene.document,
+            line,
+        )
+        .expect("管线的作者记录")
+        .tag;
+
+        app.collab.apply(crate::app::collab::CollabEvent::OpApplied {
+            op_id: "op-peer-line".to_owned(),
+            revision: 1,
+            changes: vec![json!({
+                "kind": "set_property",
+                "object_ref": line_tag,
+                "field": "公称直径",
+                "value": "DN80",
+            })],
+        });
+        app.apply_remote_changes();
+
+        let diameter = |app: &OpenCADStudio, handle: document::Handle| {
+            props_of(&app.tabs[app.active_tab].scene.document, handle)
+                .get("公称直径")
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert_eq!(diameter(&app, line), "DN80", "管线自身");
+        assert_eq!(diameter(&app, run), "DN80", "管路应跟随管线");
+        for segment in &segments {
+            assert_eq!(diameter(&app, *segment), "DN80", "管段应跟随管路");
+        }
+        assert_eq!(app.collab.last_apply_error, None);
+    }
+
     /// `VAL-PIPE-007`：管路创建时全量继承管线五个字段，且不打覆盖标记。
     #[test]
     fn a_new_run_inherits_all_five_line_fields() {
