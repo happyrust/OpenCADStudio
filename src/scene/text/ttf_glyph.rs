@@ -1364,6 +1364,15 @@ fn build_shaped(_family: &str, text: &str) -> Option<ShapedRun> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn build_shaped(family: &str, text: &str) -> Option<ShapedRun> {
+    build_shaped_with(family, text, true)
+}
+
+/// [`build_shaped`] with the positioned-glyph cache switchable. Every run the
+/// application shapes shares glyphs (`share_glyphs`); switched off, each glyph
+/// is flattened and triangulated for this run alone and the cache is neither
+/// read nor written, which is the reference the shared result is held to.
+#[cfg(not(target_arch = "wasm32"))]
+fn build_shaped_with(family: &str, text: &str, share_glyphs: bool) -> Option<ShapedRun> {
     use cosmic_text::{Attrs, Buffer, Family, Metrics, Shaping};
 
     let mut primary_metrics = sysfont::with_face_data(family, |data, idx| {
@@ -1511,9 +1520,11 @@ fn build_shaped(family: &str, text: &str) -> Option<ShapedRun> {
             x: pen_x.to_bits(),
             y: pen_y.to_bits(),
         };
-        if let Some(glyph) = positioned_glyph_cache().lock().unwrap().get(&key) {
-            glyphs.push(glyph);
-            continue;
+        if share_glyphs {
+            if let Some(glyph) = positioned_glyph_cache().lock().unwrap().get(&key) {
+                glyphs.push(glyph);
+                continue;
+            }
         }
         let mut fl = OutlineFlattener::new(scale_g);
         fl.offset = [pen_x, pen_y];
@@ -1531,10 +1542,12 @@ fn build_shaped(family: &str, text: &str) -> Option<ShapedRun> {
                 strokes: fl.contours,
                 fill_tris,
             });
-            positioned_glyph_cache()
-                .lock()
-                .unwrap()
-                .insert(key, glyph.clone());
+            if share_glyphs {
+                positioned_glyph_cache()
+                    .lock()
+                    .unwrap()
+                    .insert(key, glyph.clone());
+            }
             glyphs.push(glyph);
         }
     }
@@ -1879,5 +1892,135 @@ mod tests {
                 "msjh '{ch}' changed"
             );
         }
+    }
+
+    /// Everything a shaped run carries, as bit patterns, so two runs compare
+    /// exactly (and a NaN would compare equal to itself rather than hide).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::type_complexity)]
+    fn run_bits(
+        run: &ShapedRun,
+    ) -> (
+        u32,
+        Vec<(usize, usize, u32, u32)>,
+        Vec<(Vec<Vec<[u32; 2]>>, Vec<[u32; 2]>)>,
+    ) {
+        let point = |p: &[f32; 2]| [p[0].to_bits(), p[1].to_bits()];
+        (
+            run.advance.to_bits(),
+            run.cells
+                .iter()
+                .map(|(start, end, left, right)| (*start, *end, left.to_bits(), right.to_bits()))
+                .collect(),
+            run.glyphs
+                .iter()
+                .map(|glyph| {
+                    (
+                        glyph
+                            .strokes
+                            .iter()
+                            .map(|contour| contour.iter().map(point).collect())
+                            .collect(),
+                        glyph.fill_tris.iter().map(point).collect(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// The positioned-glyph cache must never change what a run looks like.
+    ///
+    /// `build_shaped` does its outline work outside the `font_system` lock
+    /// and asks the cache first, so a glyph the cache hands out has to be,
+    /// coordinate for coordinate, the one the run would have flattened and
+    /// triangulated for itself. Each run of the matrix is shaped with the
+    /// cache out of the way — the reference — and then twice through it. The
+    /// first pass through meets what the other runs left there: the same
+    /// faces and glyph ids at other pen positions and scales, and the same
+    /// glyph at the same position wherever two strings share a prefix. The
+    /// second pass is served from the cache outright. All three must agree
+    /// bit for bit.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_positioned_glyph_cache_never_changes_a_runs_geometry() {
+        let families: Vec<String> = sysfont::families()
+            .into_iter()
+            .filter(|family| glyph(family, 'A').is_some())
+            .take(3)
+            .collect();
+        if families.is_empty() {
+            eprintln!("no system fonts; skipping");
+            return;
+        }
+        // Shared prefixes put one glyph at one pen position in several runs,
+        // repeats put one glyph at several positions in one run, and the last
+        // two pull in whatever fallback face covers them.
+        let texts = [
+            "A",
+            "AV",
+            "AVA",
+            "AVAT",
+            "AAAA",
+            "A A",
+            "Hi",
+            "P-1001",
+            "V-1001A/B",
+            "120℃",
+            "管线 P-1001",
+        ];
+        let matrix: Vec<(&str, &str)> = families
+            .iter()
+            .flat_map(|family| texts.iter().map(move |text| (family.as_str(), *text)))
+            .collect();
+
+        let reference: Vec<Option<ShapedRun>> = matrix
+            .iter()
+            .map(|(family, text)| build_shaped_with(family, text, false))
+            .collect();
+        assert!(
+            reference.iter().flatten().any(|run| !run.glyphs.is_empty()),
+            "the matrix shaped no glyph at all"
+        );
+
+        // Other tests share the cache, and a font change empties every text
+        // cache, so "the second pass was served from the cache" is retried
+        // rather than assumed. The geometry must agree on every attempt.
+        let mut served = false;
+        for _attempt in 0..5 {
+            let mut previous: Vec<Option<ShapedRun>> = Vec::new();
+            for pass in 0..2 {
+                let mut current = Vec::with_capacity(matrix.len());
+                for (index, (family, text)) in matrix.iter().enumerate() {
+                    let shared = build_shaped(family, text);
+                    match (&reference[index], &shared) {
+                        (None, None) => {}
+                        (Some(alone), Some(shared)) => assert!(
+                            run_bits(alone) == run_bits(shared),
+                            "{family:?} {text:?} is not the same run through the cache (pass {pass})"
+                        ),
+                        _ => panic!("{family:?} {text:?} shaped one way and not the other"),
+                    }
+                    current.push(shared);
+                }
+                if pass == 1 {
+                    served |= previous.iter().zip(&current).any(|pair| match pair {
+                        (Some(first), Some(second)) => first
+                            .glyphs
+                            .iter()
+                            .zip(&second.glyphs)
+                            .any(|(a, b)| Arc::ptr_eq(a, b)),
+                        _ => false,
+                    });
+                }
+                previous = current;
+            }
+            if served {
+                break;
+            }
+        }
+        assert!(
+            served,
+            "no glyph of the second pass came out of the cache, so the cache was never compared"
+        );
     }
 }
