@@ -456,24 +456,28 @@ pub(super) fn subscribe() -> iced::Subscription<CollabEvent> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn worker() -> impl iced::futures::Stream<Item = CollabEvent> {
-    iced::stream::channel(64, |mut sender| async move {
-        eprintln!("[collab] 订阅已启动，准备连接");
-        // The app's client: it reads the published config, drains the queue
-        // the UI fills, and quits on a signal that is this thread's alone —
-        // `shutdown` raises it through the registration below, and nothing
-        // else in the process can.
-        let link = transport::Link::app();
-        let thread_link = link.clone();
-        let handle = std::thread::spawn(move || {
-            if let Err(error) = transport::run_client(&mut sender, &thread_link) {
-                eprintln!("[collab] 传输层退出：{error}");
-            }
-        });
-        // The quit path needs this handle to wait for the goodbye frame, so
-        // the thread that owns the socket is the one the app joins.
-        transport::register_worker(handle, link);
-        iced::futures::future::pending::<()>().await;
-    })
+    // The receiving half of a futures channel already is the stream iced asks
+    // for, so the worker has no future of its own to drive: the transport
+    // thread holds the sending half, and the stream ends when that thread
+    // does — at quit, or once the subscription itself is gone. Nothing under
+    // this module is asynchronous code (`VAL-CLI-019`).
+    let (mut sender, receiver) = iced::futures::channel::mpsc::channel::<CollabEvent>(64);
+    eprintln!("[collab] 订阅已启动，准备连接");
+    // The app's client: it reads the published config, drains the queue the
+    // UI fills, and quits on a signal that is this thread's alone —
+    // `shutdown` raises it through the registration below, and nothing else
+    // in the process can.
+    let link = transport::Link::app();
+    let thread_link = link.clone();
+    let handle = std::thread::spawn(move || {
+        if let Err(error) = transport::run_client(&mut sender, &thread_link) {
+            eprintln!("[collab] 传输层退出：{error}");
+        }
+    });
+    // The quit path needs this handle to wait for the goodbye frame, so the
+    // thread that owns the socket is the one the app joins.
+    transport::register_worker(handle, link);
+    receiver
 }
 
 /// Close the collaboration socket before the process exits.
@@ -497,6 +501,45 @@ mod tests {
             user_id: user.to_owned(),
             display_name: user.to_owned(),
         }
+    }
+
+    /// VAL-CLI-019: nothing under `src/app/collab/` is asynchronous code. The
+    /// contract checks that by searching the sources for four spellings, so
+    /// this searches the same files for the same four — written in pieces
+    /// here, or the test would find itself.
+    #[test]
+    fn nothing_under_this_module_is_asynchronous_code() {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("app")
+            .join("collab");
+        let needles = [
+            ["async", " fn"].concat(),
+            [".aw", "ait"].concat(),
+            ["tok", "io"].concat(),
+            ["async", "_std"].concat(),
+        ];
+        let mut read = 0;
+        for entry in std::fs::read_dir(&folder).expect("the module's folder") {
+            let path = entry.expect("a directory entry").path();
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("a source file");
+            read += 1;
+            for (number, line) in source.lines().enumerate() {
+                for needle in &needles {
+                    assert!(
+                        !line.contains(needle.as_str()),
+                        "{}:{}: {needle:?} in `{}`",
+                        path.display(),
+                        number + 1,
+                        line.trim()
+                    );
+                }
+            }
+        }
+        assert!(read >= 6, "only {read} source files were read in {folder:?}");
     }
 
     #[test]
