@@ -645,3 +645,7 @@ mod tests {
         assert!(app.dock_panel_visible(PanelId::PidBackup));
     }
 }
+
+/// A walk over a real backup through the application; run with `--ignored`.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod audit;
