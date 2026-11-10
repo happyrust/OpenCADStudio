@@ -22,13 +22,16 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{manifest, text_preview, DetailLine, Effect, NodeId, PidBackupBrowser, Row};
+use super::{database, manifest, text_preview, DetailLine, Effect, NodeId, PidBackupBrowser, Row};
 use crate::io::pid_backup_browse::BackupIndex;
 
 /// The sections of the browser, in the order their rows and detail lines
 /// appear. A section's position here is the slot its nodes carry.
-pub(super) static SECTIONS: &[&dyn Section] =
-    &[&manifest::ManifestSection, &text_preview::TextPreview];
+pub(super) static SECTIONS: &[&dyn Section] = &[
+    &manifest::ManifestSection,
+    &text_preview::TextPreview,
+    &database::DatabaseSection,
+];
 
 /// The sections a panel state works with: [`SECTIONS`], unless a test gave
 /// the state its own.
@@ -438,9 +441,21 @@ pub(crate) mod fake {
                     let open = cx.is_open(&first);
                     rows.push(row(first, depth, "fake first", true, open));
                     if open {
-                        rows.push(row(cx.node([*file, 0, 0]), depth + 1, "fake leaf", false, false));
+                        rows.push(row(
+                            cx.node([*file, 0, 0]),
+                            depth + 1,
+                            "fake leaf",
+                            false,
+                            false,
+                        ));
                     }
-                    rows.push(row(cx.node([*file, FAILING]), depth, "fake second", false, false));
+                    rows.push(row(
+                        cx.node([*file, FAILING]),
+                        depth,
+                        "fake second",
+                        false,
+                        false,
+                    ));
                 }
                 NodeId::Root => rows.push(row(
                     cx.node([usize::MAX]),
@@ -455,12 +470,18 @@ pub(crate) mod fake {
 
         fn details(&self, cx: &Cx<'_>, id: &NodeId, lines: &mut Vec<DetailLine>) {
             if *id == NodeId::Files {
-                lines.push(DetailLine::Field("fake".to_string(), "on a native node".to_string()));
+                lines.push(DetailLine::Field(
+                    "fake".to_string(),
+                    "on a native node".to_string(),
+                ));
             }
             let Some(path) = cx.own(id) else {
                 return;
             };
-            lines.push(DetailLine::Field("fake path".to_string(), format!("{path:?}")));
+            lines.push(DetailLine::Field(
+                "fake path".to_string(),
+                format!("{path:?}"),
+            ));
             match cx.load(id) {
                 None => {}
                 Some(SectionLoad::Loading) => {
@@ -579,7 +600,9 @@ mod tests {
     #[test]
     fn the_search_text_reaches_a_section() {
         let mut state = ready();
-        assert!(!labels(&state).iter().any(|(_, label)| label.starts_with("fake")));
+        assert!(!labels(&state)
+            .iter()
+            .any(|(_, label)| label.starts_with("fake")));
         update(&mut state, PidBackupMsg::Filter("  A-1 ".to_string()));
         // Trimmed and lowercased, as the tree compares it; the row sits after
         // the root's own subtree.
@@ -625,7 +648,10 @@ mod tests {
         assert_eq!(state.selected, Some(node.clone()));
         assert!(detail_rows(&state, &node).contains(&("fake loading".to_string(), String::new())));
         // Asked once: a second click waits for the first read.
-        assert_eq!(update(&mut state, PidBackupMsg::Select(node.clone())), Effect::None);
+        assert_eq!(
+            update(&mut state, PidBackupMsg::Select(node.clone())),
+            Effect::None
+        );
 
         let index = state.index().cloned().expect("a ready index");
         let result = iced::futures::executor::block_on(load_in_background(
@@ -669,7 +695,10 @@ mod tests {
             section,
             asked.clone(),
         ));
-        assert_eq!(result.as_ref().err().map(String::as_str), Some("the fake read failed"));
+        assert_eq!(
+            result.as_ref().err().map(String::as_str),
+            Some("the fake read failed")
+        );
         update(
             &mut state,
             PidBackupMsg::SectionLoaded {
@@ -756,7 +785,10 @@ mod tests {
         select_and_read(&mut state, &first);
         select_and_read(&mut state, &second);
         assert!(has_data(&state, &first) && has_data(&state, &second));
-        assert_eq!(update(&mut state, PidBackupMsg::Select(first.clone())), Effect::None);
+        assert_eq!(
+            update(&mut state, PidBackupMsg::Select(first.clone())),
+            Effect::None
+        );
 
         // A section that keeps the selected node's data only: the first
         // node's goes when the second is selected, and is read again on the
@@ -766,7 +798,10 @@ mod tests {
         select_and_read(&mut state, &first);
         assert!(has_data(&state, &first));
         // Selecting the node it is on keeps what it has.
-        assert_eq!(update(&mut state, PidBackupMsg::Select(first.clone())), Effect::None);
+        assert_eq!(
+            update(&mut state, PidBackupMsg::Select(first.clone())),
+            Effect::None
+        );
         assert!(has_data(&state, &first));
         select_and_read(&mut state, &second);
         assert!(!has_data(&state, &first) && has_data(&state, &second));
@@ -813,7 +848,10 @@ mod tests {
         assert_eq!(both(Effect::None, Effect::None), Effect::None);
         assert_eq!(both(load(1), Effect::None), load(1));
         assert_eq!(both(Effect::None, load(1)), load(1));
-        assert_eq!(both(load(1), load(2)), Effect::Batch(vec![load(1), load(2)]));
+        assert_eq!(
+            both(load(1), load(2)),
+            Effect::Batch(vec![load(1), load(2)])
+        );
         assert_eq!(
             both(both(load(1), load(2)), load(3)),
             Effect::Batch(vec![load(1), load(2), load(3)])
@@ -839,7 +877,11 @@ mod tests {
                 .unwrap_or_else(|error| panic!("the row of {label} is drawn: {error:?}"))
                 .visible_bounds()
                 .expect("the row is on screen");
-            let x = if left_of { bounds.x - 7.0 } else { bounds.center_x() };
+            let x = if left_of {
+                bounds.x - 7.0
+            } else {
+                bounds.center_x()
+            };
             ui.point_at(iced::Point::new(x, bounds.center_y()));
             let _ = ui.simulate(iced_test::simulator::click());
             ui.into_messages()

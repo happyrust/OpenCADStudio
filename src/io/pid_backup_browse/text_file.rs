@@ -58,6 +58,21 @@ pub struct TextFile {
     pub hidden: usize,
 }
 
+impl TextFile {
+    /// The lines whole: one continued over several rows is put together
+    /// again.
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::with_capacity(self.line_count);
+        for (number, text) in &self.rows {
+            match (number, lines.last_mut()) {
+                (None, Some(last)) => last.push_str(text),
+                _ => lines.push(text.clone()),
+            }
+        }
+        lines
+    }
+}
+
 /// What a file turned out to be.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Readable {
@@ -83,10 +98,7 @@ pub fn read_text_file(path: &Path) -> Result<Readable, String> {
 /// click on one costs a glance at its start.
 fn read(mut reader: impl Read, total: u64) -> std::io::Result<Readable> {
     let mut head = Vec::new();
-    reader
-        .by_ref()
-        .take(SNIFF as u64)
-        .read_to_end(&mut head)?;
+    reader.by_ref().take(SNIFF as u64).read_to_end(&mut head)?;
     if starts_binary(&head) {
         return Ok(Readable::Binary(total));
     }
@@ -109,9 +121,8 @@ fn starts_binary(head: &[u8]) -> bool {
 /// name as the index lists it: the member is taken by its position, and by
 /// its name when the position holds another.
 pub fn read_zip_member(archive: &Path, member: usize, name: &str) -> Result<Readable, String> {
-    let fail = |error: String| {
-        crate::tf!("cannot read {}: {}", archive.display(), error).into_owned()
-    };
+    let fail =
+        |error: String| crate::tf!("cannot read {}: {}", archive.display(), error).into_owned();
     let file = std::fs::File::open(archive).map_err(|error| fail(error.to_string()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|error| fail(error.to_string()))?;
     let named = |zip: &mut zip::ZipArchive<std::fs::File>, at: usize| -> bool {
@@ -272,8 +283,7 @@ fn hide_login(word: &str) -> Option<String> {
         && !password
             .chars()
             .any(|ch| "/\\[](){}<>=\"',;".contains(ch) || ch.is_whitespace());
-    (name(user, "_$#.") && plain && name(host, "_.:-/"))
-        .then(|| format!("{user}/{HIDDEN}@{host}"))
+    (name(user, "_$#.") && plain && name(host, "_.:-/")).then(|| format!("{user}/{HIDDEN}@{host}"))
 }
 
 /// `line` with what looks like a credential replaced, and how many were;
@@ -289,7 +299,10 @@ fn hide_credentials(line: &str) -> Option<(String, usize)> {
             .collect();
         return (hidden > 0).then(|| {
             (
-                format!("{key}{MANIFEST_SEPARATOR}{}", fields.join(MANIFEST_SEPARATOR)),
+                format!(
+                    "{key}{MANIFEST_SEPARATOR}{}",
+                    fields.join(MANIFEST_SEPARATOR)
+                ),
                 hidden,
             )
         });
@@ -405,7 +418,10 @@ mod tests {
     #[test]
     fn the_byte_order_mark_decides_the_encoding() {
         let utf8 = text(decode(b"\xEF\xBB\xBF<?xml?>\n<a/>", 15));
-        assert_eq!((utf8.encoding, lines(&utf8)), ("UTF-8", vec!["<?xml?>", "<a/>"]));
+        assert_eq!(
+            (utf8.encoding, lines(&utf8)),
+            ("UTF-8", vec!["<?xml?>", "<a/>"])
+        );
 
         let mut le = vec![0xFF, 0xFE];
         let mut be = vec![0xFE, 0xFF];
@@ -470,7 +486,10 @@ mod tests {
         assert_eq!(file.bytes, total);
         assert_eq!(file.line_count, whole);
         assert_eq!(file.rows.len(), whole);
-        assert!(file.rows.iter().all(|(_, text)| text.len() == line.len() - 1));
+        assert!(file
+            .rows
+            .iter()
+            .all(|(_, text)| text.len() == line.len() - 1));
         // A file of exactly the limit is whole.
         let exact = text(decode(&bytes[..TEXT_LIMIT], TEXT_LIMIT as u64));
         assert_eq!(exact.cut_at, None);
@@ -482,7 +501,10 @@ mod tests {
         let file = text(decode(format!("short\n{long}\nend").as_bytes(), 0));
         assert_eq!(file.line_count, 3);
         assert_eq!(
-            file.rows.iter().map(|(number, _)| *number).collect::<Vec<_>>(),
+            file.rows
+                .iter()
+                .map(|(number, _)| *number)
+                .collect::<Vec<_>>(),
             [Some(1), Some(2), None, Some(3)]
         );
         // Broken after the space, nothing lost.
@@ -491,19 +513,26 @@ mod tests {
         // No space to break at: cut at the row's width.
         let solid = "z".repeat(ROW_UNITS * 2 + 5);
         assert_eq!(
-            split_row(&solid).iter().map(|row| row.len()).collect::<Vec<_>>(),
+            split_row(&solid)
+                .iter()
+                .map(|row| row.len())
+                .collect::<Vec<_>>(),
             [ROW_UNITS, ROW_UNITS, 5]
         );
         // A wide character takes two columns, and is never split.
         let wide = "图".repeat(ROW_UNITS);
         let rows = split_row(&wide);
         assert_eq!(
-            rows.iter().map(|row| row.chars().count()).collect::<Vec<_>>(),
+            rows.iter()
+                .map(|row| row.chars().count())
+                .collect::<Vec<_>>(),
             [ROW_UNITS / 2, ROW_UNITS / 2]
         );
         assert_eq!(rows.concat(), wide);
         // A line of exactly a row stays one.
         assert_eq!(split_row(&"k".repeat(ROW_UNITS)).len(), 1);
+        // Put together again, the rows are the lines they were cut from.
+        assert_eq!(file.lines(), ["short", long.as_str(), "end"]);
     }
 
     /// What a credential looks like, made up for the tests.
@@ -604,8 +633,8 @@ mod tests {
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let root = std::env::temp_dir()
-            .join(format!("ocs-pid-backup-text-{name}-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("ocs-pid-backup-text-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -634,15 +663,21 @@ mod tests {
         writer.start_file("Maps/second.xml", options).unwrap();
         writer.write_all(b"<second>\n</second>").unwrap();
         writer.start_file("Maps/symbol.sym", options).unwrap();
-        writer.write_all(&[0xD0, 0xCF, 0x11, 0xE0, 0, 0, 0, 0]).unwrap();
+        writer
+            .write_all(&[0xD0, 0xCF, 0x11, 0xE0, 0, 0, 0, 0])
+            .unwrap();
         writer.finish().unwrap();
         assert_eq!(
-            lines(&text(read_zip_member(&archive, 2, "Maps/second.xml").unwrap())),
+            lines(&text(
+                read_zip_member(&archive, 2, "Maps/second.xml").unwrap()
+            )),
             ["<second>", "</second>"]
         );
         // The position holds another member: the name finds the right one.
         assert_eq!(
-            lines(&text(read_zip_member(&archive, 0, "Maps/first.xml").unwrap())),
+            lines(&text(
+                read_zip_member(&archive, 0, "Maps/first.xml").unwrap()
+            )),
             ["<first/>"]
         );
         assert_eq!(

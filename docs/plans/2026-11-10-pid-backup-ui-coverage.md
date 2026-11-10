@@ -281,13 +281,38 @@ set OCS_PID_BACKUP_AUDIT_LANG=zh-CN
 
 ## 6. 执行记录
 
-D1–D9 还没有拍板。第一批（2a）按 §4 的建议先走：D1 (a)、D2 (a)、D6 (a)、D8 (a)、D9 (a)；D3、D4、D7 不动，W11、W15 不做。每项一个提交，提交号在这一批收尾时补进本表。
+D1–D9 还没有拍板。第一批（2a）按 §4 的建议先走：D1 (a)、D2 (a)、D6 (a)、D8 (a)、D9 (a)；D3、D4、D7 不动，W11、W15 不做。每项一个提交。
 
 | 项 | 提交 | 做了什么 | 清点表的变化 |
 |---|---|---|---|
-| W0 | 「P&ID 备份面板：子树扩展点（section）」 | `pid_backup_browser/section.rs`：一支子树一个 `Section`（挂在哪一行下面、自己的行、节点详情与给别的节点追加的详情、要在后台读的数据），`NodeId::Section(槽位, 路径)`；`visible_rows` / `detail_lines` / `update` 各自在末尾转给注册表；后台读取走 `Effect::LoadSection` → `PidBackupMsg::SectionLoaded`，带代数，换了备份之后迟到的结果丢弃。注册表此时是空的，面板没有可见变化。 | 无 |
-| 附：`Select` | 「PIDBACKUPOPEN Select：命令行按标签路径定位节点」 | 方案里没有的一项，为的是不动鼠标也能看真实窗口：`PIDBACKUPOPEN Select 装置组 > SQPlant > test > U01 > D07 > #1 > #1` 逐级展开并选中，与逐级点击留下的状态相同（`pid_backup_browser/goto.rs`）；遇到要先读图元的图纸就等读完再接着走。真实窗口的检查因此可以只靠自动化通道发命令加 `/capture`。 | 无 |
-| 附：修改标记 | 「停靠面板不再把图纸标为已修改」 | §1.3 里「`PIDBACKUPOPEN` 之后图纸带上修改标记」的原因：面板停靠时 `dock_keep_view`（`src/app/dock/update.rs`）把相机平移半个面板宽、让图在屏幕上不动，下一个 tick（`src/app/update/viewport.rs` 的 `on_tick`）发现相机变了，写回文档并置 `dirty`。与备份无关，任何停靠面板都如此。改在 `dock_keep_view`：相机原本与文档一致时，平移后当场写回文档并记为已同步，不置 `dirty`。三个约定不动的文件没有碰。 | 无（§1.3 的一条） |
-| W1 | 「P&ID 备份面板：详情区键值不再重叠、选中行有底色、图元行显示位号、详情区表格」 | 键列取面板宽度的 36%（96–240 px），键比键列长就独占一行、值在下一行的值列，两者都在自己的框里换行；选中行用调色板的 `primary.weak` 作底色；图元行显示发布出来的名字（`IObject.Name`，注释取 `INote.NoteText`），没有名字的显示「类型 #序号」，UID 放进详情（`io/pid_backup_browse/labels.rs`）；`DetailLine::Table` 与独立的表格部件 `pid_backup_browser/grid.rs`（表头固定、列宽按内容、横向滚动、点列名排序、只建可见的行），图元类型的详情用它列出该类型的全部图元。全厂包 14 894 个图元里 3 425 个有名字。 | #26 的两处缺口（标签是 UID、键值重叠）补上，状态仍是 ✅；§1.3 的 1、2、3 条 |
-| W2 | 「P&ID 备份面板：Manifest.txt 全量可看，备份文件显示原名，口令一律不出现」 | `io/pid_backup_browse/manifest.rs` 把 Manifest 的每一行归位（概况、表 / 视图 / 角色 / 权限 / 数据库文件、文件登记与 FileSize 合并、连接信息），口令类字段在读入时就换成 `•••`，之后的索引、面板、日志都拿不到原文；`pid_backup_browser/manifest.rs` 是第一支 section：`Manifest.txt` 行可以展开成 概况 / 数据库对象 / 文件登记 / 连接信息。备份文件行显示「存储名 — 原始路径」（`RefData~4~680 — Ref\rules.rul`），详情里有来源路径、源内文件数与目录数、打包前大小；单个文件按原名的扩展名说格式，不再把 `exportlayer.xlsx` 叫成有 12 个成员的 Zip。 | #1 ◐→✅，#2 ❌→✅，#3 ◐→✅，#4 ❌→✅（口令按 D6 遮住）；#32、#33、#36、#37 的文件现在看得出是什么（内容仍看不了，状态不变）；§1.3 的第 5 条 |
-| W3 | 「P&ID 备份面板：包根目录的其他文件也列出来，文本文件点开就能读」 | `io/pid_backup_browse/loose_files.rs` 把扫描没认领的根目录文件（`Export.log`、`PlantConfig.xml`）列进「备份文件」，排在转储之后。`io/pid_backup_browse/text_file.rs` 读文本：编码按字节判断（UTF-16 / UTF-8 的 BOM，其次合法 UTF-8，再次 GBK，最后 Windows-1252），最多读 8 MiB（已见语料最大的文本是 3.7 MB 的数据映射），二进制文件只看开头 8 KB。`pid_backup_browser/text_preview.rs` 是第二支 section，不加行，只给已有的三种文件节点（备份文件、归档成员、参考文件）的详情加内容：编码、行数、逐行的表格（行号 + 文本，横竖都能滚，只建可见行）；不是文本的文件明说「不是文本文件」。读取在工作线程上，只保留当前选中文件的文本（`Section::keeps_only_selected`）。`Manifest.txt` 不走这条路（内容在它自己的子树里，口令已遮住）；别的文本里长得像口令的值同样换成 `•••` 并说明换了几处。 | #7 ❌→✅，#29 ◐→✅，#32 ◐→✅，#37 ◐→✅，#39 ◐→✅；#38 的 8 份映射 XML、#30 的 `CatalogIndex.xml` 原文可读（结构化视图仍未接，状态不变）；#6 的文本成员能看内容 |
+| W0 | `10c32a621`「P&ID 备份面板：子树扩展点（section）」 | `pid_backup_browser/section.rs`：一支子树一个 `Section`（挂在哪一行下面、自己的行、节点详情与给别的节点追加的详情、要在后台读的数据），`NodeId::Section(槽位, 路径)`；`visible_rows` / `detail_lines` / `update` 各自在末尾转给注册表；后台读取走 `Effect::LoadSection` → `PidBackupMsg::SectionLoaded`，带代数，换了备份之后迟到的结果丢弃。注册表此时是空的，面板没有可见变化。 | 无 |
+| 附：`Select` | `4fd4e7c3b`「PIDBACKUPOPEN Select：命令行按标签路径定位节点」、`ebca0f068`「…一段路径只写名字就够」 | 方案里没有的一项，为的是不动鼠标也能看真实窗口：`PIDBACKUPOPEN Select 装置组 > SQPlant > test > U01 > D07 > #1 > #1` 逐级展开并选中，与逐级点击留下的状态相同（`pid_backup_browser/goto.rs`）；遇到要先读图元的图纸就等读完再接着走。真实窗口的检查因此可以只靠自动化通道发命令加 `/capture`。 | 无 |
+| 附：修改标记 | `d93d6b909`「停靠面板不再把图纸标为已修改」 | §1.3 里「`PIDBACKUPOPEN` 之后图纸带上修改标记」的原因：面板停靠时 `dock_keep_view`（`src/app/dock/update.rs`）把相机平移半个面板宽、让图在屏幕上不动，下一个 tick（`src/app/update/viewport.rs` 的 `on_tick`）发现相机变了，写回文档并置 `dirty`。与备份无关，任何停靠面板都如此。改在 `dock_keep_view`：相机原本与文档一致时，平移后当场写回文档并记为已同步，不置 `dirty`。三个约定不动的文件没有碰。 | 无（§1.3 的一条） |
+| W1 | `fc37fbaf2`「P&ID 备份面板：详情区键值不再重叠、选中行有底色、图元行显示位号、详情区表格」 | 键列取面板宽度的 36%（96–240 px），键比键列长就独占一行、值在下一行的值列，两者都在自己的框里换行；选中行用调色板的 `primary.weak` 作底色；图元行显示发布出来的名字（`IObject.Name`，注释取 `INote.NoteText`），没有名字的显示「类型 #序号」，UID 放进详情（`io/pid_backup_browse/labels.rs`）；`DetailLine::Table` 与独立的表格部件 `pid_backup_browser/grid.rs`（表头固定、列宽按内容、横向滚动、点列名排序、只建可见的行），图元类型的详情用它列出该类型的全部图元。全厂包 14 894 个图元里 3 425 个有名字。 | #26 的两处缺口（标签是 UID、键值重叠）补上，状态仍是 ✅；§1.3 的 1、2、3 条 |
+| W2 | `483afcbbb`「P&ID 备份面板：Manifest.txt 全量可看，备份文件显示原名，口令一律不出现」 | `io/pid_backup_browse/manifest.rs` 把 Manifest 的每一行归位（概况、表 / 视图 / 角色 / 权限 / 数据库文件、文件登记与 FileSize 合并、连接信息），口令类字段在读入时就换成 `•••`，之后的索引、面板、日志都拿不到原文；`pid_backup_browser/manifest.rs` 是第一支 section：`Manifest.txt` 行可以展开成 概况 / 数据库对象 / 文件登记 / 连接信息。备份文件行显示「存储名 — 原始路径」（`RefData~4~680 — Ref\rules.rul`），详情里有来源路径、源内文件数与目录数、打包前大小；单个文件按原名的扩展名说格式，不再把 `exportlayer.xlsx` 叫成有 12 个成员的 Zip。 | #1 ◐→✅，#2 ❌→✅，#3 ◐→✅，#4 ❌→✅（口令按 D6 遮住）；#32、#33、#36、#37 的文件现在看得出是什么（内容仍看不了，状态不变）；§1.3 的第 5 条 |
+| W3 | `3ccc72782`「P&ID 备份面板：包根目录的其他文件也列出来，文本文件点开就能读」 | `io/pid_backup_browse/loose_files.rs` 把扫描没认领的根目录文件（`Export.log`、`PlantConfig.xml`）列进「备份文件」，排在转储之后。`io/pid_backup_browse/text_file.rs` 读文本：编码按字节判断（UTF-16 / UTF-8 的 BOM，其次合法 UTF-8，再次 GBK，最后 Windows-1252），最多读 8 MiB（已见语料最大的文本是 3.7 MB 的数据映射），二进制文件只看开头 8 KB。`pid_backup_browser/text_preview.rs` 是第二支 section，不加行，只给已有的三种文件节点（备份文件、归档成员、参考文件）的详情加内容：编码、行数、逐行的表格（行号 + 文本，横竖都能滚，只建可见行）；不是文本的文件明说「不是文本文件」。读取在工作线程上，只保留当前选中文件的文本（`Section::keeps_only_selected`）。`Manifest.txt` 不走这条路（内容在它自己的子树里，口令已遮住）；别的文本里长得像口令的值同样换成 `•••` 并说明换了几处。 | #7 ❌→✅，#29 ◐→✅，#32 ◐→✅，#37 ◐→✅，#39 ◐→✅；#38 的 8 份映射 XML、#30 的 `CatalogIndex.xml` 原文可读（结构化视图仍未接，状态不变）；#6 的文本成员能看内容 |
+| W4 | `46d687a30`「P&ID 备份面板：Export.dmp 展开成库和表，带行数」 | `io/pid_backup_browse/export_log.rs` 解析 `Export.log`（`about to export <库>'s tables`、`exporting table <名> <n> rows exported`，分区表按分区累加，`EXP-` / `ORA-` 消息、连接的数据库、字符集、导出结果一并取出），再与 Manifest 的 `Table` 行不分大小写地合并成 `TableCatalog`：库按 Manifest 的顺序和写法，表按名字。`pid_backup_browser/database.rs` 是第三支 section：`Export.dmp` 行可以展开成 库（表数）→ 表（行数），空表置灰；转储的详情增加库数、表数、有数据的表、总行数、导出信息和各库一览表；库的详情是它的表（可按表名或行数排序）；表的详情是库、表名、行数。没有 `Export.log` 的包（SQL Server）只列表名并说明原因。全厂包：4 库 154 表 365 530 行，与清点一致。 | #9 ❌→✅（SQL Server 包只有表名，没有行数）；#12–#22 的表现在看得到名字和行数，内容仍等 W15，状态不变 |
+| 附：排版 | `f30261921`「本批新建的 12 个文件过一遍 rustfmt（只动排版）」 | CI 的 lint 一步目前只是参考，但新文件不再往上添差异。本批之前就有的文件没有动。 | 无 |
+
+### 6.1 第一批（2a）之后的清点
+
+| | 第一阶段 | 2a 之后 | 变化的行 |
+|---|---:|---:|---|
+| ✅ 看得到 | 11 | 21 | 新增 #1、#2、#3、#4（口令遮住）、#7、#9、#29、#32、#37、#39 |
+| ◐ 看得到一部分 | 13 | 7 | 剩 #28、#30、#31、#33、#34、#36、#38 |
+| ❌ 看不到 | 17 | 13 | 剩 #12–#22（表的内容，等 W15；表名和行数经 #9 看得到）、#23、#27 |
+
+### 6.2 这一批收尾时的验证
+
+- 全量：18 个测试可执行文件 **6406 过 / 3 失败 / 43 忽略**（第一阶段 6313 / 3 / 43）。失败的是 `app::collab::transport` 的 2 条和 `io::pdf_export::tests::filled_ttf_glyphs_export_as_real_text`。
+- `app::collab::transport` 那一组：库测试整体又跑 4 遍，每遍这一组失败 4 条（第一阶段是 3 条，多出来的是 `cancelling_the_subscription_ends_the_thread_promptly`）；这一组单独跑 3 遍，14 条全过。与机器当时的负载有关（同时还有别的仓库在编译）。
+- `filled_ttf_glyphs_export_as_real_text`：5 遍库测试里失败 2 遍；单独跑 5 遍、连同所在模块跑 3 遍都过。原因是上游测试之间的竞争，与本批无关：这条测试先把字形排进进程级的字形图集、放开锁、再导出；而每一条构造应用的测试（`new_for_test` → `apply_config` → `apply_settings` → `set_textfill` → `reset_font_entries`）都会把这个图集清空。只把这条测试和 41 条上游的应用测试（`app::viewport_dimension_tests`、`app::navigation::tests`）放进同一个进程，30 遍里失败 28 遍。本批没有碰图集、字体和 PDF 导出。没有改它：修法（按图集代数重试，或给两边加一把测试锁）属于上游的测试代码。
+- 第一阶段偶发过一次的两条（`quad_feed_has_no_v14_auto_tab_per_plugin`、`a_layer_switched_off_inside_a_block_patches_the_references_in_place`）：5 遍库测试里各过 5 次。
+- 走查（含逐张导入）三个包都过，图纸、图元、导入的数字与第一阶段相同；口令检查三个包各 0 处命中。
+- 非测试构建的告警 19 条、库测试构建 28 条，与第一阶段相同。
+
+### 6.3 这一批留下的已知不足
+
+- 详情区在面板下半截（树 3 : 详情 2）。全厂包 `rules.rul` 在 889 px 高的窗口里只露出 4 行文本，82 张表的库露出 8 行。能滚动，但读长文件吃力。属于 D1 的范围：面板里加可拖动的分隔条，或把表格弹到独立窗口。
+- `Select` 走到的节点、以及点选靠下的行之后，树不会自动滚到选中行。
+- 同组图纸仍按库里的行序排；关闭备份后的重复提示、路径分隔符不一致（§1.3 第 7 条）没有动。

@@ -127,7 +127,11 @@ impl Section for ManifestSection {
                 (VIEWS, t!("Database views"), model.views.len()),
                 (ROLES, t!("Database roles"), model.roles.len()),
                 (RIGHTS, t!("Database rights"), model.rights.len()),
-                (DATABASE_FILES, t!("Database files"), model.database_files.len()),
+                (
+                    DATABASE_FILES,
+                    t!("Database files"),
+                    model.database_files.len(),
+                ),
             ];
             for (part, label, count) in parts {
                 // An Oracle plant has no database files to list.
@@ -153,16 +157,17 @@ impl Section for ManifestSection {
         let count = |label: std::borrow::Cow<'static, str>, count: usize| {
             DetailLine::Field(label.into_owned(), count.to_string())
         };
-        let objects = |title: std::borrow::Cow<'static, str>,
-                       objects: &[crate::io::pid_backup_browse::manifest::DbObject]| {
-            DetailLine::Table(Arc::new(Table::new(
-                vec![Column::text(t!("Schema")), Column::text(title)],
-                objects
-                    .iter()
-                    .map(|object| vec![object.schema.clone(), object.name.clone()])
-                    .collect(),
-            )))
-        };
+        let objects =
+            |title: std::borrow::Cow<'static, str>,
+             objects: &[crate::io::pid_backup_browse::manifest::DbObject]| {
+                DetailLine::Table(Arc::new(Table::new(
+                    vec![Column::text(t!("Schema")), Column::text(title)],
+                    objects
+                        .iter()
+                        .map(|object| vec![object.schema.clone(), object.name.clone()])
+                        .collect(),
+                )))
+            };
         match path {
             [SUMMARY] => {
                 for (key, value) in &model.summary {
@@ -331,7 +336,9 @@ mod tests {
             "File<<|>>4<<|>>2<<|>>824<<|>>1<<|>>\\\\host\\P\\SQPlant\\Ref\\Jacket.XML<<|>>2<<|>>Failed to access file.".to_string(),
         ];
         if sql_server {
-            lines.push("DatabaseFiles<<|>>Plant_dat<<|>>1<<|>>C:\\Data\\Plant.mdf<<|>>PRIMARY".to_string());
+            lines.push(
+                "DatabaseFiles<<|>>Plant_dat<<|>>1<<|>>C:\\Data\\Plant.mdf<<|>>PRIMARY".to_string(),
+            );
         }
         lines.join("\n")
     }
@@ -339,7 +346,9 @@ mod tests {
     /// A ready panel whose backup has a manifest, the drawing archive and
     /// two reference files, one of which the backup failed to read.
     fn ready(sql_server: bool) -> PidBackupBrowser {
-        let model = manifest_model(&pid_parse::backup::parse_manifest(&manifest_text(sql_server)));
+        let model = manifest_model(&pid_parse::backup::parse_manifest(&manifest_text(
+            sql_server,
+        )));
         let file = |name: &str, kind: FileKind, format: &str, id: &str| BackupFile {
             name: name.to_string(),
             kind,
@@ -490,7 +499,10 @@ mod tests {
         );
         assert_eq!(
             detail_rows(&state, &node(&[OBJECTS, DATABASE_FILES]))[1],
-            ("Plant_dat".to_string(), "1 | C:\\Data\\Plant.mdf | PRIMARY".to_string())
+            (
+                "Plant_dat".to_string(),
+                "1 | C:\\Data\\Plant.mdf | PRIMARY".to_string()
+            )
         );
     }
 
@@ -549,19 +561,35 @@ mod tests {
         let folder = detail_rows(&state, &NodeId::File(1));
         for expected in [
             (t!("Original path").into_owned(), "Plant".to_string()),
-            (t!("Source path").into_owned(), "\\\\host\\P\\SQPlant\\Plant".to_string()),
+            (
+                t!("Source path").into_owned(),
+                "\\\\host\\P\\SQPlant\\Plant".to_string(),
+            ),
             (t!("Files in the source").into_owned(), "54".to_string()),
             (t!("Folders in the source").into_owned(), "6".to_string()),
-            (t!("Size before packing").into_owned(), "97.2 MB".to_string()),
+            (
+                t!("Size before packing").into_owned(),
+                "97.2 MB".to_string(),
+            ),
         ] {
             assert!(folder.contains(&expected), "{expected:?} in {folder:?}");
         }
         // A single file: no counts of what is in it, and no members.
         let single = detail_rows(&state, &NodeId::File(2));
         assert!(single.contains(&(t!("File format").into_owned(), "RUL".to_string())));
-        assert!(single.contains(&(t!("Original path").into_owned(), "Ref\\rules.rul".to_string())));
-        for absent in [t!("Files in the source"), t!("Folders in the source"), t!("Members")] {
-            assert!(!single.iter().any(|(key, _)| *key == absent), "{absent} in {single:?}");
+        assert!(single.contains(&(
+            t!("Original path").into_owned(),
+            "Ref\\rules.rul".to_string()
+        )));
+        for absent in [
+            t!("Files in the source"),
+            t!("Folders in the source"),
+            t!("Members"),
+        ] {
+            assert!(
+                !single.iter().any(|(key, _)| *key == absent),
+                "{absent} in {single:?}"
+            );
         }
     }
 
@@ -633,7 +661,11 @@ mod tests {
                 .unwrap_or_else(|error| panic!("\"{label}\" is drawn: {error:?}"))
                 .visible_bounds()
                 .expect("on screen");
-            let x = if left_of { bounds.x - 7.0 } else { bounds.center_x() };
+            let x = if left_of {
+                bounds.x - 7.0
+            } else {
+                bounds.center_x()
+            };
             ui.point_at(iced::Point::new(x, bounds.center_y()));
             let _ = ui.simulate(iced_test::simulator::click());
             ui.into_messages()
@@ -661,9 +693,9 @@ mod tests {
         let register = format!("{} (3)", t!("File register"));
         let clicked = press(&state, &register, false);
         assert!(
-            clicked
-                .iter()
-                .any(|message| matches!(message, PidBackupMsg::Select(id) if *id == node(&[FILES]))),
+            clicked.iter().any(
+                |message| matches!(message, PidBackupMsg::Select(id) if *id == node(&[FILES]))
+            ),
             "{clicked:?}"
         );
         apply(&mut state, clicked);

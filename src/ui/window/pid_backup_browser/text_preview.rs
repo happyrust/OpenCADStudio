@@ -211,8 +211,10 @@ mod tests {
     const PASSWORD: &str = "a-made-up-password";
 
     fn scratch(name: &str) -> PathBuf {
-        let root = std::env::temp_dir()
-            .join(format!("ocs-pid-backup-preview-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "ocs-pid-backup-preview-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -259,8 +261,14 @@ mod tests {
             )
             .as_bytes(),
         );
-        write("PlantConfig.xml", "\u{feff}<PlantConfig>\r\n  <伴热 介质=\"蒸汽\"/>\r\n</PlantConfig>\r\n".as_bytes());
-        write("RefData~4~680", b"\"Begin Rules\",2\n\"Rule\",\"Pipe to Nozzle\"\n\"End Rules\"\n");
+        write(
+            "PlantConfig.xml",
+            "\u{feff}<PlantConfig>\r\n  <伴热 介质=\"蒸汽\"/>\r\n</PlantConfig>\r\n".as_bytes(),
+        );
+        write(
+            "RefData~4~680",
+            b"\"Begin Rules\",2\n\"Rule\",\"Pipe to Nozzle\"\n\"End Rules\"\n",
+        );
         let mut ole = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
         ole.extend([0u8; 256]);
         write("RefData~4~683", &ole);
@@ -268,7 +276,10 @@ mod tests {
             &root.join("RefData~4~809.zip"),
             &[
                 ("Maps/", b""),
-                ("Maps/import.xml", b"<Map>\n  <Row from=\"A\" to=\"B\"/>\n</Map>\n"),
+                (
+                    "Maps/import.xml",
+                    b"<Map>\n  <Row from=\"A\" to=\"B\"/>\n</Map>\n",
+                ),
                 ("Maps/valve.sym", &ole),
             ],
         );
@@ -361,13 +372,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 ("Manifest.txt", FileKind::Manifest, "Manifest"),
-                ("Export.dmp", FileKind::ExportDump, index.files[1].format.as_str()),
+                (
+                    "Export.dmp",
+                    FileKind::ExportDump,
+                    index.files[1].format.as_str()
+                ),
                 ("Export.log", FileKind::Other, "LOG"),
                 ("PlantConfig.xml", FileKind::Other, "XML"),
                 ("RefData~4~680", FileKind::RefData, "RUL"),
                 ("RefData~4~683", FileKind::RefData, "SPP"),
                 ("RefData~4~809.zip", FileKind::RefData, "Zip"),
-                ("RefData~4~824", FileKind::RefData, index.files[7].format.as_str()),
+                (
+                    "RefData~4~824",
+                    FileKind::RefData,
+                    index.files[7].format.as_str()
+                ),
             ]
         );
         // They are rows of the tree like the others.
@@ -389,7 +408,13 @@ mod tests {
         assert!(select(&mut state, &rules));
         let rows = detail_rows(&state, &rules);
         // The file's own details first, then what the read found.
-        assert_eq!(rows[0], (t!("Backup file name").into_owned(), "RefData~4~680".to_string()));
+        assert_eq!(
+            rows[0],
+            (
+                t!("Backup file name").into_owned(),
+                "RefData~4~680".to_string()
+            )
+        );
         assert_eq!(value(&rows, &t!("Original path")), Some("Ref\\rules.rul"));
         assert_eq!(value(&rows, &t!("Text encoding")), Some("UTF-8"));
         assert_eq!(value(&rows, &t!("Line count")), Some("3"));
@@ -439,7 +464,9 @@ mod tests {
         assert!(select(&mut state, &empty));
         let rows = detail_rows(&state, &empty);
         assert_eq!(value(&rows, &t!("Line count")), Some("0"));
-        assert!(!rows.iter().any(|(key, _)| key.contains(t!("Text content").as_ref())));
+        assert!(!rows
+            .iter()
+            .any(|(key, _)| key.contains(t!("Text content").as_ref())));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -453,7 +480,10 @@ mod tests {
         ] {
             assert!(select(&mut state, &node), "{node:?}");
             let rows = detail_rows(&state, &node);
-            assert!(rows.contains(&(not_text.clone(), String::new())), "{rows:?}");
+            assert!(
+                rows.contains(&(not_text.clone(), String::new())),
+                "{rows:?}"
+            );
             assert_eq!(value(&rows, &t!("Text encoding")), None);
         }
         let _ = std::fs::remove_dir_all(&root);
@@ -516,11 +546,17 @@ mod tests {
         assert!(select(&mut state, &rules));
         assert!(select(&mut state, &log));
         assert_eq!(state.section_data.len(), 1);
-        assert_eq!(value(&detail_rows(&state, &rules), &t!("Text encoding")), None);
+        assert_eq!(
+            value(&detail_rows(&state, &rules), &t!("Text encoding")),
+            None
+        );
         assert!(value(&detail_rows(&state, &log), &t!("Text encoding")).is_some());
         // Back on the first file: read again.
         assert!(select(&mut state, &rules));
-        assert_eq!(value(&detail_rows(&state, &rules), &t!("Line count")), Some("3"));
+        assert_eq!(
+            value(&detail_rows(&state, &rules), &t!("Line count")),
+            Some("3")
+        );
         // A node with no text lets go of the last one.
         assert!(!select(&mut state, &NodeId::Root));
         assert!(state.section_data.is_empty());
@@ -536,7 +572,10 @@ mod tests {
         let log = file(&state, "Export.log");
         assert!(select(&mut state, &log));
         let rows = detail_rows(&state, &log);
-        assert_eq!(value(&rows, "4"), Some(format!("exp system/{HIDDEN}@orcl").as_str()));
+        assert_eq!(
+            value(&rows, "4"),
+            Some(format!("exp system/{HIDDEN}@orcl").as_str())
+        );
         assert_eq!(value(&rows, "5"), Some(format!("key {HIDDEN}").as_str()));
         assert!(rows.contains(&(
             tf!(
