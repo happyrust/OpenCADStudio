@@ -356,14 +356,20 @@ pub(super) fn subscribe() -> iced::Subscription<CollabEvent> {
 fn worker() -> impl iced::futures::Stream<Item = CollabEvent> {
     iced::stream::channel(64, |mut sender| async move {
         eprintln!("[collab] 订阅已启动，准备连接");
+        // The app's client: it reads the published config, drains the queue
+        // the UI fills, and quits on a signal that is this thread's alone —
+        // `shutdown` raises it through the registration below, and nothing
+        // else in the process can.
+        let link = transport::Link::app();
+        let thread_link = link.clone();
         let handle = std::thread::spawn(move || {
-            if let Err(error) = transport::run_client(&mut sender) {
+            if let Err(error) = transport::run_client(&mut sender, &thread_link) {
                 eprintln!("[collab] 传输层退出：{error}");
             }
         });
         // The quit path needs this handle to wait for the goodbye frame, so
         // the thread that owns the socket is the one the app joins.
-        transport::register_worker(handle);
+        transport::register_worker(handle, link);
         iced::futures::future::pending::<()>().await;
     })
 }

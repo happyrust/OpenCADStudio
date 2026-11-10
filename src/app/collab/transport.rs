@@ -24,7 +24,7 @@ use ocs_collab::ClientMessage;
 use std::io::{ErrorKind, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tungstenite::{Message, WebSocket};
 
@@ -39,24 +39,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Heartbeat cadence the server expects (see `architecture.md` §3.1).
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
-/// Test-only override for the cadence, so the emission path can be exercised
-/// without sitting through a real minute of wall clock. Production always uses
-/// [`HEARTBEAT_INTERVAL`].
-#[cfg(test)]
-static HEARTBEAT_OVERRIDE: Mutex<Option<Duration>> = Mutex::new(None);
-
-/// Cadence actually used by the read loop.
-fn heartbeat_interval() -> Duration {
-    #[cfg(test)]
-    if let Some(interval) = *HEARTBEAT_OVERRIDE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-    {
-        return interval;
-    }
-    HEARTBEAT_INTERVAL
-}
-
 /// Reconnect backoff: 200 ms doubling to a 5 s ceiling, matching the
 /// documented retry ladder.
 const BACKOFF_START: Duration = Duration::from_millis(200);
@@ -66,74 +48,134 @@ const BACKOFF_MAX: Duration = Duration::from_secs(5);
 /// subscription is still alive.
 const BACKOFF_SLICE: Duration = Duration::from_millis(50);
 
-/// Set by [`shutdown`] when the app is quitting. Unlike a dropped
-/// subscription, this asks the thread to say goodbye on the wire: a process
-/// that just dies leaves the server waiting out the heartbeat timeout, while a
-/// `Close` frame retires the session at once (`VAL-CLI-016`).
-static STOP: AtomicBool = AtomicBool::new(false);
+/// The outbound queue: requests the UI wants on the wire, oldest first.
+type Outbox = Mutex<std::collections::VecDeque<Outbound>>;
 
-/// The transport thread, kept so [`shutdown`] can wait for its goodbye.
-static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
-
-/// Whether the app is quitting and the transport must close its socket.
-pub(super) fn stop_requested() -> bool {
-    STOP.load(Ordering::Relaxed)
+/// What one transport thread works with: where its session parameters come
+/// from, the requests waiting to go out, the signal that tells it to quit, and
+/// its heartbeat cadence.
+///
+/// The app's client is wired to the two process-wide slots ([`Link::app`]):
+/// iced starts the subscription worker as a bare `fn`, so a slot is the only
+/// way its parameters can reach it. Those slots are the app client's and
+/// nobody else's. In a test binary every app that gets built republishes its
+/// (empty) config to them and any test may queue a claim on them, so a client
+/// is always handed its link, and one that is not the app's gets a link that
+/// shares nothing ([`Link::detached`]).
+#[derive(Clone)]
+pub(super) struct Link {
+    config: Arc<Mutex<ClientConfig>>,
+    outbox: Arc<Outbox>,
+    /// Raised by [`shutdown`]. Unlike a dropped subscription it asks the
+    /// thread to say goodbye on the wire. It belongs to this link alone: it
+    /// used to be one process-wide flag that `shutdown` set and nothing
+    /// cleared, which read as "the app is quitting" to every client started
+    /// after the first quit.
+    stop: Arc<AtomicBool>,
+    heartbeat: Duration,
 }
 
-/// Records the thread [`shutdown`] waits on. Called from the subscription
-/// worker, which is the only place that spawns it.
-pub(super) fn register_worker(handle: std::thread::JoinHandle<()>) {
+impl Link {
+    /// The link of the app's own client: the published config, the queue the
+    /// UI fills, and a quit signal of its own.
+    pub(super) fn app() -> Self {
+        Self {
+            config: Arc::clone(app_config()),
+            outbox: Arc::clone(app_outbox()),
+            stop: Arc::new(AtomicBool::new(false)),
+            heartbeat: HEARTBEAT_INTERVAL,
+        }
+    }
+
+    /// A link that shares nothing with the app's client.
+    #[cfg(test)]
+    fn detached(config: ClientConfig) -> Self {
+        Self {
+            config: Arc::new(Mutex::new(config)),
+            outbox: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+            stop: Arc::new(AtomicBool::new(false)),
+            heartbeat: HEARTBEAT_INTERVAL,
+        }
+    }
+
+    /// The session parameters in effect right now.
+    fn config(&self) -> ClientConfig {
+        self.config
+            .lock()
+            .map(|slot| slot.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether this client was asked to quit.
+    fn stop_requested(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+}
+
+/// What [`shutdown`] needs to end the app's transport thread politely: the
+/// thread, and the link whose quit signal that thread watches.
+struct Worker {
+    handle: std::thread::JoinHandle<()>,
+    link: Link,
+}
+
+/// The app's transport thread, kept so [`shutdown`] can ask it to say goodbye
+/// and wait until it has.
+static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
+
+/// Records the thread [`shutdown`] stops and waits on, with the link it was
+/// started on. Called from the subscription worker, which is the only place
+/// that spawns it.
+pub(super) fn register_worker(handle: std::thread::JoinHandle<()>, link: Link) {
     if let Ok(mut slot) = WORKER.lock() {
-        *slot = Some(handle);
+        *slot = Some(Worker { handle, link });
     }
 }
 
 /// Asks the transport to close its socket and waits for the thread to finish.
 ///
+/// Unlike a dropped subscription, this asks the thread to say goodbye on the
+/// wire: a process that just dies leaves the server waiting out the heartbeat
+/// timeout, while a `Close` frame retires the session at once (`VAL-CLI-016`).
+///
+/// With no transport thread running there is nobody to say goodbye for, and
+/// nothing is left behind for a later client to trip over.
+///
 /// Returns once the worker is gone or the budget elapses. The budget exists so
 /// a wedged socket cannot hang the quit path; the thread's 100 ms read timeout
 /// means the normal case returns almost immediately.
 pub(super) fn shutdown() {
+    // Taken out of the slot, so the join does not leak on a later restart of
+    // the subscription (iced may rebuild it if the window reopens).
+    let Some(worker) = WORKER.lock().ok().and_then(|mut slot| slot.take()) else {
+        return;
+    };
     eprintln!("[collab] 退出：请求关闭协同连接");
-    STOP.store(true, Ordering::Relaxed);
+    worker.link.stop.store(true, Ordering::Relaxed);
     let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let finished = WORKER
-            .lock()
-            .map(|slot| slot.as_ref().is_none_or(|handle| handle.is_finished()))
-            .unwrap_or(true);
-        if finished || Instant::now() >= deadline {
-            break;
-        }
+    while !worker.handle.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
-    // Reap the handle so the join does not leak on a later restart of the
-    // subscription (iced may rebuild it if the window reopens).
-    let handle = WORKER.lock().ok().and_then(|mut slot| slot.take());
-    if let Some(handle) = handle {
-        let _ = handle.join();
-    }
+    let _ = worker.handle.join();
 }
 
-/// Session config handed to the transport thread before it starts. The worker
-/// is spawned by iced with no arguments, so the value travels through here.
-fn config_slot() -> &'static Mutex<ClientConfig> {
-    static SLOT: OnceLock<Mutex<ClientConfig>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(ClientConfig::default()))
+/// Session config published for the app's client. The worker is spawned by
+/// iced with no arguments, so the value travels through here.
+fn app_config() -> &'static Arc<Mutex<ClientConfig>> {
+    static SLOT: OnceLock<Arc<Mutex<ClientConfig>>> = OnceLock::new();
+    SLOT.get_or_init(|| Arc::new(Mutex::new(ClientConfig::default())))
 }
 
-/// Publish the session parameters the transport thread should use.
+/// Publish the session parameters the app's transport thread should use.
 pub(super) fn set_client_config(config: ClientConfig) {
-    if let Ok(mut slot) = config_slot().lock() {
+    publish_config(app_config(), config);
+}
+
+/// Replace what a config slot holds; its client reads it on the next attempt.
+fn publish_config(slot: &Mutex<ClientConfig>, config: ClientConfig) {
+    if let Ok(mut slot) = slot.lock() {
         *slot = config;
     }
-}
-
-fn current_config() -> ClientConfig {
-    config_slot()
-        .lock()
-        .map(|slot| slot.clone())
-        .unwrap_or_default()
 }
 
 /// One outbound request the UI wants on the wire. The transport thread owns the
@@ -157,60 +199,76 @@ impl Outbound {
     }
 }
 
-/// Outbound queue shared between the UI thread (producer) and the socket
-/// thread (consumer). A `Mutex<VecDeque>` is enough: claim traffic is
-/// human-paced, never a hot path.
-fn outbox() -> &'static Mutex<std::collections::VecDeque<Outbound>> {
-    static OUTBOX: OnceLock<Mutex<std::collections::VecDeque<Outbound>>> = OnceLock::new();
-    OUTBOX.get_or_init(|| Mutex::new(std::collections::VecDeque::new()))
+/// Outbound queue of the app's client, shared between the UI thread
+/// (producer) and the socket thread (consumer). A `Mutex<VecDeque>` is enough:
+/// claim traffic is human-paced, never a hot path.
+fn app_outbox() -> &'static Arc<Outbox> {
+    static OUTBOX: OnceLock<Arc<Outbox>> = OnceLock::new();
+    OUTBOX.get_or_init(|| Arc::new(Mutex::new(std::collections::VecDeque::new())))
 }
 
-fn push_outbound(request: Outbound) {
-    if let Ok(mut queue) = outbox().lock() {
+fn push_outbound(outbox: &Outbox, request: Outbound) {
+    if let Ok(mut queue) = outbox.lock() {
         queue.push_back(request);
     }
 }
 
 /// Take everything queued since the last drain.
-fn drain_outbound() -> Vec<Outbound> {
-    outbox()
+fn drain_outbound(outbox: &Outbox) -> Vec<Outbound> {
+    outbox
         .lock()
         .map(|mut queue| queue.drain(..).collect())
         .unwrap_or_default()
 }
 
-/// Queue a `claim` for `tag`. The `session_id` is checked against the live
-/// session by the caller (`State::request_claim`), so the queue itself only
-/// carries the intent.
-pub(super) fn request_claim(session_id: &str, tag: &str) -> Result<(), String> {
-    let _ = session_id;
-    if tag.trim().is_empty() {
-        return Err("位号为空".to_owned());
-    }
-    push_outbound(Outbound::Claim {
-        tag: tag.trim().to_owned(),
-    });
-    Ok(())
-}
-
-/// Queue a `release` for `tag`.
-pub(super) fn request_release(session_id: &str, tag: &str) -> Result<(), String> {
-    let _ = session_id;
-    if tag.trim().is_empty() {
-        return Err("位号为空".to_owned());
-    }
-    push_outbound(Outbound::Release {
-        tag: tag.trim().to_owned(),
-    });
-    Ok(())
-}
-
-/// Forget queued requests. Called when a session ends so a reconnect never
+/// Forget queued requests. Done when a session starts, so a reconnect never
 /// replays a claim the user made against the old session.
-pub(super) fn clear_outbound() {
-    if let Ok(mut queue) = outbox().lock() {
+fn clear_outbound(outbox: &Outbox) {
+    if let Ok(mut queue) = outbox.lock() {
         queue.clear();
     }
+}
+
+/// Put a `claim` for `tag` on `outbox`. An empty tag never gets there.
+fn queue_claim(outbox: &Outbox, tag: &str) -> Result<(), String> {
+    if tag.trim().is_empty() {
+        return Err("位号为空".to_owned());
+    }
+    push_outbound(
+        outbox,
+        Outbound::Claim {
+            tag: tag.trim().to_owned(),
+        },
+    );
+    Ok(())
+}
+
+/// Put a `release` for `tag` on `outbox`. An empty tag never gets there.
+fn queue_release(outbox: &Outbox, tag: &str) -> Result<(), String> {
+    if tag.trim().is_empty() {
+        return Err("位号为空".to_owned());
+    }
+    push_outbound(
+        outbox,
+        Outbound::Release {
+            tag: tag.trim().to_owned(),
+        },
+    );
+    Ok(())
+}
+
+/// Queue a `claim` for `tag` for the app's client. The `session_id` is checked
+/// against the live session by the caller (`State::request_claim`), so the
+/// queue itself only carries the intent.
+pub(super) fn request_claim(session_id: &str, tag: &str) -> Result<(), String> {
+    let _ = session_id;
+    queue_claim(app_outbox(), tag)
+}
+
+/// Queue a `release` for `tag` for the app's client.
+pub(super) fn request_release(session_id: &str, tag: &str) -> Result<(), String> {
+    let _ = session_id;
+    queue_release(app_outbox(), tag)
 }
 
 /// Turn one queued request into the wire message for `session_id`.
@@ -279,10 +337,14 @@ fn emit(sender: &mut mpsc::Sender<CollabEvent>, event: CollabEvent) -> Result<()
 
 /// Sleep out a retry delay, aborting early when the subscription disappears or
 /// the app starts quitting.
-fn wait_before_retry(sender: &mpsc::Sender<CollabEvent>, delay: Duration) -> Result<(), ()> {
+fn wait_before_retry(
+    sender: &mpsc::Sender<CollabEvent>,
+    delay: Duration,
+    link: &Link,
+) -> Result<(), ()> {
     let deadline = Instant::now() + delay;
     while Instant::now() < deadline {
-        if sender.is_closed() || stop_requested() {
+        if sender.is_closed() || link.stop_requested() {
             return Err(());
         }
         std::thread::sleep(BACKOFF_SLICE.min(deadline.saturating_duration_since(Instant::now())));
@@ -295,13 +357,21 @@ fn wait_before_retry(sender: &mpsc::Sender<CollabEvent>, delay: Duration) -> Res
 /// Returns `Ok(())` once the subscription is cancelled (or the client was never
 /// configured); errors are reported through the channel rather than returned,
 /// because there is no one left to return them to.
-pub(super) fn run_client(sender: &mut mpsc::Sender<CollabEvent>) -> std::io::Result<()> {
+///
+/// Everything the client reads or drains comes through `link`: its session
+/// parameters, its outbound queue, and its quit signal ([`shutdown`] raises the
+/// one of the link it was registered with). Once that is set the session says
+/// goodbye on the wire and the client does not reconnect.
+pub(super) fn run_client(
+    sender: &mut mpsc::Sender<CollabEvent>,
+    link: &Link,
+) -> std::io::Result<()> {
     let mut attempt = 0u32;
     loop {
-        if stop_requested() || sender.is_closed() {
+        if link.stop_requested() || sender.is_closed() {
             return Ok(());
         }
-        let config = current_config();
+        let config = link.config();
         if config.server_url.trim().is_empty() {
             // The subscription is gated on a configured address, so this is
             // only reachable in the window between the worker starting and the
@@ -317,7 +387,7 @@ pub(super) fn run_client(sender: &mut mpsc::Sender<CollabEvent>) -> std::io::Res
         if emit(sender, CollabEvent::Connecting { attempt }).is_err() {
             return Ok(());
         }
-        match run_session(sender, &config) {
+        match run_session(sender, &config, link) {
             Ok(Ended::SubscriptionGone) => return Ok(()),
             Ok(Ended::Quit) => return Ok(()),
             Ok(Ended::Closed(reason)) => {
@@ -347,7 +417,7 @@ pub(super) fn run_client(sender: &mut mpsc::Sender<CollabEvent>) -> std::io::Res
                 }
             }
         }
-        if wait_before_retry(sender, backoff_delay(attempt)).is_err() {
+        if wait_before_retry(sender, backoff_delay(attempt), link).is_err() {
             return Ok(());
         }
         attempt = attempt.saturating_add(1);
@@ -358,10 +428,11 @@ pub(super) fn run_client(sender: &mut mpsc::Sender<CollabEvent>) -> std::io::Res
 fn run_session(
     sender: &mut mpsc::Sender<CollabEvent>,
     config: &ClientConfig,
+    link: &Link,
 ) -> Result<Ended, String> {
     // A request queued against a session that has since ended must not be
     // replayed into this one: the tag may belong to somebody else by now.
-    clear_outbound();
+    clear_outbound(&link.outbox);
     let mut ws = connect(&config.server_url)?;
     let hello = ClientMessage::Hello {
         user_id: config.user_id.clone(),
@@ -376,7 +447,7 @@ fn run_session(
     let mut session_id: Option<String> = None;
 
     loop {
-        if stop_requested() {
+        if link.stop_requested() {
             // The app is quitting: say goodbye on the wire so the server
             // retires the session now instead of after the 90 s timeout.
             close(&mut ws);
@@ -442,7 +513,7 @@ fn run_session(
         // since the last tick. Sending here (rather than from the UI thread)
         // keeps every write to the socket on the thread that owns it.
         if let Some(session_id) = session_id.clone() {
-            for request in drain_outbound() {
+            for request in drain_outbound(&link.outbox) {
                 let message = outbound_message(&request, &session_id);
                 if let Err(error) = send_json(&mut ws, &message) {
                     // A failed write means the socket is gone; the retry ladder
@@ -454,7 +525,7 @@ fn run_session(
             }
         }
 
-        if last_heartbeat.elapsed() >= heartbeat_interval() {
+        if last_heartbeat.elapsed() >= link.heartbeat {
             let Some(session_id) = session_id.clone() else {
                 continue;
             };
@@ -540,15 +611,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iced::futures::StreamExt;
     use std::net::TcpListener;
-    use std::sync::MutexGuard;
 
-    /// The session config lives in a process-global slot, so tests that touch
-    /// it must not overlap: two threads would fight over one URL.
-    fn config_lock() -> MutexGuard<'static, ()> {
-        static LOCK: Mutex<()> = Mutex::new(());
-        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// The parameters every test client joins with, pointed at `server_url`.
+    fn config_for(server_url: String) -> ClientConfig {
+        ClientConfig {
+            server_url,
+            user_id: "u1".to_owned(),
+            drawing_id: "PID-1101".to_owned(),
+            mode: "协同编辑".to_owned(),
+            client_version: "test".to_owned(),
+        }
     }
 
     /// A one-connection WebSocket server that answers `hello` with `welcome`
@@ -625,42 +698,61 @@ mod tests {
         (url, seen, closed, handle)
     }
 
+    /// How long a test waits for the client's session to come up. A loopback
+    /// handshake takes a few milliseconds and the wait ends the moment
+    /// `Connected` arrives, so the bound is only ever spent on a failure — and
+    /// it is wide enough that a busy machine cannot turn a slow start into one.
+    const SESSION_WAIT: Duration = Duration::from_secs(10);
+
+    /// Start a client on `link`, on a thread of its own.
+    fn start_client(link: &Link) -> (mpsc::Receiver<CollabEvent>, std::thread::JoinHandle<()>) {
+        let (mut sender, receiver) = mpsc::channel::<CollabEvent>(64);
+        let link = link.clone();
+        let worker = std::thread::spawn(move || {
+            let _ = run_client(&mut sender, &link);
+        });
+        (receiver, worker)
+    }
+
+    /// Wait until the client reports its session. `false` once
+    /// [`SESSION_WAIT`] has run out, or as soon as the client thread is gone
+    /// (its end of the channel dropped) without ever having connected.
+    fn session_came_up(receiver: &mut mpsc::Receiver<CollabEvent>) -> bool {
+        let started = Instant::now();
+        loop {
+            match receiver.try_recv() {
+                Ok(CollabEvent::Connected { .. }) => {
+                    eprintln!("[transport-test] session after {:?}", started.elapsed());
+                    return true;
+                }
+                Ok(_) => {}
+                Err(mpsc::TryRecvError::Closed) => return false,
+                Err(mpsc::TryRecvError::Empty) => {
+                    if started.elapsed() >= SESSION_WAIT {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+    }
+
     /// VAL-CLI-002: the read loop really emits `heartbeat` frames on its
     /// cadence, and every one carries the session id from `welcome`.
     #[test]
     fn the_session_emits_heartbeats_carrying_its_session_id() {
-        let _guard = config_lock();
         let (url, seen, _closed, server) = recording_server();
-        set_client_config(ClientConfig {
-            server_url: url,
-            user_id: "u1".to_owned(),
-            drawing_id: "PID-1101".to_owned(),
-            mode: "协同编辑".to_owned(),
-            client_version: "test".to_owned(),
-        });
-        *HEARTBEAT_OVERRIDE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Duration::from_millis(120));
+        // A cadence short enough to watch several beats go by without sitting
+        // through a real minute; the app's client always runs on
+        // `HEARTBEAT_INTERVAL`.
+        let mut link = Link::detached(config_for(url));
+        link.heartbeat = Duration::from_millis(120);
 
-        let (mut sender, receiver) = mpsc::channel::<CollabEvent>(64);
-        let worker = std::thread::spawn(move || {
-            let _ = run_client(&mut sender);
-        });
-
-        let mut receiver = receiver;
-        let mut connected = false;
-        for _ in 0..60 {
-            match receiver.try_next() {
-                Ok(Some(CollabEvent::Connected { .. })) => {
-                    connected = true;
-                    break;
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(_) => std::thread::sleep(Duration::from_millis(20)),
-            }
-        }
-        assert!(connected, "the client never reported a session");
+        let (mut receiver, worker) = start_client(&link);
+        assert!(
+            session_came_up(&mut receiver),
+            "the client never reported a session"
+        );
 
         // Four cadence periods is enough for at least three beats.
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -700,9 +792,6 @@ mod tests {
         }
         assert!(exited, "the transport thread leaked after cancellation");
         let _ = worker.join();
-        *HEARTBEAT_OVERRIDE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         let _ = server.join();
     }
 
@@ -710,36 +799,19 @@ mod tests {
     /// thread is joined rather than leaked.
     #[test]
     fn quitting_sends_a_close_frame_and_joins_the_thread() {
-        let _guard = config_lock();
         let (url, _seen, closed, server) = recording_server();
-        set_client_config(ClientConfig {
-            server_url: url,
-            user_id: "u1".to_owned(),
-            drawing_id: "PID-1101".to_owned(),
-            mode: "协同编辑".to_owned(),
-            client_version: "test".to_owned(),
-        });
+        let link = Link::detached(config_for(url));
 
-        let (mut sender, receiver) = mpsc::channel::<CollabEvent>(64);
-        let worker = std::thread::spawn(move || {
-            let _ = run_client(&mut sender);
-        });
-        register_worker(worker);
-
-        let mut receiver = receiver;
-        let mut connected = false;
-        for _ in 0..60 {
-            match receiver.try_next() {
-                Ok(Some(CollabEvent::Connected { .. })) => {
-                    connected = true;
-                    break;
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(_) => std::thread::sleep(Duration::from_millis(20)),
-            }
-        }
-        assert!(connected, "the client never reported a session");
+        let (mut receiver, worker) = start_client(&link);
+        assert!(
+            session_came_up(&mut receiver),
+            "the client never reported a session"
+        );
+        // Registered once the session is up: the registration slot is the one
+        // the whole process shares, so a test elsewhere that quits an app takes
+        // whatever is in it. From here on that would only say this client's
+        // goodbye early, which is the very thing asserted below.
+        register_worker(worker, link);
 
         let started = Instant::now();
         shutdown();
@@ -761,8 +833,61 @@ mod tests {
         assert!(saw_close, "the client never sent a close frame on quit");
         let _ = server.join();
         drop(receiver);
-        // Reset the process-global stop flag so later tests are unaffected.
-        STOP.store(false, Ordering::Relaxed);
+    }
+
+    /// A quit earlier in the process must not stop a client that starts later.
+    ///
+    /// Tests elsewhere in this binary walk the quit path (`EXIT` at the end of
+    /// a batch run lands in `exit_app()`), and `exit_app()` says goodbye to
+    /// the collaboration server on its way out. With no transport thread
+    /// running there is nobody to say goodbye for, so nothing may be left
+    /// behind that a later client would read as "the app is quitting".
+    #[test]
+    fn a_quit_with_no_transport_thread_leaves_a_later_client_alone() {
+        let mut app = crate::app::OpenCADStudio::new_for_test();
+        let _ = app.exit_app();
+
+        let (url, server) = quiet_server();
+        let link = Link::detached(config_for(url));
+        let (mut receiver, worker) = start_client(&link);
+        assert!(
+            session_came_up(&mut receiver),
+            "the client never reported a session"
+        );
+
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+    }
+
+    /// What an app publishes for its own client must not reach anybody
+    /// else's.
+    ///
+    /// Every app that applies a config republishes its collaboration settings
+    /// to the app client's slot, and with collaboration unconfigured that is
+    /// an empty address — which a client reads as "wait until one is
+    /// configured". A client on a link of its own keeps the address it was
+    /// started with, however many apps come and go meanwhile.
+    #[test]
+    fn what_an_app_publishes_does_not_reach_a_client_on_its_own_link() {
+        let (url, server) = quiet_server();
+        let link = Link::detached(config_for(url));
+
+        // What `apply_config` does in every app this binary builds.
+        crate::app::OpenCADStudio::new_for_test()
+            .collab
+            .sync_client_config();
+        set_client_config(ClientConfig::default());
+
+        let (mut receiver, worker) = start_client(&link);
+        assert!(
+            session_came_up(&mut receiver),
+            "the client never reported a session"
+        );
+
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
     }
 
     #[test]
@@ -823,6 +948,8 @@ mod tests {
             HEARTBEAT_INTERVAL.as_secs() * 3 <= 90,
             "90 s timeout must tolerate several missed beats"
         );
+        // And that cadence is the one the app's client is started on.
+        assert_eq!(Link::app().heartbeat, HEARTBEAT_INTERVAL);
     }
 
     #[test]
@@ -856,17 +983,23 @@ mod tests {
         assert!(emit(&mut sender, CollabEvent::Connecting { attempt }).is_ok());
     }
 
+    /// What is published to a link's config slot is what its client reads on
+    /// its next attempt.
     #[test]
     fn the_published_config_round_trips_through_the_slot() {
-        let _guard = config_lock();
-        set_client_config(ClientConfig {
-            server_url: "ws://127.0.0.1:3240/ws".to_owned(),
-            user_id: "u1".to_owned(),
-            drawing_id: "PID-1101".to_owned(),
-            mode: "协同编辑".to_owned(),
-            client_version: "test".to_owned(),
-        });
-        let config = current_config();
+        let link = Link::detached(ClientConfig::default());
+        assert!(link.config().server_url.is_empty());
+        publish_config(
+            &link.config,
+            ClientConfig {
+                server_url: "ws://127.0.0.1:3240/ws".to_owned(),
+                user_id: "u1".to_owned(),
+                drawing_id: "PID-1101".to_owned(),
+                mode: "协同编辑".to_owned(),
+                client_version: "test".to_owned(),
+            },
+        );
+        let config = link.config();
         assert_eq!(config.server_url, "ws://127.0.0.1:3240/ws");
         assert_eq!(config.user_id, "u1");
         assert_eq!(config.drawing_id, "PID-1101");
@@ -877,37 +1010,16 @@ mod tests {
     /// This is the "no leak, no hang" contract of the transport.
     #[test]
     fn cancelling_the_subscription_ends_the_thread_promptly() {
-        let _guard = config_lock();
         let (url, server) = quiet_server();
-        set_client_config(ClientConfig {
-            server_url: url,
-            user_id: "u1".to_owned(),
-            drawing_id: "PID-1101".to_owned(),
-            mode: "协同编辑".to_owned(),
-            client_version: "test".to_owned(),
-        });
-
-        let (mut sender, receiver) = mpsc::channel::<CollabEvent>(64);
-        let worker = std::thread::spawn(move || {
-            let _ = run_client(&mut sender);
-        });
+        let link = Link::detached(config_for(url));
 
         // Wait for the session to come up, so the read loop is definitely
         // spinning on its timeout when the receiver goes away.
-        let mut receiver = receiver;
-        let mut connected = false;
-        for _ in 0..60 {
-            match receiver.try_next() {
-                Ok(Some(CollabEvent::Connected { .. })) => {
-                    connected = true;
-                    break;
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(_) => std::thread::sleep(Duration::from_millis(50)),
-            }
-        }
-        assert!(connected, "the client never reported a session");
+        let (mut receiver, worker) = start_client(&link);
+        assert!(
+            session_came_up(&mut receiver),
+            "the client never reported a session"
+        );
 
         drop(receiver);
         let started = Instant::now();
@@ -934,39 +1046,17 @@ mod tests {
     /// the protocol's frames, carrying the session id from `welcome`.
     #[test]
     fn queued_claims_and_releases_reach_the_wire_with_the_session_id() {
-        let _guard = config_lock();
         let (url, seen, _closed, server) = recording_server();
-        set_client_config(ClientConfig {
-            server_url: url,
-            user_id: "u1".to_owned(),
-            drawing_id: "PID-1101".to_owned(),
-            mode: "协同编辑".to_owned(),
-            client_version: "test".to_owned(),
-        });
-        clear_outbound();
+        let link = Link::detached(config_for(url));
 
-        let (mut sender, receiver) = mpsc::channel::<CollabEvent>(64);
-        let worker = std::thread::spawn(move || {
-            let _ = run_client(&mut sender);
-        });
+        let (mut receiver, worker) = start_client(&link);
+        assert!(
+            session_came_up(&mut receiver),
+            "the client never reported a session"
+        );
 
-        let mut receiver = receiver;
-        let mut connected = false;
-        for _ in 0..60 {
-            match receiver.try_next() {
-                Ok(Some(CollabEvent::Connected { .. })) => {
-                    connected = true;
-                    break;
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(_) => std::thread::sleep(Duration::from_millis(20)),
-            }
-        }
-        assert!(connected, "the client never reported a session");
-
-        request_claim("s-test", "P-1001").expect("claim queues");
-        request_release("s-test", "P-1001").expect("release queues");
+        queue_claim(&link.outbox, "P-1001").expect("claim queues");
+        queue_release(&link.outbox, "P-1001").expect("release queues");
 
         let deadline = Instant::now() + Duration::from_secs(2);
         let frames = loop {
@@ -1005,16 +1095,58 @@ mod tests {
     /// then.
     #[test]
     fn a_new_session_starts_with_an_empty_outbox() {
-        request_claim("s-old", "P-1001").expect("claim queues");
-        clear_outbound();
-        assert!(drain_outbound().is_empty());
+        let outbox = Outbox::default();
+        queue_claim(&outbox, "P-1001").expect("claim queues");
+        clear_outbound(&outbox);
+        assert!(drain_outbound(&outbox).is_empty());
+    }
+
+    /// A request queued before the session exists never reaches the wire: the
+    /// session clears the queue as it starts.
+    #[test]
+    fn a_request_queued_before_the_session_is_not_replayed_into_it() {
+        let (url, seen, _closed, server) = recording_server();
+        let link = Link::detached(config_for(url));
+        queue_claim(&link.outbox, "P-0001").expect("claim queues");
+
+        let (mut receiver, worker) = start_client(&link);
+        assert!(
+            session_came_up(&mut receiver),
+            "the client never reported a session"
+        );
+        // One queued after the session is up does go out; once it is on the
+        // wire, anything the session was going to send from before is too.
+        queue_claim(&link.outbox, "P-1001").expect("claim queues");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let frames = loop {
+            let frames: Vec<String> = seen.lock().expect("frame log").clone();
+            if frames.iter().any(|frame| frame.contains("P-1001")) || Instant::now() >= deadline {
+                break frames;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(
+            frames.iter().any(|frame| frame.contains("P-1001")),
+            "the claim made in the session never went out: {frames:?}"
+        );
+        assert!(
+            !frames.iter().any(|frame| frame.contains("P-0001")),
+            "a claim from before the session was replayed into it: {frames:?}"
+        );
+
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
     }
 
     #[test]
     fn an_empty_tag_is_refused_before_it_reaches_the_queue() {
-        clear_outbound();
+        let outbox = Outbox::default();
+        assert!(queue_claim(&outbox, "   ").is_err());
+        assert!(queue_release(&outbox, "").is_err());
+        assert!(drain_outbound(&outbox).is_empty());
+        // The app's own entry points refuse it the same way.
         assert!(request_claim("s-1", "   ").is_err());
         assert!(request_release("s-1", "").is_err());
-        assert!(drain_outbound().is_empty());
     }
 }
