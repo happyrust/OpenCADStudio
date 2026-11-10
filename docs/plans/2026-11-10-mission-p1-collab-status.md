@@ -9,7 +9,7 @@
 
 ## 0. 一页结论
 
-- **第二轮之后（§13）**：M6 的 4 项功能全部提交，`collab-client-broadcast` 在 `360dd0708`。M6 的 20 条断言逐条取了证：15 条按契约原文全部成立，5 条（003、005、013、018、019）各有一句按字面不成立，卡在契约自己的写法上，等契约的主人裁决（§13.4）。协同传输测试的隔离已修，全量 20 个测试程序 6571 通过 / 0 失败 / 43 忽略。`Cargo.lock` 的欠账已补，`--locked` 能用了。M7 没有开始。
+- **第二轮之后（§13）**：M6 的 4 项功能全部提交，`collab-client-broadcast` 在 `360dd0708`。M6 的 20 条断言逐条取了证：15 条按契约原文全部成立，5 条（003、005、013、018、019）各有一句按字面不成立，卡在契约自己的写法上，等契约的主人裁决（§13.4）。协同传输测试的隔离已修；全量 20 个测试程序在 `8cd274a2a` 上 6571 通过 / 0 失败 / 43 忽略，并进另一条线最后两个提交之后 6575 / 1 / 43，那 1 条是并行时偶发的测试，单独重跑通过（§13.8）。`Cargo.lock` 的欠账已补，`--locked` 能用了。M7 没有开始。
 
 - **mission 没有在跑。** `state.json` 是 `paused`，最后一条进度记录是 13:48:28 的 `mission_paused`。19:45:45 那次写入是 Factory 桌面端恢复编排会话时刷新了时间戳，之后没有任何新的运行（§2）。
 - **进度**：7 个里程碑里 M1–M5 已关闭（实现、代码评审、逐条断言取证都做完）；M6 的 4 项功能做完 3 项并已提交，第 4 项 `collab-client-broadcast` 是工作区里的半成品；M6 的里程碑验证还没跑；M7 的 4 项没有开始。`features.json` 共 57 条：52 completed / 1 in_progress / 4 pending（§3）。
@@ -499,9 +499,11 @@ git -C D:\work\plant-code\cad\OpenCADStudio reset --mixed refs/backup/main-pre-m
 | `360dd0708` | `collab-client-broadcast`：变更广播与只读降级（§13.2、§13.4） |
 | `412b1d3f2` | 合并 `upstream-merge-20261110`（到 `c2a7db496`）：隐藏桌面上驱动编辑器的脚本与说明，无冲突 |
 | `8cd274a2a` | 协同订阅不再写异步块，`VAL-CLI-019` 的检索式从 1 处命中变成 0（§13.3） |
-| 本节所在的提交 | 这份执行记录 |
+| `6b2531199` | 这份执行记录 |
+| `f8b28dc38` | 合并 `upstream-merge-20261110`（到 `36eeb97fe`）：那条线按根因修了并行时偶发失败的六条测试，文本预览多遮几处口令；无冲突 |
+| 本节最后一次改动所在的提交 | 最后这次合并之后的验证（§13.5 的补记、§13.8） |
 
-每次合并之后都跑了备份面板的两个测试分组：`pid_backup` 149 通过 / 2 忽略，`pidbackup` 21 通过 / 1 忽略（第一次合并后是 136 / 2 与 21 / 1，多出来的 13 条是那条线新加的测试）。
+每次合并之后都跑了备份面板的两个测试分组。四次依次是：`pid_backup` 136 通过 / 2 忽略、149 / 2、149 / 2、154 / 2；`pidbackup` 四次都是 21 通过 / 1 忽略。多出来的是那条线新加的测试。
 
 ### 13.2 feature（照此同步回 `features.json`）
 
@@ -605,6 +607,17 @@ lib 测试程序整套并行跑，传输组的失败条数：
 
 这类失败改前就有（第一轮带半成品的 4 遍里出现过 2 次，§10.4）。前两条有个便宜的修法：`set_textfill` 在值没变时不重置图集（三行）。那是上游的代码，没有动。
 
+补记：另一条线随后在 `2271924a0` 里按根因修了这四条（连同另外两条），都改在测试里，已并进 `main`（`f8b28dc38`）。它查明的原因与上表前三条一致；第四条（qat）上表猜错了，实际是 `apply_settings` 每次都 `set_language`，语言代数加一，以它为键的缓存按设计清空。
+
+合并之后 lib 测试整套并行又跑了 11 遍（`B\r2m-lib-full\`、`B\r2y-lib-full\`，外加全量那一遍）：传输组 0 失败；9 遍全过，2 遍各失败 1 条，都在那六条之外——
+
+| 测试 | 11 遍里失败 | 现象 |
+|---|---:|---|
+| `app::automation::tests::a_job_whose_text_the_atlas_no_longer_holds_is_laid_out_again` | 1 | 断言等于 0 的那个数得了 4。看名字与上表前两条同属字形图集一族；没有细查 |
+| `io::svg_export::tests::a_page_style_table_wins_over_the_job_wide_one` | 1 | 同一页两种走法出的 SVG 不相同；没有细查 |
+
+两条单独跑各 5 次都通过，所在模块整组也通过（128 条、38 条；`B\r2m-groups\`、`B\r2y-single\`）。这一轮没有碰这两个文件。
+
 ### 13.6 种子图上 `PID_AUTHOR` 读回为空的原因
 
 是探针读数的写法，不是图也不是接口。`probe-broadcast.ps1` 把响应 `ConvertFrom-Json` 之后再 `Out-String`，然后用正则找 `tag=…`；PowerShell 排版嵌套对象时把里层印成 `{@{handle=391; xdata=}}`——`xdata` 那一格是空的——所以永远匹配不上。同一张种子图、同一个接口，直接读响应正文得到的是 `"tag=P-1001"`（`E\logs\t00_smoke.result.txt`）；离线拿同一段 JSON 走探针的写法，也得到那个空格。
@@ -622,11 +635,12 @@ lib 测试程序整套并行跑，传输组的失败条数：
 | | 通过 | 失败 | 忽略 |
 |---|---:|---:|---:|
 | 第一轮（合并 + 半成品） | 6483 | 4 | 43 |
-| 现在 | 6571 | 0 | 43 |
+| `8cd274a2a` | 6571 | 0 | 43 |
+| `f8b28dc38`（并进另一条线最后两个提交之后，`B\r2y-*`） | 6575 | 1 | 43 |
 
-传输组归零。这一遍里 §13.5 那四条零星失败一条也没出现，但它们没有修，以后的全量里还会偶尔冒出来。
+传输组归零。最后那一遍失败的 1 条是 `io::svg_export::tests::a_page_style_table_wins_over_the_job_wide_one`，并行时偶发，单独重跑 5 次都通过（§13.5 的补记）；同一个测试程序随后整套又跑 4 遍，全过。
 
-mission 的门禁：`check --workspace` 通过；`clippy -p OpenCADStudio` 571 条告警，与改前同数，落在本轮改动行上的 0 条；`clippy -p ocs_collab -p ocs_collab_server --all-targets` 0 条；lib 的 `collab` 分组 86 通过；`ocs_collab` 69、`ocs_collab_server` 105 + 11 通过；`pytest scripts/pid-platform` 558 通过。`--locked` 现在能用，`services.yaml` 里「换成 `--offline`、构建后还原锁文件、绝不提交」那段说明已经过时。
+mission 的门禁（在 `8cd274a2a` 上；`clippy -p OpenCADStudio` 与 pytest 在最后那次合并之后又跑过，结果相同）：`check --workspace` 通过；`clippy -p OpenCADStudio` 571 条告警，与改前同数，落在本轮改动行上的 0 条；`clippy -p ocs_collab -p ocs_collab_server --all-targets` 0 条；lib 的 `collab` 分组 86 通过；`ocs_collab` 69、`ocs_collab_server` 105 + 11 通过；`pytest scripts/pid-platform` 558 通过。最后那次合并之后 `collab` 分组仍是 86 通过。`--locked` 现在能用，`services.yaml` 里「换成 `--offline`、构建后还原锁文件、绝不提交」那段说明已经过时。
 
 没有做的：wasm 目标的检查。
 
@@ -655,7 +669,7 @@ mission 的门禁：`check --workspace` 通过；`clippy -p OpenCADStudio` 571 �
 - 传输线程的重试计数在会话建成后不归零。`CollabEvent::Connecting` 的注释写的是「成功会话后的第一次尝试从零数起」，实际上计数接着上次往下数，同一进程里断过几次之后，再断线一上来就是 5 秒的封顶间隔。契约的场景只断一次，不受影响。
 - 占用被拒时命令行那条警告显示的是会话号（面板与状态里是用户）。
 - 服务器给 `display_name` 用的是 `user_id`，没有去查 `users` 表里的显示名。
-- §13.5 的四条零星失败。
+- §13.5 补记里剩下的两条零星失败。
 - §6.2 里 mission 记录在案的问题没有复核，除了「`capture` 默认不等帧」「`scope:"window"` 的 `screen_bounds` 是物理像素」两条，实际情况见 §13.4 之 7。
 
 M7 开工前：§13.4 的 2、4、5、6 最好先有结论，它们都落在 M7 要动的代码上（`hello`、`readonly_downgrade`、`claim_denied`）；`VAL-CROSS-004`（没有编辑权限的角色连入即降级）会用到「后加入的会话降级」，它和 `VAL-CROSS-011` 都会用到总闸；端到端验证可以直接用 `E\m6h.py`，或者仓库里另一条线提交的 `docs/automation/hidden_desktop.py`。
