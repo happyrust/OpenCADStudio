@@ -949,19 +949,24 @@ mod tests {
     // than the same page with the text stripped — proving text reaches the file.
     #[test]
     fn text_grows_the_pdf_vs_no_text() {
-        let wire = text_wire("HELLO", [20.0, 20.0, 0.0]);
-        let mut blank = wire.clone();
-        blank.wire.text_verts.clear();
+        // The export reads the glyphs back from the process-wide atlas the
+        // wire was laid out into: a test starting an application in between
+        // empties it, and the text is gone from the file.
+        crate::scene::text::sdf_atlas::undisturbed(|| {
+            let wire = text_wire("HELLO", [20.0, 20.0, 0.0]);
+            let mut blank = wire.clone();
+            blank.wire.text_verts.clear();
 
-        let with_text = build_pdf_pages(&[test_page(vec![wire])], None).unwrap();
-        let no_text = build_pdf_pages(&[test_page(vec![blank])], None).unwrap();
-        assert!(with_text.starts_with(b"%PDF"));
-        assert!(
-            with_text.len() > no_text.len(),
-            "text did not add content: {} !> {}",
-            with_text.len(),
-            no_text.len()
-        );
+            let with_text = build_pdf_pages(&[test_page(vec![wire])], None).unwrap();
+            let no_text = build_pdf_pages(&[test_page(vec![blank])], None).unwrap();
+            assert!(with_text.starts_with(b"%PDF"));
+            assert!(
+                with_text.len() > no_text.len(),
+                "text did not add content: {} !> {}",
+                with_text.len(),
+                no_text.len()
+            );
+        });
     }
 
     /// A `text_wire`-style quads wire in a system TrueType face, or `None`
@@ -993,26 +998,30 @@ mod tests {
     // tessellated outline's `re f` triangles. Skip only where no TTF resolves.
     #[test]
     fn filled_ttf_glyphs_export_as_real_text() {
-        let Some(wire) = ttf_wire("Hi", [20.0, 20.0, 0.0]) else {
-            return;
-        };
-        let bytes = build_pdf_pages(&[test_page(vec![wire])], None).unwrap();
-        let stream = pdf_stream_text(&bytes);
-        assert!(
-            stream.contains("/FontFile") || stream.contains("/FontFile2"),
-            "no embedded font program in {stream:?}"
-        );
-        assert!(
-            stream.contains("/ToUnicode"),
-            "no ToUnicode map in {stream:?}"
-        );
-        // A Type0 font draw: font select, text matrix, glyph codes.
-        assert!(stream.contains("Tf"), "no font selection in {stream:?}");
-        assert!(stream.contains(" Tm"), "no text matrix in {stream:?}");
-        assert!(
-            stream.contains("Tj") || stream.contains("TJ"),
-            "no text showing in {stream:?}"
-        );
+        // Laid out into the process-wide atlas, then read back from it by
+        // the export: see `text_grows_the_pdf_vs_no_text`.
+        crate::scene::text::sdf_atlas::undisturbed(|| {
+            let Some(wire) = ttf_wire("Hi", [20.0, 20.0, 0.0]) else {
+                return;
+            };
+            let bytes = build_pdf_pages(&[test_page(vec![wire])], None).unwrap();
+            let stream = pdf_stream_text(&bytes);
+            assert!(
+                stream.contains("/FontFile") || stream.contains("/FontFile2"),
+                "no embedded font program in {stream:?}"
+            );
+            assert!(
+                stream.contains("/ToUnicode"),
+                "no ToUnicode map in {stream:?}"
+            );
+            // A Type0 font draw: font select, text matrix, glyph codes.
+            assert!(stream.contains("Tf"), "no font selection in {stream:?}");
+            assert!(stream.contains(" Tm"), "no text matrix in {stream:?}");
+            assert!(
+                stream.contains("Tj") || stream.contains("TJ"),
+                "no text showing in {stream:?}"
+            );
+        });
     }
 
     // ── The extraction contract ───────────────────────────────────────────

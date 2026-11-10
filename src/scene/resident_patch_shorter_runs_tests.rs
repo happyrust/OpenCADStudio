@@ -187,6 +187,11 @@ fn six_references() -> Scene {
 
 #[test]
 fn references_drawn_as_stubs_are_patched_when_a_layer_inside_switches() {
+    // As below: patched only while the atlas generation holds still.
+    crate::scene::text::sdf_atlas::undisturbed(references_drawn_as_stubs);
+}
+
+fn references_drawn_as_stubs() {
     let mut scene = six_references();
     let before = drawn(&scene);
 
@@ -224,6 +229,14 @@ fn references_drawn_as_stubs_are_patched_when_a_layer_inside_switches() {
 
 #[test]
 fn a_layer_switched_off_inside_a_block_patches_the_references_in_place() {
+    // The set is patched only while the tessellation memo stands, and the
+    // memo is keyed by the generation of the process-wide glyph atlas. A
+    // test starting an application moves it: the set is then built anew, in
+    // the order a new set has, and nothing was patched.
+    crate::scene::text::sdf_atlas::undisturbed(a_layer_switched_off_inside_a_block);
+}
+
+fn a_layer_switched_off_inside_a_block() {
     let (mut scene, first) = two_references();
     let before = drawn(&scene);
     assert_eq!(

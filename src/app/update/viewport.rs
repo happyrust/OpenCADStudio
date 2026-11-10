@@ -10837,6 +10837,12 @@ mod rapid_drawing_tests {
             let _ = app.update(Message::ViewportLeftPressAt(at));
             for (step, x) in [70.0, 75.0, 80.0, 85.0].into_iter().enumerate() {
                 let at = screen(&app, glam::DVec3::new(x, 50.0, 0.0));
+                // A pass that took 8 ms or more makes the next move wait as
+                // long (`MOVE_COALESCE_FROM_MS`); on a machine busy with
+                // other work one does, and the move below would be withheld
+                // instead of answered. This test is about what an answered
+                // move draws, so the gate is left open.
+                app.move_pass_due = None;
                 let _ = app.update(Message::ViewportMove(at));
                 // The pointer is still moving: the frame tick rebuilds only
                 // the command preview.

@@ -61,6 +61,40 @@ fn bump_generation() {
     ATLAS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Run `test` so that only a failure with the atlas left alone counts.
+///
+/// The atlas is one per process, as it is in the editor, where a single
+/// thread lays text out and reads it back. Tests run side by side, and every
+/// one that starts an application empties the atlas on its way
+/// (`set_textfill` in `apply_settings`). To a test in the middle of laying
+/// text out and reading it back that is its glyphs gone: text missing from
+/// an export, a tessellation memo thrown away, a resident set built anew
+/// where it was to be patched. None of it is the code under test.
+///
+/// So a run that fails while [`generation`] moved is run again; one that
+/// fails with the atlas untouched is the failure it looks like, and is
+/// reported at once. A test that moves the generation itself (by starting an
+/// application) is always taken to be disturbed: it should bracket the
+/// stretch that matters with [`generation`] instead.
+#[cfg(test)]
+pub(crate) fn undisturbed(test: impl Fn()) {
+    // A disturbed run costs a few milliseconds; the bound is there for a
+    // test that disturbs itself, which would otherwise never end.
+    const RUNS: usize = 2000;
+    let mut last = None;
+    for _ in 0..RUNS {
+        let before = generation();
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(&test)) {
+            Ok(()) => return,
+            Err(failure) if generation() == before => std::panic::resume_unwind(failure),
+            Err(failure) => last = Some(failure),
+        }
+    }
+    if let Some(failure) = last {
+        std::panic::resume_unwind(failure);
+    }
+}
+
 /// TEXTFILL system variable — `true` fills TrueType glyphs (default), `false`
 /// draws them hollow (outline only). Global, like the AutoCAD system variable.
 static TEXTFILL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
