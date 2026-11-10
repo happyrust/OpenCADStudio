@@ -1277,6 +1277,8 @@ mod tests {
         "table-log-only",
         "table-rows-not-shown",
         "no-row-count",
+        "split-set",
+        "split-needs-percent",
     ];
 
     /// The panel's own labels, the ones the dock title and the command share.

@@ -7513,6 +7513,8 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "Named in Export.log only" => Some(("pid-backup", "table-log-only")),
         "The rows of the table are not shown yet." => Some(("pid-backup", "table-rows-not-shown")),
         "The export log states no row count for this table." => Some(("pid-backup", "no-row-count")),
+        "PIDBACKUPOPEN: the tree takes {}% of the panel's height" => Some(("pid-backup", "split-set")),
+        "PIDBACKUPOPEN: Split takes a percentage from {} to {}" => Some(("pid-backup", "split-needs-percent")),
         _ => None,
     }
 }

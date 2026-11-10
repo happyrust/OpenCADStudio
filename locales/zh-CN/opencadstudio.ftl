@@ -9148,6 +9148,8 @@ pid-backup =
     .table-log-only = 只在 Export.log 里有
     .table-rows-not-shown = 表的内容暂时还看不了。
     .no-row-count = 导出日志里没有这张表的行数。
+    .split-set = PIDBACKUPOPEN：树占面板高度的 __ocs_fmt_0__%
+    .split-needs-percent = PIDBACKUPOPEN：Split 后面要一个 __ocs_fmt_0__ 到 __ocs_fmt_1__ 之间的百分比
 
 block-flip-frame-feedback =
     .unavailable = 块参数坐标框不可用。

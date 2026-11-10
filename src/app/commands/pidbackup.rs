@@ -10,6 +10,8 @@
 //! PIDBACKUPOPEN Select <a > b > c>   go to a node of the open backup by the
 //!                                    labels on the way to it, unfolding the
 //!                                    levels above it and selecting it
+//! PIDBACKUPOPEN Split <percent>      give the tree that much of the panel's
+//!                                    height and the details the rest
 //! ```
 //!
 //! `Select` is the panel without a pointer: a script, or a client on the
@@ -57,6 +59,27 @@ enum Request {
     Restore(PathBuf, Option<PathBuf>),
     /// Go to the node at this path of labels.
     Select(String),
+    /// Give the tree this percentage of the panel's height; `None` when what
+    /// follows the word is no percentage.
+    Split(Option<f32>),
+}
+
+/// What follows `Split` when `rest` starts with that word: the percentage,
+/// with or without its sign.
+#[cfg(not(target_arch = "wasm32"))]
+fn split_percent(rest: &str) -> Option<Option<f32>> {
+    let (word, value) = match rest.split_once(char::is_whitespace) {
+        Some((word, value)) => (word, value.trim()),
+        None => (rest, ""),
+    };
+    word.eq_ignore_ascii_case("SPLIT").then(|| {
+        value
+            .trim_end_matches('%')
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|percent| (0.0..=100.0).contains(percent))
+    })
 }
 
 /// What follows `Select` (or `S`) when `rest` starts with that word.
@@ -100,6 +123,9 @@ fn parse_request(rest: &str, exists: impl Fn(&Path) -> bool) -> Option<Request> 
     // After the path check: a backup that is really called `Select` wins.
     if let Some(path) = select_path(rest) {
         return Some(Request::Select(path.to_string()));
+    }
+    if let Some(percent) = split_percent(rest) {
+        return Some(Request::Split(percent));
     }
     let mut words = Vec::new();
     let mut word = String::new();
@@ -193,6 +219,30 @@ impl OpenCADStudio {
         match parse_request(rest, Path::exists) {
             Some(Request::Restore(source, target)) => self.load_pid_backup(source, target),
             Some(Request::Select(path)) => self.on_pid_backup(PidBackupMsg::Goto(path)),
+            Some(Request::Split(Some(percent))) => {
+                let task = self.on_pid_backup(PidBackupMsg::SetSplit(percent / 100.0));
+                let share = self.pid_backup_browser.split().tree_share();
+                self.command_line.push_output(
+                    crate::tf!(
+                        "PIDBACKUPOPEN: the tree takes {}% of the panel's height",
+                        (share * 100.0).round()
+                    )
+                    .as_ref(),
+                );
+                task
+            }
+            Some(Request::Split(None)) => {
+                let (least, most) = pid_backup_browser::split::TREE_SHARE_RANGE;
+                self.command_line.push_error(
+                    crate::tf!(
+                        "PIDBACKUPOPEN: Split takes a percentage from {} to {}",
+                        (least * 100.0).round(),
+                        (most * 100.0).round()
+                    )
+                    .as_ref(),
+                );
+                Task::none()
+            }
             Some(Request::Zip | Request::Folder) if on_command_line => {
                 // No dialogs here: the keyword is not a path either.
                 self.command_line
@@ -282,7 +332,16 @@ impl OpenCADStudio {
                 .push_error(crate::tf!("PIDBACKUPOPEN: {}", error).as_ref()),
             None => {}
         }
-        self.run_pid_backup_effect(effect)
+        let task = self.run_pid_backup_effect(effect);
+        // The selection moved: once the panel is laid out again the tree
+        // scrolls to it. Without a window there is nothing to scroll.
+        if pid_backup_browser::take_reveal(&mut self.pid_backup_browser) {
+            return Task::batch([
+                task,
+                iced::advanced::widget::operate(pid_backup_browser::reveal_selected()),
+            ]);
+        }
+        task
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -687,6 +746,83 @@ mod tests {
         // The levels above it are open: the row is on screen.
         let labels: Vec<String> = row_labels(&app).into_iter().map(|(label, _)| label).collect();
         assert!(labels.contains(&"00".to_string()), "{labels:?}");
+    }
+
+    #[test]
+    fn split_takes_a_percentage_for_the_tree() {
+        let none = |_: &Path| false;
+        assert_eq!(parse_request("Split 30", none), Some(Request::Split(Some(30.0))));
+        assert_eq!(parse_request("split 42.5%", none), Some(Request::Split(Some(42.5))));
+        // No number, or one that is no percentage.
+        assert_eq!(parse_request("Split", none), Some(Request::Split(None)));
+        assert_eq!(parse_request("Split wide", none), Some(Request::Split(None)));
+        assert_eq!(parse_request("Split 130", none), Some(Request::Split(None)));
+        // Only the whole word: a source called `splitter.zip` is a source.
+        assert_eq!(
+            parse_request("splitter.zip", none),
+            Some(Request::Restore(PathBuf::from("splitter.zip"), None))
+        );
+        // And a backup that is really called `Split` is opened.
+        let exists = |path: &Path| path == Path::new("Split");
+        assert_eq!(
+            parse_request("Split", exists),
+            Some(Request::Restore(PathBuf::from("Split"), None))
+        );
+    }
+
+    #[test]
+    fn a_split_line_moves_the_bar_and_says_where_it_is() {
+        let mut app = app();
+        let default = app.pid_backup_browser.split().tree_share();
+        // With a backup in the panel, as a script has it by then: the bare
+        // verb asks nothing, so the command line hands the whole line over.
+        let _ = app.on_pid_backup(PidBackupMsg::Loaded(Ok(index())));
+        let task = app.run_command_line("PIDBACKUPOPEN Split 30");
+        app.drive_headless_task(task).expect("moving the bar needs no window");
+        assert_eq!(app.pid_backup_browser.split().tree_share(), 0.3);
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Output);
+        assert!(last.text.contains("30"), "{}", last.text);
+        // Out of range is brought to the nearest share a half can have.
+        let _ = app.dispatch_command("PIDBACKUPOPEN Split 1");
+        let (least, _) = pid_backup_browser::split::TREE_SHARE_RANGE;
+        assert_eq!(app.pid_backup_browser.split().tree_share(), least);
+        let last = app.command_line.history.last().expect("一条历史");
+        assert!(last.text.contains("12"), "{}", last.text);
+        // What is no percentage is refused, and the bar stays.
+        let _ = app.dispatch_command("PIDBACKUPOPEN Split much");
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Error);
+        assert_eq!(app.pid_backup_browser.split().tree_share(), least);
+        // The bar is the user's: a backup arriving or leaving keeps it.
+        let _ = app.on_pid_backup(PidBackupMsg::Loaded(Ok(index())));
+        let _ = app.on_pid_backup(PidBackupMsg::Close);
+        assert_eq!(app.pid_backup_browser.split().tree_share(), least);
+        assert_ne!(least, default);
+    }
+
+    /// A selection asks the tree to scroll to it once, whoever made it: a
+    /// click, or a walk from the command line that ends after its drawing
+    /// was read.
+    #[test]
+    fn a_selection_is_revealed_once() {
+        let mut app = app();
+        let _ = app.on_pid_backup(PidBackupMsg::Loaded(Ok(index())));
+        assert!(!pid_backup_browser::take_reveal(&mut app.pid_backup_browser));
+        // Without a window the scroll itself has nothing to act on; the
+        // request is taken with the message that made it.
+        let task = app.on_pid_backup(PidBackupMsg::Select(NodeId::Groups));
+        app.drive_headless_task(task).expect("a selection needs no window");
+        assert!(!pid_backup_browser::take_reveal(&mut app.pid_backup_browser));
+        // The panel alone: a selection sets it, unfolding does not.
+        let state = &mut app.pid_backup_browser;
+        pid_backup_browser::update(state, PidBackupMsg::Select(NodeId::Files));
+        assert!(pid_backup_browser::take_reveal(state));
+        assert!(!pid_backup_browser::take_reveal(state));
+        pid_backup_browser::update(state, PidBackupMsg::Toggle(NodeId::Groups));
+        assert!(!pid_backup_browser::take_reveal(state));
+        pid_backup_browser::update(state, PidBackupMsg::Goto(crate::t!("Plant groups").into_owned()));
+        assert!(pid_backup_browser::take_reveal(state));
     }
 
     #[test]

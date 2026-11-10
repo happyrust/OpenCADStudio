@@ -9177,6 +9177,8 @@ pid-backup =
     .table-log-only = Named in Export.log only
     .table-rows-not-shown = The rows of the table are not shown yet.
     .no-row-count = The export log states no row count for this table.
+    .split-set = PIDBACKUPOPEN: the tree takes __ocs_fmt_0__% of the panel's height
+    .split-needs-percent = PIDBACKUPOPEN: Split takes a percentage from __ocs_fmt_0__ to __ocs_fmt_1__
 
 block-flip-frame-feedback =
     .unavailable = Układ parametru bloku jest niedostępny.
