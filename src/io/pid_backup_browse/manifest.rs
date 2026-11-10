@@ -173,7 +173,11 @@ pub fn manifest_model(manifest: &Manifest) -> ManifestModel {
     let sizes: Vec<(&str, &str, [Option<u64>; 3])> = manifest
         .all("FileSize")
         .filter_map(|line| {
-            let number = |at: usize| line.fields.get(at).and_then(|field| field.trim().parse().ok());
+            let number = |at: usize| {
+                line.fields
+                    .get(at)
+                    .and_then(|field| field.trim().parse().ok())
+            };
             Some((
                 line.fields.first()?.as_str(),
                 line.fields.get(1)?.as_str(),
@@ -241,7 +245,9 @@ pub fn manifest_model(manifest: &Manifest) -> ManifestModel {
 
 /// The components of a path the manifest states: `\\host\share\a\b`.
 fn components(path: &str) -> Vec<&str> {
-    path.split(['\\', '/']).filter(|part| !part.is_empty()).collect()
+    path.split(['\\', '/'])
+        .filter(|part| !part.is_empty())
+        .collect()
 }
 
 /// Give every record its [`FileRecord::original`]: its source from the
@@ -355,7 +361,11 @@ mod tests {
     fn every_line_lands_in_its_place() {
         let model = model();
         assert_eq!(
-            model.summary.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+            model
+                .summary
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
             ["Name", "Version", "Rootitem", "BackupCommand"]
         );
         // A line of several fields reads as one, in order, empty ones kept.
@@ -366,16 +376,35 @@ mod tests {
         assert_eq!(
             model.tables,
             [
-                DbObject { schema: "SQPlantpid".to_string(), name: "T_DRAWING".to_string() },
-                DbObject { schema: "SQPlant".to_string(), name: "T_PLANTGROUP".to_string() },
+                DbObject {
+                    schema: "SQPlantpid".to_string(),
+                    name: "T_DRAWING".to_string()
+                },
+                DbObject {
+                    schema: "SQPlant".to_string(),
+                    name: "T_PLANTGROUP".to_string()
+                },
             ]
         );
         assert_eq!(model.views.len(), 1);
         assert_eq!(model.roles.len(), 1);
-        assert_eq!(model.rights, [["E54C", "0", "3", "100"], ["E54C", "0", "3", "301"]]);
         assert_eq!(
-            model.connections.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
-            ["SiteConnInfo", "PlantConnInfo", "TableSpace", "DBUids", "DBPwds"]
+            model.rights,
+            [["E54C", "0", "3", "100"], ["E54C", "0", "3", "301"]]
+        );
+        assert_eq!(
+            model
+                .connections
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "SiteConnInfo",
+                "PlantConnInfo",
+                "TableSpace",
+                "DBUids",
+                "DBPwds"
+            ]
         );
         assert_eq!(model.files.len(), 7);
         assert!(model.database_files.is_empty());
@@ -390,7 +419,10 @@ mod tests {
         assert_eq!(model.hidden, 6);
         let printed = format!("{model:?}");
         for secret in [OBFUSCATED, PASSWORD, "plain-secret", "#####"] {
-            assert!(!printed.contains(secret), "the model still holds a credential");
+            assert!(
+                !printed.contains(secret),
+                "the model still holds a credential"
+            );
         }
         // What is around a credential stays readable.
         assert_eq!(
@@ -467,7 +499,10 @@ mod tests {
     fn a_single_files_format_is_its_original_extension() {
         assert_eq!(format_of("Ref\\rules.rul").as_deref(), Some("RUL"));
         assert_eq!(format_of("Ref\\exportlayer.xlsx").as_deref(), Some("XLSX"));
-        assert_eq!(format_of("Plant\\Resources\\Map.xml").as_deref(), Some("XML"));
+        assert_eq!(
+            format_of("Plant\\Resources\\Map.xml").as_deref(),
+            Some("XML")
+        );
         assert_eq!(format_of("Ref\\Symbols"), None);
         assert_eq!(format_of("Ref\\odd.name-that-is-no-extension"), None);
         assert_eq!(format_of(""), None);
@@ -475,6 +510,9 @@ mod tests {
 
     #[test]
     fn an_empty_manifest_is_an_empty_model() {
-        assert_eq!(manifest_model(&parse_manifest("")), ManifestModel::default());
+        assert_eq!(
+            manifest_model(&parse_manifest("")),
+            ManifestModel::default()
+        );
     }
 }

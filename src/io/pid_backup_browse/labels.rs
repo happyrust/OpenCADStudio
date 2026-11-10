@@ -159,7 +159,10 @@ mod tests {
         let mut items = vec![
             item("UID-9", Vec::new()),
             named("UID-5", "P-10"),
-            item("UID-2", vec![attribute("INamedInstrument", "MeasuredVariable", "T")]),
+            item(
+                "UID-2",
+                vec![attribute("INamedInstrument", "MeasuredVariable", "T")],
+            ),
             named("UID-7", "p-2"),
             named("UID-1", "P-10"),
         ];

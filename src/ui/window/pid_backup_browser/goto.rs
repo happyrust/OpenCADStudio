@@ -129,7 +129,11 @@ fn find<'a>(children: &[&'a Row], segment: &str) -> Option<&'a Row> {
     children
         .iter()
         .find(|row| row.label == segment)
-        .or_else(|| children.iter().find(|row| row.label.to_lowercase() == lower))
+        .or_else(|| {
+            children
+                .iter()
+                .find(|row| row.label.to_lowercase() == lower)
+        })
         .or_else(|| {
             children
                 .iter()
@@ -288,7 +292,10 @@ mod tests {
         // A drawing whose items hold no such type: the read has landed, so
         // the walk does not wait any longer.
         let mut state = ready();
-        start(&mut state, &format!("{groups} > SQPlant > 00 > A-101 > Vessel"));
+        start(
+            &mut state,
+            &format!("{groups} > SQPlant > 00 > A-101 > Vessel"),
+        );
         update(
             &mut state,
             PidBackupMsg::ItemsLoaded(0, Ok(Arc::new(DrawingItems::default()))),
@@ -296,7 +303,10 @@ mod tests {
         let error = take_outcome(&mut state)
             .expect("the walk ended")
             .expect_err("the drawing holds no vessel");
-        assert!(error.contains("Vessel") && error.contains("A-101"), "{error}");
+        assert!(
+            error.contains("Vessel") && error.contains("A-101"),
+            "{error}"
+        );
     }
 
     #[test]

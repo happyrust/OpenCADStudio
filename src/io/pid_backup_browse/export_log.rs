@@ -53,7 +53,8 @@ pub fn parse_export_log<'a>(lines: impl IntoIterator<Item = &'a str>) -> ExportL
         if let Some(server) = text.strip_prefix("Connected to:") {
             log.server.get_or_insert_with(|| server.trim().to_string());
         } else if let Some(sets) = text.strip_prefix("Export done in ") {
-            log.character_sets.get_or_insert_with(|| sets.trim().to_string());
+            log.character_sets
+                .get_or_insert_with(|| sets.trim().to_string());
         } else if text.starts_with("Export terminated") {
             log.outcome = Some(text.to_string());
         } else if text.starts_with("EXP-") || text.starts_with("ORA-") {
@@ -78,7 +79,9 @@ pub fn parse_export_log<'a>(lines: impl IntoIterator<Item = &'a str>) -> ExportL
             let _name = words.next();
             let (Some(rows), Some(table)) = (
                 rows_exported(words),
-                log.schemas.last_mut().and_then(|schema| schema.tables.last_mut()),
+                log.schemas
+                    .last_mut()
+                    .and_then(|schema| schema.tables.last_mut()),
             ) else {
                 continue;
             };
@@ -104,8 +107,7 @@ fn schema_of(text: &str) -> Option<&str> {
         .strip_prefix("about to export ")
         .or_else(|| rest.strip_prefix("About to export "))?;
     let (schema, what) = rest.split_once("'s ")?;
-    (what.starts_with("tables") && !schema.is_empty() && !schema.contains(' '))
-        .then_some(schema)
+    (what.starts_with("tables") && !schema.is_empty() && !schema.contains(' ')).then_some(schema)
 }
 
 /// `53` of `53 rows exported`.

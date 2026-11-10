@@ -80,7 +80,10 @@ fn bounds_of(ui: &mut Ui<'_>, label: &str) -> iced::Rectangle {
 }
 
 /// The panel messages a click at `point` produces.
-fn click_at(state: &PidBackupBrowser, point: impl Fn(&mut Ui<'_>) -> iced::Point) -> Vec<PidBackupMsg> {
+fn click_at(
+    state: &PidBackupBrowser,
+    point: impl Fn(&mut Ui<'_>) -> iced::Point,
+) -> Vec<PidBackupMsg> {
     let mut ui = draw(state);
     let at = point(&mut ui);
     ui.point_at(at);
@@ -113,7 +116,9 @@ fn pixels(state: &PidBackupBrowser, name: &str) -> image::RgbaImage {
         .map(|entry| entry.path())
         .find(|path| path.extension().is_some_and(|ext| ext == "png"))
         .expect("one picture");
-    let image = image::open(&written).expect("the picture reads back").to_rgba8();
+    let image = image::open(&written)
+        .expect("the picture reads back")
+        .to_rgba8();
     let _ = std::fs::remove_dir_all(&folder);
     image
 }
@@ -137,7 +142,12 @@ fn an_item_row_is_the_items_name_and_its_type_lists_the_items_as_a_table() {
         rows[2..],
         [
             (
-                format!("{} | {} | {}", t!("Item name"), t!("Item class"), t!("Item UID")),
+                format!(
+                    "{} | {} | {}",
+                    t!("Item name"),
+                    t!("Item class"),
+                    t!("Item UID")
+                ),
                 crate::tf!("{} row(s)", 3).into_owned()
             ),
             ("FT-12".to_string(), "PIDInstrument | UID-C".to_string()),
@@ -282,7 +292,10 @@ fn a_long_table_in_the_details_builds_only_the_rows_in_view() {
         .collect();
     items.item_count = 400;
     update(&mut state, PidBackupMsg::Toggle(NodeId::Drawing(0)));
-    update(&mut state, PidBackupMsg::ItemsLoaded(0, Ok(Arc::new(items))));
+    update(
+        &mut state,
+        PidBackupMsg::ItemsLoaded(0, Ok(Arc::new(items))),
+    );
     update(&mut state, PidBackupMsg::Select(NodeId::ItemType(0, 0)));
 
     let built = |state: &PidBackupBrowser| -> (Vec<bool>, Vec<PidBackupMsg>) {
@@ -314,7 +327,11 @@ fn a_long_table_in_the_details_builds_only_the_rows_in_view() {
             )
         })
         .collect();
-    assert_eq!(reported.len(), 1, "the view reports its height: {messages:?}");
+    assert_eq!(
+        reported.len(),
+        1,
+        "the view reports its height: {messages:?}"
+    );
     for message in messages {
         update(&mut state, message);
     }

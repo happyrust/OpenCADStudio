@@ -172,8 +172,8 @@ fn column_widths(columns: &[Column], rows: &[Vec<String>], widest_column: f32) -
         .iter()
         .enumerate()
         .map(|(at, column)| {
-            let title = crate::ui::style::text_metrics::width(&column.title, TEXT, false)
-                + SORT_MARK_W;
+            let title =
+                crate::ui::style::text_metrics::width(&column.title, TEXT, false) + SORT_MARK_W;
             let cells = widest(rows.iter().filter_map(|row| row.get(at)));
             (title.max(cells) + 2.0 * CELL_PAD).clamp(COLUMN_MIN, widest_column)
         })
@@ -249,7 +249,10 @@ pub fn update(state: &mut GridState, msg: GridMsg, table: impl FnOnce() -> Optio
 /// The rows of `table` ordered by `column`. Equal cells keep the order they
 /// were given in, both ways.
 pub fn sorted_order(table: &Table, column: usize, descending: bool) -> Vec<u32> {
-    let numeric = table.columns.get(column).is_some_and(|column| column.numeric);
+    let numeric = table
+        .columns
+        .get(column)
+        .is_some_and(|column| column.numeric);
     let mut order: Vec<u32> = (0..table.rows.len() as u32).collect();
     order.sort_by(|left, right| {
         let (a, b) = (
@@ -261,7 +264,11 @@ pub fn sorted_order(table: &Table, column: usize, descending: bool) -> Vec<u32> 
         } else {
             natural_cmp(a, b)
         };
-        let by_cell = if descending { by_cell.reverse() } else { by_cell };
+        let by_cell = if descending {
+            by_cell.reverse()
+        } else {
+            by_cell
+        };
         by_cell.then(left.cmp(right))
     });
     order
@@ -381,7 +388,9 @@ pub fn view<'a, Message: Clone + 'a>(
             .x(-state.offset.0)
             .height(Length::Fixed(HEADER_H)),
     )
-    .direction(scrollable::Direction::Vertical(scrollable::Scrollbar::hidden()))
+    .direction(scrollable::Direction::Vertical(
+        scrollable::Scrollbar::hidden(),
+    ))
     .width(Fill)
     .height(Length::Fixed(HEADER_H));
 
@@ -452,7 +461,9 @@ mod tests {
     }
 
     fn sort(state: &mut GridState, table: &Table, column: usize) {
-        update(state, GridMsg::Sort(column), || Some(Arc::new(table.clone())));
+        update(state, GridMsg::Sort(column), || {
+            Some(Arc::new(table.clone()))
+        });
     }
 
     #[test]
@@ -516,7 +527,10 @@ mod tests {
             ],
         );
         let second = |order: Vec<u32>| -> Vec<&str> {
-            order.iter().map(|row| table.cell(*row as usize, 1)).collect()
+            order
+                .iter()
+                .map(|row| table.cell(*row as usize, 1))
+                .collect()
         };
         assert_eq!(
             second(sorted_order(&table, 0, false)),
@@ -577,7 +591,10 @@ mod tests {
             vec![Column::text("A"), Column::text("B")],
             vec![
                 vec!["x".to_string(), "y".repeat(400)],
-                vec!["a much longer cell than the title".to_string(), String::new()],
+                vec![
+                    "a much longer cell than the title".to_string(),
+                    String::new(),
+                ],
             ],
         );
         assert!(table.widths[0] > COLUMN_MIN && table.widths[0] < COLUMN_MAX);
@@ -663,7 +680,10 @@ mod tests {
                 _ => None,
             })
             .expect("the first frame reports the view");
-        assert!(reported > 100.0 && reported <= 200.0 - HEADER_H, "{reported}");
+        assert!(
+            reported > 100.0 && reported <= 200.0 - HEADER_H,
+            "{reported}"
+        );
         for msg in messages {
             update(&mut state, msg, || Some(Arc::new(table.clone())));
         }

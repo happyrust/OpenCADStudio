@@ -147,9 +147,8 @@ impl Section for DatabaseSection {
                 };
                 lines.push(count(t!("Schema"), &schema.name));
                 lines.push(count(t!("Table name"), &table.name));
-                let marker = |text: std::borrow::Cow<'static, str>| {
-                    DetailLine::Marker(text.into_owned())
-                };
+                let marker =
+                    |text: std::borrow::Cow<'static, str>| DetailLine::Marker(text.into_owned());
                 match table.rows {
                     Some(rows) => lines.push(count(t!("Row count"), rows)),
                     None if catalog.has_log => lines.push(marker(t!(
@@ -218,7 +217,10 @@ fn database_lines(catalog: &TableCatalog, lines: &mut Vec<DetailLine>) {
             "This backup has no Export.log: the tables are listed without row counts."
         )));
     }
-    let mut columns = vec![Column::text(t!("Schema")), Column::number(t!("Table count"))];
+    let mut columns = vec![
+        Column::text(t!("Schema")),
+        Column::number(t!("Table count")),
+    ];
     if catalog.has_log {
         columns.push(Column::number(t!("Tables with rows")));
         columns.push(Column::number(t!("Row count")));
@@ -388,7 +390,13 @@ Export terminated successfully without warnings.
         let state = ready(true);
         let rows = detail_rows(&state, &DUMP);
         // The file's own line first.
-        assert_eq!(rows[0], (t!("Backup file name").into_owned(), "Export.dmp".to_string()));
+        assert_eq!(
+            rows[0],
+            (
+                t!("Backup file name").into_owned(),
+                "Export.dmp".to_string()
+            )
+        );
         assert_eq!(value(&rows, &t!("Schema count")), Some("2"));
         assert_eq!(value(&rows, &t!("Table count")), Some("6"));
         assert_eq!(value(&rows, &t!("Tables with rows")), Some("4"));
@@ -420,7 +428,10 @@ Export terminated successfully without warnings.
             ]
         );
         // Every other file's details are what they were.
-        assert_eq!(value(&detail_rows(&state, &NodeId::File(2)), &t!("Schema count")), None);
+        assert_eq!(
+            value(&detail_rows(&state, &NodeId::File(2)), &t!("Schema count")),
+            None
+        );
     }
 
     #[test]
@@ -436,7 +447,10 @@ Export terminated successfully without warnings.
                 (t!("Row count").into_owned(), "47977".to_string()),
             ]
         );
-        assert_eq!(rows[4].0, format!("{} | {}", t!("Table name"), t!("Row count")));
+        assert_eq!(
+            rows[4].0,
+            format!("{} | {}", t!("Table name"), t!("Row count"))
+        );
         assert_eq!(
             rows[5..],
             [
@@ -507,7 +521,8 @@ Export terminated successfully without warnings.
     fn a_table_only_one_source_names_says_so() {
         let mut log = parse_export_log(LOG.lines());
         log.schemas[1].tables.push(("T_EXTRA".to_string(), None));
-        log.messages.push("EXP-00091: Exporting questionable statistics.".to_string());
+        log.messages
+            .push("EXP-00091: Exporting questionable statistics.".to_string());
         let mut manifest = tables();
         manifest.push(object("SQPlantpid", "T_UNLOGGED"));
         let index = BackupIndex {
@@ -524,7 +539,10 @@ Export terminated successfully without warnings.
             t!("Export messages").into_owned(),
             "EXP-00091: Exporting questionable statistics.".to_string(),
         ] {
-            assert!(rows.contains(&(expected.clone(), String::new())), "{expected}: {rows:?}");
+            assert!(
+                rows.contains(&(expected.clone(), String::new())),
+                "{expected}: {rows:?}"
+            );
         }
         // SQPlantpid by name: T_AREABRK, T_DRAWING, T_EXTRA, T_MODELITEM,
         // T_NOTE, T_UNLOGGED.
@@ -554,7 +572,10 @@ Export terminated successfully without warnings.
             .iter()
             .filter(|row| matches!(row.id, NodeId::File(_)))
             .all(|row| !row.expandable));
-        assert_eq!(value(&detail_rows(&state, &NodeId::File(0)), &t!("Table count")), None);
+        assert_eq!(
+            value(&detail_rows(&state, &NodeId::File(0)), &t!("Table count")),
+            None
+        );
         // With a catalog, only the dump opens.
         let state = ready(true);
         let expandable: Vec<String> = visible_rows(&state)
@@ -587,7 +608,11 @@ Export terminated successfully without warnings.
                 .unwrap_or_else(|error| panic!("{label} is drawn: {error:?}"))
                 .visible_bounds()
                 .unwrap_or_else(|| panic!("{label} is on screen"));
-            let x = if left_of { bounds.x - 7.0 } else { bounds.center_x() };
+            let x = if left_of {
+                bounds.x - 7.0
+            } else {
+                bounds.center_x()
+            };
             ui.point_at(iced::Point::new(x, bounds.center_y()));
             let _ = ui.simulate(iced_test::simulator::click());
             ui.into_messages()
@@ -645,7 +670,10 @@ Export terminated successfully without warnings.
                 .visible_bounds()
                 .expect("the title is on screen");
             // The rows' title sits right of the name's, on the same line.
-            ui.point_at(iced::Point::new(name.x + name.width + 40.0, name.center_y()));
+            ui.point_at(iced::Point::new(
+                name.x + name.width + 40.0,
+                name.center_y(),
+            ));
             let _ = ui.simulate(iced_test::simulator::click());
             ui.into_messages()
                 .filter_map(|message| match message {
