@@ -285,6 +285,8 @@ pub struct PlotPage<'a> {
 pub struct GlyphSnapshot {
     table: std::collections::HashMap<u64, crate::scene::text::sdf_atlas::GlyphExport>,
     solid_key: u64,
+    /// The atlas generation the snapshot was taken under.
+    generation: u64,
 }
 
 impl GlyphSnapshot {
@@ -305,11 +307,28 @@ impl GlyphSnapshot {
         Self {
             table: atlas.export_table(),
             solid_key: crate::scene::text::sdf_atlas::uv_key(atlas.solid_uv()),
+            // Read with the atlas held, as `capture` does: the process-wide
+            // atlas moves its generation under its own lock, so this is the
+            // generation of exactly the tiles in `table`.
+            generation: crate::scene::text::sdf_atlas::generation(),
         }
     }
 
     pub fn glyphs(&self) -> usize {
         self.table.len()
+    }
+
+    /// The atlas generation ([`crate::scene::text::sdf_atlas::generation`])
+    /// the snapshot was taken under.
+    ///
+    /// A key is a tile's place in the atlas, not the glyph baked there. After
+    /// a rewind the tiles fill again in whatever order text is next laid out,
+    /// so a quad laid out before it can carry a key this snapshot *has* — for
+    /// a different glyph — and [`Self::missing_in`] counts nothing missing.
+    /// Text and snapshot belong together only when the text was laid out
+    /// under this generation; whoever laid it out is the one to know.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The export geometry under a quad's atlas-tile key — the lookup
@@ -399,6 +418,8 @@ impl PlotAssets {
     /// Glyph quads on `pages` the snapshot cannot draw — the count a strict
     /// backend would refuse the job over. Zero when there is no snapshot: the
     /// emitter will take its own then, and report on that one.
+    ///
+    /// Zero here is necessary, not sufficient: see [`Self::letters`].
     pub fn stale_glyphs(&self, pages: &[crate::io::plot_types::PdfPageInput]) -> usize {
         let Some(snapshot) = &self.glyphs else {
             return 0;
@@ -407,6 +428,26 @@ impl PlotAssets {
             .iter()
             .map(|page| snapshot.missing_in(page.content.wires.iter().map(|wire| &wire.wire)))
             .sum()
+    }
+
+    /// Whether the snapshot draws `pages` as they were laid out, given the
+    /// atlas generation their text was laid out under.
+    ///
+    /// Two things have to hold. Every quad's key is in the snapshot
+    /// ([`Self::stale_glyphs`] is zero) — and the snapshot was taken under
+    /// the generation the text was laid out under, because a key present
+    /// after a rewind may be another glyph's
+    /// ([`GlyphSnapshot::generation`]). No snapshot at all is no text to get
+    /// wrong.
+    pub fn letters(
+        &self,
+        pages: &[crate::io::plot_types::PdfPageInput],
+        laid_out_under: u64,
+    ) -> bool {
+        self.glyphs
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.generation() == laid_out_under)
+            && self.stale_glyphs(pages) == 0
     }
 }
 

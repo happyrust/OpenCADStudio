@@ -3557,6 +3557,15 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn drawing_with(name: &str, label: bool) -> (std::path::PathBuf, std::path::PathBuf) {
+        drawing_lettered(name, label.then_some("PLOT"))
+    }
+
+    /// The fixture with `label` as its one line of text, or with none.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn drawing_lettered(
+        name: &str,
+        label: Option<&str>,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("ocs-plot-svg-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -3584,9 +3593,9 @@ mod tests {
         // Text, because glyph geometry is the one thing a headless plot could
         // silently lose: `emit_text` reads the process-wide SDF atlas, which
         // in the editor is warm from drawing the canvas (D6/R1).
-        if label {
+        if let Some(label) = label {
             let text = document::entities::Text::with_value(
-                "PLOT".to_string(),
+                label.to_string(),
                 document::types::Vector3::new(20.0, 20.0, 0.0),
             )
             .with_height(8.0);
@@ -3799,11 +3808,15 @@ mod tests {
         app.set_headless_model_page("A3", true, true, None, None, 1.0)
             .unwrap();
         // `resolve_plot_job` lays the text out again when its snapshot does
-        // not cover the pages, up to four times: enough for an atlas that
-        // grows under one drawing. Here every test that starts an
-        // application empties the atlas, and four in a row can each land
-        // between a layout and its snapshot. A job resolved while the atlas
-        // moved says nothing about the job; resolve until one was left alone.
+        // not letter the pages, up to four times: enough for an atlas that
+        // grows under one drawing. Here it used to run out: every test that
+        // started an application rewound the atlas, twice, and four in a row
+        // could each land between a layout and its snapshot. `set_textfill`
+        // now rewinds for a change only, which leaves this process a growth
+        // or two and one test that stages rewinds — fewer moves than a job
+        // has passes. The loop stays for what it says about the assertions
+        // below: a job resolved while the atlas moved says nothing about the
+        // job.
         let atlas = crate::scene::text::sdf_atlas::generation;
         let job = loop {
             let before = atlas();
@@ -3988,39 +4001,65 @@ mod tests {
 
     // R1, the recovery: the scene keeps its laid-out wires until the geometry
     // changes, and the atlas can be rewound or re-scaled behind them — every
-    // key those quads carry then points at a tile that is gone. A job resolved
-    // from such wires would be short its text, and `resolve_plot_job` is the
-    // one place that can notice: it checks the snapshot against the pages and
-    // lays the drawing out again when they disagree.
+    // key those quads carry then points at a tile that is gone, or at a tile
+    // another glyph has since been baked into. A job resolved from such wires
+    // would be short its text, or lettered in the wrong glyphs, and
+    // `resolve_plot_job` is the one place that can notice: it knows which
+    // atlas generation the pages were laid out under, holds the snapshot to
+    // it, and lays the drawing out again when they disagree.
+    //
+    // The second case is the one a count of missing keys cannot see, and the
+    // one staged here. The label is one glyph repeated, baked into the atlas's
+    // first tile; after the rewind another glyph is baked there. Each rewind
+    // and its bake happen under one lock, so nothing else in the process can
+    // come between them: every quad of the label then carries a key the atlas
+    // does have, for the wrong letter.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_job_whose_text_the_atlas_no_longer_holds_is_laid_out_again() {
         use crate::app::update::file::PlotRequest;
-        use crate::io::plot_emit::{GlyphSnapshot, PlotAssets};
         use crate::io::svg_export::{export_svg_pages, SvgWriteOptions};
 
-        let (dir, drawing) = drawing_with_geometry("job-rewound");
+        let (dir, drawing) = drawing_lettered("job-rewound", Some("AAAA"));
         let mut app = OpenCADStudio::new_for_test();
         app.open_drawing_headless(&drawing).unwrap();
         app.select_layout_headless("Model").unwrap();
         app.set_headless_model_page("A3", true, true, None, None, 1.0)
             .unwrap();
+
+        // The font the scene letters the label in: the glyphs baked below go
+        // under the keys its layout looks up.
+        let font = {
+            let document = &app.tabs[app.active_tab].scene.document;
+            let label = document
+                .entities()
+                .find_map(|entity| match entity {
+                    document::EntityType::Text(text) => Some(text),
+                    _ => None,
+                })
+                .expect("the fixture has its label");
+            crate::entities::text::text_run_placement_at_scale(label, document, 1.0).font
+        };
+        // Rewind the atlas and bake `glyph` before anything else can: it is
+        // in the first tile.
+        let rewind_onto = |glyph: char| {
+            let mut atlas = crate::scene::text::sdf_atlas::text_atlas()
+                .lock()
+                .unwrap();
+            atlas.reset();
+            atlas
+                .get_or_insert(&font, glyph, false)
+                .expect("the label's font has the glyph");
+        };
+
+        rewind_onto('A');
         let first = app.resolve_plot_job(&PlotRequest::current_view()).unwrap();
         assert_eq!(first.assets.stale_glyphs(&first.pages), 0);
 
-        // Rewind the atlas behind the job's back, as TEXTFILL does.
-        crate::scene::text::sdf_atlas::text_atlas()
-            .lock()
-            .unwrap()
-            .reset();
-        let live = PlotAssets {
-            glyphs: GlyphSnapshot::capture(),
-            ..Default::default()
-        };
-        assert!(
-            live.stale_glyphs(&first.pages) > 0,
-            "the reset should have orphaned every glyph the first job laid out"
-        );
+        // Rewind the atlas behind the job's back, as TEXTFILL does, and let
+        // another glyph take the label's tile.
+        rewind_onto('B');
+
         // The first job is unaffected: it draws from the snapshot it carries,
         // and the strict default writes its page whole.
         assert_eq!(first.assets.stale_glyphs(&first.pages), 0);
@@ -4039,7 +4078,8 @@ mod tests {
         assert_eq!(before.pages[0].report.missing_glyphs, 0);
 
         // A job resolved now starts from the same cached wires, whose keys the
-        // atlas no longer has; it must come back laid out afresh and covered.
+        // atlas has again — for `B`. It must come back laid out afresh:
+        // covered, and lettered as it was.
         let second = app.resolve_plot_job(&PlotRequest::current_view()).unwrap();
         assert_eq!(
             second.assets.stale_glyphs(&second.pages),
@@ -4055,6 +4095,23 @@ mod tests {
         )
         .expect("the re-laid-out page is whole under the strict default");
         assert_eq!(after.pages[0].report.missing_glyphs, 0);
+        // Every outline on the page, whatever order the layout emitted it in.
+        let outlines = |path: &std::path::Path| {
+            let svg = std::fs::read_to_string(path).unwrap();
+            let mut paths: Vec<String> = svg
+                .lines()
+                .filter(|line| line.starts_with("<path"))
+                .map(str::to_owned)
+                .collect();
+            paths.sort();
+            paths
+        };
+        assert_eq!(
+            outlines(&after.pages[0].path),
+            outlines(&before.pages[0].path),
+            "the same drawing laid out twice should draw the same outlines: \
+             the label came back in another glyph's"
+        );
         assert_eq!(
             after.pages[0].report.elements, before.pages[0].report.elements,
             "the same drawing laid out twice should draw the same number of elements"

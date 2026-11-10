@@ -6439,25 +6439,53 @@ impl OpenCADStudio {
     /// a cold atlas filling up under a large drawing can do that in the middle
     /// of laying the drawing out, leaving the quads laid out before the growth
     /// pointing at tiles that no longer exist. Plotted, those glyphs would be
-    /// missing (R1). When the check finds any, the drawing is laid out once
-    /// more against the atlas as it now stands and the snapshot is taken
-    /// afresh. One relayout settles the single-document case — the atlas holds
-    /// every glyph by then, so laying the same text out cannot grow it again —
-    /// but the atlas is process-wide: another document (or a parallel test)
-    /// can grow it *between* the relayout and the fresh snapshot, so the check
-    /// repeats until a snapshot covers the pages, within a small bound.
+    /// missing (R1). A rewind (TEXTFILL) is worse: the tiles fill again in
+    /// whatever order text is next laid out, so a quad laid out before it can
+    /// point at a tile that does exist and holds another glyph. Plotted, that
+    /// is the wrong letter, and counting missing keys does not see it.
+    ///
+    /// So each pass first drops whatever the scene laid out under an earlier
+    /// atlas generation, lays the pages out, takes the snapshot, and holds
+    /// the snapshot to the generation the pass started under as well as to
+    /// the pages' keys. When either check fails the drawing is laid out once
+    /// more against the atlas as it now stands. One relayout settles the
+    /// single-document case — the atlas holds every glyph by then, so laying
+    /// the same text out cannot grow it again — but the atlas is process-wide:
+    /// another document can grow it *between* the relayout and the fresh
+    /// snapshot, so the check repeats until a snapshot letters the pages,
+    /// within a small bound.
     pub(crate) fn resolve_plot_job(&mut self, request: &PlotRequest) -> Result<PlotJob, String> {
-        let mut pages = self.resolve_plot_pages(request)?;
-        let mut assets = crate::io::plot_emit::PlotAssets::for_pages(&pages);
+        let (mut job, mut lettered) = self.lay_out_plot_job(request, false)?;
         for _ in 0..4 {
-            if assets.stale_glyphs(&pages) == 0 {
+            if lettered {
                 break;
             }
-            self.tabs[self.active_tab].scene.bump_geometry();
-            pages = self.resolve_plot_pages(request)?;
-            assets = crate::io::plot_emit::PlotAssets::for_pages(&pages);
+            (job, lettered) = self.lay_out_plot_job(request, true)?;
         }
-        Ok(PlotJob { pages, assets })
+        Ok(job)
+    }
+
+    /// One pass of [`Self::resolve_plot_job`]: the pages laid out against the
+    /// atlas as it is now and the snapshot taken after them, with whether the
+    /// snapshot is known to letter those pages. `afresh` lays the drawing out
+    /// again whatever the scene has cached.
+    fn lay_out_plot_job(
+        &mut self,
+        request: &PlotRequest,
+        afresh: bool,
+    ) -> Result<(PlotJob, bool), String> {
+        let scene = &mut self.tabs[self.active_tab].scene;
+        // Wires the scene kept from before a growth or a rewind go first, so
+        // every quad on the pages is laid out under this generation or a
+        // later one — and a later one fails the check below.
+        let laid_out_under = scene.resync_with_atlas();
+        if afresh {
+            scene.bump_geometry();
+        }
+        let pages = self.resolve_plot_pages(request)?;
+        let assets = crate::io::plot_emit::PlotAssets::for_pages(&pages);
+        let lettered = assets.letters(&pages, laid_out_under);
+        Ok((PlotJob { pages, assets }, lettered))
     }
 
     /// The pages of a plot job, laid out against the atlas as it is now.

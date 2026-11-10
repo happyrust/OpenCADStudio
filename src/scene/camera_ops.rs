@@ -2231,16 +2231,28 @@ impl Scene {
     }
 
     pub fn update(&mut self, _dt: Duration) {
-        // The glyph atlas grew or re-baked since this scene last built its
-        // caches (a CJK sheet set bakes thousands of tiles on first sight):
-        // every quad laid out before that samples the wrong tile — scrambled
-        // text in the affected blocks / viewports. One structural bump
-        // re-lays-out all text against the settled atlas.
+        self.resync_with_atlas();
+    }
+
+    /// Drop the text this scene laid out under an earlier state of the glyph
+    /// atlas, and say which atlas generation its text belongs to from here on.
+    ///
+    /// The glyph atlas grew or re-baked since this scene last built its
+    /// caches (a CJK sheet set bakes thousands of tiles on first sight):
+    /// every quad laid out before that samples the wrong tile — scrambled
+    /// text in the affected blocks / viewports. One structural bump
+    /// re-lays-out all text against the settled atlas.
+    ///
+    /// The tick does this once a frame. A plot cannot wait for the next
+    /// frame — a headless one never has one — so it asks before it reads the
+    /// wires, and holds its glyph snapshot to the generation returned.
+    pub fn resync_with_atlas(&mut self) -> u64 {
         let atlas_gen = crate::scene::text::sdf_atlas::generation();
         if self.last_atlas_generation.get() != atlas_gen {
             self.last_atlas_generation.set(atlas_gen);
             self.bump_geometry();
         }
+        atlas_gen
     }
 }
 

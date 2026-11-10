@@ -39,7 +39,7 @@ pub fn text_atlas() -> &'static Mutex<GlyphAtlas> {
     // 2048² (~780 glyphs) covers real text-heavy drawings (many fonts + CJK /
     // Vietnamese diacritics) without ever growing; `pack()` still grows as a
     // fallback beyond that. See issue #347.
-    ATLAS.get_or_init(|| Mutex::new(GlyphAtlas::new(2048, 2048)))
+    ATLAS.get_or_init(|| Mutex::new(GlyphAtlas::process_wide(2048, 2048)))
 }
 
 /// Bumped whenever already-baked entries' UVs stop addressing their tile:
@@ -49,6 +49,10 @@ pub fn text_atlas() -> &'static Mutex<GlyphAtlas> {
 /// (silently dropping text from the PDF — issue #385 all over again, under
 /// issue #347's grow-the-atlas conditions). The tessellation memo guard folds
 /// this in, so a growth re-lays-out the text instead of leaving stale quads.
+///
+/// It counts the moves of [`text_atlas`] and of nothing else: an atlas of a
+/// caller's own (`GlyphAtlas::new`) hands its UVs to that caller alone, and
+/// growing or rewinding it says nothing about the quads anyone else holds.
 static ATLAS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Current atlas UV generation — see [`ATLAS_GENERATION`]. Anything that caches
@@ -57,25 +61,24 @@ pub fn generation() -> u64 {
     ATLAS_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-fn bump_generation() {
-    ATLAS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
-
 /// Run `test` so that only a failure with the atlas left alone counts.
 ///
 /// The atlas is one per process, as it is in the editor, where a single
-/// thread lays text out and reads it back. Tests run side by side, and every
-/// one that starts an application empties the atlas on its way
-/// (`set_textfill` in `apply_settings`). To a test in the middle of laying
-/// text out and reading it back that is its glyphs gone: text missing from
-/// an export, a tessellation memo thrown away, a resident set built anew
-/// where it was to be patched. None of it is the code under test.
+/// thread lays text out and reads it back. Tests run side by side, and the
+/// atlas can still move under one of them: it grows as the suite's glyphs
+/// fill it, and the plot test that stages a rewind rewinds it. (Starting an
+/// application used to as well, twice — `apply_settings` set TEXTFILL, which
+/// rewound the atlas whatever the value. [`set_textfill`] now rewinds for a
+/// change only.) To a test in the middle of laying text out and reading it
+/// back a move is its glyphs gone: text missing from an export, a
+/// tessellation memo thrown away, a resident set built anew where it was to
+/// be patched. None of it is the code under test.
 ///
 /// So a run that fails while [`generation`] moved is run again; one that
 /// fails with the atlas untouched is the failure it looks like, and is
-/// reported at once. A test that moves the generation itself (by starting an
-/// application) is always taken to be disturbed: it should bracket the
-/// stretch that matters with [`generation`] instead.
+/// reported at once. A test that moves the generation itself (by rewinding
+/// or growing the atlas) is always taken to be disturbed: it should bracket
+/// the stretch that matters with [`generation`] instead.
 #[cfg(test)]
 pub(crate) fn undisturbed(test: impl Fn()) {
     // A disturbed run costs a few milliseconds; the bound is there for a
@@ -103,12 +106,34 @@ pub fn textfill() -> bool {
     TEXTFILL.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Set TEXTFILL and drop the cached glyphs so they re-bake filled / hollow.
-/// Callers must re-tessellate text (`bump_geometry`) so quads pick up the
-/// re-baked tiles.
+/// Set TEXTFILL. A change drops the cached glyphs so they re-bake filled /
+/// hollow, and callers must then re-tessellate text (`bump_geometry`) so quads
+/// pick up the re-baked tiles. Setting the value it already has does nothing.
 pub fn set_textfill(on: bool) {
-    TEXTFILL.store(on, std::sync::atomic::Ordering::Relaxed);
-    reset_font_entries();
+    set_textfill_in(&TEXTFILL, text_atlas(), on);
+}
+
+/// [`set_textfill`] against a given flag and atlas. Returns whether the
+/// setting changed, which is exactly when the atlas was rewound.
+///
+/// Rewinding is neither free nor private: every glyph is baked again, and
+/// every quad laid out so far addresses a tile that is gone, so every open
+/// drawing lays its text out again and a plot resolved in between is short
+/// its text. `apply_settings` sets TEXTFILL along with every other preference
+/// — at start-up, on Restore Defaults, on a discarded Options session — and
+/// nearly always to the value it has, so the rewind is for a change only.
+fn set_textfill_in(
+    flag: &std::sync::atomic::AtomicBool,
+    atlas: &Mutex<GlyphAtlas>,
+    on: bool,
+) -> bool {
+    if flag.swap(on, std::sync::atomic::Ordering::Relaxed) == on {
+        return false;
+    }
+    if let Ok(mut atlas) = atlas.lock() {
+        atlas.reset();
+    }
+    true
 }
 
 pub fn reset_font_entries() {
@@ -248,6 +273,11 @@ pub struct GlyphAtlas {
     /// ([`ensure_baked_in`]): a second worker wanting one of these waits for
     /// that bake instead of repeating it.
     baking: HashSet<GlyphKey>,
+    /// The counter this atlas moves when the UVs it has handed out stop
+    /// addressing their tiles (a growth, a rewind). [`ATLAS_GENERATION`] for
+    /// the process-wide atlas; `None` for an atlas of a caller's own, whose
+    /// quads nobody else holds.
+    moves: Option<&'static std::sync::atomic::AtomicU64>,
 }
 
 /// A freshly baked, not-yet-packed glyph tile.
@@ -291,6 +321,24 @@ impl GlyphAtlas {
             dirty: true,
             resets: 0,
             baking: HashSet::new(),
+            moves: None,
+        }
+    }
+
+    /// The atlas behind [`text_atlas`]: the one whose growths and rewinds move
+    /// [`generation`], because scenes and plot jobs cache the quads laid out
+    /// against it.
+    fn process_wide(width: u32, height: u32) -> Self {
+        Self {
+            moves: Some(&ATLAS_GENERATION),
+            ..Self::new(width, height)
+        }
+    }
+
+    /// Every UV handed out so far has just stopped addressing its tile.
+    fn uvs_moved(&self) {
+        if let Some(counter) = self.moves {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -321,10 +369,12 @@ impl GlyphAtlas {
     /// next use (e.g. after TEXTFILL toggles between fill and outline).
     pub fn reset(&mut self) {
         let resets = self.resets + 1;
+        let moves = self.moves;
         *self = GlyphAtlas::new(self.width, self.height);
         self.resets = resets;
+        self.moves = moves;
         // The packer rewound, so every previously handed-out UV is now stale.
-        bump_generation();
+        self.uvs_moved();
     }
 
     /// Look up a glyph's atlas placement, baking + packing it on first use.
@@ -429,7 +479,7 @@ impl GlyphAtlas {
         self.height = new_h;
         self.dirty = true;
         // Every already-emitted quad's V now addresses the wrong tile.
-        bump_generation();
+        self.uvs_moved();
         true
     }
 
@@ -1154,6 +1204,101 @@ mod tests {
         let g = atlas.lock().unwrap();
         assert!(!g.entries.contains_key(&a), "stale tile dropped");
         assert!(g.baking.is_empty(), "claim released all the same");
+    }
+
+    // `apply_settings` sets TEXTFILL with every other preference, so every
+    // application that starts — and every Options session that is discarded or
+    // reset to defaults — sets it to the value it already has. That must not
+    // rewind the atlas: the glyphs are the right ones, and rewinding them
+    // orphans every quad laid out so far. (With one application per test and
+    // the tests side by side it also emptied the atlas under whichever test
+    // was between laying text out and reading it back.)
+    #[test]
+    fn setting_textfill_to_the_value_it_has_leaves_the_baked_glyphs_alone() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        for value in [true, false] {
+            let flag = AtomicBool::new(value);
+            let atlas = Mutex::new(GlyphAtlas::new(512, 512));
+            let baked = atlas
+                .lock()
+                .unwrap()
+                .get_or_insert("txt", 'A', false)
+                .expect("LFF 'A' bakes");
+
+            assert!(
+                !set_textfill_in(&flag, &atlas, value),
+                "TEXTFILL {value} -> {value} is not a change"
+            );
+
+            assert_eq!(flag.load(Ordering::Relaxed), value);
+            let atlas = atlas.lock().unwrap();
+            assert_eq!(atlas.resets, 0, "the atlas was rewound for nothing");
+            let kept = atlas
+                .entries
+                .get(&key('A'))
+                .copied()
+                .flatten()
+                .expect("the glyph is still baked");
+            assert_eq!(kept.uv_min, baked.uv_min, "and still in its tile");
+        }
+    }
+
+    // A real change does rewind: the tiles were baked for the other setting.
+    #[test]
+    fn changing_textfill_rewinds_the_atlas_once() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let flag = AtomicBool::new(true);
+        let atlas = Mutex::new(GlyphAtlas::new(512, 512));
+        atlas.lock().unwrap().get_or_insert("txt", 'A', false);
+
+        assert!(set_textfill_in(&flag, &atlas, false), "true -> false");
+        assert!(!flag.load(Ordering::Relaxed));
+        assert_eq!(atlas.lock().unwrap().resets, 1);
+        assert!(atlas.lock().unwrap().entries.is_empty(), "the cache is gone");
+
+        assert!(set_textfill_in(&flag, &atlas, true), "and back");
+        assert!(flag.load(Ordering::Relaxed));
+        assert_eq!(atlas.lock().unwrap().resets, 2);
+    }
+
+    // The generation is the process-wide atlas's: scenes and plot jobs compare
+    // it to decide whether the quads they hold still address their tiles. An
+    // atlas of a test's (or any caller's) own moves no counter at all, and one
+    // given a counter moves it once per growth and once per rewind — the
+    // rewind keeping the counter it was given.
+    #[test]
+    fn only_an_atlas_given_a_counter_moves_one() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static MOVES: AtomicU64 = AtomicU64::new(0);
+
+        assert!(GlyphAtlas::new(64, 64).moves.is_none());
+        let shared = GlyphAtlas::process_wide(64, 64);
+        assert!(
+            shared
+                .moves
+                .is_some_and(|counter| std::ptr::eq(counter, &ATLAS_GENERATION)),
+            "the process-wide atlas moves the generation everyone reads"
+        );
+
+        let mut counted = GlyphAtlas {
+            moves: Some(&MOVES),
+            ..GlyphAtlas::new(1024, 1024)
+        };
+        counted.reset();
+        assert_eq!(MOVES.load(Ordering::Relaxed), 1, "a rewind moves it");
+        counted.reset();
+        assert_eq!(
+            MOVES.load(Ordering::Relaxed),
+            2,
+            "and the atlas keeps its counter across the rewind"
+        );
+        let start = counted.height();
+        while counted.height() == start {
+            counted
+                .pack(bake_glyph(&filled_square(), PEN_HALF_UNITS).unwrap())
+                .expect("the atlas grows before it is full");
+        }
+        assert_eq!(MOVES.load(Ordering::Relaxed), 3, "so does a growth");
     }
 
     /// Field value (0..1) at a glyph-space point, filtered the way the GPU

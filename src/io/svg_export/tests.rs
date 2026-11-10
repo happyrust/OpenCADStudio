@@ -563,9 +563,9 @@ fn same_dash(want: &[f64], got: &[f64]) -> bool {
 /// The corpus keeps a text quad whose key the atlas does not have, on purpose:
 /// it is how the traversal's skip gets exercised. And the corpus lays its text
 /// out into the process-wide atlas without a snapshot of its own, so a test
-/// elsewhere in the binary that resets the atlas (every `OpenCADStudio::new`
-/// applies TEXTFILL, which does) or grows it makes the corpus text stale in
-/// flight. Writing corpus pages is therefore the lenient caller's job — the
+/// elsewhere in the binary that rewinds the atlas (the plot test that stages
+/// one) or grows it makes the corpus text stale in flight. Writing corpus
+/// pages is therefore the lenient caller's job — the
 /// strict one refuses them, which is its own test, on pages that carry their
 /// own snapshot.
 fn lenient() -> SvgOptions {
@@ -1582,12 +1582,19 @@ fn a_page_style_table_wins_over_the_job_wide_one() {
     pages[1].plot_style = None;
     let styled = crate::io::plot_corpus::styled_ctb();
     // The ctb page carries text laid out into the shared atlas, which another
-    // test may reset or grow before this page is written; that is R1's
+    // test may rewind or grow before this page is written; that is R1's
     // subject, not this test's, so write leniently (see `lenient`).
+    //
+    // And from one snapshot (see `shared_assets`). Left to themselves the two
+    // pages each take their own as they reach their text, a file write apart:
+    // an atlas moved in between letters the first page and not the second,
+    // and the pages differ by their glyphs with the style table having had
+    // nothing to do with it.
+    let assets = shared_assets();
     let batch = export_svg_pages(
         &pages,
         Some(&styled),
-        &PlotAssets::default(),
+        &assets,
         &scratch.join("plot.svg"),
         &lenient_files(),
     )
@@ -1604,7 +1611,7 @@ fn a_page_style_table_wins_over_the_job_wide_one() {
     let bare = export_svg_pages(
         &plain,
         None,
-        &PlotAssets::default(),
+        &assets,
         &scratch.join("bare.svg"),
         &lenient_files(),
     )
