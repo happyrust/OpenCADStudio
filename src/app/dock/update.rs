@@ -1131,8 +1131,22 @@ impl OpenCADStudio {
         }
         // How far right the viewport's centre moved.
         let shift = ((left - was_left) - (right - was_right)) * 0.5;
+        // The pan is the dock's doing, not a view the user chose: it only
+        // keeps the drawing where it was on screen. When the document already
+        // held the camera (nothing was waiting for the next tick), write the
+        // panned camera back here, so the tick does not take it for a change
+        // of view and mark the drawing modified. Showing a pallet is not an
+        // edit. A block-edit session and an active floating viewport keep
+        // their cameras elsewhere and are left to the tick.
+        let in_step = tab.last_synced_camera_gen == tab.scene.camera_generation
+            && tab.active_block_edit.is_none()
+            && tab.scene.active_viewport.is_none();
         tab.scene.camera.borrow_mut().pan_screen(-shift, 0.0, vh);
         tab.scene.camera_generation += 1;
+        if in_step {
+            tab.scene.sync_camera_to_document();
+            tab.last_synced_camera_gen = tab.scene.camera_generation;
+        }
     }
 
     /// Size a panel takes when floated: its current floating size, or its

@@ -626,6 +626,46 @@ mod tests {
         assert_eq!(row_labels(&app).len(), 4);
     }
 
+    /// Showing the browser docks a panel, and the dock pans the camera so
+    /// the drawing stays where it was on screen. In a drawn application the
+    /// next tick took that pan for a change of view and marked the drawing
+    /// modified: closing the window after PIDBACKUPOPEN asked whether to
+    /// save a drawing nobody had touched.
+    #[test]
+    fn showing_the_panel_does_not_mark_the_drawing_modified() {
+        let mut app = app();
+        let i = app.active_tab;
+        // A window and a viewport, as a drawn application has them.
+        let _ = app.update(Message::WindowResized(1600.0, 900.0));
+        app.tabs[i].scene.selection.borrow_mut().view.vp_size = (1400.0, 760.0);
+        let tick = |app: &mut OpenCADStudio| {
+            let _ = app.update(Message::Tick(std::time::Instant::now()));
+        };
+        tick(&mut app);
+        tick(&mut app);
+        app.tabs[i].dirty = false;
+        let before = app.tabs[i].scene.camera.borrow().target;
+
+        let _ = app.dispatch_command("PIDBACKUPOPEN");
+        assert!(app.dock_panel_visible(PanelId::PidBackup));
+        // The dock change is seen at the end of the next update, which pans;
+        // the tick after that is where the pan became a modification.
+        tick(&mut app);
+        tick(&mut app);
+        assert_ne!(
+            app.tabs[i].scene.camera.borrow().target,
+            before,
+            "the dock pans the camera to keep the drawing where it was"
+        );
+        assert!(!app.tabs[i].dirty, "showing a panel is not an edit");
+        // The document still holds the camera it is drawn with, so a later
+        // save writes the view the user sees.
+        assert_eq!(
+            app.tabs[i].last_synced_camera_gen,
+            app.tabs[i].scene.camera_generation
+        );
+    }
+
     #[test]
     fn a_select_line_goes_to_the_node_and_reports_it() {
         let mut app = app();

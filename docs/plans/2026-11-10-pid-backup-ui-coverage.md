@@ -287,3 +287,4 @@ D1–D9 还没有拍板。第一批（2a）按 §4 的建议先走：D1 (a)、D2
 |---|---|---|---|
 | W0 | 「P&ID 备份面板：子树扩展点（section）」 | `pid_backup_browser/section.rs`：一支子树一个 `Section`（挂在哪一行下面、自己的行、节点详情与给别的节点追加的详情、要在后台读的数据），`NodeId::Section(槽位, 路径)`；`visible_rows` / `detail_lines` / `update` 各自在末尾转给注册表；后台读取走 `Effect::LoadSection` → `PidBackupMsg::SectionLoaded`，带代数，换了备份之后迟到的结果丢弃。注册表此时是空的，面板没有可见变化。 | 无 |
 | 附：`Select` | 「PIDBACKUPOPEN Select：命令行按标签路径定位节点」 | 方案里没有的一项，为的是不动鼠标也能看真实窗口：`PIDBACKUPOPEN Select 装置组 > SQPlant > test > U01 > D07 > #1 > #1` 逐级展开并选中，与逐级点击留下的状态相同（`pid_backup_browser/goto.rs`）；遇到要先读图元的图纸就等读完再接着走。真实窗口的检查因此可以只靠自动化通道发命令加 `/capture`。 | 无 |
+| 附：修改标记 | 「停靠面板不再把图纸标为已修改」 | §1.3 里「`PIDBACKUPOPEN` 之后图纸带上修改标记」的原因：面板停靠时 `dock_keep_view`（`src/app/dock/update.rs`）把相机平移半个面板宽、让图在屏幕上不动，下一个 tick（`src/app/update/viewport.rs` 的 `on_tick`）发现相机变了，写回文档并置 `dirty`。与备份无关，任何停靠面板都如此。改在 `dock_keep_view`：相机原本与文档一致时，平移后当场写回文档并记为已同步，不置 `dirty`。三个约定不动的文件没有碰。 | 无（§1.3 的一条） |
