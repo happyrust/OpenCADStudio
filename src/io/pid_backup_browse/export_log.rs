@@ -131,6 +131,9 @@ pub struct TableCatalog {
     pub outcome: Option<String>,
     /// The `EXP-` and `ORA-` messages of the log.
     pub messages: Vec<String>,
+    /// The schemas in the order the export wrote them, which is the order
+    /// their tables lie in the dump. Empty without a log.
+    pub export_order: Vec<String>,
 }
 
 /// One schema of a [`TableCatalog`].
@@ -177,6 +180,27 @@ impl TableCatalog {
     /// How many tables the schemas hold together.
     pub fn table_count(&self) -> usize {
         self.schemas.iter().map(|schema| schema.tables.len()).sum()
+    }
+
+    /// The schema whose table `table` comes first in the dump: the one a
+    /// reader that takes "the first table of that name" reads. That is the
+    /// export's order when the log gives it, the catalog's otherwise.
+    pub fn first_schema_with(&self, table: &str) -> Option<usize> {
+        let has = |schema: &CatalogSchema| {
+            schema
+                .tables
+                .iter()
+                .any(|found| found.name.eq_ignore_ascii_case(table))
+        };
+        self.export_order
+            .iter()
+            .filter_map(|name| {
+                self.schemas
+                    .iter()
+                    .position(|schema| schema.name.eq_ignore_ascii_case(name))
+            })
+            .find(|at| has(&self.schemas[*at]))
+            .or_else(|| self.schemas.iter().position(has))
     }
 
     /// The rows of all the tables; `None` when no table has a count.
@@ -284,6 +308,14 @@ pub fn table_catalog(manifest: &[DbObject], log: Option<&ExportLog>) -> Option<T
         character_sets: log.and_then(|log| log.character_sets.clone()),
         outcome: log.and_then(|log| log.outcome.clone()),
         messages: log.map(|log| log.messages.clone()).unwrap_or_default(),
+        export_order: log
+            .map(|log| {
+                log.schemas
+                    .iter()
+                    .map(|schema| schema.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -461,6 +493,42 @@ Export terminated successfully with warnings.
             Some("Export terminated successfully with warnings.")
         );
         assert_eq!(catalog.messages.len(), 3);
+    }
+
+    #[test]
+    fn a_table_two_schemas_have_is_first_in_the_one_the_export_wrote_first() {
+        // The manifest names SQPlantd before SQPlantpidd; the export wrote
+        // them the other way round, and that is how they lie in the dump.
+        let manifest = [
+            object("SQPlantd", "CODELISTS"),
+            object("SQPlantpidd", "CODELISTS"),
+            object("SQPlantpid", "T_PIPERUN"),
+        ];
+        let log = parse_export_log(
+            "
+. about to export SQPLANTPIDD's tables via Conventional Path ...
+. . exporting table                      CODELISTS       3407 rows exported
+. about to export SQPLANTD's tables via Conventional Path ...
+. . exporting table                      CODELISTS        130 rows exported
+. about to export SQPLANTPID's tables via Conventional Path ...
+. . exporting table                    T_MODELITEM      47124 rows exported
+. . exporting table                      T_PIPERUN       4686 rows exported
+"
+            .lines(),
+        );
+        let catalog = table_catalog(&manifest, Some(&log)).unwrap();
+        assert_eq!(catalog.schemas[0].name, "SQPlantd");
+        assert_eq!(
+            catalog.export_order,
+            ["SQPLANTPIDD", "SQPLANTD", "SQPLANTPID"]
+        );
+        assert_eq!(catalog.first_schema_with("codelists"), Some(1));
+        assert_eq!(catalog.first_schema_with("T_PIPERUN"), Some(2));
+        assert_eq!(catalog.first_schema_with("T_NOZZLE"), None);
+        // Without a log the catalog's own order is all there is.
+        let catalog = table_catalog(&manifest, None).unwrap();
+        assert!(catalog.export_order.is_empty());
+        assert_eq!(catalog.first_schema_with("CODELISTS"), Some(0));
     }
 
     #[test]

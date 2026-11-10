@@ -23,6 +23,7 @@
 //! [`load_items`], read on demand when the panel first expands a drawing.
 
 pub mod drawing_data;
+pub mod exp_views;
 pub mod export_log;
 pub mod labels;
 pub mod loose_files;
@@ -83,6 +84,9 @@ pub struct BackupIndex {
     /// The tables of the database the dump holds, with their row counts
     /// when the backup carries its export log.
     pub table_catalog: Option<export_log::TableCatalog>,
+    /// The dump's own tables, read the first time something asks for them
+    /// ([`BackupIndex::dump`]).
+    pub dump: exp_views::DumpCell,
 }
 
 impl BackupIndex {
@@ -314,6 +318,7 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
         manifest_model,
         ref_root,
         table_catalog,
+        dump: exp_views::DumpCell::default(),
     })
 }
 
