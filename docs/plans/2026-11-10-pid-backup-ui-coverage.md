@@ -324,3 +324,23 @@ D1 按 (a)（仍在现有面板里，表格保持独立部件），D5 按 (a)（
 | 项 | 提交 | 做了什么 | 清点表的变化 |
 |---|---|---|---|
 | 0 真实窗口工具 | 「docs/automation：隐藏桌面上驱动真实编辑器窗口的脚本与说明」 | 2a 里用来「不动鼠标、不抢焦点地看真实窗口」的办法入库：`docs/automation/hidden_desktop.py`（库）、`hidden_steps.py`（按 JSON 步骤驱动一个或几个实例）、`hidden_steps_example.json`、`guides/hidden-desktop.md`（一页说明：起实例、发命令、截图、确认指针和前台窗口没变、收尾、同时起几个实例、做不到的事）。相比 2a 的草稿：路径一律转成绝对路径；编辑器挂在作业对象上，脚本怎么结束它都跟着结束；能同时起多个实例并给每个实例不同的命令行；自己核对运行前后的指针与前台窗口。 | 无 |
+| 1 测试之间的竞争 | 「并行测试共用进程级状态造成的偶发失败：六条测试各自按根因修」 | 库测试并行跑时偶发失败的六条上游测试，根因是四种进程级状态被别的测试动了：字形图集（每条构造应用的测试都清空它）、语言代数（同样每次构造都加一）、quad 面板存储（两条测试共用插件名 `PLUGIN`）、插件错误队列（每个应用的 tick 都清空它）。另有一条是时间门限（一次指针移动处理超过 8 ms，下一次移动被合并）。只动测试代码；`sdf_atlas.rs` 加的是 `#[cfg(test)]` 的辅助函数，`plugin/mod.rs` 把错误队列的取用收成一个函数、测试构建里按线程各一份，产品构建的行为不变。修前修后的失败次数见 §6.5。 | 无 |
+| 口令：文本预览 | 「文本预览：Manifest 的副本与别的文件里的口令也遮住」 | 先确认：`Manifest.txt` 那一行从不被读成文本（内容只在它展开的子树里，口令已遮住），三个包的走查各有一条断言。再补两处漏洞（先红后绿）：一份行尾只有回车的 Manifest 副本，整份被当成一行，按位置认定的口令字段露了原文——现在回车、换行、回车加换行都算行尾；别的文件里叫作口令的值（`Password=…`、`<Pwd>…</Pwd>`、`"password": "…"`、`key="DbPassword" value="…"`、连接串里的 `Pwd=…;`）原样显示——现在一律换成 `•••` 并计数。三个包里能被预览打开的文本逐个扫过（脚本只报位置和长度）：除 `Manifest.txt` 本身外没有一处口令，新规则在真实文件上一处都没有遮（`ObjectAttrValidation.xml` 的 `PassValue` 不算口令）。 | 无 |
+
+### 6.5 第 1 项：每条测试的根因与修前修后
+
+「定向重现」是把这条测试和会干扰它的测试放进同一个进程跑 30 遍（`target\stage1-logs\repro-item1.ps1`，干扰方是 41 条构造应用的上游测试；quad 那条是它和它旁边那条两条一起跑）。「全套」是库测试整套并行连跑 8 遍。修前的全套是 2a 尖端 `f4fe14604`，修后是本项的构建。
+
+| 测试 | 根因（进程级状态） | 修法（都在测试里） | 定向重现 修前 → 修后 | 全套 8 遍 修前 → 修后 |
+|---|---|---|---|---|
+| `io::pdf_export::tests::filled_ttf_glyphs_export_as_real_text` | 字形图集。排好字到导出读回之间，别的测试构造应用（`apply_settings` → `set_textfill` → 清空图集），文字从 PDF 里消失 | `sdf_atlas::undisturbed`：失败且图集代数动过才重跑，图集没动的失败照常报 | 29 → 0 | 4 → 0 |
+| `ui::ribbon::qat::tests::a_command_items_look_is_worked_out_once_and_forgotten_with_the_tabs` | 语言代数。`apply_settings` 每次都 `set_language`，代数加一，快速访问栏的缓存按设计清空，计数就不对了 | 取数的那一段在语言代数没动的一轮里完成 | 24 → 0 | 0 → 0（主线 8 遍里 1 遍） |
+| `scene::resident_patch_shorter_runs_tests::a_layer_switched_off_inside_a_block_patches_the_references_in_place` | 字形图集的代数。镶嵌备忘以它为键，一动就整套重建：顺序与「就地修补」的不同，修补计数也不加 | `sdf_atlas::undisturbed` | 9 → 0 | 1 → 0（第一阶段也出现过 1 次） |
+| `app::plugin_host::tests::quad_feed_has_no_v14_auto_tab_per_plugin` | quad 面板存储是进程级的，哪些插件活着却是线程级的；旁边那条注册测试在 `PLUGIN` 名下放着一个面板的那一刻，这条测试的 `PLUGIN` 也看得见它 | 这条测试用自己的插件名 | 8 → 0 | 0 → 0（主线 1 遍，第一阶段 1 次） |
+| `app::automation::tests::the_job_carries_one_glyph_snapshot_that_covers_its_pages` | 字形图集。产品代码自己会重排最多 4 次，旁边测试多的时候 4 次可能都被打断 | 取作业、出 SVG 两处各自重做，直到有一次图集没动 | **没重现**（0 → 0） | 0 → 0（主线 1 遍） |
+| `app::update::plugin_grips_tests::third_settle_strike_tears_the_connection_down_and_arms_the_rearm` | 插件错误队列是进程级的，每个应用的 tick 都把它倒进自己的命令行。失败那次队列里少的正是第一击的几行，而这条测试中途自己不清队列 | `plugin/mod.rs`：测试构建里队列按线程各一份 | **没重现**（两种干扰组合各 0 / 30） | 1 → 0 |
+| `app::update::viewport::rapid_drawing_tests::drawing_preview_keeps_the_new_object_colour_on_full_and_fast_passes` | 不是共享状态，是时间门限：一次指针移动处理 ≥ 8 ms（`MOVE_COALESCE_FROM_MS`），下一次移动就被合并掉不处理；机器忙的时候会超 | 每次移动前把门限打开（同文件别的测试也这样控制它） | **没重现**（单独 0 / 20；同时压三套全量时 0 / 20） | 修后那 8 遍里出现 1 遍（当时正在编译）；加这一行之后没有再量 |
+
+同一机制、没见过失败、也没重现出来、一并套了同样保护的两条：`io::pdf_export::tests::text_grows_the_pdf_vs_no_text`（定向 0 → 0）、`scene::resident_patch_shorter_runs_tests::references_drawn_as_stubs_are_patched_when_a_layer_inside_switches`（定向 0 → 0）。
+
+没有处理的：`rapid_drawing_tests::throttle_axis_command_matches_authoritative_move` 在同时压三套全量时 20 遍里失败 1 遍（单独 0 / 20），同样是时间门限一类，全套里没出现过。协同传输那一组照旧失败，等主线那边的修正。

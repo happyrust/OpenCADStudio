@@ -3798,7 +3798,20 @@ mod tests {
         app.select_layout_headless("Model").unwrap();
         app.set_headless_model_page("A3", true, true, None, None, 1.0)
             .unwrap();
-        let job = app.resolve_plot_job(&PlotRequest::current_view()).unwrap();
+        // `resolve_plot_job` lays the text out again when its snapshot does
+        // not cover the pages, up to four times: enough for an atlas that
+        // grows under one drawing. Here every test that starts an
+        // application empties the atlas, and four in a row can each land
+        // between a layout and its snapshot. A job resolved while the atlas
+        // moved says nothing about the job; resolve until one was left alone.
+        let atlas = crate::scene::text::sdf_atlas::generation;
+        let job = loop {
+            let before = atlas();
+            let job = app.resolve_plot_job(&PlotRequest::current_view()).unwrap();
+            if job.assets.stale_glyphs(&job.pages) == 0 || atlas() == before {
+                break job;
+            }
+        };
         assert_eq!(job.pages.len(), 1);
         let snapshot = job
             .assets
@@ -3817,9 +3830,15 @@ mod tests {
         );
         // And the strict default plots it without a word about missing text.
         let out = dir.join("plot.svg");
-        let batch = super::plot_svg_with(&mut app, &drawing, &out, &model_on_a3())
-            .unwrap()
-            .batch;
+        let batch = loop {
+            let before = atlas();
+            let batch = super::plot_svg_with(&mut app, &drawing, &out, &model_on_a3())
+                .unwrap()
+                .batch;
+            if batch.pages[0].report.missing_glyphs == 0 || atlas() == before {
+                break batch;
+            }
+        };
         assert_eq!(batch.pages[0].report.missing_glyphs, 0);
         let _ = std::fs::remove_dir_all(&dir);
 

@@ -1511,22 +1511,35 @@ mod tests {
 
     #[test]
     fn a_command_items_look_is_worked_out_once_and_forgotten_with_the_tabs() {
+        // The looks are kept for one language generation, and the generation
+        // is the process's: every test that starts an application applies
+        // its language and moves it, which empties the cache as it should.
+        // The counts below are of a stretch in which nobody did.
+        let language = crate::i18n::language_generation;
         let mut ribbon = Ribbon::default();
-        assert!(matches!(
-            ribbon.qat_look("measure_menu"),
-            QatLook::Split {
-                id: "MEASURE_MENU",
-                ..
+        let (first, again) = loop {
+            let before = language();
+            assert!(matches!(
+                ribbon.qat_look("measure_menu"),
+                QatLook::Split {
+                    id: "MEASURE_MENU",
+                    ..
+                }
+            ));
+            assert!(matches!(
+                ribbon.qat_look("LINE"),
+                QatLook::Plain { runs: true, .. }
+            ));
+            let first = ribbon.qat_cache.borrow().looks.len();
+            // The same command in other case is the same entry.
+            ribbon.qat_look("line");
+            let again = ribbon.qat_cache.borrow().looks.len();
+            if language() == before {
+                break (first, again);
             }
-        ));
-        assert!(matches!(
-            ribbon.qat_look("LINE"),
-            QatLook::Plain { runs: true, .. }
-        ));
-        assert_eq!(ribbon.qat_cache.borrow().looks.len(), 2);
-        // The same command in other case is the same entry.
-        ribbon.qat_look("line");
-        assert_eq!(ribbon.qat_cache.borrow().looks.len(), 2);
+        };
+        assert_eq!(first, 2);
+        assert_eq!(again, 2);
         ribbon.set_modules(crate::plugin::all_ribbon_modules());
         assert!(ribbon.qat_cache.borrow().looks.is_empty());
     }

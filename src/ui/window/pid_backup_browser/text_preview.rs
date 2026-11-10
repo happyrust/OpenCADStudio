@@ -597,6 +597,138 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// What a manifest's credentials look like in the panel: the row of
+    /// `Manifest.txt` itself is never read as text (its content is the
+    /// branch under it, hidden field by field), and a copy of the file is a
+    /// file like any other wherever it lies -- beside the backup under
+    /// another name, inside an archive, among the reference files. None of
+    /// them, and no settings file with a password in it, shows a credential:
+    /// not in the details, not in what the panel keeps.
+    #[test]
+    fn the_manifest_its_copies_and_a_settings_file_show_no_credential() {
+        const SECRETS: [&str; 6] = [
+            "copy-site-secret",
+            "copy-plant-secret",
+            "copy-dbpwds-secret",
+            "copy-command-secret",
+            "ini-secret",
+            "xml-secret",
+        ];
+        let manifest = |line_end: &str| -> Vec<u8> {
+            let text = [
+                "Name<<|>>SQPlant",
+                "SiteConnInfo<<|>>copy-site-secret<<|>>1<<|>>ORCL",
+                "PlantConnInfo<<|>>SQPlant<<|>>2<<|>>ORCL<<|>>SQPlant<<|>>copy-plant-secret",
+                "DBPwds<<|>>copy-dbpwds-secret",
+                "BackupCommand<<|>>Exp.exe system/copy-command-secret@ORCL FILE=Export.dmp",
+                "",
+            ]
+            .join(line_end);
+            // As SmartPlant writes a manifest: UTF-16 with a byte-order mark.
+            let mut bytes = vec![0xFF, 0xFE];
+            for unit in text.encode_utf16() {
+                bytes.extend(unit.to_le_bytes());
+            }
+            bytes
+        };
+        let root = scratch("manifest-copies");
+        std::fs::write(root.join("Manifest.txt"), manifest("\r\n")).unwrap();
+        std::fs::write(root.join("Manifest - copy.txt"), manifest("\r\n")).unwrap();
+        // The same lines with nothing but carriage returns between them.
+        std::fs::write(root.join("Manifest.mac.txt"), manifest("\r")).unwrap();
+        std::fs::write(
+            root.join("Connection.ini"),
+            b"[Database]\r\nUser=plant\r\nPassword=ini-secret\r\n",
+        )
+        .unwrap();
+        write_zip(
+            &root.join("RefData~4~900.zip"),
+            &[
+                ("Old/Manifest.txt", &manifest("\n")),
+                (
+                    "Old/site.config",
+                    b"<add key=\"SitePassword\" value=\"xml-secret\"/>\n",
+                ),
+            ],
+        );
+        std::fs::create_dir_all(root.join("Ref")).unwrap();
+        std::fs::write(root.join("Ref").join("Manifest.bak"), manifest("\r\n")).unwrap();
+        let index = build_index(&root, None).expect("the folder indexes");
+        let mut state = PidBackupBrowser::default();
+        update(&mut state, PidBackupMsg::Loaded(Ok(Arc::new(index))));
+
+        // The manifest's own row: nothing is read, and its details are the
+        // file's alone.
+        let own = file(&state, "Manifest.txt");
+        assert!(!select(&mut state, &own));
+        assert_eq!(
+            value(&detail_rows(&state, &own), &t!("Text encoding")),
+            None
+        );
+
+        let places = [
+            (
+                "a copy beside the backup",
+                file(&state, "Manifest - copy.txt"),
+            ),
+            (
+                "a copy with carriage returns alone",
+                file(&state, "Manifest.mac.txt"),
+            ),
+            ("a settings file", file(&state, "Connection.ini")),
+            (
+                "a copy inside an archive",
+                member(&state, "RefData~4~900.zip", "Old/Manifest.txt"),
+            ),
+            (
+                "a configuration inside an archive",
+                member(&state, "RefData~4~900.zip", "Old/site.config"),
+            ),
+            (
+                "a copy among the reference files",
+                NodeId::RefFile(vec![], 0),
+            ),
+        ];
+        for (what, node) in &places {
+            assert!(select(&mut state, node), "{what} is read as text");
+            let rows = detail_rows(&state, node);
+            assert!(
+                value(&rows, &t!("Text encoding")).is_some(),
+                "{what} is shown as text: {} rows",
+                rows.len()
+            );
+            // Where a credential shows is said; the credential is not.
+            for (at, secret) in SECRETS.iter().enumerate() {
+                assert!(
+                    !format!("{rows:?}").contains(secret),
+                    "{what}: credential {at} of SECRETS is in the details"
+                );
+                assert!(
+                    !format!("{state:?}").contains(secret),
+                    "{what}: credential {at} of SECRETS is in the panel's state"
+                );
+            }
+            // And the panel says that it hid something.
+            assert!(
+                rows.iter()
+                    .any(|(key, value)| value.is_empty() && key.contains(HIDDEN)),
+                "{what}: the details do not say that anything was hidden"
+            );
+        }
+        // What is not a credential is still there to read.
+        let copy = &places[0].1;
+        assert!(select(&mut state, copy));
+        let rows = detail_rows(&state, copy);
+        assert_eq!(value(&rows, "1"), Some("Name<<|>>SQPlant"));
+        assert_eq!(
+            value(&rows, "5"),
+            Some(
+                format!("BackupCommand<<|>>Exp.exe system/{HIDDEN}@ORCL FILE=Export.dmp").as_str()
+            )
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The preview as the panel draws it: the row of a file is where a press
     /// lands, and the lines of the file it selects are drawn under its
     /// details, the header of the grid above them.

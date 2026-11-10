@@ -554,9 +554,21 @@ fn walk_text(
     let mut text_file = None;
     let mut text_member = None;
     let mut binary_file = None;
+    let mut manifest_left_alone = false;
     for (at, file) in index.files.iter().enumerate() {
         let id = NodeId::File(at);
         let content = read_file_node(app, &id, empty);
+        // The manifest holds the plant's credentials in the clear. Its
+        // content is the branch under its row, where each is hidden; the
+        // file itself is never read into the details as text.
+        if file.kind == crate::io::pid_backup_browse::FileKind::Manifest {
+            assert!(
+                matches!(content, Content::NotRead),
+                "selecting {} read it as text",
+                file.name
+            );
+            manifest_left_alone = true;
+        }
         match &content {
             Content::Text { .. } if text_file.is_none() && file.record.is_some() => {
                 text_file = Some(id.clone());
@@ -580,6 +592,9 @@ fn walk_text(
         "with no text of their own (the manifest, the dump, archives, missing files)",
     );
     members.report(audit, "archive members", "folders");
+    if manifest_left_alone {
+        audit.line("  Manifest.txt: selected like the others, not read as text");
+    }
 
     let mut reference = ContentTally::default();
     let mut text_reference = None;

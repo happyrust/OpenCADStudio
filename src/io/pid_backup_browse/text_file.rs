@@ -15,12 +15,16 @@
 //!   continued on rows of its own.
 //! * What has the look of a credential is replaced by
 //!   [`HIDDEN`](super::manifest::HIDDEN), and counted: a line of a manifest
-//!   by the manifest's own rule, elsewhere a value obfuscated the way a
-//!   manifest's are and a `user/password@host` login. A file is not expected
-//!   to hold one, but the panel shows what it is given.
+//!   by the manifest's own rule (a copy of one can lie anywhere), elsewhere
+//!   a value obfuscated the way a manifest's are, a `user/password@host`
+//!   login, and the value of anything called a password (`Password=…`,
+//!   `<Pwd>…</Pwd>`, `"password": "…"`, `key="DbPassword" value="…"`). A
+//!   file is not expected to hold one, but the panel shows what it is given.
 
+use std::borrow::Cow;
 use std::io::Read;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use pid_parse::publish::backup_package::decode_zip_entry_name;
 
@@ -169,7 +173,7 @@ pub fn decode(head: &[u8], total: u64) -> Readable {
         return Readable::Binary(total);
     }
     // A cut file ends on its last whole line.
-    let text = match (cut, text.rfind('\n')) {
+    let text = match (cut, text.rfind(['\n', '\r'])) {
         (true, Some(end)) => &text[..end],
         _ => text.as_str(),
     };
@@ -177,10 +181,13 @@ pub fn decode(head: &[u8], total: u64) -> Readable {
     let mut hidden = 0;
     let mut line_count = 0;
     // An empty file has no line, not one empty line.
-    let lines = (!text.is_empty()).then(|| text.split('\n'));
-    for line in lines.into_iter().flatten() {
+    let lines = if text.is_empty() {
+        Vec::new()
+    } else {
+        split_lines(text)
+    };
+    for line in lines {
         line_count += 1;
-        let line = line.trim_end_matches('\r');
         let widened;
         let line = if line.contains('\t') {
             widened = line.replace('\t', "    ");
@@ -215,6 +222,33 @@ pub fn decode(head: &[u8], total: u64) -> Readable {
         cut_at: cut.then_some(TEXT_LIMIT as u64),
         hidden,
     })
+}
+
+/// The lines of `text`. A line ends at a line feed, at a carriage return, or
+/// at the two together: a file whose lines end in carriage returns alone is
+/// rare, but read as one long line its fields would not be where the rules
+/// that hide a manifest's credentials look for them.
+fn split_lines(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut at = 0;
+    while at < bytes.len() {
+        let end = match bytes[at] {
+            b'\n' => 1,
+            b'\r' if bytes.get(at + 1) == Some(&b'\n') => 2,
+            b'\r' => 1,
+            _ => {
+                at += 1;
+                continue;
+            }
+        };
+        lines.push(&text[start..at]);
+        at += end;
+        start = at;
+    }
+    lines.push(&text[start..]);
+    lines
 }
 
 fn utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> String {
@@ -286,6 +320,88 @@ fn hide_login(word: &str) -> Option<String> {
     (name(user, "_$#.") && plain && name(host, "_.:-/")).then(|| format!("{user}/{HIDDEN}@{host}"))
 }
 
+/// The words a key ends in when what it holds is a password.
+const PASSWORD_WORDS: &str = "password|passwd|pwd|passphrase|密码|口令";
+
+fn pattern(cell: &'static OnceLock<regex::Regex>, source: String) -> &'static regex::Regex {
+    cell.get_or_init(|| regex::Regex::new(&source).expect("the pattern is a constant"))
+}
+
+/// Whether a line names a password at all: what decides, for nearly every
+/// line of every file, that there is nothing more to look for.
+fn names_a_password(line: &str) -> bool {
+    static NAMED: OnceLock<regex::Regex> = OnceLock::new();
+    pattern(&NAMED, format!("(?i){PASSWORD_WORDS}")).is_match(line)
+}
+
+/// The shapes a password takes in a settings file, a connection string, an
+/// XML or a JSON document. Each has the value as its `value` group.
+fn password_shapes() -> [&'static regex::Regex; 3] {
+    static PAIR: OnceLock<regex::Regex> = OnceLock::new();
+    static ELEMENT: OnceLock<regex::Regex> = OnceLock::new();
+    static SETTING: OnceLock<regex::Regex> = OnceLock::new();
+    // A key is letters, digits and `_ . -`, and ends in one of the words:
+    // `Password`, `db_pwd`, `数据库密码`, but neither `PassValue` nor
+    // `PasswordHint`.
+    let key = format!(r"[\p{{L}}\p{{N}}_.\-]*(?:{PASSWORD_WORDS})");
+    [
+        // `Password=x`, `pwd: x`, `"password": "x"`, `DbPassword="x y"`.
+        pattern(
+            &PAIR,
+            format!(r#"(?i){key}["']?\s*[=:]\s*(?P<value>"[^"]*"|'[^']*'|[^\s;,&<>"']+)"#),
+        ),
+        // `<Password>x</Password>`.
+        pattern(
+            &ELEMENT,
+            format!(
+                r"(?i)<[\p{{L}}\p{{N}}_.:\-]*(?:{PASSWORD_WORDS})(?:\s[^<>]*)?>(?P<value>[^<]+)<"
+            ),
+        ),
+        // `<add key="DbPassword" value="x"/>`.
+        pattern(
+            &SETTING,
+            format!(
+                r#"(?i)\b(?:key|name)\s*=\s*"[^"]*(?:{PASSWORD_WORDS})"[^<>]*?\bvalue\s*=\s*(?P<value>"[^"]*")"#
+            ),
+        ),
+    ]
+}
+
+/// `line` with the value of everything called a password replaced, counting
+/// them in `hidden`.
+fn hide_named_passwords<'a>(line: &'a str, hidden: &mut usize) -> Cow<'a, str> {
+    let mut line = Cow::Borrowed(line);
+    for shape in password_shapes() {
+        let replaced = shape.replace_all(&line, |found: &regex::Captures<'_>| {
+            let whole = found.get(0).expect("the whole match");
+            let value = found.name("value").expect("every shape has a value");
+            let quote = value
+                .as_str()
+                .chars()
+                .next()
+                .filter(|ch| matches!(ch, '"' | '\''))
+                .map(String::from)
+                .unwrap_or_default();
+            let inner = value.as_str().trim_matches(['"', '\'']).trim();
+            // Nothing there, or hidden already by the shape before.
+            if inner.is_empty() || inner == HIDDEN {
+                return whole.as_str().to_string();
+            }
+            *hidden += 1;
+            let text = whole.as_str();
+            format!(
+                "{}{quote}{HIDDEN}{quote}{}",
+                &text[..value.start() - whole.start()],
+                &text[value.end() - whole.start()..],
+            )
+        });
+        if let Cow::Owned(replaced) = replaced {
+            line = Cow::Owned(replaced);
+        }
+    }
+    line
+}
+
 /// `line` with what looks like a credential replaced, and how many were;
 /// `None` when it holds none, which is every line of nearly every file.
 fn hide_credentials(line: &str) -> Option<(String, usize)> {
@@ -307,9 +423,15 @@ fn hide_credentials(line: &str) -> Option<(String, usize)> {
             )
         });
     }
-    if !(line.contains("#####") || (line.contains('@') && line.contains('/'))) {
+    let named = names_a_password(line);
+    if !(named || line.contains("#####") || (line.contains('@') && line.contains('/'))) {
         return None;
     }
+    let line = if named {
+        hide_named_passwords(line, &mut hidden)
+    } else {
+        Cow::Borrowed(line)
+    };
     let words: Vec<String> = line
         .split(' ')
         .map(|word| {
@@ -558,6 +680,160 @@ mod tests {
         assert_eq!(file.hidden, 5);
         let debug = format!("{file:?}");
         assert!(!debug.contains(PASSWORD) && !debug.contains(OBFUSCATED));
+    }
+
+    /// Every kind of credential a manifest holds, each a value made up for
+    /// this test and spelled so that only the rule for its place can hide it.
+    const MANIFEST_SECRETS: [&str; 6] = [
+        "site-secret-one",
+        "site-secret-two",
+        "plant-secret",
+        "tablespace-secret",
+        "dbpwds-secret",
+        "command-secret",
+    ];
+
+    fn manifest_copy(line_end: &str) -> String {
+        [
+            "Name<<|>>SQPlant",
+            "SiteConnInfo<<|>>site-secret-one<<|>>1<<|>>ORCL<<|>>SQSite<<|>>site-secret-two<<|>>system",
+            "PlantConnInfo<<|>>SQPlant<<|>>2<<|>>ORCL<<|>>SQPlant<<|>>plant-secret<<|>>system",
+            "TableSpace<<|>>Permanent<<|>>tablespace-secret<<|>>USERS",
+            "DBUids<<|>>SQPlantpid,SQPlant",
+            "DBPwds<<|>>dbpwds-secret",
+            "BackupCommand<<|>>Exp.exe system/command-secret@ORCL OWNER=(SQPlant) FILE=Export.dmp",
+            "Table<<|>>SQPlant<<|>>T_PLANTGROUP",
+            "",
+        ]
+        .join(line_end)
+    }
+
+    /// A manifest is never opened as text, but a copy of one can lie
+    /// anywhere: under another name, inside an archive, among the reference
+    /// files. Whatever its encoding and its line ends, it shows what the
+    /// manifest's own branch shows and no more.
+    #[test]
+    fn a_copy_of_a_manifest_shows_none_of_its_credentials() {
+        let utf16 = |text: &str| -> Vec<u8> {
+            let mut bytes = vec![0xFF, 0xFE];
+            for unit in text.encode_utf16() {
+                bytes.extend(unit.to_le_bytes());
+            }
+            bytes
+        };
+        for (what, bytes) in [
+            (
+                "UTF-16, CRLF (as SmartPlant writes it)",
+                utf16(&manifest_copy("\r\n")),
+            ),
+            ("UTF-8, LF", manifest_copy("\n").into_bytes()),
+            ("UTF-8, CRLF", manifest_copy("\r\n").into_bytes()),
+            ("UTF-8, CR alone", manifest_copy("\r").into_bytes()),
+            ("UTF-16, CR alone", utf16(&manifest_copy("\r"))),
+        ] {
+            let file = text(decode(&bytes, bytes.len() as u64));
+            let shown = lines(&file).join("\n");
+            let leaking: Vec<usize> = MANIFEST_SECRETS
+                .iter()
+                .enumerate()
+                .filter(|(_, secret)| shown.contains(**secret))
+                .map(|(at, _)| at)
+                .collect();
+            assert!(
+                leaking.is_empty(),
+                "{what}: the credentials {leaking:?} of MANIFEST_SECRETS are shown"
+            );
+            assert_eq!(file.hidden, 6, "{what}");
+            assert_eq!(file.line_count, 8, "{what}");
+            // What is not a credential is all there.
+            assert!(shown.contains("DBUids<<|>>SQPlantpid,SQPlant"), "{what}");
+            assert!(
+                shown.contains(&format!("Exp.exe system/{HIDDEN}@ORCL OWNER=(SQPlant)")),
+                "{what}"
+            );
+        }
+    }
+
+    /// A password in a settings file, a connection string, an XML or JSON
+    /// document: the value is hidden whatever the file is.
+    #[test]
+    fn a_password_in_any_text_file_is_not_shown() {
+        let source = [
+            "Password=made-up-01",
+            "Provider=OraOLEDB.Oracle;User ID=plant;Password=made-up-02;Data Source=ORCL",
+            "Driver={SQL Server};Server=db;Uid=sa;Pwd=made-up-03;",
+            "<Connection user=\"plant\" DbPassword=\"made-up 04\" timeout=\"30\"/>",
+            "  <Password>made-up 05</Password>",
+            "  \"password\": \"made-up-06\",",
+            "db_pwd : made-up-07",
+            "数据库密码=made-up-08",
+            "PASSPHRASE='made-up 09'",
+            "sqlplus -s system/made-up-10@orcl",
+            "<add key=\"DbPassword\" value=\"made-up-11\"/>",
+        ]
+        .join("\n");
+        let file = text(decode(source.as_bytes(), source.len() as u64));
+        let shown = lines(&file).join("\n");
+        // Which line still shows its value is said; the value is not.
+        let leaking: Vec<usize> = lines(&file)
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains("made-up"))
+            .map(|(at, _)| at + 1)
+            .collect();
+        assert!(leaking.is_empty(), "lines {leaking:?} show their password");
+        assert!(!shown.contains("made-up"));
+        assert_eq!(file.hidden, 11);
+        assert_eq!(
+            lines(&file),
+            [
+                format!("Password={HIDDEN}"),
+                format!(
+                    "Provider=OraOLEDB.Oracle;User ID=plant;Password={HIDDEN};Data Source=ORCL"
+                ),
+                format!("Driver={{SQL Server}};Server=db;Uid=sa;Pwd={HIDDEN};"),
+                format!("<Connection user=\"plant\" DbPassword=\"{HIDDEN}\" timeout=\"30\"/>"),
+                format!("  <Password>{HIDDEN}</Password>"),
+                format!("  \"password\": \"{HIDDEN}\","),
+                format!("db_pwd : {HIDDEN}"),
+                format!("数据库密码={HIDDEN}"),
+                format!("PASSPHRASE='{HIDDEN}'"),
+                format!("sqlplus -s system/{HIDDEN}@orcl"),
+                format!("<add key=\"DbPassword\" value=\"{HIDDEN}\"/>"),
+            ]
+        );
+    }
+
+    /// Words that only start like "password", and a password key with
+    /// nothing after it, hide nothing.
+    #[test]
+    fn a_key_that_is_not_a_password_keeps_its_value() {
+        for line in [
+            // Real: the validation rules of a plant (`ObjectAttrValidation.xml`).
+            "<Attr Name=\"TagSeqNo\" PassValue=\"是\" FailValue=\"否\"/>",
+            "<PassCount>3</PassCount>",
+            "Bypass=1; Compass=north; PasswordHint=the usual",
+            "Password=",
+            "<Password></Password>",
+            "password \"\" is not allowed",
+            "Passwords are kept by the site administrator.",
+        ] {
+            let file = text(decode(line.as_bytes(), 0));
+            assert_eq!(lines(&file), [line], "{line}");
+            assert_eq!(file.hidden, 0, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_line_ends_at_a_line_feed_a_carriage_return_or_both() {
+        let file = text(decode(b"one\rtwo\r\nthree\nfour\r", 0));
+        assert_eq!(lines(&file), ["one", "two", "three", "four"]);
+        assert_eq!(file.line_count, 4);
+        // Empty lines stay, whatever ends them.
+        assert_eq!(
+            lines(&text(decode(b"a\r\rb\n\r\nc", 0))),
+            ["a", "", "b", "", "c"]
+        );
     }
 
     #[test]
