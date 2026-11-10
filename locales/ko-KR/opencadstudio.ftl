@@ -9098,6 +9098,7 @@ pid-backup =
     .no-row-count = The export log states no row count for this table.
     .split-set = PIDBACKUPOPEN: the tree takes __ocs_fmt_0__% of the panel's height
     .split-needs-percent = PIDBACKUPOPEN: Split takes a percentage from __ocs_fmt_0__ to __ocs_fmt_1__
+    .reference-folder = Reference folder
 
 block-flip-frame-feedback =
     .unavailable = 블록 매개변수 프레임을 사용할 수 없습니다.

@@ -1279,6 +1279,7 @@ mod tests {
         "no-row-count",
         "split-set",
         "split-needs-percent",
+        "reference-folder",
     ];
 
     /// The panel's own labels, the ones the dock title and the command share.

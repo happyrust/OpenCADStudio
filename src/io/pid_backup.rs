@@ -16,8 +16,17 @@
 //! decodes them, and a name that would leave the restore folder refuses the
 //! whole restore.
 
+mod refdata;
+
+pub use refdata::REFERENCE_DIR;
+
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+
+/// What a restore folder holds, as a number: a restore made under an older
+/// layout is made again. 2: the reference data volumes are unpacked into
+/// `Ref`.
+const RESTORE_LAYOUT: u32 = 2;
 
 /// Written last into a finished restore folder; holds the source's cache key.
 pub(crate) const DONE_MARKER: &str = ".ocs-restored";
@@ -87,6 +96,7 @@ pub fn restore_cache(source: &Path) -> PathBuf {
 fn cache_key(source: &Path) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
+    RESTORE_LAYOUT.hash(&mut hasher);
     let mut stamp = |path: &Path| {
         path.hash(&mut hasher);
         if let Ok(meta) = std::fs::metadata(path) {
@@ -100,6 +110,11 @@ fn cache_key(source: &Path) -> String {
     if source.is_dir() {
         for archive in plant_data_archives(source) {
             stamp(&archive);
+        }
+        // The reference data is restored too: a volume or a manifest that
+        // changed makes the restore stale.
+        for file in refdata::stamped_files(source) {
+            stamp(&file);
         }
     }
     format!("{:016x}", hasher.finish())
@@ -118,14 +133,18 @@ pub fn restore(source: &Path, target: Option<&Path>) -> Result<Restored, String>
                 drawings: pid_drawings(source),
             });
         }
-        let reference = source.join("Ref");
+        let reference = source.join(REFERENCE_DIR);
         return build(source, target, |staging| {
             for archive in &archives {
                 extract_zip(archive, staging)?;
             }
+            // A `Ref` folder somebody unpacked beside the backup first, then
+            // the backup's own volumes over it: what the backup holds is the
+            // backup, what lies beside it only fills in.
             if reference.is_dir() {
-                copy_dir(&reference, &staging.join("Ref"))?;
+                copy_dir(&reference, &staging.join(REFERENCE_DIR))?;
             }
+            refdata::restore_reference_data(source, staging)?;
             Ok(())
         });
     }
@@ -146,6 +165,7 @@ pub fn restore(source: &Path, target: Option<&Path>) -> Result<Restored, String>
             for archive in plant_data_archives(&root) {
                 extract_zip(&archive, &root)?;
             }
+            refdata::restore_reference_data(&root, &root)?;
         }
         Ok(())
     })
@@ -208,7 +228,7 @@ fn build(
     let marker = target.join(DONE_MARKER);
     if std::fs::read_to_string(&marker).is_ok_and(|stamp| stamp.trim() == key) {
         return Ok(Restored {
-            drawings: pid_drawings(&target),
+            drawings: restored_drawings(&target),
             root: target,
             extracted: true,
             reused: true,
@@ -255,11 +275,26 @@ fn build(
         ));
     }
     Ok(Restored {
-        drawings: pid_drawings(&target),
+        drawings: restored_drawings(&target),
         root: target,
         extracted: true,
         reused: false,
     })
+}
+
+/// The drawings of a restore folder: every `.pid` under it but the ones in
+/// its reference data. A border template is a `.pid` file as well, and it is
+/// the plant's reference data, not one of its drawings.
+fn restored_drawings(target: &Path) -> Vec<PathBuf> {
+    let mut reference = vec![target.join(REFERENCE_DIR)];
+    reference.extend(
+        backup_roots(target)
+            .into_iter()
+            .map(|root| root.join(REFERENCE_DIR)),
+    );
+    let mut drawings = pid_drawings(target);
+    drawings.retain(|drawing| !reference.iter().any(|folder| drawing.starts_with(folder)));
+    drawings
 }
 
 /// The `PlantData~*` zip archives directly in `dir`, path-sorted.
@@ -520,6 +555,200 @@ mod tests {
         // The source folder is only read.
         assert!(backup.join("PlantData~2~711.zip").is_file());
         assert!(!backup.join("00").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A manifest for the reference data volumes of the tests below.
+    fn manifest(lines: &[&str]) -> String {
+        let mut text = String::from("Name<<|>>SQPlant\r\n");
+        for line in lines {
+            text.push_str(line);
+            text.push_str("\r\n");
+        }
+        text
+    }
+
+    /// The backup as SmartPlant leaves it: drawings in one archive, the
+    /// reference data in numbered volumes, and nothing unpacked beside them.
+    fn backup_with_volumes(backup: &Path) {
+        std::fs::create_dir_all(backup).unwrap();
+        std::fs::write(
+            backup.join("Manifest.txt"),
+            manifest(&[
+                "File<<|>>2<<|>>1<<|>>711<<|>>1<<|>>\\\\host\\P\\SQPlant\\Plant<<|>>1<<|>>PlantData~2~711.zip",
+                "File<<|>>4<<|>>1<<|>>681<<|>>1<<|>>\\\\host\\P\\SQPlant\\Ref\\Symbols<<|>>1<<|>>RefData~4~681.zip",
+                "File<<|>>4<<|>>1<<|>>682<<|>>1<<|>>\\\\host\\P\\SQPlant\\Ref\\Template Files<<|>>1<<|>>RefData~4~682.zip",
+                "File<<|>>4<<|>>2<<|>>680<<|>>1<<|>>\\\\host\\P\\SQPlant\\Ref\\rules.rul<<|>>1<<|>>RefData~4~680",
+                "File<<|>>4<<|>>1<<|>>685<<|>>1<<|>>\\\\host\\P\\SQPlant\\Ref\\Symbols\\Assemblies<<|>>1<<|>>RefData~4~685.zip",
+                "File<<|>>4<<|>>2<<|>>824<<|>>1<<|>>\\\\host\\P\\SQPlant\\Ref\\Jacket.XML<<|>>2<<|>>Failed to access file.",
+            ]),
+        )
+        .unwrap();
+        write_zip(&backup.join("PlantData~2~711.zip"), &[("00/00/A.pid", b"a")]);
+        write_zip(
+            &backup.join("RefData~4~681.zip"),
+            &[
+                ("Piping/Valves/gate.sym", b"gate from the volume"),
+                ("CatalogIndex.xml", b"<catalog/>"),
+            ],
+        );
+        write_zip(
+            &backup.join("RefData~4~682.zip"),
+            &[("A1.igr", b"border"), ("A1.pid", b"template drawing")],
+        );
+        std::fs::write(backup.join("RefData~4~680"), b"\"Begin Rules\",1").unwrap();
+        write_zip(&backup.join("RefData~4~685.zip"), &[("Piping/pump.sym", b"assembly")]);
+    }
+
+    #[test]
+    fn a_backup_folder_gets_its_reference_data_volumes_back_under_ref() {
+        let root = scratch("refdata");
+        let backup = root.join("backup");
+        backup_with_volumes(&backup);
+        let target = root.join("out");
+        let restored = restore(&backup, Some(&target)).unwrap();
+        let read = |relative: &str| std::fs::read(target.join(relative)).ok();
+        // A folder volume lands where the manifest says the folder was, a
+        // single file under its own name, a folder inside another inside it.
+        assert_eq!(
+            read("Ref/Symbols/Piping/Valves/gate.sym").as_deref(),
+            Some(&b"gate from the volume"[..])
+        );
+        assert_eq!(read("Ref/Symbols/CatalogIndex.xml").as_deref(), Some(&b"<catalog/>"[..]));
+        assert_eq!(read("Ref/Template Files/A1.igr").as_deref(), Some(&b"border"[..]));
+        assert_eq!(read("Ref/rules.rul").as_deref(), Some(&b"\"Begin Rules\",1"[..]));
+        assert_eq!(
+            read("Ref/Symbols/Assemblies/Piping/pump.sym").as_deref(),
+            Some(&b"assembly"[..])
+        );
+        // The file the backup never got is not made up.
+        assert!(!target.join("Ref/Jacket.XML").exists());
+        // The volumes themselves are not copied, and the source is only read.
+        assert!(!target.join("RefData~4~681.zip").exists());
+        assert!(!backup.join("Ref").exists());
+        // A border template is a `.pid` too: it is reference data, not one
+        // of the plant's drawings.
+        assert!(target.join("Ref/Template Files/A1.pid").is_file());
+        assert_eq!(restored.drawings, vec![target.join("00/00/A.pid")]);
+        // And a restore that is reused lists the same.
+        let again = restore(&backup, Some(&target)).unwrap();
+        assert!(again.reused);
+        assert_eq!(again.drawings, restored.drawings);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_ref_folder_beside_the_backup_fills_in_what_the_volumes_do_not_hold() {
+        let root = scratch("refdata-beside");
+        let backup = root.join("backup");
+        backup_with_volumes(&backup);
+        let symbols = backup.join("Ref").join("Symbols");
+        std::fs::create_dir_all(symbols.join("Piping").join("Valves")).unwrap();
+        // One the volume holds too, and one only the folder has.
+        std::fs::write(symbols.join("Piping/Valves/gate.sym"), b"gate from the folder").unwrap();
+        std::fs::write(symbols.join("Piping/Valves/own.sym"), b"only beside").unwrap();
+        let target = root.join("out");
+        restore(&backup, Some(&target)).unwrap();
+        assert_eq!(
+            std::fs::read(target.join("Ref/Symbols/Piping/Valves/gate.sym")).unwrap(),
+            b"gate from the volume"
+        );
+        assert_eq!(
+            std::fs::read(target.join("Ref/Symbols/Piping/Valves/own.sym")).unwrap(),
+            b"only beside"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_zipped_backup_gets_its_reference_data_back_beside_its_drawings() {
+        let root = scratch("refdata-zip");
+        let backup = root.join("stage").join("MyPlant");
+        backup_with_volumes(&backup);
+        // The whole folder in one zip, as a backup is passed around.
+        let outer = root.join("backup.zip");
+        let mut members: Vec<(String, Vec<u8>)> = Vec::new();
+        for entry in std::fs::read_dir(&backup).unwrap().flatten() {
+            members.push((
+                format!("MyPlant/{}", entry.file_name().to_string_lossy()),
+                std::fs::read(entry.path()).unwrap(),
+            ));
+        }
+        let borrowed: Vec<(&str, &[u8])> = members
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect();
+        write_zip(&outer, &borrowed);
+        let target = root.join("out");
+        let restored = restore(&outer, Some(&target)).unwrap();
+        let plant = target.join("MyPlant");
+        assert_eq!(
+            std::fs::read(plant.join("Ref/Symbols/Piping/Valves/gate.sym")).unwrap(),
+            b"gate from the volume"
+        );
+        assert_eq!(std::fs::read(plant.join("Ref/rules.rul")).unwrap(), b"\"Begin Rules\",1");
+        // The template drawing under `Ref` is not one of the drawings.
+        assert_eq!(restored.drawings, vec![plant.join("00/00/A.pid")]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_volume_whose_path_leaves_the_restore_folder_is_not_unpacked() {
+        let root = scratch("refdata-outside");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(&backup).unwrap();
+        // Three volumes share `\\host\P\Ref`; two of the paths lead above it.
+        std::fs::write(
+            backup.join("Manifest.txt"),
+            manifest(&[
+                "File<<|>>4<<|>>1<<|>>681<<|>>1<<|>>\\\\host\\P\\Ref\\Symbols<<|>>1<<|>>RefData~4~681.zip",
+                "File<<|>>4<<|>>2<<|>>690<<|>>1<<|>>\\\\host\\P\\Ref\\..\\..\\..\\outside.txt<<|>>1<<|>>RefData~4~690",
+                "File<<|>>4<<|>>1<<|>>691<<|>>1<<|>>\\\\host\\P\\Ref\\..\\..\\outside<<|>>1<<|>>RefData~4~691.zip",
+            ]),
+        )
+        .unwrap();
+        write_zip(&backup.join("PlantData~2~711.zip"), &[("A.pid", b"a")]);
+        write_zip(&backup.join("RefData~4~681.zip"), &[("gate.sym", b"gate")]);
+        std::fs::write(backup.join("RefData~4~690"), b"must stay inside").unwrap();
+        write_zip(&backup.join("RefData~4~691.zip"), &[("inside.txt", b"must stay inside")]);
+        let target = root.join("nested").join("out");
+        restore(&backup, Some(&target)).unwrap();
+        // Whatever was restored is under the target; nothing beside or above.
+        let mut found = Vec::new();
+        let mut pending = vec![root.clone()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if std::fs::read(&path).is_ok_and(|bytes| bytes == b"must stay inside") {
+                    found.push(path);
+                }
+            }
+        }
+        for path in &found {
+            assert!(
+                path.starts_with(&target) || path.starts_with(&backup),
+                "{} is outside the restore",
+                path.display()
+            );
+        }
+        assert!(!root.join("outside.txt").exists());
+        assert!(!root.join("nested").join("outside.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_changed_volume_makes_the_restore_stale() {
+        let root = scratch("refdata-stale");
+        let backup = root.join("backup");
+        backup_with_volumes(&backup);
+        let key = cache_key(&backup);
+        assert_eq!(key, cache_key(&backup));
+        // A volume grows: the cache of the old one is not the backup's any
+        // more.
+        std::fs::write(backup.join("RefData~4~680"), b"\"Begin Rules\",2\r\nmore").unwrap();
+        assert_ne!(key, cache_key(&backup));
         let _ = std::fs::remove_dir_all(&root);
     }
 

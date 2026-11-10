@@ -7448,6 +7448,7 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "The export log states no row count for this table." => Some(("pid-backup", "no-row-count")),
         "PIDBACKUPOPEN: the tree takes {}% of the panel's height" => Some(("pid-backup", "split-set")),
         "PIDBACKUPOPEN: Split takes a percentage from {} to {}" => Some(("pid-backup", "split-needs-percent")),
+        "Reference folder" => Some(("pid-backup", "reference-folder")),
         _ => None,
     }
 }

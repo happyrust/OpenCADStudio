@@ -1318,6 +1318,15 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
                 t!("Reference file count").into_owned(),
                 index.ref_tree.file_count().to_string(),
             ));
+            // Where the tree was read from: the restore, with the backup's
+            // reference data volumes unpacked, or a folder beside a backup
+            // that is used where it lies.
+            if !index.ref_root.as_os_str().is_empty() {
+                lines.push(DetailLine::Field(
+                    t!("Reference folder").into_owned(),
+                    index.ref_root.display().to_string(),
+                ));
+            }
         }
         NodeId::RefDir(path) => {
             if let Some(node) = ref_at(&index.ref_tree, path) {
