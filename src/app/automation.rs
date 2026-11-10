@@ -6785,6 +6785,14 @@ mod tests {
                 .input
                 .left_press_time = Some(held_since);
             for &(x, y) in &path {
+                // A pass that took 8 ms or more makes the next move wait as
+                // long (`MOVE_COALESCE_FROM_MS`): the editor answers it on a
+                // later frame, and here nothing would. On a machine busy with
+                // the rest of the suite one pass does take that long, the
+                // moves after it are withheld and the drag never starts. This
+                // test is about what the moves do once answered, so the gate
+                // is left open for each.
+                app.move_pass_due = None;
                 let _ = app.update(Message::ViewportMove(iced::Point::new(x, y)));
             }
             {
