@@ -835,6 +835,14 @@ impl Store {
         Ok(rows)
     }
 
+    /// One conflict entry by id.
+    pub fn conflict(&self, conflict_id: &str) -> Result<Option<ConflictRow>, String> {
+        Ok(self
+            .list_conflicts(None, None)?
+            .into_iter()
+            .find(|row| row.conflict_id == conflict_id))
+    }
+
     /// Resolves a pending conflict. Returns `false` when the row is unknown or
     /// already resolved (adjudication happens once).
     pub fn resolve_conflict(

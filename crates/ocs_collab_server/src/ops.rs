@@ -320,6 +320,211 @@ pub fn objects(
     (drawing.model.revision(), items)
 }
 
+/// The three rulings (`architecture.md` §2.5).
+pub const RESOLUTION_A: &str = "采用甲方";
+pub const RESOLUTION_B: &str = "采用乙方";
+pub const RESOLUTION_MANUAL: &str = "人工改值";
+/// `conflicts.status` once ruled on.
+pub const STATUS_RESOLVED: &str = "已裁决";
+
+/// A ruling that was carried out.
+#[derive(Debug)]
+pub struct Resolved {
+    /// The entry as it stands now.
+    pub row: ConflictRow,
+    /// What the field (or the line's connections) was set to.
+    pub final_value: String,
+    /// The revision the drawing moved to when the ruling was written back.
+    pub revision: i64,
+    /// The `op_applied` that tells the room.
+    pub message: ServerMessage,
+}
+
+/// Why a ruling was not carried out.
+#[derive(Debug)]
+pub enum ResolveError {
+    /// No entry has that id.
+    Unknown,
+    /// It was ruled on before; the entry is returned as it stands.
+    AlreadyResolved(Box<ConflictRow>),
+    /// The request does not say a ruling the entry can take.
+    Invalid(String),
+    /// The database refused.
+    Store(String),
+}
+
+/// Carry out a ruling on a pending conflict entry.
+///
+/// A ruling is more than a mark on the entry: the value it picks is written
+/// to the drawing as an op of the server's own — the revision moves and
+/// `op_applied` goes out — so every client on the drawing has it at once and
+/// one that is away gets it when it catches up. The op, its audit row and
+/// the op-log row are one transaction; the entry is marked after it.
+///
+/// For a field the value is `value_a`, `value_b` or the one given; for a
+/// pipe line's connections `value_a` and `value_b` are the two changes that
+/// tied, and the one picked is applied (a value given by hand has to be such
+/// a change too).
+pub fn resolve(
+    state: &AppState,
+    conflict_id: &str,
+    resolution: &str,
+    custom: Option<&str>,
+    resolved_by: &str,
+    now: i64,
+) -> Result<Resolved, ResolveError> {
+    let Some(store) = &state.store else {
+        return Err(ResolveError::Store("数据库不可用".to_owned()));
+    };
+    let row = store
+        .conflict(conflict_id)
+        .map_err(ResolveError::Store)?
+        .ok_or(ResolveError::Unknown)?;
+    if row.status != STATUS_PENDING {
+        return Err(ResolveError::AlreadyResolved(Box::new(row)));
+    }
+    let final_value = match resolution {
+        RESOLUTION_A => row.value_a.clone(),
+        RESOLUTION_B => row.value_b.clone(),
+        RESOLUTION_MANUAL => custom
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| ResolveError::Invalid("人工改值需要给出 value".to_owned()))?,
+        other => {
+            return Err(ResolveError::Invalid(format!(
+                "resolution 只能是 {RESOLUTION_A} / {RESOLUTION_B} / {RESOLUTION_MANUAL}，收到 {other}"
+            )))
+        }
+    };
+
+    let mut drawings = state.drawings.lock().expect("drawings mutex poisoned");
+    let drawing = drawings
+        .entry(row.drawing_id.clone())
+        .or_insert_with(|| DrawingOps::load(state, &row.drawing_id));
+    let payload = if row.field == ocs_collab::conflict::FIELD_TOPOLOGY {
+        serde_json::from_str::<Value>(&final_value)
+            .ok()
+            .filter(Value::is_object)
+            .ok_or_else(|| {
+                ResolveError::Invalid("拓扑冲突的裁决值必须是一个拓扑操作（JSON 对象）".to_owned())
+            })?
+    } else {
+        let mut change = serde_json::json!({
+            "kind": if row.field == ocs_collab::conflict::FIELD_TAG { KIND_SET_TAG } else { "set_property" },
+            "object_ref": row.object_ref,
+            "field": row.field,
+            "value": final_value,
+        });
+        if let Some(current) = drawing.model.field(&row.object_ref, &row.field) {
+            change["old_value"] = Value::String(current.value.clone());
+        }
+        change
+    };
+    let changes: Vec<Change> = Change::list(&payload)
+        .iter()
+        .map(|change| drawing.model.completed(change))
+        .collect();
+    if changes.is_empty() || !changes.iter().all(Change::is_understood) {
+        return Err(ResolveError::Invalid(
+            "裁决值不是服务器认识的操作".to_owned(),
+        ));
+    }
+
+    // The ruling is made knowing the drawing as it is: nothing to be behind.
+    let expected = drawing.model.revision();
+    let session_id = format!("adjudication:{conflict_id}");
+    let applied: Vec<(Change, String)> = changes
+        .into_iter()
+        .map(|change| {
+            let name = match drawing.model.judge(&change, expected, &session_id) {
+                Verdict::Apply { object_ref, .. } => object_ref,
+                _ => change.subject(),
+            };
+            (change, name)
+        })
+        .collect();
+    let broadcast: Vec<Value> = applied
+        .iter()
+        .map(|(change, name)| change.broadcast_form(name))
+        .collect();
+    let company = store
+        .user_role(resolved_by)
+        .ok()
+        .flatten()
+        .map(|(_, company)| company)
+        .filter(|company| !company.is_empty())
+        .unwrap_or_else(|| "未知".to_owned());
+    let audit = NewAuditRow {
+        module: "冲突裁决".to_owned(),
+        action: "conflict_resolved".to_owned(),
+        at: now,
+        object_ref: row.object_ref.clone(),
+        user_id: resolved_by.to_owned(),
+        company,
+        ip: "127.0.0.1".to_owned(),
+        workspace: "默认工作区".to_owned(),
+        change_text: format!(
+            "裁决 {conflict_id}：{}.{} 甲方 {}，乙方 {}，{resolution}，最终 {final_value}",
+            row.object_ref, row.field, row.value_a, row.value_b
+        ),
+    };
+    let op_id = format!("resolve-{conflict_id}");
+    let record = OpRecord {
+        op_id: op_id.clone(),
+        session_id: session_id.clone(),
+        user_id: resolved_by.to_owned(),
+        base_revision: expected,
+        at: now,
+        changes: Value::Array(broadcast.clone()).to_string(),
+    };
+    let revision = match store.apply_op(&row.drawing_id, expected, &[audit], Some(&record)) {
+        Ok(OpCommit::Applied { revision, .. }) => revision,
+        Ok(OpCommit::Stale { current }) => {
+            drawing.model.set_revision(current);
+            return Err(ResolveError::Store(format!(
+                "图面修订已到 {current}，请重试"
+            )));
+        }
+        Err(err) => return Err(ResolveError::Store(err)),
+    };
+    for (change, name) in &applied {
+        drawing
+            .model
+            .commit(change, name, revision, &session_id, resolved_by);
+    }
+    drawing.model.set_revision(revision);
+
+    let custom_value = (resolution == RESOLUTION_MANUAL).then_some(final_value.as_str());
+    match store.resolve_conflict(conflict_id, resolution, custom_value, resolved_by) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("[ocs_collab_server] 冲突 {conflict_id} 写回之后标记失败：条目已不是待裁决")
+        }
+        Err(err) => return Err(ResolveError::Store(err)),
+    }
+    println!(
+        "[ocs_collab_server] 裁决 conflict={conflict_id} by={resolved_by} resolution={resolution} object_ref={} field={} -> 广播 op_applied revision={revision} at={now}",
+        row.object_ref, row.field
+    );
+    let row = ConflictRow {
+        status: STATUS_RESOLVED.to_owned(),
+        resolution: Some(resolution.to_owned()),
+        resolved_value: custom_value.map(str::to_owned),
+        resolved_by: Some(resolved_by.to_owned()),
+        ..row
+    };
+    Ok(Resolved {
+        row,
+        final_value,
+        revision,
+        message: ServerMessage::OpApplied {
+            op_id,
+            revision,
+            changes: broadcast,
+        },
+    })
+}
+
 /// The drawing's pipe topology as the server knows it, for
 /// `GET /drawing/{id}/topology`: `(revision, {pipe_lines, pipe_runs,
 /// connectors})`. Ops still inside the tie window, and ops a conflict entry

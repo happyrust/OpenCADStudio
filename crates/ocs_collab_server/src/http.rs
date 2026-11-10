@@ -41,6 +41,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/drawing/{id}/state", post(drawing_state))
         .route("/drawing/{id}/objects", get(drawing_objects))
         .route("/drawing/{id}/topology", get(drawing_topology))
+        .route("/conflicts", get(conflict_list))
+        .route("/conflicts/{id}/resolve", post(conflict_resolve))
         .with_state(state)
 }
 
@@ -347,6 +349,11 @@ async fn drawing_state(
 /// session id so the same user's second session is not mistaken for it. With
 /// nobody editing there is no holder, and everybody is downgraded.
 ///
+/// 契约未规定，待用户确认：`VAL-CLI-011` 只说「`u1`（编辑权持有者）」，没有
+/// 说以「把图纸状态改成只读」触发降级时谁算持有者。上面这条规则（切换那
+/// 一刻最早建立的活跃编辑会话）是实现方的选择，见状态文档 §13.4 之 2 与
+/// §14.3。
+///
 /// A downgrade is about one session's access, so it goes out on that
 /// session's own channel rather than to the room: the room would hand it to
 /// the holder as well.
@@ -533,6 +540,155 @@ async fn drawing_topology(
     topology["drawing_id"] = json!(drawing_id);
     topology["revision"] = json!(revision);
     (StatusCode::OK, Json(topology)).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct ConflictParams {
+    drawing_id: Option<String>,
+    status: Option<String>,
+}
+
+/// `GET /conflicts[?drawing_id=…&status=…]` → 200 `{"items":[…],"total":N}`
+/// (appendix A.1), each item a `conflicts` row.
+async fn conflict_list(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ConflictParams>,
+) -> Response {
+    let Some(store) = state.store.clone() else {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, codes::INVALID_MESSAGE, "数据库不可用");
+    };
+    match store.list_conflicts(params.drawing_id.as_deref(), params.status.as_deref()) {
+        Ok(items) => {
+            let total = items.len();
+            (StatusCode::OK, Json(json!({ "items": items, "total": total }))).into_response()
+        }
+        Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, codes::INVALID_MESSAGE, &err),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolveBody {
+    resolution: Option<String>,
+    /// Who rules. `user_id` is taken as well, as the other write endpoints
+    /// spell it.
+    resolved_by: Option<String>,
+    user_id: Option<String>,
+    /// The value for 人工改值: `value` as the validation contract writes the
+    /// payload, `resolved_value` as appendix A.1 does.
+    value: Option<String>,
+    resolved_value: Option<String>,
+}
+
+/// `POST /conflicts/{id}/resolve` — body `{resolution, resolved_by, value?}`
+/// → 200 `{conflict_id, status:"已裁决", …}`.
+///
+/// Ruling on a conflict is 授权配置 in the role matrix, judged on the
+/// drawing the entry belongs to like any other write; a refusal carries the
+/// tier that refused (`level`). An entry ruled on before answers 409 and is
+/// left as it is. The value the ruling picks is written to the drawing and
+/// broadcast (`ops::resolve`).
+async fn conflict_resolve(
+    State(state): State<Arc<AppState>>,
+    Path(conflict_id): Path<String>,
+    Json(body): Json<ResolveBody>,
+) -> Response {
+    let Some(store) = state.store.clone() else {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, codes::INVALID_MESSAGE, "数据库不可用");
+    };
+    let Some(resolved_by) = body.resolved_by.or(body.user_id) else {
+        return error_response(StatusCode::BAD_REQUEST, codes::INVALID_MESSAGE, "缺少 resolved_by");
+    };
+    let Some(resolution) = body.resolution else {
+        return error_response(StatusCode::BAD_REQUEST, codes::INVALID_MESSAGE, "缺少 resolution");
+    };
+    let row = match store.conflict(&conflict_id) {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return error_response(StatusCode::NOT_FOUND, codes::CONFLICT_UNKNOWN, "没有这个冲突条目")
+        }
+        Err(err) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, codes::INVALID_MESSAGE, &err)
+        }
+    };
+
+    let active_editors = active_editors_on(&state, &row.drawing_id).await;
+    match perm::evaluate(
+        &store,
+        &resolved_by,
+        &row.drawing_id,
+        Operation::ConfigureAuthorization.as_str(),
+        &active_editors,
+    ) {
+        Ok(outcome) if outcome.decision.allowed => {}
+        Ok(outcome) => {
+            // The decision names the tier as `denied_level`; the contract
+            // reads it as `level` (`VAL-CONF-015`). Both are given.
+            let mut refusal = decision_json(&outcome);
+            refusal["level"] = refusal["denied_level"].clone();
+            return (outcome.status, Json(refusal)).into_response();
+        }
+        Err(err) => return perm_error_response(&err),
+    }
+
+    let custom = body.value.or(body.resolved_value);
+    let resolved = match crate::ops::resolve(
+        &state,
+        &conflict_id,
+        &resolution,
+        custom.as_deref(),
+        &resolved_by,
+        ocs_collab::now_unix(),
+    ) {
+        Ok(resolved) => resolved,
+        Err(crate::ops::ResolveError::Unknown) => {
+            return error_response(StatusCode::NOT_FOUND, codes::CONFLICT_UNKNOWN, "没有这个冲突条目")
+        }
+        Err(crate::ops::ResolveError::AlreadyResolved(row)) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "ok": false,
+                    "code": codes::CONFLICT_ALREADY_RESOLVED,
+                    "message": "该冲突条目已经裁决过，裁决只做一次",
+                    "conflict_id": row.conflict_id,
+                    "status": row.status,
+                    "resolution": row.resolution,
+                    "resolved_by": row.resolved_by,
+                })),
+            )
+                .into_response()
+        }
+        Err(crate::ops::ResolveError::Invalid(message)) => {
+            return error_response(StatusCode::BAD_REQUEST, codes::INVALID_MESSAGE, &message)
+        }
+        Err(crate::ops::ResolveError::Store(message)) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, codes::INVALID_MESSAGE, &message)
+        }
+    };
+
+    // The ruling took effect as an op: the room hears it, and the sessions'
+    // baseline follows the revision as it does for any op.
+    state
+        .sessions
+        .lock()
+        .await
+        .advance_base_revision(&resolved.row.drawing_id, resolved.revision);
+    state.bus.publish(&resolved.row.drawing_id, &resolved.message);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "conflict_id": resolved.row.conflict_id,
+            "status": resolved.row.status,
+            "resolution": resolved.row.resolution,
+            "resolved_by": resolved.row.resolved_by,
+            "resolved_value": resolved.row.resolved_value,
+            "object_ref": resolved.row.object_ref,
+            "field": resolved.row.field,
+            "value": resolved.final_value,
+            "revision": resolved.revision,
+        })),
+    )
+        .into_response()
 }
 
 /// The audit log has no mutation path at all (invariant 7).
@@ -1318,5 +1474,305 @@ mod tests {
 
         assert!(first_rx.try_recv().is_err());
         assert!(second_rx.try_recv().is_err());
+    }
+
+    // ── Conflict adjudication (`VAL-CONF-010` … `016`) ──────────────────
+
+    const PID: &str = "PID-1101";
+
+    /// A server with a tie window, the contract's four users, and one
+    /// session each for u1 and u2 on PID-1101.
+    async fn adjudication_state() -> (Arc<AppState>, ws::Connection, ws::Connection) {
+        let store = Store::open_in_memory().expect("memory store");
+        let doc: crate::store::SeedDoc = serde_json::from_str(
+            r#"{
+              "users":[
+                {"user_id":"u1","display_name":"工艺甲","role":"工艺设计人员","company":"甲方工程公司"},
+                {"user_id":"u2","display_name":"工艺乙","role":"工艺设计人员","company":"甲方工程公司"},
+                {"user_id":"u3","display_name":"校对丙","role":"校对人员","company":"甲方工程公司"},
+                {"user_id":"u4","display_name":"管理员丁","role":"项目管理员","company":"甲方工程公司"}
+              ],
+              "pbs_nodes":[{"node_id":"P-ROOT","name":"工厂","node_type":"工厂"}],
+              "pbs_acl":[
+                {"node_id":"P-ROOT","subject":"u3","permission":"查看","allowed":true},
+                {"node_id":"P-ROOT","subject":"u4","permission":"编辑","allowed":true}
+              ],
+              "drawings":[
+                {"drawing_id":"PID-1101","file_name":"PID-1101.dwg","pbs_node_id":"P-ROOT","state":"协同编辑"}
+              ]
+            }"#,
+        )
+        .expect("seed json");
+        store.seed(&doc).expect("seed applies");
+        let mut state = AppState::new(Some(store), None, ":memory:", SessionConfig::default());
+        state.tie_window = std::time::Duration::from_millis(500);
+        let state = Arc::new(state);
+        let mut sessions = Vec::new();
+        for user in ["u1", "u2"] {
+            let mut conn = ws::Connection::new("10.0.0.7");
+            let hello = ocs_collab::ClientMessage::Hello {
+                user_id: user.into(),
+                drawing_id: PID.into(),
+                mode: "协同编辑".into(),
+                client_version: "test".into(),
+                workspace: "plant-a".into(),
+            };
+            ws::handle_message(&state, &mut conn, hello, 1_700_000_000).await;
+            sessions.push(conn);
+        }
+        let s2 = sessions.pop().expect("s2");
+        let s1 = sessions.pop().expect("s1");
+        (state, s1, s2)
+    }
+
+    async fn submit(state: &AppState, conn: &mut ws::Connection, op_id: &str, payload: serde_json::Value) {
+        let session_id = conn.session.as_ref().expect("session").session_id.clone();
+        let base_revision = crate::ops::objects(state, PID, None).0;
+        let message = ocs_collab::ClientMessage::Op {
+            session_id,
+            base_revision,
+            op_id: op_id.into(),
+            payload,
+        };
+        ws::handle_message(state, conn, message, 1_700_000_001).await;
+    }
+
+    /// Have u1 and u2 tie on `field` of P-1001 and return the entry's id.
+    async fn tie_on(
+        state: &AppState,
+        s1: &mut ws::Connection,
+        s2: &mut ws::Connection,
+        field: &str,
+        (a, b): (&str, &str),
+    ) -> String {
+        let write = |value: &str| {
+            json!({"kind": "set_property", "object_ref": "P-1001", "field": field, "value": value})
+        };
+        let before: Vec<String> = pending(state);
+        submit(state, s1, &format!("{field}-a"), write(a)).await;
+        submit(state, s2, &format!("{field}-b"), write(b)).await;
+        pending(state)
+            .into_iter()
+            .find(|id| !before.contains(id))
+            .expect("the two writes tied")
+    }
+
+    fn pending(state: &AppState) -> Vec<String> {
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .list_conflicts(Some(PID), Some("待裁决"))
+            .expect("conflicts")
+            .into_iter()
+            .map(|row| row.conflict_id)
+            .collect()
+    }
+
+    async fn rule(
+        state: &Arc<AppState>,
+        conflict_id: &str,
+        by: &str,
+        resolution: &str,
+        value: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = conflict_resolve(
+            State(state.clone()),
+            Path(conflict_id.to_owned()),
+            Json(ResolveBody {
+                resolution: Some(resolution.into()),
+                resolved_by: Some(by.into()),
+                user_id: None,
+                value: value.map(str::to_owned),
+                resolved_value: None,
+            }),
+        )
+        .await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).expect("json body"))
+    }
+
+    fn held_value(state: &AppState, field: &str) -> Option<String> {
+        crate::ops::objects(state, PID, Some("P-1001"))
+            .1
+            .first()
+            .and_then(|item| item["fields"][field]["value"].as_str().map(str::to_owned))
+    }
+
+    fn entry(state: &AppState, conflict_id: &str) -> crate::store::ConflictRow {
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .conflict(conflict_id)
+            .expect("read")
+            .expect("the entry")
+    }
+
+    // `VAL-CONF-010`, `-011`, `-012`, `-013`: each of the three rulings
+    // marks the entry, writes the value it picks to the drawing — as an op
+    // the room hears — and leaves a record carrying both values and the one
+    // that stood.
+    #[tokio::test]
+    async fn a_ruling_writes_the_value_it_picks_and_is_on_record() {
+        let (state, mut s1, mut s2) = adjudication_state().await;
+        let mut room = state.bus.subscribe(PID);
+        let cases = [
+            ("设计压力", "采用甲方", None, "1.6MPa"),
+            ("公称直径", "采用乙方", None, "2.5MPa"),
+            ("绝热等级", "人工改值", Some("2.0MPa"), "2.0MPa"),
+        ];
+        for (field, resolution, custom, expected) in cases {
+            let id = tie_on(&state, &mut s1, &mut s2, field, ("1.6MPa", "2.5MPa")).await;
+            assert_eq!(held_value(&state, field), None, "nothing stands before the ruling");
+            while room.try_recv().is_some() {}
+
+            let (status, body) = rule(&state, &id, "u4", resolution, custom).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["status"], "已裁决");
+            assert_eq!(body["conflict_id"], id.as_str());
+
+            let row = entry(&state, &id);
+            assert_eq!(row.status, "已裁决");
+            assert_eq!(row.resolution.as_deref(), Some(resolution));
+            assert_eq!(row.resolved_by.as_deref(), Some("u4"));
+            assert_eq!(row.resolved_value.as_deref(), custom, "only a value given by hand is kept");
+            assert_eq!(held_value(&state, field).as_deref(), Some(expected), "{resolution}");
+
+            match room.try_recv() {
+                Some(ocs_collab::ServerMessage::OpApplied { changes, revision, .. }) => {
+                    assert_eq!(changes[0]["field"], field);
+                    assert_eq!(changes[0]["value"], expected);
+                    assert_eq!(body["revision"], revision);
+                }
+                other => panic!("the room should hear the ruling as an op: {other:?}"),
+            }
+            let rows = state
+                .store
+                .as_ref()
+                .expect("store")
+                .audit_query(&AuditQuery {
+                    user_id: Some("u4".into()),
+                    ..AuditQuery::default()
+                })
+                .expect("audit")
+                .items;
+            let record = rows
+                .iter()
+                .find(|row| row.change_text.contains(&id))
+                .expect("the ruling is on record");
+            assert_eq!(record.object_ref, "P-1001");
+            for value in ["1.6MPa", "2.5MPa", expected] {
+                assert!(record.change_text.contains(value), "{}", record.change_text);
+            }
+        }
+    }
+
+    // `VAL-CONF-014`: a ruling is made once.
+    #[tokio::test]
+    async fn a_second_ruling_is_refused_and_changes_nothing() {
+        let (state, mut s1, mut s2) = adjudication_state().await;
+        let id = tie_on(&state, &mut s1, &mut s2, "设计压力", ("1.6MPa", "2.5MPa")).await;
+        let (status, _) = rule(&state, &id, "u4", "采用甲方", None).await;
+        assert_eq!(status, StatusCode::OK);
+        let store = state.store.as_ref().expect("store");
+        let audit_before = store.audit_count().expect("count");
+
+        let (status, body) = rule(&state, &id, "u4", "采用乙方", None).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["code"], codes::CONFLICT_ALREADY_RESOLVED);
+        let row = entry(&state, &id);
+        assert_eq!(row.resolution.as_deref(), Some("采用甲方"));
+        assert_eq!(row.resolved_by.as_deref(), Some("u4"));
+        assert_eq!(store.audit_count().expect("count"), audit_before);
+        assert_eq!(held_value(&state, "设计压力").as_deref(), Some("1.6MPa"));
+    }
+
+    // `VAL-CONF-015`: ruling takes 授权配置. A reviewer's role does not have
+    // it; the refusal says which tier refused, and the entry stays pending.
+    #[tokio::test]
+    async fn a_ruling_by_someone_who_may_not_configure_is_refused_at_the_role_tier() {
+        let (state, mut s1, mut s2) = adjudication_state().await;
+        let id = tie_on(&state, &mut s1, &mut s2, "设计压力", ("1.6MPa", "2.5MPa")).await;
+        let (status, body) = rule(&state, &id, "u3", "采用甲方", None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["code"], codes::PERM_DENIED_ROLE);
+        assert_eq!(body["level"], "role");
+        let row = entry(&state, &id);
+        assert_eq!(row.status, "待裁决");
+        assert_eq!(row.resolution, None);
+        assert_eq!(held_value(&state, "设计压力"), None);
+    }
+
+    // `VAL-CONF-016`: entries are listed by drawing and by status.
+    #[tokio::test]
+    async fn conflicts_are_listed_by_drawing_and_status() {
+        let (state, mut s1, mut s2) = adjudication_state().await;
+        for field in ["设计压力", "公称直径", "绝热等级"] {
+            let id = tie_on(&state, &mut s1, &mut s2, field, ("a", "b")).await;
+            rule(&state, &id, "u4", "采用甲方", None).await;
+        }
+        tie_on(&state, &mut s1, &mut s2, "流体介质", ("水", "油")).await;
+
+        let list = |status: &'static str, drawing: &'static str| {
+            let state = state.clone();
+            async move {
+                let response = conflict_list(
+                    State(state),
+                    Query(ConflictParams {
+                        drawing_id: Some(drawing.into()),
+                        status: Some(status.into()),
+                    }),
+                )
+                .await;
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                    .await
+                    .expect("body");
+                serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+            }
+        };
+        let waiting = list("待裁决", PID).await;
+        assert_eq!(waiting["total"], 1);
+        let item = &waiting["items"][0];
+        for key in ["conflict_id", "object_ref", "field", "status"] {
+            assert!(item[key].as_str().is_some_and(|text| !text.is_empty()), "{item}");
+        }
+        assert_eq!(list("已裁决", PID).await["items"].as_array().map(Vec::len), Some(3));
+        assert_eq!(list("待裁决", "PID-9999").await["total"], 0);
+    }
+
+    // A ruling on a pipe line's connections applies the change it picks.
+    #[tokio::test]
+    async fn a_ruling_on_a_topology_entry_applies_the_change_it_picks() {
+        let (state, mut s1, mut s2) = adjudication_state().await;
+        submit(&state, &mut s1, "run", json!({"kind": "add_pipe_run", "line_tag": "L-1001", "points": [[0, 0], [100, 0]]})).await;
+        submit(&state, &mut s2, "fit", json!({"kind": "insert_fitting", "run_tag": "L-1001-01", "fitting_type": "gate_valve", "at": [50, 0]})).await;
+        let id = pending(&state).pop().expect("the two changes tied");
+        assert_eq!(crate::ops::topology(&state, PID).1["pipe_runs"], json!([]));
+
+        let (status, body) = rule(&state, &id, "u4", "采用甲方", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, topology) = crate::ops::topology(&state, PID);
+        assert_eq!(topology["pipe_runs"][0]["tag"], "L-1001-01");
+        assert_eq!(topology["pipe_runs"][0]["points"], json!([[0, 0], [100, 0]]));
+    }
+
+    #[tokio::test]
+    async fn a_ruling_that_cannot_be_read_is_refused_without_touching_the_entry() {
+        let (state, mut s1, mut s2) = adjudication_state().await;
+        let id = tie_on(&state, &mut s1, &mut s2, "设计压力", ("1.6MPa", "2.5MPa")).await;
+        let (status, body) = rule(&state, "c-no-such-entry", "u4", "采用甲方", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["code"], codes::CONFLICT_UNKNOWN);
+        let (status, _) = rule(&state, &id, "u4", "人工改值", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a value by hand needs the value");
+        let (status, _) = rule(&state, &id, "u4", "掷硬币", None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(entry(&state, &id).status, "待裁决");
     }
 }

@@ -768,4 +768,46 @@ mission 的说明：一方删除另一方仍提交修改时删除生效、修改
 | `VAL-CONF-009` | passed | `c02-009-topology-before.json` 与 `c02-009-topology-after.json` 逐字相同（`pipe_runs` 为空、修订 1）；两个 op 都没有 `op_applied`；`status` 仍是 `待裁决` |
 | `VAL-CONF-017` | passed | `c02-017-topology.json`（P-1003 是 `L-1001-01` 的 `from`）；`ws-c02a-s2.jsonl`（`error` `OBJECT_REFERENCED`，「被 L-1001 引用为管路端点」）；语义查询里 P-1003 仍在；`c02-017-audit.json`（`delete_refused`，`user_id=u2`） |
 
-按字面不成立的：017 写「服务器返回 `ok=false`」，WS 的 `error` 帧没有 `ok` 这个键（`architecture.md` §3.1 的 `error` 是 `{code, message, level?}`）；错误码用的是 A.4 定的 `OBJECT_REFERENCED`，不是契约举例的 `REFERENCED_OBJECT`。其余逐句成立。场景脚本 `E7\c02_object_topology.py`，17 项检查全过；`c01_field_merge.py` 在新服务器上回归 24 项全过；`ocs_collab` 76 条、`ocs_collab_server` 123 + 12 条单测通过，clippy 0 告警。
+按字面不成立的：017 写「服务器返回 `ok=false`」，WS 的 `error` 帧没有 `ok` 这个键（`architecture.md` §3.1 的 `error` 是 `{code, message, level?}`）；错误码用的是 A.4 定的 `OBJECT_REFERENCED`，不是契约举例的 `REFERENCED_OBJECT`。其余逐句成立。场景脚本 `E7\c02_object_topology.py`，17 项检查全过；`c01_field_merge.py` 在新服务器上回归 24 项全过；`ocs_collab` 76 条、`ocs_collab_server` 123 + 12 条单测通过，clippy 0 告警。提交 `5a708d31d`。
+
+#### 14.5.3 `conflict-resolution`（`VAL-CONF-010`–`016`）
+
+mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（采用甲方 / 采用乙方 / 人工改值），人工改值的自定义值存 `resolved_value` 列；裁决结果与双方原值写入审计；裁决后 `status` 变 `已裁决` 且不可重复裁决；非管理员裁决返回 403；`GET /conflicts` 可按 `drawing_id` 与 `status` 检索。
+
+开工前：`Store::list_conflicts` / `resolve_conflict` 在 M1 就有，`conflicts.resolved_value` 列也在，但路由里没有 `/conflicts`，裁决之后也没有任何东西把选中的值写回图上。
+
+| 断言 | 要点 | 准备怎样取证 |
+|---|---|---|
+| `VAL-CONF-010` | u4 对并列条目裁决「采用甲方」：200；行变 `已裁决`、`resolution='采用甲方'`、`resolved_by='u4'`；字段最终值是 `value_a` | 裁决响应；`select * from conflicts where conflict_id=…`；服务器语义读回 |
+| `VAL-CONF-011` | 新条目裁决「采用乙方」：字段最终值是 `value_b` | 同上 |
+| `VAL-CONF-012` | 新条目裁决「人工改值」，`value='2.0MPa'`：最终值 `2.0MPa`，自定义值能读回 | 同上，另看 `resolved_value` 列 |
+| `VAL-CONF-013` | 每个被裁决的条目在 `audit_log` 至少一行：`user_id='u4'`、`object_ref` 是冲突对象、`change_text` 里 `value_a`、`value_b`、最终值都在 | `GET /audit?tag=P-1001`；`select change_text from audit_log where user_id='u4'` |
+| `VAL-CONF-014` | 对已裁决的条目再裁决：409（或 `ok=false`），`code` 表示已裁决；行不变；审计不增 | 第二次的响应；行；审计行数前后 |
+| `VAL-CONF-015` | u3（校对人员）裁决：403，`code` 表示权限拒绝，`level` 标明角色级；行仍是 `待裁决`、`resolution` 为 NULL | 403 的响应；行 |
+| `VAL-CONF-016` | 至少 1 条待裁决、3 条已裁决时，`GET /conflicts?drawing_id=PID-1101&status=待裁决` 的 `items` 条数对，每项 `conflict_id` / `object_ref` / `field` / `status` 非空；`status=已裁决` 返回 3 条 | 两次列表的响应；`select status,count(*) from conflicts group by status` |
+
+裁决由谁能做：照「改图纸状态」的先例，按「授权配置」这项操作走三级权限判定（角色矩阵里项目管理员允许、校对人员拒绝）。裁决选中的值由服务器作为一次 op 写回（修订加一、广播 `op_applied`），这样在线的各端当场改过来，离线的重连后也补得上。
+
+**做了什么**
+
+- `GET /conflicts[?drawing_id=&status=]` → `{"items":[…],"total":N}`，每项就是 `conflicts` 的一行。
+- `POST /conflicts/{id}/resolve`，载荷 `{resolution, resolved_by, value?}`（`value` 是契约的写法，A.1 写的 `resolved_value` 也收；`resolved_by` 也可以写成 `user_id`）。先按条目所在的图做「授权配置」的权限判定，被拒时照权限接口的样子返回，另加一个 `level` 键（与 `denied_level` 同值，契约 015 读的是 `level`）。没有这个条目 404 `CONFLICT_UNKNOWN`；已经裁决过 409 `CONFLICT_ALREADY_RESOLVED`，带 `ok:false`，条目与审计都不动；`resolution` 不是三者之一、人工改值没给值，400。
+- 裁决生效（`ops::resolve`）：选中的值由服务器写成一个 op——字段冲突是 `set_property` / `set_tag`，拓扑冲突是当初并列的那个操作本身——修订加一、进 `ops` 表、广播 `op_applied`（`op_id` 是 `resolve-<conflict_id>`）；审计记一行 `module='冲突裁决'`、`action='conflict_resolved'`、`user_id` 是裁决人，`change_text` 写「裁决 <id>：对象.字段 甲方 …，乙方 …，<resolution>，最终 …」；然后把条目标成 `已裁决`，人工改值的值进 `resolved_value` 列。
+
+**结果**
+
+| 断言 | 建议状态 | 证据（`E7\logs\`） |
+|---|---|---|
+| `VAL-CONF-010` | passed | `c03_resolution.result.txt`；`c03-010-request.json`、`c03-010-response.json`（200）；`c03-010-row.json`（已裁决 / 采用甲方 / u4）；语义读回 设计压力=1.6MPa；`ws-c03-s1.jsonl` 里的 `op_applied`（`resolve-…`） |
+| `VAL-CONF-011` | passed | `c03-011-*.json`；最终值 2.5MPa |
+| `VAL-CONF-012` | passed | `c03-012-*.json`；最终值 2.0MPa；`resolved_value=2.0MPa`（表里与响应里） |
+| `VAL-CONF-013` | passed | `c03-013-audit-u4.json`：三个条目各一行，`user_id=u4`、`object_ref=P-1001`，`change_text` 里 1.6MPa、2.5MPa 与各自的最终值都在；`c03-013-audit-http.json` |
+| `VAL-CONF-014` | passed | `c03-014-response.json`（409，`ok=false`，`CONFLICT_ALREADY_RESOLVED`）；行仍是 采用甲方 / u4；该条目的裁决审计行 1 → 1 |
+| `VAL-CONF-015` | passed | `c03-015-response.json`（403，`PERM_DENIED_ROLE`，`level=role`）；条目仍 `待裁决`、`resolution` 为 NULL |
+| `VAL-CONF-016` | passed | `c03-016-pending.json`（1 条，四个字段非空）、`c03-016-resolved.json`（3 条）、`c03-016-counts.json` |
+
+七条逐句成立。场景脚本 `E7\c03_resolution.py`，20 项检查全过（服务器带 `--tie-window-ms 1200`，并列条目是这样造出来的）；`c01`、`c02` 回归各 24、17 项全过；`ocs_collab_server` 129 + 12 条单测通过（新增 6 条在 `http.rs`：三种裁决各自写回、广播并留痕；重复裁决；非管理员；按图纸与状态检索；拓扑条目的裁决；读不懂的裁决），clippy 0 告警。
+
+`VAL-CONF-018`（审计日志改删返回 405）不在 M7 四项的 `fulfills` 里，M1 已经实现，`http.rs` 里有它的单测；这一轮没有另外取证。
+
+到这里 `VAL-CONF` 的 18 条里 M7 负责的 17 条都有了建议状态。剩下的一项 `cross-area-flows`（`VAL-CROSS-001`–`012`）没有开工，见 §14.7。

@@ -134,6 +134,10 @@ pub mod codes {
     /// The op was made against a revision the drawing has left, and it is of
     /// a kind the server cannot merge. Catch up and send it again.
     pub const STALE_BASE_REVISION: &str = "STALE_BASE_REVISION";
+    /// No conflict entry has that id.
+    pub const CONFLICT_UNKNOWN: &str = "CONFLICT_UNKNOWN";
+    /// The conflict entry was ruled on before; a ruling is made once.
+    pub const CONFLICT_ALREADY_RESOLVED: &str = "CONFLICT_ALREADY_RESOLVED";
     /// A field write that was behind: another session wrote the same field
     /// after the op's baseline, and that value stays (`architecture.md` §3.3
     /// step 2). Not to be sent again.
