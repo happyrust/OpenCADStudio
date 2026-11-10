@@ -22,7 +22,10 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{database, manifest, text_preview, DetailLine, Effect, NodeId, PidBackupBrowser, Row};
+use super::{
+    database, drawing_data, manifest, text_preview, DetailLine, Effect, NodeId, PidBackupBrowser,
+    Row,
+};
 use crate::io::pid_backup_browse::BackupIndex;
 
 /// The sections of the browser, in the order their rows and detail lines
@@ -31,6 +34,7 @@ pub(super) static SECTIONS: &[&dyn Section] = &[
     &manifest::ManifestSection,
     &text_preview::TextPreview,
     &database::DatabaseSection,
+    &drawing_data::DrawingDataSection,
 ];
 
 /// The sections a panel state works with: [`SECTIONS`], unless a test gave
