@@ -16,6 +16,14 @@
 //!
 //! The state lives on the application, not on a tab, so switching documents
 //! leaves the tree where the user left it.
+//!
+//! The three trees above are the panel's own. Every other kind of data a
+//! backup holds is a [`section`]: a module beside this one that hangs its
+//! rows under a row of the tree and states the details of its nodes.
+
+mod section;
+
+pub use section::{SectionData, SectionLoad};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -86,6 +94,9 @@ pub enum NodeId {
     RefDir(Vec<usize>),
     /// One file of the `Ref` tree, `(directory path, file)`.
     RefFile(Vec<usize>, usize),
+    /// One node of a branch a [`section`] contributes: the section's slot in
+    /// the registry, and the address the section gives the node.
+    Section(usize, Vec<usize>),
 }
 
 /// What the user did in the panel.
@@ -102,6 +113,14 @@ pub enum PidBackupMsg {
     Loaded(Result<Arc<BackupIndex>, String>),
     /// One drawing's items finished reading, or failed to.
     ItemsLoaded(usize, Result<Arc<DrawingItems>, String>),
+    /// What a section asked to have read about `node` arrived, or failed to.
+    /// `generation` is the panel's when the read began.
+    SectionLoaded {
+        generation: u64,
+        section: usize,
+        node: NodeId,
+        result: Result<SectionData, String>,
+    },
     /// The expand arrow of a node.
     Toggle(NodeId),
     /// A click on a row: select it.
@@ -132,6 +151,16 @@ pub enum Effect {
     Refresh(PathBuf),
     /// Ask the user for a backup source.
     PickSource,
+    /// Read what section `section` wants to know about `node`, off the UI
+    /// thread, and come back with [`PidBackupMsg::SectionLoaded`] carrying
+    /// the same `generation`.
+    LoadSection {
+        generation: u64,
+        section: usize,
+        node: NodeId,
+    },
+    /// Several of the above at once.
+    Batch(Vec<Effect>),
 }
 
 /// One row of the flattened tree.
@@ -167,6 +196,14 @@ pub struct PidBackupBrowser {
     pub items: HashMap<usize, ItemsState>,
     /// The search box's text.
     pub filter: String,
+    /// What the sections had read off the UI thread, by section slot and by
+    /// the node the data is about.
+    pub section_data: HashMap<(usize, NodeId), SectionLoad>,
+    /// Counts the backups the panel has let go of. A read carries the count
+    /// it began under, so one that outlives its backup is recognised.
+    pub generation: u64,
+    /// The sections this panel draws.
+    sections: section::Registry,
 }
 
 impl PidBackupBrowser {
@@ -184,6 +221,32 @@ impl PidBackupBrowser {
         self.selected = None;
         self.items.clear();
         self.filter.clear();
+        self.section_data.clear();
+        self.generation += 1;
+    }
+
+    /// Browse with the test section instead of the real ones.
+    #[cfg(test)]
+    pub(crate) fn use_fake_sections(&mut self) {
+        self.sections = section::Registry(section::fake::FAKE_SECTIONS);
+    }
+}
+
+/// [`section::Section::load`] of one section on a worker thread: what the
+/// application runs for [`Effect::LoadSection`]. The future owns what it
+/// needs of `state`, so it outlives the borrow.
+pub fn load_section_in_background(
+    state: &PidBackupBrowser,
+    section: usize,
+    node: NodeId,
+) -> impl std::future::Future<Output = Result<SectionData, String>> + Send + 'static {
+    let index = state.index().cloned();
+    let sections = state.sections;
+    async move {
+        let Some(index) = index else {
+            return Err(t!("No backup is open.").into_owned());
+        };
+        section::load_in_background(sections, index, section, node).await
     }
 }
 
@@ -198,7 +261,7 @@ pub fn visible_rows(state: &PidBackupBrowser) -> Vec<Row> {
     let Some(index) = state.index() else {
         return Vec::new();
     };
-    let filter = state.filter.trim().to_lowercase();
+    let filter = section::filter_of(state);
     let filtering = !filter.is_empty();
     let mut rows = Vec::new();
     rows.push(Row {
@@ -218,7 +281,7 @@ pub fn visible_rows(state: &PidBackupBrowser) -> Vec<Row> {
     if !filtering {
         push_ref(state, index, &mut rows);
     }
-    rows
+    section::splice(state, index, &filter, rows)
 }
 
 /// Apply `msg` to `state` and say what the application should do next.
@@ -255,12 +318,29 @@ pub fn update(state: &mut PidBackupBrowser, msg: PidBackupMsg) -> Effect {
             state.items.insert(drawing, ItemsState::Failed(error));
             Effect::None
         }
-        PidBackupMsg::Toggle(id) => toggle(state, id),
-        PidBackupMsg::Select(id) => {
-            state.selected = Some(id);
+        PidBackupMsg::SectionLoaded {
+            generation,
+            section,
+            node,
+            result,
+        } => {
+            section::loaded(state, generation, section, node, result);
             Effect::None
         }
-        PidBackupMsg::Activate(id) => activate(state, id),
+        // The tree's own answer first, then whatever a section now wants
+        // read about the node.
+        PidBackupMsg::Toggle(id) => {
+            let own = toggle(state, id.clone());
+            section::both(own, section::after(state, section::EventKind::Toggled, &id))
+        }
+        PidBackupMsg::Select(id) => {
+            state.selected = Some(id.clone());
+            section::after(state, section::EventKind::Selected, &id)
+        }
+        PidBackupMsg::Activate(id) => {
+            let own = activate(state, id.clone());
+            section::both(own, section::after(state, section::EventKind::Activated, &id))
+        }
         PidBackupMsg::Refresh => match &state.load {
             LoadState::Ready(index) => Effect::Refresh(index.source.clone()),
             LoadState::Loading(source) => Effect::Refresh(source.clone()),
@@ -1043,7 +1123,10 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
                 ));
             }
         }
+        // A section's node: the section states all of it, below.
+        NodeId::Section(..) => {}
     }
+    section::details(state, index, id, &mut lines);
     lines
 }
 
@@ -1230,7 +1313,7 @@ mod tests {
         })
     }
 
-    fn ready() -> PidBackupBrowser {
+    pub(super) fn ready() -> PidBackupBrowser {
         let mut state = PidBackupBrowser::default();
         assert_eq!(
             update(&mut state, PidBackupMsg::Loaded(Ok(index()))),

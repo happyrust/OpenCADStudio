@@ -278,3 +278,11 @@ set OCS_PID_BACKUP_AUDIT_LANG=zh-CN
 | `gui-plant-baseline` | 基线程序：图纸行没有箭头 |
 | `gui-backends` | 基线与合并后、dx12 与 vulkan 各自的窗口 |
 | `gui-close` | 执行过命令后关窗口弹出的「未保存的更改」 |
+
+## 6. 执行记录
+
+D1–D9 还没有拍板。第一批（2a）按 §4 的建议先走：D1 (a)、D2 (a)、D6 (a)、D8 (a)、D9 (a)；D3、D4、D7 不动，W11、W15 不做。每项一个提交，提交号在这一批收尾时补进本表。
+
+| 项 | 提交 | 做了什么 | 清点表的变化 |
+|---|---|---|---|
+| W0 | 「P&ID 备份面板：子树扩展点（section）」 | `pid_backup_browser/section.rs`：一支子树一个 `Section`（挂在哪一行下面、自己的行、节点详情与给别的节点追加的详情、要在后台读的数据），`NodeId::Section(槽位, 路径)`；`visible_rows` / `detail_lines` / `update` 各自在末尾转给注册表；后台读取走 `Effect::LoadSection` → `PidBackupMsg::SectionLoaded`，带代数，换了备份之后迟到的结果丢弃。注册表此时是空的，面板没有可见变化。 | 无 |

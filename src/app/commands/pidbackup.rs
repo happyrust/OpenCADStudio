@@ -211,6 +211,15 @@ impl OpenCADStudio {
             PidBackupMsg::Loaded(Ok(_)) => (true, None),
             PidBackupMsg::Loaded(Err(error))
             | PidBackupMsg::ItemsLoaded(_, Err(error)) => (false, Some(error.clone())),
+            // A read that outlived its backup is dropped by the panel, so
+            // its failure is nobody's news either.
+            PidBackupMsg::SectionLoaded {
+                generation,
+                result: Err(error),
+                ..
+            } if *generation == self.pid_backup_browser.generation => {
+                (false, Some(error.clone()))
+            }
             _ => (false, None),
         };
         let effect = pid_backup_browser::update(&mut self.pid_backup_browser, msg);
@@ -256,6 +265,33 @@ impl OpenCADStudio {
                 self.load_pid_backup(source, None)
             }
             Effect::PickSource => self.pick_backup_source(false),
+            // What a section wants read: off the UI thread, as the items
+            // are, and back to the panel under the generation it left with.
+            Effect::LoadSection {
+                generation,
+                section,
+                node,
+            } => Task::perform(
+                pid_backup_browser::load_section_in_background(
+                    &self.pid_backup_browser,
+                    section,
+                    node.clone(),
+                ),
+                move |result| {
+                    Message::PidBackup(PidBackupMsg::SectionLoaded {
+                        generation,
+                        section,
+                        node: node.clone(),
+                        result,
+                    })
+                },
+            ),
+            Effect::Batch(effects) => Task::batch(
+                effects
+                    .into_iter()
+                    .map(|effect| self.run_pid_backup_effect(effect))
+                    .collect::<Vec<_>>(),
+            ),
         }
     }
 
@@ -522,6 +558,65 @@ mod tests {
             LoadState::Ready(_)
         ));
         assert_eq!(row_labels(&app).len(), 4);
+    }
+
+    /// An app whose panel browses [`index`] with the test section, which
+    /// hangs two nodes under every backup file: one whose read succeeds and
+    /// one whose read fails.
+    fn app_with_fake_section() -> OpenCADStudio {
+        let mut app = app();
+        let _ = app.on_pid_backup(PidBackupMsg::Loaded(Ok(index())));
+        app.pid_backup_browser.use_fake_sections();
+        app
+    }
+
+    #[test]
+    fn what_a_section_wants_read_is_read_off_the_ui_thread_and_lands_in_the_panel() {
+        let mut app = app_with_fake_section();
+        let node = NodeId::Section(0, vec![0, 0]);
+        let history = app.command_line.history.len();
+        let task = app.on_pid_backup(PidBackupMsg::Select(node.clone()));
+        app.drive_headless_task(task)
+            .expect("a section's read needs no window");
+        let details = pid_backup_browser::detail_rows(&app.pid_backup_browser, &node);
+        assert!(
+            details
+                .iter()
+                .any(|(key, value)| key == "fake data" && value.ends_with("file 0 of 1")),
+            "{details:?}"
+        );
+        // A read that went well is the panel's news alone.
+        assert_eq!(app.command_line.history.len(), history);
+    }
+
+    #[test]
+    fn a_section_read_that_fails_is_reported_as_an_error() {
+        let mut app = app_with_fake_section();
+        let node = NodeId::Section(0, vec![0, 1]);
+        let task = app.on_pid_backup(PidBackupMsg::Select(node.clone()));
+        app.drive_headless_task(task)
+            .expect("a section's read needs no window");
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Error);
+        assert!(last.text.contains("the fake read failed"), "{}", last.text);
+        // The node says so too, and the backup stays open.
+        assert!(pid_backup_browser::detail_rows(&app.pid_backup_browser, &node)
+            .iter()
+            .any(|(key, _)| key == "the fake read failed"));
+        assert!(matches!(app.pid_backup_browser.load, LoadState::Ready(_)));
+    }
+
+    #[test]
+    fn a_section_read_for_a_backup_that_was_closed_is_not_reported() {
+        let mut app = app_with_fake_section();
+        let history = app.command_line.history.len();
+        let _ = app.on_pid_backup(PidBackupMsg::SectionLoaded {
+            generation: app.pid_backup_browser.generation + 1,
+            section: 0,
+            node: NodeId::Section(0, vec![0, 1]),
+            result: Err("too late".to_string()),
+        });
+        assert_eq!(app.command_line.history.len(), history);
     }
 
     #[test]

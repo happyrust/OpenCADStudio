@@ -9051,6 +9051,9 @@ pid-backup =
     .cannot-start-indexing = cannot start indexing the backup: __ocs_fmt_0__
     .drawing-read-stopped = the drawing read stopped before it finished
     .index-stopped = the backup index stopped before it finished
+    .nothing-to-read = this node has nothing to read
+    .cannot-start-section = cannot start reading the backup data: __ocs_fmt_0__
+    .section-read-stopped = the backup data read stopped before it finished
 
 block-flip-frame-feedback =
     .unavailable = Układ parametru bloku jest niedostępny.

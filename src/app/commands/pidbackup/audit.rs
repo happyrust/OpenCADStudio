@@ -17,7 +17,9 @@
 //!   a PNG of the panel in each state the walk passes through;
 //! - `OCS_PID_BACKUP_AUDIT_LANG=zh-CN` draws the panel in Chinese. The UI
 //!   language is one process-wide loader, so only set it when this test runs
-//!   alone.
+//!   alone;
+//! - `OCS_PID_BACKUP_AUDIT_SKIP_IMPORT` (any value) leaves out the import of
+//!   every drawing, the slow half that a change to the panel does not touch.
 //!
 //! A folder source is restored into the cache under the temp folder, which
 //! is where the 100 MB of a plant's drawings go: point `TEMP` at a drive
@@ -56,6 +58,9 @@ impl Audit {
             return;
         };
         let _guard = crate::headless_ui_lock();
+        // The application draws its text in the desktop's interface font; so
+        // does the picture, or its line breaks would not be the window's.
+        crate::sys::ui_font::apply(crate::sys::ui_font::detect().as_ref());
         let mut ui = iced_test::simulator::Simulator::with_size(
             iced::Settings {
                 fonts: vec![std::borrow::Cow::Borrowed(iced_aw::ICED_AW_FONT_BYTES)],
@@ -527,8 +532,19 @@ fn a_real_backup_is_walked_node_by_node() {
     let mut slowest_import = (Duration::ZERO, String::new());
     let mut entities = 0;
     let mut undrawn = 0;
-    audit.line("== import of every drawing (name | entities | decoded | not drawn | sheet layers | time) ==");
+    // The slow half of the walk (a plant's drawings take half a minute), and
+    // the one a change to the panel does not touch: a run that is only
+    // after the panel can leave it out.
+    let import = std::env::var_os("OCS_PID_BACKUP_AUDIT_SKIP_IMPORT").is_none();
+    audit.line(if import {
+        "== import of every drawing (name | entities | decoded | not drawn | sheet layers | time) =="
+    } else {
+        "== import of every drawing: skipped (OCS_PID_BACKUP_AUDIT_SKIP_IMPORT) =="
+    });
     for drawing in &index.drawings {
+        if !import {
+            break;
+        }
         let Some(path) = &drawing.pid_path else {
             continue;
         };

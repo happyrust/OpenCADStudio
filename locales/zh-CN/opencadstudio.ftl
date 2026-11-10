@@ -9022,6 +9022,9 @@ pid-backup =
     .cannot-start-indexing = 无法开始建立备份索引：__ocs_fmt_0__
     .drawing-read-stopped = 图纸读取在完成前停止
     .index-stopped = 备份索引在完成前停止
+    .nothing-to-read = 该节点没有可读取的数据
+    .cannot-start-section = 无法开始读取备份数据：__ocs_fmt_0__
+    .section-read-stopped = 备份数据读取在完成前停止
 
 block-flip-frame-feedback =
     .unavailable = 块参数坐标框不可用。

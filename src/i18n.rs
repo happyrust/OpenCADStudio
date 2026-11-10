@@ -1219,6 +1219,9 @@ mod tests {
         "cannot-start-indexing",
         "drawing-read-stopped",
         "index-stopped",
+        "nothing-to-read",
+        "cannot-start-section",
+        "section-read-stopped",
     ];
 
     /// The panel's own labels, the ones the dock title and the command share.
