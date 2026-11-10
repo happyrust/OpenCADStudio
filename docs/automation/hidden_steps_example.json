@@ -1,0 +1,16 @@
+[
+  ["say", "editor 0 draws a line, editor 1 a circle; each keeps a picture of its own window"],
+  ["state", "before any command"],
+  [0, "cmd", "LINE 0,0 100,50"],
+  [1, "cmd", "CIRCLE 50,25 20"],
+  [0, "cmd", "ZOOM E"],
+  [1, "cmd", "ZOOM E"],
+  ["wait", 1.0],
+  [0, "capture", "line"],
+  [0, "capture", "line-viewport", "viewport"],
+  [1, "capture", "circle"],
+  [0, "state", "after the commands"],
+  [1, "state", "after the commands"],
+  [0, "history", 4],
+  [1, "history", 4]
+]
