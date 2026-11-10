@@ -675,3 +675,54 @@ mission 的门禁（在 `8cd274a2a` 上；`clippy -p OpenCADStudio` 与 pytest �
 - §6.2 里 mission 记录在案的问题没有复核，除了「`capture` 默认不等帧」「`scope:"window"` 的 `screen_bounds` 是物理像素」两条，实际情况见 §13.4 之 7。
 
 M7 开工前：§13.4 的 2、4、5、6 最好先有结论，它们都落在 M7 要动的代码上（`hello`、`readonly_downgrade`、`claim_denied`）；`VAL-CROSS-004`（没有编辑权限的角色连入即降级）会用到「后加入的会话降级」，它和 `VAL-CROSS-011` 都会用到总闸；端到端验证可以直接用 `E\m6h.py`，或者仓库里另一条线提交的 `docs/automation/hidden_desktop.py`。
+
+## 14. 执行记录：2026-11-11 第三轮（零星失败的根因、补跑、M7 开工）
+
+本节的路径缩写：`B` = `D:\work\plant-code\cad\ocs-mission-backup-20261110\logs`，`E7` = `D:\scratch\m7-validation`（本轮的新证据；`D:\scratch\m6-validation` 里上一轮的证据没有动）。进度仍然不写回 mission 的文件，断言状态都是「建议状态」。
+
+### 14.5 M7：每项开工前列出的断言与取证办法
+
+#### 14.5.1 `conflict-field-merge`（`VAL-CONF-001`–`005`）
+
+mission 的说明（`features.json`）：不同字段并发修改自动合并且无冲突条目；同字段并发修改按 `base_revision` 判定落后方让位且无冲突条目；被覆盖的原值写入审计；`base_revision` 相同且值不同时生成冲突条目。
+
+开工前服务器的行为：`base_revision` 必须等于当前修订，否则一律 `STALE_BASE_REVISION`（`ws.rs` 的 `op` → `Store::commit_op`）；服务器不记任何对象的字段值，`conflicts` 表与 `Store::insert_conflict` / `list_conflicts` / `resolve_conflict` 在 M1 已经建好但没有调用方，`ocs_collab::conflict` 里有一个 M1 留下的纯函数骨架。
+
+| 断言 | 要点 | 准备怎样取证 |
+|---|---|---|
+| `VAL-CONF-001` | s1 改 `P-1001.设计压力` 得修订 1；s2 仍带基线 0 改同一对象的 `公称直径`，收到 `op_applied`（修订 2），没有 `conflict`；`conflicts` 0 行；两个字段都读得回 | 两个 WS 会话的帧序列；`select count(*) from conflicts`；服务器的语义读回 `GET /drawing/PID-1101/objects`（契约写的是 GUI 的 xdata 读回，这条断言全程不起 GUI，读服务器记下的字段值） |
+| `VAL-CONF-002` | 同上，但 s2 改的是同一字段：s2 收到表示基线落后的 `error`，`conflicts` 0 行，字段最终值是先到的 `1.6MPa` | s2 的出站 op 与入站帧；`conflicts` 计数；语义读回 |
+| `VAL-CONF-003` | 上一条在 `audit_log` 留一行：`object_ref='P-1001'`、`action` 表示属性覆盖、`user_id='u2'`、`change_text` 同时有 `2.5MPa` 与 `1.6MPa`，九个字段都非空 | `GET /audit?tag=P-1001`；`select * from audit_log where object_ref='P-1001' order by seq desc limit 1` |
+| `VAL-CONF-004` | 两个会话基线相同、同一字段、值不同、服务器判为并列：`conflicts` 新增 1 行（`value_a` 是先到的，`value_b` 是后到的，`base_revision=0`，`status='待裁决'`，`resolution` 与 `resolved_by` 为 NULL），双方各收到 `conflict`，`conflict_id` 与表中一致 | `select * from conflicts`；双方的 `conflict` 帧 |
+| `VAL-CONF-005` | s1 在修订 3 写了 `公称直径=DN50`；s2 带基线 1 写 `DN80`：让位，`conflicts` 行数不增，最终值 `DN50`，s2 收到覆盖通知 | `conflicts` 计数前后；语义读回；s2 的入站帧 |
+
+单元测试先行（`ocs_collab` 的判定纯函数、`ocs_collab_server` 的 `ws` 处理与库表），再用 Python 起真服务器、两个 WS 会话、直接读 SQLite 走一遍契约的场景（契约写的工具是 Node 26 的 WebSocket；用 `E7` 里的标准库 WS 客户端，帧原文照样落盘）。这一项不起 GUI，不涉及指针与焦点。
+
+**做了什么**
+
+- `ocs_collab::conflict` 重写：`DrawingModel` 是服务器对一张图的全部所知——每个对象（按现在的位号）每个字段最后的值、生效的修订、是谁的会话写的——加上改位号的历史。`judge` 给出前两段的结论：基线之后没有别的会话写过这个字段，合并（`Apply`）；写过而且值不同，让位（`Yield`）。`collides` 是第三段的条件。M1 留下的骨架把「值不同且基线等于当前修订」一律判成冲突，那其实是最普通的改值，已经换掉，它的 12 条单测换成按契约写的 14 条。
+- 服务器新增 `ops.rs`，`ws::op` 交给它：判定、提交、记账在一把锁里同步做完。库里新增 `ops` 表（每个生效的 op 一行，键是它产生的修订），重启后靠重放它重建 `DrawingModel`；`Store::apply_op` 把「修订加一、会话基线、审计行、ops 行」放在一个事务里。
+- 让位：给提交者回 `error`，`code` 是新增的 `OP_SUPERSEDED`，`message` 写明基线、生效的修订、谁先写入、两个值；`audit_log` 记一行 `action='property_superseded'`（改位号是 `tag_superseded`），`change_text` 里两个值都在；修订不动，不生成冲突条目。
+- 并列：服务器带 `--tie-window-ms N` 启动时，基线等于当前修订的 op 先暂存 N 毫秒再提交；这段时间里别的会话带同一基线写同一字段且值不同，就是并列——两个 op 都不生效，`conflicts` 表一行（`value_a` 是先到的），全房间广播 `conflict`，双方的提交各记一行审计（`action='conflict'`）。窗口到了没人并列，就正常提交。默认 N=0：不暂存，谁先到谁生效，后到的按第二段让位。
+- `GET /drawing/{id}/objects[?object_ref=位号]`：服务器记下的对象与字段值，给没有图纸的客户端读回用。
+- 一个 op 里批着走的后续变更（客户端「一步一个 op」）现在逐处判定：能合并的生效，落后的让位，修订只加一次，`op_applied.changes` 是生效的那几处的平铺列表，每一处各记一行审计。
+- 改过位号之后，没看到改名的会话仍用旧位号提交：服务器顺着改名历史找到对象，广播时把 `object_ref` 换成现在的位号（§14.4 第三问在服务器这一侧的回答）。
+
+**定下来的事**（契约没有写明或者写得对不上的，见 §14.6）
+
+- 并列怎样才算。契约 002 与 004 的线上输入一模一样（两个会话都带基线 0、同一字段、值不同），一条要「落后方让位、无冲突条目」，一条要「生成冲突条目」，区别只在 004 那句「且服务器配置为无法用基线判定（例如两者 op 在同一 base_revision 窗口内、服务器判为并列）」。`architecture.md` A.4 给的机械条件是「两个 op 的 `base_revision` 均等于服务器当前 `revision`」——先到的一生效，后到的就不再等于了，所以只有先到的还没生效时才可能成立。于是做成一个可配置的窗口，默认关。
+- 会话不会落后于自己：同一个会话接连两步改同一字段，第二步带的基线比第一步生效的修订旧，但它是更新的意图，照常生效。这也顺带解决了 §13.10 里「两步编辑之间不等回执就发，第二个 op 被 `STALE_BASE_REVISION` 拒绝」——对改属性、改位号这两类 op 不再发生，客户端不用重发。
+- 三段判定只管 `set_property` 与 `set_tag`。别的 op（`insert_symbol`、拓扑类、未知类型）仍按老规矩：基线必须等于当前修订，否则 `STALE_BASE_REVISION`。它们的判定是下一项的事。
+- 服务器按位号记对象。两个对象同一位号在它那里是一个条目。
+
+**结果**
+
+| 断言 | 建议状态 | 证据（`E7\logs\`） |
+|---|---|---|
+| `VAL-CONF-001` | passed | `c01_field_merge.result.txt`；`ws-c01a-s1.jsonl`、`ws-c01a-s2.jsonl`（s2 的 `op_applied` revision=2，没有 `conflict`）；`c01-001-objects.json`（设计压力=1.6MPa，公称直径=DN50） |
+| `VAL-CONF-002` | passed | `ws-c01b-s2.jsonl`（`error` `OP_SUPERSEDED`，「基线 0 落后…」）；`c01-002-objects.json`（1.6MPa）；`conflicts` 0 行 |
+| `VAL-CONF-003` | passed | `c01-003-audit-row.json`、`c01-003-audit-http.json`：`object_ref=P-1001`、`action=property_superseded`、`user_id=u2`，`change_text`=「set_property P-1001.设计压力: 2.5MPa 让位于 1.6MPa（基线 0 落后于修订 1，u1 先写入）」，九个字段非空 |
+| `VAL-CONF-004` | passed（服务器带 `--tie-window-ms 1500`） | `c01-004-conflicts.json`（各列与契约逐项相同）；`ws-c01c-s1.jsonl`、`ws-c01c-s2.jsonl`（双方的 `conflict`，`conflict_id` 与表中一致）；窗口过后两个 op 都没有 `op_applied`，修订仍是 0 |
+| `VAL-CONF-005` | passed | `ws-c01c-s2.jsonl`（`error` `OP_SUPERSEDED`）；`conflicts` 前后都是 1 行；`c01-005-objects.json`（DN50）；服务器日志 `c01-server-c-log.txt` |
+
+按字面不成立的：001 的证据一栏写的是 GUI 的 `GET /api/v1/entities/<handle>/xdata`，而这条断言全程只有 WS 会话、没有 GUI，字段值是从服务器的 `GET /drawing/PID-1101/objects` 读回的。其余四条逐句成立。场景脚本 `E7\c01_field_merge.py`，24 项检查全过（`ocs_collab` 71 条、`ocs_collab_server` 118 + 12 条单测通过，两个 crate 的 clippy 0 告警）。

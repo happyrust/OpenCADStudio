@@ -5,12 +5,14 @@
 
 pub mod bus;
 pub mod http;
+pub mod ops;
 pub mod perm;
 pub mod store;
 pub mod ws;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ocs_collab::{OccupancyTable, ServerMessage, SessionConfig, SessionRegistry};
 
@@ -41,6 +43,16 @@ pub struct AppState {
     /// Per-session unicast channel, used for messages that must not reach the
     /// rest of the drawing room (targeted errors).
     pub direct: Arc<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<ServerMessage>>>>,
+    /// What the server knows of each drawing — the value every field was last
+    /// given, rebuilt from the op log — and the ops it is holding inside the
+    /// tie window. One std mutex: an op is judged, committed and recorded
+    /// under it with no await in between.
+    pub drawings: Arc<Mutex<HashMap<String, ops::DrawingOps>>>,
+    /// How long an op made against the current revision is held before it
+    /// commits, so that another made against the same revision can be seen
+    /// to tie with it (`--tie-window-ms`). Zero — the default — holds
+    /// nothing: every op commits on arrival and no two can tie.
+    pub tie_window: Duration,
     pub version: &'static str,
 }
 
@@ -61,6 +73,8 @@ impl AppState {
             occupancy: Arc::new(tokio::sync::Mutex::new(OccupancyTable::new())),
             revisions: Arc::new(Mutex::new(HashMap::new())),
             direct: Arc::new(Mutex::new(HashMap::new())),
+            drawings: Arc::new(Mutex::new(HashMap::new())),
+            tie_window: Duration::ZERO,
             version: env!("CARGO_PKG_VERSION"),
         }
     }

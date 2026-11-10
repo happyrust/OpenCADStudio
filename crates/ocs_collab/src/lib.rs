@@ -12,9 +12,7 @@ pub mod permission;
 pub mod protocol;
 pub mod session;
 
-pub use conflict::{
-    commit, resolve_change, AppliedChange, ChangeAttempt, ConflictOutcome, ObjectState,
-};
+pub use conflict::{collides, Change, DrawingModel, FieldState, ObjectState, Verdict};
 pub use ids::{new_claim_id, new_conflict_id, new_session_id, now_unix};
 pub use occupancy::{ClaimOutcome, Occupancy, OccupancyTable, ReleaseOutcome};
 pub use permission::{

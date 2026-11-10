@@ -19,9 +19,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ocs_collab::SessionConfig;
-use ocs_collab_server::http;
 use ocs_collab_server::store::Store;
 use ocs_collab_server::AppState;
+use ocs_collab_server::{http, ops};
 
 /// Default listen port, matching `services.yaml`.
 const DEFAULT_PORT: u16 = 3240;
@@ -35,6 +35,10 @@ struct Cli {
     heartbeat_timeout: i64,
     claim_ttl: i64,
     seed: Option<String>,
+    /// Milliseconds an op made against the current revision is held so that
+    /// another made against the same revision can tie with it. 0 holds
+    /// nothing.
+    tie_window_ms: u64,
 }
 
 fn default_db_path() -> String {
@@ -50,7 +54,8 @@ fn default_db_path() -> String {
 
 fn usage() -> &'static str {
     "ocs_collab_server --port <port> --db <path> \
-     [--heartbeat-timeout <seconds>] [--claim-ttl <seconds>] [--seed <json>]"
+     [--heartbeat-timeout <seconds>] [--claim-ttl <seconds>] [--seed <json>] \
+     [--tie-window-ms <milliseconds>]"
 }
 
 fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
@@ -60,6 +65,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
         heartbeat_timeout: DEFAULT_HEARTBEAT_TIMEOUT,
         claim_ttl: DEFAULT_CLAIM_TTL,
         seed: None,
+        tie_window_ms: 0,
     };
 
     let mut iter = args.into_iter();
@@ -95,6 +101,12 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 }
             }
             "--seed" => cli.seed = Some(value("--seed")?),
+            "--tie-window-ms" => {
+                let raw = value("--tie-window-ms")?;
+                cli.tie_window_ms = raw
+                    .parse()
+                    .map_err(|_| format!("--tie-window-ms 需要非负整数毫秒数，收到 {raw}"))?;
+            }
             "--help" | "-h" => return Err(usage().to_owned()),
             other => return Err(format!("未知参数 {other}；用法：{}", usage())),
         }
@@ -162,14 +174,30 @@ async fn main() -> ExitCode {
         }
     };
 
-    let state = Arc::new(build_state(&cli));
+    let mut state = build_state(&cli);
+    state.tie_window = std::time::Duration::from_millis(cli.tie_window_ms);
+    let state = Arc::new(state);
+    // With a tie window, ops made against the current revision wait it out
+    // before they commit; this is what commits them.
+    if !state.tie_window.is_zero() {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(ops::flush_interval(state.tie_window));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                ops::flush_and_deliver(&state).await;
+            }
+        });
+    }
     let app = http::router(state);
 
     println!(
-        "[ocs_collab_server] v{} 监听 http://{addr}（heartbeat_timeout={}s, claim_ttl={}s）",
+        "[ocs_collab_server] v{} 监听 http://{addr}（heartbeat_timeout={}s, claim_ttl={}s, tie_window={}ms）",
         env!("CARGO_PKG_VERSION"),
         cli.heartbeat_timeout,
-        cli.claim_ttl
+        cli.claim_ttl,
+        cli.tie_window_ms
     );
 
     let shutdown = async {
@@ -254,6 +282,17 @@ mod tests {
         assert!(parse_args(args(&["--port", "abc"])).is_err());
     }
 
+    // No window unless one is asked for: every op then commits on arrival,
+    // as it did before there was a window.
+    #[test]
+    fn the_tie_window_is_off_unless_asked_for() {
+        assert_eq!(parse_args(args(&[])).expect("no args").tie_window_ms, 0);
+        let cli = parse_args(args(&["--tie-window-ms", "250"])).expect("flag parses");
+        assert_eq!(cli.tie_window_ms, 250);
+        assert!(parse_args(args(&["--tie-window-ms", "-1"])).is_err());
+        assert!(parse_args(args(&["--tie-window-ms", "soon"])).is_err());
+    }
+
     #[test]
     fn seed_is_optional_and_captured_when_present() {
         let cli = parse_args(args(&["--seed", "D:\\scratch\\seed.json"])).expect("flags parse");
@@ -281,6 +320,7 @@ mod tests {
             heartbeat_timeout: 90,
             claim_ttl: 300,
             seed: None,
+            tie_window_ms: 0,
         };
         let state = build_state(&cli);
         assert!(state.store.is_none());
@@ -298,6 +338,7 @@ mod tests {
             heartbeat_timeout: 5,
             claim_ttl: 5,
             seed: None,
+            tie_window_ms: 0,
         };
         let state = build_state(&cli);
         assert!(state.db_healthy());

@@ -39,6 +39,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/audit/{seq}", any(audit_immutable))
         .route("/permission/check", post(permission_check))
         .route("/drawing/{id}/state", post(drawing_state))
+        .route("/drawing/{id}/objects", get(drawing_objects))
         .with_state(state)
 }
 
@@ -486,6 +487,37 @@ async fn audit_list(
         Ok(page) => (StatusCode::OK, Json(page)).into_response(),
         Err(err) => error_response(StatusCode::INTERNAL_SERVER_ERROR, codes::INVALID_MESSAGE, &err),
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct ObjectsParams {
+    object_ref: Option<String>,
+}
+
+/// `GET /drawing/{id}/objects[?object_ref=TAG]` → 200
+/// `{"drawing_id","revision","items":[{"object_ref","fields":{...}}],"total"}`.
+///
+/// The server's own picture of the drawing: every object an op has written,
+/// by the tag it goes by now, with the value each field holds, the revision
+/// that put it there and whose op it was. It is what a client with no drawing
+/// of its own reads a field back from (`VAL-CONF-001`).
+async fn drawing_objects(
+    State(state): State<Arc<AppState>>,
+    Path(drawing_id): Path<String>,
+    Query(params): Query<ObjectsParams>,
+) -> Response {
+    let (revision, items) = crate::ops::objects(&state, &drawing_id, params.object_ref.as_deref());
+    let total = items.len();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "drawing_id": drawing_id,
+            "revision": revision,
+            "items": items,
+            "total": total,
+        })),
+    )
+        .into_response()
 }
 
 /// The audit log has no mutation path at all (invariant 7).

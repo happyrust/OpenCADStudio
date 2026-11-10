@@ -127,7 +127,13 @@ pub mod codes {
     pub const PERM_INVALID_STATE: &str = "PERM_INVALID_STATE";
     pub const OBJECT_REFERENCED: &str = "OBJECT_REFERENCED";
     pub const INVALID_STATE_TRANSITION: &str = "INVALID_STATE_TRANSITION";
+    /// The op was made against a revision the drawing has left, and it is of
+    /// a kind the server cannot merge. Catch up and send it again.
     pub const STALE_BASE_REVISION: &str = "STALE_BASE_REVISION";
+    /// A field write that was behind: another session wrote the same field
+    /// after the op's baseline, and that value stays (`architecture.md` §3.3
+    /// step 2). Not to be sent again.
+    pub const OP_SUPERSEDED: &str = "OP_SUPERSEDED";
 }
 
 /// Reasons carried by [`ServerMessage::ClaimReleased`].

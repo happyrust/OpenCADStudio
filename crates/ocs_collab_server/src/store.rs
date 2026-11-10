@@ -121,6 +121,32 @@ pub enum OpCommit {
     Stale { current: i64 },
 }
 
+/// One applied op as it goes into the `ops` log. The revision is assigned by
+/// the commit.
+#[derive(Debug, Clone)]
+pub struct OpRecord {
+    pub op_id: String,
+    pub session_id: String,
+    pub user_id: String,
+    /// The baseline the client made it against.
+    pub base_revision: i64,
+    pub at: i64,
+    /// The changes that took effect, as a JSON array — the same objects
+    /// `op_applied` carried in `changes`.
+    pub changes: String,
+}
+
+/// One row of the `ops` log, read back for replay.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredOp {
+    pub revision: i64,
+    pub op_id: String,
+    pub session_id: String,
+    pub user_id: String,
+    pub base_revision: i64,
+    pub changes: Vec<serde_json::Value>,
+}
+
 /// Filters accepted by `GET /audit`.
 #[derive(Debug, Clone, Default)]
 pub struct AuditQuery {
@@ -435,6 +461,28 @@ impl Store {
         base_revision: i64,
         row: &NewAuditRow,
     ) -> Result<OpCommit, String> {
+        self.apply_op(drawing_id, base_revision, std::slice::from_ref(row), None)
+    }
+
+    /// [`Self::commit_op`] for an op that may carry several changes and whose
+    /// applied changes are to be kept for replay: `expected` is the revision
+    /// the caller judged the op against, every row in `rows` goes into the
+    /// audit log, and `op`, when given, into the `ops` log under the new
+    /// revision — all in the one transaction, or none of it.
+    ///
+    /// `expected` is not the client's `base_revision` any more: a change made
+    /// against an older baseline can still merge (`architecture.md` §3.3), and
+    /// whether it does is decided before this is called. The check stays so
+    /// that a commit can never land on a revision other than the one it was
+    /// judged against.
+    pub fn apply_op(
+        &self,
+        drawing_id: &str,
+        expected: i64,
+        rows: &[NewAuditRow],
+        op: Option<&OpRecord>,
+    ) -> Result<OpCommit, String> {
+        let base_revision = expected;
         let conn = self.lock()?;
 
         // A drawing that is not registered yet counts as revision 0, the same
@@ -481,25 +529,48 @@ impl Store {
             )
             .map_err(|err| format!("move session baselines of {drawing_id}: {err}"))?;
 
-            conn.execute(
-                "INSERT INTO audit_log
-                   (module, action, at, object_ref, user_id, company, ip, workspace, change_text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    row.module,
-                    row.action,
-                    row.at,
-                    row.object_ref,
-                    row.user_id,
-                    row.company,
-                    row.ip,
-                    row.workspace,
-                    row.change_text
-                ],
-            )
-            .map_err(|err| format!("append audit for {drawing_id}: {err}"))?;
+            let mut seq = 0;
+            for row in rows {
+                conn.execute(
+                    "INSERT INTO audit_log
+                       (module, action, at, object_ref, user_id, company, ip, workspace, change_text)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        row.module,
+                        row.action,
+                        row.at,
+                        row.object_ref,
+                        row.user_id,
+                        row.company,
+                        row.ip,
+                        row.workspace,
+                        row.change_text
+                    ],
+                )
+                .map_err(|err| format!("append audit for {drawing_id}: {err}"))?;
+                seq = conn.last_insert_rowid();
+            }
 
-            Ok(conn.last_insert_rowid())
+            if let Some(op) = op {
+                conn.execute(
+                    "INSERT INTO ops
+                       (drawing_id, revision, op_id, session_id, user_id, base_revision, at, changes)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        drawing_id,
+                        next,
+                        op.op_id,
+                        op.session_id,
+                        op.user_id,
+                        op.base_revision,
+                        op.at,
+                        op.changes
+                    ],
+                )
+                .map_err(|err| format!("log op for {drawing_id}: {err}"))?;
+            }
+
+            Ok(seq)
         })();
 
         match written {
@@ -518,6 +589,35 @@ impl Store {
                 Err(err)
             }
         }
+    }
+
+    /// Every op applied to `drawing_id`, oldest first: what the server
+    /// rebuilds its picture of the drawing from after a restart, and what a
+    /// session that was away is sent to catch up.
+    pub fn load_ops(&self, drawing_id: &str, after: i64) -> Result<Vec<StoredOp>, String> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT revision, op_id, session_id, user_id, base_revision, changes
+                 FROM ops WHERE drawing_id = ?1 AND revision > ?2 ORDER BY revision",
+            )
+            .map_err(|err| format!("prepare ops of {drawing_id}: {err}"))?;
+        let rows = stmt
+            .query_map(params![drawing_id, after], |row| {
+                let changes: String = row.get(5)?;
+                Ok(StoredOp {
+                    revision: row.get(0)?,
+                    op_id: row.get(1)?,
+                    session_id: row.get(2)?,
+                    user_id: row.get(3)?,
+                    base_revision: row.get(4)?,
+                    changes: serde_json::from_str(&changes).unwrap_or_default(),
+                })
+            })
+            .map_err(|err| format!("query ops of {drawing_id}: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read ops of {drawing_id}: {err}"))?;
+        Ok(rows)
     }
 
     /// `(node_id, parent_id)` for every PBS node, in storage order.
@@ -1065,6 +1165,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ip          TEXT NOT NULL,
   workspace   TEXT NOT NULL,
   change_text TEXT NOT NULL
+);
+
+-- Every applied op, keyed by the revision it produced. The server holds no
+-- drawing; this log is what it knows of one, and replaying it is how that
+-- knowledge survives a restart.
+CREATE TABLE IF NOT EXISTS ops (
+  drawing_id    TEXT NOT NULL,
+  revision      INTEGER NOT NULL,
+  op_id         TEXT NOT NULL,
+  session_id    TEXT NOT NULL,
+  user_id       TEXT NOT NULL,
+  base_revision INTEGER NOT NULL,
+  at            INTEGER NOT NULL,
+  changes       TEXT NOT NULL,
+  PRIMARY KEY (drawing_id, revision)
 );
 
 CREATE INDEX IF NOT EXISTS audit_by_tag ON audit_log(object_ref, at DESC);

@@ -34,7 +34,7 @@ use serde_json::Value;
 use tokio::time::{interval, timeout, MissedTickBehavior};
 
 use crate::bus::Subscription;
-use crate::store::{ClaimRow, NewAuditRow, OpCommit, SessionRow, Store};
+use crate::store::{ClaimRow, NewAuditRow, SessionRow, Store};
 use crate::AppState;
 
 /// How long a socket may sit before sending `hello`. Keeps dead TCP peers
@@ -847,90 +847,31 @@ async fn op(
         return vec![Reaction::Send(error_message(&code, "会话已失效，无法提交操作"))];
     }
 
-    let revision = match &state.store {
-        Some(store) => {
-            let row = op_audit_row(store, session, &payload, &op_id, peer_addr, now);
-            match store.commit_op(&session.drawing_id, base_revision, &row) {
-                Ok(OpCommit::Applied { revision, .. }) => revision,
-                Ok(OpCommit::Stale { current }) => {
-                    log_stale_op(session, &op_id, base_revision, current, now);
-                    return vec![Reaction::Send(error_message(
-                        codes::STALE_BASE_REVISION,
-                        &format!("图面当前修订为 {current}，操作基于 {base_revision}"),
-                    ))];
-                }
-                Err(err) => {
-                    // `commit_op` rolls the revision back when the audit insert
-                    // fails, so a failed commit leaves nothing to undo here.
-                    eprintln!("[ocs_collab_server] 提交操作失败：{err}");
-                    return vec![Reaction::Send(error_message(
-                        codes::INVALID_MESSAGE,
-                        "提交操作失败",
-                    ))];
-                }
-            }
-        }
-        None => {
-            // Same critical section shape as `commit_op`, just in memory: read,
-            // compare and insert under one lock acquisition, then drop the guard
-            // before building the reaction.
-            let mut revisions = state.revisions.lock().expect("revisions mutex poisoned");
-            let current = revisions.get(&session.drawing_id).copied().unwrap_or(0);
-            if base_revision != current {
-                drop(revisions);
-                log_stale_op(session, &op_id, base_revision, current, now);
-                return vec![Reaction::Send(error_message(
-                    codes::STALE_BASE_REVISION,
-                    &format!("图面当前修订为 {current}，操作基于 {base_revision}"),
-                ))];
-            }
-            let next = current + 1;
-            revisions.insert(session.drawing_id.clone(), next);
-            drop(revisions);
-            next
-        }
-    };
+    // The judgment, the commit and the record of it are one synchronous
+    // critical section inside `ops::receive`.
+    let outcome = crate::ops::receive(
+        state,
+        session,
+        peer_addr,
+        base_revision,
+        op_id,
+        payload,
+        now,
+    );
 
-    // The drawing's live sessions share its baseline, and the broadcast below
-    // is what moves them: every one of them is at `revision` from here on
-    // (`VAL-CLI-010`). `commit_op` moved the table rows inside its own
+    // The drawing's live sessions share its baseline, and the broadcast is
+    // what moves them: every one of them is at `revision` from here on
+    // (`VAL-CLI-010`). The commit moved the table rows inside its own
     // transaction; this moves the registry those rows are rewritten from, so
     // the next heartbeat does not put the old baseline back.
-    let moved = state
-        .sessions
-        .lock()
-        .await
-        .advance_base_revision(&session.drawing_id, revision);
-    println!(
-        "[ocs_collab_server] 入站 op session={} user={} op_id={op_id} base_revision={base_revision} kind={} object_ref={} -> 广播 op_applied revision={revision} sessions={moved} at={now}",
-        session.session_id,
-        session.user_id,
-        payload.get("kind").and_then(Value::as_str).unwrap_or("op"),
-        payload
-            .get("object_ref")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-    );
-
-    vec![Reaction::Publish {
-        drawing_id: session.drawing_id.clone(),
-        message: ServerMessage::OpApplied {
-            op_id,
-            revision,
-            changes: op_changes(&payload),
-        },
-    }]
-}
-
-/// The line a refused op leaves in the log: what the client believed, and what
-/// the drawing is actually at.
-fn log_stale_op(session: &Session, op_id: &str, base_revision: i64, current: i64, now: i64) {
-    println!(
-        "[ocs_collab_server] 入站 op session={} user={} op_id={op_id} base_revision={base_revision} -> error {} current={current} at={now}",
-        session.session_id,
-        session.user_id,
-        codes::STALE_BASE_REVISION
-    );
+    if let Some(revision) = outcome.revision {
+        state
+            .sessions
+            .lock()
+            .await
+            .advance_base_revision(&session.drawing_id, revision);
+    }
+    outcome.reactions
 }
 
 /// One housekeeping pass: mark timed-out sessions stale and expire claims.
@@ -1014,7 +955,7 @@ async fn session_unavailable(state: &AppState, session_id: &str) -> Option<Strin
 /// Only used to stamp `welcome.base_revision`; commits go through
 /// [`Store::commit_op`] (or the `revisions` mutex) so they never split the
 /// read from the write.
-fn current_revision(state: &AppState, drawing_id: &str) -> i64 {
+pub(crate) fn current_revision(state: &AppState, drawing_id: &str) -> i64 {
     match &state.store {
         Some(store) => match store.drawing(drawing_id) {
             Ok(Some((_, _, revision))) => revision,
@@ -1033,7 +974,7 @@ fn current_revision(state: &AppState, drawing_id: &str) -> i64 {
 /// Normalizes an op payload into the `changes` array on `op_applied`: object
 /// payloads keep every key and get the canonical fields backfilled with
 /// `null` where absent; anything else is wrapped verbatim.
-fn op_changes(payload: &Value) -> Vec<Value> {
+pub(crate) fn op_changes(payload: &Value) -> Vec<Value> {
     match payload {
         Value::Object(map) => {
             let mut change = map.clone();
@@ -1110,7 +1051,7 @@ fn value_text(value: &Value) -> String {
 
 /// A readable one-liner for the audit `change_text` column. Always non-empty:
 /// `kind` and `object_ref` are already defaulted by the caller.
-fn describe_change(kind: &str, object_ref: &str, payload: &Value) -> String {
+pub(crate) fn describe_change(kind: &str, object_ref: &str, payload: &Value) -> String {
     let field = payload
         .get("field")
         .and_then(Value::as_str)
@@ -1133,7 +1074,7 @@ fn describe_change(kind: &str, object_ref: &str, payload: &Value) -> String {
 
 /// Builds the audit row for one applied op. VAL-SRV-020 requires all nine
 /// fields non-empty, so every source has a fallback.
-fn op_audit_row(
+pub(crate) fn op_audit_row(
     store: &Store,
     session: &Session,
     payload: &Value,
@@ -1156,10 +1097,31 @@ fn op_audit_row(
             Some(op_id)
         })
         .unwrap_or("未知对象");
+    audit_row(
+        Some(store),
+        session,
+        kind,
+        object_ref,
+        describe_change(kind, object_ref, payload),
+        peer_addr,
+        now,
+    )
+}
+
+/// One audit row for something `session` did to `object_ref`. Every column
+/// has a fallback, so all nine are non-empty whatever the session carries
+/// (`VAL-SRV-020`).
+pub(crate) fn audit_row(
+    store: Option<&Store>,
+    session: &Session,
+    action: &str,
+    object_ref: &str,
+    change_text: String,
+    peer_addr: &str,
+    now: i64,
+) -> NewAuditRow {
     let company = store
-        .user_role(&session.user_id)
-        .ok()
-        .flatten()
+        .and_then(|store| store.user_role(&session.user_id).ok().flatten())
         .map(|(_, company)| company)
         .filter(|company| !company.is_empty())
         .unwrap_or_else(|| "未知".to_owned());
@@ -1180,14 +1142,18 @@ fn op_audit_row(
     };
     NewAuditRow {
         module: "协同编辑".to_owned(),
-        action: kind.to_owned(),
+        action: action.to_owned(),
         at: now,
-        object_ref: object_ref.to_owned(),
+        object_ref: if object_ref.is_empty() {
+            "未知对象".to_owned()
+        } else {
+            object_ref.to_owned()
+        },
         user_id,
         company,
         ip,
         workspace,
-        change_text: describe_change(kind, object_ref, payload),
+        change_text,
     }
 }
 
