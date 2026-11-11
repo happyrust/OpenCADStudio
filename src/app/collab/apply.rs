@@ -258,12 +258,16 @@ impl OpenCADStudio {
 
     /// Place the symbol a peer placed, or erase the object a peer erased.
     ///
-    /// A placement the sender's own handle already answers for here — an
-    /// entity under that handle carrying that tag — is this drawing's own
-    /// symbol said back to it, and is not placed twice. Otherwise the symbol
-    /// is new here whatever else carries its tag: two people who each placed
-    /// a symbol under one tag have two symbols, and it is the server that
-    /// gives one of them another tag (`VAL-CROSS-010`).
+    /// A peer's placement is always a new symbol here, whatever else carries
+    /// its tag and whatever sits under the handle the sender names. Two
+    /// people who each placed a symbol under one tag have two symbols, and
+    /// it is the server that gives one of them another tag
+    /// (`VAL-CROSS-010`). And two drawings opened from one file give their
+    /// next entity the same handle, so the sender's handle carrying that
+    /// tag here means this session placed one too — not that it is the
+    /// same symbol. (It was read that way once, and the peer's symbol was
+    /// then never placed.) This session's own placements do not come by
+    /// this road at all: an op of its own is told by its id.
     ///
     /// What cannot be done — a symbol this program's library does not have,
     /// an erased object this drawing never had or has two of — goes into
@@ -299,14 +303,6 @@ impl OpenCADStudio {
             applied.unresolved.push(change.object_ref.clone());
             return;
         };
-        let document = &self.tabs[i].scene.document;
-        let already_here = !change.handles.is_empty()
-            && change.handles.iter().all(|handle| {
-                PidAuthor::load(document, *handle).is_some_and(|author| author.tag == change.object_ref)
-            });
-        if already_here {
-            return;
-        }
         // The block comes into being with the first placement, as it does
         // for a local one.
         if !self.tabs[i].scene.document.block_records.contains(&placed.block) {
@@ -2184,8 +2180,14 @@ mod tests {
             .expect("the valve");
         let op_id = app.collab.own_ops.back().cloned().expect("the op in flight");
 
-        // The peer's valve, under the same tag, got there first.
-        remote(&mut app, 1, vec![peers_valve(&tag, 300.0)]);
+        // The peer's valve, under the same tag, got there first — and under
+        // the same handle: both opened the same file, so both drawings gave
+        // their next entity the same one. That says nothing about it being
+        // this session's valve (it was once taken to, and the peer's valve
+        // was then never placed here).
+        let mut peers = peers_valve(&tag, 300.0);
+        peers["handle"] = serde_json::json!(format!("{:X}", own.value()));
+        remote(&mut app, 1, vec![peers]);
         assert_eq!(tags(&app), sorted(&["P-1001", &tag, &tag]));
 
         // This session's own op, as the server took it.
