@@ -800,6 +800,11 @@ impl OpenCADStudio {
                                 && next.change.object_ref == entry.change.object_ref
                         })
                 }
+                // What was said of connectors is followed again in the
+                // order it was said: each is a thing made sure of — it is
+                // there, it is gone, it has this other end — and following
+                // it twice changes nothing.
+                Some(super::pipes::Pipe::Connector(_)) => true,
                 None => false,
             })
             .map(|(_, entry)| entry.change.clone())

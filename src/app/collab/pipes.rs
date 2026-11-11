@@ -51,6 +51,9 @@ pub enum Pipe {
     Line(LineStretches),
     /// `add_pipe_run`, `insert_fitting`, `update_pipe_run`.
     Run(RunStatement),
+    /// `create_connector`, `delete_connector`, `pair_connector`
+    /// (`super::connectors`).
+    Connector(super::connectors::ConnectorSaid),
 }
 
 // Coordinates are finite numbers; a `Change` is compared and kept in lists
@@ -260,6 +263,7 @@ pub(super) fn to_json(change: &Change, pipe: &Pipe) -> Value {
             }
             out
         }
+        Pipe::Connector(said) => super::connectors::to_json(change, said),
     }
 }
 
@@ -981,6 +985,7 @@ impl OpenCADStudio {
         let outcome = match &change.pipe {
             Some(Pipe::Line(line)) => Ok(self.ensure_line(i, &change.object_ref, line, applied)),
             Some(Pipe::Run(said)) => self.align_run(i, &change.object_ref, said, applied),
+            Some(Pipe::Connector(said)) => self.write_remote_connector(i, change, said, applied),
             None => Err(change.object_ref.clone()),
         };
         match outcome {

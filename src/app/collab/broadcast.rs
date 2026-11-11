@@ -170,6 +170,14 @@ impl Change {
         ) {
             return super::pipes::from_json(&kind, value);
         }
+        if matches!(
+            kind.as_str(),
+            super::connectors::KIND_CREATE_CONNECTOR
+                | super::connectors::KIND_DELETE_CONNECTOR
+                | super::connectors::KIND_PAIR_CONNECTOR
+        ) {
+            return super::connectors::from_json(&kind, value);
+        }
         let handles: Vec<Handle> = match value["handles"].as_array() {
             Some(listed) => listed
                 .iter()
@@ -468,6 +476,7 @@ pub fn collect_step_changes(doc: &Document, entities: &EntityImages) -> Vec<Chan
         .map(|(handle, before, after)| (*handle, before.as_deref(), after.as_deref()))
         .collect();
     changes.extend(super::pipes::statements(doc, &images));
+    changes.extend(super::connectors::statements(doc, &images));
     changes
 }
 
@@ -480,6 +489,7 @@ pub fn collect_undone_step_changes(doc: &Document, entities: &EntityImages) -> V
         .map(|(handle, before, after)| (*handle, after.as_deref(), before.as_deref()))
         .collect();
     changes.extend(super::pipes::statements(doc, &images));
+    changes.extend(super::connectors::statements(doc, &images));
     changes
 }
 

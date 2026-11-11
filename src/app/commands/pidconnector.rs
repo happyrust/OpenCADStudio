@@ -1,9 +1,13 @@
 //! `PIDCONNECTOR` / `PIDPAIR` —— 页间连接符（管道/信号线 × 流入/流出）。
 //!
 //! ```text
-//! PIDCONNECTOR <pipe_in|pipe_out|signal_in|signal_out> [<drawing_id>:<handle>]
+//! PIDCONNECTOR <pipe_in|pipe_out|signal_in|signal_out> [<drawing_id>:<handle> | <目标图号>]
 //! PIDPAIR <本图 handle> <对端 drawing_id>:<handle>
 //! ```
+//!
+//! 第二个参数带冒号时是本进程另一张图上的对端（`<document_id>:<handle>`）；
+//! 不带冒号时是协同里的目标图号——另一端在服务器的哪张图上，由服务器配对
+//! （`src/app/collab/connectors.rs`，`VAL-CROSS-009`）。
 //!
 //! 四条硬约束（`architecture.md` 6.5 / `validation-contract.md` E 区）：
 //!
@@ -46,7 +50,8 @@ const CONNECTOR_PICK_TOLERANCE: f64 = 5.0;
 const PIPE_FIELDS: [&str; 5] = crate::pid::propagate::LINE_FIELDS;
 
 /// 信号线连接符下传的两个字段。**不含 `管道等级`**（`VAL-PIPE-027`）。
-const SIGNAL_FIELDS: [&str; 2] = ["起点仪表", "终点仪表"];
+/// 与协同服务器沿连接符跨图传递时用的是同一份清单。
+const SIGNAL_FIELDS: [&str; 2] = ocs_collab::link::SIGNAL_FIELDS;
 
 // ── 命令：PIDCONNECTOR ───────────────────────────────────────────────────
 
@@ -222,9 +227,20 @@ impl OpenCADStudio {
             return None;
         }
 
+        // 第二个参数有两种读法。带冒号的是本进程里另一张图上的对端
+        // `<document_id>:<handle>`，照旧校验、创建即配对。不带冒号的是
+        // **目标图号**：另一端在协同服务器的哪张图上（`VAL-CROSS-009`）——
+        // 那张图不在本进程里，配对由服务器做，这里只把图号记在连接符上，
+        // 随 `create_connector` 说给房间。
+        let (peer, target_drawing) = match request.peer.as_deref().map(str::trim) {
+            Some(text) if text.contains(':') => (Some(text.to_string()), None),
+            Some(text) if !text.is_empty() => (None, Some(text.to_string())),
+            _ => (None, None),
+        };
+
         // 对端格式与可配对性在**写入之前**校验：被拒时实体数不变
         // （`VAL-PIPE-024` / `025` 的「实体数不变」判据同样适用于这里）。
-        if let Some(peer) = request.peer.as_deref() {
+        if let Some(peer) = peer.as_deref() {
             if let Err((code, message)) = self.precheck_peer(i, request.kind, peer) {
                 self.command_line.push_error_coded(code, &message);
                 return None;
@@ -247,23 +263,24 @@ impl OpenCADStudio {
             tag_source: "auto".to_string(),
             tag_status: "ok".to_string(),
             topology: request.kind.role().to_string(),
-            connector_peer: request.peer.clone().unwrap_or_default(),
+            connector_peer: peer.clone().unwrap_or_default(),
             props: "{}".to_string(),
             ..PidAuthor::default()
         }
         .store(&mut self.tabs[i].scene.document, handle);
 
-        let peer_drawing = request
-            .peer
+        let peer_drawing = peer
             .as_deref()
             .and_then(parse_peer)
-            .map(|(drawing, _)| drawing.to_string());
+            .map(|(drawing, _)| drawing.to_string())
+            // 没有同进程对端时，记的是目标图号（服务器配上之后会再写一遍）。
+            .or(target_drawing);
         let mut record = ConnectorRecord::new(
             handle_text(handle),
             request.kind,
             hit.tag.clone(),
         );
-        record.peer = request.peer.clone();
+        record.peer = peer.clone();
         record.peer_drawing = peer_drawing;
         // 「连接管路头尾信息」：本侧宿主线的位号，配对后再补对端。
         record.upstream = Some(hit.tag.clone());
@@ -283,7 +300,7 @@ impl OpenCADStudio {
         }));
 
         // 创建即配对（`PIDCONNECTOR <kind> <peer>`）：写对端并传递属性。
-        if let Some(peer) = request.peer.clone() {
+        if let Some(peer) = peer {
             if let Err((code, message)) = self.pair_connectors(i, handle, &peer) {
                 self.command_line.push_error_coded(code, &message);
                 return None;

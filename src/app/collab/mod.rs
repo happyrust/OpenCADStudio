@@ -23,11 +23,14 @@ use std::collections::BTreeMap;
 pub(super) mod broadcast;
 mod apply;
 mod claims;
+pub(super) mod connectors;
 pub(super) mod pipes;
 #[cfg(not(target_arch = "wasm32"))]
 mod messages;
 #[cfg(not(target_arch = "wasm32"))]
 mod transport;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_connector_cross_drawing;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_offline_queue;
 #[cfg(all(test, not(target_arch = "wasm32")))]
