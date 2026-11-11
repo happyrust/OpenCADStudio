@@ -7377,6 +7377,12 @@ impl OpenCADStudio {
                 }
             }
         }
+        // The session is for the drawing this launch opens. It connects
+        // before that file has loaded, so what peers do meanwhile waits for
+        // the tab showing it (`collab_tab`).
+        if s.collab.wanted() {
+            s.collab.document_path = cfg.files.first().cloned();
+        }
         s.collab.sync_client_config();
         // GPU backend / renderer fallback: the resolver ran before iced
         // booted, so surface its verdict here where the user can see it.

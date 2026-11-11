@@ -1524,6 +1524,15 @@ impl OpenCADStudio {
     }
 
     pub(super) fn on_tick(&mut self, t: Instant) -> Task<Message> {
+        // Peers' changes that arrived before the session's drawing was open
+        // are waiting for it; nothing else would bring them back once the
+        // drawing is there.
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.collab.pending_remote.is_empty() {
+            self.apply_remote_changes();
+            self.sync_claim_colors();
+            self.refresh_collab_view();
+        }
         let i = self.active_tab;
         self.tabs[i].scene.update(t - self.start);
         // Dynamic dimensions keep their screen size across zoom bands.

@@ -26,16 +26,22 @@ impl OpenCADStudio {
     /// The tab holding the drawing the session speaks for, if it is open.
     ///
     /// Which tab that is gets settled the first time the session needs a
-    /// document — to send an edit, or to take a peer's — and it is the drawing
-    /// in front at that moment: the one the editor was started on. From then
-    /// on it is that tab whatever is in front, until the tab is closed; a
-    /// session whose drawing was closed has no document, and says so rather
-    /// than move on to the next one.
+    /// document — to send an edit, or to take a peer's. An editor started on
+    /// a file has a session for that file: it is the tab showing it, and
+    /// until the file has loaded there is none — not the drawing that
+    /// happens to be in front meanwhile. Started on no file, it is the
+    /// drawing in front at that moment. From then on it is that tab whatever
+    /// is in front, until the tab is closed; a session whose drawing was
+    /// closed has no document, and says so rather than move on to the next
+    /// one.
     pub(in crate::app) fn collab_tab(&mut self) -> Option<usize> {
         if let Some(id) = self.collab.document {
             return self.tabs.iter().position(|tab| tab.id == id);
         }
-        let i = self.active_tab;
+        let i = match self.collab.document_path.clone() {
+            Some(path) => self.tab_showing(&path)?,
+            None => self.active_tab,
+        };
         if self.tabs.get(i).is_some_and(|tab| !tab.is_start) {
             self.collab.document = Some(self.tabs[i].id);
             return Some(i);
@@ -102,6 +108,10 @@ impl OpenCADStudio {
     /// step, so a person can undo a change a peer made — and that undo is
     /// broadcast like any other (`undo_steps_reported`).
     ///
+    /// While the session's drawing is not among the tabs — not loaded yet, or
+    /// closed — the ops stay in `pending_remote`, in order, and `on_tick`
+    /// comes back here every frame until there is a drawing to put them on.
+    ///
     /// An op this drawing cannot follow — a change shape it does not know, or
     /// an object it does not have — is reported (`last_apply_error`, and on
     /// the command line) rather than passed over: from there on the two
@@ -110,17 +120,26 @@ impl OpenCADStudio {
         if self.collab.pending_remote.is_empty() {
             return;
         }
-        let pending = std::mem::take(&mut self.collab.pending_remote);
         // The session's drawing, wherever it is among the tabs — not the tab
         // in front, which may be another sheet carrying the same tags.
         let Some(i) = self.collab_tab() else {
-            self.report_apply_error(if self.collab.document.is_some() {
-                "协同的图纸已经关闭，远端变更未应用".to_owned()
+            // Nowhere to put them yet. They stay queued: a session comes up
+            // before the drawing it was started on has finished loading, and
+            // what arrives in between must reach the drawing when it is there
+            // (`on_tick` comes back here). Said once per change in the count,
+            // not once per frame.
+            let waiting = self.collab.pending_remote.len();
+            let reason = if self.collab.document.is_some() {
+                format!("协同的图纸已经关闭，{waiting} 个远端操作留在队列里，未应用")
             } else {
-                "当前标签页不是图纸，远端变更未应用".to_owned()
-            });
+                format!("协同的图纸还没有打开，{waiting} 个远端操作在等它")
+            };
+            if self.collab.last_apply_error.as_deref() != Some(reason.as_str()) {
+                self.report_apply_error(reason);
+            }
             return;
         };
+        let pending = std::mem::take(&mut self.collab.pending_remote);
         let mut total = 0usize;
         let mut failure: Option<String> = None;
         // Raised for as long as a step opened here can still reach
@@ -681,6 +700,200 @@ mod tests {
             1,
             "an edit to another drawing went out as this session's: {:?}",
             app.collab.own_ops
+        );
+
+        // Taking that edit back and putting it on again is the other
+        // drawing's business too.
+        let _ = app.automation_op(r#"{"op":"undo"}"#);
+        assert_eq!(
+            PidAuthor::load(&app.tabs[copy_tab].scene.document, copy_vessel)
+                .expect("author")
+                .tag,
+            "P-2001",
+            "the undo itself goes through"
+        );
+        assert_eq!(app.collab.own_ops.len(), 1, "its undo went out");
+        let _ = app.automation_op(r#"{"op":"redo"}"#);
+        assert_eq!(
+            PidAuthor::load(&app.tabs[copy_tab].scene.document, copy_vessel)
+                .expect("author")
+                .tag,
+            "P-2009"
+        );
+        assert_eq!(app.collab.own_ops.len(), 1, "its redo went out");
+    }
+
+    /// The session comes up before the drawing it was started on has finished
+    /// loading. What a peer does in between waits for the drawing; it is not
+    /// thrown away, and the next frame after the drawing is there applies it.
+    #[test]
+    fn a_change_that_arrives_before_the_drawing_is_open_waits_for_it() {
+        let mut app = OpenCADStudio::new_for_test();
+        assert!(app.tabs[app.active_tab].is_start, "only the start page so far");
+        app.collab.apply(CollabEvent::OpApplied {
+            op_id: "op-early".to_owned(),
+            revision: 1,
+            changes: vec![serde_json::json!({
+                "kind": "set_tag", "object_ref": "P-1001", "field": "tag", "value": "P-1009",
+            })],
+        });
+        app.apply_remote_changes();
+        assert_eq!(app.collab.pending_remote.len(), 1, "kept, not dropped");
+        assert_eq!(app.collab.document, None, "the start page is not a drawing");
+        let said = app.collab.last_apply_error.clone().expect("it says it is waiting");
+        // Asked again on the next frame, it has nothing new to say.
+        app.apply_remote_changes();
+        assert_eq!(app.collab.last_apply_error.as_deref(), Some(said.as_str()));
+        assert_eq!(app.collab.pending_remote.len(), 1);
+
+        // The drawing opens.
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let tab = app.active_tab;
+        let vessel = {
+            let document = &mut app.tabs[tab].scene.document;
+            let handle = document
+                .add_entity(document::EntityType::Insert(Insert::new(
+                    "PID_SYM_equipment_vessel",
+                    Vector3::ZERO,
+                )))
+                .expect("entity");
+            PidAuthor {
+                type_code: "EQUIPMENT".to_owned(),
+                tag: "P-1001".to_owned(),
+                tag_source: "auto".to_owned(),
+                tag_status: "ok".to_owned(),
+                ..PidAuthor::default()
+            }
+            .store(document, handle);
+            handle
+        };
+        let _ = app.update(crate::app::Message::Tick(iced::time::Instant::now()));
+
+        assert_eq!(
+            PidAuthor::load(&app.tabs[tab].scene.document, vessel)
+                .expect("author")
+                .tag,
+            "P-1009",
+            "the frame after the drawing opened applies what was waiting"
+        );
+        assert!(app.collab.pending_remote.is_empty());
+        assert_eq!(app.collab.last_apply_error, None);
+        assert_eq!(app.collab.document, Some(app.tabs[tab].id));
+    }
+
+    /// An editor started on a file has a session for that file. While it is
+    /// still loading, a drawing that happens to be in front — another file of
+    /// the same launch, a new one — is not it: the change waits, and goes to
+    /// the tab showing the file once there is one.
+    #[test]
+    fn a_session_started_on_a_file_waits_for_that_file_not_the_tab_in_front() {
+        let dir = std::env::temp_dir().join(format!("ocs-collab-bind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let file = dir.join("PID-1101.dwg");
+        std::fs::write(&file, b"").expect("the file the launch named");
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.collab.document_path = Some(file.clone());
+        // Something else is open and in front before the file has loaded.
+        let (other_tab, other_vessel) = another_drawing_in_front(&mut app, "P-1001");
+        remote_retag(&mut app, "op-early", 1, "P-1001", "P-1009");
+        assert_eq!(app.collab.pending_remote.len(), 1, "it waits for the file");
+        assert_eq!(app.collab.document, None, "the tab in front is not the session's");
+        assert_eq!(
+            PidAuthor::load(&app.tabs[other_tab].scene.document, other_vessel)
+                .expect("author")
+                .tag,
+            "P-1001"
+        );
+
+        // The file finishes loading into a tab of its own, behind.
+        let (file_tab, file_vessel) = another_drawing_in_front(&mut app, "P-1001");
+        app.tabs[file_tab].current_path = Some(file);
+        app.active_tab = other_tab;
+        let _ = app.update(crate::app::Message::Tick(iced::time::Instant::now()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(app.collab.document, Some(app.tabs[file_tab].id));
+        assert!(app.collab.pending_remote.is_empty());
+        assert_eq!(
+            PidAuthor::load(&app.tabs[file_tab].scene.document, file_vessel)
+                .expect("author")
+                .tag,
+            "P-1009",
+            "the change reaches the file the session was started on"
+        );
+        assert_eq!(
+            PidAuthor::load(&app.tabs[other_tab].scene.document, other_vessel)
+                .expect("author")
+                .tag,
+            "P-1001",
+            "and no other drawing"
+        );
+    }
+
+    /// Once the session's drawing is closed there is nowhere to put a peer's
+    /// change. It stays queued and is said to be; it does not move on to
+    /// whatever drawing is open instead.
+    #[test]
+    fn a_change_for_a_closed_drawing_stays_queued_and_touches_no_other() {
+        let (mut app, _) = app_with_vessel("P-1001");
+        remote_retag(&mut app, "op-peer-a", 1, "P-1001", "P-1005");
+        let session_id = app.tabs[app.active_tab].id;
+        let (_, copy_vessel) = another_drawing_in_front(&mut app, "P-1005");
+        let copy_id = app.tabs[app.active_tab].id;
+        // The session's drawing is closed; the copy is what is left. (Saved
+        // first as far as the tab is concerned, so the close is not held up
+        // by the question about unsaved changes.)
+        let session_tab = app
+            .tabs
+            .iter()
+            .position(|tab| tab.id == session_id)
+            .expect("the session's tab");
+        app.tabs[session_tab].dirty = false;
+        let _ = app.update(crate::app::Message::TabClose(session_id));
+        assert!(
+            app.tabs.iter().all(|tab| tab.id != session_id),
+            "the session's drawing is closed"
+        );
+        let copy_tab = app
+            .tabs
+            .iter()
+            .position(|tab| tab.id == copy_id)
+            .expect("the copy is still open");
+        remote_retag(&mut app, "op-peer-b", 2, "P-1005", "P-1009");
+        assert_eq!(app.collab.pending_remote.len(), 1);
+        assert!(app
+            .collab
+            .last_apply_error
+            .as_deref()
+            .is_some_and(|said| said.contains("已经关闭")));
+        assert_eq!(
+            PidAuthor::load(&app.tabs[copy_tab].scene.document, copy_vessel)
+                .expect("author")
+                .tag,
+            "P-1005"
+        );
+    }
+
+    /// A claim is on a tag of the session's drawing. Another sheet open
+    /// beside it that carries the same tag is not occupied by anyone.
+    #[test]
+    fn a_claim_colours_the_sessions_drawing_only() {
+        let (mut app, vessel) = app_with_vessel("P-1001");
+        let session_tab = app.active_tab;
+        app.collab.document = Some(app.tabs[session_tab].id);
+        let (copy_tab, _) = another_drawing_in_front(&mut app, "P-1001");
+        app.collab.claims.insert("P-1001".to_owned(), "u1".to_owned());
+        app.sync_claim_colors();
+        let coloured = app.tabs[session_tab]
+            .scene
+            .claim_display
+            .as_ref()
+            .expect("the session's drawing shows the claim");
+        assert!(coloured.handles.contains(&vessel));
+        assert!(
+            app.tabs[copy_tab].scene.claim_display.is_none(),
+            "a sheet outside the session was coloured as occupied"
         );
     }
 

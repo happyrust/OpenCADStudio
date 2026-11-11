@@ -87,16 +87,23 @@ impl OpenCADStudio {
     /// `VAL-CLI-008` reads the tint of the symbol `u1` itself claimed. The
     /// tag→handles resolution reads each entity's `PID_AUTHOR` record, the same
     /// source the tag engine and the properties panel use.
+    ///
+    /// Only the session's drawing is coloured. A claim is on a tag of that
+    /// drawing; another sheet open beside it may carry the same tag and is
+    /// not occupied by anyone.
     pub(crate) fn sync_claim_colors(&mut self) {
         let tags: Vec<String> = self.collab.claims.keys().cloned().collect();
-        if tags.is_empty() {
-            for tab in &mut self.tabs {
-                tab.scene.set_claim_display(None);
-            }
-            return;
-        }
+        let session_tab = if tags.is_empty() {
+            None
+        } else {
+            self.collab_tab()
+        };
         let wanted: std::collections::HashSet<&str> = tags.iter().map(String::as_str).collect();
-        for tab in &mut self.tabs {
+        for (index, tab) in self.tabs.iter_mut().enumerate() {
+            if session_tab != Some(index) {
+                tab.scene.set_claim_display(None);
+                continue;
+            }
             let document = &tab.scene.document;
             let handles: rustc_hash::FxHashSet<document::Handle> = document
                 .entities()

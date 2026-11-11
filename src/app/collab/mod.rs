@@ -156,6 +156,11 @@ pub(super) struct State {
     /// until the session first needs a document; see
     /// `OpenCADStudio::collab_tab`.
     pub document: Option<u64>,
+    /// The file the editor was started on, when it was started on one with a
+    /// session configured: the session is that file's. While `document` is
+    /// unset the session waits for the tab showing this file instead of
+    /// taking the drawing in front.
+    pub document_path: Option<std::path::PathBuf>,
 }
 
 /// One remote `op_applied` waiting to be applied to the local document.
