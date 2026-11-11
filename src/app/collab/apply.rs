@@ -10,6 +10,19 @@ use crate::app::OpenCADStudio;
 
 use super::broadcast;
 
+/// What an undo or redo on the session's drawing keeps from before its steps
+/// are applied, for `replay_remote_after`.
+pub(in crate::app) struct HistoryGuard {
+    /// The lowest `remote_mark` among the steps: the peers' changes later
+    /// than this are the ones the steps' images do not hold.
+    mark: u64,
+    /// Every entity the steps or those later changes touch, as it was.
+    before: Vec<(
+        document::Handle,
+        Option<std::sync::Arc<document::EntityType>>,
+    )>,
+}
+
 impl OpenCADStudio {
     /// Broadcast the semantic content of one undo step to the room.
     ///
@@ -104,9 +117,17 @@ impl OpenCADStudio {
     /// drawing.
     ///
     /// Runs right after `collab.apply` so the drawing catches up on the same
-    /// frame the roster and baseline do (`VAL-CLI-009`). Each op is one undo
-    /// step, so a person can undo a change a peer made — and that undo is
-    /// broadcast like any other (`undo_steps_reported`).
+    /// frame the roster and baseline do (`VAL-CLI-009`).
+    ///
+    /// A peer's change is not a step on this person's undo stack: undo takes
+    /// back what they did themselves, and never a colleague's edit (which it
+    /// used to, the newest step being whatever arrived last — and it went
+    /// out as this person's op). Nor does it clear their redo stack. What
+    /// keeps a local undo from wiping a peer's change off an entity both
+    /// touched is `replay_remote_after`.
+    ///
+    /// A local step still open when a change arrives is closed first, as
+    /// the user's own: it is broadcast like any other step.
     ///
     /// While the session's drawing is not among the tabs — not loaded yet, or
     /// closed — the ops stay in `pending_remote`, in order, and `on_tick`
@@ -142,8 +163,12 @@ impl OpenCADStudio {
         let pending = std::mem::take(&mut self.collab.pending_remote);
         let mut total = 0usize;
         let mut failure: Option<String> = None;
-        // Raised for as long as a step opened here can still reach
-        // `push_undo_entry`: the fold must not go back out as this client's op.
+        // The user's own step, if one is open, ends here and goes out as
+        // theirs — before the flag below is raised, which would keep it in.
+        // Left open it would record the peer's writes as part of itself.
+        self.finish_pending_history(i);
+        // Raised while the peers' changes are written: nothing done here is
+        // this client's to send.
         self.applying_remote = true;
         for remote in pending {
             let read = broadcast::changes_from_payload(&remote.changes);
@@ -161,8 +186,6 @@ impl OpenCADStudio {
             if parsed.is_empty() {
                 continue;
             }
-            // Opening a step closes the one before it, so each op is its own.
-            self.push_undo_snapshot(i, "COLLAB");
             let applied = {
                 let document = &mut self.tabs[i].scene.document;
                 broadcast::apply_changes(document, &parsed)
@@ -174,34 +197,26 @@ impl OpenCADStudio {
                     applied.unresolved.join("、")
                 ));
             }
+            // Kept, with the entities each was written to, for the undo and
+            // redo that come later (`replay_remote_after`).
+            for (change, handles) in &applied.resolved {
+                self.collab.remote_seq += 1;
+                self.collab.remote_log.push(super::AppliedRemote {
+                    seq: self.collab.remote_seq,
+                    handles: handles.clone(),
+                    change: change.clone(),
+                });
+            }
             if applied.is_empty() {
-                self.discard_last_undo_entry(i);
                 continue;
             }
             total += applied.handles.len();
-            // What hangs off the changed objects is this drawing's own to
-            // work out, as after a local edit: a pipe line's field goes down
-            // to its runs and their segments. The sender states only the
-            // tagged objects it changed — a segment has no tag to name it by
-            // — so without this the segments here keep the old values.
-            let carried_down = self.propagate_pid_chain(i, &applied.handles);
-            let changes: Vec<(document::Handle, crate::scene::ChangeKind)> = applied
-                .handles
-                .iter()
-                .chain(&carried_down)
-                .map(|handle| (*handle, crate::scene::ChangeKind::Modified))
-                .collect();
-            self.tabs[i].scene.bump_entities(&changes);
-            self.tabs[i].dirty = true;
-            // Inside the step, as `refresh_pid_tags` asks of its caller: the
-            // label and the uniqueness status then undo and redo with the tag.
-            if !applied.retagged.is_empty() {
-                self.refresh_pid_tags(i, &applied.retagged);
-            }
+            self.settle_remote_writes(i, &applied.handles, &applied.retagged);
         }
-        self.finish_pending_history(i);
         self.applying_remote = false;
+        self.prune_remote_log(i);
         if total > 0 {
+            self.refresh_properties();
             self.command_line
                 .push_info(&format!("协同：已应用远端变更（{total} 个实体）"));
         }
@@ -224,6 +239,168 @@ impl OpenCADStudio {
             None if total > 0 => self.collab.last_apply_error = None,
             None => {}
         }
+    }
+
+    /// What follows a peer's change having been written to `handles` on tab
+    /// `i`, outside any undo step.
+    ///
+    /// What hangs off the changed objects is this drawing's own to work out,
+    /// as after a local edit: a pipe line's field goes down to its runs and
+    /// their segments (the sender states only the tagged objects it changed
+    /// — a segment has no tag to name it by), and a tag that moved takes its
+    /// label and its uniqueness status with it.
+    fn settle_remote_writes(
+        &mut self,
+        i: usize,
+        handles: &[document::Handle],
+        retagged: &[document::Handle],
+    ) {
+        let carried_down = self.propagate_pid_chain(i, handles);
+        let changes: Vec<(document::Handle, crate::scene::ChangeKind)> = handles
+            .iter()
+            .chain(&carried_down)
+            .map(|handle| (*handle, crate::scene::ChangeKind::Modified))
+            .collect();
+        self.tabs[i].scene.bump_entities(&changes);
+        self.tabs[i].dirty = true;
+        if !retagged.is_empty() {
+            self.refresh_pid_tags(i, retagged);
+        }
+        // The drawing changed without a step being pushed, which is what
+        // normally moves this on.
+        self.tabs[i].edit_revision = self.tabs[i].edit_revision.wrapping_add(1);
+    }
+
+    /// The `remote_mark` of a step being pushed on tab `i`: how many of the
+    /// peers' changes the session's drawing has taken so far. A step on any
+    /// other drawing has none to count.
+    pub(in crate::app) fn collab_remote_mark(&self, i: usize) -> u64 {
+        match self.collab.document {
+            Some(id) if self.tabs.get(i).is_some_and(|tab| tab.id == id) => self.collab.remote_seq,
+            _ => 0,
+        }
+    }
+
+    /// Before the top `steps` steps of tab `i`'s undo stack (or redo stack)
+    /// are applied: what [`Self::replay_remote_after`] will need afterwards.
+    /// `None` when no peer's change is later than those steps — an undo then
+    /// is what it always was.
+    pub(in crate::app) fn history_guard(
+        &self,
+        i: usize,
+        undo: bool,
+        steps: usize,
+    ) -> Option<HistoryGuard> {
+        let tab = self.tabs.get(i)?;
+        if self.collab.remote_log.is_empty() || self.collab.document != Some(tab.id) {
+            return None;
+        }
+        let stack = if undo {
+            &tab.history.undo_stack
+        } else {
+            &tab.history.redo_stack
+        };
+        let mut mark = None;
+        let mut handles: Vec<document::Handle> = Vec::new();
+        for snapshot in stack.iter().rev().take(steps) {
+            if let crate::app::tab_document::HistorySnapshot::Delta(delta) = snapshot {
+                mark = Some(mark.map_or(delta.remote_mark, |lowest: u64| lowest.min(delta.remote_mark)));
+                handles.extend(delta.entities.iter().map(|(handle, _, _)| *handle));
+            }
+        }
+        let mark = mark?;
+        let later = self.collab.remote_log.iter().filter(|entry| entry.seq > mark);
+        let before_later = handles.len();
+        handles.extend(later.flat_map(|entry| entry.handles.iter().copied()));
+        if handles.len() == before_later {
+            return None;
+        }
+        handles.sort();
+        handles.dedup();
+        let document = &tab.scene.document;
+        Some(HistoryGuard {
+            mark,
+            before: handles
+                .into_iter()
+                .map(|handle| (handle, document.get_entity_arc(handle)))
+                .collect(),
+        })
+    }
+
+    /// After local steps were taken back or put on again on tab `i`: write
+    /// the peers' changes that came later than those steps once more, and
+    /// say what the whole thing amounts to for the room.
+    ///
+    /// A step restores the entities it touched to images from when it was
+    /// made. A peer's change made since to one of those entities is in
+    /// neither image, so it is written again here — to the entities it was
+    /// written to when it arrived, in the order the changes came. What is
+    /// then sent to the room is this drawing before the undo against this
+    /// drawing now: only what really changed. A field a peer has since set
+    /// again stays as the peer set it, and nothing is said of it.
+    pub(in crate::app) fn replay_remote_after(
+        &mut self,
+        i: usize,
+        guard: HistoryGuard,
+    ) -> Vec<broadcast::Change> {
+        let later: Vec<super::AppliedRemote> = self
+            .collab
+            .remote_log
+            .iter()
+            .filter(|entry| entry.seq > guard.mark)
+            .cloned()
+            .collect();
+        let mut applied = broadcast::Applied::default();
+        let mut targets: Vec<document::Handle> = Vec::new();
+        {
+            let document = &mut self.tabs[i].scene.document;
+            for entry in &later {
+                broadcast::write_to(document, &entry.handles, &entry.change, &mut applied);
+                targets.extend(
+                    entry
+                        .handles
+                        .iter()
+                        .copied()
+                        .filter(|handle| document.get_entity(*handle).is_some()),
+                );
+            }
+        }
+        targets.sort();
+        targets.dedup();
+        // Carried down again whether or not anything had to be rewritten:
+        // the step may have put back an entity that only *derives* from one
+        // a peer changed — a segment under a line whose field moved — and
+        // that is in no entry of the log.
+        self.settle_remote_writes(i, &targets, &applied.retagged);
+        self.refresh_properties();
+        let document = &self.tabs[i].scene.document;
+        let images: Vec<_> = guard
+            .before
+            .into_iter()
+            .map(|(handle, before)| (handle, before, document.get_entity_arc(handle)))
+            .collect();
+        broadcast::collect_changes(&images)
+    }
+
+    /// Drop the part of `remote_log` no step can ask for any more: changes
+    /// no later than the oldest step still on tab `i`'s undo or redo stack.
+    fn prune_remote_log(&mut self, i: usize) {
+        const KEEP_WITHOUT_ASKING: usize = 1024;
+        if self.collab.remote_log.len() <= KEEP_WITHOUT_ASKING {
+            return;
+        }
+        let history = &self.tabs[i].history;
+        let oldest = history
+            .undo_stack
+            .iter()
+            .chain(&history.redo_stack)
+            .filter_map(|snapshot| match snapshot {
+                crate::app::tab_document::HistorySnapshot::Delta(delta) => Some(delta.remote_mark),
+                _ => None,
+            })
+            .min()
+            .unwrap_or(self.collab.remote_seq);
+        self.collab.remote_log.retain(|entry| entry.seq > oldest);
     }
 
     /// Record why a remote change did not reach this drawing, where the status
@@ -804,6 +981,294 @@ mod tests {
         assert!(app.collab.pending_remote.is_empty());
         assert_eq!(app.collab.last_apply_error, None);
         assert_eq!(app.collab.document, Some(app.tabs[tab].id));
+    }
+
+    // ── Undo takes back this person's steps, not a peer's ────────────────
+
+    /// A second vessel on the drawing `app_with_vessel` made.
+    fn add_vessel(app: &mut OpenCADStudio, tag: &str, props: &str) -> document::Handle {
+        let i = app.active_tab;
+        let document = &mut app.tabs[i].scene.document;
+        let handle = document
+            .add_entity(document::EntityType::Insert(Insert::new(
+                "PID_SYM_equipment_vessel",
+                Vector3::new(40.0, 0.0, 0.0),
+            )))
+            .expect("entity");
+        PidAuthor {
+            type_code: "EQUIPMENT".to_owned(),
+            tag: tag.to_owned(),
+            tag_source: "auto".to_owned(),
+            tag_status: "ok".to_owned(),
+            props: props.to_owned(),
+            ..PidAuthor::default()
+        }
+        .store(document, handle);
+        handle
+    }
+
+    fn connected(app: &mut OpenCADStudio) {
+        app.collab.connected = true;
+        app.collab.session_id = Some("s-1".to_owned());
+    }
+
+    /// A local property edit, through the contract's own write channel
+    /// (`xdata_set` carrying the whole `props`).
+    fn put_props(app: &mut OpenCADStudio, handle: document::Handle, props: &str) {
+        let state = app.control_state();
+        let (response, task) = app.control_request(serde_json::json!({
+            "protocol": 1,
+            "op": "xdata_set",
+            "request_id": format!("collab-props-{}", app.collab.sent.len()),
+            "client_id": "test",
+            "document_id": state["document_id"],
+            "revision": state["revision"],
+            "handles": [format!("{:X}", handle.value())],
+            "app": "PID_AUTHOR",
+            "data": [{"code": 1000, "value": format!("props={props}")}],
+        }));
+        app.drive_headless_task(task).unwrap();
+        assert_eq!(response["ok"], true, "{response}");
+        app.finish_all_pending_history();
+    }
+
+    fn remote(app: &mut OpenCADStudio, revision: i64, changes: Vec<serde_json::Value>) {
+        app.collab.apply(CollabEvent::OpApplied {
+            op_id: format!("op-peer-{revision}"),
+            revision,
+            changes,
+        });
+        app.apply_remote_changes();
+    }
+
+    fn author(app: &OpenCADStudio, handle: document::Handle) -> PidAuthor {
+        PidAuthor::load(&app.tabs[app.active_tab].scene.document, handle).expect("author")
+    }
+
+    fn prop(app: &OpenCADStudio, handle: document::Handle, key: &str) -> String {
+        crate::pid::propagate::split_props(&author(app, handle).props)
+            .0
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Every change the last op this session queued states, flattened.
+    fn last_sent(app: &OpenCADStudio) -> Vec<broadcast::Change> {
+        let payload = app.collab.sent.last().expect("an op was queued").clone();
+        broadcast::changes_from_payload(&[payload]).changes
+    }
+
+    fn undo(app: &mut OpenCADStudio) {
+        let _ = app.automation_op(r#"{"op":"undo"}"#);
+    }
+
+    fn redo(app: &mut OpenCADStudio) {
+        let _ = app.automation_op(r#"{"op":"redo"}"#);
+    }
+
+    /// A peer's change is not a step on this person's undo stack. Undo takes
+    /// back what they did themselves — it used to take back whatever arrived
+    /// last, a colleague's edit, and send that out as this person's op.
+    #[test]
+    fn undo_takes_back_this_persons_step_and_leaves_a_peers_change_alone() {
+        let (mut app, pump) = app_with_vessel("P-1001");
+        let vessel = add_vessel(&mut app, "V-1001", "{}");
+        connected(&mut app);
+        let _ = app.run_command_line("PIDTAG P-1001 P-1005");
+        app.finish_all_pending_history();
+        assert_eq!(app.collab.sent.len(), 1);
+        let steps = app.tabs[app.active_tab].history.undo_stack.len();
+
+        remote(
+            &mut app,
+            1,
+            vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "V-1001", "field": "设计压力", "value": "2.5MPa",
+            })],
+        );
+        assert_eq!(prop(&app, vessel, "设计压力"), "2.5MPa");
+        assert_eq!(
+            app.tabs[app.active_tab].history.undo_stack.len(),
+            steps,
+            "a peer's change must not become a step of this person's"
+        );
+
+        undo(&mut app);
+        assert_eq!(author(&app, pump).tag, "P-1001", "this person's retag is taken back");
+        assert_eq!(prop(&app, vessel, "设计压力"), "2.5MPa", "the peer's change stays");
+        assert_eq!(app.collab.sent.len(), 2, "the undo goes out");
+        let said = last_sent(&app);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(
+            (said[0].kind.as_str(), said[0].object_ref.as_str(), said[0].value.as_str()),
+            ("set_tag", "P-1005", "P-1001")
+        );
+
+        // Nothing of this person's is left to take back, and the peer's
+        // change is not there to be taken.
+        undo(&mut app);
+        assert_eq!(prop(&app, vessel, "设计压力"), "2.5MPa");
+        assert_eq!(app.collab.sent.len(), 2);
+    }
+
+    /// One object, two people, two fields. Taking back one's own field puts
+    /// back the entity as it was before one's step — an image the peer's
+    /// field is not in — so the peer's change is written again afterwards,
+    /// and only one's own field is said to have moved. Redo likewise.
+    #[test]
+    fn undo_puts_back_ones_own_field_and_keeps_the_field_a_peer_changed() {
+        let (mut app, _) = app_with_vessel("X-1");
+        let pump = add_vessel(&mut app, "P-1001", r#"{"设计压力":"1.0MPa","设计温度":"80℃"}"#);
+        connected(&mut app);
+        put_props(&mut app, pump, r#"{"设计压力":"1.6MPa","设计温度":"80℃"}"#);
+        remote(
+            &mut app,
+            1,
+            vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "P-1001", "field": "设计温度", "value": "120℃",
+            })],
+        );
+
+        undo(&mut app);
+        assert_eq!(prop(&app, pump, "设计压力"), "1.0MPa", "one's own field goes back");
+        assert_eq!(prop(&app, pump, "设计温度"), "120℃", "the peer's field stays");
+        let said = last_sent(&app);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(
+            (said[0].field.as_str(), said[0].value.as_str()),
+            ("设计压力", "1.0MPa")
+        );
+
+        redo(&mut app);
+        assert_eq!(prop(&app, pump, "设计压力"), "1.6MPa");
+        assert_eq!(prop(&app, pump, "设计温度"), "120℃", "and stays through the redo");
+        let said = last_sent(&app);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(
+            (said[0].field.as_str(), said[0].value.as_str()),
+            ("设计压力", "1.6MPa")
+        );
+    }
+
+    /// The same field. The peer wrote it after this person did, so the
+    /// peer's value is what the room has; taking one's own write back
+    /// changes nothing here and says nothing there. Said, it would put the
+    /// old value over the peer's for everyone.
+    #[test]
+    fn undoing_a_value_a_peer_has_since_overwritten_changes_nothing_and_says_nothing() {
+        let (mut app, _) = app_with_vessel("X-1");
+        let pump = add_vessel(&mut app, "P-1001", r#"{"设计压力":"1.0MPa"}"#);
+        connected(&mut app);
+        put_props(&mut app, pump, r#"{"设计压力":"1.6MPa"}"#);
+        remote(
+            &mut app,
+            1,
+            vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "P-1001", "field": "设计压力", "value": "2.5MPa",
+            })],
+        );
+        let sent = app.collab.sent.len();
+
+        undo(&mut app);
+        assert_eq!(prop(&app, pump, "设计压力"), "2.5MPa");
+        assert_eq!(app.collab.sent.len(), sent, "{:?}", app.collab.sent.last());
+    }
+
+    /// A peer's change used to clear this person's redo stack, being pushed
+    /// as a step of theirs. It is not a step, and the redo is still there.
+    #[test]
+    fn a_peers_change_leaves_this_persons_redo_in_place() {
+        let (mut app, pump) = app_with_vessel("P-1001");
+        let vessel = add_vessel(&mut app, "V-1001", "{}");
+        connected(&mut app);
+        let _ = app.run_command_line("PIDTAG P-1001 P-1005");
+        app.finish_all_pending_history();
+        undo(&mut app);
+        assert_eq!(author(&app, pump).tag, "P-1001");
+
+        remote(
+            &mut app,
+            1,
+            vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "V-1001", "field": "设计压力", "value": "2.5MPa",
+            })],
+        );
+        assert_eq!(
+            app.tabs[app.active_tab].history.redo_stack.len(),
+            1,
+            "the redo was thrown away"
+        );
+        redo(&mut app);
+        assert_eq!(author(&app, pump).tag, "P-1005");
+        assert_eq!(prop(&app, vessel, "设计压力"), "2.5MPa");
+    }
+
+    /// A peer renamed the object after this person edited it. The undo finds
+    /// it all the same — by the entity, not the name it had — keeps the new
+    /// name, and tells the room about the object under the name it has now.
+    #[test]
+    fn an_undo_after_a_peers_retag_names_the_object_by_the_tag_it_has_now() {
+        let (mut app, _) = app_with_vessel("X-1");
+        let pump = add_vessel(&mut app, "P-1001", r#"{"设计压力":"1.0MPa"}"#);
+        connected(&mut app);
+        put_props(&mut app, pump, r#"{"设计压力":"1.6MPa"}"#);
+        remote(
+            &mut app,
+            1,
+            vec![serde_json::json!({
+                "kind": "set_tag", "object_ref": "P-1001", "field": "tag", "value": "P-1009",
+            })],
+        );
+
+        undo(&mut app);
+        assert_eq!(author(&app, pump).tag, "P-1009", "the peer's name for it stays");
+        assert_eq!(prop(&app, pump, "设计压力"), "1.0MPa");
+        let said = last_sent(&app);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(
+            (said[0].object_ref.as_str(), said[0].field.as_str(), said[0].value.as_str()),
+            ("P-1009", "设计压力", "1.0MPa")
+        );
+    }
+
+    /// A step of this person's still open when a peer's change arrives ends
+    /// there and goes out as theirs. It used to be closed inside the fold,
+    /// where nothing is sent: the edit stayed in this drawing only.
+    #[test]
+    fn a_step_still_open_when_a_peers_change_arrives_goes_out_as_this_persons() {
+        let (mut app, pump) = app_with_vessel("P-1001");
+        let vessel = add_vessel(&mut app, "V-1001", "{}");
+        connected(&mut app);
+        let i = app.active_tab;
+        app.push_undo_snapshot(i, "TEST");
+        {
+            let document = &mut app.tabs[i].scene.document;
+            let mut record = PidAuthor::load(document, pump).expect("author");
+            record.tag = "P-1005".to_owned();
+            record.store(document, pump);
+        }
+        assert!(app.collab.sent.is_empty(), "the step is still open");
+
+        remote(
+            &mut app,
+            1,
+            vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "V-1001", "field": "设计压力", "value": "2.5MPa",
+            })],
+        );
+        assert_eq!(app.collab.sent.len(), 1, "this person's step went out");
+        let said = last_sent(&app);
+        assert_eq!(
+            (said[0].kind.as_str(), said[0].object_ref.as_str(), said[0].value.as_str()),
+            ("set_tag", "P-1001", "P-1005")
+        );
+        assert_eq!(prop(&app, vessel, "设计压力"), "2.5MPa");
+        // Their step alone is on the stack; undo takes it back and leaves
+        // the peer's change.
+        undo(&mut app);
+        assert_eq!(author(&app, pump).tag, "P-1001");
+        assert_eq!(prop(&app, vessel, "设计压力"), "2.5MPa");
     }
 
     /// A peer's change this drawing cannot follow — here, to an object it

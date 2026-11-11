@@ -322,6 +322,12 @@ pub struct Applied {
     /// Changes whose object this drawing does not have, by the name they used
     /// for it. Nothing was written for them, and the two drawings now differ.
     pub unresolved: Vec<String>,
+    /// Every change that found its object, with the entities it was found to
+    /// mean — whether or not a value had to be written. The caller keeps
+    /// these: taking back a local step restores entity images from before
+    /// the change, and the change is then written to the same entities
+    /// again ([`write_to`]).
+    pub resolved: Vec<(Change, Vec<Handle>)>,
 }
 
 impl Applied {
@@ -425,7 +431,19 @@ pub fn apply_change(doc: &mut Document, change: &Change, applied: &mut Applied) 
         }
         return;
     }
-    for handle in targets {
+    write_to(doc, &targets, change, applied);
+    applied.resolved.push((change.clone(), targets));
+}
+
+/// Write `change` to the entities `targets`, whatever tag they carry now.
+///
+/// This is the second half of [`apply_change`], and what applies a peer's
+/// change a second time after a local undo or redo put back entity images
+/// from before it: the entities are the ones it was resolved to when it
+/// arrived, and by then the object may be under another name here (the undo
+/// took back a retag). An entity that is gone, or has no record, is skipped.
+pub fn write_to(doc: &mut Document, targets: &[Handle], change: &Change, applied: &mut Applied) {
+    for &handle in targets {
         let Some(mut author) = PidAuthor::load(doc, handle) else {
             continue;
         };

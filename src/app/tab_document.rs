@@ -1256,6 +1256,13 @@ pub(super) struct DeltaSnapshot {
         crate::scene::named_parameters::ParameterTable,
         crate::scene::named_parameters::ParameterTable,
     )>,
+    /// How many of the peers' changes this drawing had taken when the step
+    /// was made (`collab::State::remote_seq`). The images above are from
+    /// that moment: what a peer did afterwards is in neither of them, so
+    /// taking the step back or putting it on again is followed by those
+    /// later changes being applied once more (`replay_remote_after`). `0`
+    /// outside a collaboration session, where it is never read.
+    pub(super) remote_mark: u64,
     pub(super) label: HistoryLabel,
 }
 

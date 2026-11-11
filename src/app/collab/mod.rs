@@ -171,6 +171,33 @@ pub(super) struct State {
     /// Whether a session has been up before in this run, so that
     /// `base_revision` is a revision this drawing was actually at.
     pub had_session: bool,
+    /// The peers' changes this drawing has taken, in the order it took them,
+    /// each with the entities it was written to.
+    ///
+    /// A peer's change is not a step on this person's undo stack — undo
+    /// takes back what they did themselves. But a local step keeps images of
+    /// the entities it touched, from the moment it was made, and taking it
+    /// back puts those images in the drawing: whatever a peer did to the
+    /// same entities since is not in them. So after an undo or a redo the
+    /// changes that came later than the step are written again, from here
+    /// (`OpenCADStudio::replay_remote_after`).
+    pub remote_log: Vec<AppliedRemote>,
+    /// How many changes `remote_log` has ever held: the `seq` of the newest.
+    pub remote_seq: u64,
+    /// The payload of every op this state queued, for tests to read: the
+    /// outbound queue itself is the process's, and other tests write to it.
+    #[cfg(test)]
+    pub sent: Vec<Value>,
+}
+
+/// One change of a peer's as this drawing took it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppliedRemote {
+    /// Its place in the order they were taken, from 1.
+    pub seq: u64,
+    /// The entities it was written to.
+    pub handles: Vec<document::Handle>,
+    pub change: broadcast::Change,
 }
 
 /// One remote `op_applied` waiting to be applied to the local document.
@@ -464,6 +491,8 @@ impl State {
             ));
         }
         let op_id = transport::next_op_id(&session_id);
+        #[cfg(test)]
+        self.sent.push(payload.clone());
         transport::request_op(&session_id, self.base_revision, &op_id, payload)?;
         if self.own_ops.len() >= 64 {
             self.own_ops.pop_front();

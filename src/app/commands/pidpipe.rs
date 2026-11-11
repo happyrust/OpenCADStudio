@@ -1699,6 +1699,62 @@ mod tests {
         }
     }
 
+    /// 协同：撤销自己的一步，会把这一步碰过的实体放回当时的样子。管路和管段
+    /// 的属性有一部分是从管线下传来的；别人后来改了管线的字段，它们「当时的
+    /// 样子」里没有这个值。撤销之后要照管线现在的值重新下传，否则管路和管段
+    /// 悄悄退回旧值，而管线上是新值。
+    #[test]
+    fn undoing_ones_own_run_edit_keeps_what_a_peer_later_set_on_the_line() {
+        let mut app = app();
+        let line = draw_line(&mut app);
+        let (run, segments) = draw_run(&mut app);
+        let line_tag = crate::pid::persist::PidAuthor::load(
+            &app.tabs[app.active_tab].scene.document,
+            line,
+        )
+        .expect("管线的作者记录")
+        .tag;
+        let value = |app: &OpenCADStudio, handle: document::Handle, key: &str| {
+            props_of(&app.tabs[app.active_tab].scene.document, handle)
+                .get(key)
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        // 自己的一步：改管路自己的一个字段（整份 props 一起写回）。
+        let mut mine = props_of(&app.tabs[app.active_tab].scene.document, run);
+        mine.insert("绝热等级".to_string(), "H".to_string());
+        let pairs: Vec<(&str, &str)> = mine
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        put_props(&mut app, run, &pairs);
+        app.finish_all_pending_history();
+        assert_eq!(value(&app, run, "绝热等级"), "H");
+
+        // 别人随后改了管线的公称直径，下传到管路与管段。
+        app.collab.apply(crate::app::collab::CollabEvent::OpApplied {
+            op_id: "op-peer-line".to_owned(),
+            revision: 1,
+            changes: vec![json!({
+                "kind": "set_property",
+                "object_ref": line_tag,
+                "field": "公称直径",
+                "value": "DN80",
+            })],
+        });
+        app.apply_remote_changes();
+        assert_eq!(value(&app, run, "公称直径"), "DN80");
+
+        let _ = app.automation_op(r#"{"op":"undo"}"#);
+        assert_ne!(value(&app, run, "绝热等级"), "H", "自己的那一步撤回了");
+        assert_eq!(value(&app, line, "公称直径"), "DN80", "管线上是别人的值");
+        assert_eq!(value(&app, run, "公称直径"), "DN80", "管路仍跟随管线现在的值");
+        for segment in &segments {
+            assert_eq!(value(&app, *segment, "公称直径"), "DN80", "管段也是");
+        }
+    }
+
     /// `VAL-PIPE-007`：管路创建时全量继承管线五个字段，且不打覆盖标记。
     #[test]
     fn a_new_run_inherits_all_five_line_fields() {

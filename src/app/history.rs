@@ -157,6 +157,8 @@ impl OpenCADStudio {
             if delta.view.is_none() {
                 delta.view = Some(Box::new(self.tabs[i].scene.camera.borrow().clone()));
             }
+            // What the peers had done to this drawing by now; see the field.
+            delta.remote_mark = self.collab_remote_mark(i);
         }
         // The single convergence point of every new undo step (about 60 call
         // sites route here), which is why the collaboration broadcast hooks in
@@ -246,6 +248,7 @@ impl OpenCADStudio {
             reference_designations: Vec::new(),
             graph: None,
             named_parameters: None,
+            remote_mark: 0,
             label: label.into(),
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -441,6 +444,7 @@ impl OpenCADStudio {
             reference_designations,
             graph,
             named_parameters: None,
+            remote_mark: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -724,6 +728,7 @@ impl OpenCADStudio {
             reference_designations: Vec::new(),
             graph: None,
             named_parameters: None,
+            remote_mark: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -786,6 +791,7 @@ impl OpenCADStudio {
             reference_designations: Vec::new(),
             graph: None,
             named_parameters: None,
+            remote_mark: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -848,6 +854,7 @@ impl OpenCADStudio {
             reference_designations: Vec::new(),
             graph: None,
             named_parameters: None,
+            remote_mark: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -930,6 +937,7 @@ impl OpenCADStudio {
             reference_designations: Vec::new(),
             graph: None,
             named_parameters: None,
+            remote_mark: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -971,6 +979,7 @@ impl OpenCADStudio {
             reference_designations: Vec::new(),
             graph: None,
             named_parameters: None,
+            remote_mark: 0,
             label: "STYLE".into(),
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -1180,6 +1189,7 @@ impl OpenCADStudio {
             reference_designations,
             graph: None,
             named_parameters,
+            remote_mark: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -1575,6 +1585,9 @@ impl OpenCADStudio {
         // did: a retag taken back here has to be taken back in the room. The
         // steps of one UNDO go out together, in the order they are taken back.
         let mut undone = Vec::new();
+        // In a collaboration session the steps' images may predate changes
+        // the peers have made since; see `replay_remote_after`.
+        let guard = self.history_guard(i, true, steps);
         for _ in 0..steps {
             let Some(snapshot) = self.tabs[i].history.undo_stack.pop() else {
                 break;
@@ -1631,6 +1644,10 @@ impl OpenCADStudio {
             &changes,
         );
         self.restore_history_view(i, step_view);
+        let undone = match guard {
+            Some(guard) => self.replay_remote_after(i, guard),
+            None => undone,
+        };
         self.broadcast_changes(i, undone);
         if report {
             self.command_line
@@ -1686,6 +1703,7 @@ impl OpenCADStudio {
         let mut step_view = None;
         // Broadcast for the same reason an undo is (`undo_steps_reported`).
         let mut redone = Vec::new();
+        let guard = self.history_guard(i, false, steps);
         for _ in 0..steps {
             let Some(snapshot) = self.tabs[i].history.redo_stack.pop() else {
                 break;
@@ -1737,6 +1755,10 @@ impl OpenCADStudio {
             &changes,
         );
         self.restore_history_view(i, step_view);
+        let redone = match guard {
+            Some(guard) => self.replay_remote_after(i, guard),
+            None => redone,
+        };
         self.broadcast_changes(i, redone);
         self.command_line
             .push_output(crate::tf!("Redo: {last_label}").as_ref());
