@@ -1323,7 +1323,14 @@ impl OpenCADStudio {
                 // and every claim outcome are narrated here so the command line
                 // says what happened instead of going quiet.
                 let was_connected = self.collab.connected;
+                let was_readonly = self.collab.readonly;
                 self.collab.apply(event.clone());
+                if self.collab.readonly != was_readonly {
+                    // The Properties panel draws the session's drawing as
+                    // inputs or as values by this, so it is rebuilt now rather
+                    // than at the next change of selection.
+                    self.refresh_properties();
+                }
                 // A remote change is folded into the open drawing on the same
                 // frame the baseline moves, so the drawing and
                 // `/collab/status` never disagree (`VAL-CLI-009`).

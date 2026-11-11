@@ -64,7 +64,7 @@ impl OpenCADStudio {
 
     /// Whether tab `i` holds the session's drawing, settling it on `i` when
     /// the session has no document yet and `i` is the drawing in front.
-    fn is_collab_tab(&mut self, i: usize) -> bool {
+    pub(in crate::app) fn is_collab_tab(&mut self, i: usize) -> bool {
         self.collab_tab() == Some(i)
     }
 
@@ -1616,6 +1616,112 @@ mod tests {
             claims: Vec::new(),
         });
         assert!(!app.collab.readonly);
+    }
+
+    fn select(app: &mut OpenCADStudio, handle: document::Handle) {
+        let _ = app.automation_op(r#"{"op":"select","clear":true}"#);
+        let state = app.control_state();
+        let (response, task) = app.control_request(serde_json::json!({
+            "protocol": 1,
+            "op": "select",
+            "request_id": format!("collab-select-{:X}", handle.value()),
+            "client_id": "test",
+            "document_id": state["document_id"],
+            "revision": state["revision"],
+            "handles": [format!("{:X}", handle.value())],
+        }));
+        app.drive_headless_task(task).unwrap();
+        assert_eq!(response["ok"], true, "{response}");
+    }
+
+    /// The Properties panel's rows for the drawing in front, as they stand.
+    fn panel_rows(app: &OpenCADStudio) -> Vec<crate::scene::model::object::Property> {
+        app.tabs[app.active_tab]
+            .properties
+            .sections
+            .iter()
+            .flat_map(|section| section.props.iter().cloned())
+            .collect()
+    }
+
+    fn panel_row(app: &OpenCADStudio, label: &str) -> crate::scene::model::object::PropValue {
+        panel_rows(app)
+            .into_iter()
+            .find(|row| row.label == label)
+            .unwrap_or_else(|| panic!("no row labelled {label}"))
+            .value
+    }
+
+    /// What the Properties panel shows of an object in a session that may
+    /// not write: its values, as values. An input that takes what is typed
+    /// and then gives it back — the step is undone as it closes — is worse
+    /// than no input. The panel changes over when the session is told, with
+    /// nobody touching the selection; a peer's change still shows in it; and
+    /// a drawing the session is not on keeps its inputs.
+    #[test]
+    fn a_session_that_may_not_write_shows_an_objects_properties_as_values() {
+        use crate::scene::model::object::PropValue;
+        let is_value = |value: &PropValue| {
+            matches!(value, PropValue::ReadOnly(_) | PropValue::ReadOnlyWithTooltip { .. })
+        };
+        let (mut app, _) = app_with_vessel("X-1");
+        let pump = add_vessel(&mut app, "P-1001", r#"{"设计压力":"1.0MPa"}"#);
+        connected(&mut app);
+        let session_tab = app.active_tab;
+        app.collab.document = Some(app.tabs[session_tab].id);
+        select(&mut app, pump);
+        app.refresh_properties();
+        assert_eq!(panel_row(&app, "设计压力"), PropValue::PlainText("1.0MPa".to_owned()));
+        assert!(
+            panel_rows(&app).iter().any(|row| !is_value(&row.value)),
+            "a session that writes has inputs"
+        );
+
+        let _ = app.update(crate::app::Message::CollabEvent(CollabEvent::ReadonlyDowngrade {
+            reason: "角色无编辑权限".to_owned(),
+            holder: None,
+            level: Some("role".to_owned()),
+            code: Some("PERM_DENIED_ROLE".to_owned()),
+        }));
+        let rows = panel_rows(&app);
+        assert!(!rows.is_empty());
+        for row in &rows {
+            assert!(is_value(&row.value), "{} is still an input: {:?}", row.label, row.value);
+        }
+        assert_eq!(panel_row(&app, "设计压力"), PropValue::ReadOnly("1.0MPa".to_owned()));
+
+        // A peer's change shows, and is still not an input.
+        let _ = app.update(crate::app::Message::CollabEvent(CollabEvent::OpApplied {
+            op_id: "op-peer-1".to_owned(),
+            revision: 1,
+            changes: vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "P-1001", "field": "设计压力", "value": "2.5MPa",
+            })],
+        }));
+        assert_eq!(prop(&app, pump, "设计压力"), "2.5MPa");
+        assert_eq!(panel_row(&app, "设计压力"), PropValue::ReadOnly("2.5MPa".to_owned()));
+
+        // Another drawing is not the session's, and is edited as ever.
+        let (_, other) = another_drawing_in_front(&mut app, "P-2001");
+        select(&mut app, other);
+        app.refresh_properties();
+        assert!(
+            panel_rows(&app).iter().any(|row| !is_value(&row.value)),
+            "a drawing the session is not on lost its inputs"
+        );
+
+        // Told it may write again — a new session the server does not
+        // downgrade — the inputs come back, again without being asked.
+        app.active_tab = session_tab;
+        app.refresh_properties();
+        assert_eq!(panel_row(&app, "设计压力"), PropValue::ReadOnly("2.5MPa".to_owned()));
+        let _ = app.update(crate::app::Message::CollabEvent(CollabEvent::Connected {
+            session_id: "s-9".to_owned(),
+            base_revision: 1,
+            peers: Vec::new(),
+            claims: Vec::new(),
+        }));
+        assert_eq!(panel_row(&app, "设计压力"), PropValue::PlainText("2.5MPa".to_owned()));
     }
 
     /// A peer's change this drawing cannot follow — here, to an object it

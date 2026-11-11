@@ -2466,6 +2466,11 @@ impl OpenCADStudio {
         crate::entities::table::set_prop_current_cell_active(prop_vertex_indicator_active);
 
         let annotation_scale_handle = self.tabs[i].scene.displayed_annotation_scale_handle();
+        // A collaboration session that may not write shows the objects of its
+        // drawing as values, the way a locked layer does. Its edits are
+        // refused where every edit ends up (`refuses_step`), and an input
+        // that takes what is typed and then gives it back is worse than none.
+        let session_reads_only = self.collab.readonly && self.is_collab_tab(i);
         let mut new_panel = {
             let selected = self.tabs[i].scene.selected_entities();
             let mut panel = match selected.len() {
@@ -3591,12 +3596,15 @@ filter={:.1} local={:.1} aggregate={:.1} entities={}",
                 );
                 panel.field_key_by_id = crate::ui::properties::build_field_key_map(&panel.sections);
             }
-            if locked_only {
+            let reads_only = session_reads_only && !property_handles.is_empty();
+            if locked_only || reads_only {
                 // A point cloud locked on its own (not by its layer) still
-                // takes its Locked row, the way it is unlocked.
-                let cloud_lock_only = property_handles
-                    .iter()
-                    .all(|handle| self.tabs[i].scene.locked_layer_name(*handle).is_none());
+                // takes its Locked row, the way it is unlocked — unless the
+                // session may not write at all.
+                let cloud_lock_only = !reads_only
+                    && property_handles
+                        .iter()
+                        .all(|handle| self.tabs[i].scene.locked_layer_name(*handle).is_none());
                 make_sections_read_only(
                     &mut panel.sections,
                     if cloud_lock_only {
