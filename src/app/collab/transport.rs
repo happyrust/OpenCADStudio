@@ -567,6 +567,7 @@ fn describe_event(event: &CollabEvent) -> String {
             rejected,
         } => format!("error code={code} op_id={op_id} rejected={rejected} {message}"),
         CollabEvent::Resuming { from } => format!("welcome replay_from={from}"),
+        CollabEvent::ClaimsExpire(claims) => format!("welcome claims expire: {}", claims.len()),
         CollabEvent::OpsInConflict { op_ids } => format!("conflict op_ids={}", op_ids.join(",")),
         CollabEvent::Conflict(entry) => format!(
             "conflict conflict_id={} object_ref={} field={} value_a={} value_b={}",

@@ -116,6 +116,9 @@ pub enum CollabEvent {
     /// so the session is taken at the revision its drawing has, and what it
     /// missed arrives as `op_applied` like any other (`VAL-CROSS-008`).
     Resuming { from: i64 },
+    /// When each claim a `welcome` listed runs out, in Unix seconds — said
+    /// behind the `Connected` that lists who holds them.
+    ClaimsExpire(Vec<(String, i64)>),
     /// An `error` that answers an op of this session's by its id.
     /// `rejected`: nothing of the op took effect, and the step it spoke for
     /// is taken back. Otherwise it is about one change of an op whose other
@@ -464,6 +467,11 @@ pub(super) struct State {
     /// The id of the last session that was up: ops made with none up are
     /// numbered under it (the id is the server's and nobody else's).
     last_session: Option<String>,
+    /// tag → when the claim on it runs out, in Unix seconds, for the claims
+    /// the server has said it of: those standing at the last `welcome`, and
+    /// one this session asked for and was refused. A claim this session was
+    /// granted is not in here — `claim_granted` does not say.
+    pub claim_expiry: BTreeMap<String, i64>,
     /// The payload of every op this state queued, for tests to read: the
     /// outbound queue itself is the process's, and other tests write to it.
     #[cfg(test)]
@@ -666,11 +674,15 @@ impl State {
             CollabEvent::Resuming { from } => {
                 self.resume_from = Some(from);
             }
+            CollabEvent::ClaimsExpire(claims) => {
+                self.claim_expiry = claims.into_iter().collect();
+            }
             CollabEvent::Disconnected { reason, will_retry } => {
                 self.connected = false;
                 self.session_id = None;
                 self.peers.clear();
                 self.claims.clear();
+                self.claim_expiry.clear();
                 self.catching_up = None;
                 self.resume_from = None;
                 for entry in &mut self.outbox {
@@ -702,6 +714,8 @@ impl State {
             CollabEvent::ClaimGranted { tag } => {
                 let holder = self.user_id.clone();
                 self.last_claim_message = Some(format!("已占用位号 {tag}"));
+                // Whatever was known of an earlier claim on it is over.
+                self.claim_expiry.remove(&tag);
                 self.claims.insert(tag, holder);
             }
             CollabEvent::ClaimDenied {
@@ -715,11 +729,13 @@ impl State {
                 self.last_claim_message =
                     Some(format!("位号 {tag} 已被 {holder} 占用，到期时间 {expires_at}"));
                 self.last_error = Some(format!("位号 {tag} 已被占用，到期时间 {expires_at}"));
+                self.claim_expiry.insert(tag.clone(), expires_at);
                 self.claims.insert(tag, holder);
             }
             CollabEvent::ClaimReleased { tag, reason } => {
                 self.last_claim_message = Some(format!("位号 {tag} 占用已释放（{reason}）"));
                 self.claims.remove(&tag);
+                self.claim_expiry.remove(&tag);
             }
             CollabEvent::ReadonlyDowngrade {
                 reason,
@@ -988,6 +1004,13 @@ impl State {
             "last_apply_error": self.last_apply_error,
             "document_id": self.document,
             "diverged": self.diverged,
+            // tag → when the claim on it runs out (Unix seconds), where the
+            // server has said.
+            "claim_expiry": self
+                .claim_expiry
+                .iter()
+                .map(|(tag, expires_at)| (tag.clone(), json!(expires_at)))
+                .collect::<serde_json::Map<String, Value>>(),
             // Ops of this session's the room has not answered: the one on
             // the wire and the ones waiting behind it, or for a session.
             "queued_ops": self.outbox.len(),

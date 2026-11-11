@@ -1068,3 +1068,49 @@ fn a_session_the_server_let_go_of_is_to_be_joined_again() {
         );
     }
 }
+
+// ── When a claim runs out ────────────────────────────────────────────────
+
+/// The server says when each claim runs out, in `welcome` and when it
+/// refuses a claim. The client used to drop the time on the floor; it is
+/// kept with the claim and shown in the status.
+#[test]
+fn the_time_a_claim_runs_out_is_kept_with_it() {
+    let mut a = editor("u1");
+    let frame = r#"{"type":"welcome","session_id":"s-1","base_revision":0,"peers":[],
+        "claims":[{"tag":"P-1001","session_id":"s-2","user_id":"u2","expires_at":1700000300}]}"#;
+    let reading = messages::read(frame);
+    let messages::Frame::Event(connected) = reading.frame else {
+        panic!("welcome is an event");
+    };
+    hear(&mut a, connected);
+    for event in reading.after {
+        hear(&mut a, event);
+    }
+    assert_eq!(a.collab.claims.get(PUMP).map(String::as_str), Some("u2"));
+    assert_eq!(a.collab.claim_expiry.get(PUMP), Some(&1_700_000_300));
+    assert_eq!(a.collab.status_json()["claim_expiry"][PUMP], 1_700_000_300);
+
+    // A claim this session asked for and was refused says it too.
+    hear(
+        &mut a,
+        CollabEvent::ClaimDenied {
+            tag: VESSEL.to_owned(),
+            holder: "s-2".to_owned(),
+            expires_at: 1_700_000_900,
+        },
+    );
+    assert_eq!(a.collab.claim_expiry.get(VESSEL), Some(&1_700_000_900));
+
+    // Let go of, the time goes with the claim; and with the session, all.
+    hear(
+        &mut a,
+        CollabEvent::ClaimReleased {
+            tag: PUMP.to_owned(),
+            reason: "expired".to_owned(),
+        },
+    );
+    assert_eq!(a.collab.claim_expiry.get(PUMP), None);
+    drop_session(&mut a);
+    assert!(a.collab.claim_expiry.is_empty());
+}

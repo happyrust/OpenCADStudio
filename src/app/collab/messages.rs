@@ -71,6 +71,13 @@ pub(super) fn read(text: &str) -> Reading {
             // Said first: the session is then taken at the revision its
             // drawing has, with what it missed still to come.
             before.extend(replay_from.map(|from| CollabEvent::Resuming { from }));
+            // When each claim runs out. It used to be dropped here.
+            after.push(CollabEvent::ClaimsExpire(
+                claims
+                    .iter()
+                    .map(|claim| (claim.tag.clone(), claim.expires_at))
+                    .collect(),
+            ));
             Frame::Event(CollabEvent::Connected {
                 session_id,
                 base_revision,
