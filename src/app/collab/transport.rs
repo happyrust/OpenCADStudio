@@ -252,6 +252,61 @@ fn log(line: &str) {
     eprintln!("[collab] t={at} {line}");
 }
 
+/// How much of the traffic the client writes to stderr.
+///
+/// The lifecycle — connecting, dropped, retrying, quitting — is always
+/// written: it is what tells a person why nothing is arriving. The frames
+/// are another matter, and `OCS_COLLAB_LOG` decides: `quiet` writes nothing
+/// per frame; `frames` writes every frame as it was on the wire, next to
+/// the one-line reading of it; anything else, or nothing, writes the
+/// readings alone (what it has always done).
+///
+/// The wire text is for runs that keep evidence. A reading is this client's
+/// account of a frame, and an account can be wrong where the frame is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum LogLevel {
+    Quiet,
+    Events,
+    Frames,
+}
+
+/// The level `OCS_COLLAB_LOG` names, read as leniently as an environment
+/// variable set by hand deserves.
+fn level_named(value: Option<&str>) -> LogLevel {
+    match value.map(|value| value.trim().to_ascii_lowercase()).as_deref() {
+        Some("quiet" | "off" | "0") => LogLevel::Quiet,
+        Some("frames" | "frame" | "2") => LogLevel::Frames,
+        _ => LogLevel::Events,
+    }
+}
+
+/// The level this process logs at, read once.
+fn log_level() -> LogLevel {
+    static LEVEL: OnceLock<LogLevel> = OnceLock::new();
+    *LEVEL.get_or_init(|| level_named(std::env::var("OCS_COLLAB_LOG").ok().as_deref()))
+}
+
+/// What is written for one frame at `level`: the frame itself, in the
+/// direction it travelled, when frames are kept; then the reading of it,
+/// when it has one and readings are written.
+fn frame_lines(level: LogLevel, inbound: bool, wire: &str, reading: Option<&str>) -> Vec<String> {
+    let mut lines = Vec::new();
+    if level >= LogLevel::Frames {
+        lines.push(format!("帧 {} {wire}", if inbound { "<-" } else { "->" }));
+    }
+    if level >= LogLevel::Events {
+        lines.extend(reading.map(str::to_owned));
+    }
+    lines
+}
+
+/// Write what [`frame_lines`] gives for one frame at this process's level.
+fn log_frame(inbound: bool, wire: &str, reading: Option<&str>) {
+    for line in frame_lines(log_level(), inbound, wire, reading) {
+        log(&line);
+    }
+}
+
 /// Outbound queue of the app's client, shared between the UI thread
 /// (producer) and the socket thread (consumer). A `Mutex<VecDeque>` is enough:
 /// claim traffic is human-paced, never a hot path.
@@ -587,7 +642,7 @@ pub(super) fn run_client(
         }
         log(&format!(
             "连接 {}（第 {} 次尝试）",
-            config.server_url,
+            super::shown_address(&config.server_url),
             attempt.saturating_add(1)
         ));
         let mut came_up = false;
@@ -643,7 +698,8 @@ fn run_session(
         client_version: config.client_version.clone(),
         workspace: String::new(),
     };
-    send_json(&mut ws, &hello)?;
+    let wire = send_json(&mut ws, &hello)?;
+    log_frame(false, &wire, None);
 
     let mut last_heartbeat = Instant::now();
     let mut session_id: Option<String> = None;
@@ -661,32 +717,39 @@ fn run_session(
             return Ok(Ended::SubscriptionGone);
         }
         match ws.read() {
-            Ok(Message::Text(text)) => match classify(text.as_str()) {
-                Frame::Event(event) => {
-                    // `welcome` carries the session id every later frame
-                    // references, so remember it before forwarding.
-                    if let CollabEvent::Connected {
-                        session_id: id, ..
-                    } = &event
-                    {
-                        session_id = Some(id.clone());
-                        *came_up = true;
+            Ok(Message::Text(text)) => {
+                let frame = classify(text.as_str());
+                let reading = match &frame {
+                    Frame::Event(event) => Some(format!("收到 {}", describe_event(event))),
+                    _ => None,
+                };
+                log_frame(true, text.as_str(), reading.as_deref());
+                match frame {
+                    Frame::Event(event) => {
+                        // `welcome` carries the session id every later frame
+                        // references, so remember it before forwarding.
+                        if let CollabEvent::Connected {
+                            session_id: id, ..
+                        } = &event
+                        {
+                            session_id = Some(id.clone());
+                            *came_up = true;
+                        }
+                        if emit(sender, link, event).is_err() {
+                            close(&mut ws);
+                            return Ok(Ended::SubscriptionGone);
+                        }
                     }
-                    log(&format!("收到 {}", describe_event(&event)));
-                    if emit(sender, link, event).is_err() {
+                    Frame::Close => {
                         close(&mut ws);
-                        return Ok(Ended::SubscriptionGone);
+                        return Ok(Ended::Closed("server closed the session".to_owned()));
+                    }
+                    Frame::Ignored => {}
+                    Frame::Unreadable(error) => {
+                        log(&format!("无法解析服务器帧：{error}"));
                     }
                 }
-                Frame::Close => {
-                    close(&mut ws);
-                    return Ok(Ended::Closed("server closed the session".to_owned()));
-                }
-                Frame::Ignored => {}
-                Frame::Unreadable(error) => {
-                    log(&format!("无法解析服务器帧：{error}"));
-                }
-            },
+            }
             Ok(Message::Binary(_)) => {}
             Ok(Message::Ping(payload)) => {
                 // tungstenite queues the pong; flushing pushes it out now
@@ -720,14 +783,20 @@ fn run_session(
         if let Some(session_id) = session_id.clone() {
             for request in drain_outbound(&link.outbox) {
                 let message = outbound_message(&request, &session_id);
-                if let Err(error) = send_json(&mut ws, &message) {
-                    // A failed write means the socket is gone; the retry ladder
-                    // takes over and the queued request is dropped with it.
-                    let reason = format!("{} 发送失败：{error}", request.describe());
-                    close(&mut ws);
-                    return Ok(Ended::Closed(reason));
+                match send_json(&mut ws, &message) {
+                    Ok(wire) => {
+                        let reading = format!("发送 {}", request.describe());
+                        log_frame(false, &wire, Some(&reading));
+                    }
+                    Err(error) => {
+                        // A failed write means the socket is gone; the retry
+                        // ladder takes over and the queued request is dropped
+                        // with it.
+                        let reason = format!("{} 发送失败：{error}", request.describe());
+                        close(&mut ws);
+                        return Ok(Ended::Closed(reason));
+                    }
                 }
-                log(&format!("发送 {}", request.describe()));
             }
         }
 
@@ -738,10 +807,13 @@ fn run_session(
             let beat = ClientMessage::Heartbeat {
                 session_id: session_id.clone(),
             };
-            if let Err(error) = send_json(&mut ws, &beat) {
-                let reason = format!("heartbeat failed: {error}");
-                close(&mut ws);
-                return Ok(Ended::Closed(reason));
+            match send_json(&mut ws, &beat) {
+                Ok(wire) => log_frame(false, &wire, None),
+                Err(error) => {
+                    let reason = format!("heartbeat failed: {error}");
+                    close(&mut ws);
+                    return Ok(Ended::Closed(reason));
+                }
             }
             last_heartbeat = Instant::now();
         }
@@ -794,14 +866,16 @@ fn connect(url: &str) -> Result<WebSocket<TcpStream>, String> {
     Ok(ws)
 }
 
-/// Serialise one client message and flush it.
-fn send_json<S>(ws: &mut WebSocket<S>, message: &ClientMessage) -> Result<(), String>
+/// Serialise one client message and flush it. Returns the text that went
+/// out, for the frame log.
+fn send_json<S>(ws: &mut WebSocket<S>, message: &ClientMessage) -> Result<String, String>
 where
     S: std::io::Read + Write,
 {
     let text = serde_json::to_string(message).map_err(|error| format!("序列化失败：{error}"))?;
-    ws.send(Message::text(text))
-        .map_err(|error| format!("发送失败：{error}"))
+    ws.send(Message::text(text.clone()))
+        .map_err(|error| format!("发送失败：{error}"))?;
+    Ok(text)
 }
 
 /// Say goodbye politely. `close` only queues the frame; without the flush the
@@ -1250,6 +1324,34 @@ mod tests {
         assert!(!full.is_disconnected(), "full is not disconnected");
         // And the loop's `emit` treats that as "keep going".
         assert!(emit(&mut sender, &link, CollabEvent::Connecting { attempt }).is_ok());
+    }
+
+    /// The three levels, and what each writes for a frame: nothing; the
+    /// one-line reading; the frame as it was on the wire and then the
+    /// reading. A frame with no reading — a heartbeat, a `hello` — is
+    /// written only where frames are.
+    #[test]
+    fn a_frame_is_written_by_the_level_the_log_is_at() {
+        assert_eq!(level_named(None), LogLevel::Events, "what it has always done");
+        assert_eq!(level_named(Some("")), LogLevel::Events);
+        assert_eq!(level_named(Some("events")), LogLevel::Events);
+        assert_eq!(level_named(Some(" Quiet ")), LogLevel::Quiet);
+        assert_eq!(level_named(Some("off")), LogLevel::Quiet);
+        assert_eq!(level_named(Some("FRAMES")), LogLevel::Frames);
+
+        let wire = r#"{"type":"op_applied","op_id":"op-1","revision":2,"changes":[{"value":"2.5MPa"}]}"#;
+        let reading = "收到 op_applied op_id=op-1 revision=2 changes=1";
+        assert!(frame_lines(LogLevel::Quiet, true, wire, Some(reading)).is_empty());
+        assert_eq!(frame_lines(LogLevel::Events, true, wire, Some(reading)), [reading]);
+        assert_eq!(
+            frame_lines(LogLevel::Frames, true, wire, Some(reading)),
+            [format!("帧 <- {wire}"), reading.to_owned()],
+            "the frame goes in as it was, not as it was read"
+        );
+
+        let beat = r#"{"type":"heartbeat","session_id":"s-1"}"#;
+        assert!(frame_lines(LogLevel::Events, false, beat, None).is_empty());
+        assert_eq!(frame_lines(LogLevel::Frames, false, beat, None), [format!("帧 -> {beat}")]);
     }
 
     /// What is published to a link's config slot is what its client reads on

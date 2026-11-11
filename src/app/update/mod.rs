@@ -1341,7 +1341,7 @@ impl OpenCADStudio {
                     super::collab::CollabEvent::Connected { session_id, .. } => {
                         self.command_line.push_info(&format!(
                             "协同：已连接 {}（会话 {session_id}）",
-                            self.collab.server_url
+                            super::collab::shown_address(&self.collab.server_url)
                         ));
                         // The first live session brings the panel out where the
                         // layout has it: a claim is only useful if the roster

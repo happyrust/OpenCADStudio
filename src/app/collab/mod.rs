@@ -28,6 +28,23 @@ mod messages;
 #[cfg(not(target_arch = "wasm32"))]
 mod transport;
 
+/// A server address as it may be shown — in the log, on the command line,
+/// in `/collab/status`: without whatever stands before an `@` in its
+/// authority. A user name and a password in a URL are credentials wherever
+/// the URL goes, and those three places are read by people and kept in
+/// files. The protocol has no use for them (a session is who `hello` says
+/// it is), so nothing is lost by not showing them.
+pub(super) fn shown_address(address: &str) -> String {
+    let Some((scheme, rest)) = address.split_once("://") else {
+        return address.to_owned();
+    };
+    let authority = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..authority].rfind('@') {
+        Some(at) => format!("{scheme}://***@{}", &rest[at + 1..]),
+        None => address.to_owned(),
+    }
+}
+
 /// One participant on the drawing, as the server reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerInfo {
@@ -490,7 +507,7 @@ impl State {
             "ok": true,
             "configured": self.wanted(),
             "connected": self.connected,
-            "server_url": self.server_url,
+            "server_url": shown_address(&self.server_url),
             "user_id": self.user_id,
             "drawing_id": self.drawing_id,
             "session_id": self.session_id,
@@ -739,6 +756,33 @@ mod tests {
 
         state.server_url = "ws://127.0.0.1:3240/ws".to_owned();
         assert!(state.wanted());
+    }
+
+    /// An address is shown without what stands before the `@` of its
+    /// authority, and otherwise as it is — an `@` further along is part of
+    /// the path, not a credential.
+    #[test]
+    fn an_address_is_shown_without_its_credentials() {
+        for (address, shown) in [
+            ("ws://127.0.0.1:3240/ws", "ws://127.0.0.1:3240/ws"),
+            ("ws://someone:hunter2@127.0.0.1:3240/ws", "ws://***@127.0.0.1:3240/ws"),
+            ("ws://someone@host/ws", "ws://***@host/ws"),
+            // A password may itself hold an `@`: the last one ends it.
+            ("ws://a:p@ss@host:1/ws", "ws://***@host:1/ws"),
+            ("ws://host/ws?at=a@b", "ws://host/ws?at=a@b"),
+            ("ws://host/room@2", "ws://host/room@2"),
+            ("", ""),
+            ("not an address", "not an address"),
+        ] {
+            assert_eq!(shown_address(address), shown, "{address}");
+        }
+
+        // Where the status endpoint publishes it.
+        let mut state = State::new();
+        state.server_url = "ws://someone:hunter2@127.0.0.1:3240/ws".to_owned();
+        let status = state.status_json().to_string();
+        assert!(!status.contains("hunter2"), "{status}");
+        assert!(status.contains("127.0.0.1:3240"), "{status}");
     }
 
     #[test]

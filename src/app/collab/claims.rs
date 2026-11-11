@@ -191,9 +191,11 @@ impl OpenCADStudio {
                 Some(Task::none())
             }
             _ => {
+                // The word only: what follows it may be an address, and an
+                // address is not echoed as typed (`shown_address`).
                 self.command_line.push_error(&format!(
                     "PIDCOLLAB: 只接受 ON、OFF、SERVER <ws://主机:端口/ws>、USER <用户>、\
-                     DRAWING <图号>，实得 \"{arg}\"。"
+                     DRAWING <图号>，实得 \"{word}\"。"
                 ));
                 Some(Task::none())
             }
@@ -208,9 +210,10 @@ impl OpenCADStudio {
         let name = setting.name();
         if typed.is_empty() {
             let saved = match setting {
-                CollabSetting::Server => &self.collab.configured_server_url,
-                CollabSetting::User => &self.collab.configured_user_id,
-                CollabSetting::Drawing => &self.collab.configured_drawing_id,
+                // Not as a file edited by hand may have it: see `shown_address`.
+                CollabSetting::Server => super::shown_address(&self.collab.configured_server_url),
+                CollabSetting::User => self.collab.configured_user_id.clone(),
+                CollabSetting::Drawing => self.collab.configured_drawing_id.clone(),
             };
             let saved = if saved.is_empty() { "（未设置）" } else { saved.as_str() };
             self.command_line
@@ -223,7 +226,8 @@ impl OpenCADStudio {
                 Ok(()) => typed.to_owned(),
                 Err(why) => {
                     self.command_line.push_error(&format!(
-                        "PIDCOLLAB SERVER: {why}。地址要写成 ws://主机:端口/ws，实得 \"{typed}\"。"
+                        "PIDCOLLAB SERVER: {why}。地址要写成 ws://主机:端口/ws，实得 \"{}\"。",
+                        super::shown_address(typed)
                     ));
                     return;
                 }
@@ -268,7 +272,7 @@ impl OpenCADStudio {
         match self.start_saved_session() {
             Ok(()) => self.command_line.push_info(&format!(
                 "协同：{name} 已保存为 {shown}，正在连接 {}",
-                self.collab.server_url
+                super::shown_address(&self.collab.server_url)
             )),
             Err(missing) => self
                 .command_line
@@ -455,6 +459,10 @@ impl CollabSetting {
 /// Whether `address` is one the transport can dial: a `ws://` URL naming a
 /// host. `wss://` is not — the transport speaks over a plain socket — and is
 /// better refused here than saved and retried for ever.
+///
+/// Nor is one carrying a user name or a password. The protocol does not use
+/// them, and the settings file this goes into is plain text. What was typed
+/// is not echoed in that refusal.
 fn dialable(address: &str) -> Result<(), String> {
     if address.contains(char::is_whitespace) {
         return Err("地址里有空白".to_owned());
@@ -465,6 +473,9 @@ fn dialable(address: &str) -> Result<(), String> {
     }
     if parsed.host_str().is_none_or(str::is_empty) {
         return Err("地址缺少主机名".to_owned());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("地址里不要带用户名或口令（协同协议不用它们，设置文件是明文）".to_owned());
     }
     Ok(())
 }
@@ -1006,6 +1017,29 @@ mod tests {
             );
             assert!(!app.collab.wanted(), "{typed} started a session");
         }
+    }
+
+    /// An address carrying a user name and a password is refused — the
+    /// protocol has no use for them and the settings file is plain text —
+    /// and the refusal does not repeat them.
+    #[test]
+    fn an_address_carrying_credentials_is_refused_and_not_repeated() {
+        let mut app = app_with_tags(&["P-1001"]);
+        app.collab.user_id = "u1".to_owned();
+        app.collab.drawing_id = "PID-1101".to_owned();
+        let refused = run(&mut app, "PIDCOLLAB SERVER ws://someone:hunter2@127.0.0.1:3240/ws");
+        assert_eq!(refused["ok"], false, "{refused}");
+        let said = refused.to_string();
+        assert!(!said.contains("hunter2"), "the password is repeated in {said}");
+        assert!(!said.contains("someone"), "the user name is repeated in {said}");
+        assert!(said.contains("127.0.0.1:3240"), "which address was refused is not said in {said}");
+        assert!(app.current_config().collab.server_url.is_empty());
+        assert!(!app.collab.wanted());
+
+        // Nor in the refusal of a word the command does not know.
+        let refused = run(&mut app, "PIDCOLLAB SERVE ws://someone:hunter2@127.0.0.1:3240/ws");
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert!(!refused.to_string().contains("hunter2"), "{refused}");
     }
 
     /// With nobody to connect as, or no drawing to connect for, the address
