@@ -1864,7 +1864,13 @@ impl OpenCADStudio {
                 tab.scene.populate_meshes_from_document();
             }
         }
-        let model_bg = self.model_space.resolve_model_bg(&self.active_theme);
+        // Inside the P&ID module a drawing is cleared to the canvas colour
+        // of the module's design. The user's model space background stays
+        // as it is set, for the general interface.
+        let model_bg = match self.pid_shell.current() {
+            Some(_) => crate::app::pid_shell::canvas::colour(self.pid_shell.theme),
+            None => self.model_space.resolve_model_bg(&self.active_theme),
+        };
         let paper_bg = self.model_space.resolve_paper_bg();
         let desk_bg = self.model_space.resolve_desk_bg();
         let sel_color = self.model_space.resolve_selection_color();

@@ -1055,7 +1055,11 @@ impl OpenCADStudio {
                         bounds,
                         step_x,
                         step_y,
-                        major_every: self.grid_major_every,
+                        major_every: if bare {
+                            super::pid_shell::canvas::GRID_MAJOR_EVERY
+                        } else {
+                            self.grid_major_every
+                        },
                         origin,
                         axes,
                         limits,
@@ -1087,6 +1091,14 @@ bg={bg_ms:.1}ms n={view_count}"
                     [0.80, 0.80, 0.80]
                 },
                 axes: self.grid_axes,
+                line_alpha: None,
+            };
+            // The P&ID editor draws the grid of its design (the block editor
+            // keeps its own).
+            let grid_style = if bare && !in_block_editor {
+                super::pid_shell::canvas::grid_style(self.pid_shell.theme, bg_lum)
+            } else {
+                grid_style
             };
             // Wipeouts hide the model-space grid (the grid is an
             // overlay above the GPU scene, so it is cut around them instead).

@@ -38,6 +38,8 @@
 //!                         STARTUP_SCREEN, nav(), view(), PIDSCREEN
 //!   chrome.rs             the shell around a screen: title bar, navigation,
 //!                         status bar; SyncStatus
+//!   canvas.rs             the colour a drawing is cleared to and the grid
+//!                         over it, inside the module
 //!   rebase.rs             a frame of its own for the general drawing
 //!                         interface inside the content area
 //!   workbench.rs          01 工作台         workbench       not implemented
@@ -135,6 +137,7 @@
 //! `ui_bounds` — and a test — tells that the module is on, which screen is
 //! drawn and where.
 
+pub mod canvas;
 pub mod chrome;
 pub(crate) mod rebase;
 
@@ -155,6 +158,8 @@ pub mod workbench;
 
 #[cfg(test)]
 mod pid_editor_screen;
+#[cfg(test)]
+mod pid_editor_screen_canvas;
 #[cfg(test)]
 mod pid_fonts_loading;
 #[cfg(test)]
@@ -529,6 +534,9 @@ impl OpenCADStudio {
         cfg: &crate::cli::GuiConfig,
     ) -> Task<AppMessage> {
         let on = !cfg.classic && self.pid_shell.show(STARTUP_SCREEN);
+        if on {
+            self.use_pid_canvas();
+        }
         if !cfg.files.is_empty() {
             // Through `OpenExternal`, the door a second launch hands files
             // to: it checks each path, skips one already open, and queues
@@ -587,6 +595,8 @@ impl OpenCADStudio {
         }
         // The rectangle of the screen that was showing is no longer drawn.
         crate::ui::wrap_bar::forget_bounds(BOUNDS_PREFIX);
+        // The module may just have come on over open drawings.
+        self.use_pid_canvas();
         // The module may just have come on: the general interface measures
         // by the area the shell leaves it from here on.
         if let Some((width, height)) = self.pid_shell.window() {
