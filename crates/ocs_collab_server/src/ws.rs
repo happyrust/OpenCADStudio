@@ -507,6 +507,7 @@ pub async fn handle_message(
         drawing_id,
         mode,
         workspace,
+        since,
         ..
     } = &message
     {
@@ -516,7 +517,7 @@ pub async fn handle_message(
                 "会话已完成 hello，重复的 hello 被拒绝",
             ))];
         }
-        return hello(state, conn, user_id, drawing_id, mode, workspace, now).await;
+        return hello(state, conn, user_id, drawing_id, mode, workspace, *since, now).await;
     }
 
     let Some(session) = conn.session.clone() else {
@@ -553,8 +554,40 @@ pub async fn handle_message(
     }
 }
 
+/// What a session that was at revision `since` of `drawing_id` missed, when
+/// the server can say all of it: the op of every revision from `since + 1`
+/// to `current`, in order, as the op log has them. `None` when it cannot —
+/// the session did not ask, it names a revision the drawing has not reached
+/// (it was on another database), there is no op log, or the log does not
+/// hold every revision in between — and the session is then welcomed with
+/// no replay, to find out for itself that it is behind.
+fn missed_ops(
+    state: &AppState,
+    drawing_id: &str,
+    since: Option<i64>,
+    current: i64,
+) -> Option<Vec<crate::store::StoredOp>> {
+    let since = since?;
+    if since < 0 || since > current {
+        return None;
+    }
+    if since == current {
+        return Some(Vec::new());
+    }
+    let ops = state.store.as_ref()?.load_ops(drawing_id, since).ok()?;
+    let whole = ops.len() as i64 == current - since
+        && ops
+            .iter()
+            .zip(since + 1..)
+            .all(|(op, revision)| op.revision == revision);
+    whole.then_some(ops)
+}
+
 /// Opens a session for a `hello`: ensures the drawing row, applies the
-/// takeover rules and answers `welcome` + `peer_joined`.
+/// takeover rules and answers `welcome` + `peer_joined`. A session that
+/// says where its drawing was (`since`) is sent, right behind the
+/// `welcome`, every op the room applied after that (`VAL-CROSS-008`).
+#[allow(clippy::too_many_arguments)]
 async fn hello(
     state: &AppState,
     conn: &mut Connection,
@@ -562,6 +595,7 @@ async fn hello(
     drawing_id: &str,
     mode: &str,
     workspace: &str,
+    since: Option<i64>,
     now: i64,
 ) -> Vec<Reaction> {
     if let Some(store) = &state.store {
@@ -577,11 +611,18 @@ async fn hello(
     // Reading first and subscribing when the reactions are applied left a
     // gap: an op that took effect in between was in neither, and the session
     // started one change short with nothing to tell it so.
-    let (joined, base_revision) = {
+    //
+    // What a returning session missed is read in the same step, for the
+    // same reason: every op is then in the replay, or reaches the
+    // subscription, and none is in both.
+    let (joined, base_revision, missed) = {
         let _drawings = state.drawings.lock().expect("drawings mutex poisoned");
+        let joined = state.bus.subscribe(drawing_id);
+        let base_revision = current_revision(state, drawing_id);
         (
-            state.bus.subscribe(drawing_id),
-            current_revision(state, drawing_id),
+            joined,
+            base_revision,
+            missed_ops(state, drawing_id, since, base_revision),
         )
     };
     let session_id = new_session_id();
@@ -619,6 +660,8 @@ async fn hello(
                     message: "该图面已有活动的编辑会话".to_owned(),
                     level: Some("state".to_owned()),
                     holder: Some(holder),
+                    op_id: None,
+                    rejected: None,
                 }),
                 Reaction::Close,
             ]
@@ -665,6 +708,8 @@ async fn hello(
                         message: "会话已被新连接接管".to_owned(),
                         level: None,
                         holder: None,
+                        op_id: None,
+                        rejected: None,
                     },
                 });
             }
@@ -702,6 +747,15 @@ async fn hello(
                 peers.len(),
                 claims.len()
             );
+            if let Some(since) = since {
+                println!(
+                    "[ocs_collab_server] hello session={session_id} user={user_id} since={since} -> {}",
+                    match &missed {
+                        Some(ops) => format!("补发 {} 条 op_applied（修订 {since} 之后到 {base_revision}）", ops.len()),
+                        None => format!("不补发（当前修订 {base_revision}，日志里没有完整的一段）"),
+                    }
+                );
+            }
 
             conn.session = Some(session.clone());
             conn.joined = Some(joined);
@@ -714,12 +768,22 @@ async fn hello(
                     base_revision,
                     peers,
                     claims,
+                    replay_from: missed.as_ref().and(since),
                 }),
-                Reaction::Publish {
-                    drawing_id: drawing_id.to_owned(),
-                    message: ServerMessage::PeerJoined(peer_of(&session)),
-                },
             ]);
+            // What the session missed, each op as the room first heard it,
+            // before anything else reaches this socket.
+            reactions.extend(missed.unwrap_or_default().into_iter().map(|op| {
+                Reaction::Send(ServerMessage::OpApplied {
+                    op_id: op.op_id,
+                    revision: op.revision,
+                    changes: op.changes,
+                })
+            }));
+            reactions.push(Reaction::Publish {
+                drawing_id: drawing_id.to_owned(),
+                message: ServerMessage::PeerJoined(peer_of(&session)),
+            });
             // A session that may not write is told so as it comes in: its
             // user's role does not edit, or the drawing is 只读 already (a
             // downgrade used to reach only the sessions that were there
@@ -914,7 +978,10 @@ async fn op(
     now: i64,
 ) -> Vec<Reaction> {
     if let Some(code) = session_unavailable(state, &session.session_id).await {
-        return vec![Reaction::Send(error_message(&code, "会话已失效，无法提交操作"))];
+        return vec![Reaction::Send(refusing(
+            error_message(&code, "会话已失效，无法提交操作"),
+            &op_id,
+        ))];
     }
 
     // A session that may not write does not write, whatever its client
@@ -933,7 +1000,10 @@ async fn op(
             denied.code(),
             denied.level.as_str()
         );
-        return vec![Reaction::Send(denied.error(&format!("操作 {op_id} ")))];
+        return vec![Reaction::Send(refusing(
+            denied.error(&format!("操作 {op_id} ")),
+            &op_id,
+        ))];
     }
 
     // A tag somebody else holds is theirs to change until they let go of it
@@ -964,6 +1034,8 @@ async fn op(
             ),
             level: None,
             holder: Some(held.session_id),
+            op_id: Some(op_id),
+            rejected: Some(true),
         })];
     }
 
@@ -1275,6 +1347,30 @@ fn error_message(code: &str, message: &str) -> ServerMessage {
         message: message.to_owned(),
         level: None,
         holder: None,
+        op_id: None,
+        rejected: None,
+    }
+}
+
+/// `error`, as the answer to op `op_id` nothing of which took effect: its
+/// sender takes the step back (`VAL-CROSS-008`).
+fn refusing(error: ServerMessage, op_id: &str) -> ServerMessage {
+    match error {
+        ServerMessage::Error {
+            code,
+            message,
+            level,
+            holder,
+            ..
+        } => ServerMessage::Error {
+            code,
+            message,
+            level,
+            holder,
+            op_id: Some(op_id.to_owned()),
+            rejected: Some(true),
+        },
+        other => other,
     }
 }
 
@@ -1482,6 +1578,7 @@ mod tests {
             mode: mode.into(),
             client_version: "test".into(),
             workspace: workspace.into(),
+            since: None,
         }
     }
 
@@ -1645,6 +1742,7 @@ mod tests {
                 base_revision,
                 peers,
                 claims,
+                ..
             } => {
                 assert_eq!(welcomed, &session_id);
                 assert_eq!(*base_revision, 0);
@@ -1797,6 +1895,8 @@ mod tests {
                     message: "该图面已有活动的编辑会话".to_owned(),
                     level: Some("state".to_owned()),
                     holder: Some(a_id),
+                    op_id: None,
+                    rejected: None,
                 }),
                 Reaction::Close,
             ],
@@ -2109,6 +2209,7 @@ mod tests {
                 mode: "协同编辑".into(),
                 client_version: "test".into(),
                 workspace: "plant-a".into(),
+                since: None,
             },
             T0 + 2,
         )

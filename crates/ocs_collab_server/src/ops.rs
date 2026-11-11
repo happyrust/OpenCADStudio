@@ -557,23 +557,47 @@ fn stale(incoming: &Incoming<'_>, current: i64) -> Outcome {
         incoming.now
     );
     Outcome {
-        reactions: vec![Reaction::Send(error(
+        reactions: vec![Reaction::Send(answer(
+            incoming,
             codes::STALE_BASE_REVISION,
             format!(
                 "图面当前修订为 {current}，操作基于 {}",
                 incoming.base_revision
             ),
+            true,
         ))],
         revision: None,
     }
 }
 
-fn error(code: &str, message: String) -> ServerMessage {
+/// The `error` that answers an op: which op it is about, and — `rejected`
+/// — whether nothing of that op took effect, so that its sender can take
+/// the step back (`VAL-CROSS-008`). An error about one change of an op
+/// whose other changes may still take effect is not `rejected`; the caller
+/// that finds nothing took effect after all says so with [`reject_whole`].
+fn answer(incoming: &Incoming<'_>, code: &str, message: String, rejected: bool) -> ServerMessage {
     ServerMessage::Error {
         code: code.to_owned(),
         message,
         level: None,
         holder: None,
+        op_id: Some(incoming.op_id.to_owned()),
+        rejected: rejected.then_some(true),
+    }
+}
+
+/// Every error among `reactions` now says that nothing of its op took
+/// effect.
+fn reject_whole(reactions: &mut [Reaction]) {
+    for reaction in reactions {
+        if let Reaction::Send(ServerMessage::Error { rejected, .. })
+        | Reaction::SendTo {
+            message: ServerMessage::Error { rejected, .. },
+            ..
+        } = reaction
+        {
+            *rejected = Some(true);
+        }
     }
 }
 
@@ -624,6 +648,12 @@ fn judge_and_commit(
     let mut reactions = Vec::new();
     let mut applied: Vec<(Change, String, Option<String>)> = Vec::new();
     let mut behind_topology = None;
+    // An op that makes, erases or reconnects something is one step of
+    // somebody's drawing and is taken whole or not at all: half of it — the
+    // field written, the fitting refused — is a drawing nobody made, and
+    // nothing its sender could take back. Field writes alone keep being
+    // judged one by one (`architecture.md` §3.3, step 1).
+    let structural = changes.iter().any(|change| !change.writes_a_field());
     for change in changes {
         let change = drawing.model.completed(&change);
         // A held op was made against a newer revision than this one: what
@@ -708,6 +738,24 @@ fn judge_and_commit(
         let mut outcome = stale(incoming, revision.max(drawing.model.revision()));
         reactions.append(&mut outcome.reactions);
     }
+    // Everything in `reactions` so far is a change that was turned away.
+    if !reactions.is_empty() && (structural || applied.is_empty()) {
+        reject_whole(&mut reactions);
+        println!(
+            "[ocs_collab_server] 入站 op session={} user={} op_id={} base_revision={} -> 整个 op 未生效（{} 条变更被拒{}） at={}",
+            session.session_id,
+            session.user_id,
+            incoming.op_id,
+            incoming.base_revision,
+            reactions.len(),
+            if applied.is_empty() { "" } else { "，带结构的 op 不拆开生效" },
+            incoming.now
+        );
+        return Outcome {
+            reactions,
+            revision: None,
+        };
+    }
     if applied.is_empty() {
         return Outcome {
             reactions,
@@ -782,7 +830,10 @@ fn judge_and_commit(
             }
         }
         Err(mut outcome) => {
+            // The commit did not happen: nothing of the op took effect,
+            // whatever was said of single changes before.
             reactions.append(&mut outcome.reactions);
+            reject_whole(&mut reactions);
             Outcome {
                 reactions,
                 revision: None,
@@ -823,9 +874,11 @@ fn commit(
                 Err(err) => {
                     eprintln!("[ocs_collab_server] 提交操作失败：{err}");
                     return Err(Outcome {
-                        reactions: vec![Reaction::Send(error(
+                        reactions: vec![Reaction::Send(answer(
+                            incoming,
                             codes::INVALID_MESSAGE,
                             "提交操作失败".to_owned(),
+                            true,
                         ))],
                         revision: None,
                     });
@@ -907,7 +960,12 @@ fn refused(
         "[ocs_collab_server] 入站 op session={} user={} op_id={} base_revision={} object_ref={object_ref} -> error {code} at={}",
         session.session_id, session.user_id, incoming.op_id, incoming.base_revision, incoming.now
     );
-    Reaction::Send(error(code, format!("操作 {}：{text}", incoming.op_id)))
+    Reaction::Send(answer(
+        incoming,
+        code,
+        format!("操作 {}：{text}", incoming.op_id),
+        false,
+    ))
 }
 
 /// Step 2's bookkeeping: the audit row saying what was not overwritten, and
@@ -955,12 +1013,14 @@ fn yielded(
         codes::OP_SUPERSEDED,
         incoming.now
     );
-    Reaction::Send(error(
+    Reaction::Send(answer(
+        incoming,
         codes::OP_SUPERSEDED,
         format!(
             "操作 {} 的基线 {} 落后：{what} 已在修订 {winner_revision} 被 {winner_user} 改为 {winner}，本次提交的 {} 未生效",
             incoming.op_id, incoming.base_revision, change.value
         ),
+        false,
     ))
 }
 
@@ -1064,6 +1124,8 @@ fn tie(
                 field,
                 value_a,
                 value_b,
+                // Neither op gets any other answer for this change.
+                op_ids: vec![first.op_id.clone(), second.op_id.to_owned()],
             },
         });
     }
@@ -1129,6 +1191,7 @@ mod tests {
             mode: "协同编辑".into(),
             client_version: "test".into(),
             workspace: "plant-a".into(),
+            since: None,
         };
         handle_message(state, &mut conn, hello, T0).await;
         assert!(conn.session.is_some(), "hello must open a session");
@@ -1277,6 +1340,7 @@ mod tests {
             mode: "协同编辑".into(),
             client_version: "test".into(),
             workspace: "plant-a".into(),
+            since: None,
         };
         let welcome = handle_message(&state, &mut late, hello, T0).await;
         let told = welcome
@@ -1434,6 +1498,7 @@ mod tests {
                 field,
                 value_a,
                 value_b,
+                ..
             } => {
                 assert_eq!(conflict_id, &row.conflict_id);
                 assert_eq!(
@@ -1840,5 +1905,247 @@ mod tests {
         assert_eq!(flush_interval(Duration::from_millis(8)), Duration::from_millis(5));
         assert_eq!(flush_interval(Duration::from_millis(100)), Duration::from_millis(25));
         assert_eq!(flush_interval(Duration::from_secs(3)), Duration::from_millis(50));
+    }
+
+    // ── `VAL-CROSS-008`: coming back, and being refused ──────────────────
+
+    /// A `hello` from a session that says where its drawing was.
+    async fn come_back(state: &AppState, user_id: &str, since: Option<i64>) -> Vec<Reaction> {
+        let mut conn = Connection::new("10.0.0.9");
+        let hello = ClientMessage::Hello {
+            user_id: user_id.into(),
+            drawing_id: DRAWING.into(),
+            mode: "协同编辑".into(),
+            client_version: "test".into(),
+            workspace: "plant-a".into(),
+            since,
+        };
+        handle_message(state, &mut conn, hello, T0 + 5).await
+    }
+
+    /// What a `hello` was answered with on its own socket: the revision the
+    /// room is at, where the replay starts, and the ops replayed, in order.
+    fn welcomed(reactions: &[Reaction]) -> (i64, Option<i64>, Vec<(String, i64, Vec<Value>)>) {
+        let mut told = None;
+        let mut replayed = Vec::new();
+        for reaction in reactions {
+            match reaction {
+                Reaction::Send(ServerMessage::Welcome { base_revision, replay_from, .. }) => {
+                    assert!(replayed.is_empty(), "the replay comes behind the welcome");
+                    told = Some((*base_revision, *replay_from));
+                }
+                Reaction::Send(ServerMessage::OpApplied { op_id, revision, changes }) => {
+                    replayed.push((op_id.clone(), *revision, changes.clone()));
+                }
+                _ => {}
+            }
+        }
+        let (base_revision, replay_from) = told.expect("welcome");
+        (base_revision, replay_from, replayed)
+    }
+
+    /// A session that was away says the revision its drawing had reached,
+    /// and is sent every op the room applied after it — each as the room
+    /// first heard it, behind the `welcome` and ahead of anything else. It
+    /// used to be welcomed at the room's revision with nothing in between,
+    /// and could only mark itself as no longer matching the room.
+    ///
+    /// Nothing is replayed to a session that does not ask, to one that names
+    /// a revision this drawing has not reached, or when there is no log to
+    /// replay from; such a session finds out for itself that it is behind.
+    #[tokio::test]
+    async fn collab_offline_queue_a_session_that_comes_back_is_sent_what_it_missed() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let mut said = Vec::new();
+        for (revision, (field, value)) in
+            [("设计压力", "1.6MPa"), ("公称直径", "DN50"), ("绝热等级", "H")].into_iter().enumerate()
+        {
+            let op_id = format!("op-{}", revision + 1);
+            let reactions = submit(&state, &mut s1, revision as i64, &op_id, set(field, value)).await;
+            said.push(applied(&reactions).expect("applied"));
+        }
+
+        let (base, from, replayed) = welcomed(&come_back(&state, "u2", Some(1)).await);
+        assert_eq!((base, from), (3, Some(1)));
+        assert_eq!(replayed, said[1..], "revisions 2 and 3, as the room heard them");
+
+        let (base, from, replayed) = welcomed(&come_back(&state, "u3", Some(3)).await);
+        assert_eq!((base, from), (3, Some(3)), "nothing missed is still an answer");
+        assert!(replayed.is_empty());
+        let (base, from, replayed) = welcomed(&come_back(&state, "u4", Some(0)).await);
+        assert_eq!((base, from, replayed.len()), (3, Some(0), 3));
+
+        // Not asked; and a revision this drawing never reached.
+        for since in [None, Some(7), Some(-1)] {
+            let (base, from, replayed) = welcomed(&come_back(&state, "u5", since).await);
+            assert_eq!((base, from), (3, None), "{since:?}");
+            assert!(replayed.is_empty(), "{since:?}");
+        }
+
+        // With no database there is no log: nothing can be replayed, except
+        // to a session that missed nothing.
+        let bare = AppState::new(None, Some("no database".into()), "missing.db", SessionConfig::default());
+        let mut only = join(&bare, "u1").await;
+        submit(&bare, &mut only, 0, "op-1", set("设计压力", "1.6MPa")).await;
+        assert_eq!(welcomed(&come_back(&bare, "u2", Some(0)).await).1, None);
+        assert_eq!(welcomed(&come_back(&bare, "u2", Some(1)).await).1, Some(1));
+    }
+
+    /// The replay and the subscription are one step: an op that commits
+    /// right behind the `hello` reaches the room's channel and is not in
+    /// the replay, and one that committed right before it is in the replay
+    /// and not on the channel a second time.
+    #[tokio::test]
+    async fn collab_offline_queue_the_replay_and_the_room_overlap_nowhere() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        submit(&state, &mut s1, 0, "op-1", set("设计压力", "1.6MPa")).await;
+
+        let mut late = Connection::new("10.0.0.9");
+        let hello = ClientMessage::Hello {
+            user_id: "u2".into(),
+            drawing_id: DRAWING.into(),
+            mode: "协同编辑".into(),
+            client_version: "test".into(),
+            workspace: "plant-a".into(),
+            since: Some(0),
+        };
+        let reactions = handle_message(&state, &mut late, hello, T0 + 5).await;
+        let (_, _, replayed) = welcomed(&reactions);
+        assert_eq!(replayed.iter().map(|(op_id, ..)| op_id.as_str()).collect::<Vec<_>>(), ["op-1"]);
+        submit(&state, &mut s1, 1, "op-2", set("公称直径", "DN50")).await;
+
+        let mut joined = late.joined.take().expect("the subscription hello took out");
+        let heard: Vec<String> = std::iter::from_fn(|| joined.try_recv())
+            .filter_map(|message| match message {
+                ServerMessage::OpApplied { op_id, .. } => Some(op_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(heard, ["op-2"], "only what came after the replay");
+    }
+
+    /// `(code, op_id, rejected)` of every `error` sent back.
+    fn answers(reactions: &[Reaction]) -> Vec<(String, Option<String>, Option<bool>)> {
+        reactions
+            .iter()
+            .filter_map(|reaction| match reaction {
+                Reaction::Send(ServerMessage::Error { code, op_id, rejected, .. })
+                | Reaction::SendTo {
+                    message: ServerMessage::Error { code, op_id, rejected, .. },
+                    ..
+                } => Some((code.clone(), op_id.clone(), *rejected)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// An `error` that answers an op names the op, and says whether nothing
+    /// of it took effect — which is what lets its sender take that step,
+    /// and no other, back. It used to carry a code and a sentence.
+    #[tokio::test]
+    async fn collab_offline_queue_an_error_names_its_op_and_says_whether_nothing_took_effect() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        submit(&state, &mut s1, 0, "op-1", set("设计压力", "1.6MPa")).await;
+
+        // Behind another session's write to the same field: the one change
+        // the op carries yields, so nothing of it took effect.
+        let behind = submit(&state, &mut s2, 0, "op-2", set("设计压力", "2.5MPa")).await;
+        assert_eq!(
+            answers(&behind),
+            [(codes::OP_SUPERSEDED.to_owned(), Some("op-2".to_owned()), Some(true))]
+        );
+        assert!(applied(&behind).is_none());
+
+        // Two field writes, one behind: that one is answered without
+        // `rejected`, and the other takes effect under the same op id.
+        let mut both = set("设计压力", "4.0MPa");
+        both["changes"] = json!([set("公称直径", "DN80")]);
+        let partly = submit(&state, &mut s2, 0, "op-3", both).await;
+        assert_eq!(answers(&partly), [(codes::OP_SUPERSEDED.to_owned(), Some("op-3".to_owned()), None)]);
+        let (op_id, revision, changes) = applied(&partly).expect("the other field merged");
+        assert_eq!((op_id.as_str(), revision, changes.len()), ("op-3", 2, 1));
+        assert_eq!(value_of(&state, "公称直径").as_deref(), Some("DN80"));
+
+        // A baseline the drawing has not reached, and an op the judgment
+        // does not read made against an old one: refused whole.
+        let ahead = submit(&state, &mut s2, 9, "op-4", set("设计压力", "4.0MPa")).await;
+        assert_eq!(
+            answers(&ahead),
+            [(codes::STALE_BASE_REVISION.to_owned(), Some("op-4".to_owned()), Some(true))]
+        );
+        let opaque = submit(&state, &mut s2, 0, "op-5", json!({"kind": "something_else", "tag": "X"})).await;
+        assert_eq!(
+            answers(&opaque),
+            [(codes::STALE_BASE_REVISION.to_owned(), Some("op-5".to_owned()), Some(true))]
+        );
+    }
+
+    /// An op that makes, erases or reconnects something is taken whole or
+    /// not at all. One of its changes refused used to leave the rest in
+    /// effect — the symbol placed, say, and the field it was to carry not
+    /// written — which is a step nobody made and nobody could take back.
+    /// Field writes alone are still judged one by one (the test above).
+    #[tokio::test]
+    async fn collab_offline_queue_an_op_that_carries_structure_is_taken_whole_or_not_at_all() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        submit(&state, &mut s1, 0, "op-1", set("设计压力", "1.6MPa")).await;
+
+        let mut step = json!({"kind": "insert_symbol", "type": "VALVE", "tag": "V-1001", "position": [5, 5]});
+        step["changes"] = json!([set("设计压力", "2.5MPa")]);
+        let refused = submit(&state, &mut s2, 0, "op-2", step.clone()).await;
+        assert_eq!(
+            answers(&refused),
+            [(codes::OP_SUPERSEDED.to_owned(), Some("op-2".to_owned()), Some(true))]
+        );
+        assert!(applied(&refused).is_none(), "the symbol went in though the op was refused");
+        let (revision, items) = objects(&state, DRAWING, Some("V-1001"));
+        assert_eq!((revision, items.len()), (1, 0), "{items:?}");
+
+        // Made against the drawing as it is, the same step goes in whole.
+        let taken = submit(&state, &mut s2, 1, "op-3", step).await;
+        assert!(answers(&taken).is_empty(), "{taken:?}");
+        assert_eq!(applied(&taken).map(|(_, revision, changes)| (revision, changes.len())), Some((2, 2)));
+        assert_eq!(objects(&state, DRAWING, Some("V-1001")).1.len(), 1);
+
+        // A change to a line's connections behind another session's, with
+        // a field write beside it: neither happens.
+        let run = json!({"kind": "add_pipe_run", "line_tag": "L-1001", "tag": "L-1001-01", "points": [[0, 0], [9, 0]]});
+        submit(&state, &mut s1, 2, "op-4", run).await;
+        let mut late = json!({"kind": "insert_fitting", "line_tag": "L-1001", "run_tag": "L-1001-01",
+            "fitting_type": "gate_valve", "at": [5, 0]});
+        late["changes"] = json!([set("绝热等级", "H")]);
+        let refused = submit(&state, &mut s2, 2, "op-5", late).await;
+        assert_eq!(
+            answers(&refused),
+            [(codes::STALE_BASE_REVISION.to_owned(), Some("op-5".to_owned()), Some(true))]
+        );
+        assert!(applied(&refused).is_none());
+        assert_eq!(value_of(&state, "绝热等级"), None);
+    }
+
+    /// A conflict entry names the two ops that tied: neither gets an
+    /// `op_applied` or an `error` for it, and a client that waits for its
+    /// op to be answered before it sends the next would wait for good.
+    #[tokio::test]
+    async fn collab_offline_queue_a_conflict_names_the_two_ops_that_tied() {
+        let state = windowed();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        let held = submit(&state, &mut s1, 0, "op-a", set("设计压力", "1.6MPa")).await;
+        assert!(held.is_empty(), "held inside the window: {held:?}");
+        let tied = submit(&state, &mut s2, 0, "op-b", set("设计压力", "2.5MPa")).await;
+        let told = conflicts_published(&tied);
+        assert_eq!(told.len(), 1, "{tied:?}");
+        match &told[0] {
+            ServerMessage::Conflict { op_ids, .. } => assert_eq!(op_ids, &["op-a", "op-b"]),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert!(answers(&tied).is_empty() && applied(&tied).is_none());
     }
 }

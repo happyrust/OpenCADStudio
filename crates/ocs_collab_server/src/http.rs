@@ -1398,6 +1398,7 @@ mod tests {
                 mode: mode.into(),
                 client_version: "test".into(),
                 workspace: "plant-a".into(),
+                since: None,
             },
             now,
         )
@@ -1490,6 +1491,7 @@ mod tests {
                 mode: "协同编辑".into(),
                 client_version: "test".into(),
                 workspace: "plant-a".into(),
+                since: None,
             },
             now,
         )
@@ -2102,6 +2104,7 @@ mod tests {
                 mode: "协同编辑".into(),
                 client_version: "test".into(),
                 workspace: "plant-a".into(),
+                since: None,
             };
             ws::handle_message(&state, &mut conn, hello, 1_700_000_000).await;
             sessions.push(conn);
