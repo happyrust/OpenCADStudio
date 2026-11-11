@@ -40,6 +40,37 @@ thread_local! {
         RefCell::new(FxHashMap::default());
     /// Advanced by `end_frame` once everything above the widgets has drawn.
     static FRAME: Cell<u64> = const { Cell::new(0) };
+    /// Where the frame the widgets being drawn are laid out in starts in the
+    /// window: zero, except inside [`with_origin`].
+    static DRAW_ORIGIN: Cell<Vector> = const { Cell::new(Vector::ZERO) };
+    /// The origin each widget was last drawn under, for the widgets drawn in
+    /// a frame of their own (the others have no entry).
+    static DD_ORIGINS: RefCell<FxHashMap<String, Vector>> =
+        RefCell::new(FxHashMap::default());
+}
+
+/// Draw widgets that are laid out in a frame of their own — one whose
+/// top-left corner is not the window's but `origin` (`app::pid_shell::rebase`).
+///
+/// The bounds they record stay in that frame, which is what the frame's own
+/// overlays are placed by; [`window_bounds`] and [`recorded_bounds`] add the
+/// origin back for whoever needs the place in the window.
+pub fn with_origin<R>(origin: Vector, draw: impl FnOnce() -> R) -> R {
+    let outer = DRAW_ORIGIN.with(|cell| cell.replace(origin));
+    let drawn = draw();
+    DRAW_ORIGIN.with(|cell| cell.set(outer));
+    drawn
+}
+
+/// The origin of the frame widget `id` was last drawn in.
+fn origin_of(id: &str) -> Vector {
+    DD_ORIGINS.with(|m| m.borrow().get(id).copied().unwrap_or(Vector::ZERO))
+}
+
+/// Last-drawn bounds of the widget `id` in window coordinates: what a
+/// screenshot of the window is cropped by.
+pub fn window_bounds(id: &str) -> Option<Rectangle> {
+    dropdown_bounds(id).map(|bounds| bounds + origin_of(id))
 }
 
 /// Last-drawn screen bounds of the dropdown button with this id.
@@ -71,7 +102,8 @@ pub fn recent_bounds(id: &str) -> Option<Rectangle> {
     })
 }
 
-/// Every widget id currently reporting bounds, sorted by id.
+/// Every widget id currently reporting bounds, sorted by id, each in window
+/// coordinates.
 ///
 /// A panel whose background matches the drawing area cannot be segmented out
 /// of a screenshot, so a client reads where its widgets are from here instead
@@ -86,7 +118,7 @@ pub fn recorded_bounds() -> Vec<(String, Rectangle)> {
     let mut out: Vec<(String, Rectangle)> = DD_BOUNDS.with(|m| {
         m.borrow()
             .iter()
-            .map(|(id, (bounds, _))| (id.clone(), *bounds))
+            .map(|(id, (bounds, _))| (id.clone(), *bounds + origin_of(id)))
             .collect()
     });
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -99,6 +131,7 @@ pub fn recorded_bounds() -> Vec<(String, Rectangle)> {
 /// keeps describing what is actually on screen.
 pub fn forget_bounds(prefix: &str) {
     DD_BOUNDS.with(|m| m.borrow_mut().retain(|id, _| !id.starts_with(prefix)));
+    DD_ORIGINS.with(|m| m.borrow_mut().retain(|id, _| !id.starts_with(prefix)));
 }
 
 /// Record `bounds` for the widget `id` as if it had just been drawn.
@@ -1111,6 +1144,15 @@ impl<'a> Widget<Message, Theme, Renderer> for PosReport<'a> {
                 self.id.to_string(),
                 (layout.bounds(), FRAME.with(Cell::get)),
             );
+        });
+        let origin = DRAW_ORIGIN.with(Cell::get);
+        DD_ORIGINS.with(|m| {
+            let mut origins = m.borrow_mut();
+            if origin == Vector::ZERO {
+                origins.remove(self.id.as_ref());
+            } else {
+                origins.insert(self.id.to_string(), origin);
+            }
         });
         self.child.as_widget().draw(
             &tree.children[0],

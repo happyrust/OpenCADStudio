@@ -12,9 +12,13 @@
 //! Start page when it is picked or when the last drawing is closed.
 //!
 //! [`view`] is the whole general interface, and that interface places its
-//! dropdowns, menus and dialogs in window coordinates. It has to be given
-//! the whole window, starting at the top-left corner, until the canvas is
-//! taken out of it (see "What the shell draws today" in [`super`]).
+//! dropdowns, menus and dialogs by window coordinates. So it is not put in
+//! the shell's content area as it is: it is given a frame of its own there
+//! ([`super::rebase`]), in which the area's top-left corner is its origin
+//! and the area's size is its "window size". Until the editor's own layout
+//! replaces it, the shell therefore shows two of some things: the general
+//! interface's status bar above the shell's, and its tab bar and ribbon
+//! under the shell's title bar.
 
 use iced::{Element, Task};
 
@@ -39,7 +43,8 @@ pub(crate) fn update(_app: &mut OpenCADStudio, message: Message) -> Task<AppMess
     match message {}
 }
 
-/// Draw the editor: today, the general drawing interface.
+/// Draw the editor: today, the general drawing interface, in a frame of its
+/// own inside the shell's content area ([`super::rebase`]).
 pub(crate) fn view(app: &OpenCADStudio) -> Element<'_, AppMessage> {
-    app.view_classic()
+    super::rebase::Rebase::new(app.view_classic()).into()
 }

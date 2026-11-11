@@ -36,6 +36,10 @@
 //! src/app/pid_shell/
 //!   mod.rs                this file: PidScreen, NavGroup, PidShell, Message,
 //!                         STARTUP_SCREEN, nav(), view(), PIDSCREEN
+//!   chrome.rs             the shell around a screen: title bar, navigation,
+//!                         status bar; SyncStatus
+//!   rebase.rs             a frame of its own for the general drawing
+//!                         interface inside the content area
 //!   workbench.rs          01 工作台         workbench       not implemented
 //!   drawings.rs           02 图纸管理       drawings        not implemented
 //!   editor.rs             03 P&ID 编辑器    editor          implemented
@@ -52,6 +56,9 @@
 //!   permissions.rs        14 权限管理       permissions     not implemented
 //!   pid_shell_startup.rs  tests: the first screen, switching, the navigation,
 //!                         the screen list against the design
+//!   pid_shell_chrome.rs   tests: the bars and their sizes, the session's
+//!                         state, what can be pressed, and the general
+//!                         interface in its frame (pointer, snap, popups)
 //! ```
 //!
 //! # What a screen module is
@@ -103,18 +110,28 @@
 //! `pid_shell_startup::the_call_example_of_the_module_docs_runs` makes these
 //! calls.
 //!
-//! # What the shell draws today
+//! # What the shell draws
 //!
-//! Nothing of its own: [`view`] hands the window to the showing screen. The
-//! title bar, the navigation and the status bar of the design are not drawn
-//! yet, and they cannot simply be put around the editor as it is: the editor
-//! screen is the whole general drawing interface, which places its dropdowns,
-//! menus and dialogs in window coordinates (`win_size`), so it has to start
-//! at the window's top-left corner until the canvas is taken out of it.
+//! [`view`] is the design's `component/App Shell` ([`chrome`]): the title
+//! bar, the navigation — the implemented screens under the design's groups,
+//! and the state of the collaboration session at its foot — and the status
+//! bar, around the showing screen. A screen's `view` is given the content
+//! area and nothing else.
+//!
+//! The editor screen is still the whole general drawing interface, which
+//! places its dropdowns, menus and dialogs by window coordinates. It is put
+//! in the content area in a frame of its own ([`rebase`]) and is told the
+//! area's size as its window size (`PidShell::editor_frame`), so that what
+//! it places lands where it should.
 //!
 //! The showing screen's rectangle is reported as `PID_SHELL:<id>`
-//! ([`bounds_id`]), which is how the automation channel's `ui_bounds` — and a
-//! test — tells that the module is on and which screen is drawn.
+//! ([`bounds_id`]) and the shell's parts as `PID_CHROME:<part>`
+//! (`chrome::CHROME_BOUNDS_PREFIX`), which is how the automation channel's
+//! `ui_bounds` — and a test — tells that the module is on, which screen is
+//! drawn and where.
+
+pub mod chrome;
+pub(crate) mod rebase;
 
 pub mod bom;
 pub mod color_rules;
@@ -131,6 +148,8 @@ pub mod typelib;
 pub mod validation;
 pub mod workbench;
 
+#[cfg(test)]
+mod pid_shell_chrome;
 #[cfg(test)]
 mod pid_shell_startup;
 
@@ -341,6 +360,11 @@ pub struct PidShell {
     /// the general CAD interface. Only [`PidShell::show`] sets it, so it is
     /// never a screen without a `view`.
     current: Option<PidScreen>,
+    /// The theme the shell is drawn in: which value of each design variable
+    /// it takes.
+    pub theme: crate::ui::style::pid_tokens::PidTheme,
+    /// The window's size, as the last resize said; `None` before the first.
+    window: Option<(f32, f32)>,
     /// 01 工作台.
     pub workbench: workbench::State,
     /// 02 图纸管理.
@@ -385,6 +409,27 @@ impl PidShell {
         }
         self.current = Some(screen);
         true
+    }
+
+    /// Take note of the window's size, and say what size the general drawing
+    /// interface is to measure by: the window's while the module is off,
+    /// and while it is on what the title bar, the navigation and the status
+    /// bar leave of it — the area the interface is laid out in
+    /// ([`rebase::Rebase`]).
+    pub fn editor_frame(&mut self, window: (f32, f32)) -> (f32, f32) {
+        self.window = Some(window);
+        if self.current.is_none() {
+            return window;
+        }
+        (
+            (window.0 - chrome::NAV_WIDTH).max(1.0),
+            (window.1 - chrome::TITLE_BAR_HEIGHT - chrome::STATUS_BAR_HEIGHT).max(1.0),
+        )
+    }
+
+    /// The window's size, once a resize has said it.
+    pub fn window(&self) -> Option<(f32, f32)> {
+        self.window
     }
 }
 
@@ -433,12 +478,14 @@ pub fn bounds_id(screen: PidScreen) -> String {
     format!("{BOUNDS_PREFIX}{}", screen.id())
 }
 
-/// The root view of the P&ID module: the showing screen, drawn by its
-/// module. `None` while the module is off.
+/// The root view of the P&ID module: the shell ([`chrome`]) around the
+/// showing screen, which is drawn by its module. `None` while the module is
+/// off.
 pub(in crate::app) fn view(app: &OpenCADStudio) -> Option<Element<'_, AppMessage>> {
     let screen = app.pid_shell.current()?;
     let draw = screen.view_fn()?;
-    Some(crate::ui::wrap_bar::PosReport::owned(bounds_id(screen), draw(app)).into())
+    let content = crate::ui::wrap_bar::PosReport::owned(bounds_id(screen), draw(app));
+    Some(chrome::frame(app, screen, content.into()))
 }
 
 impl OpenCADStudio {
@@ -519,6 +566,11 @@ impl OpenCADStudio {
         }
         // The rectangle of the screen that was showing is no longer drawn.
         crate::ui::wrap_bar::forget_bounds(BOUNDS_PREFIX);
+        // The module may just have come on: the general interface measures
+        // by the area the shell leaves it from here on.
+        if let Some((width, height)) = self.pid_shell.window() {
+            let _ = self.update(AppMessage::WindowResized(width, height));
+        }
         true
     }
 
