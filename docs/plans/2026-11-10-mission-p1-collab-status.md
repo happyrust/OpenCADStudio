@@ -9,7 +9,7 @@
 
 ## 0. 一页结论
 
-- **第二轮之后（§13）**：M6 的 4 项功能全部提交，`collab-client-broadcast` 在 `360dd0708`。M6 的 20 条断言逐条取了证：15 条按契约原文全部成立，5 条（003、005、013、018、019）各有一句按字面不成立，卡在契约自己的写法上，等契约的主人裁决（§13.4）。协同传输测试的隔离已修；全量 20 个测试程序在 `8cd274a2a` 上 6571 通过 / 0 失败 / 43 忽略，并进另一条线最后两个提交之后 6575 / 1 / 43，那 1 条是并行时偶发的测试，单独重跑通过（§13.8）。`Cargo.lock` 的欠账已补，`--locked` 能用了。M7 没有开始。
+- **第二轮之后（§13）**：M6 的 4 项功能全部提交，`collab-client-broadcast` 在 `360dd0708`。M6 的 20 条断言逐条取了证：13 条成立，7 条部分成立（003、005、009、011、013、018、019；原来写的是 15 条成立、5 条各有一句不成立，2026-11-11 按独立审查更正，见 §13.3 末与 §15）——其中 003、005、013、018、019 与 009 卡在契约自己的写法上，等契约的主人裁决（§13.4），011 是放行名单里有写命令。协同传输测试的隔离已修；全量 20 个测试程序在 `8cd274a2a` 上 6571 通过 / 0 失败 / 43 忽略，并进另一条线最后两个提交之后 6575 / 1 / 43，那 1 条是并行时偶发的测试，单独重跑通过（§13.8）。`Cargo.lock` 的欠账已补，`--locked` 能用了。M7 没有开始。
 
 - **mission 没有在跑。** `state.json` 是 `paused`，最后一条进度记录是 13:48:28 的 `mission_paused`。19:45:45 那次写入是 Factory 桌面端恢复编排会话时刷新了时间戳，之后没有任何新的运行（§2）。
 - **进度**：7 个里程碑里 M1–M5 已关闭（实现、代码评审、逐条断言取证都做完）；M6 的 4 项功能做完 3 项并已提交，第 4 项 `collab-client-broadcast` 是工作区里的半成品；M6 的里程碑验证还没跑；M7 的 4 项没有开始。`features.json` 共 57 条：52 completed / 1 in_progress / 4 pending（§3）。
@@ -542,9 +542,9 @@ git -C D:\work\plant-code\cad\OpenCADStudio reset --mixed refs/backup/main-pre-m
 | `VAL-CLI-006` | passed | 默认 TTL。到期那一秒 `claims` 行数 1 → 0；u1、u2 各收到一条 `claim_released reason=expired`；服务器日志有 TTL 回收行 | `logs\t22_ttl.result.txt`、`t22-server-log.txt`、`t22-u1-collab-log.txt`、`t22-u2-collab-log.txt` |
 | `VAL-CLI-007` | passed | `PIDRELEASE P-1001` → 双方收到 `claim_released reason=released`；`claims` 该行删除 | `logs\t21_claims.result.txt`、`t21-server-log.txt` |
 | `VAL-CLI-008` | passed | 窗口截图里面板占用行显示 P-1001 与 u1，符号与位号是占用色；`ui_bounds` 有 `pid-collab-row-P-1001`；status 的 `claims` 是 `{"P-1001":"u1"}`。占用色像素在视口截图上量：占用前 0，占用后 311（为什么不在窗口截图上量，见 §13.4 之 7） | `shots\t21-008-u1-claim.png`、`shots\t21-008-u1-viewport-before.png`、`shots\t21-008-u1-viewport-claim.png`、`logs\t21-008-capture-window.json`、`t21-008-capture-viewport.json`、`t21-008-ui-bounds.json` |
-| `VAL-CLI-009` | passed | u1 执行 `PIDTAG P-1001 P-1009`；双方收到同一条 `op_applied`（`op_id` 相同，修订 0 → 1）；u2 的 `PID_AUTHOR.tag` 读回 P-1009；两张截图的位号文字都是 P-1009 | `logs\t10_broadcast.result.txt`、`t10-009-u1-run.json`、`t10-009-u2-xdata.json`、`shots\t10-009-u1.png`、`shots\t10-009-u2.png`、`logs\t10-u1-collab-log.txt`、`t10-u2-collab-log.txt`、`t10-server-log.txt` |
+| `VAL-CLI-009` | 部分成立（2026-11-11 按审查 S9 更正，原记 passed） | u1 执行 `PIDTAG P-1001 P-1009`；双方收到同一条 `op_applied`（`op_id` 相同，修订 0 → 1）；u2 的 `PID_AUTHOR.tag` 读回 P-1009；两张截图的位号文字都是 P-1009。正文里「双方均确认收到对方的 `peer_joined`」不成立：后连入的 u2 没有收到关于 u1 的 `peer_joined`（它从 `welcome.peers` 得知 u1），`t10-u2-collab-log.txt` 里没有这一行，脚本当时也没有检查这一句——与 018 那一句是同一件事（§13.4 之 5） | `logs\t10_broadcast.result.txt`、`t10-009-u1-run.json`、`t10-009-u2-xdata.json`、`shots\t10-009-u1.png`、`shots\t10-009-u2.png`、`logs\t10-u1-collab-log.txt`、`t10-u2-collab-log.txt`、`t10-server-log.txt` |
 | `VAL-CLI-010` | passed | u2 改 `设计压力`，出站 op 带 `base_revision=1`；服务器回修订 2、没有 error；u1 收到修订 2；`sessions` 两行的 `base_revision` 都是 2 | `logs\t10_broadcast.result.txt`、`t10-010-u2-put.json`、`t10-010-sessions.json`、`t10-server-log.txt` |
-| `VAL-CLI-011` | passed | 图纸切只读后 u2 收到 `readonly_downgrade`（含 reason 与 holder）；u2 的 `PIDTAG` 返回 `ok=false`、`code=COLLAB_READONLY`，位号仍是 P-1009；u1 的同类命令 `ok=true`。持有者怎么认定，见 §13.4 之 2 | `logs\t10_broadcast.result.txt`、`t10-011-u2-status.json`、`t10-011-u2-run.json`、`t10-011-u1-run.json` |
+| `VAL-CLI-011` | 部分成立（2026-11-11 按审查 S1、S9 更正，原记 passed） | 图纸切只读后 u2 收到 `readonly_downgrade`（含 reason 与 holder）；u2 的 `PIDTAG` 返回 `ok=false`、`code=COLLAB_READONLY`，位号仍是 P-1009；u1 的同类命令 `ok=true`。持有者怎么认定，见 §13.4 之 2。按契约给的例子逐句有证据，但「写命令被拒」作为一类不成立：当时的只读放行名单里有会改图的命令（`PIDLEGEND ON/OFF/PURGE`、`PIDGROUP`、`AUDIT Yes`、`MEASURE`、`FIND`），走同一个入口会被放行。处理情况见 §15 | `logs\t10_broadcast.result.txt`、`t10-011-u2-status.json`、`t10-011-u2-run.json`、`t10-011-u1-run.json` |
 | `VAL-CLI-012` | passed | u2 的协同面板横幅画「只读」，u1 那一行画「编辑权」；`ui_bounds` 报告 `pid-collab-readonly` 与 `pid-collab-holder-u1`；u1 的面板上两样都没有（对照） | `shots\t10-012-u2-readonly.png`、`shots\t10-012-u1-editable.png`、`logs\t10-012-u2-capture.json`、`t10-012-u2-ui-bounds.json` |
 | `VAL-CLI-013` | 见 §13.4 之 4 | u1 收到 `peer_joined`（u2 的会话、`display_name` 非空），在线人数 1 → 2，截图 2 行；u2 的 `welcome.peers` 含 u1。「首次连入为空数组」「u2 的长度为 1」两句不成立：服务器把连入者自己也列进 `peers` | `logs\t10_broadcast.result.txt`、`t10-u1-status-alone.json`、`t10-u1-status-two.json`、`t10-u2-status-two.json`、`shots\t10-013-u1-alone.png`、`shots\t10-013-u1-two.png` |
 | `VAL-CLI-014` | passed | 强杀服务器后客户端 30 秒仍存活（`/ready` 200）；每次失败后的等待 200、400、800、1600、3200、5000、5000 毫秒，连接尝试相隔 2.45 → 7.06 秒；同端口同库重启后 0.6 秒建起新会话。间隔是从客户端日志读的——服务器停着的时候没有服务器日志可读 | `logs\t24_reconnect.result.txt`、`t24-014-attempts.txt`、`t24-sessions-before.json`、`t24-sessions-after.json`、`t24-u1-collab-log.txt`、`t24-server-log.txt` |
@@ -555,7 +555,7 @@ git -C D:\work\plant-code\cad\OpenCADStudio reset --mixed refs/backup/main-pre-m
 | `VAL-CLI-019` | 见 §13.4 之 8 | 依赖树里没有 `tokio`、`async-std`，有 `tungstenite`（`smol` 来自 iced，按裁决不计）；`src/app/collab/` 下检索式零命中（`8cd274a2a` 之前是 1 处）。「冷构建不超过 20 秒」不成立 | `logs\t26-cargo-tree.txt`；检索式由测试 `nothing_under_this_module_is_asynchronous_code` 钉住；构建耗时见 `B\r2*-summary.txt` |
 | `VAL-CLI-020` | passed | 强杀服务器后 2 毫秒客户端日志出现 `read error: ConnectionReset`（不是 close 帧分支），进入退避；重启后建起新会话 | `logs\t24_reconnect.result.txt`、`t24-u1-collab-log.txt` |
 
-合计：15 条按契约原文全部成立；5 条（003、005、013、018、019）各有一句按字面不成立，行为本身都取了证，卡在契约的写法上（§13.4）。没有哪一条没验，也没有哪一条非动指针或抢焦点不可。契约允许「点面板或用等价命令」的三处（004 占用、007 释放、016 退出）用的都是命令，面板上的占用 / 释放按钮和窗口的关闭按钮这一轮没有端到端点过。
+合计（2026-11-11 按独立审查 S9 更正）：**13 条成立，7 条部分成立**（003、005、009、011、013、018、019）。原来写的是「15 条按契约原文全部成立；5 条各有一句按字面不成立」，把 009 和 011 算进了全部成立，不对：009 的正文里有「双方均确认收到对方的 `peer_joined`」，和 018 不成立的那一句是同一件事；011 的「写命令被拒」按契约的例子成立，作为一类不成立（放行名单里有写命令）。003、005、013、018、019 各有一句按字面不成立，行为本身都取了证，卡在契约的写法上（§13.4）。014 的「从服务器日志的失败连接时间戳可读出」做不到（§13.4 之 9），行为成立，仍记成立，审查也是这么记的。没有哪一条没验，也没有哪一条非动指针或抢焦点不可。契约允许「点面板或用等价命令」的三处（004 占用、007 释放、016 退出）用的都是命令，面板上的占用 / 释放按钮和窗口的关闭按钮这一轮没有端到端点过。
 
 里程碑验证中修掉的：`VAL-CLI-019` 的检索式命中（`8cd274a2a`）；服务器此前不记入站 hello、claim、release、op 与占用到期，而 001、004、006、007、009、010、017 的证据都引服务器日志（并在 `360dd0708` 里）；客户端此前不记连接尝试与断开原因，014、015、020 要读（同上）。
 
@@ -932,7 +932,7 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 4. **「被引用」的范围。** 现状：只有管路端点（`add_pipe_run` 的 `from` / `to`）算引用，管路上的管件被删不拦。选项：管件也算。倾向不算，理由见 §14.5.2。
 5. **三处契约字面。** 001 的证据栏写的是 GUI 的 xdata 读回，实际读的是服务器的语义读回；017 写「`ok=false`」，WS 的 `error` 帧没有这个键，码名是 A.4 的 `OBJECT_REFERENCED`；015 读的 `level` 现在与 `denied_level` 并存。建议把 001 的证据改成「服务器 `GET /drawing/{id}/objects` 的读回」，017 的「返回 `ok=false`，`code` 表示被引用不可删（如 `REFERENCED_OBJECT`）」改成「返回 `error`，`code='OBJECT_REFERENCED'`」。
 6. **出图另外几条路没有图集核对**（§14.2 末）。现状：控制通道的 `plot` 动作与 PDF 导出不经 `resolve_plot_job`。选项：让它们也走同一遍核对（PDF 改成用作业带着的快照）；或者留着。倾向修，但它在这个 mission 之外，是上游出图的代码，等一句话再动。
-7. **会话绑哪张图**（§14.4 末）。现状：第一次用到时在前面的那张图。选项：改成命令行上给的那个文件所在的标签页。倾向后者，要动打开文件的路径，没有做。
+7. **会话绑哪张图**（§14.4 末）。现状：第一次用到时在前面的那张图。选项：改成命令行上给的那个文件所在的标签页。倾向后者，要动打开文件的路径，没有做。（补记：`c1a94dfde` 做了——带文件启动时会话只认显示那个文件的标签页，文件还没载入时入站变更在队列里等；不带文件启动仍按在前面的图算。见 §15.2 的 B1。）
 
 ### 14.7 没做的、没核实的
 
@@ -966,8 +966,97 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 
 在最后的提交 `dacf954ba` 上已经构建完全部二进制与测试程序（`B\r3z-summary.txt`，03:15 结束），全量与端到端的重跑见本节后面的补记。
 
+**补记（2026-11-11 09:19–09:25，`dacf954ba` 的构建，`B\r3z-*`）**
+
+| | 结果 |
+|---|---|
+| 全量 20 个测试程序 | 6664 通过 / 0 失败 / 44 忽略（`B\r3z-test.log`） |
+| lib 整套并行 8 遍（`--workspace` 构建出来的那个 lib 测试程序） | 7 遍 6054 通过 / 0 失败 / 42 忽略；**第 6 遍 1 条失败**：`app::update::viewport::rapid_drawing_tests::throttle_axis_lock_matches_authoritative_move`（`B\r3z-lib-full\run6.log`）。根因与修正见 §15.3 |
+| 备份面板两个分组（并入 `454db6685` 之后） | `pid_backup` 196 通过 / 3 忽略，`pidbackup` 24 通过 / 1 忽略 |
+| 协同分组 | 92 通过 |
+
+这 8 遍在跑的时候，工作区里 `src/app/collab/` 与 `src/app/update/viewport.rs` 正在被编辑。测试程序是此前构建好的，运行时会读源码的测试只有一条（`nothing_under_this_module_is_asynchronous_code`，读 `src/app/collab/` 找四种异步写法），当时的改动里没有这四种写法，它也没有失败；别的测试读的是夹具与资源，不读源码。端到端八个场景在 `dacf954ba` 上没有单独重跑，放在 §15 这一批修正之后一起跑。
+
 ### 14.9 磁盘与环境
 
 - 这一轮没有删过任何东西。D 盘开工时 21.8 GB，中途最低 18.4 GB，09:15 是 25.9 GB（机器上同时有别的构建在进出）。
 - 03:14 会话被外部中断，09:17 接着做；中断时没有进行到一半的 git 操作，没有残留进程。
 - mission 留下的三个 `pwsh` 与 `.ocs.lock` 没有碰。
+
+## 15. 执行记录：2026-11-11 第四段（对照独立审查逐条修）
+
+独立审查读的是 `3d4281eb3`，报告在 `D:\work\plant-code\cad\ocs-mission-backup-20261110\reviews\m6-review-3d4281eb3.md`。这一节逐条对照此后的提交。次序按「会写错数据的在前」：B1、S3、S6、S4，然后 S1、S2、S5、S7、S8。每做完一项提交一次，本节跟着改。
+
+本节的路径缩写同前：`B` = `D:\work\plant-code\cad\ocs-mission-backup-20261110\logs`，`E7` = `D:\scratch\m7-validation`。
+
+### 15.1 提交（`6cf766be5` 之后，都在 `main` 上，没有 push）
+
+| 提交 | 内容 |
+|---|---|
+| `c1a94dfde` | B1 余下三处：入站变更等图纸、占用色只涂会话那张图、启动窗口不丢变更 |
+| `71c95e90d` | 测试不再靠墙钟：指针移动的合并闸、双击窗口（§15.3） |
+| `9cc429cce` | S3、S7、N2、N5：变更不再悄悄丢掉；丢了、应用不上都标出来并停止提交；服务器按提交次序发布 `op_applied` |
+| `96f21cf91` | N8：正常退出时删掉自动化通道的描述文件 |
+
+### 15.2 发现项对照表
+
+「守着的测试」写测试名；lib 的在 `src/app/` 下对应模块的 `tests` 里，服务器的在 `crates/ocs_collab_server/src/` 下。
+
+| 项 | 现在 | 提交 | 守着的测试 | 还差什么 |
+|---|---|---|---|---|
+| **B1** 会话不绑标签页 | 已修 | `13dad6ef8`、`c1a94dfde` | (a) 入站按绑定的标签页 id 找：`a_remote_change_lands_on_the_sessions_drawing_not_on_the_tab_in_front`；找不到时留在队列里：`a_change_that_arrives_before_the_drawing_is_open_waits_for_it`（未载入）、`a_change_for_a_closed_drawing_stays_queued_and_touches_no_other`（已关闭，走 `Message::TabClose`）。(b) `push_undo_entry`、撤销、重做只在绑定的那一页广播：`an_edit_on_another_drawing_is_not_broadcast_as_the_sessions`（三步都查）。(c) 占用色只涂绑定的那一页：`a_claim_colours_the_sessions_drawing_only`。(d) 启动窗口：`on_tick` 在队列非空时回去应用（上面第二条走的就是这条路）；带文件启动的会话只认显示那个文件的标签页：`a_session_started_on_a_file_waits_for_that_file_not_the_tab_in_front` | 会话的图关掉之后会话还连着（占用不释放，队列只进不出）；同一个文件关掉再开不会重新绑上。关图要不要结束会话，见 §15.6 |
+| **S1** 只读放行名单里有写命令 | 没修 | — | — | 与 S2、`VAL-CROSS-004/011` 的只读总闸一起做 |
+| **S2** 只读只靠客户端自觉，断线即解除 | 没修 | — | — | 同上 |
+| **S3** 变更丢了基线照样前进 | 已修 | `9cc429cce` | 通道满：`a_peers_change_waits_for_room_in_the_channel_instead_of_being_dropped`、`a_waiting_change_gives_up_when_the_subscription_is_gone`、`…_when_the_app_is_quitting`。修订不连续：`a_revision_that_skips_one_marks_the_session_and_stops_its_ops`、`a_revision_already_seen_is_dropped`、`coming_back_to_a_room_that_moved_on_marks_the_session`。应用不上：`a_change_this_drawing_cannot_follow_stops_the_sessions_writes`、`an_op_this_client_cannot_read_marks_the_session_too`。面板：`a_session_that_parted_from_the_room_draws_the_badge`。服务器按提交次序发布：`an_applied_op_is_announced_before_the_drawing_is_unlocked` | 标记之后没有自动恢复，只能取得最新图纸重开。重连时由服务器补发错过的 op 放在 `cross-area-flows`（`VAL-CROSS-008`）。自己的 op 被服务器拒绝后本地改动还在，也是一种不一致，同样在那里处理 |
+| **S4** 入站变更进了本地撤销栈 | 没修 | — | — | 下一项，单独提交 |
+| **S5** 远端应用不调 `propagate_pid_chain` | 已修 | `cce14ba77` | `a_remote_line_change_is_carried_down_to_runs_and_segments`（`src/app/commands/pidpipe.rs`） | 拓扑表里的属性副本由 `propagate_pid_chain` 末尾的 `sync_props_from_document` 对齐 |
+| **S6** `object_ref` 的边界 | 部分修 | `cce14ba77` | 空位号对象：`a_change_naming_no_tag_is_not_applied_by_its_handle_alone`、`a_change_to_an_untagged_object_is_not_stated`。`already_retagged` 的两半：`a_retag_fitting_several_symbols_is_reported_even_when_the_new_tag_exists` | 多个实体同一个位号（管线、信号线）；两端各自新建的同位号对象；占用与 `object_ref` 共用的规范形式；`already_retagged` 只在句柄对得上时才算；一个 op 里认不出的变更要报。下一项 |
+| **S7** `op_id` 只在进程内唯一 | 已修 | `9cc429cce` | `two_sessions_never_make_the_same_op_id` | 被服务器拒绝的 op 的 id 仍留在 `own_ops` 里（最多 64 个）。id 带会话号之后它不会再被别人的 op 撞上 |
+| **S8** 持有者规则的竞争与边界 | 没修 | — | — | |
+| **S9** 记账 | 已改 | 本文档 | — | §0 与 §13.3 改成 13 条成立、7 条部分成立（003、005、009、011、013、018、019） |
+| **N1** 重试计数建成会话后不归零 | 没修 | — | — | |
+| **N2** `shutdown()` 预算过后无条件 `join()` | 已修 | `9cc429cce` | `a_wedged_worker_does_not_hold_the_quit_past_its_budget`、`a_worker_that_stops_is_joined_within_the_budget` | |
+| **N3** 本地开着的撤销步被远端折叠关掉时不广播 | 没修 | — | — | 与 S4 一起 |
+| **N4** `__overrides` 不随变更走；远端改位号一律 `manual` | 没修 | — | — | |
+| **N5** 心跳把旧基线写回；`welcome` 的修订读在进房间之前 | 已修 | `9cc429cce` | `rewriting_a_session_row_never_takes_its_baseline_back`、`a_session_that_joins_hears_the_op_right_after_the_revision_it_was_told` | |
+| **N6** 客户端日志不分级；连接地址原样进日志 | 没修 | — | — | |
+| **N7** 异步写法的检索只扫一层 | 没修 | — | — | |
+| **N8** 证据目录里的描述文件 | 已修 | `96f21cf91` | `a_retired_descriptor_is_gone`、`publishing_does_not_overwrite_a_descriptor_already_there`、`quitting_retires_the_descriptor_this_process_published` | 删除记录见 §15.4 |
+| **N9** 证据的卫生 | 没修 | — | — | 这一批修完重跑端到端时处理：两个 GUI 之间的帧存原文、去掉恒为真的检查、`t21_claims` 进 `run_all` |
+
+### 15.3 新查到的零星失败（不是协同的代码）
+
+**`throttle_axis_lock_matches_authoritative_move`**：`dacf954ba` 的 lib 全量 8 遍里失败 1 遍（§14.8 补记）。和 `821e11395` 修的 `lasso_press_drag_selects` 是同一类：`on_viewport_move` 用墙钟量一遍指针移动处理的耗时，达到 8 毫秒就把下一次移动扣下；测试里图是空的，机器忙（当时另一条线在构建）时一遍超过 8 毫秒，测试紧接着发的第二次移动被扣下，光标停在第一次的位置——失败输出里 x=40 正是第一次移动的位置。`821e11395` 只改了那一条测试，当时写了「另有约 70 处 `Message::ViewportMove` 的测试属于同一类」。`71c95e90d` 把这一类从根上去掉：耗时由 `move_pass_cost` 给出，正式构建里是 `started.elapsed()`，测试构建里是测试自己声明的值（缺省为零），合并闸的测试改成声明耗时。
+
+定向复现没有成功：`app::update::viewport` 一组 `--test-threads 64` 连跑 60 遍、`app::` 全组 64 线程连跑 12 遍，修之前修之后都是 0。它的修前失败率只有全量那一次，1/8。
+
+**`double_clicking_a_hatch_starts_hatchedit_on_it`**：上面那次定向（viewport 组、64 线程、60 遍）里目标没有复现，这一条却失败了 18 遍（修合并闸之前的程序）与 32 遍（之后的程序）。测试把双击的第一下记成 100 毫秒之前，双击窗口 400 毫秒，留给第二下 300 毫秒；64 个线程同时建应用时线程等不到核。`71c95e90d` 把第一下的时刻记到时钟前面，修之后同样的 60 遍是 0。缺省线程数下这一条从来没有失败过。`block_editor_tests.rs` 里同样写法的一处一并改了。
+
+| | 修之前 | 修之后 |
+|---|---|---|
+| `throttle_axis_lock…`，lib 全量缺省线程 | 1/8（`B\r3z-lib-full`） | 0/8（`B\r4c-lib-full`） |
+| `throttle_axis_lock…`，viewport 组 64 线程 | 0/60（`B\r4b-before-repro`） | 0/60（`B\r4b-after-repro`） |
+| `throttle_axis_lock…`，`app::` 全组 64 线程 | 0/12（`B\r4b-before64-repro`） | 0/12（`B\r4b-after64-repro`） |
+| `double_clicking_a_hatch…`，viewport 组 64 线程 | 18/60、32/60（同上两个目录） | 0/60（`B\r4c-after-dblclick-repro`） |
+
+### 15.4 N8：删掉的描述文件
+
+- `D:\scratch\m6-validation\work\appdata\<实例>\OpenCADStudio\automation\<32 位十六进制>.json`，共 26 个：`seed-make` 1、`seed-reopen` 1、`smoke` 1、`t10-u1` 2、`t10-u2` 2、`t11-a` 3、`t11-b` 3、`t20-u1` 1、`t21-u1` 3、`t21-u2` 3、`t22-u1` 1、`t22-u2` 1、`t23-u1` 1、`t24-u1` 1、`t25-offline` 1、`t25-plain` 1。与审查报告的个数逐项相同。
+- `E7\m6-rerun\work\appdata\<实例>\OpenCADStudio\automation\` 下 13 个（本轮重跑 M6 场景留下的，每个实例 1 个），同样删除。
+- 逐个文件的完整路径与字节数在 `D:\work\plant-code\cad\ocs-mission-backup-20261110\n8-deleted-descriptors.txt`，不含内容。删之前确认过没有 `OpenCADStudio` 或 `ocs_collab_server` 进程在跑。
+- 两个证据目录里别的东西没有动；16 个 `automation` 目录本身留着（空的）。
+- 程序这边：正常退出时自己删（`96f21cf91`）。被强杀或崩溃的进程仍会留下描述文件。
+
+### 15.5 测试
+
+| 提交 | 跑了什么 | 结果 |
+|---|---|---|
+| `c1a94dfde` | lib 全量 1 遍；协同分组 | 6058 通过 / 0 失败 / 42 忽略；96 通过。红灯输出 `B\r4a-b1-red.log` |
+| `71c95e90d`、`9cc429cce`、`96f21cf91`（同一次构建，三者改的文件互不相交） | lib 全量 8 遍；协同分组 | 每遍 6075 通过 / 0 失败 / 42 忽略（`B\r4c-lib-full\summary.txt`）；108 通过 |
+| `9cc429cce` | 服务器三个测试程序；`clippy -p ocs_collab -p ocs_collab_server --all-targets` | `ocs_collab` 76、`ocs_collab_server` lib 132、main 12，全部通过；0 警告。红灯输出 `B\r4c-srv-red.log` |
+
+全量 20 个测试程序、端到端场景、主程序的 clippy 在这一批修正之后一起跑，结果补在本节。
+
+### 15.6 这一段里要用户过目的
+
+1. **会话的图关掉之后会话怎么办。** 现状：会话还连着，占用不释放，别人的变更在队列里等一张不会回来的图。选项：关图即结束会话（发 close 帧，占用随之释放）；或者保持现状。倾向关图即结束——一个没有图的会话占着位号没有意义——但这是行为上的决定，没有做。
