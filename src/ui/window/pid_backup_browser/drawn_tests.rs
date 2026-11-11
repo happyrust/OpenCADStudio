@@ -442,3 +442,91 @@ fn the_scroll_bar_of_the_tree_is_not_drawn_over_the_rows() {
         fits.x + fits.width
     );
 }
+
+/// How many texts on screen read exactly `label`.
+fn count_of(ui: &mut Ui<'_>, label: &str) -> usize {
+    use iced_test::selector::Candidate;
+    let mut seen = 0;
+    // A selector that never selects is shown every widget.
+    let _ = ui.find(|candidate: Candidate<'_>| -> Option<()> {
+        if let Candidate::Text {
+            content,
+            visible_bounds: Some(_),
+            ..
+        } = candidate
+        {
+            seen += usize::from(content == label);
+        }
+        None
+    });
+    seen
+}
+
+/// A panel with no backup said so twice, once in each half; and while a
+/// backup was loading the lower half still said that none was open. The
+/// upper half is where the panel says what it has; the lower half is the
+/// details of a node, and has nothing to say without one.
+#[test]
+fn a_panel_without_a_backup_says_so_once() {
+    let _guard = crate::headless_ui_lock();
+    let mut state = ready_with_drawings_shown();
+    update(&mut state, PidBackupMsg::Close);
+    let none_open = t!("No backup is open.");
+    assert_eq!(count_of(&mut draw(&state), none_open.as_ref()), 1);
+
+    update(
+        &mut state,
+        PidBackupMsg::SourcePicked(Some(PathBuf::from("D:/backups/plant.zip"))),
+    );
+    let mut ui = draw(&state);
+    assert_eq!(count_of(&mut ui, t!("Loading backup…").as_ref()), 1);
+    assert_eq!(count_of(&mut ui, none_open.as_ref()), 0);
+}
+
+/// The drawings of a group are drawn in name order, as the index files
+/// them, and a click on the topmost selects the one whose name sorts
+/// first: the order on screen is the order of the names, not of the files.
+#[test]
+fn a_groups_drawings_are_drawn_in_name_order_and_a_click_selects_the_one_drawn() {
+    let _guard = crate::headless_ui_lock();
+    let root = std::env::temp_dir().join(format!(
+        "ocs-pid-backup-drawn-order-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("00")).unwrap();
+    std::fs::write(root.join("Manifest.txt"), "Name<<|>>SQPlant\n").unwrap();
+    // In the order of their paths these are A10, a9, b.
+    for name in ["b", "A10", "a9"] {
+        std::fs::write(root.join("00").join(format!("{name}.pid")), name).unwrap();
+    }
+    let index = crate::io::pid_backup_browse::build_index(&root, None).expect("the folder indexes");
+    let first = index
+        .drawings
+        .iter()
+        .position(|drawing| drawing.name == "a9")
+        .expect("a9 is a drawing of the folder");
+    let mut state = PidBackupBrowser::default();
+    update(&mut state, PidBackupMsg::Loaded(Ok(Arc::new(index))));
+    update(&mut state, PidBackupMsg::Toggle(NodeId::Groups));
+    update(&mut state, PidBackupMsg::Toggle(NodeId::Group(vec![0])));
+
+    let mut ui = draw(&state);
+    let drawn: Vec<f32> = ["a9", "A10", "b"]
+        .iter()
+        .map(|name| bounds_of(&mut ui, name).y)
+        .collect();
+    assert!(
+        drawn[0] < drawn[1] && drawn[1] < drawn[2],
+        "a9, A10 and b from the top down: {drawn:?}"
+    );
+    drop(ui);
+    let pressed = click_at(&state, |ui| bounds_of(ui, "a9").center());
+    assert!(
+        pressed
+            .iter()
+            .any(|message| matches!(message, PidBackupMsg::Select(NodeId::Drawing(at)) if *at == first)),
+        "{pressed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

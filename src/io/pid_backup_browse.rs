@@ -41,7 +41,9 @@ use pid_parse::backup::{
 use pid_parse::publish::oracle_exp::{
     backup_path_key, plant_group_path, read_backup_drawings, read_plant_groups, BackupDrawing,
 };
-use pid_parse::publish::pid_load::{load_publish_from_pid, PidPublishDrawing, PidPublishItem};
+use pid_parse::publish::pid_load::{
+    load_publish_from_pid, PidLoadError, PidPublishDrawing, PidPublishItem,
+};
 
 /// Group the drawings the table does not mention are filed under.
 pub const UNREGISTERED_GROUP: &str = "Unregistered";
@@ -307,7 +309,8 @@ pub fn build_index_in(
             drawings.extend(entries);
         }
     }
-    let plant_groups = build_group_tree(&group_paths);
+    let mut plant_groups = build_group_tree(&group_paths);
+    sort_group_drawings(&mut plant_groups, &drawings);
     // The restore's own `Ref` is the whole of it: the backup's reference
     // data volumes unpacked, and what a `Ref` folder beside the backup adds.
     // A folder used where it lies has only what lies beside it.
@@ -770,7 +773,7 @@ pub fn match_drawings_under(
         entries.push(DrawingEntry {
             name: row.name.clone(),
             pid_path: found.map(|index| pids[index].clone()),
-            group_path: row.group_path.clone(),
+            group_path: filed_under(&row.group_path),
             meta: row.meta.clone(),
         });
     }
@@ -822,11 +825,7 @@ pub fn folder_entries(pids: &[PathBuf], backup_root: &Path, restored: &Path) -> 
             DrawingEntry {
                 name: file_stem(pid),
                 pid_path: Some(pid.clone()),
-                group_path: if folder.is_empty() {
-                    UNGROUPED.to_string()
-                } else {
-                    folder
-                },
+                group_path: filed_under(&folder),
                 meta: vec![
                     ("PATH".to_string(), relative_key(pid, base)),
                     ("FILE".to_string(), pid.display().to_string()),
@@ -926,9 +925,45 @@ pub struct ItemAttribute {
 /// The panel asks for this the first time a drawing is expanded: a drawing's
 /// attributes are megabytes of compound file the tree must not wait on.
 pub fn load_items(path: &Path) -> Result<DrawingItems, String> {
-    let drawing = load_publish_from_pid(path)
-        .map_err(|error| crate::tf!("cannot read {}: {}", path.display(), error).into_owned())?;
+    let drawing = load_publish_from_pid(path).map_err(|error| read_failure(path, &error))?;
     Ok(group_items(drawing))
+}
+
+/// The name the file at `path` goes by in a message: its file name. The
+/// folder of a backup's drawing is the restore cache's -- a key and all --
+/// and tells nobody which drawing it is; the details of the drawing state
+/// the whole path for whoever wants it.
+pub(crate) fn file_label(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// `text` with the whole path of `path`, wherever a reader quoted it, cut
+/// down to the file's name.
+pub(crate) fn name_the_file_only(text: &str, path: &Path) -> String {
+    let whole = path.display().to_string();
+    let name = file_label(path);
+    if whole.is_empty() || whole == name {
+        text.to_string()
+    } else {
+        text.replace(&whole, &name)
+    }
+}
+
+/// Why the `.pid` at `path` gave no items, as the panel says it.
+pub(crate) fn read_failure(path: &Path, error: &PidLoadError) -> String {
+    let reason = match error {
+        // The reader's one reason of its own, in the application's words.
+        PidLoadError::NoDrawing => crate::t!(
+            "it states no drawing number (no P&IDAttributes row carries a DrawingNo)"
+        )
+        .into_owned(),
+        // What went wrong with the file itself.
+        PidLoadError::Io(error) => name_the_file_only(&error.to_string(), path),
+    };
+    crate::tf!("cannot read {}: {}", file_label(path), reason).into_owned()
 }
 
 /// [`load_items`] on a worker thread, as [`crate::io::pid_backup::restore`]
@@ -1048,6 +1083,33 @@ pub fn group_published_items(items: Vec<PidPublishItem>) -> (Vec<ItemGroup>, usi
         })
         .collect();
     (groups, item_count)
+}
+
+/// The path of the group the tree files a drawing under, spelled as the
+/// group spells its own ([`GroupNode::path`]): the segments of the drawing
+/// table's `SQPlant \ 00 \ 00`, or of a folder key `00/00`, joined by
+/// ` / `; [`UNGROUPED`] when there are none. A fixed label
+/// ([`UNREGISTERED_GROUP`]) is one segment and stays itself.
+pub fn filed_under(path: &str) -> String {
+    let parts = split_group_path(path);
+    if parts.is_empty() {
+        UNGROUPED.to_string()
+    } else {
+        parts.join(" / ")
+    }
+}
+
+/// Put the drawings of every group in name order, as a person sorts names
+/// ([`labels::natural_cmp`]): the order of the drawing table's rows, or of
+/// the files' paths, is nobody's. Drawings of one name keep their order.
+pub fn sort_group_drawings(groups: &mut [GroupNode], drawings: &[DrawingEntry]) {
+    let name = |at: &usize| drawings.get(*at).map_or("", |entry| entry.name.as_str());
+    for group in groups {
+        group
+            .drawings
+            .sort_by(|left, right| labels::natural_cmp(name(left), name(right)).then(left.cmp(right)));
+        sort_group_drawings(&mut group.children, drawings);
+    }
 }
 
 /// Fold the group paths into a tree; a path's segments nest under each other.
@@ -1493,6 +1555,9 @@ mod tests {
         let (entries, unregistered) =
             assemble_drawings(&rows, &pids, Path::new("/restore"), Path::new("/restore"));
         assert_eq!(entries.len(), 1);
+        // The table spells a group's path with backslashes; the drawing
+        // states it the way the tree spells the group's own.
+        assert_eq!(entries[0].group_path, "SQPlant / 00 / 00");
         assert_eq!(unregistered.len(), 1);
         assert_eq!(unregistered[0].name, "Loose");
         assert_eq!(unregistered[0].group_path, UNREGISTERED_GROUP);
@@ -1577,6 +1642,50 @@ mod tests {
             Some(Path::new("/restore/00/00/A.pid"))
         );
         assert!(matched.unmatched.is_empty());
+    }
+
+    /// The drawings of a group were listed in the order of the drawing
+    /// table (or of their paths), which is nobody's order; and a drawing
+    /// spelled its group's path another way than the group did.
+    #[test]
+    fn a_groups_drawings_are_in_name_order_and_state_the_groups_own_path() {
+        let root = scratch("group-order");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(backup.join("Manifest.txt"), "Name<<|>>SQPlant\n").unwrap();
+        write_zip(
+            &backup.join("PlantData~2~711.zip"),
+            &[
+                ("00/00/b.pid", b"b"),
+                ("00/00/A10.pid", b"a"),
+                ("00/00/a9.pid", b"a"),
+                ("00/01/Z.pid", b"z"),
+            ],
+        );
+        let index = build_index(&backup, Some(&root.join("out"))).unwrap();
+        assert_eq!(index.drawings.len(), 4);
+        // No drawing table here: the drawings are filed by folder.
+        let group = &index.plant_groups[0].children[0];
+        assert_eq!(group.path, "00 / 00");
+        let names: Vec<&str> = group
+            .drawings
+            .iter()
+            .map(|at| index.drawings[*at].name.as_str())
+            .collect();
+        // As a person sorts names: case aside, 9 before 10.
+        assert_eq!(names, ["a9", "A10", "b"]);
+        fn check(node: &GroupNode, index: &BackupIndex) {
+            for at in &node.drawings {
+                assert_eq!(index.drawings[*at].group_path, node.path);
+            }
+            for child in &node.children {
+                check(child, index);
+            }
+        }
+        for node in &index.plant_groups {
+            check(node, &index);
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

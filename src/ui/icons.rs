@@ -1617,6 +1617,26 @@ mod tests {
         }
     }
 
+    /// The three icons this fork added for its P&ID panels were 24 px
+    /// drawings with round caps, drawn as they were while every other icon
+    /// is fitted to the screen's pixels. They are 16 px grid art now, in
+    /// the set's own vocabulary.
+    #[test]
+    fn the_pid_panel_icons_are_16_px_grid_art() {
+        for name in ["pid_palette.svg", "ui/collab.svg", "ui/folder.svg"] {
+            let source = std::fs::read(icons_dir().join(name)).unwrap();
+            let text = std::str::from_utf8(&source).unwrap();
+            assert_eq!(root_attr(text, "viewBox"), Some("0 0 16 16"), "{name}");
+            assert!(
+                sharpen_grid_svg(&source).is_some(),
+                "{name} is not pixel-grid art"
+            );
+            for foreign in ["<circle", "<rect", "<line", "linecap=\"round\"", "#B4B6B9"] {
+                assert!(!text.contains(foreign), "{name} holds {foreign}");
+            }
+        }
+    }
+
     /// Every 32 px drawing is found from its own 16 px file. The pairs are
     /// looked up by content, so two byte-identical 16 px files with
     /// different 32 px drawings would both get the first one: such a pair

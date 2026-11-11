@@ -129,7 +129,7 @@ fn check_view(checked: Vec<Checked>) -> CheckView {
                 String::new(),
                 String::new(),
                 String::new(),
-                drawing.group,
+                super::group_path_label(&drawing.group),
             ]);
             continue;
         };
@@ -173,7 +173,7 @@ fn check_view(checked: Vec<Checked>) -> CheckView {
             drawn,
             missing,
             format!("{:.0}", took.as_secs_f64() * 1000.0),
-            drawing.group,
+            super::group_path_label(&drawing.group),
         ]);
     }
     view.table = Arc::new(Table::new(

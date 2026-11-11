@@ -9308,6 +9308,10 @@ pid-backup =
     .cache-usage = PIDBACKUPOPEN：Cache 后面写文件夹的完整路径，或者 Default（恢复默认位置）、Clear（清理）
     .cache-how-to-name = PIDBACKUPOPEN：用 Cache=<文件夹> 指定还原缓存的位置，Cache=Default 恢复默认位置
     .cache-folder-dialog = 选择还原缓存的位置
+    .read-no-drawing-number = 图纸里没有图号（P&IDAttributes 里没有带 DrawingNo 的行）
+    .import-parser-cannot-read = 解析器读不了 __ocs_fmt_0__：__ocs_fmt_1__
+    .import-nothing-to-draw = __ocs_fmt_0__ 里没有可画的图形：解析器找到 __ocs_fmt_1__ 个图形，没有一个是从文件的记录里解码出来的
+    .import-nothing-to-draw-empty = __ocs_fmt_0__ 里没有可画的图形：解析器在里面没有找到图形
 
 block-flip-frame-feedback =
     .unavailable = 块参数坐标框不可用。

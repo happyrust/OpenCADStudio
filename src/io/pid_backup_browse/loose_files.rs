@@ -128,8 +128,9 @@ mod tests {
 
     #[test]
     fn a_folder_that_cannot_be_read_has_no_loose_files() {
-        let root = scratch("absent").join("not-there");
-        assert!(loose_files(&root, &[]).is_empty());
+        let root = scratch("absent");
+        assert!(loose_files(&root.join("not-there"), &[]).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

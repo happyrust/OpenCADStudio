@@ -1560,12 +1560,57 @@ fn a_real_backup_is_walked_node_by_node() {
     details_of(&app, &NodeId::Groups, &mut empty);
     let groups = group_paths(&index.plant_groups);
     audit.line(format!("== plant groups ({}) ==", groups.len()));
+    // A group's drawings are in name order, and each states the path of
+    // its group the way the group states its own.
+    let group_path = crate::t!("Group path");
+    let stated = |rows: &[(String, String)]| -> String {
+        rows.iter()
+            .find(|(key, _)| *key == group_path)
+            .map(|(_, value)| value.clone())
+            .expect("the details state a group path")
+    };
+    let mut out_of_order = 0;
+    let mut reordered = 0;
     for path in &groups {
         send(&mut app, PidBackupMsg::Toggle(NodeId::Group(path.clone()))).unwrap();
         let rows = details_of(&app, &NodeId::Group(path.clone()), &mut empty);
         let text: Vec<String> = rows.iter().map(|(key, value)| format!("{key}={value}")).collect();
         audit.line(format!("  {}", text.join("; ")));
+        let mut node = &index.plant_groups[path[0]];
+        for at in &path[1..] {
+            node = &node.children[*at];
+        }
+        let own = stated(&rows);
+        for at in &node.drawings {
+            let drawing = details_of(&app, &NodeId::Drawing(*at), &mut empty);
+            assert_eq!(
+                stated(&drawing),
+                own,
+                "{} states its group another way than the group does",
+                index.drawings[*at].name
+            );
+        }
+        let names: Vec<&str> = node
+            .drawings
+            .iter()
+            .map(|at| index.drawings[*at].name.as_str())
+            .collect();
+        out_of_order += names
+            .windows(2)
+            .filter(|pair| {
+                crate::io::pid_backup_browse::labels::natural_cmp(pair[0], pair[1])
+                    == std::cmp::Ordering::Greater
+            })
+            .count();
+        // How many groups the order of the drawing table would have shown
+        // differently.
+        reordered += usize::from(node.drawings.windows(2).any(|pair| pair[0] > pair[1]));
     }
+    assert_eq!(out_of_order, 0, "drawings out of name order in their group");
+    audit.line(format!(
+        "  every drawing states its group's path as the group does; drawings are in name order ({reordered} of {} group(s) differ from the order of the index)",
+        groups.len()
+    ));
     audit.shot(&app, "groups-open");
 
     // Which drawing-table columns the backup actually fills.
@@ -1677,6 +1722,13 @@ fn a_real_backup_is_walked_node_by_node() {
                 ));
             }
             Some(ItemsState::Failed(error)) => {
+                // The reason names the drawing's file, not the folder of
+                // the restore it lies in.
+                assert!(
+                    !error.contains(&index.restored.display().to_string()),
+                    "the reason {} did not read names the restore folder: {error}",
+                    drawing.name
+                );
                 // A read that fails must not fail silently: the drawing's
                 // details carry the reason, and so does the command line.
                 let rows = details_of(&app, &NodeId::Drawing(at), &mut empty);
@@ -2150,6 +2202,11 @@ fn a_real_backup_is_walked_node_by_node() {
             }
             Err(error) => {
                 import_errors += 1;
+                assert!(
+                    !error.contains(&index.restored.display().to_string()),
+                    "the reason {} did not import names the restore folder: {error}",
+                    drawing.name
+                );
                 not_imported.push(format!("{}: {error}", drawing.name));
             }
         }

@@ -1437,6 +1437,10 @@ mod tests {
         "cache-usage",
         "cache-how-to-name",
         "cache-folder-dialog",
+        "read-no-drawing-number",
+        "import-parser-cannot-read",
+        "import-nothing-to-draw",
+        "import-nothing-to-draw-empty",
     ];
 
     /// The panel's own labels, the ones the dock title and the command share.
