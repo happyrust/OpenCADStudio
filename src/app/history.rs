@@ -162,9 +162,18 @@ impl OpenCADStudio {
             HistorySnapshot::Delta(delta)
                 if changes_the_drawing(&delta) && self.refuses_step(i) =>
             {
-                self.take_back_refused_step(i, delta, &label);
+                self.take_back_refused_step(i, delta, &label, None);
                 return;
             }
+            // Nor does a session that may write change an object whose tag
+            // somebody else has claimed (`claim_against`).
+            HistorySnapshot::Delta(delta) => match self.claim_against(i, &delta.entities) {
+                Some(held) => {
+                    self.take_back_refused_step(i, delta, &label, Some(held));
+                    return;
+                }
+                None => HistorySnapshot::Delta(delta),
+            },
             other => other,
         };
         if let HistorySnapshot::Delta(delta) = &mut snapshot {
@@ -193,7 +202,16 @@ impl OpenCADStudio {
     /// nothing goes on the undo stack, the redo stack is left alone, and
     /// nothing is sent to the room. The drawing is put back as the step
     /// found it, the way an undo of it would.
-    fn take_back_refused_step(&mut self, i: usize, mut d: Box<DeltaSnapshot>, label: &str) {
+    ///
+    /// `held` is the tag and its holder when the step is refused for a
+    /// claim; `None` when the session may not write at all.
+    fn take_back_refused_step(
+        &mut self,
+        i: usize,
+        mut d: Box<DeltaSnapshot>,
+        label: &str,
+        held: Option<(String, String)>,
+    ) {
         let stated = super::collab::broadcast::collect_changes(&d.entities);
         let native_graph_changed =
             !d.parametric_constraints.is_empty() || d.named_parameters.is_some();
@@ -217,7 +235,10 @@ impl OpenCADStudio {
             native_graph_changed,
             &changes,
         );
-        self.report_refused_step(&stated, label);
+        match held {
+            Some((tag, holder)) => self.report_claimed_step(&stated, label, &tag, &holder),
+            None => self.report_refused_step(&stated, label),
+        }
     }
 
     pub(super) fn push_object_visibility_history(
@@ -1624,6 +1645,10 @@ impl OpenCADStudio {
                 .push_info(crate::t!("Nothing to undo.").as_ref());
             return;
         }
+        // Nor into an object somebody else has claimed since the step.
+        if self.claim_refuses_replay(i, true, steps) {
+            return;
+        }
 
         let mut last_label = String::new();
         let mut had_full = false;
@@ -1746,6 +1771,9 @@ impl OpenCADStudio {
         if steps == 0 {
             self.command_line
                 .push_info(crate::t!("Nothing to redo.").as_ref());
+            return;
+        }
+        if self.claim_refuses_replay(i, false, steps) {
             return;
         }
 

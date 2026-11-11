@@ -1628,6 +1628,121 @@ mod tests {
         assert!(rows[0].change_text.contains("只读"), "{}", rows[0].change_text);
     }
 
+    /// One `claim` or `release` from `conn`, as the socket would hand it in.
+    async fn claim_frame(
+        state: &AppState,
+        conn: &mut crate::ws::Connection,
+        tag: &str,
+        claim: bool,
+    ) -> Vec<crate::ws::Reaction> {
+        let session_id = conn.session.as_ref().expect("session").session_id.clone();
+        let tag = tag.to_owned();
+        let message = if claim {
+            ocs_collab::ClientMessage::Claim { session_id, tag }
+        } else {
+            ocs_collab::ClientMessage::Release { session_id, tag }
+        };
+        crate::ws::handle_message(state, conn, message, ocs_collab::now_unix()).await
+    }
+
+    /// The `(code, holder)` of the error among `reactions`.
+    fn error_in(reactions: &[crate::ws::Reaction]) -> Option<(String, Option<String>)> {
+        reactions.iter().find_map(|reaction| match reaction {
+            crate::ws::Reaction::Send(ocs_collab::ServerMessage::Error { code, holder, .. }) => {
+                Some((code.clone(), holder.clone()))
+            }
+            _ => None,
+        })
+    }
+
+    /// `VAL-CROSS-002`: a tag somebody holds is theirs to change. Another
+    /// session's op on it is refused whole — naming the holder, changing
+    /// nothing, telling the room nothing, and going on record — until the
+    /// holder lets go. The holder's own ops go through all the while. A
+    /// claim used to be a note in a table: it refused a second claim and
+    /// nothing else.
+    #[tokio::test]
+    async fn an_op_on_a_tag_another_session_holds_is_refused_until_it_is_released() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let (mut holder, _) = live_conn(&state, "u-proc", now - 10).await;
+        let (mut other, _) = live_conn(&state, "u-admin", now).await;
+        let holder_id = holder.session.as_ref().expect("session").session_id.clone();
+        let granted = claim_frame(&state, &mut holder, "P-1001", true).await;
+        assert!(
+            granted.iter().any(|reaction| matches!(
+                reaction,
+                crate::ws::Reaction::Send(ocs_collab::ServerMessage::ClaimGranted { .. })
+            )),
+            "{granted:?}"
+        );
+        let mut room = state.bus.subscribe("d-a1-coop");
+
+        assert!(applied_in(&write(&state, &mut holder, "op-h1", "1.6MPa").await));
+        assert_eq!(crate::ws::current_revision(&state, "d-a1-coop"), 1);
+        while room.try_recv().is_some() {}
+
+        let refused = write(&state, &mut other, "op-o1", "2.5MPa").await;
+        assert_eq!(
+            error_in(&refused),
+            Some((codes::CLAIM_HELD.to_owned(), Some(holder_id.clone()))),
+            "{refused:?}"
+        );
+        assert!(!applied_in(&refused));
+        assert!(room.try_recv().is_none(), "the room hears nothing");
+        assert_eq!(crate::ws::current_revision(&state, "d-a1-coop"), 1);
+        let rows = denied_rows(&state, "u-admin");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].object_ref, "P-1001");
+        assert!(rows[0].change_text.contains("占用"), "{}", rows[0].change_text);
+        assert!(rows[0].change_text.contains("u-proc"), "{}", rows[0].change_text);
+
+        // Nor may another object be given the tag that is held.
+        let session_id = other.session.as_ref().expect("session").session_id.clone();
+        let retag = crate::ws::handle_message(
+            &state,
+            &mut other,
+            ocs_collab::ClientMessage::Op {
+                session_id,
+                base_revision: 1,
+                op_id: "op-o2".into(),
+                payload: json!({
+                    "kind": "set_tag", "object_ref": "V-2001", "field": "tag", "value": "P-1001",
+                }),
+            },
+            ocs_collab::now_unix(),
+        )
+        .await;
+        assert_eq!(
+            error_in(&retag),
+            Some((codes::CLAIM_HELD.to_owned(), Some(holder_id))),
+            "{retag:?}"
+        );
+
+        // Let go of, it is anybody's again.
+        claim_frame(&state, &mut holder, "P-1001", false).await;
+        assert!(applied_in(&write(&state, &mut other, "op-o3", "2.5MPa").await));
+        assert_eq!(crate::ws::current_revision(&state, "d-a1-coop"), 2);
+    }
+
+    /// A claim is on a tag of one drawing. The same tag on another drawing
+    /// is another object, and nobody holds that.
+    #[tokio::test]
+    async fn a_claim_made_on_another_drawing_holds_nothing_on_this_one() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let (mut writer, _) = live_conn(&state, "u-proc", now).await;
+        state.occupancy.lock().await.claim(
+            "P-1001",
+            "d-a2-solo",
+            "s-elsewhere",
+            "u-admin",
+            now,
+            300,
+        );
+        assert!(applied_in(&write(&state, &mut writer, "op-1", "1.6MPa").await));
+    }
+
     /// 只读 has one writer: the holder goes on writing, everybody else is
     /// refused at the state tier and told who holds it. A session that joins
     /// afterwards is told the same as it comes in (it used to be told
@@ -1728,6 +1843,39 @@ mod tests {
         assert_eq!(rows[0].object_ref, "P-1001");
         assert!(rows[0].change_text.contains("PIDTAG P-1001 P-1009"));
         assert!(rows[0].change_text.contains("角色"), "{}", rows[0].change_text);
+    }
+
+    /// A session that may write turns a write away for one other reason —
+    /// the tag is somebody else's for now — and that is what goes on record
+    /// when it says so: who holds it, not "read-only".
+    #[tokio::test]
+    async fn an_attempt_on_a_held_tag_is_recorded_with_who_holds_it() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let (mut holder, _) = live_conn(&state, "u-proc", now - 10).await;
+        let (mut other, _) = live_conn(&state, "u-admin", now).await;
+        claim_frame(&state, &mut holder, "P-1001", true).await;
+        let session_id = other.session.as_ref().expect("session").session_id.clone();
+
+        let reactions = crate::ws::handle_message(
+            &state,
+            &mut other,
+            ocs_collab::ClientMessage::Attempt {
+                session_id,
+                object_ref: "P-1001".into(),
+                text: "set_property P-1001.设计压力 = 2.5MPa".into(),
+            },
+            ocs_collab::now_unix(),
+        )
+        .await;
+        assert!(error_in(&reactions).is_none(), "{reactions:?}");
+        let rows = denied_rows(&state, "u-admin");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].object_ref, "P-1001");
+        assert!(rows[0].change_text.contains("设计压力"), "{}", rows[0].change_text);
+        assert!(rows[0].change_text.contains("占用"), "{}", rows[0].change_text);
+        assert!(rows[0].change_text.contains("u-proc"), "{}", rows[0].change_text);
+        assert!(!rows[0].change_text.contains("只读"), "{}", rows[0].change_text);
     }
 
     /// 单人编辑 with two users on the drawing: the one that was there first

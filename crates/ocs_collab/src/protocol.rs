@@ -173,6 +173,10 @@ pub mod codes {
     /// after the op's baseline, and that value stays (`architecture.md` §3.3
     /// step 2). Not to be sent again.
     pub const OP_SUPERSEDED: &str = "OP_SUPERSEDED";
+    /// A write to an object whose tag another session has claimed, or one
+    /// that would give an object such a tag. The claim stands until its
+    /// holder releases it or it runs out (`VAL-CROSS-002`).
+    pub const CLAIM_HELD: &str = "CLAIM_HELD";
 }
 
 /// Reasons carried by [`ServerMessage::ClaimReleased`].

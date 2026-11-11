@@ -87,6 +87,29 @@ impl OccupancyTable {
         self.claims.iter().find(|claim| claim.tag == tag)
     }
 
+    /// The claim that keeps `session_id` from writing to `tag` on
+    /// `drawing_id` at `now`: one on that tag of that drawing, held by
+    /// another session, that has not run out.
+    ///
+    /// Reads only. A claim past its time is not removed here — that is
+    /// `expire`'s to do, which also says so to the room — it just does not
+    /// count. A claim made from another drawing does not count either: the
+    /// same tag there is another object.
+    pub fn held_by_another(
+        &self,
+        tag: &str,
+        drawing_id: &str,
+        session_id: &str,
+        now: i64,
+    ) -> Option<&Occupancy> {
+        self.claims.iter().find(|claim| {
+            claim.tag == tag
+                && claim.drawing_id == drawing_id
+                && claim.session_id != session_id
+                && claim.expires_at > now
+        })
+    }
+
     /// Requests ownership of `tag` until `now + ttl`.
     ///
     /// An expired claim is discarded first, so a stale owner never blocks a
@@ -213,6 +236,31 @@ mod tests {
             other => panic!("expected granted, got {other:?}"),
         }
         assert_eq!(table.get("V-1001").map(|c| c.session_id.as_str()), Some("s-1"));
+    }
+
+    /// Who a claim keeps out: every other session on that drawing, while it
+    /// lasts. Not its own session, not anybody once it has run out — though
+    /// nothing has removed it yet — and not a session on another drawing.
+    #[test]
+    fn a_claim_keeps_other_sessions_of_its_drawing_out_while_it_lasts() {
+        let mut table = OccupancyTable::new();
+        let _ = table.claim("V-1001", "PID-1101", "s-1", "u1", 1_000, 300);
+        let held = |session: &str, drawing: &str, now: i64| {
+            table
+                .held_by_another("V-1001", drawing, session, now)
+                .map(|claim| claim.session_id.clone())
+        };
+        assert_eq!(held("s-2", "PID-1101", 1_010), Some("s-1".to_owned()));
+        assert_eq!(held("s-1", "PID-1101", 1_010), None, "its own");
+        assert_eq!(held("s-2", "PID-1101", 1_299), Some("s-1".to_owned()));
+        assert_eq!(held("s-2", "PID-1101", 1_300), None, "run out");
+        assert_eq!(held("s-2", "PID-1102", 1_010), None, "another drawing");
+        assert_eq!(
+            table.held_by_another("V-1002", "PID-1101", "s-2", 1_010),
+            None,
+            "another tag"
+        );
+        assert_eq!(table.len(), 1, "reading removes nothing");
     }
 
     #[test]

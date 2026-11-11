@@ -936,6 +936,37 @@ async fn op(
         return vec![Reaction::Send(denied.error(&format!("操作 {op_id} ")))];
     }
 
+    // A tag somebody else holds is theirs to change until they let go of it
+    // (`VAL-CROSS-002`). One such change refuses the op whole, like every
+    // other refusal: an op is one step of somebody's, and half a step is
+    // not something they made.
+    if let Some((change, held)) = held_by_another(state, session, &payload, now).await {
+        let tried = describe_change(&change.kind, &change.subject(), &change.raw);
+        let text = format!(
+            "{tried} 被拒绝（位号 {} 由 {} 占用，到期 {}）",
+            held.tag, held.user_id, held.expires_at
+        );
+        record_refused_write(state, session, peer_addr, &held.tag, text, now);
+        println!(
+            "[ocs_collab_server] 入站 op session={} user={} op_id={op_id} base_revision={base_revision} object_ref={} -> error {} tag={} holder={} at={now}",
+            session.session_id,
+            session.user_id,
+            change.subject(),
+            codes::CLAIM_HELD,
+            held.tag,
+            held.session_id
+        );
+        return vec![Reaction::Send(ServerMessage::Error {
+            code: codes::CLAIM_HELD.to_owned(),
+            message: format!(
+                "操作 {op_id}：位号 {} 已被 {} 占用，到期 {}",
+                held.tag, held.user_id, held.expires_at
+            ),
+            level: None,
+            holder: Some(held.session_id),
+        })];
+    }
+
     // The judgment, the commit and the record of it are one synchronous
     // critical section inside `ops::receive`.
     let outcome = crate::ops::receive(
@@ -963,6 +994,36 @@ async fn op(
     outcome.reactions
 }
 
+/// The first change of `payload` that touches a tag another session holds
+/// on this drawing, with the claim.
+///
+/// A change touches the tag of the object it is about, and a retag also the
+/// tag it would give: taking a held tag for another object is as much the
+/// holder's business as changing the object that has it.
+async fn held_by_another(
+    state: &AppState,
+    session: &Session,
+    payload: &Value,
+    now: i64,
+) -> Option<(ocs_collab::conflict::Change, Occupancy)> {
+    let changes = ocs_collab::conflict::Change::list(payload);
+    let occupancy = state.occupancy.lock().await;
+    changes.into_iter().find_map(|change| {
+        let mut tags = vec![change.subject()];
+        if change.kind == ocs_collab::conflict::KIND_SET_TAG {
+            tags.push(change.value.clone());
+        }
+        tags.iter()
+            .filter(|tag| !tag.is_empty())
+            .find_map(|tag| {
+                occupancy
+                    .held_by_another(tag, &session.drawing_id, &session.session_id, now)
+                    .cloned()
+            })
+            .map(|held| (change, held))
+    })
+}
+
 /// `audit_log.action` of a write that was refused because the session may
 /// not write.
 pub const ACTION_WRITE_DENIED: &str = "write_denied";
@@ -978,14 +1039,27 @@ fn record_denied_write(
     denied: &crate::access::Denied,
     now: i64,
 ) {
-    let Some(store) = &state.store else {
-        return;
-    };
     let text = format!(
         "{tried} 被拒绝（只读，{}）：{}",
         denied.level.as_str(),
         denied.reason
     );
+    record_refused_write(state, session, peer_addr, object_ref, text, now);
+}
+
+/// Puts a refused write on record under `text`, which says what was tried
+/// and why it did not happen.
+fn record_refused_write(
+    state: &AppState,
+    session: &Session,
+    peer_addr: &str,
+    object_ref: &str,
+    text: String,
+    now: i64,
+) {
+    let Some(store) = &state.store else {
+        return;
+    };
     let row = audit_row(
         Some(store),
         session,
@@ -1019,21 +1093,57 @@ async fn attempt(
     } else {
         text.trim()
     };
-    let denied = crate::access::write_access(state, session)
-        .await
-        .unwrap_or(crate::access::Denied {
-            // The server would have let it through; the client refused on
-            // what it had been told. Said as it is.
-            level: ocs_collab::DenialLevel::State,
-            reason: "客户端处于只读，自行拒绝（服务器此刻判定该会话可写）".to_owned(),
-            holder: None,
-        });
-    record_denied_write(state, session, peer_addr, object_ref, tried, &denied, now);
+    let denied = crate::access::write_access(state, session).await;
+    // A session that may write turns a write away for one other reason: the
+    // tag is somebody else's for now.
+    let held = match &denied {
+        Some(_) => None,
+        None => state
+            .occupancy
+            .lock()
+            .await
+            .held_by_another(object_ref, &session.drawing_id, &session.session_id, now)
+            .cloned(),
+    };
+    let why = match (&denied, &held) {
+        (Some(denied), _) => denied.level.as_str().to_owned(),
+        (None, Some(held)) => format!("claim holder={}", held.session_id),
+        (None, None) => "state".to_owned(),
+    };
+    match (denied, held) {
+        (Some(denied), _) => {
+            record_denied_write(state, session, peer_addr, object_ref, tried, &denied, now)
+        }
+        (None, Some(held)) => record_refused_write(
+            state,
+            session,
+            peer_addr,
+            object_ref,
+            format!(
+                "{tried} 被拒绝（位号 {} 由 {} 占用，到期 {}）",
+                held.tag, held.user_id, held.expires_at
+            ),
+            now,
+        ),
+        (None, None) => record_denied_write(
+            state,
+            session,
+            peer_addr,
+            object_ref,
+            tried,
+            &crate::access::Denied {
+                // The server would have let it through; the client refused
+                // on what it had been told. Said as it is.
+                level: ocs_collab::DenialLevel::State,
+                reason: "客户端处于只读，自行拒绝（服务器此刻判定该会话可写）".to_owned(),
+                holder: None,
+            },
+            now,
+        ),
+    }
     println!(
-        "[ocs_collab_server] 入站 attempt session={} user={} object_ref={object_ref} level={} -> 记审计 {ACTION_WRITE_DENIED} at={now}",
-        session.session_id,
-        session.user_id,
-        denied.level.as_str()
+        "[ocs_collab_server] 入站 attempt session={} user={} object_ref={object_ref} level={why} -> 记审计 {ACTION_WRITE_DENIED} at={now}",
+        session.session_id, session.user_id
     );
     vec![Reaction::Nothing]
 }

@@ -1139,7 +1139,9 @@ pub(crate) fn map_status(response: Value, created: bool) -> u16 {
         | "session_changed"
         | "document_not_active"
         | "gui_required"
-        | "DUPLICATE_INFLOW_CONNECTOR" => 409,
+        | "DUPLICATE_INFLOW_CONNECTOR"
+        // 位号被别的会话占用：与现有的占用冲突，占用释放后同一请求即可成功。
+        | "CLAIM_HELD" => 409,
         // 协同会话不可写：请求本身没有错，是这个会话不被允许做这件事。
         "COLLAB_READONLY" | "PERM_DENIED_ROLE" | "PERM_DENIED_PBS" | "PERM_DENIED_STATE" => 403,
         "busy" => 503,
@@ -1249,6 +1251,12 @@ mod tests {
                 "{code}"
             );
         }
+        // And one refused because somebody else holds the tag conflicts with
+        // that claim: the same request succeeds once it is released.
+        assert_eq!(
+            map_status(json!({"ok": false, "code": "CLAIM_HELD"}), false),
+            409
+        );
     }
 
     /// `ready` must not advertise the welcome (Start) tab: that tab answers

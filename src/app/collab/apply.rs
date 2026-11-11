@@ -507,6 +507,90 @@ impl OpenCADStudio {
         self.collab.readonly && !self.applying_remote && self.is_collab_tab(i)
     }
 
+    /// The claim that keeps this session from changing what the images in
+    /// `entities` show changed on tab `i`: the first tag among them that
+    /// somebody else holds, and who.
+    ///
+    /// A claim is on a tag, and the tag stands for whatever object carries
+    /// it — before the step or after it. So a retag is caught by the tag it
+    /// takes from an object and by the tag it gives one, and a held symbol
+    /// moved or erased is caught although neither says anything in P&ID
+    /// terms (`VAL-CROSS-002`).
+    ///
+    /// What this client knows of the claims is what it has been told: the
+    /// ones standing when it joined, and the holder of any it asked for and
+    /// was refused (a grant is told to the session that asked, not to the
+    /// room). One granted to somebody since is for the server to refuse.
+    pub(in crate::app) fn claim_against(
+        &mut self,
+        i: usize,
+        entities: &broadcast::EntityImages,
+    ) -> Option<(String, String)> {
+        if self.applying_remote || self.collab.claims.is_empty() || !self.is_collab_tab(i) {
+            return None;
+        }
+        let own = self.collab.user_id.as_str();
+        entities
+            .iter()
+            .flat_map(|(_, before, after)| [before.as_deref(), after.as_deref()])
+            .flatten()
+            .filter_map(crate::pid::persist::PidAuthor::from_entity)
+            .filter(|author| !author.tag.is_empty())
+            .find_map(|author| {
+                let holder = self.collab.claims.get(&author.tag)?;
+                (holder != own).then(|| (author.tag.clone(), holder.clone()))
+            })
+    }
+
+    /// Whether an undo (`undo`) or a redo of `steps` steps on tab `i` would
+    /// change an object somebody else holds — said and put on record when
+    /// it would. Taking a step back is a write like the step was.
+    pub(in crate::app) fn claim_refuses_replay(&mut self, i: usize, undo: bool, steps: usize) -> bool {
+        use crate::app::tab_document::HistorySnapshot;
+        let held = {
+            let history = &self.tabs[i].history;
+            let stack = if undo { &history.undo_stack } else { &history.redo_stack };
+            let images: Vec<_> = stack
+                .iter()
+                .rev()
+                .take(steps)
+                .filter_map(|snapshot| match snapshot {
+                    HistorySnapshot::Delta(delta) => Some(delta.entities.clone()),
+                    _ => None,
+                })
+                .collect();
+            images
+                .iter()
+                .find_map(|entities| self.claim_against(i, entities))
+        };
+        let Some((tag, holder)) = held else {
+            return false;
+        };
+        let what = if undo { "UNDO" } else { "REDO" };
+        self.command_line.push_error_coded(
+            ocs_collab::protocol::codes::CLAIM_HELD,
+            &format!("协同：位号 {tag} 已被 {holder} 占用，拒绝执行 {what}"),
+        );
+        self.collab.report_attempt(&tag, what);
+        true
+    }
+
+    /// Say that a step was taken back because it touched `tag`, which
+    /// `holder` holds, and put the attempt on record under that tag.
+    pub(in crate::app) fn report_claimed_step(
+        &mut self,
+        changes: &[broadcast::Change],
+        label: &str,
+        tag: &str,
+        holder: &str,
+    ) {
+        self.command_line.push_error_coded(
+            ocs_collab::protocol::codes::CLAIM_HELD,
+            &format!("协同：位号 {tag} 已被 {holder} 占用，这一步修改（{label}）已撤回"),
+        );
+        self.collab.report_attempt(tag, &tried_text(changes, label));
+    }
+
     /// The tier (`role` / `pbs` / `state`) behind `code`, when `code` is what
     /// the read-only gate has just answered a write with. `None` for any
     /// other failure code.
@@ -546,24 +630,31 @@ impl OpenCADStudio {
             &code,
             &format!("协同：当前会话只读，这一步修改（{label}）已撤回"),
         );
-        let (object_ref, text) = match changes.first() {
-            Some(first) => (
-                first.object_ref.clone(),
-                changes
-                    .iter()
-                    .map(|change| {
-                        format!(
-                            "{} {}.{} = {}",
-                            change.kind, change.object_ref, change.field, change.value
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("；"),
-            ),
-            None => (String::new(), label.to_owned()),
-        };
-        self.collab.report_attempt(&object_ref, &text);
+        let object_ref = changes
+            .first()
+            .map(|first| first.object_ref.clone())
+            .unwrap_or_default();
+        self.collab
+            .report_attempt(&object_ref, &tried_text(changes, label));
     }
+}
+
+/// What a step that was taken back had tried, for the record: what it would
+/// have told the room, or its own name when it says nothing in P&ID terms.
+fn tried_text(changes: &[broadcast::Change], label: &str) -> String {
+    if changes.is_empty() {
+        return label.to_owned();
+    }
+    changes
+        .iter()
+        .map(|change| {
+            format!(
+                "{} {}.{} = {}",
+                change.kind, change.object_ref, change.field, change.value
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("；")
 }
 
 /// Commands a read-only session may still run: looking around, inspecting, and
@@ -1769,6 +1860,152 @@ mod tests {
         select(&mut app, pump);
         app.refresh_properties();
         assert_eq!(panel_row(&app, "设计压力"), PropValue::PlainText("2.5MPa".to_owned()));
+    }
+
+    // ── A tag somebody else holds ────────────────────────────────────────
+
+    /// What a refused claim tells this session: who holds the tag.
+    fn held_by(app: &mut OpenCADStudio, tag: &str, holder: &str) {
+        app.collab.apply(CollabEvent::ClaimDenied {
+            tag: tag.to_owned(),
+            holder: holder.to_owned(),
+            expires_at: 1_900_000_000,
+        });
+        assert_eq!(app.collab.claims.get(tag).map(String::as_str), Some(holder));
+    }
+
+    /// `VAL-CROSS-002`: a write to an object whose tag another user holds
+    /// is taken back as its step closes, whatever door it came in by. The
+    /// caller is told so under the code for a held tag, the drawing and
+    /// the history are as they were, nothing goes to the room, and the
+    /// attempt is reported under the tag. A claim used to keep out a second
+    /// claim and nothing else.
+    #[test]
+    fn a_write_to_a_tag_somebody_else_holds_is_taken_back() {
+        let (mut app, other) = app_with_vessel("X-1");
+        let pump = add_vessel(&mut app, "P-1001", r#"{"设计压力":"1.0MPa"}"#);
+        connected(&mut app);
+        app.collab.user_id = "u2".to_owned();
+        // A step of this person's own, so there is a stack to be left alone.
+        put_props(&mut app, other, r#"{"设计压力":"3.0MPa"}"#);
+        let i = app.active_tab;
+        assert_eq!(app.collab.sent.len(), 1);
+        assert_eq!(app.tabs[i].history.undo_stack.len(), 1);
+        held_by(&mut app, "P-1001", "u1");
+        held_by(&mut app, "P-2000", "u1");
+
+        // Over REST, the contract's write channel for properties.
+        let state = app.control_state();
+        let (response, task) = app.control_request(serde_json::json!({
+            "protocol": 1,
+            "op": "xdata_set",
+            "request_id": "held-1",
+            "client_id": "test",
+            "document_id": state["document_id"],
+            "revision": state["revision"],
+            "handles": [format!("{:X}", pump.value())],
+            "app": "PID_AUTHOR",
+            "data": [{"code": 1000, "value": r#"props={"设计压力":"9.9MPa"}"#}],
+        }));
+        app.drive_headless_task(task).unwrap();
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(response["code"], "CLAIM_HELD", "{response}");
+        assert!(response["level"].is_null(), "a claim is not a tier: {response}");
+        assert_eq!(prop(&app, pump, "设计压力"), "1.0MPa", "the write was taken back");
+
+        // By a command: the tag itself, and another object given a held tag.
+        let refused = app.automation_op(r#"{"op":"run","cmd":"PIDTAG P-1001 P-1009"}"#);
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(refused["code"], "CLAIM_HELD", "{refused}");
+        assert_eq!(author(&app, pump).tag, "P-1001");
+        let refused = app.automation_op(r#"{"op":"run","cmd":"PIDTAG X-1 P-2000"}"#);
+        assert_eq!(refused["code"], "CLAIM_HELD", "{refused}");
+        assert_eq!(author(&app, other).tag, "X-1");
+
+        assert_eq!(app.collab.sent.len(), 1, "nothing goes to the room");
+        assert_eq!(app.tabs[i].history.undo_stack.len(), 1);
+        assert_eq!(app.tabs[i].history.redo_stack.len(), 0);
+        let reported: Vec<&str> = app
+            .collab
+            .attempts
+            .iter()
+            .map(|(object_ref, _)| object_ref.as_str())
+            .collect();
+        assert_eq!(reported, ["P-1001", "P-1001", "P-2000"]);
+        assert!(app.collab.attempts[0].1.contains("设计压力"), "{:?}", app.collab.attempts);
+
+        // An object nobody holds is written as ever.
+        put_props(&mut app, other, r#"{"设计压力":"3.5MPa"}"#);
+        assert_eq!(app.collab.sent.len(), 2);
+
+        // Let go of, the tag is anybody's; held by this person, it is theirs.
+        app.collab.apply(CollabEvent::ClaimReleased {
+            tag: "P-1001".to_owned(),
+            reason: "released".to_owned(),
+        });
+        put_props(&mut app, pump, r#"{"设计压力":"2.5MPa"}"#);
+        assert_eq!(prop(&app, pump, "设计压力"), "2.5MPa");
+        app.collab.apply(CollabEvent::ClaimGranted {
+            tag: "P-1001".to_owned(),
+        });
+        put_props(&mut app, pump, r#"{"设计压力":"2.6MPa"}"#);
+        assert_eq!(prop(&app, pump, "设计压力"), "2.6MPa");
+        assert_eq!(app.collab.sent.len(), 4);
+    }
+
+    /// Taking a step back is a write like any other: an undo or a redo that
+    /// would change an object somebody has claimed since is refused, stacks
+    /// untouched, until the claim is gone.
+    #[test]
+    fn undo_does_not_reach_into_a_tag_somebody_has_since_claimed() {
+        let (mut app, _) = app_with_vessel("X-1");
+        let pump = add_vessel(&mut app, "P-1001", r#"{"设计压力":"1.0MPa"}"#);
+        connected(&mut app);
+        app.collab.user_id = "u2".to_owned();
+        put_props(&mut app, pump, r#"{"设计压力":"1.6MPa"}"#);
+        let i = app.active_tab;
+        held_by(&mut app, "P-1001", "u1");
+
+        undo(&mut app);
+        assert_eq!(prop(&app, pump, "设计压力"), "1.6MPa", "the undo went through");
+        assert_eq!(app.tabs[i].history.undo_stack.len(), 1);
+        assert_eq!(app.tabs[i].history.redo_stack.len(), 0);
+        assert_eq!(app.collab.sent.len(), 1, "nothing goes to the room");
+        assert_eq!(app.collab.attempts.len(), 1, "{:?}", app.collab.attempts);
+        assert_eq!(app.collab.attempts[0].0, "P-1001");
+
+        app.collab.apply(CollabEvent::ClaimReleased {
+            tag: "P-1001".to_owned(),
+            reason: "expired".to_owned(),
+        });
+        undo(&mut app);
+        assert_eq!(prop(&app, pump, "设计压力"), "1.0MPa");
+
+        // And the same on the way forward.
+        held_by(&mut app, "P-1001", "u1");
+        redo(&mut app);
+        assert_eq!(prop(&app, pump, "设计压力"), "1.0MPa", "the redo went through");
+        assert_eq!(app.tabs[i].history.redo_stack.len(), 1);
+    }
+
+    /// The holder's own change arrives like any peer's: a claim keeps this
+    /// person's hands off the object, not the object from following the room.
+    #[test]
+    fn a_held_tag_still_takes_the_changes_its_holder_makes() {
+        let (mut app, _) = app_with_vessel("X-1");
+        let pump = add_vessel(&mut app, "P-1001", r#"{"设计压力":"1.0MPa"}"#);
+        connected(&mut app);
+        app.collab.user_id = "u2".to_owned();
+        held_by(&mut app, "P-1001", "u1");
+        remote(
+            &mut app,
+            1,
+            vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "P-1001", "field": "设计压力", "value": "2.5MPa",
+            })],
+        );
+        assert_eq!(prop(&app, pump, "设计压力"), "2.5MPa");
+        assert_eq!(app.collab.last_apply_error, None);
     }
 
     /// A peer's change this drawing cannot follow — here, to an object it
