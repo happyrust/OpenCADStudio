@@ -1025,10 +1025,10 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 | **N3** 本地开着的撤销步被远端折叠关掉时不广播 | 已修 | `be0582ea7` | `a_step_still_open_when_a_peers_change_arrives_goes_out_as_this_persons` | 那一步仍然会被关掉（一条命令的撤销被分成两步），只是不再丢；不截断需要让记录器暂停，文档库没有这个接口 |
 | **N4** `__overrides` 不随变更走；远端改位号一律 `manual` | 没修 | — | — | |
 | **N5** 心跳把旧基线写回；`welcome` 的修订读在进房间之前 | 已修 | `9cc429cce` | `rewriting_a_session_row_never_takes_its_baseline_back`、`a_session_that_joins_hears_the_op_right_after_the_revision_it_was_told` | |
-| **N6** 客户端日志不分级；连接地址原样进日志 | 没修 | — | — | |
+| **N6** 客户端日志不分级；连接地址原样进日志 | 已修 | `c1db1a03d` | 见 §17.5 | |
 | **N7** 异步写法的检索只扫一层 | 已修 | `a5f28544b` | `nothing_under_this_module_is_asynchronous_code` 现在递归 | |
 | **N8** 证据目录里的描述文件 | 已修 | `96f21cf91` | `a_retired_descriptor_is_gone`、`publishing_does_not_overwrite_a_descriptor_already_there`、`quitting_retires_the_descriptor_this_process_published` | 删除记录见 §15.4 |
-| **N9** 证据的卫生 | 没修 | — | — | 这一批修完重跑端到端时处理：两个 GUI 之间的帧存原文、去掉恒为真的检查、`t21_claims` 进 `run_all` |
+| **N9** 证据的卫生 | 三条里修了两条半 | `c1db1a03d`，脚本在 `E7\m6-rerun-2\` | 见 §17.5 | 「各处截图只查文件存在」没有改 |
 
 ### 15.3 新查到的零星失败（不是协同的代码）
 
