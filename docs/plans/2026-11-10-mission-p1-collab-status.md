@@ -680,6 +680,116 @@ M7 开工前：§13.4 的 2、4、5、6 最好先有结论，它们都落在 M7 
 
 本节的路径缩写：`B` = `D:\work\plant-code\cad\ocs-mission-backup-20261110\logs`，`E7` = `D:\scratch\m7-validation`（本轮的新证据；`D:\scratch\m6-validation` 里上一轮的证据没有动）。进度仍然不写回 mission 的文件，断言状态都是「建议状态」。
 
+### 14.1 提交
+
+`main` 上 `3d4281eb3` 之后（只走第一父提交），未推送：
+
+| 提交 | 内容 |
+|---|---|
+| `09e9508c6` | 合并 `upstream-merge-20261110`（到 `d92c68ca9`）：备份还原把参考数据卷放回 `Ref`。在动图集那几个文件之前并的 |
+| `75454fa6d` | 两条并行偶发失败按根因修：`set_textfill` 只在值真的变了才重置字形图集；出图按图集代数核对（§14.2） |
+| `35749fc48` | 合并（到 `8200f9b88`）：备份面板的图纸节点多出工艺点、分支点等 |
+| `821e11395` | `lasso_press_drag_selects` 不再受移动合并门限的墙钟影响（§14.2 末） |
+| `13dad6ef8` | 协同会话绑定到它那张图的标签页（§14.4 末） |
+| `cce14ba77` | 协同按位号引用对象的三处缺陷（§14.4） |
+| `369dacba1` | M7 `conflict-field-merge`（§14.5.1） |
+| `454db6685` | 合并（到 `1fb8423f3`）：备份面板读数据库转储、数据映射表 |
+| `5a708d31d` | M7 `conflict-object-topology`（§14.5.2） |
+| `dacf954ba` | M7 `conflict-resolution`（§14.5.3） |
+
+三次合并都是自动合并、无冲突，与本线改的文件没有重叠。
+
+feature（照此同步回 `features.json`）：`conflict-field-merge`、`conflict-object-topology`、`conflict-resolution` 由 `pending` 改 `completed`，完成提交依次是 `369dacba1`、`5a708d31d`、`dacf954ba`；`cross-area-flows` 仍是 `pending`。
+
+### 14.2 两条零星失败的根因
+
+`io::svg_export::tests::a_page_style_table_wins_over_the_job_wide_one` 与 `app::automation::tests::a_job_whose_text_the_atlas_no_longer_holds_is_laid_out_again`（§13.5 末尾那两条）。它们不在另一条线 `2271924a0` 修的六条里。
+
+**共享的是哪一样、谁写谁读。** 进程级状态是 `scene::text::sdf_atlas::text_atlas()`（字形图集）和它的代数 `ATLAS_GENERATION`。字形四边形记着自己那一格的位置，图集一重置或长高，此前排好的四边形全部作废。
+
+- 写的人有三拨。其一，每一条构造应用的测试：`new_for_test` → `new` → `apply_config` → `apply_settings` → `set_textfill` → `reset_font_entries` → `GlyphAtlas::reset`，不管 TEXTFILL 变没变都重置，一次构造两遍（`new` 里一遍，套默认配置又一遍），源码里 `new_for_test()` 有 865 处调用。其二，`sdf_atlas` 自己的单元测试：它们在私有的 `GlyphAtlas` 上做重置和长高，却也推进了全进程共用的代数。其三，图集长高（一个进程至多两次）和第二条测试自己那次 `reset`。
+- 读的人。第一条测试的两页各自在写到第一段文字时取一次快照，中间隔着一次落盘；两次快照之间图集被重置，第一页有字、第二页没字（失败输出里两页的差别只有第一页多出来的那几条字形笔画）。第二条测试读的是 `resolve_plot_job`：排版、取快照、不一致就重排，最多 4 次。它有三种失败，定向复现里都见到了：4009 行与 4044 行，5 遍排版每一遍都被别的测试的重置打断；4058 行，`stale_glyphs` 是 0、`missing_glyphs` 是 0，画出的元素数却是 12 对 11。
+
+**4058 行那一种不只是测试互相干扰，是产品缺陷。** `resolve_plot_job` 靠「四边形的键在不在快照里」判断这些页还能不能用。键是格子的位置，不是格子里的字：图集重置之后，格子按下一次排版的顺序重新填，旧四边形的键可以指向一个存在的格子、里面是别的字。这时数缺的键得 0，页被当成完好的交出去，出图上是错的字，没有任何报告。产品里触发它需要：图集被重置（改 TEXTFILL；或者选项窗口的「恢复默认」「关闭不保存」——`apply_settings` 此前也无条件重置），随后先排了别的文字，再在场景的下一帧之前出图（无头出图没有帧）。改写后的第二条测试把这个情形摆成确定的：标注是同一个字重复四次，烘在第一格；重置后在同一把锁里先烘另一个字。修之前它单独跑 10 遍 10 遍失败，画出来的是 `B` 的轮廓（`B\r3a-red-evidence.log`）。
+
+**修法**（`75454fa6d`）
+
+- `set_textfill`：值没变就什么都不做。对产品是少做事——启动、恢复默认、放弃选项时不再把所有字形重烘一遍、所有图纸的文字重排一遍；值真的变了照旧重置。
+- 代数只属于进程级的那张图集：`GlyphAtlas` 带一个可选的计数器，`text_atlas()` 用 `ATLAS_GENERATION`，私有图集不带。
+- `GlyphSnapshot` 记下取快照时的代数；`PlotAssets::letters(pages, 代数)` 要求「键都在」并且「快照的代数等于排版时的代数」。`resolve_plot_job` 每一遍先让场景与图集对齐（`Scene::resync_with_atlas`，就是 `update()` 里每帧做的那一段），排版，取快照，再核对；不成立就重排，仍然最多 4 次。
+- 第一条测试的三次导出共用一份快照（同文件里的 `shared_assets` 就是为这个写的）。第二条测试改成上面说的确定情形，断言比的是整页的轮廓。
+
+修完之后一个测试进程里图集至多动 4 次（长高 2 次，第二条测试自己的 2 次重置），少于 `resolve_plot_job` 的 5 遍，「5 遍都被打断」在构造上不再可能。
+
+**先红后绿**：`setting_textfill_to_the_value_it_has_leaves_the_baked_glyphs_alone` 在旧行为下失败，改写后的第二条测试在旧的 `resolve_plot_job` 下 10 遍 10 遍失败，改后都通过；另加 `changing_textfill_rewinds_the_atlas_once`、`only_an_atlas_given_a_counter_moves_one`。
+
+**改前改后的失败率**（同一台机器、同样的种子；`B\r3-before-*-repro\`、`B\r3-after-*-repro\`，脚本 `B\repro.ps1`）
+
+| 跑法 | 遍数 | `a_page_style_table…` | `a_job_whose_text…` |
+|---|---:|---|---|
+| 定向：两条目标 + `app::command_driver`（217 条，都构造应用），打乱顺序。改前 | 600 | 83 | 3（4044 行 2 次，4009 行 1 次） |
+| 同上，改前，另外两批 | 100 + 3 | 15 + 1 | 0 + 1（4058 行） |
+| 同上，改后 | 600 | 0 | 0 |
+| 定向：`command_driver` + `automation` + `control` + `plugin_host`（627 条）。改前 | 60 | 14 | 0 |
+| 同上，改后 | 60 | 0 | 0 |
+| lib 整套并行。改前（上一轮，§13.5） | 11 | 1 | 1 |
+| lib 整套并行。改后（`B\r3c-lib-full\`） | 8 | 0 | 0 |
+
+顺带的效果：lib 整套并行一遍从 52–58 秒降到 27–33 秒，省下的是每个测试应用重烘字形的时间。
+
+**没有改、看到了的**
+
+- 控制通道的 `plot` 动作（`src/app/control/actions.rs`）自己排页、不经 `resolve_plot_job`，SVG 用空的 `PlotAssets`（每页各取快照），PDF 在写的时候才取快照；`file.rs` 里几条 PDF 导出在工作线程上取快照。多布局出图中途图集长高，或者排版与取快照之间界面线程又排了别的字，这些路径没有上面的核对。它们不是这两条失败暴露的，这一轮没有动（§14.6 之 6）。
+- `OpenCADStudio::new()` 读的是本机真实的 `settings.json`。那里 `textfill` 若是 `false`，每次 `new_for_test` 仍然会真的翻两次 TEXTFILL。本机与 CI 都是默认值。
+
+**核对时新出现的第三条**：`app::automation::tests::lasso_press_drag_selects`，大干扰组改后的 60 遍里失败 1 遍（「drag must start (add=true rect=false)」）。不是共享状态，是墙钟门限：一次指针移动的处理耗时到了 8 毫秒（`MOVE_COALESCE_FROM_MS`），`on_viewport_move` 就把 `move_pass_due` 设到「现在 + 这次的耗时」，在那之前到达的移动被 `defer_pointer_move` 扣下，等下一帧再答复；测试连发 11 次移动、中间没有帧，机器忙的时候后面的移动全被扣下，拖拽起不来。另一条线在 `2271924a0` 里对 `rapid_drawing` 那条、上游在 `parameter_preview.rs` 里用的是同一个修法：每次移动之前把门限打开（`821e11395`）。它改前的失败率太低，没有单独量出来（同一组改图集之前 60 遍 0 次、之后 60 遍 1 次，都在噪声里）；改后的遍数见 §14.8。同一类的口子还有：直接发 `Message::ViewportMove` 的测试位置约 70 处，其中连发两次以上又断言「每一次都被答复」的都可能在机器很忙时失败，这一次只改了实际失败的那一条。
+
+### 14.3 契约里那五处：查到的断言，做了什么，建议的措辞
+
+**`welcome.peers` 含不含连入者自己——没有改。** 契约里提到 `welcome` 或 `peers` 的断言一共九条：
+
+| 断言 | 相关的话 | 要求 |
+|---|---|---|
+| `VAL-CLI-001` | 「`peers` 为数组」 | 不分 |
+| `VAL-CLI-003`（2026-11-09 的裁决条目 1、3） | 「`u2` 侧收到 `welcome` 且 `peers` 长度为 2、包含 `u1`」「`u2` 侧自己维护的在线列表计数从 2 变 1」 | **含自己**（图上只有 u1、u2 两个人） |
+| `VAL-CLI-013` | 「`u1`…确认 `welcome.peers` 为空数组（首次连入）」「`u2` 的 `welcome.peers` 长度为 1 且含 `u1`」 | 不含自己 |
+| `VAL-CROSS-006` | 「`u1` 的在线面板显示 0 名其他用户（`welcome.peers` 为空）」「`u2` 的 `welcome.peers` 含 `u1`」 | 不含自己 |
+| `VAL-PERM-018` | 只读 `base_revision` | 不分 |
+| `VAL-SRV-004`（mission 已记 passed） | 「`peers`（数组）」 | 不分 |
+| `VAL-SRV-009`（passed） | B 收到 `welcome` | 不分 |
+| `VAL-SRV-019`（passed） | 「`peers` 数组至少含 A 的 `session_id`」 | 不分 |
+| `VAL-SRV-027`（passed） | 只读 `claims` | 不分 |
+
+mission 记为 passed 的四条 `VAL-SRV` 都不要求含自己。但 `VAL-CLI-003` 要求，而且上一轮按这句取过证（`welcome.peers` 长度 2）。照「有一条要求含自己就不改、等用户」办：服务器没有动。两种定法各自要改的句子：
+
+- 定为**不含自己**（倾向，`VAL-CLI-013`、`VAL-CROSS-006` 与 `architecture.md` 的例子都是这样）：`VAL-CLI-003` 裁决条目 1 原句「`u2` 侧收到 `welcome` 且 `peers` 长度为 2、包含 `u1`」改成「`u2` 侧收到 `welcome` 且 `peers` 长度为 1、包含 `u1`」；条目 3 原句「`u2` 侧自己维护的在线列表计数从 2 变 1（打印 `peersBefore` / `peersAfter`）」改成「`u2` 侧自己维护的在线人数（含自己）从 2 变 1（打印 `peersBefore` / `peersAfter`）」。行为上是服务器 `hello` 里少列一项。
+- 定为**含自己**（现状）：`VAL-CLI-013` 原句「确认 `welcome.peers` 为空数组（首次连入）」改成「确认 `welcome.peers` 里只有自己（首次连入）」，「`u2` 的 `welcome.peers` 长度为 1 且含 `u1`」改成「长度为 2 且含 `u1`」；`VAL-CROSS-006` 原句「（`welcome.peers` 为空）」改成「（`welcome.peers` 里除自己外没有别人）」。
+
+**后连入方的 `peer_joined`——行为不动。** 建议的措辞：`VAL-CLI-018` 原句「两个实例互相收到 `peer_joined`。」改成「先连入的实例收到后连入者的 `peer_joined`；后连入的实例在 `welcome.peers` 里看到先连入者。」`VAL-CLI-003` 正文原句「第二个观测端（`u2`，同一 `PID-1101`）连入并确认收到 `peer_joined`。」改成「第二个观测端（`u2`，同一 `PID-1101`）连入并确认 `welcome.peers` 含 `u1`。」；裁决条目 2 原句「`u2` 侧收到 `peer_joined`（`u1`）与后续 `peer_left`（`session_id` 与 `u1` 匹配）」改成「`u2` 侧的 `welcome.peers` 含 `u1`，并收到后续 `peer_left`（`session_id` 与 `u1` 匹配）」。
+
+**`claim_denied.holder`——行为不动**（与 `VAL-SRV-011` 一致）。`VAL-CLI-005` 原句「`holder` 为 `u1` 的显示名或 `u1` 用户 id」改成「`holder` 为 `u1` 的会话号（同 `VAL-SRV-011`）；`u2` 的 `GET /api/v1/collab/status` 与协同面板把占用者显示为 `u1`」。
+
+**`VAL-CLI-019` 的 20 秒——没有处理。** 原句「`cargo build -p OpenCADStudio` 冷构建（`cargo clean -p OpenCADStudio` 后）耗时不超过 20 秒。」建议删去，或改成「`cargo build -p ocs_collab` 冷构建耗时不超过 20 秒」；证据一栏的「构建耗时测量」随之删去或改对象。
+
+**`VAL-CLI-011` 的持有者规则——照旧，契约未规定，待用户确认。** 代码注释里已写明（`http.rs` 的 `downgrade_all_but_the_holder`）。建议在原句「`u2` 收到 `readonly_downgrade`，载荷含 `reason` 与 `holder`。」后面加一句：「以改图纸状态触发时，编辑权持有者是切换那一刻该图上最早建立的活跃编辑会话，`holder` 是它的会话号；该图上没有编辑会话时 `holder` 为 `null`，所有会话都降级。」
+
+§13.4 里另外两处也给出措辞：`VAL-CLI-008` 的取证提示里「`wait_for_frame`」应改为「响应里的 `waited_for_frame`」，「窗口截图的 `screen_bounds`」应改为「视口截图（`scope:"viewport"`）的 `screen_bounds`」；`VAL-CLI-014` 的「从服务器日志的失败连接时间戳可读出」应改为「从客户端日志的连接尝试时间戳可读出」。
+
+### 14.4 `object_ref` 改成位号：四个问题
+
+上一轮把 op 里的 `object_ref` 从实体句柄换成了位号（`architecture.md` §3.2 的每个载荷都这样写，服务器的审计与裁决也按它），句柄只作为 `handle` 提示随行。这是一处没人点名的设计变化，四个问题的回答：
+
+1. **没有位号的对象怎么引用？** 不引用。管段、打断符、页间连接符的 `PID_AUTHOR.tag` 是空串，它们在线上没有名字：发送方不陈述它们的变更，接收方收到空的 `object_ref` 一律不应用、按「（无位号）」报成未应用。它们带的值是派生的（管段取管路的值），所以接收方应用完一个 op 之后在同一个撤销步里跑一遍属性下传（`propagate_pid_chain`，与本地改属性之后是同一个入口），由本图自己算。**这里查出一处会引用错对象的缺陷，已修**：此前空位号的变更会带着句柄发出去，接收方只要句柄下的实体位号也是空的就信了——两边各自打开文件之后各画过一条管，同一个句柄下就是两根不同的管段，别人那根管段的属性会写到我这根上。
+2. **两个对象位号相同时怎么办？** 句柄提示来分：提示的句柄下那个实体确实带着这个位号，就是它；否则必须恰好只有一个对象带这个位号，没有或者多于一个都不应用，报未应用。服务器那一侧按位号记对象，两个同位号的对象在它那里是一个条目。两边都有重复位号、句柄又对不上（都是各自在会话里新建的）时说不清指哪个，结果是报未应用，不会改错。
+3. **改位号这个操作引用旧位号还是新位号？应用之后下一个操作还找得到吗？** `set_tag` 的 `object_ref` 是旧位号（别人此刻还认的名字），`value` 是新位号；同一步里跟在后面的属性变更、以及此后的 op，都用新位号。接收方应用之后对象就带着新位号，找得到。服务器一侧（§14.5.1）：改名之后，没看到改名的会话仍用旧位号提交，服务器顺着改名历史找到对象，广播时把 `object_ref` 换成现在的位号。**查出一处该报没报的缺陷，已修**：旧位号在本图上挂在两个符号上（说不清指哪个）、而新位号正好另有其物时，这次改名既没应用也没报——`already_retagged` 的注释写的是「旧位号已经没有、新位号已经在」，代码只查了后一半。
+4. **大小写与空白是否归一？** 不归一。比较的是存下来的字符串，逐字相等，大小写与首尾空白都算数——位号引擎的唯一校验、服务器的占用表与审计也都是这样比的。`PIDTAG <旧> <新>` 在命令行上找旧位号时不分大小写，但广播出去的 `object_ref` 取的是存着的那个字符串，不是用户敲的。没有查出缺陷。
+
+四条红测试修之前都失败（`B\r3d-red.log`），修后通过（`cce14ba77`）：`a_change_naming_no_tag_is_not_applied_by_its_handle_alone`、`a_change_to_an_untagged_object_is_not_stated`、`a_retag_fitting_several_symbols_is_reported_even_when_the_new_tag_exists`、`a_remote_line_change_is_carried_down_to_runs_and_segments`。
+
+**会话与标签页的绑定**（`13dad6ef8`）。入站变更此前写到当前活动的标签页：用户切到另一张图——比如同一张图的副本，位号相同——别人对协同图纸的改动会写到前面那张图上，是数据错误；反过来，在别的图上的编辑会被当成协同图纸的变更广播出去；只读闸也不分图。现在会话有一个 `document`，在它第一次需要文档时定在当时在前面的那张图上（启动时打开的那张），此后入站写到它、只有它的编辑才出站、只读闸只管它；它关了之后会话没有文档，入站变更报「协同的图纸已经关闭」。`GET /api/v1/collab/status` 多一个诊断字段 `document_id`。三条红测试修之前都失败（同一份 `r3d-red.log`）。
+
+没有处理的：管路上手工改过的字段带覆盖标记（`__overrides`），标记不随变更广播，接收方的管路没有标记，之后管线再改同一字段两边会不一样；给一个原本没有位号的对象起位号，这一步对别人说不出来；绑定取的是「第一次用到时在前面的图」而不是「命令行上给的那个文件」。
+
 ### 14.5 M7：每项开工前列出的断言与取证办法
 
 #### 14.5.1 `conflict-field-merge`（`VAL-CONF-001`–`005`）
@@ -811,3 +921,53 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 `VAL-CONF-018`（审计日志改删返回 405）不在 M7 四项的 `fulfills` 里，M1 已经实现，`http.rs` 里有它的单测；这一轮没有另外取证。
 
 到这里 `VAL-CONF` 的 18 条里 M7 负责的 17 条都有了建议状态。剩下的一项 `cross-area-flows`（`VAL-CROSS-001`–`012`）没有开工，见 §14.7。
+
+### 14.6 定下来的事里要用户过目的
+
+每件写现状、选项、倾向。
+
+1. **并列窗口的默认值。** 现状：`--tie-window-ms` 默认 0，不暂存，两个人同时改同一字段时先到的生效、后到的让位，永远不会生成冲突条目；`VAL-CONF-004`、`-008`、`VAL-CROSS-007` 取证时要显式带这个参数。选项：保持 0；或者给一个几百毫秒的默认值，代价是每一步编辑的广播都晚这么久。倾向保持 0——契约 004 自己写的是「服务器配置为无法用基线判定」，M1–M6 的断言也都是在「到了就生效」上验的。
+2. **`VAL-CLI-011` 的持有者规则**（§14.3）。现状：切换那一刻最早建立的活跃编辑会话。倾向保留，待确认。
+3. **新增的两个错误码。** 让位用 `OP_SUPERSEDED`，改已删对象用 `OBJECT_DELETED`，都走 `error` 帧（A.4：「`op_rejected` 不存在」）。契约只说「`error` 表示基线落后」「被覆盖通知」，没给码名。选项：让位改回 `STALE_BASE_REVISION`。倾向分开：`STALE_BASE_REVISION` 的意思是「追上来再发一遍」，让位的意思是「不要再发」，客户端要分得开。
+4. **「被引用」的范围。** 现状：只有管路端点（`add_pipe_run` 的 `from` / `to`）算引用，管路上的管件被删不拦。选项：管件也算。倾向不算，理由见 §14.5.2。
+5. **三处契约字面。** 001 的证据栏写的是 GUI 的 xdata 读回，实际读的是服务器的语义读回；017 写「`ok=false`」，WS 的 `error` 帧没有这个键，码名是 A.4 的 `OBJECT_REFERENCED`；015 读的 `level` 现在与 `denied_level` 并存。建议把 001 的证据改成「服务器 `GET /drawing/{id}/objects` 的读回」，017 的「返回 `ok=false`，`code` 表示被引用不可删（如 `REFERENCED_OBJECT`）」改成「返回 `error`，`code='OBJECT_REFERENCED'`」。
+6. **出图另外几条路没有图集核对**（§14.2 末）。现状：控制通道的 `plot` 动作与 PDF 导出不经 `resolve_plot_job`。选项：让它们也走同一遍核对（PDF 改成用作业带着的快照）；或者留着。倾向修，但它在这个 mission 之外，是上游出图的代码，等一句话再动。
+7. **会话绑哪张图**（§14.4 末）。现状：第一次用到时在前面的那张图。选项：改成命令行上给的那个文件所在的标签页。倾向后者，要动打开文件的路径，没有做。
+
+### 14.7 没做的、没核实的
+
+- **`cross-area-flows`（`VAL-CROSS-001`–`012`）没有开工。** 它要的客户端功能，按上一轮 §13.10 的清单对一遍：
+  - 两步编辑之间的基线过期与重发：对改属性、改位号已经由服务器的合并解决（§14.5.1）；客户端收到 `STALE_BASE_REVISION` 之后追上再发，没有做。
+  - 会话与标签页的绑定：做了（`13dad6ef8`）。
+  - 新建与删除实体的广播：服务器认 `insert_symbol` / `delete_object` / 拓扑类 op 了，客户端还不发、收到也不会建或删实体。
+  - 只读总闸（命令、REST 直接写、撤销重做、属性面板、夹点）：没有做，仍然只有命令入口那一道。
+  - 只读状态跨重连、后加入只读图纸的会话降级：没有做。
+  - 客户端显示 `conflict`、处理 `OP_SUPERSEDED` / `OBJECT_DELETED`：没有做，现在只会把服务器的 `error` 原文印在命令行上。
+  - 重连后补上错过的 op（服务器有 `ops` 表与 `Store::load_ops`，还没有接到 `hello` 上）：没有做。
+  - 管路覆盖标记随变更广播：没有做。
+  - 服务器保证并发插入的位号唯一（`VAL-CROSS-010`）：没有做。
+- 远端变更在本地命令执行到一半时到达会截断那条命令的撤销步（§13.10），没有处理。
+- §14.2 末尾两处产品上的观察（出图的另外几条路、`new()` 读真实的 `settings.json`）没有动。
+- `VAL-CONF-018` 这一轮没有另外取证。
+- wasm 目标的检查：mission 的 `AGENTS.md`、`services.yaml`、`mission.md`、验证契约里都没有 wasm 这个词，它不在 mission 的门禁里；没有跑。
+
+### 14.8 全量测试与门禁
+
+在图集与 lasso 两处修正之后的树上（`821e11395`，`B\r3c-*`）：
+
+| | 结果 |
+|---|---|
+| 全量 20 个测试程序 | 6608 通过 / 0 失败 / 43 忽略，20 个都退出码 0 |
+| lib 整套并行 8 遍 | 每遍 6030 通过 / 0 失败 / 41 忽略（`B\r3c-lib-full\summary.txt`） |
+| 备份面板两个分组 | `pid_backup` 179 通过 / 2 忽略，`pidbackup` 24 通过 / 1 忽略 |
+| 端到端八个场景（`E7\m6-rerun\`，M6 的 `run_all.ps1` 换了证据目录） | 108 项全过；每个场景前后指针位置与前台窗口不变；没有残留进程（`logs\run_all.summary.txt`） |
+
+之后的每一项各自跑过相关的测试（见各节）。`test --workspace --no-run` 第一次用 `-j 10`，rustc 报 `memory allocation of … bytes failed` 崩了（`B\r3c-test-norun.crashed-oom.log`），那一遍不算；改用 `-j 4` 之后通过。
+
+在最后的提交 `dacf954ba` 上已经构建完全部二进制与测试程序（`B\r3z-summary.txt`，03:15 结束），全量与端到端的重跑见本节后面的补记。
+
+### 14.9 磁盘与环境
+
+- 这一轮没有删过任何东西。D 盘开工时 21.8 GB，中途最低 18.4 GB，09:15 是 25.9 GB（机器上同时有别的构建在进出）。
+- 03:14 会话被外部中断，09:17 接着做；中断时没有进行到一半的 git 操作，没有残留进程。
+- mission 留下的三个 `pwsh` 与 `.ocs.lock` 没有碰。
