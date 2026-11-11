@@ -19,7 +19,8 @@ use iced::{alignment, font, Background, Border, Color, Element, Fill, Font, Leng
 
 use super::{nav, Message, NavGroup, PidScreen};
 use crate::app::{Message as AppMessage, OpenCADStudio};
-use crate::ui::style::pid_tokens::{ColorToken, NumberToken, PidTheme, TextToken};
+use crate::ui::style::pid_fonts;
+use crate::ui::style::pid_tokens::{ColorToken, NumberToken, PidTheme};
 use crate::ui::wrap_bar::PosReport;
 
 /// Height of the title bar.
@@ -189,19 +190,11 @@ pub fn nav_groups() -> Vec<(NavGroup, Vec<PidScreen>)> {
 // ── Drawing ──────────────────────────────────────────────────────────────
 
 fn ui_font(theme: PidTheme, weight: font::Weight) -> Font {
-    Font {
-        family: font::Family::Name(TextToken::FontUi.value(theme)),
-        weight,
-        ..Font::DEFAULT
-    }
+    pid_fonts::ui(theme, weight)
 }
 
 fn mono_font(theme: PidTheme, weight: font::Weight) -> Font {
-    Font {
-        family: font::Family::Name(TextToken::FontMono.value(theme)),
-        weight,
-        ..Font::DEFAULT
-    }
+    pid_fonts::mono(theme, weight)
 }
 
 /// A bar or a panel of the shell: the panel colour with the hairline the

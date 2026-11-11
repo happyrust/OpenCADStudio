@@ -149,6 +149,8 @@ pub mod validation;
 pub mod workbench;
 
 #[cfg(test)]
+mod pid_fonts_loading;
+#[cfg(test)]
 mod pid_shell_chrome;
 #[cfg(test)]
 mod pid_shell_startup;
@@ -156,6 +158,7 @@ mod pid_shell_startup;
 use iced::{Element, Task};
 
 use super::{Message as AppMessage, OpenCADStudio};
+use crate::ui::style::pid_fonts;
 
 /// Where a launch lands. The one place to change it.
 ///
@@ -403,10 +406,15 @@ impl PidShell {
 
     /// Show `screen`, turning the module on if it was off. A screen that is
     /// not implemented is refused: `false`, and what was showing still is.
+    ///
+    /// The module's typefaces go into the interface's font database here,
+    /// the first time a screen is shown ([`pid_fonts::ensure_loaded`]): a
+    /// session that never shows one never loads them.
     pub fn show(&mut self, screen: PidScreen) -> bool {
         if !screen.is_implemented() {
             return false;
         }
+        pid_fonts::ensure_loaded();
         self.current = Some(screen);
         true
     }
