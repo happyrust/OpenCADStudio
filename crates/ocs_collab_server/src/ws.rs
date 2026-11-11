@@ -675,11 +675,16 @@ async fn hello(
                 }
             }
 
+            // The others on the drawing. The session being welcomed is not
+            // its own peer: the first one in finds the list empty, the
+            // second finds the first (`VAL-CLI-013`, `VAL-CROSS-006`,
+            // `architecture.md` A.5).
             let peers: Vec<Peer> = {
                 let sessions = state.sessions.lock().await;
                 sessions
                     .active_peers(drawing_id)
                     .iter()
+                    .filter(|peer| peer.session_id != session.session_id)
                     .map(peer_of)
                     .collect()
             };
@@ -1525,9 +1530,9 @@ mod tests {
             } => {
                 assert_eq!(welcomed, &session_id);
                 assert_eq!(*base_revision, 0);
-                assert!(peers
-                    .iter()
-                    .any(|peer| peer.session_id == session_id && peer.user_id == "u1"));
+                // The first session on a drawing has no peers; it is not
+                // its own (`VAL-CLI-013`: "`welcome.peers` 为空数组").
+                assert!(peers.is_empty(), "{peers:?}");
                 assert!(claims.is_empty());
             }
             other => panic!("expected welcome, got {other:?}"),
@@ -1603,10 +1608,13 @@ mod tests {
         let mut b = conn();
         let reactions =
             handle_message(&state, &mut b, hello("u2", "协同编辑", "plant-b"), T0 + 1).await;
+        let b_id = session_id(&b);
         match &sends(&reactions)[0] {
             ServerMessage::Welcome { peers, claims, .. } => {
-                assert_eq!(peers.len(), 2, "both active sessions are peers");
-                assert!(peers.iter().any(|peer| peer.session_id == a_id));
+                // The others on the drawing: A, and not B itself.
+                assert_eq!(peers.len(), 1, "{peers:?}");
+                assert_eq!(peers[0].session_id, a_id);
+                assert!(peers.iter().all(|peer| peer.session_id != b_id));
                 assert_eq!(claims.len(), 1);
                 assert_eq!(claims[0].tag, "V-1001");
                 assert_eq!(claims[0].session_id, a_id);

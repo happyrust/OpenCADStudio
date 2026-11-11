@@ -79,6 +79,10 @@ pub const DIVERGED_LABEL: &str = "不一致";
 /// What a peer row says of the session holding the edit right.
 pub const HOLDER_LABEL: &str = "编辑权";
 
+/// What the roster says under this session's own row when nobody else is
+/// on the drawing.
+pub const NO_OTHERS_LABEL: &str = "暂无其他在线用户";
+
 /// One peer row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerRow {
@@ -181,13 +185,11 @@ fn notice(_: &Theme) -> iced::widget::text::Style {
     }
 }
 
-/// The peer list, in the order the server reported it: this session marked
-/// 本机, and whoever holds the edit right marked 编辑权.
+/// Everybody on the drawing: this session first, marked 本机, then the
+/// others in the order the server reported them, with whoever holds the
+/// edit right marked 编辑权. With nobody else there, it says so.
 fn peer_rows<'a>(view: &'a CollabView) -> Element<'a, Message> {
     let mut rows = column![].spacing(2);
-    if view.peers.is_empty() {
-        rows = rows.push(text("暂无其他在线用户").size(11).style(muted));
-    }
     for peer in &view.peers {
         let name = if peer.display_name.is_empty() || peer.display_name == peer.user_id {
             peer.user_id.clone()
@@ -207,6 +209,9 @@ fn peer_rows<'a>(view: &'a CollabView) -> Element<'a, Message> {
             line = line.push(text("本机").size(10).style(muted));
         }
         rows = rows.push(container(line).width(Fill).padding([2, 2]));
+    }
+    if view.peers.iter().all(|peer| peer.is_self) {
+        rows = rows.push(text(NO_OTHERS_LABEL).size(11).style(muted));
     }
     rows.into()
 }
@@ -489,6 +494,31 @@ mod tests {
         assert_eq!(drawn(&mut ui, READONLY_LABEL), None);
         assert_eq!(drawn(&mut ui, HOLDER_LABEL), None);
         assert_eq!(drawn(&mut ui, DIVERGED_LABEL), None);
+    }
+
+    /// The first one on a drawing sees itself, marked 本机, and is told
+    /// nobody else is there; with a second, the note goes and both rows are
+    /// drawn (`VAL-CROSS-006`: 「0 名其他用户」→「1 名其他用户、共 2 人」).
+    #[test]
+    fn the_roster_shows_this_session_and_says_when_nobody_else_is_there() {
+        let alone = CollabView {
+            peers: vec![peer("u1", true, false)],
+            ..view_with(Vec::new())
+        };
+        let mut ui = draw(&alone);
+        assert!(drawn(&mut ui, "u1").is_some());
+        assert!(drawn(&mut ui, "本机").is_some());
+        assert!(drawn(&mut ui, NO_OTHERS_LABEL).is_some());
+
+        let two = CollabView {
+            peers: vec![peer("u1", true, false), peer("u2", false, false)],
+            ..view_with(Vec::new())
+        };
+        let mut ui = draw(&two);
+        let own = drawn(&mut ui, "u1").expect("this session's row");
+        let other = drawn(&mut ui, "u2").expect("the other's row");
+        assert!(own.y < other.y, "this session first: {own:?}, {other:?}");
+        assert_eq!(drawn(&mut ui, NO_OTHERS_LABEL), None);
     }
 
     /// A session whose drawing is short of the room's changes says so in the

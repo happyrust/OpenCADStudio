@@ -348,9 +348,15 @@ impl State {
                 }
                 self.had_session = true;
                 self.connected = true;
-                self.session_id = Some(session_id);
                 self.base_revision = base_revision;
-                self.peers = peers;
+                // The others on the drawing. `welcome.peers` does not list
+                // the session it welcomes; a server that still does (it
+                // used to) is read the same way.
+                self.peers = peers
+                    .into_iter()
+                    .filter(|peer| peer.session_id != session_id)
+                    .collect();
+                self.session_id = Some(session_id);
                 self.claims = claims.into_iter().collect();
                 // A fresh session re-derives write access from the server: a
                 // session that may not write is told so right behind this
@@ -503,7 +509,11 @@ impl State {
                 .iter()
                 .map(|(tag, holder)| (tag.clone(), json!(holder)))
                 .collect::<serde_json::Map<String, Value>>(),
+            // `peers` is the others (A.5); this is everybody on the drawing,
+            // this session included — what the panel's header counts.
+            "online": if self.session_id.is_some() { self.peers.len() + 1 } else { 0 },
             "readonly": self.readonly,
+            "readonly_level": self.readonly_level,
             "readonly_holder": self.readonly_holder,
             "readonly_holder_user": self.readonly_holder_user(),
             "reconnect_attempts": self.reconnect_attempts,
@@ -944,6 +954,54 @@ mod tests {
         let state = State::new();
         assert!(state.request_claim("P-1001").is_err());
         assert!(state.request_release("P-1001").is_err());
+    }
+
+    /// `welcome.peers` is the others on the drawing: the first session in
+    /// finds it empty, the second finds the first (`VAL-CLI-013`,
+    /// `VAL-CROSS-006`). The published roster is the same list
+    /// (`architecture.md` A.5), and the head count beside it is everybody —
+    /// this session too. A server that still lists the session it welcomes,
+    /// as it used to, is read the same way.
+    #[test]
+    fn the_roster_is_the_others_and_the_head_count_includes_this_session() {
+        let mut state = State::new();
+        assert_eq!(state.status_json()["online"], 0, "no session, nobody");
+        state.apply(CollabEvent::Connected {
+            session_id: "s-1".to_owned(),
+            base_revision: 0,
+            peers: Vec::new(),
+            claims: Vec::new(),
+        });
+        let status = state.status_json();
+        assert_eq!(status["peers"].as_array().map(Vec::len), Some(0));
+        assert_eq!(status["online"], 1);
+
+        state.apply(CollabEvent::PeerJoined(peer("s-2", "u2")));
+        let status = state.status_json();
+        assert_eq!(status["peers"].as_array().map(Vec::len), Some(1));
+        assert_eq!(status["peers"][0]["user_id"], "u2");
+        assert_eq!(status["online"], 2);
+
+        // The second one in: the welcome lists the first.
+        let mut second = State::new();
+        second.apply(CollabEvent::Connected {
+            session_id: "s-2".to_owned(),
+            base_revision: 0,
+            peers: vec![peer("s-1", "u1")],
+            claims: Vec::new(),
+        });
+        assert_eq!(second.peers, [peer("s-1", "u1")]);
+
+        // The old form, with the welcomed session in its own list.
+        let mut old = State::new();
+        old.apply(CollabEvent::Connected {
+            session_id: "s-2".to_owned(),
+            base_revision: 0,
+            peers: vec![peer("s-1", "u1"), peer("s-2", "u2")],
+            claims: Vec::new(),
+        });
+        assert_eq!(old.peers, [peer("s-1", "u1")]);
+        assert_eq!(old.status_json()["online"], 2);
     }
 
     /// A drawing that goes 只读 keeps one writer, and the server tells every

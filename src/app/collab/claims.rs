@@ -19,25 +19,30 @@ impl OpenCADStudio {
     /// so the panel never draws a stale roster or a released claim.
     pub(crate) fn refresh_collab_view(&mut self) {
         let state = &self.collab;
-        let peers: Vec<PeerRow> = state
-            .peers
-            .iter()
-            .map(|peer| PeerRow {
-                user_id: peer.user_id.clone(),
-                display_name: peer.display_name.clone(),
-                is_self: state
-                    .session_id
+        // This session first, then the others. The roster the server sends
+        // is the others (`welcome.peers` does not list the session it
+        // welcomes), so the row for this session is the panel's own.
+        let own = state.session_id.as_ref().map(|_| PeerRow {
+            user_id: state.user_id.clone(),
+            display_name: state.user_id.clone(),
+            is_self: true,
+            // The marker is drawn for a session that lost the edit right,
+            // on the row of whoever kept it; that is never its own row.
+            is_holder: false,
+        });
+        let others = state.peers.iter().map(|peer| PeerRow {
+            user_id: peer.user_id.clone(),
+            display_name: peer.display_name.clone(),
+            is_self: false,
+            // The server names the holding session, so the same user's
+            // other session is not marked along with it.
+            is_holder: state.readonly
+                && state
+                    .readonly_holder
                     .as_deref()
-                    .is_some_and(|id| id == peer.session_id),
-                // The server names the holding session, so the same user's
-                // other session is not marked along with it.
-                is_holder: state.readonly
-                    && state
-                        .readonly_holder
-                        .as_deref()
-                        .is_some_and(|holder| holder == peer.session_id),
-            })
-            .collect();
+                    .is_some_and(|holder| holder == peer.session_id),
+        });
+        let peers: Vec<PeerRow> = own.into_iter().chain(others).collect();
         let claims: Vec<ClaimRow> = state
             .claims
             .iter()
@@ -338,27 +343,26 @@ mod tests {
         app.collab.apply(CollabEvent::Connected {
             session_id: "s-1".to_owned(),
             base_revision: 0,
-            peers: vec![
-                PeerInfo {
-                    session_id: "s-1".to_owned(),
-                    user_id: "u1".to_owned(),
-                    display_name: "u1".to_owned(),
-                },
-                PeerInfo {
-                    session_id: "s-2".to_owned(),
-                    user_id: "u2".to_owned(),
-                    display_name: "工艺乙".to_owned(),
-                },
-            ],
+            // The others on the drawing: the welcome does not list the
+            // session it welcomes.
+            peers: vec![PeerInfo {
+                session_id: "s-2".to_owned(),
+                user_id: "u2".to_owned(),
+                display_name: "工艺乙".to_owned(),
+            }],
             claims: vec![("P-1001".to_owned(), "u2".to_owned())],
         });
         app.refresh_collab_view();
 
         let view = &app.pid_collab_view;
         assert!(view.connected);
+        // The panel's roster is everybody: this session's own row first,
+        // then the others.
         assert_eq!(view.peers.len(), 2);
         assert!(view.peers[0].is_self, "本机会话必须标记");
+        assert_eq!(view.peers[0].user_id, "u1");
         assert!(!view.peers[1].is_self);
+        assert_eq!(view.peers[1].user_id, "u2");
         let row = view
             .claims
             .iter()
@@ -386,7 +390,7 @@ mod tests {
         app.collab.apply(CollabEvent::Connected {
             session_id: "s-2".to_owned(),
             base_revision: 0,
-            peers: vec![peer("s-1", "u1"), peer("s-2", "u2"), peer("s-3", "u1")],
+            peers: vec![peer("s-1", "u1"), peer("s-3", "u1")],
             claims: Vec::new(),
         });
         app.refresh_collab_view();
@@ -421,7 +425,7 @@ mod tests {
             .collect();
         assert_eq!(
             marked,
-            [("u1", false, true), ("u2", true, false), ("u1", false, false)]
+            [("u2", true, false), ("u1", false, true), ("u1", false, false)]
         );
     }
 
