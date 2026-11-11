@@ -1263,6 +1263,13 @@ pub(super) struct DeltaSnapshot {
     /// later changes being applied once more (`replay_remote_after`). `0`
     /// outside a collaboration session, where it is never read.
     pub(super) remote_mark: u64,
+    /// The step's number in the collaboration session
+    /// (`collab::State::next_step`), given when it is pushed: the op that
+    /// told the room of the step names it, and finds the step again by it
+    /// if the server refuses the op and the step has to be taken back. It
+    /// stays with the step as it moves between the undo and redo stacks.
+    /// `0` before the step is pushed.
+    pub(super) collab_step: u64,
     pub(super) label: HistoryLabel,
 }
 

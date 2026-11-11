@@ -332,6 +332,7 @@ impl OpenCADStudio {
             graph: None,
             named_parameters,
             remote_mark: 0,
+            collab_step: 0,
             label: super::tab_document::HistoryLabel::formatted(
                 format!("Edit block {}", session.block_name),
                 "edit-block",
