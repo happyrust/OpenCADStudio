@@ -7,7 +7,7 @@ use std::{collections::VecDeque, sync::OnceLock};
 #[cfg(not(target_arch = "wasm32"))]
 mod transport;
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) use transport::subscribe;
+pub(super) use transport::{retire_descriptor, subscribe};
 
 pub(super) fn session_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();

@@ -5675,6 +5675,7 @@ impl OpenCADStudio {
     pub(in crate::app) fn leave_keeping_recovery(&mut self) -> Task<Message> {
         self.exit_requested = true;
         crate::app::collab::shutdown();
+        crate::app::control::retire_descriptor();
         iced::exit()
     }
 
@@ -5687,6 +5688,10 @@ impl OpenCADStudio {
         // timeout, while a close frame retires the session immediately.
         #[cfg(not(target_arch = "wasm32"))]
         crate::app::collab::shutdown();
+        // And take away the automation channel's descriptor: it names a port
+        // that is about to close and carries the token for it.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::app::control::retire_descriptor();
         iced::exit()
     }
 
