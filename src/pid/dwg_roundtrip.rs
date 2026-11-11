@@ -613,6 +613,29 @@ mod tests {
         assert_eq!(persist::props_len(&line.props), 2);
     }
 
+    /// 把 fixture 存成一份 DWG 2018 文件，路径由 `OCS_M3_BASELINE_OUT` 给出：
+    /// `VAL-CROSS-005` 起步用的「M3 基线文件」。程序里没有哪条命令会把类型库
+    /// 或位号规则表写进图纸（它们只经持久化接口写入），所以这份图只能这样造。
+    /// 这是生成器，不是检查：平时忽略，要用时带着环境变量、加 `--ignored` 跑。
+    #[test]
+    #[ignore = "生成器：把 OCS_M3_BASELINE_OUT 设为要写出的文件路径"]
+    fn write_the_m3_baseline_drawing() {
+        let path = std::env::var_os("OCS_M3_BASELINE_OUT")
+            .expect("把 OCS_M3_BASELINE_OUT 设为要写出的文件路径");
+        let (doc, handles) = fixture();
+        assert_no_transform_sensitive_variants(&doc);
+        assert_fixture_shape(&doc, &handles);
+        let bytes = crate::io::save_to_bytes(&doc, "dwg", DxfVersion::AC1032)
+            .expect("save dwg 2018");
+        std::fs::write(&path, &bytes).expect("写出基线文件");
+
+        // 写出去的这份读回来是完整的。
+        let back = crate::io::load_bytes("baseline.dwg", bytes).expect("load dwg 2018");
+        let mut losses = diff(&snapshot(&doc, &handles), &snapshot(&back, &handles));
+        losses.extend(assert_graph_keys_present(&back));
+        assert!(losses.is_empty(), "基线文件读回有丢失：\n{}", loss_table(&losses));
+    }
+
     /// `VAL-SEM-035`：七个版本往返丢失数为 0。
     ///
     /// 每个版本各做一次「保存 → 读回」（DWG 与 DXF 各一遍，`round_trip`
