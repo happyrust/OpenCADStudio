@@ -1462,6 +1462,11 @@ pub(super) struct OpenCADStudio {
     /// expensive enough to be worth coalescing (`MOVE_COALESCE_FROM_MS`).
     /// `None` means every move runs its pass, as before.
     move_pass_due: Option<Instant>,
+    /// What a move pass is taken to have cost under test, where it is stated
+    /// rather than measured (`move_pass_cost`). `None` is a pass that keeps
+    /// up, which is what an empty test drawing would be on an idle machine.
+    #[cfg(test)]
+    move_pass_cost_for_test: Option<std::time::Duration>,
     /// Moves withheld since the last answered pass, reported with it under
     /// `PERF=1`: each one is a pass that used to be paid for in full and
     /// thrown away, so this is the queue that is no longer forming.
@@ -6708,6 +6713,8 @@ impl OpenCADStudio {
             hover_dwell: None,
             move_owed: None,
             move_pass_due: None,
+            #[cfg(test)]
+            move_pass_cost_for_test: None,
             move_withheld: 0,
             snap_dwell: None,
             constraint_glyph_tooltip: None,

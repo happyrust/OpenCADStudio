@@ -2135,8 +2135,11 @@ fn double_clicking_block_parameter_label_starts_rename() {
             Some((parameter, item.graphic.labels[0].1.clone()))
         );
         assert!(app.authoring_name_is_editable(parameter));
+        // The first click of the pair, stamped ahead of the clock so that it
+        // stays inside the double-click window however long this thread
+        // waits for a core (see `double_clicking_a_hatch_starts_hatchedit_on_it`).
         app.last_vp_click_time =
-            Some(std::time::Instant::now() - std::time::Duration::from_millis(100));
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(3600));
         app.last_vp_click_pos = Some(cursor_local);
         let _ = app.update(Message::ViewportMove(cursor));
         let _ = app.update(Message::ViewportLeftPressAt(cursor));

@@ -1817,6 +1817,24 @@ impl OpenCADStudio {
         self.on_viewport_move(p)
     }
 
+    /// What the move pass begun at `started` cost: the measure the
+    /// coalescing gate goes by.
+    #[cfg(not(test))]
+    fn move_pass_cost(&self, started: Instant) -> std::time::Duration {
+        started.elapsed()
+    }
+
+    /// Under test the cost is stated, not measured. The wall clock there
+    /// times the machine running the suite: with other work on it an empty
+    /// drawing's pass runs past `MOVE_COALESCE_FROM_MS`, the gate arms, and
+    /// the next move a test sends is withheld — so a test that reads the
+    /// cursor after two moves passed or failed by how busy the machine was.
+    /// A pass costs nothing unless the test says what it cost.
+    #[cfg(test)]
+    fn move_pass_cost(&self, _started: Instant) -> std::time::Duration {
+        self.move_pass_cost_for_test.unwrap_or_default()
+    }
+
     pub(in crate::app) fn on_viewport_move(&mut self, p: Point) -> Task<Message> {
         // While a cell is typed in the cursor moves (and pans) as usual but
         // takes no snaps.
@@ -1825,7 +1843,7 @@ impl OpenCADStudio {
         let started = Instant::now();
         let task = self.on_viewport_move_inner(p);
         let index = self.command_interaction_index_task();
-        let cost = started.elapsed();
+        let cost = self.move_pass_cost(started);
         // Give the next pass as long to arrive as this one took to answer.
         // The moves that arrive meanwhile cost nothing, so the queue drains
         // instead of growing, and the one that outlives the gap is the only
@@ -10305,9 +10323,14 @@ mod hatch_double_click_tests {
     fn double_clicking_a_hatch_starts_hatchedit_on_it() {
         let (mut app, handle, cursor, cursor_local) = app_with_hatch();
         let i = app.active_tab;
-        // The first click of the pair, 100 ms ago at the same spot.
+        // The first click of the pair, at the same spot. It is stamped ahead
+        // of the clock, which the second click reads as "no time since" (an
+        // instant still to come is zero away): stamped 100 ms back it left
+        // the second click 300 ms to arrive in, and on a machine with every
+        // core taken this thread can wait longer than that for one — the
+        // pair then is not a double click, and the test failed for it.
         app.last_vp_click_time =
-            Some(std::time::Instant::now() - std::time::Duration::from_millis(100));
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(3600));
         app.last_vp_click_pos = Some(cursor_local);
         click(&mut app, cursor);
 
@@ -13334,11 +13357,20 @@ mod pointer_move_coalescing_tests {
         app
     }
 
+    /// A gap no test outlives. The tests below are about what happens inside
+    /// the gap; with one of a few milliseconds a test thread held up for that
+    /// long on a busy machine would find itself past it.
+    const A_LONG_GAP: Duration = Duration::from_secs(3600);
+
     #[test]
     fn a_pass_that_keeps_up_leaves_the_gate_shut() {
         let mut app = app(None);
-        // An empty drawing answers a move far inside `MOVE_COALESCE_FROM_MS`,
-        // so nothing about this path may change for it.
+        // A pass just inside `MOVE_COALESCE_FROM_MS`: nothing about this path
+        // may change for it. The cost is stated — measured, it would be the
+        // machine's, and a busy one takes longer than that over an empty
+        // drawing.
+        app.move_pass_cost_for_test =
+            Some(Duration::from_millis(crate::app::MOVE_COALESCE_FROM_MS) - Duration::from_micros(1));
         let _ = app.on_viewport_move(Point::new(100.0, 100.0));
         assert!(
             app.move_pass_due.is_none(),
@@ -13351,9 +13383,54 @@ mod pointer_move_coalescing_tests {
         );
     }
 
+    /// The other side of the threshold: a pass that took as long as
+    /// `MOVE_COALESCE_FROM_MS` arms the gate, and the move that follows
+    /// inside the gap it left is withheld.
+    #[test]
+    fn a_pass_at_the_threshold_arms_the_gate_for_as_long_as_it_took() {
+        let mut app = app(None);
+        let tab = app.active_tab;
+        app.move_pass_cost_for_test =
+            Some(Duration::from_millis(crate::app::MOVE_COALESCE_FROM_MS));
+        let _ = app.on_viewport_move(Point::new(100.0, 100.0));
+        assert!(
+            app.move_pass_due.is_some(),
+            "a pass at the threshold must arm the gate"
+        );
+
+        app.move_pass_cost_for_test = Some(A_LONG_GAP);
+        let before = Instant::now();
+        let _ = app.on_viewport_move(Point::new(100.0, 100.0));
+        let due = app.move_pass_due.expect("armed");
+        assert!(
+            due >= before + A_LONG_GAP,
+            "the gap is as long as the pass took"
+        );
+        let _ = app.on_pointer_move_coalesced(Point::new(101.0, 101.0));
+        assert_eq!(
+            app.move_owed,
+            Some((Point::new(101.0, 101.0), tab)),
+            "a move inside the gap is withheld"
+        );
+    }
+
+    /// A test that sends two moves and reads the cursor is not about the
+    /// gate and says nothing of what a pass cost. Its passes then cost
+    /// nothing, however long the machine took over them, and each move runs.
+    #[test]
+    fn a_test_that_states_no_cost_gets_a_pass_that_keeps_up() {
+        let mut app = app(None);
+        assert_eq!(app.move_pass_cost_for_test, None, "what a fresh app has");
+        for x in [100.0, 120.0, 140.0] {
+            let _ = app.on_pointer_move_coalesced(Point::new(x, 100.0));
+            assert!(app.move_pass_due.is_none());
+            assert!(app.move_owed.is_none(), "the move at {x} ran its own pass");
+        }
+    }
+
     #[test]
     fn a_withheld_move_keeps_only_the_latest_position() {
-        let mut app = app(Some(Duration::from_millis(50)));
+        let mut app = app(Some(A_LONG_GAP));
         let tab = app.active_tab;
         let _ = app.on_pointer_move_coalesced(Point::new(10.0, 20.0));
         assert_eq!(
@@ -13372,7 +13449,7 @@ mod pointer_move_coalescing_tests {
 
     #[test]
     fn the_tick_waits_for_the_gap_and_then_answers() {
-        let mut app = app(Some(Duration::from_millis(50)));
+        let mut app = app(Some(A_LONG_GAP));
         let _ = app.on_pointer_move_coalesced(Point::new(10.0, 20.0));
         let _ = app.on_move_coalesce_tick();
         assert!(
@@ -13391,7 +13468,7 @@ mod pointer_move_coalescing_tests {
 
     #[test]
     fn a_message_that_reads_the_cursor_answers_the_withheld_move_first() {
-        let mut app = app(Some(Duration::from_millis(50)));
+        let mut app = app(Some(A_LONG_GAP));
         let i = app.active_tab;
         let _ = app.on_pointer_move_coalesced(Point::new(10.0, 20.0));
         assert!(app.move_owed.is_some(), "the move must be withheld first");
@@ -13411,7 +13488,7 @@ mod pointer_move_coalescing_tests {
 
     #[test]
     fn a_newer_move_does_not_flush_the_one_it_supersedes() {
-        let mut app = app(Some(Duration::from_millis(50)));
+        let mut app = app(Some(A_LONG_GAP));
         let _ = app.on_pointer_move_coalesced(Point::new(10.0, 20.0));
         let _ = app.flush_owed_pointer_move(&Message::ViewportMove(Point::new(30.0, 40.0)));
         assert!(
@@ -13422,7 +13499,7 @@ mod pointer_move_coalescing_tests {
 
     #[test]
     fn a_press_drops_the_position_the_gate_withheld() {
-        let mut app = app(Some(Duration::from_millis(50)));
+        let mut app = app(Some(A_LONG_GAP));
         let _ = app.on_pointer_move_coalesced(Point::new(10.0, 20.0));
         assert!(app.move_owed.is_some(), "the move must be withheld first");
         app.set_cursor_for_press(Point::new(300.0, 300.0));
