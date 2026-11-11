@@ -23,6 +23,7 @@
 
 mod database;
 mod datamap;
+mod diagnostics;
 mod drawing_data;
 #[cfg(test)]
 mod drawn_tests;
@@ -155,6 +156,9 @@ pub enum PidBackupMsg {
     /// Give the tree this share of the height (0 to 1): `PIDBACKUPOPEN
     /// Split`.
     SetSplit(f32),
+    /// A beat of the progress clock ([`Effect::Tick`]): the panel is drawn
+    /// anew, and looks whether there is still something to count.
+    Progress,
 }
 
 /// What the application should do after [`update`] applied a message.
@@ -181,8 +185,35 @@ pub enum Effect {
         section: usize,
         node: NodeId,
     },
+    /// Wait a moment ([`tick`]) and send [`PidBackupMsg::Progress`]: the
+    /// clock that keeps the panel drawn while a section counts its way
+    /// through something long.
+    Tick,
     /// Several of the above at once.
     Batch(Vec<Effect>),
+}
+
+/// How long a beat of the progress clock is.
+const TICK: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// One beat of the progress clock: what the application waits out for
+/// [`Effect::Tick`].
+pub async fn tick() {
+    let (sender, receiver) = iced::futures::channel::oneshot::channel();
+    let spawned = std::thread::Builder::new()
+        .name("ocs-pid-backup-tick".into())
+        .spawn(move || {
+            std::thread::sleep(TICK);
+            let _ = sender.send(());
+        });
+    match spawned {
+        Ok(_) => {
+            let _ = receiver.await;
+        }
+        // No thread to sleep on: the beat is still a beat, or the clock
+        // would spin.
+        Err(_) => std::thread::sleep(TICK),
+    }
 }
 
 /// One row of the flattened tree.
@@ -237,6 +268,9 @@ pub struct PidBackupBrowser {
     split: split::Split,
     /// The selection moved and the tree has not been scrolled to it yet.
     reveal: bool,
+    /// The progress clock is going: a beat is on its way. Not the last
+    /// backup's to forget: the beat arrives all the same, and settles it.
+    ticking: bool,
 }
 
 /// Whether the selection moved since this was last asked: the application
@@ -425,6 +459,16 @@ pub fn update(state: &mut PidBackupBrowser, msg: PidBackupMsg) -> Effect {
         PidBackupMsg::Filter(text) => {
             state.filter = text;
             Effect::None
+        }
+        // The message itself is what draws the panel anew; the clock goes
+        // on for as long as something counts.
+        PidBackupMsg::Progress => {
+            state.ticking = section::in_progress(state);
+            if state.ticking {
+                Effect::Tick
+            } else {
+                Effect::None
+            }
         }
     }
 }
@@ -939,6 +983,9 @@ enum DetailLine {
     Heading(String),
     /// The "open drawing" button for a drawing that has a file.
     OpenDrawing(String),
+    /// A button that activates a node: how a section starts something that
+    /// is too slow to start by itself (a check of every drawing).
+    Button(String, NodeId),
     /// A table, drawn as a [`grid`] below the other lines. A node's details
     /// hold at most one: it takes what is left of the detail half.
     Table(std::sync::Arc<grid::Table>),
@@ -952,7 +999,10 @@ impl DetailLine {
     fn into_pairs(self) -> Vec<(String, String)> {
         match self {
             DetailLine::Field(key, value) => vec![(key, value)],
-            DetailLine::Marker(key) | DetailLine::Heading(key) | DetailLine::OpenDrawing(key) => {
+            DetailLine::Marker(key)
+            | DetailLine::Heading(key)
+            | DetailLine::OpenDrawing(key)
+            | DetailLine::Button(key, _) => {
                 vec![(key, String::new())]
             }
             DetailLine::Table(table) => {
@@ -998,12 +1048,46 @@ fn grid_key(id: &NodeId) -> u64 {
     hasher.finish()
 }
 
+/// How many lines may stand above a table at their full height. More than
+/// that, and they would push the table out of the half: they get a scroll
+/// bar of their own instead.
+const ABOVE_TABLE_FULL: usize = 10;
+
+/// How many lines a heading may keep beside the table it heads, itself
+/// among them. A longer run scrolls with the lines above it.
+const BESIDE_TABLE_MOST: usize = 6;
+
+/// How many rows a table may have and still be given its own height and no
+/// more: the lines above it are the ones that need the room then.
+const SHORT_TABLE: usize = 6;
+
+/// How the lines above a table are laid out. `headings` says of each line
+/// whether it is a heading. Returns how many of the lines, from the first,
+/// scroll, and whether any do.
+///
+/// Up to [`ABOVE_TABLE_FULL`] lines stand at their full height. More would
+/// push the table out of the half, so they scroll -- all but the last
+/// heading and the few lines under it, which belong with the table (a
+/// report's length above its lines) and stay put right above it.
+fn split_above_table(headings: &[bool]) -> (usize, bool) {
+    if headings.len() <= ABOVE_TABLE_FULL {
+        return (headings.len(), false);
+    }
+    let split = match headings.iter().rposition(|heading| *heading) {
+        Some(at) if headings.len() - at <= BESIDE_TABLE_MOST => at,
+        _ => headings.len(),
+    };
+    (split, true)
+}
+
 /// The lower half: what the selected node is.
 ///
 /// Rendering only: the content and the shape of every line come from
 /// [`detail_lines`]. The lines scroll when they outgrow the half; a table
-/// among them is drawn as a grid that takes what the other lines leave, with
-/// scroll bars of its own.
+/// among them is drawn as a grid below them, with scroll bars of its own.
+/// A few lines above a table stand at their full height and the table
+/// takes what they leave; many scroll in a share of the half, so the table
+/// is on screen however long they are ([`split_above_table`]).
 fn details<'a>(state: &'a PidBackupBrowser, width: f32) -> Element<'a, Message> {
     let hint = |label: std::borrow::Cow<'static, str>| -> Element<'a, Message> {
         text(label).size(11).style(muted).into()
@@ -1016,57 +1100,105 @@ fn details<'a>(state: &'a PidBackupBrowser, width: f32) -> Element<'a, Message> 
     };
     let key_width = key_column_width(width);
     let wrap = iced::widget::text::Wrapping::WordOrGlyph;
-    let mut body = column![].spacing(2).width(Fill);
+    // The lines above the table, one element each, and which are headings.
+    let mut above: Vec<Element<'a, Message>> = Vec::new();
+    let mut headings: Vec<bool> = Vec::new();
     let mut table = None;
     for line in detail_lines(state, id) {
-        body = match line {
-            DetailLine::Field(key, value) => body.push(kv(key, value, key_width)),
-            DetailLine::Marker(note) => {
-                body.push(text(note).size(DETAIL_TEXT).style(muted).wrapping(wrap))
-            }
+        let heading = matches!(line, DetailLine::Heading(_));
+        let element: Element<'a, Message> = match line {
+            DetailLine::Field(key, value) => kv(key, value, key_width),
+            DetailLine::Marker(note) => text(note)
+                .size(DETAIL_TEXT)
+                .style(muted)
+                .wrapping(wrap)
+                .into(),
+            // Set off from the lines above it.
             DetailLine::Heading(title) => {
-                body = body.push(Space::new().height(4));
-                body.push(text(title).size(DETAIL_TEXT))
+                column![Space::new().height(4), text(title).size(DETAIL_TEXT)]
+                    .spacing(2)
+                    .into()
             }
-            DetailLine::OpenDrawing(label) => body.push(
-                button(text(label).size(11))
-                    .on_press(PidBackupMsg::Activate(id.clone()).message())
-                    .padding([3, 10]),
-            ),
+            DetailLine::OpenDrawing(label) => button(text(label).size(11))
+                .on_press(PidBackupMsg::Activate(id.clone()).message())
+                .padding([3, 10])
+                .into(),
+            DetailLine::Button(label, node) => button(text(label).size(11))
+                .on_press(PidBackupMsg::Activate(node).message())
+                .padding([3, 10])
+                .into(),
             DetailLine::Table(found) => {
                 table = Some(found);
-                body
+                continue;
             }
         };
+        headings.push(heading);
+        above.push(element);
     }
-    let Some(table) = table else {
-        return scrollable(body)
+    let lines = |elements: Vec<Element<'a, Message>>| {
+        iced::widget::Column::with_children(elements)
+            .spacing(2)
+            .width(Fill)
+    };
+    let scrolling = |elements: Vec<Element<'a, Message>>| {
+        scrollable(lines(elements))
             .direction(scrollable::Direction::Vertical(
                 scrollable::Scrollbar::default(),
             ))
             .width(Fill)
-            .height(Fill)
-            .into();
+    };
+    let Some(table) = table else {
+        return scrolling(above).height(Fill).into();
     };
     // How many rows a table of data has. The lines of a file say how many
     // they are among the fields above them.
     if table.is_sortable() {
-        body = body.push(
+        headings.push(false);
+        above.push(
             text(row_count_label(table.rows().len()))
                 .size(DETAIL_TEXT)
-                .style(muted),
+                .style(muted)
+                .into(),
         );
     }
-    column![
-        body,
-        grid::view(&table, &state.grid, grid_key(id), |msg| {
-            PidBackupMsg::Grid(msg).message()
-        }),
-    ]
-    .spacing(2)
-    .width(Fill)
-    .height(Fill)
-    .into()
+    let grid = grid::view(&table, &state.grid, grid_key(id), |msg| {
+        PidBackupMsg::Grid(msg).message()
+    });
+    let (split, scrolls) = split_above_table(&headings);
+    if !scrolls {
+        return column![lines(above), grid]
+            .spacing(2)
+            .width(Fill)
+            .height(Fill)
+            .into();
+    }
+    // Many lines: they scroll, and the table keeps its place below them.
+    // A short table is as tall as its rows and the lines have the rest. A
+    // long table of data is what the node is about: it has two thirds of
+    // the room. The lines of a text are an appendix to what stands above
+    // them: they have two fifths.
+    let rows = table.rows().len();
+    let (lines_height, table_height) = if rows <= SHORT_TABLE {
+        (
+            Fill,
+            // The titles, the rows, and a scroll bar under them.
+            Length::Fixed(grid::HEADER_H + rows as f32 * grid::ROW_H + 14.0),
+        )
+    } else if table.is_sortable() {
+        (Length::FillPortion(1), Length::FillPortion(2))
+    } else {
+        (Length::FillPortion(3), Length::FillPortion(2))
+    };
+    let beside = above.split_off(split);
+    let mut all = column![scrolling(above).height(lines_height)]
+        .spacing(2)
+        .width(Fill)
+        .height(Fill);
+    if !beside.is_empty() {
+        all = all.push(lines(beside));
+    }
+    all.push(container(grid).width(Fill).height(table_height))
+        .into()
 }
 
 /// The lines the detail half shows for `id`, in display order.
@@ -1232,6 +1364,9 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
                 if let Some(ItemsState::Failed(error)) = state.items.get(drawing) {
                     lines.push(DetailLine::Marker(error.clone()));
                 }
+                // What a section offers for the drawing stands here, with
+                // the button that opens it, not below the columns.
+                section::early_details(state, index, id, &mut lines);
                 // Every `T_DRAWING` column, empty values included: the panel
                 // is the only place the backup's own metadata is visible.
                 for (key, value) in &entry.meta {
@@ -1372,6 +1507,34 @@ pub(crate) fn detail_rows(state: &PidBackupBrowser, id: &NodeId) -> Vec<(String,
         .into_iter()
         .flat_map(DetailLine::into_pairs)
         .collect()
+}
+
+/// The buttons in the details of `id`: each with the node it activates.
+#[cfg(test)]
+pub(crate) fn detail_buttons(state: &PidBackupBrowser, id: &NodeId) -> Vec<(String, NodeId)> {
+    detail_lines(state, id)
+        .into_iter()
+        .filter_map(|line| match line {
+            DetailLine::Button(label, node) => Some((label, node)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The `at`-th button (from zero) in the details of the selected node: its
+/// label and the node a press of it activates. What `PIDBACKUPOPEN Press`
+/// presses, so a script can do what a click on the button does.
+pub fn selected_button(state: &PidBackupBrowser, at: usize) -> Option<(String, NodeId)> {
+    let id = state.selected.as_ref()?;
+    detail_lines(state, id)
+        .into_iter()
+        .filter_map(|line| match line {
+            DetailLine::Button(label, node) => Some((label, node)),
+            // The "open drawing" button activates the drawing itself.
+            DetailLine::OpenDrawing(label) => Some((label, id.clone())),
+            _ => None,
+        })
+        .nth(at)
 }
 
 /// Build the docked panel.
@@ -1603,6 +1766,27 @@ mod tests {
             item_count: 1,
             ..DrawingItems::default()
         }
+    }
+
+    #[test]
+    fn many_lines_above_a_table_scroll_and_the_last_heading_stays_with_it() {
+        let lines = |text: &str| -> Vec<bool> { text.chars().map(|ch| ch == 'H').collect() };
+        // A few lines stand as they are, with or without a heading.
+        assert_eq!(split_above_table(&lines("....")), (4, false));
+        assert_eq!(split_above_table(&lines("..H..")), (5, false));
+        assert_eq!(split_above_table(&lines("H.......")), (8, false));
+        assert_eq!(split_above_table(&lines("...H.....H")), (10, false));
+        assert_eq!(split_above_table(&[]), (0, false));
+        // Many lines scroll, all of them when no heading says otherwise.
+        assert_eq!(split_above_table(&lines("...........")), (11, true));
+        // The last heading and the few lines under it stay beside the
+        // table; what comes before them scrolls.
+        assert_eq!(split_above_table(&lines("....H....H...")), (9, true));
+        assert_eq!(split_above_table(&lines("...H.....H.")), (9, true));
+        assert_eq!(split_above_table(&lines("...H.....H.....")), (9, true));
+        // A heading with a long run under it does not stay: all scroll.
+        assert_eq!(split_above_table(&lines("...H.....H......")), (16, true));
+        assert_eq!(split_above_table(&lines("..H...........")), (14, true));
     }
 
     fn ids(rows: &[Row]) -> Vec<NodeId> {
@@ -2261,9 +2445,10 @@ mod tests {
             ],
             "the manifest fields come first, then where the backup came from"
         );
+        let keys = detail_keys(&state, &NodeId::Root);
         assert_eq!(
-            detail_keys(&state, &NodeId::Root),
-            vec![
+            keys[..11],
+            [
                 t!("Backup name").into_owned(),
                 t!("Backup version").into_owned(),
                 t!("Backup type").into_owned(),
@@ -2278,6 +2463,9 @@ mod tests {
             ],
             "the read-only marker and every warning follow in order"
         );
+        // The backup's own lines end there; what a section adds to them --
+        // the check of the drawings -- comes after, under its heading.
+        assert_eq!(keys[11], t!("Check of the drawings").as_ref());
     }
 
     #[test]
@@ -2444,10 +2632,19 @@ mod tests {
                     plain("D:/tmp/restore/00/00/a.pid")
                 ),
                 (t!("Open drawing").into_owned(), String::new()),
+                // What a section adds to a drawing that has a file: the
+                // offer to import it and say how that went.
+                (t!("Importing it").into_owned(), String::new()),
+                (
+                    t!("Imports the drawing as opening it would, without opening it: what was drawn, what was left out, and the parser's report of the file.")
+                        .into_owned(),
+                    String::new()
+                ),
+                (t!("Import and diagnose").into_owned(), String::new()),
                 (plain("id"), plain("1")),
                 (plain("PATH"), plain("00/00/a.pid")),
             ],
-            "the file path, the open action, then every T_DRAWING column"
+            "the file path, the open action and the import, then every T_DRAWING column"
         );
     }
 

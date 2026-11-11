@@ -23,6 +23,7 @@
 //! [`load_items`], read on demand when the panel first expands a drawing.
 
 pub mod datamap;
+pub mod diagnostics;
 pub mod drawing_data;
 pub mod exp_views;
 pub mod export_log;
@@ -88,6 +89,9 @@ pub struct BackupIndex {
     /// The dump's own tables, read the first time something asks for them
     /// ([`BackupIndex::dump`]).
     pub dump: exp_views::DumpCell,
+    /// How far a check of every drawing has come, while one runs
+    /// ([`diagnostics::check_all`]).
+    pub check_progress: diagnostics::CheckProgress,
 }
 
 impl BackupIndex {
@@ -320,6 +324,7 @@ pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, 
         ref_root,
         table_catalog,
         dump: exp_views::DumpCell::default(),
+        check_progress: diagnostics::CheckProgress::default(),
     })
 }
 

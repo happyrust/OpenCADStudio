@@ -62,6 +62,27 @@ enum Request {
     /// Give the tree this percentage of the panel's height; `None` when what
     /// follows the word is no percentage.
     Split(Option<f32>),
+    /// Press a button in the details of the selected node: its number from
+    /// one, the first when none is given; `None` when what follows the word
+    /// is no such number.
+    Press(Option<usize>),
+}
+
+/// What follows `Press` when `rest` starts with that word: the number of
+/// the button, from one.
+#[cfg(not(target_arch = "wasm32"))]
+fn press_number(rest: &str) -> Option<Option<usize>> {
+    let (word, value) = match rest.split_once(char::is_whitespace) {
+        Some((word, value)) => (word, value.trim()),
+        None => (rest, ""),
+    };
+    word.eq_ignore_ascii_case("PRESS").then(|| {
+        if value.is_empty() {
+            Some(1)
+        } else {
+            value.parse::<usize>().ok().filter(|number| *number >= 1)
+        }
+    })
 }
 
 /// What follows `Split` when `rest` starts with that word: the percentage,
@@ -126,6 +147,9 @@ fn parse_request(rest: &str, exists: impl Fn(&Path) -> bool) -> Option<Request> 
     }
     if let Some(percent) = split_percent(rest) {
         return Some(Request::Split(percent));
+    }
+    if let Some(number) = press_number(rest) {
+        return Some(Request::Press(number));
     }
     let mut words = Vec::new();
     let mut word = String::new();
@@ -240,6 +264,33 @@ impl OpenCADStudio {
                         (most * 100.0).round()
                     )
                     .as_ref(),
+                );
+                Task::none()
+            }
+            Some(Request::Press(Some(number))) => {
+                match pid_backup_browser::selected_button(&self.pid_backup_browser, number - 1) {
+                    Some((label, node)) => {
+                        self.command_line.push_output(
+                            crate::tf!("PIDBACKUPOPEN: pressed \"{}\"", label).as_ref(),
+                        );
+                        self.on_pid_backup(PidBackupMsg::Activate(node))
+                    }
+                    None => {
+                        self.command_line.push_error(
+                            crate::tf!(
+                                "PIDBACKUPOPEN: the details of the selected node have no button {}",
+                                number
+                            )
+                            .as_ref(),
+                        );
+                        Task::none()
+                    }
+                }
+            }
+            Some(Request::Press(None)) => {
+                self.command_line.push_error(
+                    crate::t!("PIDBACKUPOPEN: Press takes the number of a button, from 1")
+                        .as_ref(),
                 );
                 Task::none()
             }
@@ -383,6 +434,11 @@ impl OpenCADStudio {
                     })
                 },
             ),
+            // The panel's progress clock: one beat, then the panel looks
+            // again at what is under way.
+            Effect::Tick => Task::perform(pid_backup_browser::tick(), |()| {
+                Message::PidBackup(PidBackupMsg::Progress)
+            }),
             Effect::Batch(effects) => Task::batch(
                 effects
                     .into_iter()
@@ -768,6 +824,63 @@ mod tests {
             parse_request("Split", exists),
             Some(Request::Restore(PathBuf::from("Split"), None))
         );
+    }
+
+    #[test]
+    fn press_takes_the_number_of_a_button() {
+        let none = |_: &Path| false;
+        assert_eq!(parse_request("Press", none), Some(Request::Press(Some(1))));
+        assert_eq!(parse_request("press 2", none), Some(Request::Press(Some(2))));
+        // No such number.
+        assert_eq!(parse_request("Press 0", none), Some(Request::Press(None)));
+        assert_eq!(parse_request("Press hard", none), Some(Request::Press(None)));
+        // Only the whole word, and a backup really called `Press` is opened.
+        assert_eq!(
+            parse_request("pressure.zip", none),
+            Some(Request::Restore(PathBuf::from("pressure.zip"), None))
+        );
+        let exists = |path: &Path| path == Path::new("Press");
+        assert_eq!(
+            parse_request("Press", exists),
+            Some(Request::Restore(PathBuf::from("Press"), None))
+        );
+    }
+
+    /// A script presses what a pointer would: the button in the details of
+    /// the selected node, here the one that starts the check of the
+    /// drawings.
+    #[test]
+    fn a_press_line_presses_the_button_of_the_selected_node() {
+        let mut app = app();
+        let _ = app.on_pid_backup(PidBackupMsg::Loaded(Ok(index())));
+        // Nothing selected: nothing to press.
+        let _ = app.dispatch_command("PIDBACKUPOPEN Press");
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Error);
+        assert!(app.pid_backup_browser.section_data.is_empty());
+
+        let _ = app.on_pid_backup(PidBackupMsg::Select(NodeId::Root));
+        let (label, node) = pid_backup_browser::selected_button(&app.pid_backup_browser, 0)
+            .expect("the backup's details offer the check of the drawings");
+        assert_eq!(label, crate::t!("Check every drawing").as_ref());
+        // The press starts the check: the panel waits for its result.
+        let _ = app.dispatch_command("PIDBACKUPOPEN Press");
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Output);
+        assert!(last.text.contains(&label), "{}", last.text);
+        assert!(app
+            .pid_backup_browser
+            .section_data
+            .iter()
+            .any(|((_, found), _)| *found == node));
+        // A button the details do not have, and a number that is none.
+        let _ = app.dispatch_command("PIDBACKUPOPEN Press 7");
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Error);
+        assert!(last.text.contains('7'), "{}", last.text);
+        let _ = app.dispatch_command("PIDBACKUPOPEN Press twice");
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Error);
     }
 
     #[test]

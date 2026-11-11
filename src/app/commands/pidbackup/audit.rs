@@ -28,7 +28,7 @@
 use super::*;
 use crate::io::pid_backup_browse::{BackupIndex, GroupNode, RefNode};
 use crate::ui::window::pid_backup_browser::{
-    detail_rows, visible_rows, ItemsState, NodeId, Row, SectionLoad,
+    detail_buttons, detail_rows, visible_rows, ItemsState, NodeId, Row, SectionLoad,
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -1731,6 +1731,94 @@ fn a_real_backup_is_walked_node_by_node() {
             }
         }
     }
+    // ── One drawing's import, from the button in its own details ─────────
+    // The first drawing whose items read, and the first whose items did
+    // not: that one has no subtree to look into, so the button is all
+    // there is to learn more about it from.
+    let unread_first = (0..index.drawings.len()).find(|at| {
+        matches!(
+            app.pid_backup_browser.items.get(at),
+            Some(ItemsState::Failed(_))
+        )
+    });
+    for (at, what, picture) in [
+        (data_tally.first, "its items read", "drawing-import-diagnosis"),
+        (
+            unread_first,
+            "its items did not read",
+            "drawing-import-diagnosis-items-unread",
+        ),
+    ] {
+        let Some(at) = at else {
+            continue;
+        };
+        let drawing = NodeId::Drawing(at);
+        send(&mut app, PidBackupMsg::Select(drawing.clone())).unwrap();
+        let buttons = detail_buttons(&app.pid_backup_browser, &drawing);
+        assert_eq!(
+            buttons.len(),
+            1,
+            "a drawing with a file offers its import: {buttons:?}"
+        );
+        let started = Instant::now();
+        send(&mut app, PidBackupMsg::Activate(buttons[0].1.clone())).unwrap();
+        let took = started.elapsed();
+        assert!(
+            matches!(
+                section_load(&app, &buttons[0].1),
+                Some(SectionLoad::Ready(_))
+            ),
+            "the import of {} was left unfinished",
+            index.drawings[at].name
+        );
+        let details = details_of(&app, &drawing, &mut empty);
+        let position = |key: std::borrow::Cow<'static, str>| {
+            details
+                .iter()
+                .position(|(found, _)| *found == key)
+                .unwrap_or_else(|| panic!("the drawing's details have no \"{key}\""))
+        };
+        // The import stands under its heading, with the button that opens
+        // the drawing and above the drawing's columns; it ends with how
+        // long it took, and one that failed says why on the line before.
+        // The parser's report is at the end of the details.
+        let heading = position(crate::t!("Importing it"));
+        let imported = position(crate::t!("Imported in"));
+        let report = position(crate::t!("Parser's report of the file"));
+        assert!(heading < imported && imported < report, "{details:?}");
+        audit.line(format!(
+            "== import diagnosis of {} ({what}; the button in its details; {}) ==",
+            index.drawings[at].name,
+            millis(took)
+        ));
+        for (key, value) in &details[heading + 1..=imported] {
+            audit.line(format!("  {key} = {value}"));
+        }
+        // The parser's report: how long it is and its lines, or why there
+        // is none.
+        let lines = &details[report + 1..];
+        match lines.first() {
+            Some((key, count)) if *key == crate::t!("Line count") => {
+                let rows = lines
+                    .iter()
+                    .position(|(titles, _)| titles.contains(" | "))
+                    .map_or(&[][..], |table| &lines[table + 1..]);
+                assert!(!rows.is_empty(), "a report of {count} line(s) shows none");
+                audit.line(format!(
+                    "  parser's report: {count} line(s) in {} row(s)",
+                    rows.len()
+                ));
+                for (number, text) in rows.iter().take(6) {
+                    audit.line(format!("      {number:>3} {text}"));
+                }
+            }
+            Some((why, _)) => audit.line(format!("  parser's report: {why}")),
+            None => panic!("the drawing's details say nothing of the parser's report"),
+        }
+        // The button is gone: the drawing is imported once.
+        assert!(detail_buttons(&app.pid_backup_browser, &drawing).is_empty());
+        audit.shot(&app, picture);
+    }
     if let Some(ItemsState::Ready(items)) = app.pid_backup_browser.items.get(&0).cloned() {
         // A type's details list its items as a table.
         if !items.groups.is_empty() {
@@ -1864,6 +1952,8 @@ fn a_real_backup_is_walked_node_by_node() {
 
     // ── Every drawing through the importer a double click runs ───────────
     let mut not_imported: Vec<String> = Vec::new();
+    // Imports that failed outright: one that drew nothing is not among them.
+    let mut import_errors = 0;
     let mut import_time = Duration::ZERO;
     let mut slowest_import = (Duration::ZERO, String::new());
     let mut entities = 0;
@@ -1925,7 +2015,10 @@ fn a_real_backup_is_walked_node_by_node() {
                     not_imported.push(format!("{}: imported with no entity", drawing.name));
                 }
             }
-            Err(error) => not_imported.push(format!("{}: {error}", drawing.name)),
+            Err(error) => {
+                import_errors += 1;
+                not_imported.push(format!("{}: {error}", drawing.name));
+            }
         }
     }
     audit.line(format!(
@@ -1947,6 +2040,102 @@ fn a_real_backup_is_walked_node_by_node() {
                     .join("; ")
             }
         ));
+    }
+
+    // ── The check of every drawing, from the backup's own details ────────
+    send(&mut app, PidBackupMsg::Select(NodeId::Root)).unwrap();
+    let buttons = detail_buttons(&app.pid_backup_browser, &NodeId::Root);
+    let offered = index.drawings.iter().any(|drawing| !drawing.is_missing());
+    assert_eq!(
+        buttons.len(),
+        usize::from(offered),
+        "a backup with a drawing to read offers the check: {buttons:?}"
+    );
+    if !import || buttons.is_empty() {
+        audit.line(format!(
+            "== check of the drawings: {} ==",
+            if buttons.is_empty() {
+                "nothing to check"
+            } else {
+                "offered, not run (the imports are skipped)"
+            }
+        ));
+    } else {
+        let started = Instant::now();
+        send(&mut app, PidBackupMsg::Activate(buttons[0].1.clone())).unwrap();
+        let took = started.elapsed();
+        assert!(
+            matches!(
+                section_load(&app, &buttons[0].1),
+                Some(SectionLoad::Ready(_))
+            ),
+            "the check was left unfinished"
+        );
+        let details = details_of(&app, &NodeId::Root, &mut empty);
+        let heading = details
+            .iter()
+            .position(|(key, _)| *key == crate::t!("Check of the drawings"))
+            .expect("the backup's details have the check");
+        let lines = &details[heading + 1..];
+        let shown = |key: std::borrow::Cow<'static, str>| -> String {
+            lines
+                .iter()
+                .find(|(found, _)| *found == key)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| panic!("the check does not state {key}"))
+        };
+        audit.line(format!(
+            "== check of the drawings (the button in the backup's details; {}) ==",
+            millis(took)
+        ));
+        for (key, value) in lines.iter().take_while(|(titles, _)| !titles.contains(" | ")) {
+            audit.line(format!("  {key} = {value}"));
+        }
+        // What the panel checked is what this walk read and imported.
+        assert!(
+            shown(crate::t!("Drawings checked")).starts_with(&index.drawings.len().to_string()),
+            "{} drawing(s) in the index",
+            index.drawings.len()
+        );
+        assert_eq!(
+            shown(crate::t!("Imported entities")),
+            crate::tf!(
+                "{} entities drawn, {} source record(s) not drawn",
+                entities,
+                undrawn
+            )
+        );
+        assert_eq!(
+            shown(crate::t!("Failed or missing")),
+            crate::tf!(
+                "items did not read: {}; did not import: {}; registered but missing: {}",
+                failed.len(),
+                import_errors,
+                index
+                    .drawings
+                    .iter()
+                    .filter(|drawing| drawing.is_missing())
+                    .count()
+            )
+        );
+        // A row for every drawing, and a reason on each that failed.
+        let table = lines
+            .iter()
+            .position(|(titles, _)| titles.contains(" | "))
+            .expect("the check lists the drawings");
+        assert_eq!(lines.len() - table - 1, index.drawings.len());
+        for (name, rest) in lines[table + 1..]
+            .iter()
+            .filter(|(_, rest)| !rest.starts_with(" | "))
+        {
+            audit.line(format!(
+                "    {name}: {}",
+                rest.split(" | ").next().unwrap_or_default()
+            ));
+        }
+        // The button is gone: the check ran once.
+        assert!(detail_buttons(&app.pid_backup_browser, &NodeId::Root).is_empty());
+        audit.shot(&app, "check-of-the-drawings");
     }
 
     // ── Credentials ──────────────────────────────────────────────────────
