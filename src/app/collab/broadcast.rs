@@ -33,7 +33,9 @@ use serde_json::{json, Value};
 use crate::pid::persist::PidAuthor;
 use crate::pid::propagate::{join_props, split_props};
 use crate::pid::tag_engine::TAG_SOURCE_MANUAL;
-use crate::pid::topology::{parse_handle, ROLE_PIPE_LINE, ROLE_SIGNAL_LINE};
+use crate::pid::topology::{
+    parse_handle, ROLE_FITTING, ROLE_PIPE_LINE, ROLE_PIPE_RUN, ROLE_SIGNAL_LINE,
+};
 
 /// Op kinds this client emits and understands.
 pub const KIND_SET_TAG: &str = "set_tag";
@@ -106,11 +108,19 @@ pub struct Change {
     /// What was placed, for [`KIND_INSERT_SYMBOL`]; `None` for every change
     /// to an object that exists.
     pub placed: Option<Placed>,
+    /// What a statement about a pipe line or a run says of it — the
+    /// stretches the line has, the run as the step left it
+    /// (`super::pipes`); `None` for every other change. `object_ref` is
+    /// then the line's tag or the run's.
+    pub pipe: Option<super::pipes::Pipe>,
 }
 
 impl Change {
     /// The JSON body one change becomes inside an `op` payload.
     pub fn to_json(&self) -> Value {
+        if let Some(pipe) = &self.pipe {
+            return super::pipes::to_json(self, pipe);
+        }
         let mut change = json!({
             "kind": self.kind,
             "object_ref": self.object_ref,
@@ -151,6 +161,15 @@ impl Change {
     /// missing value) — applying half of it would be worse.
     pub fn from_json(value: &Value) -> Option<Self> {
         let kind = value["kind"].as_str()?.to_owned();
+        if matches!(
+            kind.as_str(),
+            super::pipes::KIND_CREATE_PIPE_LINE
+                | super::pipes::KIND_ADD_PIPE_RUN
+                | super::pipes::KIND_INSERT_FITTING
+                | super::pipes::KIND_UPDATE_PIPE_RUN
+        ) {
+            return super::pipes::from_json(&kind, value);
+        }
         let handles: Vec<Handle> = match value["handles"].as_array() {
             Some(listed) => listed
                 .iter()
@@ -201,6 +220,7 @@ impl Change {
                     props,
                     tag_source: value["tag_source"].as_str().unwrap_or("auto").to_owned(),
                 }),
+                pipe: None,
             });
         }
         if kind == KIND_DELETE_OBJECT {
@@ -212,6 +232,7 @@ impl Change {
                 value: String::new(),
                 old: None,
                 placed: None,
+                pipe: None,
             });
         }
         if kind != KIND_SET_TAG && kind != KIND_SET_PROPERTY && kind != KIND_REASSIGN_TAG {
@@ -237,6 +258,7 @@ impl Change {
             value: value_text,
             old: value["old_value"].as_str().map(str::to_owned),
             placed: None,
+            pipe: None,
         })
     }
 
@@ -249,12 +271,14 @@ impl Change {
             && self.value == other.value
             && self.old == other.old
             && self.placed == other.placed
+            && self.pipe == other.pipe
     }
 
-    /// Whether this brings an object into the drawing or takes one out,
-    /// rather than changing one that is there.
+    /// Whether this brings an object into the drawing or takes one out —
+    /// or says what a pipe line or a run is made of — rather than changing
+    /// a field of one that is there.
     pub fn is_structural(&self) -> bool {
-        self.kind == KIND_INSERT_SYMBOL || self.kind == KIND_DELETE_OBJECT
+        self.kind == KIND_INSERT_SYMBOL || self.kind == KIND_DELETE_OBJECT || self.pipe.is_some()
     }
 }
 
@@ -262,11 +286,11 @@ impl Change {
 /// author record with a tag, that is not part of a pipe line (a fitting on a
 /// run belongs to the run; the pipe's own pieces are not `Insert`s).
 ///
-/// Those are the objects whose coming and going is said to the room. A pipe
-/// line, its runs and what is fitted on them are made of several entities
-/// and a table between them, and saying *those* takes replaying how they
-/// were drawn — which this does not do yet, so nothing is said of them
-/// rather than half of it.
+/// Those are the objects whose coming and going is said entity by entity.
+/// A pipe line, its runs and what is fitted on them are made of several
+/// entities and a table between them; what a step did to those is said by
+/// `super::pipes::statements`, from the drawing as the step left it
+/// ([`collect_step_changes`]).
 fn standalone_symbol(entity: &EntityType) -> Option<(&document::entities::Insert, PidAuthor)> {
     let EntityType::Insert(insert) = entity else {
         return None;
@@ -307,6 +331,7 @@ fn placed_symbol(handle: Handle, entity: &EntityType) -> Option<Change> {
             },
             tag_source: author.tag_source,
         }),
+        pipe: None,
     })
 }
 
@@ -321,6 +346,7 @@ fn erased_symbol(handle: Handle, entity: &EntityType) -> Option<Change> {
         value: String::new(),
         old: None,
         placed: None,
+        pipe: None,
     })
 }
 
@@ -372,6 +398,7 @@ pub fn changes_of(
             value: after_author.tag.clone(),
             old: Some(before_author.tag.clone()),
             placed: None,
+            pipe: None,
         });
     }
 
@@ -392,6 +419,7 @@ pub fn changes_of(
         value: value.to_owned(),
         old: old.cloned(),
         placed: None,
+        pipe: None,
     };
     for (key, value) in &after_props {
         if before_props.get(key) != Some(value) {
@@ -427,6 +455,32 @@ pub fn collect_undone_changes(entities: &EntityImages) -> Vec<Change> {
     stated_once(entities.iter().flat_map(|(handle, before, after)| {
         changes_of(*handle, after.as_deref(), before.as_deref())
     }))
+}
+
+/// Everything one step says to the room: what [`collect_changes`] reads
+/// off its images, then what it did to pipe lines and runs — which the
+/// images only point at, and `doc`, the drawing as the step left it, says
+/// (`super::pipes::statements`).
+pub fn collect_step_changes(doc: &Document, entities: &EntityImages) -> Vec<Change> {
+    let mut changes = collect_changes(entities);
+    let images: Vec<super::pipes::Image<'_>> = entities
+        .iter()
+        .map(|(handle, before, after)| (*handle, before.as_deref(), after.as_deref()))
+        .collect();
+    changes.extend(super::pipes::statements(doc, &images));
+    changes
+}
+
+/// [`collect_step_changes`] for a step that has just been taken back:
+/// its images read the other way, and `doc` the drawing without the step.
+pub fn collect_undone_step_changes(doc: &Document, entities: &EntityImages) -> Vec<Change> {
+    let mut changes = collect_undone_changes(entities);
+    let images: Vec<super::pipes::Image<'_>> = entities
+        .iter()
+        .map(|(handle, before, after)| (*handle, after.as_deref(), before.as_deref()))
+        .collect();
+    changes.extend(super::pipes::statements(doc, &images));
+    changes
 }
 
 /// One object, one statement. A pipe line renamed is every one of its
@@ -585,9 +639,22 @@ pub fn resolve(doc: &Document, change: &Change) -> Vec<Handle> {
                 )
         });
     if carrying.len() == 1 || one_line {
-        carrying.into_iter().map(|(handle, _)| handle).collect()
-    } else {
-        Vec::new()
+        return carrying.into_iter().map(|(handle, _)| handle).collect();
+    }
+    // A run and the fittings on it that have no tag of their own: those
+    // show the run's tag without being the run, and the tag means the run.
+    let mut runs = carrying
+        .iter()
+        .filter(|(_, author)| author.topology == ROLE_PIPE_RUN);
+    match (runs.next(), runs.next()) {
+        (Some((run, _)), None)
+            if carrying.iter().all(|(_, author)| {
+                matches!(author.topology.as_str(), ROLE_PIPE_RUN | ROLE_FITTING)
+            }) =>
+        {
+            vec![*run]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -798,6 +865,7 @@ mod tests {
             value: value.to_owned(),
             old: None,
             placed: None,
+            pipe: None,
         }
     }
 
@@ -973,6 +1041,7 @@ mod tests {
             value: "P-1009".to_owned(),
             old: Some("P-1001".to_owned()),
             placed: None,
+            pipe: None,
         };
         let payload = payload_for(std::slice::from_ref(&change)).expect("payload");
         assert_eq!(payload["kind"], KIND_SET_TAG);
@@ -1181,6 +1250,7 @@ mod tests {
             value: "P-1009".to_owned(),
             old: Some("P-1001".to_owned()),
             placed: None,
+            pipe: None,
         };
         assert_eq!(Change::from_json(&sent.to_json()), Some(sent));
 
@@ -1200,11 +1270,15 @@ mod tests {
             Some("tag".to_owned())
         );
 
-        // A kind this client has no way to act on: a pipe line's coming into
-        // being takes replaying how it was drawn. (`delete_object` stood
-        // here until this client learned to erase.)
-        let unknown = json!({"kind":"create_pipe_line","tag":"L-1001","object_ref":"L-1001"});
+        // A kind this client has no way to act on. (`delete_object` stood
+        // here until this client learned to erase, and `create_pipe_line`
+        // until it learned to draw the line — see `super::pipes`.)
+        let unknown = json!({"kind":"rename_drawing","tag":"L-1001","object_ref":"L-1001"});
         assert!(Change::from_json(&unknown).is_none());
+        // A pipe line that does not say where it runs is still not one it
+        // can draw.
+        let nowhere = json!({"kind":"create_pipe_line","tag":"L-1001","object_ref":"L-1001"});
+        assert!(Change::from_json(&nowhere).is_none());
         // And a symbol that says neither where it stands nor what it is.
         let placeless = json!({"kind":"insert_symbol","tag":"V-1001","type":"VALVE"});
         assert!(Change::from_json(&placeless).is_none());

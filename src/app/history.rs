@@ -1672,9 +1672,6 @@ impl OpenCADStudio {
             let step_label = snapshot.label().to_owned();
             match snapshot {
                 HistorySnapshot::Delta(mut d) => {
-                    undone.extend(super::collab::broadcast::collect_undone_changes(
-                        &d.entities,
-                    ));
                     native_graph_changed |=
                         !d.parametric_constraints.is_empty() || d.named_parameters.is_some();
                     // Symmetric: undo applies the before side, then the same
@@ -1693,6 +1690,12 @@ impl OpenCADStudio {
                         });
                     had_full |= d.structure.as_ref().is_some_and(StructureSnapshot::is_full);
                     changes.extend(self.apply_delta_state(i, &mut d, true));
+                    // Said once the step is back out: what a run it touched
+                    // is like now is read off the drawing without it.
+                    undone.extend(super::collab::broadcast::collect_undone_step_changes(
+                        &self.tabs[i].scene.document,
+                        &d.entities,
+                    ));
                     step_view = d
                         .view
                         .clone()
@@ -1794,7 +1797,6 @@ impl OpenCADStudio {
             let step_label = snapshot.label().to_owned();
             match snapshot {
                 HistorySnapshot::Delta(mut d) => {
-                    redone.extend(super::collab::broadcast::collect_changes(&d.entities));
                     native_graph_changed |=
                         !d.parametric_constraints.is_empty() || d.named_parameters.is_some();
                     layer_panel_changed |= d.structure.as_ref().is_some_and(|structure| {
@@ -1810,6 +1812,10 @@ impl OpenCADStudio {
                         });
                     had_full |= d.structure.as_ref().is_some_and(StructureSnapshot::is_full);
                     changes.extend(self.apply_delta_state(i, &mut d, false));
+                    redone.extend(super::collab::broadcast::collect_step_changes(
+                        &self.tabs[i].scene.document,
+                        &d.entities,
+                    ));
                     step_view = d
                         .view
                         .clone()

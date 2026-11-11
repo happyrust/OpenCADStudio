@@ -21,6 +21,15 @@ pub(in crate::app) struct HistoryGuard {
         document::Handle,
         Option<std::sync::Arc<document::EntityType>>,
     )>,
+    /// Where the drawing gave handles out from before the steps are
+    /// applied, with its blocks and the applications its entities carry
+    /// data for. A step that changed the drawing's structure puts all three
+    /// back as they were when it was made; the entities the peers have made
+    /// since are in no step's image and stay, so none of the three may go
+    /// back behind them (`keep_structure_ahead_of_peers`).
+    next_handle: u64,
+    blocks: document::tables::Table<document::tables::BlockRecord>,
+    app_ids: document::tables::Table<document::tables::AppId>,
 }
 
 impl OpenCADStudio {
@@ -33,7 +42,11 @@ impl OpenCADStudio {
         i: usize,
         delta: &crate::app::tab_document::DeltaSnapshot,
     ) {
-        self.broadcast_changes(i, broadcast::collect_changes(&delta.entities));
+        // The step has been made: the drawing is as it left it, which is
+        // what says what a run it touched is like now.
+        let changes =
+            broadcast::collect_step_changes(&self.tabs[i].scene.document, &delta.entities);
+        self.broadcast_changes(i, changes);
     }
 
     /// The tab holding the drawing the session speaks for, if it is open.
@@ -280,8 +293,22 @@ impl OpenCADStudio {
         applied: &mut broadcast::Applied,
     ) {
         use crate::pid::persist::PidAuthor;
+        // What a pipe line or a run is made of: the drawing is brought to
+        // it (`super::pipes`).
+        if change.pipe.is_some() {
+            self.write_remote_pipe(i, change, applied);
+            return;
+        }
         if change.kind == broadcast::KIND_DELETE_OBJECT {
-            let targets = broadcast::resolve(&self.tabs[i].scene.document, change);
+            // A run goes with everything that is its: the segments and the
+            // fittings have no name of their own to be erased by. (The
+            // fittings that show the run's tag are why this is asked
+            // before the tag is resolved like any other.)
+            let targets = super::pipes::run_with_parts(
+                &self.tabs[i].scene.document,
+                &change.object_ref,
+            )
+            .unwrap_or_else(|| broadcast::resolve(&self.tabs[i].scene.document, change));
             if targets.is_empty() {
                 applied.unresolved.push(if change.object_ref.is_empty() {
                     broadcast::UNTAGGED.to_owned()
@@ -429,7 +456,68 @@ impl OpenCADStudio {
                 .into_iter()
                 .map(|handle| (handle, document.get_entity_arc(handle)))
                 .collect(),
+            next_handle: document.next_handle(),
+            blocks: document.block_records.clone(),
+            app_ids: document.app_ids.clone(),
         })
+    }
+
+    /// After local steps were taken back or put on again on tab `i`: keep
+    /// what the drawing's structure owes to the peers' later changes.
+    ///
+    /// A step that changed the structure — a table, a block, the topology
+    /// record — holds an image of all of it and puts that back whole. The
+    /// peers' entities made since are still in the drawing, so:
+    ///
+    /// * handles go on being given out from where they were: one given out
+    ///   twice replaces the entity that had it;
+    /// * a block the image does not know, and whose entities are in the
+    ///   drawing, stays defined — a symbol whose block is gone draws
+    ///   nothing, and defining the library again doubles it; a block the
+    ///   step itself defined, whose entities went with the step, does not
+    ///   come back;
+    /// * every block keeps the entities it listed (model space lists the
+    ///   peers' entities; a listed handle that is gone is tolerated, as it
+    ///   is after any undo);
+    /// * an application registered since stays registered: entities still
+    ///   carry its data.
+    ///
+    /// Returns whether a block came back, for the scene to be told.
+    fn keep_structure_ahead_of_peers(&mut self, i: usize, guard: &HistoryGuard) -> bool {
+        use document::tables::TableEntry;
+        let document = &mut self.tabs[i].scene.document;
+        document.header.handle_seed = document.header.handle_seed.max(guard.next_handle);
+        let mut restored = false;
+        for record in guard.blocks.iter() {
+            let alive = record
+                .entity_handles
+                .iter()
+                .any(|handle| document.get_entity(*handle).is_some());
+            match document.block_records.get_mut(record.name()) {
+                Some(live) => {
+                    let known: std::collections::HashSet<document::Handle> =
+                        live.entity_handles.iter().copied().collect();
+                    live.entity_handles.extend(
+                        record
+                            .entity_handles
+                            .iter()
+                            .copied()
+                            .filter(|handle| !known.contains(handle)),
+                    );
+                }
+                None if alive => {
+                    document.block_records.add_or_replace(record.clone());
+                    restored = true;
+                }
+                None => {}
+            }
+        }
+        for app in guard.app_ids.iter() {
+            if !document.app_ids.contains(app.name()) {
+                document.app_ids.add_or_replace(app.clone());
+            }
+        }
+        restored
     }
 
     /// After local steps were taken back or put on again on tab `i`: write
@@ -448,6 +536,12 @@ impl OpenCADStudio {
         i: usize,
         guard: HistoryGuard,
     ) -> Vec<broadcast::Change> {
+        if self.keep_structure_ahead_of_peers(i, &guard) {
+            // Symbols whose block is defined again are drawn again.
+            let scene = &mut self.tabs[i].scene;
+            scene.invalidate_dependency_index();
+            scene.rebuild_derived_caches();
+        }
         let later: Vec<super::AppliedRemote> = self
             .collab
             .remote_log
@@ -463,6 +557,11 @@ impl OpenCADStudio {
         {
             let document = &mut self.tabs[i].scene.document;
             for entry in &later {
+                // What a line or a run is made of is put right further
+                // down, from the drawing as a whole.
+                if entry.change.pipe.is_some() {
+                    continue;
+                }
                 let here = entry
                     .handles
                     .iter()
@@ -488,6 +587,44 @@ impl OpenCADStudio {
             self.tabs[i].scene.erase_entities(&erased_since);
             targets.retain(|handle| !erased_since.contains(handle));
         }
+        // What the peers have said since of pipe lines and runs. The step
+        // put the topology table back as it was when the step was made —
+        // without their runs' records — and may have put back parts their
+        // accounts had done away with. Each line's stretches are made sure
+        // of again and each run is aligned again to the last account given
+        // of it; what a later change erased is not brought back.
+        let erased_later = |tag: &str, seq: u64| {
+            later.iter().any(|entry| {
+                entry.seq > seq
+                    && entry.change.kind == broadcast::KIND_DELETE_OBJECT
+                    && entry.change.object_ref == tag
+            })
+        };
+        let again: Vec<broadcast::Change> = later
+            .iter()
+            .enumerate()
+            .filter(|(index, entry)| match &entry.change.pipe {
+                Some(super::pipes::Pipe::Line(_)) => !erased_later(&entry.change.object_ref, entry.seq),
+                Some(super::pipes::Pipe::Run(said)) => {
+                    !erased_later(&entry.change.object_ref, entry.seq)
+                        && !erased_later(&said.line_tag, entry.seq)
+                        && !later[index + 1..].iter().any(|next| {
+                            matches!(next.change.pipe, Some(super::pipes::Pipe::Run(_)))
+                                && next.change.object_ref == entry.change.object_ref
+                        })
+                }
+                None => false,
+            })
+            .map(|(_, entry)| entry.change.clone())
+            .collect();
+        if !again.is_empty() {
+            let mut restated = broadcast::Applied::default();
+            for change in &again {
+                self.write_remote_pipe(i, change, &mut restated);
+            }
+            targets.extend(restated.handles);
+            applied.retagged.extend(restated.retagged);
+        }
         targets.sort();
         targets.dedup();
         // Carried down again whether or not anything had to be rewritten:
@@ -502,7 +639,7 @@ impl OpenCADStudio {
             .into_iter()
             .map(|(handle, before)| (handle, before, document.get_entity_arc(handle)))
             .collect();
-        broadcast::collect_changes(&images)
+        broadcast::collect_step_changes(document, &images)
     }
 
     /// Drop the part of `remote_log` no step can ask for any more: changes

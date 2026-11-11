@@ -23,10 +23,13 @@ use std::collections::BTreeMap;
 pub(super) mod broadcast;
 mod apply;
 mod claims;
+pub(super) mod pipes;
 #[cfg(not(target_arch = "wasm32"))]
 mod messages;
 #[cfg(not(target_arch = "wasm32"))]
 mod transport;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_pipe_ops;
 
 /// A server address as it may be shown — in the log, on the command line,
 /// in `/collab/status`: without whatever stands before an `@` in its
