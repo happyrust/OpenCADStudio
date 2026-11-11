@@ -1725,6 +1725,62 @@ mod tests {
         assert_eq!(crate::ws::current_revision(&state, "d-a1-coop"), 2);
     }
 
+    /// `VAL-CROSS-003` beside `-002`: a pipe line somebody holds is theirs
+    /// to change in how it is connected up, too. Another session's run on
+    /// it, fitting in one of its runs, or new account of such a run is
+    /// refused like a write to the line's fields — the claim is on the
+    /// line's tag (or the run's), which none of the three names as its
+    /// subject. Once the line is let go of they go through.
+    #[tokio::test]
+    async fn collab_pipe_ops_a_held_line_refuses_changes_to_its_connections() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let (mut holder, _) = live_conn(&state, "u-proc", now - 10).await;
+        let (mut other, _) = live_conn(&state, "u-admin", now).await;
+        let holder_id = holder.session.as_ref().expect("session").session_id.clone();
+        claim_frame(&state, &mut holder, "L-1001", true).await;
+        let op = |conn: &crate::ws::Connection, op_id: &str, base: i64, payload: serde_json::Value| {
+            ocs_collab::ClientMessage::Op {
+                session_id: conn.session.as_ref().expect("session").session_id.clone(),
+                base_revision: base,
+                op_id: op_id.into(),
+                payload,
+            }
+        };
+        let run = json!({"kind": "add_pipe_run", "line_tag": "L-1001", "tag": "L-1001-01",
+            "points": [[0, 0], [200, 0]]});
+        let fitting = json!({"kind": "insert_fitting", "line_tag": "L-1001", "run_tag": "L-1001-01",
+            "fitting_type": "gate_valve", "at": [100, 0], "tag": "V-1001"});
+        let update = json!({"kind": "update_pipe_run", "line_tag": "L-1001", "run_tag": "L-1001-01",
+            "run": {"segments": [], "fittings": []}});
+        for (index, payload) in [&run, &fitting, &update].into_iter().enumerate() {
+            let message = op(&other, &format!("op-o{index}"), 0, payload.clone());
+            let refused = crate::ws::handle_message(&state, &mut other, message, now).await;
+            assert_eq!(
+                error_in(&refused),
+                Some((codes::CLAIM_HELD.to_owned(), Some(holder_id.clone()))),
+                "{payload}: {refused:?}"
+            );
+        }
+        assert_eq!(crate::ws::current_revision(&state, "d-a1-coop"), 0);
+        // The holder's own go through, and so does anybody's on another line.
+        let message = op(&holder, "op-h1", 0, run.clone());
+        assert!(applied_in(&crate::ws::handle_message(&state, &mut holder, message, now).await));
+        let elsewhere = json!({"kind": "add_pipe_run", "line_tag": "L-1002", "tag": "L-1002-01", "points": []});
+        let message = op(&other, "op-o9", 1, elsewhere);
+        assert!(applied_in(&crate::ws::handle_message(&state, &mut other, message, now).await));
+        // A claim on the run alone stands against a change to that run.
+        claim_frame(&state, &mut holder, "L-1001", false).await;
+        claim_frame(&state, &mut holder, "L-1001-01", true).await;
+        let message = op(&other, "op-o10", 2, fitting.clone());
+        let refused = crate::ws::handle_message(&state, &mut other, message, now).await;
+        assert_eq!(error_in(&refused).map(|(code, _)| code), Some(codes::CLAIM_HELD.to_owned()));
+        claim_frame(&state, &mut holder, "L-1001-01", false).await;
+        let message = op(&other, "op-o11", 2, fitting);
+        assert!(applied_in(&crate::ws::handle_message(&state, &mut other, message, now).await));
+        assert_eq!(crate::ws::current_revision(&state, "d-a1-coop"), 3);
+    }
+
     /// `VAL-CROSS-010`: two sessions each place a valve and each calls it
     /// `V-1001` — neither had seen the other's. Both ops take effect; the
     /// second symbol goes to the room as `V-1002`, saying the tag it came

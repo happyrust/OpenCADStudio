@@ -999,7 +999,9 @@ async fn op(
 ///
 /// A change touches the tag of the object it is about, and a retag also the
 /// tag it would give: taking a held tag for another object is as much the
-/// holder's business as changing the object that has it.
+/// holder's business as changing the object that has it. A change to how a
+/// pipe line is connected up touches the line and the run it names as well
+/// as whatever it says it creates.
 async fn held_by_another(
     state: &AppState,
     session: &Session,
@@ -1012,6 +1014,12 @@ async fn held_by_another(
         let mut tags = vec![change.subject()];
         if change.kind == ocs_collab::conflict::KIND_SET_TAG {
             tags.push(change.value.clone());
+        }
+        // A change to how a pipe line is connected up is a change to the
+        // line and to the run it names: a claim on either stands against it.
+        if change.changes_topology() {
+            tags.extend(change.text("line_tag"));
+            tags.extend(change.text("run_tag"));
         }
         tags.iter()
             .filter(|tag| !tag.is_empty())
