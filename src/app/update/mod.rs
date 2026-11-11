@@ -4940,7 +4940,7 @@ impl OpenCADStudio {
                                     ));
                                 } else {
                                     #[cfg(not(target_arch = "wasm32"))]
-                                    let _ = open::that_detached(&found);
+                                    let _ = crate::sys::system_open(&found);
                                 }
                             } else {
                                 self.command_line.push_error(
