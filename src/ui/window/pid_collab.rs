@@ -83,6 +83,12 @@ pub const HOLDER_LABEL: &str = "编辑权";
 /// on the drawing.
 pub const NO_OTHERS_LABEL: &str = "暂无其他在线用户";
 
+/// What the panel says when no server address is set (`VAL-CLI-017`).
+pub const NOT_CONFIGURED_LABEL: &str = "未配置协同服务器";
+
+/// And how to set one, under it.
+pub const NOT_CONFIGURED_HINT: &str = "在命令行输入 PIDCOLLAB SERVER ws://主机:端口/ws";
+
 /// One peer row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerRow {
@@ -251,11 +257,21 @@ pub fn view<'a>(view: &'a CollabView, width: f32, chrome: Chrome) -> Element<'a,
     let title_bar = crate::ui::dock::title_bar(PanelId::PidCollab, "协同".to_string(), chrome);
 
     if !view.configured() {
-        let hint = container(text("未配置协同服务器").size(12).style(muted))
-            .center_x(Fill)
-            .center_y(Fill)
-            .width(Fill)
-            .height(Fill);
+        // Says what to do about it as well: the address is given on the
+        // command line (`PIDCOLLAB SERVER`), which is not somewhere a person
+        // would look unprompted.
+        let hint = container(
+            column![
+                text(NOT_CONFIGURED_LABEL).size(12).style(muted),
+                text(NOT_CONFIGURED_HINT).size(10).style(muted),
+            ]
+            .spacing(4)
+            .align_x(iced::Center),
+        )
+        .center_x(Fill)
+        .center_y(Fill)
+        .width(Fill)
+        .height(Fill);
         return crate::ui::dock::frame(
             title_bar,
             column![hint].spacing(6).height(Fill),

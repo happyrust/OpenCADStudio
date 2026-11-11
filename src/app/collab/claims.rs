@@ -146,8 +146,21 @@ impl OpenCADStudio {
         Task::none()
     }
 
-    /// `PIDCOLLAB [ON|OFF]` — bare or `ON` shows the panel, `OFF` hides it, so
-    /// the command has a deterministic form for scripted runs.
+    /// `PIDCOLLAB` — the panel, and the three settings a session is made of.
+    ///
+    /// * bare or `ON` shows the panel, `OFF` hides it, so the command has a
+    ///   deterministic form for scripted runs;
+    /// * `SERVER <ws://host:port/ws>` names the collaboration server, and
+    ///   `SERVER OFF` forgets it;
+    /// * `USER <id>` says who this is;
+    /// * `DRAWING <id>` says which drawing the session is for, where the
+    ///   file name does not.
+    ///
+    /// The three are saved as they are given — to the settings file the next
+    /// start reads — and a run that has no session yet starts one as soon as
+    /// it has all three, on the drawing in front (`VAL-CROSS-006`). A run
+    /// that has its session keeps it: what is given then is for the next
+    /// start.
     pub(in crate::app) fn dispatch_pidcollab(&mut self, cmd: &str, _i: usize) -> Option<Task<Message>> {
         let verb_end = cmd
             .trim_start()
@@ -158,16 +171,150 @@ impl OpenCADStudio {
             return None;
         }
         let arg = cmd.trim_start()[verb_end..].trim();
-        match arg.to_ascii_uppercase().as_str() {
-            "" | "ON" => Some(self.show_pid_collab_panel()),
-            "OFF" => Some(self.on_dock(crate::ui::dock::DockMsg::Close(PanelId::PidCollab))),
-            other => {
+        let (word, value) = match arg.split_once(char::is_whitespace) {
+            Some((word, value)) => (word, value.trim()),
+            None => (arg, ""),
+        };
+        match (word.to_ascii_uppercase().as_str(), value) {
+            ("" | "ON", "") => Some(self.show_pid_collab_panel()),
+            ("OFF", "") => Some(self.on_dock(crate::ui::dock::DockMsg::Close(PanelId::PidCollab))),
+            ("SERVER", value) => {
+                self.set_collab_setting(CollabSetting::Server, value);
+                Some(Task::none())
+            }
+            ("USER", value) => {
+                self.set_collab_setting(CollabSetting::User, value);
+                Some(Task::none())
+            }
+            ("DRAWING", value) => {
+                self.set_collab_setting(CollabSetting::Drawing, value);
+                Some(Task::none())
+            }
+            _ => {
                 self.command_line.push_error(&format!(
-                    "PIDCOLLAB: 只接受 ON 或 OFF，实得 \"{other}\"。"
+                    "PIDCOLLAB: 只接受 ON、OFF、SERVER <ws://主机:端口/ws>、USER <用户>、\
+                     DRAWING <图号>，实得 \"{arg}\"。"
                 ));
                 Some(Task::none())
             }
         }
+    }
+
+    /// Take one collaboration setting as typed: check it, keep it in what
+    /// the settings file is written from, write the file, and — when this
+    /// run has no session yet — start the session if nothing is missing now.
+    fn set_collab_setting(&mut self, setting: CollabSetting, typed: &str) {
+        let typed = typed.trim();
+        let name = setting.name();
+        if typed.is_empty() {
+            let saved = match setting {
+                CollabSetting::Server => &self.collab.configured_server_url,
+                CollabSetting::User => &self.collab.configured_user_id,
+                CollabSetting::Drawing => &self.collab.configured_drawing_id,
+            };
+            let saved = if saved.is_empty() { "（未设置）" } else { saved.as_str() };
+            self.command_line
+                .push_info(&format!("PIDCOLLAB {name}: 已保存的是 {saved}"));
+            return;
+        }
+        let value = match setting {
+            CollabSetting::Server if typed.eq_ignore_ascii_case("OFF") => String::new(),
+            CollabSetting::Server => match dialable(typed) {
+                Ok(()) => typed.to_owned(),
+                Err(why) => {
+                    self.command_line.push_error(&format!(
+                        "PIDCOLLAB SERVER: {why}。地址要写成 ws://主机:端口/ws，实得 \"{typed}\"。"
+                    ));
+                    return;
+                }
+            },
+            CollabSetting::User | CollabSetting::Drawing => {
+                if typed.contains(char::is_whitespace) {
+                    self.command_line.push_error(&format!(
+                        "PIDCOLLAB {name}: 只接受一个词，实得 \"{typed}\"。"
+                    ));
+                    return;
+                }
+                typed.to_owned()
+            }
+        };
+
+        // A run without a session takes the value for itself as well; one
+        // with a session leaves the session what it is.
+        let in_session = self.collab.wanted();
+        match setting {
+            CollabSetting::Server => self.collab.configured_server_url = value.clone(),
+            CollabSetting::User => {
+                self.collab.configured_user_id = value.clone();
+                if !in_session {
+                    self.collab.user_id = value.clone();
+                }
+            }
+            CollabSetting::Drawing => {
+                self.collab.configured_drawing_id = value.clone();
+                if !in_session {
+                    self.collab.drawing_id = value.clone();
+                }
+            }
+        }
+        self.save_config();
+        let shown = if value.is_empty() { "（无）" } else { value.as_str() };
+        if in_session {
+            self.command_line.push_info(&format!(
+                "协同：{name} 已保存为 {shown}；本次运行的会话不变，下次启动生效"
+            ));
+            return;
+        }
+        match self.start_saved_session() {
+            Ok(()) => self.command_line.push_info(&format!(
+                "协同：{name} 已保存为 {shown}，正在连接 {}",
+                self.collab.server_url
+            )),
+            Err(missing) => self
+                .command_line
+                .push_info(&format!("协同：{name} 已保存为 {shown}；{missing}，暂不连接")),
+        }
+        self.refresh_collab_view();
+    }
+
+    /// Start the session the saved settings describe, on the drawing in
+    /// front — or say what is still missing.
+    ///
+    /// Only for a run that has none: `server_url` going from empty to an
+    /// address is what registers the transport's subscription, and the
+    /// worker reads the published config as it starts.
+    fn start_saved_session(&mut self) -> Result<(), String> {
+        let server = self.collab.configured_server_url.trim().to_owned();
+        if server.is_empty() {
+            return Err("还没有服务器地址（PIDCOLLAB SERVER <地址>）".to_owned());
+        }
+        if self.collab.user_id.trim().is_empty() {
+            return Err("还没有指定用户（PIDCOLLAB USER <用户>）".to_owned());
+        }
+        let i = self.active_tab;
+        let Some(tab) = self.tabs.get(i).filter(|tab| !tab.is_start) else {
+            return Err("还没有打开要协同的图纸".to_owned());
+        };
+        if self.collab.drawing_id.trim().is_empty() {
+            // As at start-up: a drawing is known by its file name.
+            let stem = tab
+                .current_path
+                .as_ref()
+                .and_then(|path| path.file_stem())
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if stem.is_empty() {
+                return Err(
+                    "当前图纸还没有文件名，用 PIDCOLLAB DRAWING <图号> 指定图纸".to_owned(),
+                );
+            }
+            self.collab.drawing_id = stem;
+        }
+        self.collab.document = Some(tab.id);
+        self.collab.server_url = server;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.collab.sync_client_config();
+        Ok(())
     }
 
     /// A panel interaction: claim, release, or expand the claims list.
@@ -284,6 +431,42 @@ impl OpenCADStudio {
         }
         Some(self.on_collab_claim(tag, claim))
     }
+}
+
+/// One of the three things `PIDCOLLAB` keeps in the settings file.
+#[derive(Clone, Copy)]
+enum CollabSetting {
+    Server,
+    User,
+    Drawing,
+}
+
+impl CollabSetting {
+    /// The word the command takes it under.
+    fn name(self) -> &'static str {
+        match self {
+            CollabSetting::Server => "SERVER",
+            CollabSetting::User => "USER",
+            CollabSetting::Drawing => "DRAWING",
+        }
+    }
+}
+
+/// Whether `address` is one the transport can dial: a `ws://` URL naming a
+/// host. `wss://` is not — the transport speaks over a plain socket — and is
+/// better refused here than saved and retried for ever.
+fn dialable(address: &str) -> Result<(), String> {
+    if address.contains(char::is_whitespace) {
+        return Err("地址里有空白".to_owned());
+    }
+    let parsed = url::Url::parse(address).map_err(|error| format!("地址无效（{error}）"))?;
+    if parsed.scheme() != "ws" {
+        return Err(format!("不支持 {}:// 的地址", parsed.scheme()));
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err("地址缺少主机名".to_owned());
+    }
+    Ok(())
 }
 
 /// Split a command line into its verb and the remainder, or `None` when the
@@ -755,5 +938,155 @@ mod tests {
             tag: "P-1001".to_owned(),
         });
         assert_eq!(app.canonical_tag("p-1001"), "P-1001");
+    }
+
+    // ── The server, the user and the drawing, named from inside ──────────
+
+    const SERVER: &str = "ws://127.0.0.1:3240/ws";
+
+    fn run(app: &mut crate::app::OpenCADStudio, cmd: &str) -> serde_json::Value {
+        app.automation_op(&serde_json::json!({"op": "run", "cmd": cmd}).to_string())
+    }
+
+    /// `VAL-CROSS-006`: a person who has not collaborated before names the
+    /// server from inside the program. The address goes into what the
+    /// settings file is written from, and — this run having no session yet —
+    /// the session for the drawing in front starts on it, with no restart.
+    #[test]
+    fn naming_the_server_saves_it_and_starts_the_session() {
+        let mut app = app_with_tags(&["P-1001"]);
+        // Who, and on which drawing, as `--user` and `--drawing` leave them.
+        app.collab.user_id = "u1".to_owned();
+        app.collab.drawing_id = "PID-1101".to_owned();
+        assert!(!app.collab.wanted());
+        assert!(app.current_config().collab.server_url.is_empty());
+
+        let done = run(&mut app, &format!("PIDCOLLAB SERVER {SERVER}"));
+        assert_eq!(done["ok"], true, "{done}");
+
+        assert_eq!(
+            app.current_config().collab.server_url,
+            SERVER,
+            "what settings.json is written from"
+        );
+        assert!(app.collab.wanted(), "the transport is subscribed to on this");
+        let config = app.collab.client_config();
+        assert_eq!(
+            (config.server_url.as_str(), config.user_id.as_str(), config.drawing_id.as_str()),
+            (SERVER, "u1", "PID-1101")
+        );
+        assert_eq!(
+            app.collab.document,
+            Some(app.tabs[app.active_tab].id),
+            "the session is for the drawing in front when it was started"
+        );
+        assert!(app.pid_collab_view.configured(), "the panel was not told");
+    }
+
+    /// An address the transport could not dial is refused where it is typed:
+    /// nothing is saved and nothing starts.
+    #[test]
+    fn an_address_that_is_not_a_websocket_url_is_refused() {
+        for typed in [
+            "127.0.0.1:3240",
+            "http://127.0.0.1:3240/ws",
+            // No TLS in the transport: an address it cannot dial.
+            "wss://example.invalid/ws",
+            "ws://",
+            "ws://127.0.0.1:3240/ws extra",
+        ] {
+            let mut app = app_with_tags(&["P-1001"]);
+            app.collab.user_id = "u1".to_owned();
+            app.collab.drawing_id = "PID-1101".to_owned();
+            let refused = run(&mut app, &format!("PIDCOLLAB SERVER {typed}"));
+            assert_eq!(refused["ok"], false, "{typed}: {refused}");
+            assert!(
+                app.current_config().collab.server_url.is_empty(),
+                "{typed} was saved"
+            );
+            assert!(!app.collab.wanted(), "{typed} started a session");
+        }
+    }
+
+    /// With nobody to connect as, or no drawing to connect for, the address
+    /// is kept and the session waits for what is missing — and says what.
+    #[test]
+    fn a_session_waits_for_a_user_and_a_drawing() {
+        // A new drawing, never saved: it has no file name to be known by.
+        let mut app = app_with_tags(&["P-1001"]);
+        let saved = run(&mut app, &format!("PIDCOLLAB SERVER {SERVER}"));
+        assert_eq!(saved["ok"], true, "{saved}");
+        assert_eq!(app.current_config().collab.server_url, SERVER);
+        assert!(!app.collab.wanted(), "nobody to connect as");
+
+        let named = run(&mut app, "PIDCOLLAB USER u1");
+        assert_eq!(named["ok"], true, "{named}");
+        assert_eq!(app.current_config().collab.user_id, "u1");
+        assert!(!app.collab.wanted(), "no drawing to connect for");
+
+        let named = run(&mut app, "PIDCOLLAB DRAWING PID-1101");
+        assert_eq!(named["ok"], true, "{named}");
+        assert_eq!(app.current_config().collab.drawing_id, "PID-1101");
+        assert!(app.collab.wanted());
+        let config = app.collab.client_config();
+        assert_eq!(
+            (config.server_url.as_str(), config.user_id.as_str(), config.drawing_id.as_str()),
+            (SERVER, "u1", "PID-1101")
+        );
+        assert_eq!(app.collab.document, Some(app.tabs[app.active_tab].id));
+    }
+
+    /// A run that has its session keeps it. Another address is for the next
+    /// start: saved, and the live session left where it is.
+    #[test]
+    fn another_address_during_a_session_is_kept_for_the_next_start() {
+        use crate::app::collab::CollabEvent;
+
+        let mut app = app_with_tags(&["P-1001"]);
+        // As `--collab` leaves it: live, and not what is saved.
+        app.collab.server_url = SERVER.to_owned();
+        app.collab.user_id = "u1".to_owned();
+        app.collab.drawing_id = "PID-1101".to_owned();
+        app.collab.apply(CollabEvent::Connected {
+            session_id: "s-1".to_owned(),
+            base_revision: 0,
+            peers: Vec::new(),
+            claims: Vec::new(),
+        });
+
+        let other = "ws://10.0.0.9:3240/ws";
+        let done = run(&mut app, &format!("PIDCOLLAB SERVER {other}"));
+        assert_eq!(done["ok"], true, "{done}");
+        assert_eq!(app.current_config().collab.server_url, other);
+        assert_eq!(app.collab.server_url, SERVER, "the live session moved");
+        assert!(app.collab.connected);
+
+        // Forgetting it is the same: the next start is offline, this run is
+        // not cut off.
+        let done = run(&mut app, "PIDCOLLAB SERVER OFF");
+        assert_eq!(done["ok"], true, "{done}");
+        assert!(app.current_config().collab.server_url.is_empty());
+        assert_eq!(app.collab.server_url, SERVER);
+    }
+
+    /// The forms the command has always had still mean what they meant, and
+    /// a word it does not know is refused with the ones it does.
+    #[test]
+    fn the_panel_forms_stand_and_an_unknown_word_is_refused() {
+        let mut app = app_with_tags(&["P-1001"]);
+        assert_eq!(run(&mut app, "PIDCOLLAB ON")["ok"], true);
+        assert!(app.show_pid_collab);
+        assert_eq!(run(&mut app, "PIDCOLLAB OFF")["ok"], true);
+        assert!(!app.show_pid_collab);
+        assert_eq!(run(&mut app, "PIDCOLLAB")["ok"], true);
+        assert!(app.show_pid_collab);
+
+        let refused = run(&mut app, "PIDCOLLAB SERVE ws://127.0.0.1:3240/ws");
+        assert_eq!(refused["ok"], false, "{refused}");
+        let said = refused.to_string();
+        for form in ["ON", "OFF", "SERVER", "USER", "DRAWING"] {
+            assert!(said.contains(form), "{form} is not offered in {said}");
+        }
+        assert!(app.current_config().collab.server_url.is_empty());
     }
 }
