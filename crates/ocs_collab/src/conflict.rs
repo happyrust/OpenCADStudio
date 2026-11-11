@@ -484,6 +484,14 @@ impl DrawingModel {
     /// The change with what the server decides filled in: a pipe run that
     /// came without a tag gets the line's next one (`{line}-{NN}`), so that
     /// every client — and a replay of the log — calls it the same.
+    ///
+    /// And a symbol placed under a tag an object of this drawing already
+    /// has gets the next free one. Two people who place a symbol at the same
+    /// moment both work the same number out — neither has seen the other's
+    /// yet — and it is here, where the two meet, that one of them is told
+    /// another (`VAL-CROSS-010`). The tag it came with rides along as
+    /// `reassigned_from`, which is how the session that placed it knows to
+    /// rename its own.
     pub fn completed(&self, change: &Change) -> Change {
         let mut change = change.clone();
         if change.kind == KIND_ADD_PIPE_RUN && change.text("tag").is_none() {
@@ -495,7 +503,37 @@ impl DrawingModel {
                 .unwrap_or_default();
             change.raw["tag"] = Value::String(tag);
         }
+        if change.kind == KIND_INSERT_SYMBOL {
+            let tag = change.subject();
+            if !tag.is_empty() && self.objects.contains_key(&tag) {
+                let free = self.free_tag_after(&tag);
+                change.raw["reassigned_from"] = Value::String(tag);
+                change.raw["tag"] = Value::String(free.clone());
+                change.raw["object_ref"] = Value::String(free.clone());
+                change.object_ref = free;
+            }
+        }
         change
+    }
+
+    /// The first tag after `taken` that no object of this drawing has:
+    /// the number `taken` ends in counted up, in as many digits (`V-1001` →
+    /// `V-1002`), or `-2`, `-3`, … appended to one that ends in no number.
+    fn free_tag_after(&self, taken: &str) -> String {
+        let digits = taken
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .count();
+        let (stem, number) = taken.split_at(taken.len() - digits);
+        let free = |tag: &String| !self.objects.contains_key(tag);
+        match number.parse::<u64>() {
+            Ok(from) => (from + 1..)
+                .map(|n| format!("{stem}{n:0digits$}"))
+                .find(free),
+            Err(_) => (2u64..).map(|n| format!("{taken}-{n}")).find(free),
+        }
+        .unwrap_or_else(|| taken.to_owned())
     }
 
     /// An object that was deleted, by the tag it had.
@@ -1016,5 +1054,47 @@ mod tests {
         assert_eq!(model.field("V-1001", "公称直径").map(|f| f.value.as_str()), Some("DN50"));
         assert!(!one(json!({"kind": "something_else", "tag": "X"})).is_understood());
         assert!(!one(json!({"kind": KIND_INSERT_SYMBOL})).is_understood(), "names nothing");
+    }
+
+    /// `VAL-CROSS-010`: two sessions place a symbol under the same tag —
+    /// each worked the number out before it had seen the other's. The first
+    /// keeps it; the second is given the next free one, and its change says
+    /// which tag it came with, so the session that placed it can rename its
+    /// own. A tag that is free is left alone, and one freed by a deletion
+    /// can be taken again.
+    #[test]
+    fn a_symbol_placed_under_a_taken_tag_is_given_the_next_free_one() {
+        let mut model = DrawingModel::default();
+        let place = |tag: &str| {
+            one(json!({"kind": KIND_INSERT_SYMBOL, "type": "VALVE", "tag": tag,
+                "object_ref": tag, "handle": "3A1", "position": [100, 200]}))
+        };
+        let first = model.completed(&place("V-1001"));
+        assert_eq!(first.subject(), "V-1001");
+        assert!(first.raw.get("reassigned_from").is_none());
+        assert!(applies(&take(&mut model, &first, 0, 1, "s1")));
+
+        let second = model.completed(&place("V-1001"));
+        assert_eq!(second.subject(), "V-1002");
+        assert_eq!(second.raw["tag"], "V-1002");
+        assert_eq!(second.raw["object_ref"], "V-1002");
+        assert_eq!(second.raw["reassigned_from"], "V-1001");
+        assert_eq!(second.raw["handle"], "3A1", "the sender's entity still rides along");
+        assert!(applies(&take(&mut model, &second, 0, 2, "s2")));
+        assert!(model.object("V-1001").is_some() && model.object("V-1002").is_some());
+
+        // The next one counts past both; the digits keep their width.
+        assert_eq!(model.completed(&place("V-1001")).subject(), "V-1003");
+        let _ = take(&mut model, &place("P-0099"), 2, 3, "s1");
+        assert_eq!(model.completed(&place("P-0099")).subject(), "P-0100");
+        // A tag that ends in no number gets one appended.
+        let _ = take(&mut model, &place("PUMP"), 3, 4, "s1");
+        assert_eq!(model.completed(&place("PUMP")).subject(), "PUMP-2");
+
+        // Deleted, the tag is free again.
+        let _ = take(&mut model, &delete("V-1001"), 4, 5, "s1");
+        let again = model.completed(&place("V-1001"));
+        assert_eq!(again.subject(), "V-1001");
+        assert!(again.raw.get("reassigned_from").is_none());
     }
 }

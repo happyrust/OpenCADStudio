@@ -1725,6 +1725,78 @@ mod tests {
         assert_eq!(crate::ws::current_revision(&state, "d-a1-coop"), 2);
     }
 
+    /// `VAL-CROSS-010`: two sessions each place a valve and each calls it
+    /// `V-1001` — neither had seen the other's. Both ops take effect; the
+    /// second symbol goes to the room as `V-1002`, saying the tag it came
+    /// with, and the server knows two objects. No conflict entry: this is
+    /// settled by numbering, not by a ruling.
+    #[tokio::test]
+    async fn two_symbols_placed_under_one_tag_end_up_with_two_tags() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let (mut first, _) = live_conn(&state, "u-proc", now - 10).await;
+        let (mut second, _) = live_conn(&state, "u-admin", now).await;
+        let place = |conn: &mut crate::ws::Connection, op_id: &str, handle: &str, x: i64| {
+            let session_id = conn.session.as_ref().expect("session").session_id.clone();
+            ocs_collab::ClientMessage::Op {
+                session_id,
+                // Both made against the drawing as it was before either.
+                base_revision: 0,
+                op_id: op_id.into(),
+                payload: json!({
+                    "kind": "insert_symbol", "object_ref": "V-1001", "tag": "V-1001",
+                    "type": "VALVE", "block": "PID_SYM_valve_gate_valve",
+                    "position": [x, 200, 0], "handle": handle, "props": {},
+                }),
+            }
+        };
+        let changes_of = |reactions: &[crate::ws::Reaction]| -> Vec<serde_json::Value> {
+            reactions
+                .iter()
+                .find_map(|reaction| match reaction {
+                    crate::ws::Reaction::Published {
+                        message: ocs_collab::ServerMessage::OpApplied { changes, .. },
+                        ..
+                    } => Some(changes.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+
+        let message = place(&mut first, "op-1", "3A1", 100);
+        let one = crate::ws::handle_message(&state, &mut first, message, now).await;
+        let message = place(&mut second, "op-2", "3A1", 300);
+        let two = crate::ws::handle_message(&state, &mut second, message, now).await;
+
+        let (one, two) = (changes_of(&one), changes_of(&two));
+        assert_eq!(one.len(), 1, "{one:?}");
+        assert_eq!(one[0]["object_ref"], "V-1001");
+        assert!(one[0].get("reassigned_from").is_none(), "{one:?}");
+        assert_eq!(two.len(), 1, "{two:?}");
+        assert_eq!(two[0]["object_ref"], "V-1002");
+        assert_eq!(two[0]["tag"], "V-1002");
+        assert_eq!(two[0]["reassigned_from"], "V-1001");
+        assert_eq!(two[0]["handle"], "3A1");
+        assert_eq!(crate::ws::current_revision(&state, "d-a1-coop"), 2);
+
+        let store = state.store.as_ref().expect("store");
+        let entries = store
+            .list_conflicts(Some("d-a1-coop"), None)
+            .expect("conflicts");
+        assert!(entries.is_empty(), "numbering, not a ruling: {entries:?}");
+        let inserted: Vec<String> = store
+            .audit_query(&AuditQuery::default())
+            .expect("audit")
+            .items
+            .into_iter()
+            .filter(|row| row.action == "insert_symbol")
+            .map(|row| format!("{}:{}", row.user_id, row.object_ref))
+            .collect();
+        assert_eq!(inserted.len(), 2, "{inserted:?}");
+        assert!(inserted.contains(&"u-proc:V-1001".to_owned()), "{inserted:?}");
+        assert!(inserted.contains(&"u-admin:V-1002".to_owned()), "{inserted:?}");
+    }
+
     /// A claim is on a tag of one drawing. The same tag on another drawing
     /// is another object, and nobody holds that.
     #[tokio::test]

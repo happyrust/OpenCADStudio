@@ -72,7 +72,7 @@ mod pidbulk;
 mod pidconnector;
 mod pidlegend;
 pub(in crate::app) mod pidmove;
-mod pidpalette;
+pub(in crate::app) mod pidpalette;
 mod pidpipe;
 pub(in crate::app) mod pidprops;
 mod pidplot;
@@ -901,6 +901,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_pidpalette(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_pidsetprop(cmd, i) {
+            return Some(t);
+        }
         if let Some(t) = self.dispatch_pidpipe(cmd, i) {
             return Some(t);
         }
@@ -1587,6 +1590,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "PIDPIPE",
         "PIDPLOT",
         "PIDRELEASE",
+        "PIDSETPROP",
         "PIDTAG",
         "PIDTOPOLOGY",
         "PLOT",

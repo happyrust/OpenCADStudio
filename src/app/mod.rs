@@ -1570,6 +1570,10 @@ pub(super) struct OpenCADStudio {
     /// Docked collaboration panel visibility (PIDCOLLAB): the peer roster and
     /// the tag claims, with their claim/release buttons.
     pub(crate) show_pid_collab: bool,
+    /// The P&ID symbol placed last from the command line or the palette, by
+    /// the tab it was placed on: what `PIDSETPROP` means when it names no
+    /// object and nothing is selected.
+    pub(crate) pid_last_placed: Option<(u64, document::Handle)>,
     /// The cached projection of the collaboration session the panel draws.
     /// Rebuilt by `refresh_collab_view` after every collab event, so the panel
     /// never holds state of its own.
@@ -6750,6 +6754,7 @@ impl OpenCADStudio {
             pid_palette: Default::default(),
             show_pid_backup: false,
             show_pid_collab: false,
+            pid_last_placed: None,
             pid_collab_view: Default::default(),
             pid_collab_claims_open: true,
             pid_collab_auto_shown: false,

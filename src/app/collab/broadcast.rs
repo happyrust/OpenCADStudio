@@ -38,6 +38,41 @@ use crate::pid::topology::{parse_handle, ROLE_PIPE_LINE, ROLE_SIGNAL_LINE};
 /// Op kinds this client emits and understands.
 pub const KIND_SET_TAG: &str = "set_tag";
 pub const KIND_SET_PROPERTY: &str = "set_property";
+/// Not a wire kind: this client's note to itself that the server gave a
+/// symbol it placed another tag than the one it was sent under, because
+/// that one was taken (`State::apply` writes it when its own `insert_symbol`
+/// comes back saying `reassigned_from`). Written like a retag, to the entity
+/// the symbol was placed as.
+pub const KIND_REASSIGN_TAG: &str = "reassign_tag";
+/// A symbol placed: the object comes into being under the tag it was given.
+pub const KIND_INSERT_SYMBOL: &str = "insert_symbol";
+/// An object erased.
+pub const KIND_DELETE_OBJECT: &str = "delete_object";
+
+/// What a placed symbol is, beyond its tag: enough for a peer to place the
+/// same symbol in its own drawing. This is the one place geometry travels —
+/// an insertion point, a rotation and a scale, which is what a symbol's
+/// placement is; the symbol's own lines come from the library on each side.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Placed {
+    /// The symbol's block (`PID_SYM_<category>_<id>`).
+    pub block: String,
+    /// The author type code (`VALVE`, `EQUIPMENT`, …).
+    pub type_code: String,
+    pub position: [f64; 3],
+    /// Radians, as the entity stores it.
+    pub rotation: f64,
+    /// Uniform, as every placement is made.
+    pub scale: f64,
+    pub ports: String,
+    /// The author record's `props` text.
+    pub props: String,
+    pub tag_source: String,
+}
+
+// Placements are finite numbers; `Change` is compared and kept in sets of
+// its own, which is all this is for.
+impl Eq for Placed {}
 
 /// What a change naming no tag is called when it is reported as unresolved.
 pub const UNTAGGED: &str = "（无位号）";
@@ -63,7 +98,14 @@ pub struct Change {
     pub value: String,
     /// The value being replaced. The server's audit line reads it
     /// (`old_value`), which is how a change says what it overwrote.
+    ///
+    /// For [`KIND_INSERT_SYMBOL`] it is the tag the sender had given the
+    /// symbol, when the server gave it another because that one was taken
+    /// (`reassigned_from`).
     pub old: Option<String>,
+    /// What was placed, for [`KIND_INSERT_SYMBOL`]; `None` for every change
+    /// to an object that exists.
+    pub placed: Option<Placed>,
 }
 
 impl Change {
@@ -75,7 +117,21 @@ impl Change {
             "field": self.field,
             "value": self.value,
         });
-        if let Some(old) = &self.old {
+        if let Some(placed) = &self.placed {
+            // `tag` and `type` are the keys the server reads a new symbol
+            // by (`architecture.md` §3.2); `props` goes as an object, so the
+            // server knows the fields the symbol starts with.
+            change["tag"] = json!(self.object_ref);
+            change["type"] = json!(placed.type_code);
+            change["block"] = json!(placed.block);
+            change["position"] = json!(placed.position);
+            change["rotation"] = json!(placed.rotation);
+            change["scale"] = json!(placed.scale);
+            change["ports"] = json!(placed.ports);
+            change["tag_source"] = json!(placed.tag_source);
+            let (values, _) = split_props(&placed.props);
+            change["props"] = json!(values);
+        } else if let Some(old) = &self.old {
             change["old_value"] = json!(old);
         }
         // `handle` is the first, as it has always been written; `handles`
@@ -95,10 +151,6 @@ impl Change {
     /// missing value) — applying half of it would be worse.
     pub fn from_json(value: &Value) -> Option<Self> {
         let kind = value["kind"].as_str()?.to_owned();
-        if kind != KIND_SET_TAG && kind != KIND_SET_PROPERTY {
-            return None;
-        }
-        let object_ref = value["object_ref"].as_str()?.to_owned();
         let handles: Vec<Handle> = match value["handles"].as_array() {
             Some(listed) => listed
                 .iter()
@@ -110,10 +162,66 @@ impl Change {
                 .into_iter()
                 .collect(),
         };
+        if kind == KIND_INSERT_SYMBOL {
+            // The server names the symbol by the tag it has now
+            // (`object_ref`), which is not the tag it was sent under when
+            // that one was taken; a payload nobody has rewritten says `tag`.
+            let tag = value["object_ref"]
+                .as_str()
+                .filter(|tag| !tag.is_empty())
+                .or_else(|| value["tag"].as_str())
+                .filter(|tag| !tag.is_empty())?
+                .to_owned();
+            let number = |entry: &Value| entry.as_f64().filter(|n| n.is_finite());
+            let position = value["position"].as_array()?;
+            let position = [
+                number(position.first()?)?,
+                number(position.get(1)?)?,
+                position.get(2).and_then(number).unwrap_or(0.0),
+            ];
+            let props = match &value["props"] {
+                Value::Object(map) => Value::Object(map.clone()).to_string(),
+                Value::String(text) => text.clone(),
+                _ => "{}".to_owned(),
+            };
+            return Some(Self {
+                kind,
+                object_ref: tag,
+                handles,
+                field: String::new(),
+                value: String::new(),
+                old: value["reassigned_from"].as_str().map(str::to_owned),
+                placed: Some(Placed {
+                    block: value["block"].as_str().filter(|block| !block.is_empty())?.to_owned(),
+                    type_code: value["type"].as_str()?.to_owned(),
+                    position,
+                    rotation: number(&value["rotation"]).unwrap_or(0.0),
+                    scale: number(&value["scale"]).filter(|scale| *scale != 0.0).unwrap_or(1.0),
+                    ports: value["ports"].as_str().unwrap_or_default().to_owned(),
+                    props,
+                    tag_source: value["tag_source"].as_str().unwrap_or("auto").to_owned(),
+                }),
+            });
+        }
+        if kind == KIND_DELETE_OBJECT {
+            return Some(Self {
+                kind,
+                object_ref: value["object_ref"].as_str()?.to_owned(),
+                handles,
+                field: String::new(),
+                value: String::new(),
+                old: None,
+                placed: None,
+            });
+        }
+        if kind != KIND_SET_TAG && kind != KIND_SET_PROPERTY && kind != KIND_REASSIGN_TAG {
+            return None;
+        }
+        let object_ref = value["object_ref"].as_str()?.to_owned();
         let field = match value["field"].as_str() {
             Some(field) => field.to_owned(),
             // `architecture.md` writes a retag without the field.
-            None if kind == KIND_SET_TAG => "tag".to_owned(),
+            None if kind != KIND_SET_PROPERTY => "tag".to_owned(),
             None => return None,
         };
         let value_text = match &value["value"] {
@@ -128,6 +236,7 @@ impl Change {
             field,
             value: value_text,
             old: value["old_value"].as_str().map(str::to_owned),
+            placed: None,
         })
     }
 
@@ -139,7 +248,80 @@ impl Change {
             && self.field == other.field
             && self.value == other.value
             && self.old == other.old
+            && self.placed == other.placed
     }
+
+    /// Whether this brings an object into the drawing or takes one out,
+    /// rather than changing one that is there.
+    pub fn is_structural(&self) -> bool {
+        self.kind == KIND_INSERT_SYMBOL || self.kind == KIND_DELETE_OBJECT
+    }
+}
+
+/// Whether `entity` is a symbol standing on its own: an `Insert` carrying an
+/// author record with a tag, that is not part of a pipe line (a fitting on a
+/// run belongs to the run; the pipe's own pieces are not `Insert`s).
+///
+/// Those are the objects whose coming and going is said to the room. A pipe
+/// line, its runs and what is fitted on them are made of several entities
+/// and a table between them, and saying *those* takes replaying how they
+/// were drawn — which this does not do yet, so nothing is said of them
+/// rather than half of it.
+fn standalone_symbol(entity: &EntityType) -> Option<(&document::entities::Insert, PidAuthor)> {
+    let EntityType::Insert(insert) = entity else {
+        return None;
+    };
+    let author = PidAuthor::from_entity(entity)?;
+    (!author.tag.is_empty() && author.owner.is_empty() && author.topology.is_empty())
+        .then_some((insert, author))
+}
+
+/// A symbol that was not there before the step and is after it.
+fn placed_symbol(handle: Handle, entity: &EntityType) -> Option<Change> {
+    let (insert, author) = standalone_symbol(entity)?;
+    Some(Change {
+        kind: KIND_INSERT_SYMBOL.to_owned(),
+        object_ref: author.tag.clone(),
+        handles: vec![handle],
+        field: String::new(),
+        value: String::new(),
+        old: None,
+        placed: Some(Placed {
+            block: insert.block_name.clone(),
+            type_code: author.type_code,
+            position: [
+                insert.insert_point.x,
+                insert.insert_point.y,
+                insert.insert_point.z,
+            ],
+            rotation: insert.rotation,
+            scale: insert.x_scale(),
+            ports: author.ports,
+            // Properties that overflowed into an XRecord are not in the
+            // image; the symbol is said to start with none rather than
+            // not said at all.
+            props: if PidAuthor::props_are_inline(entity) {
+                author.props
+            } else {
+                "{}".to_owned()
+            },
+            tag_source: author.tag_source,
+        }),
+    })
+}
+
+/// A symbol that was there before the step and is not after it.
+fn erased_symbol(handle: Handle, entity: &EntityType) -> Option<Change> {
+    let (_, author) = standalone_symbol(entity)?;
+    Some(Change {
+        kind: KIND_DELETE_OBJECT.to_owned(),
+        object_ref: author.tag,
+        handles: vec![handle],
+        field: String::new(),
+        value: String::new(),
+        old: None,
+        placed: None,
+    })
 }
 
 /// What one handle's before/after images amount to in P&ID semantics: a
@@ -149,18 +331,23 @@ impl Change {
 /// changes after it name it by the tag it has now, so a peer applying them in
 /// order finds it each time.
 ///
-/// A created or erased entity carries no semantic change a peer can replay
-/// from this payload alone (the geometry is not in it), so it yields nothing
-/// rather than a half-truth. An image whose `props` overflowed into an XRecord
-/// is "not known here", not "no properties": the properties of such a step are
-/// left out rather than broadcast as removals.
+/// A symbol that came into being or went out of it is said as that — where
+/// it stands and what it is, or that it is gone (`placed_symbol`,
+/// `erased_symbol`). Any other created or erased entity yields nothing
+/// rather than a half-truth: the geometry of a pipe is not in this payload.
+/// An image whose `props` overflowed into an XRecord is "not known here",
+/// not "no properties": the properties of such a step are left out rather
+/// than broadcast as removals.
 pub fn changes_of(
     handle: Handle,
     before: Option<&EntityType>,
     after: Option<&EntityType>,
 ) -> Vec<Change> {
-    let (Some(before), Some(after)) = (before, after) else {
-        return Vec::new();
+    let (before, after) = match (before, after) {
+        (Some(before), Some(after)) => (before, after),
+        (None, Some(after)) => return placed_symbol(handle, after).into_iter().collect(),
+        (Some(before), None) => return erased_symbol(handle, before).into_iter().collect(),
+        (None, None) => return Vec::new(),
     };
     let (Some(before_author), Some(after_author)) = (
         PidAuthor::from_entity(before),
@@ -184,6 +371,7 @@ pub fn changes_of(
             field: "tag".to_owned(),
             value: after_author.tag.clone(),
             old: Some(before_author.tag.clone()),
+            placed: None,
         });
     }
 
@@ -203,6 +391,7 @@ pub fn changes_of(
         field: field.to_owned(),
         value: value.to_owned(),
         old: old.cloned(),
+        placed: None,
     };
     for (key, value) in &after_props {
         if before_props.get(key) != Some(value) {
@@ -328,12 +517,15 @@ pub struct Applied {
     /// the change, and the change is then written to the same entities
     /// again ([`write_to`]).
     pub resolved: Vec<(Change, Vec<Handle>)>,
+    /// Entities that were erased because a peer erased their object. They
+    /// are not in `handles`: nothing is left of them to re-derive from.
+    pub erased: Vec<Handle>,
 }
 
 impl Applied {
     /// Nothing was written.
     pub fn is_empty(&self) -> bool {
-        self.handles.is_empty()
+        self.handles.is_empty() && self.erased.is_empty()
     }
 }
 
@@ -363,7 +555,7 @@ impl Applied {
 /// The comparison is the stored text exactly — case and surrounding blanks
 /// included — which is how the tag engine's own uniqueness check compares,
 /// and what `canonical_tag` turns a typed tag into before it is claimed.
-fn resolve(doc: &Document, change: &Change) -> Vec<Handle> {
+pub fn resolve(doc: &Document, change: &Change) -> Vec<Handle> {
     if change.object_ref.is_empty() {
         return Vec::new();
     }
@@ -408,7 +600,7 @@ fn resolve(doc: &Document, change: &Change) -> Vec<Handle> {
 /// object and has another under the new tag — a rename that did not happen
 /// here, reported as done.
 fn already_retagged(doc: &Document, change: &Change) -> bool {
-    change.kind == KIND_SET_TAG
+    (change.kind == KIND_SET_TAG || change.kind == KIND_REASSIGN_TAG)
         && !change.handles.is_empty()
         && change.handles.iter().all(|handle| {
             PidAuthor::load(doc, *handle).is_some_and(|author| author.tag == change.value)
@@ -457,6 +649,16 @@ pub fn write_to(doc: &mut Document, targets: &[Handle], change: &Change, applied
                 author.store(doc, handle);
                 applied.retagged.push(handle);
             }
+            // The server's number in place of the one this drawing worked
+            // out: still a tag nobody typed, so its source stays what it was.
+            KIND_REASSIGN_TAG => {
+                if author.tag == change.value {
+                    continue;
+                }
+                author.tag = change.value.clone();
+                author.store(doc, handle);
+                applied.retagged.push(handle);
+            }
             KIND_SET_PROPERTY => {
                 let (mut values, marks) = split_props(&author.props);
                 let current = values.get(&change.field).cloned().unwrap_or_default();
@@ -494,6 +696,63 @@ mod tests {
     use crate::pid::persist::PidAuthor;
     use document::entities::Insert;
     use document::types::Vector3;
+
+    /// A symbol that was not in the drawing before a step and is after it
+    /// is said as placed — what, where, under which tag — and one that was
+    /// and is not, as erased. What a peer needs to place it survives the
+    /// wire. A fitting on a run, and a symbol with no tag, are not said.
+    #[test]
+    fn a_symbol_that_came_or_went_is_said_as_that() {
+        let mut doc = Document::new();
+        let handle = add_author(&mut doc, "V-1001", r#"{"公称直径":"DN50"}"#);
+        let entity = doc.get_entity(handle).cloned().expect("entity");
+
+        let placed = changes_of(handle, None, Some(&entity));
+        assert_eq!(placed.len(), 1, "{placed:?}");
+        assert_eq!(placed[0].kind, KIND_INSERT_SYMBOL);
+        assert_eq!(placed[0].object_ref, "V-1001");
+        assert_eq!(placed[0].handles, [handle]);
+        let what = placed[0].placed.clone().expect("what was placed");
+        assert_eq!(what.block, "PID_SYM_equipment_vessel");
+        assert_eq!(what.type_code, "EQUIPMENT");
+        assert_eq!(what.position, [0.0, 0.0, 0.0]);
+
+        let wire = placed[0].to_json();
+        assert_eq!(wire["tag"], "V-1001");
+        assert_eq!(wire["type"], "EQUIPMENT");
+        assert_eq!(wire["props"]["公称直径"], "DN50");
+        let back = Change::from_json(&wire).expect("readable");
+        assert_eq!(back.object_ref, "V-1001");
+        assert_eq!(back.handles, [handle]);
+        let read = back.placed.expect("what was placed");
+        assert_eq!((read.block, read.type_code, read.position), (what.block, what.type_code, what.position));
+        assert_eq!(split_props(&read.props).0.get("公称直径").map(String::as_str), Some("DN50"));
+
+        // As the server sends one it took under another tag.
+        let mut renumbered = wire.clone();
+        renumbered["object_ref"] = json!("V-1002");
+        renumbered["tag"] = json!("V-1002");
+        renumbered["reassigned_from"] = json!("V-1001");
+        let back = Change::from_json(&renumbered).expect("readable");
+        assert_eq!((back.object_ref.as_str(), back.old.as_deref()), ("V-1002", Some("V-1001")));
+
+        let erased = changes_of(handle, Some(&entity), None);
+        assert_eq!(erased.len(), 1, "{erased:?}");
+        assert_eq!((erased[0].kind.as_str(), erased[0].object_ref.as_str()), (KIND_DELETE_OBJECT, "V-1001"));
+        assert!(Change::from_json(&erased[0].to_json()).is_some_and(|change| change.is_structural()));
+
+        // Part of a pipe run: the run's business, not a symbol of its own.
+        let fitting = add_author(&mut doc, "V-2001", "{}");
+        let mut record = PidAuthor::load(&doc, fitting).expect("author");
+        record.owner = "1F".to_owned();
+        record.store(&mut doc, fitting);
+        let entity = doc.get_entity(fitting).cloned().expect("entity");
+        assert!(changes_of(fitting, None, Some(&entity)).is_empty());
+        // No tag: nothing a peer could call it.
+        let nameless = add_author(&mut doc, "", "{}");
+        let entity = doc.get_entity(nameless).cloned().expect("entity");
+        assert!(changes_of(nameless, None, Some(&entity)).is_empty());
+    }
 
     fn add_author(doc: &mut Document, tag: &str, props: &str) -> Handle {
         let handle = doc
@@ -535,6 +794,7 @@ mod tests {
             field: field.to_owned(),
             value: value.to_owned(),
             old: None,
+            placed: None,
         }
     }
 
@@ -628,11 +888,13 @@ mod tests {
         assert!(changes_of(handle, Some(&image), Some(&image)).is_empty());
     }
 
-    /// A created or erased entity is skipped: its geometry is not in the
-    /// payload, so replaying it would produce a half-truth.
+    /// A created or erased entity the room has no name for is skipped: there
+    /// is nothing a peer could call it. (A symbol with a tag is said — see
+    /// `a_symbol_that_came_or_went_is_said_as_that`; this used to be the
+    /// rule for every created or erased entity.)
     #[test]
-    fn a_created_or_erased_entity_is_skipped() {
-        let (doc, handle) = doc_with_author("P-1001", "");
+    fn a_created_or_erased_entity_with_no_tag_is_skipped() {
+        let (doc, handle) = doc_with_author("", "");
         let image = doc.get_entity_arc(handle).expect("image");
         assert!(changes_of(handle, None, Some(&image)).is_empty());
         assert!(changes_of(handle, Some(&image), None).is_empty());
@@ -707,6 +969,7 @@ mod tests {
             field: "tag".to_owned(),
             value: "P-1009".to_owned(),
             old: Some("P-1001".to_owned()),
+            placed: None,
         };
         let payload = payload_for(std::slice::from_ref(&change)).expect("payload");
         assert_eq!(payload["kind"], KIND_SET_TAG);
@@ -914,6 +1177,7 @@ mod tests {
             field: "tag".to_owned(),
             value: "P-1009".to_owned(),
             old: Some("P-1001".to_owned()),
+            placed: None,
         };
         assert_eq!(Change::from_json(&sent.to_json()), Some(sent));
 
@@ -933,8 +1197,14 @@ mod tests {
             Some("tag".to_owned())
         );
 
-        let unknown = json!({"kind":"delete_object","object_ref":"P-1001"});
+        // A kind this client has no way to act on: a pipe line's coming into
+        // being takes replaying how it was drawn. (`delete_object` stood
+        // here until this client learned to erase.)
+        let unknown = json!({"kind":"create_pipe_line","tag":"L-1001","object_ref":"L-1001"});
         assert!(Change::from_json(&unknown).is_none());
+        // And a symbol that says neither where it stands nor what it is.
+        let placeless = json!({"kind":"insert_symbol","tag":"V-1001","type":"VALVE"});
+        assert!(Change::from_json(&placeless).is_none());
         let nameless = json!({"kind":"set_tag","value":"x"});
         assert!(Change::from_json(&nameless).is_none());
         let valueless = json!({"kind":"set_property","object_ref":"P-1001","field":"设计压力"});

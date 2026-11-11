@@ -1316,6 +1316,12 @@ impl OpenCADStudio {
             // first-word path (bare `PIDTAG` prompts), so the condition names
             // the three-token shape rather than the verb.
             || (tokens[0].eq_ignore_ascii_case("PIDTAG") && tokens.len() == 3)
+            // `PIDSETPROP [<tag>] <key> <value>` is one whole line; the verb
+            // alone only says how it is written.
+            || tokens[0].eq_ignore_ascii_case("PIDSETPROP")
+            // `PIDCOLLAB SERVER|USER|DRAWING <value>` and `PIDCOLLAB ON|OFF`
+            // likewise: probing the bare verb would show the panel first.
+            || tokens[0].eq_ignore_ascii_case("PIDCOLLAB")
         {
             return self.dispatch_command(cmd);
         }

@@ -167,6 +167,105 @@ impl OpenCADStudio {
         true
     }
 
+    /// `PIDSETPROP [<位号>] <属性> <值>` — set one property of a P&ID object
+    /// from the command line, the way a row of the `P&ID 属性` group does:
+    /// one undo step, the same carry-down to runs and segments, the same
+    /// broadcast (`VAL-CROSS-001`).
+    ///
+    /// With a tag, the object is the one carrying it (as `PIDTAG` finds a
+    /// tag: exactly, else the one spelling of it in another case). Without,
+    /// it is what is selected; and with nothing selected, the symbol placed
+    /// last on this drawing — so `PIDINSERT` followed by `PIDSETPROP` sets
+    /// a property of what was just placed.
+    pub(in crate::app) fn dispatch_pidsetprop(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {
+        let mut words = cmd.split_whitespace();
+        if !words.next()?.eq_ignore_ascii_case("PIDSETPROP") {
+            return None;
+        }
+        let args: Vec<&str> = words.collect();
+        let (tag, key, value) = match args.as_slice() {
+            [key, value] => (None, *key, *value),
+            [tag, key, value] => (Some(*tag), *key, *value),
+            _ => {
+                self.command_line.push_error(
+                    "PIDSETPROP: 写成 PIDSETPROP <属性> <值>（作用于选中的对象），\
+                     或 PIDSETPROP <位号> <属性> <值>。",
+                );
+                return Some(Task::none());
+            }
+        };
+        let document = &self.tabs[i].scene.document;
+        let authored = |handle: &document::Handle| PidAuthor::load(document, *handle);
+        let handles: Vec<document::Handle> = match tag {
+            Some(tag) => {
+                let carrying: Vec<(document::Handle, String)> = document
+                    .entities()
+                    .filter_map(|entity| {
+                        let handle = entity.common().handle;
+                        let author = authored(&handle)?;
+                        author.tag.eq_ignore_ascii_case(tag).then_some((handle, author.tag))
+                    })
+                    .collect();
+                // The exact spelling wins; otherwise the letters must name
+                // one spelling, or it is not known which object is meant.
+                let exact: Vec<document::Handle> = carrying
+                    .iter()
+                    .filter(|(_, spelled)| spelled == tag)
+                    .map(|(handle, _)| *handle)
+                    .collect();
+                let mut spellings: Vec<&String> = carrying.iter().map(|(_, spelled)| spelled).collect();
+                spellings.sort();
+                spellings.dedup();
+                if !exact.is_empty() {
+                    exact
+                } else if spellings.len() == 1 {
+                    carrying.iter().map(|(handle, _)| *handle).collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            None => {
+                let selected: Vec<document::Handle> = self.tabs[i]
+                    .scene
+                    .selected_handles_in_order()
+                    .into_iter()
+                    .filter(|handle| authored(handle).is_some())
+                    .collect();
+                if !selected.is_empty() {
+                    selected
+                } else {
+                    // Nothing selected: the symbol placed last on this
+                    // drawing, while it is still there.
+                    self.pid_last_placed
+                        .filter(|(tab, handle)| *tab == self.tabs[i].id && authored(handle).is_some())
+                        .map(|(_, handle)| handle)
+                        .into_iter()
+                        .collect()
+                }
+            }
+        };
+        if handles.is_empty() {
+            let why = match tag {
+                Some(tag) => format!("没有位号为 {tag} 的对象（或有几种写法）"),
+                None => "没有选中带 P&ID 属性的对象，本图上也没有刚放置的符号；先选中一个，或写出位号".to_owned(),
+            };
+            self.command_line.push_error(&format!("PIDSETPROP: {why}。"));
+            return Some(Task::none());
+        }
+        let named = PidAuthor::load(&self.tabs[i].scene.document, handles[0])
+            .map(|author| author.tag)
+            .unwrap_or_default();
+        let field = format!("{PROPS_FIELD_PREFIX}{key}");
+        if !self.commit_pid_author_property(i, &handles, &field, value) {
+            self.command_line
+                .push_error(&format!("PIDSETPROP: 属性 {key} 没有设置。"));
+            return Some(Task::none());
+        }
+        self.command_line
+            .push_info(&format!("PIDSETPROP: {named} 的 {key} = {value}"));
+        Some(self.finish_dispatch(cmd))
+    }
+
     /// 属性下传重算：`edited` 里的管线/管路按「管线 → 管路 → 管段」级联。
     ///
     /// 唯一的重算入口。写 `PID_AUTHOR` XDATA 的每条路径（REST `xdata_set`、

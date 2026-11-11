@@ -186,10 +186,7 @@ impl OpenCADStudio {
             if parsed.is_empty() {
                 continue;
             }
-            let applied = {
-                let document = &mut self.tabs[i].scene.document;
-                broadcast::apply_changes(document, &parsed)
-            };
+            let applied = self.write_remote_changes(i, &parsed);
             if !applied.unresolved.is_empty() {
                 failure.get_or_insert(format!(
                     "操作 {}：位号 {} 在本图里对不上一个对象（没有，或者有好几个），这部分变更未应用",
@@ -210,7 +207,7 @@ impl OpenCADStudio {
             if applied.is_empty() {
                 continue;
             }
-            total += applied.handles.len();
+            total += applied.handles.len() + applied.erased.len();
             self.settle_remote_writes(i, &applied.handles, &applied.retagged);
         }
         self.applying_remote = false;
@@ -239,6 +236,118 @@ impl OpenCADStudio {
             None if total > 0 => self.collab.last_apply_error = None,
             None => {}
         }
+    }
+
+    /// Write one op's changes onto tab `i`, in the order it states them.
+    ///
+    /// A change to an object that is there is the document's business
+    /// (`broadcast::apply_change`). A symbol placed or an object erased is
+    /// the app's: placing takes the symbol library and the scene, the way a
+    /// local `PIDINSERT` does.
+    fn write_remote_changes(&mut self, i: usize, changes: &[broadcast::Change]) -> broadcast::Applied {
+        let mut applied = broadcast::Applied::default();
+        for change in changes {
+            if change.is_structural() {
+                self.write_remote_structure(i, change, &mut applied);
+            } else {
+                broadcast::apply_change(&mut self.tabs[i].scene.document, change, &mut applied);
+            }
+        }
+        applied
+    }
+
+    /// Place the symbol a peer placed, or erase the object a peer erased.
+    ///
+    /// A placement the sender's own handle already answers for here — an
+    /// entity under that handle carrying that tag — is this drawing's own
+    /// symbol said back to it, and is not placed twice. Otherwise the symbol
+    /// is new here whatever else carries its tag: two people who each placed
+    /// a symbol under one tag have two symbols, and it is the server that
+    /// gives one of them another tag (`VAL-CROSS-010`).
+    ///
+    /// What cannot be done — a symbol this program's library does not have,
+    /// an erased object this drawing never had or has two of — goes into
+    /// `applied.unresolved`, and from there to the person and the session's
+    /// state, like any change the drawing could not follow.
+    fn write_remote_structure(
+        &mut self,
+        i: usize,
+        change: &broadcast::Change,
+        applied: &mut broadcast::Applied,
+    ) {
+        use crate::pid::persist::PidAuthor;
+        if change.kind == broadcast::KIND_DELETE_OBJECT {
+            let targets = broadcast::resolve(&self.tabs[i].scene.document, change);
+            if targets.is_empty() {
+                applied.unresolved.push(if change.object_ref.is_empty() {
+                    broadcast::UNTAGGED.to_owned()
+                } else {
+                    change.object_ref.clone()
+                });
+                return;
+            }
+            self.tabs[i].scene.erase_entities(&targets);
+            self.tabs[i].dirty = true;
+            self.tabs[i].edit_revision = self.tabs[i].edit_revision.wrapping_add(1);
+            applied.erased.extend(targets.iter().copied());
+            // Kept: a local undo may put the entity back from an older
+            // image, and it is then erased again (`replay_remote_after`).
+            applied.resolved.push((change.clone(), targets));
+            return;
+        }
+        let Some(placed) = &change.placed else {
+            applied.unresolved.push(change.object_ref.clone());
+            return;
+        };
+        let document = &self.tabs[i].scene.document;
+        let already_here = !change.handles.is_empty()
+            && change.handles.iter().all(|handle| {
+                PidAuthor::load(document, *handle).is_some_and(|author| author.tag == change.object_ref)
+            });
+        if already_here {
+            return;
+        }
+        // The block comes into being with the first placement, as it does
+        // for a local one.
+        if !self.tabs[i].scene.document.block_records.contains(&placed.block) {
+            self.pid_symbols.instantiate(&mut self.tabs[i].scene);
+        }
+        if !self.tabs[i].scene.document.block_records.contains(&placed.block) {
+            applied.unresolved.push(format!(
+                "{}（符号 {} 不在本机的符号库里）",
+                change.object_ref, placed.block
+            ));
+            return;
+        }
+        let [x, y, z] = placed.position;
+        let insert = document::entities::Insert::new(
+            placed.block.clone(),
+            document::types::Vector3::new(x, y, z),
+        )
+        .with_uniform_scale(placed.scale)
+        .with_rotation(placed.rotation);
+        let handle = self.tabs[i]
+            .scene
+            .add_entity(document::EntityType::Insert(insert));
+        if handle.is_null() {
+            applied.unresolved.push(change.object_ref.clone());
+            return;
+        }
+        let document = &mut self.tabs[i].scene.document;
+        PidAuthor {
+            type_code: placed.type_code.clone(),
+            tag: change.object_ref.clone(),
+            tag_source: placed.tag_source.clone(),
+            tag_status: "ok".to_owned(),
+            ports: placed.ports.clone(),
+            props: placed.props.clone(),
+            ..PidAuthor::default()
+        }
+        .store(document, handle);
+        crate::app::commands::pidpalette::sync_pid_tag_attribute(document, handle);
+        applied.handles.push(handle);
+        // Its label and its uniqueness status are worked out like a retag's.
+        applied.retagged.push(handle);
     }
 
     /// What follows a peer's change having been written to `handles` on tab
@@ -352,9 +461,21 @@ impl OpenCADStudio {
             .collect();
         let mut applied = broadcast::Applied::default();
         let mut targets: Vec<document::Handle> = Vec::new();
+        // An object a peer erased since: if the step put its entities back
+        // from an older image, they go again.
+        let mut erased_since: Vec<document::Handle> = Vec::new();
         {
             let document = &mut self.tabs[i].scene.document;
             for entry in &later {
+                let here = entry
+                    .handles
+                    .iter()
+                    .copied()
+                    .filter(|handle| document.get_entity(*handle).is_some());
+                if entry.change.kind == broadcast::KIND_DELETE_OBJECT {
+                    erased_since.extend(here);
+                    continue;
+                }
                 broadcast::write_to(document, &entry.handles, &entry.change, &mut applied);
                 targets.extend(
                     entry
@@ -364,6 +485,12 @@ impl OpenCADStudio {
                         .filter(|handle| document.get_entity(*handle).is_some()),
                 );
             }
+        }
+        if !erased_since.is_empty() {
+            erased_since.sort();
+            erased_since.dedup();
+            self.tabs[i].scene.erase_entities(&erased_since);
+            targets.retain(|handle| !erased_since.contains(handle));
         }
         targets.sort();
         targets.dedup();
@@ -1860,6 +1987,232 @@ mod tests {
         select(&mut app, pump);
         app.refresh_properties();
         assert_eq!(panel_row(&app, "设计压力"), PropValue::PlainText("2.5MPa".to_owned()));
+    }
+
+    // ── Symbols that come and go ─────────────────────────────────────────
+
+    const GATE_VALVE: &str = "PID_SYM_valve_gate_valve";
+
+    /// Every symbol on the drawing in front as `(tag, handle, x, y)`.
+    fn symbols(app: &OpenCADStudio) -> Vec<(String, document::Handle, f64, f64)> {
+        let document = &app.tabs[app.active_tab].scene.document;
+        let mut found: Vec<_> = document
+            .entities()
+            .filter_map(|entity| {
+                let document::EntityType::Insert(insert) = entity else {
+                    return None;
+                };
+                let author = PidAuthor::load(document, insert.common.handle)?;
+                Some((
+                    author.tag,
+                    insert.common.handle,
+                    insert.insert_point.x,
+                    insert.insert_point.y,
+                ))
+            })
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        found
+    }
+
+    fn tags(app: &OpenCADStudio) -> Vec<String> {
+        symbols(app).into_iter().map(|(tag, ..)| tag).collect()
+    }
+
+    fn sorted(tags: &[&str]) -> Vec<String> {
+        let mut tags: Vec<String> = tags.iter().map(|tag| (*tag).to_owned()).collect();
+        tags.sort();
+        tags
+    }
+
+    fn peers_valve(tag: &str, x: f64) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "insert_symbol", "object_ref": tag, "tag": tag, "type": "VALVE",
+            "block": GATE_VALVE, "position": [x, 200.0, 0.0], "rotation": 0.0, "scale": 1.0,
+            "ports": "in,out", "props": {"公称直径": "DN50"}, "tag_source": "auto",
+            // The sender's own handle for it: nothing of this drawing's.
+            "handle": "FFF0",
+        })
+    }
+
+    /// A symbol a peer placed is placed here — where they put it, as what
+    /// they put, under the tag the room knows it by — and one they erased is
+    /// erased here. Neither is a step of this person's. A new symbol used
+    /// to exist in its maker's drawing only: nothing was said of it, and
+    /// every later change to it found nothing to change in anybody else's.
+    #[test]
+    fn a_peers_new_symbol_is_placed_here_and_one_they_erase_goes() {
+        let (mut app, _) = app_with_vessel("P-1001");
+        connected(&mut app);
+        let i = app.active_tab;
+        let steps = app.tabs[i].history.undo_stack.len();
+
+        remote(&mut app, 1, vec![peers_valve("V-1001", 100.0)]);
+        assert_eq!(app.collab.last_apply_error, None);
+        assert_eq!(app.collab.diverged, None);
+        let placed: Vec<_> = symbols(&app)
+            .into_iter()
+            .filter(|(tag, ..)| tag == "V-1001")
+            .collect();
+        assert_eq!(placed.len(), 1, "{placed:?}");
+        let (_, valve, x, y) = placed[0].clone();
+        assert_eq!((x, y), (100.0, 200.0));
+        let record = author(&app, valve);
+        assert_eq!(record.type_code, "VALVE");
+        assert_eq!(record.tag_source, "auto");
+        assert_eq!(prop(&app, valve, "公称直径"), "DN50");
+        assert!(
+            app.tabs[i].scene.document.block_records.contains(GATE_VALVE),
+            "the symbol's block came with it"
+        );
+        assert_eq!(app.tabs[i].history.undo_stack.len(), steps, "not this person's step");
+        assert!(app.collab.sent.is_empty(), "nor said back to the room");
+
+        // A change to it now finds it, like any object's.
+        remote(
+            &mut app,
+            2,
+            vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "V-1001", "field": "公称直径", "value": "DN80",
+            })],
+        );
+        assert_eq!(prop(&app, valve, "公称直径"), "DN80");
+
+        remote(
+            &mut app,
+            3,
+            vec![serde_json::json!({"kind": "delete_object", "object_ref": "V-1001"})],
+        );
+        assert_eq!(tags(&app), ["P-1001"], "the erased symbol is still here");
+        assert_eq!(app.collab.last_apply_error, None);
+
+        // Erasing what this drawing does not have is said, like any change
+        // it could not follow.
+        remote(
+            &mut app,
+            4,
+            vec![serde_json::json!({"kind": "delete_object", "object_ref": "V-7777"})],
+        );
+        assert!(app.collab.diverged.is_some());
+    }
+
+    /// `VAL-CROSS-001`: a symbol placed from the command line goes to the
+    /// room as what it is and where it stands; the property set on it next
+    /// goes as a change to that tag; and taking the placement back says the
+    /// symbol is gone.
+    #[test]
+    fn placing_a_symbol_and_setting_its_property_are_said_to_the_room() {
+        let (mut app, _) = app_with_vessel("P-1001");
+        connected(&mut app);
+
+        let placed = app.automation_op(r#"{"op":"run","cmd":"PIDINSERT VALVE 100,200"}"#);
+        assert_eq!(placed["ok"], true, "{placed}");
+        let valves: Vec<_> = symbols(&app)
+            .into_iter()
+            .filter(|(tag, ..)| tag != "P-1001")
+            .collect();
+        assert_eq!(valves.len(), 1, "{valves:?}");
+        let (tag, valve, x, y) = valves[0].clone();
+        assert!(!tag.is_empty(), "the valve has no tag");
+        assert_eq!((x, y), (100.0, 200.0));
+        assert_eq!(author(&app, valve).type_code, "VALVE");
+
+        assert_eq!(app.collab.sent.len(), 1, "the placement was not said");
+        let said = last_sent(&app);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(said[0].kind, "insert_symbol");
+        assert_eq!(said[0].object_ref, tag);
+        assert_eq!(said[0].handles, [valve]);
+        let what = said[0].placed.as_ref().expect("what was placed");
+        assert_eq!(what.type_code, "VALVE");
+        assert_eq!(what.position, [100.0, 200.0, 0.0]);
+        let wire = app.collab.sent.last().expect("payload");
+        assert_eq!(wire["tag"], tag.as_str(), "the key the server reads a new symbol by");
+        assert_eq!(wire["type"], "VALVE");
+
+        // Said of what was just placed, with nothing named.
+        let set = app.automation_op(r#"{"op":"run","cmd":"PIDSETPROP 公称直径 DN50"}"#);
+        assert_eq!(set["ok"], true, "{set}");
+        assert_eq!(prop(&app, valve, "公称直径"), "DN50");
+        assert_eq!(app.collab.sent.len(), 2);
+        let said = last_sent(&app);
+        assert_eq!(
+            (said[0].kind.as_str(), said[0].object_ref.as_str(), said[0].field.as_str(), said[0].value.as_str()),
+            ("set_property", tag.as_str(), "公称直径", "DN50")
+        );
+
+        // By tag, whatever is selected.
+        let set = app.automation_op(r#"{"op":"run","cmd":"PIDSETPROP p-1001 设计温度 80℃"}"#);
+        assert_eq!(set["ok"], true, "{set}");
+        assert_eq!(app.collab.sent.len(), 3);
+        let said = last_sent(&app);
+        assert_eq!(
+            (said[0].object_ref.as_str(), said[0].field.as_str(), said[0].value.as_str()),
+            ("P-1001", "设计温度", "80℃")
+        );
+        let refused = app.automation_op(r#"{"op":"run","cmd":"PIDSETPROP Z-9 设计温度 80℃"}"#);
+        assert_eq!(refused["ok"], false, "{refused}");
+
+        // Back out of all three; the last one takes the valve away.
+        undo(&mut app);
+        undo(&mut app);
+        undo(&mut app);
+        assert_eq!(tags(&app), ["P-1001"]);
+        let said = last_sent(&app);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!((said[0].kind.as_str(), said[0].object_ref.as_str()), ("delete_object", tag.as_str()));
+        redo(&mut app);
+        assert_eq!(last_sent(&app)[0].kind, "insert_symbol");
+    }
+
+    /// `VAL-CROSS-010`, this session's part. Two people each place a valve
+    /// and each numbers it the same. The peer's reaches the room first and
+    /// arrives here under that tag; this session's own op then comes back
+    /// saying the server took the symbol under the next one. The symbol
+    /// this session placed is renamed — that one, not the peer's, though
+    /// both carried the tag — and it is still a tag nobody typed. Taking
+    /// the placement back afterwards erases it by the name it has now.
+    #[test]
+    fn a_symbol_the_server_renumbered_is_renamed_where_it_was_placed() {
+        let (mut app, _) = app_with_vessel("P-1001");
+        connected(&mut app);
+        let placed = app.automation_op(r#"{"op":"run","cmd":"PIDINSERT VALVE 100,200"}"#);
+        assert_eq!(placed["ok"], true, "{placed}");
+        let (tag, own, ..) = symbols(&app)
+            .into_iter()
+            .find(|(tag, ..)| tag != "P-1001")
+            .expect("the valve");
+        let op_id = app.collab.own_ops.back().cloned().expect("the op in flight");
+
+        // The peer's valve, under the same tag, got there first.
+        remote(&mut app, 1, vec![peers_valve(&tag, 300.0)]);
+        assert_eq!(tags(&app), sorted(&["P-1001", &tag, &tag]));
+
+        // This session's own op, as the server took it.
+        let mut echoed = app.collab.sent.last().expect("payload").clone();
+        echoed["object_ref"] = serde_json::json!("V-9002");
+        echoed["tag"] = serde_json::json!("V-9002");
+        echoed["reassigned_from"] = serde_json::json!(tag);
+        let _ = app.update(crate::app::Message::CollabEvent(CollabEvent::OpApplied {
+            op_id,
+            revision: 2,
+            changes: vec![echoed],
+        }));
+        assert_eq!(author(&app, own).tag, "V-9002", "this session's symbol was not renamed");
+        assert_eq!(author(&app, own).tag_source, "auto", "nobody typed that tag");
+        assert_eq!(tags(&app), sorted(&["P-1001", "V-9002", &tag]));
+        assert_eq!(app.collab.last_apply_error, None);
+        assert_eq!(app.collab.diverged, None);
+
+        undo(&mut app);
+        assert_eq!(tags(&app), sorted(&["P-1001", &tag]), "the peer's valve stays");
+        let said = last_sent(&app);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert_eq!(
+            (said[0].kind.as_str(), said[0].object_ref.as_str()),
+            ("delete_object", "V-9002"),
+            "erased by the name it has now, not the one it was placed under"
+        );
     }
 
     // ── A tag somebody else holds ────────────────────────────────────────

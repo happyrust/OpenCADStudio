@@ -122,6 +122,36 @@ pub struct PendingConflict {
 /// is the conflict entry it rules on (`ocs_collab_server`'s `resolve`).
 const RULING_OP_PREFIX: &str = "resolve-";
 
+/// What this session has to do to its own drawing when an op of its own
+/// comes back: a retag for each symbol it placed that the server took under
+/// another tag (`reassigned_from` says the tag it was sent with). Each names
+/// the entity the symbol was placed as, which is how it is told from a
+/// peer's symbol that got the tag first.
+fn reassignments(changes: &[Value]) -> Vec<Value> {
+    let nested = changes
+        .iter()
+        .filter_map(|change| change.get("changes").and_then(Value::as_array))
+        .flatten();
+    changes
+        .iter()
+        .chain(nested)
+        .filter(|change| change["kind"] == broadcast::KIND_INSERT_SYMBOL)
+        .filter_map(|change| {
+            let from = change["reassigned_from"].as_str()?;
+            let to = change["object_ref"].as_str().or(change["tag"].as_str())?;
+            (from != to).then(|| {
+                json!({
+                    "kind": broadcast::KIND_REASSIGN_TAG,
+                    "object_ref": from,
+                    "field": "tag",
+                    "value": to,
+                    "handle": change["handle"],
+                })
+            })
+        })
+        .collect()
+}
+
 /// Everything the transport thread needs to open a session. Copied out of the
 /// app state before the thread starts, so the thread never reads app memory.
 #[cfg(not(target_arch = "wasm32"))]
@@ -520,6 +550,17 @@ impl State {
                 let mine = self.own_ops.iter().any(|own| own == &op_id);
                 if mine {
                     self.own_ops.retain(|own| own != &op_id);
+                    // Already in this drawing — except for a symbol the
+                    // server took under another tag than it was sent with,
+                    // because somebody else's had that one first. That one
+                    // is renamed here, where it was placed.
+                    let renames = reassignments(&changes);
+                    if !renames.is_empty() {
+                        self.pending_remote.push(RemoteChange {
+                            op_id,
+                            changes: renames,
+                        });
+                    }
                 } else {
                     self.applied_ops = self.applied_ops.saturating_add(1);
                     self.pending_remote.push(RemoteChange {

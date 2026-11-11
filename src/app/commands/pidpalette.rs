@@ -466,6 +466,30 @@ fn resolve_symbol(library: &SymbolLibrary, name: &str) -> Option<ResolvedSymbol>
             }
         }
     }
+    // Neither a symbol nor a block: a category or an author type code
+    // (`VALVE`, `EQUIPMENT`) means that category's first symbol — the one
+    // the palette shows first on its tab.
+    for category in library.categories() {
+        let Some(symbol) = category.symbols.first() else {
+            continue;
+        };
+        let block = block_name(&category.id, &symbol.id);
+        let author_type = author_type_of(&types, library, &block, &category.id);
+        if category.id.eq_ignore_ascii_case(name) || author_type.eq_ignore_ascii_case(name) {
+            let type_code = library
+                .types_of(&block)
+                .into_iter()
+                .next()
+                .unwrap_or_default();
+            return Some(ResolvedSymbol {
+                block,
+                label: symbol.label.clone(),
+                type_code,
+                author_type,
+                scale: symbol.default_scale,
+            });
+        }
+    }
     None
 }
 
@@ -518,6 +542,7 @@ impl OpenCADStudio {
         };
         Some(self.start_pid_insert(i, symbol))
     }
+
 
     /// Show the palette (docked on the right the first time), or close it when
     /// it is already showing.
@@ -612,6 +637,8 @@ impl OpenCADStudio {
         };
         author.store(&mut self.tabs[i].scene.document, handle);
         sync_pid_tag_attribute(&mut self.tabs[i].scene.document, handle);
+        // What `PIDSETPROP` means next, when it names nothing.
+        self.pid_last_placed = Some((self.tabs[i].id, handle));
     }
 
     /// After `PID_AUTHOR` records on `edited` were rewritten from outside the
