@@ -381,3 +381,64 @@ fn a_click_on_a_drawn_title_sorts_the_table_of_the_selected_node() {
     update(&mut state, PidBackupMsg::Select(NodeId::ItemType(0, 0)));
     assert_eq!(order(&state), ["UID-C", "UID-A", "UID-B"]);
 }
+
+/// The width of the bar that scrolls a half of the panel (the toolkit's
+/// own default).
+const SCROLL_BAR: f32 = 10.0;
+
+/// The lines of the details wrap at the right edge of their half. When they
+/// outgrow it a scroll bar appears at that edge, and it was drawn over the
+/// last characters of every line: the end of a long path, of the SPID. The
+/// lines now end where the bar begins.
+#[test]
+fn the_scroll_bar_of_the_details_is_not_drawn_over_the_lines() {
+    let _guard = crate::headless_ui_lock();
+    let mut state = ready_with_drawings_shown();
+    // A sliver for the details: one line fits in it, the backup's own
+    // lines do not.
+    update(&mut state, PidBackupMsg::SetSplit(split::TREE_SHARE_RANGE.1));
+    update(&mut state, PidBackupMsg::Select(NodeId::Files));
+    let fits = bounds_of(&mut draw(&state), "2");
+    update(&mut state, PidBackupMsg::Select(NodeId::Root));
+    let scrolls = bounds_of(&mut draw(&state), "D:/backups/plant.zip");
+    // A value's box starts at the value column and runs to the right edge
+    // of the lines.
+    assert!(
+        (scrolls.x - fits.x).abs() < 0.5,
+        "both values start at the value column: {fits:?} and {scrolls:?}"
+    );
+    assert!(
+        scrolls.x + scrolls.width <= fits.x + fits.width - SCROLL_BAR + 0.5,
+        "a line beside the scroll bar ends at {}; without a bar it ends at {}, and the bar is {SCROLL_BAR} px wide",
+        scrolls.x + scrolls.width,
+        fits.x + fits.width
+    );
+}
+
+/// The same for the tree: a row is drawn up to the bar that scrolls the
+/// rows, not under it.
+#[test]
+fn the_scroll_bar_of_the_tree_is_not_drawn_over_the_rows() {
+    let _guard = crate::headless_ui_lock();
+    let mut state = ready_with_drawings_shown();
+    update(&mut state, PidBackupMsg::Select(NodeId::Root));
+    let selected_row = |state: &PidBackupBrowser| -> iced::Rectangle {
+        draw(state)
+            .find(iced::widget::Id::new(split::SELECTED_ROW))
+            .expect("the selected row is drawn")
+            .visible_bounds()
+            .expect("the selected row is on screen")
+    };
+    // Most of the panel for the tree: its rows fit.
+    update(&mut state, PidBackupMsg::SetSplit(split::TREE_SHARE_RANGE.1));
+    let fits = selected_row(&state);
+    // A sliver of it: they scroll.
+    update(&mut state, PidBackupMsg::SetSplit(split::TREE_SHARE_RANGE.0));
+    let scrolls = selected_row(&state);
+    assert!(
+        scrolls.x + scrolls.width <= fits.x + fits.width - SCROLL_BAR + 0.5,
+        "a row beside the scroll bar ends at {}; without a bar it ends at {}, and the bar is {SCROLL_BAR} px wide",
+        scrolls.x + scrolls.width,
+        fits.x + fits.width
+    );
+}

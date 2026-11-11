@@ -864,6 +864,14 @@ fn muted(theme: &Theme) -> iced::widget::text::Style {
 /// Size of the text in the detail half.
 const DETAIL_TEXT: f32 = 10.0;
 
+/// The bar that scrolls a half of the panel. It takes its own strip beside
+/// what it scrolls, a hair clear of it, for as long as it is there: laid
+/// over the content it hid the end of every line that reached the edge --
+/// the last characters of a long path, of the SPID.
+fn scroll_bar() -> scrollable::Scrollbar {
+    scrollable::Scrollbar::default().spacing(2)
+}
+
 /// Space between a key and its value.
 const KEY_GAP: f32 = 6.0;
 
@@ -1187,9 +1195,7 @@ fn details<'a>(state: &'a PidBackupBrowser, width: f32) -> Element<'a, Message> 
     };
     let scrolling = |elements: Vec<Element<'a, Message>>| {
         scrollable(lines(elements))
-            .direction(scrollable::Direction::Vertical(
-                scrollable::Scrollbar::default(),
-            ))
+            .direction(scrollable::Direction::Vertical(scroll_bar()))
             .width(Fill)
     };
     let Some(table) = table else {
@@ -1682,9 +1688,7 @@ fn tree_half<'a>(state: &'a PidBackupBrowser) -> Element<'a, Message> {
             }
             scrollable(list)
                 .id(iced::widget::Id::new(split::TREE_SCROLL))
-                .direction(scrollable::Direction::Vertical(
-                    scrollable::Scrollbar::default(),
-                ))
+                .direction(scrollable::Direction::Vertical(scroll_bar()))
                 .width(Fill)
                 .height(Fill)
                 .into()
