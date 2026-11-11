@@ -1375,6 +1375,20 @@ impl OpenCADStudio {
                         self.command_line
                             .push_info(&format!("协同：修订已推进到 {revision}"));
                     }
+                    // Said to everybody, and plainly: for the two who wrote,
+                    // this is the only word that their write did not take
+                    // effect.
+                    super::collab::CollabEvent::Conflict(entry) => {
+                        self.command_line.push_warning(&format!(
+                            "协同：{} 的 {} 有冲突（{} 与 {}），两边的修改都没有生效，\
+                             等待裁决（{}）",
+                            entry.object_ref,
+                            entry.field,
+                            entry.value_a,
+                            entry.value_b,
+                            entry.conflict_id
+                        ));
+                    }
                     // A refusal is the only answer a refused request gets —
                     // an op turned down for a stale baseline is in this
                     // drawing and in nobody else's — so it is said out loud.

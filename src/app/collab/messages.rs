@@ -5,7 +5,7 @@
 //! re-deriving field names here. Only the messages that change visible state
 //! become a [`CollabEvent`]; the rest are dropped deliberately.
 
-use super::{CollabEvent, PeerInfo};
+use super::{CollabEvent, PeerInfo, PendingConflict};
 use ocs_collab::protocol::Peer;
 use ocs_collab::ServerMessage;
 
@@ -105,7 +105,22 @@ pub(super) fn classify(text: &str) -> Frame {
             }
             Frame::Event(CollabEvent::ServerError { code, message })
         }
-        ServerMessage::Conflict { .. } => Frame::Ignored,
+        // Used to be dropped here: the room was told and this client was not
+        // listening, so the panel never showed an entry and the person whose
+        // write had not taken effect was never told why.
+        ServerMessage::Conflict {
+            conflict_id,
+            object_ref,
+            field,
+            value_a,
+            value_b,
+        } => Frame::Event(CollabEvent::Conflict(PendingConflict {
+            conflict_id,
+            object_ref,
+            field,
+            value_a,
+            value_b,
+        })),
     }
 }
 
@@ -145,6 +160,29 @@ mod tests {
                 assert_eq!(claims, vec![("P-1001".to_owned(), "u2".to_owned())]);
             }
             _ => panic!("welcome must map to Connected"),
+        }
+    }
+
+    /// `VAL-CROSS-007`: a `conflict` frame reaches the UI with everything it
+    /// says — which entry, which field of which object, and the two values.
+    #[test]
+    fn a_conflict_frame_becomes_a_conflict_event() {
+        let frame = r#"{"type":"conflict","conflict_id":"c-7f3a","object_ref":"P-1001",
+            "field":"设计压力","value_a":"1.6MPa","value_b":"2.5MPa"}"#;
+        match classify(frame) {
+            Frame::Event(CollabEvent::Conflict(entry)) => {
+                assert_eq!(
+                    entry,
+                    PendingConflict {
+                        conflict_id: "c-7f3a".to_owned(),
+                        object_ref: "P-1001".to_owned(),
+                        field: "设计压力".to_owned(),
+                        value_a: "1.6MPa".to_owned(),
+                        value_b: "2.5MPa".to_owned(),
+                    }
+                );
+            }
+            _ => panic!("conflict must map to Conflict"),
         }
     }
 

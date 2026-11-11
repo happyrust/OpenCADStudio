@@ -1724,6 +1724,53 @@ mod tests {
         assert_eq!(panel_row(&app, "设计压力"), PropValue::PlainText("2.5MPa".to_owned()));
     }
 
+    /// `VAL-CROSS-007`, this client's part. A write that tied with a peer's
+    /// stays in this drawing while the entry waits — it is what this person
+    /// wrote — and the panel lists the entry. The ruling arrives as an op:
+    /// the field takes the ruled value here too, the Properties panel shows
+    /// it, and the entry is off the panel.
+    #[test]
+    fn a_ruling_reaches_the_drawing_and_takes_the_entry_off_the_panel() {
+        use crate::app::collab::PendingConflict;
+        use crate::scene::model::object::PropValue;
+        let (mut app, _) = app_with_vessel("X-1");
+        let pump = add_vessel(&mut app, "P-1001", r#"{"设计压力":"1.0MPa"}"#);
+        connected(&mut app);
+        put_props(&mut app, pump, r#"{"设计压力":"1.6MPa"}"#);
+        assert_eq!(app.collab.sent.len(), 1, "this person's write went out");
+
+        let _ = app.update(crate::app::Message::CollabEvent(CollabEvent::Conflict(
+            PendingConflict {
+                conflict_id: "c-1".to_owned(),
+                object_ref: "P-1001".to_owned(),
+                field: "设计压力".to_owned(),
+                value_a: "1.6MPa".to_owned(),
+                value_b: "2.5MPa".to_owned(),
+            },
+        )));
+        assert_eq!(app.pid_collab_view.conflicts.len(), 1, "the panel was not told");
+        assert_eq!(app.pid_collab_view.conflicts[0].subject(), "P-1001 · 设计压力");
+        assert_eq!(app.pid_collab_view.conflicts[0].values(), "1.6MPa ↔ 2.5MPa");
+        assert_eq!(prop(&app, pump, "设计压力"), "1.6MPa");
+        assert_eq!(app.collab.base_revision, 0, "a conflict is not a revision");
+
+        let _ = app.update(crate::app::Message::CollabEvent(CollabEvent::OpApplied {
+            op_id: "resolve-c-1".to_owned(),
+            revision: 1,
+            changes: vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "P-1001", "field": "设计压力",
+                "value": "2.5MPa", "old_value": "1.0MPa",
+            })],
+        }));
+        assert_eq!(prop(&app, pump, "设计压力"), "2.5MPa");
+        assert!(app.pid_collab_view.conflicts.is_empty(), "the entry is still listed");
+        assert_eq!(app.collab.last_apply_error, None);
+        assert_eq!(app.collab.diverged, None);
+        select(&mut app, pump);
+        app.refresh_properties();
+        assert_eq!(panel_row(&app, "设计压力"), PropValue::PlainText("2.5MPa".to_owned()));
+    }
+
     /// A peer's change this drawing cannot follow — here, to an object it
     /// does not have — leaves it short of the room. The baseline moved all
     /// the same, so nothing else would stop the next local edit from going

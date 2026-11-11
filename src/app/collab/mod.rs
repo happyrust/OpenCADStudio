@@ -100,8 +100,27 @@ pub enum CollabEvent {
         revision: i64,
         changes: Vec<Value>,
     },
+    /// `conflict`: two people wrote one field differently from one baseline,
+    /// neither write took effect, and the entry waits for a ruling
+    /// (`VAL-CROSS-007`). The whole room is told, the two who wrote and
+    /// everybody else alike.
+    Conflict(PendingConflict),
     ServerError { code: String, message: String },
 }
+
+/// A conflict entry awaiting a ruling, as the server announced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingConflict {
+    pub conflict_id: String,
+    pub object_ref: String,
+    pub field: String,
+    pub value_a: String,
+    pub value_b: String,
+}
+
+/// The prefix of the `op_id` a ruling is applied under: the rest of the id
+/// is the conflict entry it rules on (`ocs_collab_server`'s `resolve`).
+const RULING_OP_PREFIX: &str = "resolve-";
 
 /// Everything the transport thread needs to open a session. Copied out of the
 /// app state before the thread starts, so the thread never reads app memory.
@@ -201,6 +220,15 @@ pub(super) struct State {
     /// Whether a session has been up before in this run, so that
     /// `base_revision` is a revision this drawing was actually at.
     pub had_session: bool,
+    /// The conflict entries the room was told of and that no ruling has
+    /// arrived for, oldest first. While one stands, the field it names has
+    /// the value it had before either write — except in the drawing of
+    /// whoever made one of them, which keeps what its owner wrote until the
+    /// ruling says otherwise.
+    ///
+    /// Kept across a reconnect: the entry is still waiting on the server,
+    /// and a `welcome` does not list them.
+    pub conflicts: Vec<PendingConflict>,
     /// The peers' changes this drawing has taken, in the order it took them,
     /// each with the entities it was written to.
     ///
@@ -481,6 +509,12 @@ impl State {
                         self.base_revision
                     ));
                 }
+                // A ruling settles the entry its id names. Its changes are a
+                // peer's like any other — the ruling was made on the server
+                // — and reach the drawing below.
+                if let Some(ruled) = op_id.strip_prefix(RULING_OP_PREFIX) {
+                    self.conflicts.retain(|entry| entry.conflict_id != ruled);
+                }
                 // The room broadcast reaches the originator too; its own op is
                 // already in the local document, so only the baseline moves.
                 let mine = self.own_ops.iter().any(|own| own == &op_id);
@@ -494,6 +528,16 @@ impl State {
                     });
                 }
                 self.base_revision = revision;
+            }
+            CollabEvent::Conflict(entry) => {
+                // Told once per entry; a second telling is the same entry.
+                if !self
+                    .conflicts
+                    .iter()
+                    .any(|known| known.conflict_id == entry.conflict_id)
+                {
+                    self.conflicts.push(entry);
+                }
             }
             CollabEvent::ServerError { code, message } => {
                 self.last_error = Some(format!("{code}: {message}"));
@@ -541,6 +585,18 @@ impl State {
             "last_apply_error": self.last_apply_error,
             "document_id": self.document,
             "diverged": self.diverged,
+            // The entries awaiting a ruling, as the room was told of them.
+            "conflicts": self
+                .conflicts
+                .iter()
+                .map(|entry| json!({
+                    "conflict_id": entry.conflict_id,
+                    "object_ref": entry.object_ref,
+                    "field": entry.field,
+                    "value_a": entry.value_a,
+                    "value_b": entry.value_b,
+                }))
+                .collect::<Vec<_>>(),
         })
     }
 
@@ -756,6 +812,86 @@ mod tests {
 
         state.server_url = "ws://127.0.0.1:3240/ws".to_owned();
         assert!(state.wanted());
+    }
+
+    fn conflict(id: &str) -> CollabEvent {
+        CollabEvent::Conflict(PendingConflict {
+            conflict_id: id.to_owned(),
+            object_ref: "P-1001".to_owned(),
+            field: "设计压力".to_owned(),
+            value_a: "1.6MPa".to_owned(),
+            value_b: "2.5MPa".to_owned(),
+        })
+    }
+
+    /// `VAL-CROSS-007`: a conflict the room is told of is kept, and
+    /// published, until the ruling on it comes — as the `op_applied` whose
+    /// id names the entry. Nothing else takes it off: not another op, not a
+    /// dropped socket (it is still waiting on the server), not being told
+    /// of it twice.
+    #[test]
+    fn a_conflict_is_kept_until_its_ruling_arrives() {
+        let mut state = State::new();
+        state.server_url = "ws://127.0.0.1:3240/ws".to_owned();
+        state.apply(CollabEvent::Connected {
+            session_id: "s-1".to_owned(),
+            base_revision: 0,
+            peers: Vec::new(),
+            claims: Vec::new(),
+        });
+        assert_eq!(state.status_json()["conflicts"], json!([]));
+
+        state.apply(conflict("c-1"));
+        state.apply(conflict("c-1"));
+        state.apply(conflict("c-2"));
+        let published = state.status_json()["conflicts"].clone();
+        assert_eq!(
+            published,
+            json!([
+                {"conflict_id": "c-1", "object_ref": "P-1001", "field": "设计压力",
+                 "value_a": "1.6MPa", "value_b": "2.5MPa"},
+                {"conflict_id": "c-2", "object_ref": "P-1001", "field": "设计压力",
+                 "value_a": "1.6MPa", "value_b": "2.5MPa"},
+            ])
+        );
+
+        // Somebody's op, and a lost socket: both entries are still waiting.
+        state.apply(CollabEvent::OpApplied {
+            op_id: "op-s-2-1".to_owned(),
+            revision: 1,
+            changes: Vec::new(),
+        });
+        state.apply(CollabEvent::Disconnected {
+            reason: "read error: ConnectionReset".to_owned(),
+            will_retry: true,
+        });
+        state.apply(CollabEvent::Connected {
+            session_id: "s-3".to_owned(),
+            base_revision: 1,
+            peers: Vec::new(),
+            claims: Vec::new(),
+        });
+        assert_eq!(state.conflicts.len(), 2);
+
+        // The ruling on the first.
+        state.apply(CollabEvent::OpApplied {
+            op_id: "resolve-c-1".to_owned(),
+            revision: 2,
+            changes: vec![json!({
+                "kind": "set_property", "object_ref": "P-1001", "field": "设计压力", "value": "2.5MPa",
+            })],
+        });
+        let left: Vec<&str> = state
+            .conflicts
+            .iter()
+            .map(|entry| entry.conflict_id.as_str())
+            .collect();
+        assert_eq!(left, ["c-2"]);
+        assert_eq!(
+            state.pending_remote.last().map(|remote| remote.op_id.as_str()),
+            Some("resolve-c-1"),
+            "the ruling is a change like any other, for the drawing to take"
+        );
     }
 
     /// An address is shown without what stands before the `@` of its

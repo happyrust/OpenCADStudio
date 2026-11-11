@@ -537,6 +537,10 @@ fn describe_event(event: &CollabEvent) -> String {
             changes.len()
         ),
         CollabEvent::ServerError { code, message } => format!("error code={code} {message}"),
+        CollabEvent::Conflict(entry) => format!(
+            "conflict conflict_id={} object_ref={} field={} value_a={} value_b={}",
+            entry.conflict_id, entry.object_ref, entry.field, entry.value_a, entry.value_b
+        ),
         // Not frames: the transport makes these up itself.
         CollabEvent::Connecting { .. } | CollabEvent::Disconnected { .. } => {
             "(not a server frame)".to_owned()

@@ -109,6 +109,40 @@ pub struct ClaimRow {
     pub is_self: bool,
 }
 
+/// One conflict entry awaiting a ruling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictRow {
+    pub conflict_id: String,
+    pub object_ref: String,
+    pub field: String,
+    pub value_a: String,
+    pub value_b: String,
+}
+
+impl ConflictRow {
+    /// What is contended: the object and the field.
+    pub fn subject(&self) -> String {
+        format!("{} · {}", self.object_ref, self.field)
+    }
+
+    /// The two values that were written, the first to arrive first.
+    pub fn values(&self) -> String {
+        format!("{} ↔ {}", self.value_a, self.value_b)
+    }
+}
+
+/// `PosReport` id prefix of the conflict rows.
+pub const CONFLICT_BOUNDS_PREFIX: &str = "pid-collab-conflict-";
+
+/// `PosReport` id of the row for conflict entry `conflict_id`, so a client
+/// can tell that the panel shows it (`VAL-CROSS-007`).
+pub fn conflict_bounds_id(conflict_id: &str) -> String {
+    format!("{CONFLICT_BOUNDS_PREFIX}{conflict_id}")
+}
+
+/// The header of the conflicts section. Drawn only while there is an entry.
+pub const CONFLICTS_LABEL: &str = "待裁决冲突";
+
 /// Everything the panel draws, taken from the collaboration state so the view
 /// function stays free of app types (and therefore testable).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -121,6 +155,8 @@ pub struct CollabView {
     /// session then sends nothing more, and the panel says so.
     pub diverged: Option<String>,
     pub peers: Vec<PeerRow>,
+    /// The conflict entries nobody has ruled on yet, oldest first.
+    pub conflicts: Vec<ConflictRow>,
     pub claims: Vec<ClaimRow>,
     pub last_message: Option<String>,
     /// The claims section is expanded.
@@ -220,6 +256,19 @@ fn peer_rows<'a>(view: &'a CollabView) -> Element<'a, Message> {
         rows = rows.push(text(NO_OTHERS_LABEL).size(11).style(muted));
     }
     rows.into()
+}
+
+/// One conflict entry: what is contended on the first line, in the colour
+/// of things to notice, and the two values under it.
+fn conflict_row<'a>(entry: &'a ConflictRow) -> Element<'a, Message> {
+    let lines = column![
+        text(entry.subject()).size(11).style(notice),
+        text(entry.values()).size(10).style(muted),
+    ]
+    .spacing(1);
+    let reported =
+        crate::ui::wrap_bar::PosReport::owned(conflict_bounds_id(&entry.conflict_id), lines);
+    container(reported).width(Fill).padding([2, 2]).into()
 }
 
 /// One claim row: the tag, its holder, and the claim/release button.
@@ -327,6 +376,19 @@ pub fn view<'a>(view: &'a CollabView, width: f32, chrome: Chrome) -> Element<'a,
     // ── Peers ────────────────────────────────────────────────────────────
     body = body.push(section_header("在线用户", view.peers.len()));
     body = body.push(peer_rows(view));
+
+    // ── Conflicts awaiting a ruling ──────────────────────────────────────
+    // Above the claims, and not behind a toggle: an entry here means a
+    // write — possibly this person's — has not taken effect, and stays so
+    // until somebody rules on it.
+    if !view.conflicts.is_empty() {
+        body = body.push(section_header(CONFLICTS_LABEL, view.conflicts.len()));
+        let mut rows = column![].spacing(2);
+        for entry in &view.conflicts {
+            rows = rows.push(conflict_row(entry));
+        }
+        body = body.push(rows);
+    }
 
     // ── Claims ───────────────────────────────────────────────────────────
     let toggle_label = if view.claims_open {
@@ -535,6 +597,40 @@ mod tests {
         let other = drawn(&mut ui, "u2").expect("the other's row");
         assert!(own.y < other.y, "this session first: {own:?}, {other:?}");
         assert_eq!(drawn(&mut ui, NO_OTHERS_LABEL), None);
+    }
+
+    /// `VAL-CROSS-007`: an entry awaiting a ruling is listed under a header
+    /// of its own, below the roster, saying what is contended and the two
+    /// values; with no entry there is no such section.
+    #[test]
+    fn a_conflict_awaiting_a_ruling_is_listed_with_what_is_contended() {
+        let entry = ConflictRow {
+            conflict_id: "c-7f3a".to_owned(),
+            object_ref: "P-1001".to_owned(),
+            field: "设计压力".to_owned(),
+            value_a: "1.6MPa".to_owned(),
+            value_b: "2.5MPa".to_owned(),
+        };
+        assert_eq!(conflict_bounds_id("c-7f3a"), "pid-collab-conflict-c-7f3a");
+        let view_model = CollabView {
+            peers: vec![peer("u1", true, false)],
+            conflicts: vec![entry.clone()],
+            ..view_with(Vec::new())
+        };
+        let mut ui = draw(&view_model);
+        let header = drawn(&mut ui, CONFLICTS_LABEL).expect("the section header is drawn");
+        let subject = drawn(&mut ui, "P-1001 · 设计压力").expect("what is contended is drawn");
+        let values = drawn(&mut ui, "1.6MPa ↔ 2.5MPa").expect("the two values are drawn");
+        let roster = drawn(&mut ui, "u1").expect("the roster is drawn");
+        assert!(roster.y < header.y, "below the roster: u1 {roster:?}, header {header:?}");
+        assert!(header.y < subject.y && subject.y < values.y, "{header:?} {subject:?} {values:?}");
+
+        let none = CollabView {
+            peers: vec![peer("u1", true, false)],
+            ..view_with(Vec::new())
+        };
+        let mut ui = draw(&none);
+        assert_eq!(drawn(&mut ui, CONFLICTS_LABEL), None);
     }
 
     /// A session whose drawing is short of the room's changes says so in the

@@ -9,7 +9,7 @@
 
 use crate::app::{Message, OpenCADStudio};
 use crate::ui::dock::PanelId;
-use crate::ui::window::pid_collab::{ClaimRow, CollabView, PeerRow, PidCollabMsg};
+use crate::ui::window::pid_collab::{ClaimRow, CollabView, ConflictRow, PeerRow, PidCollabMsg};
 use iced::Task;
 
 impl OpenCADStudio {
@@ -77,6 +77,24 @@ impl OpenCADStudio {
                 crate::ui::window::pid_collab::DIVERGED_BOUNDS_ID,
             );
         }
+        let conflicts: Vec<ConflictRow> = state
+            .conflicts
+            .iter()
+            .map(|entry| ConflictRow {
+                conflict_id: entry.conflict_id.clone(),
+                object_ref: entry.object_ref.clone(),
+                field: entry.field.clone(),
+                value_a: entry.value_a.clone(),
+                value_b: entry.value_b.clone(),
+            })
+            .collect();
+        // An entry that has been ruled on stops reporting its rectangle,
+        // for the same reason a released claim does.
+        if self.pid_collab_view.conflicts != conflicts {
+            crate::ui::wrap_bar::forget_bounds(
+                crate::ui::window::pid_collab::CONFLICT_BOUNDS_PREFIX,
+            );
+        }
         self.pid_collab_view = CollabView {
             connected: state.connected,
             server_url: state.server_url.clone(),
@@ -84,6 +102,7 @@ impl OpenCADStudio {
             readonly: state.readonly,
             diverged: state.diverged.clone(),
             peers,
+            conflicts,
             claims,
             last_message: state.last_claim_message.clone(),
             claims_open: self.pid_collab_claims_open,
