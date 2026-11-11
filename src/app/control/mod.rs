@@ -1102,7 +1102,16 @@ impl OpenCADStudio {
                 .map(|(_, owner)| owner.clone()));
             return (busy, Task::none());
         }
-        if matches!(op, "run" | "start" | "input") && tab.is_start {
+        // Leaving the program is the one command that needs no drawing: an
+        // editor whose last drawing was closed can still be told to quit,
+        // rather than having to be killed.
+        // Spelled as the dispatcher takes them (`start_allowed`).
+        let leaves = op == "run"
+            && req["cmd"]
+                .as_str()
+                .map(str::trim)
+                .is_some_and(|cmd| matches!(cmd, "QUIT" | "EXIT"));
+        if matches!(op, "run" | "start" | "input") && tab.is_start && !leaves {
             return (
                 failure("no_document", "Create or open a drawing first"),
                 Task::none(),

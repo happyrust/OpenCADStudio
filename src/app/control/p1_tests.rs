@@ -3950,3 +3950,30 @@ fn entities_create_insert_refuses_unknown_constant_and_non_text_attributes() {
     assert!(crate::entity_creation::validate_entity(&spec, "").is_err());
     assert_eq!(count_type(&mut app, "Insert"), 0, "nothing was created");
 }
+
+/// An editor whose last drawing was closed can still be told to quit. `run`
+/// turns every other command away on the Start tab — there is nothing for
+/// it to act on — but leaving the program needs no drawing. Without this an
+/// instance that had closed its drawing could only be killed, which leaves
+/// its collaboration session to time out and its automation descriptor on
+/// disk (`VAL-CROSS-012` closes the drawing, then quits).
+#[test]
+fn quit_is_run_with_no_drawing_open() {
+    for cmd in ["QUIT", "EXIT"] {
+        let mut app = OpenCADStudio::new_for_test();
+        let state = app.control_state();
+        let envelope = |cmd: &str, id: &str| {
+            json!({
+                "protocol": 1, "op": "run", "cmd": cmd, "request_id": id, "client_id": "test",
+                "document_id": state["document_id"], "revision": state["revision"],
+            })
+        };
+        let (refused, _) = app.control_request(envelope("CIRCLE 0,0 5", "draw"));
+        assert_eq!(refused["code"], "no_document", "{refused}");
+        assert!(!app.exit_requested);
+
+        let (response, _task) = app.control_request(envelope(cmd, "quit"));
+        assert_ne!(response["code"], "no_document", "{cmd}: {response}");
+        assert!(app.exit_requested, "{cmd} did not leave: {response}");
+    }
+}
