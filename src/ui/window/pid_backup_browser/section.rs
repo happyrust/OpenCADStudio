@@ -23,8 +23,8 @@ use std::any::Any;
 use std::sync::Arc;
 
 use super::{
-    database, datamap, drawing_data, manifest, text_preview, DetailLine, Effect, NodeId,
-    PidBackupBrowser, Row,
+    database, datamap, diagnostics, drawing_data, manifest, text_preview, DetailLine, Effect,
+    NodeId, PidBackupBrowser, Row,
 };
 use crate::io::pid_backup_browse::BackupIndex;
 
@@ -36,6 +36,7 @@ pub(super) static SECTIONS: &[&dyn Section] = &[
     &database::DatabaseSection,
     &drawing_data::DrawingDataSection,
     &datamap::DataMapSection,
+    &diagnostics::DiagnosticsSection,
 ];
 
 /// The sections a panel state works with: [`SECTIONS`], unless a test gave
@@ -170,6 +171,12 @@ pub(super) trait Section: Sync {
     /// and whatever the section has to add for any other node.
     fn details(&self, _cx: &Cx<'_>, _id: &NodeId, _lines: &mut Vec<DetailLine>) {}
 
+    /// What the section has to say about `id` early: lines that belong
+    /// before the long list a node's own details end with. Asked for a
+    /// drawing only, whose details end with every column of the drawing
+    /// table: a button down there would be a screen away.
+    fn early_details(&self, _cx: &Cx<'_>, _id: &NodeId, _lines: &mut Vec<DetailLine>) {}
+
     /// The node whose data `event` makes the section need, if any. It is
     /// read once: a node that is loading, loaded or failed is not asked for
     /// again until the backup is.
@@ -191,6 +198,36 @@ pub(super) trait Section: Sync {
     fn keeps_only_selected(&self) -> bool {
         false
     }
+
+    /// Whether something this section had read is still under way and its
+    /// lines change while it is: a count of what is done so far. While any
+    /// section says so the panel is drawn anew a few times a second
+    /// ([`Effect::Tick`]); nothing else draws it while the user's hands are
+    /// off it.
+    ///
+    /// The answer must turn false when the work ends, whether or not its
+    /// result has reached the panel yet: a caller that runs the panel's
+    /// effects one after the other waits for the clock to stop before it
+    /// hands the result over.
+    fn in_progress(&self, _cx: &Cx<'_>) -> bool {
+        false
+    }
+}
+
+/// Whether any section has something under way that counts as it goes.
+pub(super) fn in_progress(state: &PidBackupBrowser) -> bool {
+    let Some(index) = state.index() else {
+        return false;
+    };
+    let filter = filter_of(state);
+    state.sections.0.iter().enumerate().any(|(slot, section)| {
+        section.in_progress(&Cx {
+            state,
+            index,
+            slot,
+            filter: &filter,
+        })
+    })
 }
 
 /// The search box's text as sections and the tree compare it.
@@ -270,6 +307,25 @@ pub(super) fn details(
     }
 }
 
+/// What the sections have to say about `id` before its own long list.
+pub(super) fn early_details(
+    state: &PidBackupBrowser,
+    index: &BackupIndex,
+    id: &NodeId,
+    lines: &mut Vec<DetailLine>,
+) {
+    let filter = filter_of(state);
+    for (slot, section) in state.sections.0.iter().enumerate() {
+        let cx = Cx {
+            state,
+            index,
+            slot,
+            filter: &filter,
+        };
+        section.early_details(&cx, id, lines);
+    }
+}
+
 /// Tell the sections what the user did, and turn the data they now want into
 /// the reads the application should start.
 pub(super) fn after(state: &mut PidBackupBrowser, kind: EventKind, node: &NodeId) -> Effect {
@@ -305,6 +361,12 @@ pub(super) fn after(state: &mut PidBackupBrowser, kind: EventKind, node: &NodeId
         if let Some(node) = wanted {
             effect = both(effect, request(state, slot, node));
         }
+    }
+    // A read that counts as it goes was just started: set the clock going,
+    // unless it is.
+    if !state.ticking && in_progress(state) {
+        state.ticking = true;
+        effect = both(effect, Effect::Tick);
     }
     effect
 }

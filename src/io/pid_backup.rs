@@ -7,7 +7,8 @@
 //! that already holds loose `.pid` files is used where it is, read-only. One
 //! whose drawings are still archived, and any zip, is unpacked into a restore
 //! folder: by default a cache under the temp folder keyed by the source, so a
-//! second open of the same backup reuses it. The drawings land beside a `Ref`
+//! second open of the same backup reuses it. The cache may be another folder,
+//! and can be measured and cleared ([`cache`]). The drawings land beside a `Ref`
 //! there -- the backup's own, copied in for a folder source -- so the
 //! importer's walk up from a drawing finds the symbol library.
 //!
@@ -16,8 +17,10 @@
 //! decodes them, and a name that would leave the restore folder refuses the
 //! whole restore.
 
+pub mod cache;
 mod refdata;
 
+pub use cache::{default_cache_root, restore_cache_in};
 pub use refdata::REFERENCE_DIR;
 
 use std::io::Read;
@@ -84,13 +87,10 @@ pub fn is_zip(path: &Path) -> bool {
     file.read_exact(&mut magic).is_ok() && &magic == b"PK\x03\x04"
 }
 
-/// The default restore folder of `source`: `<temp>/ocs-pid-backups/<hash>`,
-/// keyed as `pid_pdf`'s template cache is (path, size, modification time).
-/// A folder source is keyed by its drawing archives as well.
+/// The default restore folder of `source`: `<temp>/ocs-pid-backups/<hash>`
+/// ([`restore_cache_in`] the [`default_cache_root`]).
 pub fn restore_cache(source: &Path) -> PathBuf {
-    std::env::temp_dir()
-        .join("ocs-pid-backups")
-        .join(cache_key(source))
+    restore_cache_in(&default_cache_root(), source)
 }
 
 fn cache_key(source: &Path) -> String {
@@ -123,6 +123,16 @@ fn cache_key(source: &Path) -> String {
 /// Make `source` -- a backup zip or folder -- browsable, unpacking it into
 /// `target` (default [`restore_cache`]) when it has to be.
 pub fn restore(source: &Path, target: Option<&Path>) -> Result<Restored, String> {
+    restore_in(source, target, None)
+}
+
+/// [`restore`] with the cache in `cache_root` instead of the default folder:
+/// without a `target` the backup is unpacked into its own folder there.
+pub fn restore_in(
+    source: &Path,
+    target: Option<&Path>,
+    cache_root: Option<&Path>,
+) -> Result<Restored, String> {
     if source.is_dir() {
         let archives = plant_data_archives(source);
         if archives.is_empty() {
@@ -134,7 +144,7 @@ pub fn restore(source: &Path, target: Option<&Path>) -> Result<Restored, String>
             });
         }
         let reference = source.join(REFERENCE_DIR);
-        return build(source, target, |staging| {
+        return build(source, target, cache_root, |staging| {
             for archive in &archives {
                 extract_zip(archive, staging)?;
             }
@@ -157,7 +167,7 @@ pub fn restore(source: &Path, target: Option<&Path>) -> Result<Restored, String>
             source.display()
         ));
     }
-    build(source, target, |staging| {
+    build(source, target, cache_root, |staging| {
         extract_zip(source, staging)?;
         // A zip of a whole backup still files its drawings in PlantData
         // archives; unpack those where they lie so each lands beside its Ref.
@@ -220,11 +230,18 @@ pub fn pid_drawings(root: &Path) -> Vec<PathBuf> {
 fn build(
     source: &Path,
     target: Option<&Path>,
+    cache_root: Option<&Path>,
     fill: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<Restored, String> {
     let key = cache_key(source);
     let owned = target.is_none();
-    let target = target.map_or_else(|| restore_cache(source), Path::to_path_buf);
+    let target = target.map_or_else(
+        || match cache_root {
+            Some(root) => restore_cache_in(root, source),
+            None => restore_cache(source),
+        },
+        Path::to_path_buf,
+    );
     let marker = target.join(DONE_MARKER);
     if std::fs::read_to_string(&marker).is_ok_and(|stamp| stamp.trim() == key) {
         return Ok(Restored {
@@ -749,6 +766,29 @@ mod tests {
         // more.
         std::fs::write(backup.join("RefData~4~680"), b"\"Begin Rules\",2\r\nmore").unwrap();
         assert_ne!(key, cache_key(&backup));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_restore_goes_into_the_cache_folder_it_is_given() {
+        let root = scratch("cache-root");
+        let zip = root.join("backup.zip");
+        write_zip(&zip, &[("00/00/A.pid", b"a")]);
+        let cache = root.join("my cache");
+        let restored = restore_in(&zip, None, Some(&cache)).unwrap();
+        assert_eq!(restored.root, restore_cache_in(&cache, &zip));
+        assert_eq!(restored.root.parent(), Some(cache.as_path()));
+        assert_eq!(restored.drawings, vec![restored.root.join("00/00/A.pid")]);
+        // The folder is the cache's own: a second open reuses it, and what
+        // the cache holds says so.
+        assert!(restore_in(&zip, None, Some(&cache)).unwrap().reused);
+        let usage = cache::usage(&cache, Some(&restored.root));
+        assert_eq!(usage.others, 0);
+        assert_eq!(usage.current.map(|restore| restore.files), Some(2));
+        // A target named outright wins over the cache folder.
+        let named = root.join("named");
+        let restored = restore_in(&zip, Some(&named), Some(&cache)).unwrap();
+        assert_eq!(restored.root, named);
         let _ = std::fs::remove_dir_all(&root);
     }
 

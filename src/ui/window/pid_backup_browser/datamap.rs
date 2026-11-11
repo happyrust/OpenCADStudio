@@ -22,7 +22,7 @@ use super::section::{Cx, Event, EventKind, Section, SectionData, SectionLoad};
 use super::{DetailLine, NodeId, Row};
 use crate::io::pid_backup_browse::datamap::{is_data_map, read_enum_map, EnumMap};
 use crate::io::pid_backup_browse::{BackupIndex, RefFile};
-use crate::{t, tf};
+use crate::t;
 
 /// The data maps of the reference tree.
 pub(super) struct DataMapSection;
@@ -196,6 +196,7 @@ mod tests {
     use super::*;
     use crate::app::Message;
     use crate::io::pid_backup_browse::RefNode;
+    use crate::tf;
     use crate::ui::dock::Chrome;
     use crate::ui::window::pid_backup_browser::{
         detail_rows, update, view, visible_rows, Effect, PidBackupBrowser, PidBackupMsg,

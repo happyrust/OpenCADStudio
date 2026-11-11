@@ -60,6 +60,8 @@ pub struct AppConfig {
     pub context_menu: crate::ui::popup::context_menu::MenuCustomization,
     /// Collaboration server address and identity (`--collab` overrides these).
     pub collab: CollabConfig,
+    /// What the P&ID backup browser keeps between runs.
+    pub pid_backup: PidBackupConfig,
 }
 
 impl Default for AppConfig {
@@ -85,6 +87,7 @@ impl Default for AppConfig {
             model_space: ModelSpaceThemeConfig::default(),
             context_menu: Default::default(),
             collab: CollabConfig::default(),
+            pid_backup: PidBackupConfig::default(),
         }
     }
 }
@@ -623,6 +626,16 @@ pub struct CollabConfig {
     pub mode: String,
 }
 
+/// What the P&ID backup browser keeps between runs.
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PidBackupConfig {
+    /// The folder restored backups are kept in. Absent: the default one
+    /// under the temp folder, wherever that is on the day.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<String>,
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct RibbonConfig {
@@ -793,6 +806,23 @@ mod tests {
         assert_eq!(deserialized.model_space.grid_opacity, 45);
         assert_eq!(deserialized.model_space.selection_opacity, 35);
         assert_eq!(deserialized.model_space.selection_window_color, 5);
+    }
+
+    #[test]
+    fn the_backup_cache_folder_is_absent_by_default_and_round_trips() {
+        let missing: AppConfig = serde_json::from_str("{}").expect("deserialize old config");
+        assert_eq!(missing.pid_backup.cache_dir, None);
+        // The default folder is not written down: it is wherever the temp
+        // folder is when the application runs.
+        let serialized = serde_json::to_string(&AppConfig::default()).expect("serialize config");
+        assert!(!serialized.contains("cache_dir"), "{serialized}");
+
+        let mut original = AppConfig::default();
+        original.pid_backup.cache_dir = Some("E:/pid cache".to_string());
+        let serialized = serde_json::to_string(&original).expect("serialize config");
+        let restored: AppConfig = serde_json::from_str(&serialized).expect("deserialize config");
+        assert_eq!(restored.pid_backup.cache_dir.as_deref(), Some("E:/pid cache"));
+        assert!(restored == original);
     }
 
     #[test]
