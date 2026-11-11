@@ -1640,6 +1640,65 @@ mod tests {
         assert_eq!(app.collab.last_apply_error, None);
     }
 
+    /// 协同：一条拐了弯的管线是好几段实体，每段都带同一个位号。别人说的仍然
+    /// 是「管线 L 的某字段 = 某值」，只有位号，没有句柄（不带图纸的客户端、
+    /// 或者拿着另一份文件的客户端）。此前这种变更因为「带这个位号的实体不止
+    /// 一个」整条不应用；它说的是这条管线，应该落到管线上并照常下传。
+    #[test]
+    fn a_remote_change_to_a_line_drawn_in_several_stretches_reaches_the_line() {
+        let mut app = app();
+        draw(
+            &mut app,
+            "PIDPIPE",
+            &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0], [200.0, 100.0, 0.0]],
+        );
+        let table = topology(&app);
+        let record = table.pipe_lines.last().expect("管线已建").clone();
+        let line = parse_handle(&record.handle).expect("handle");
+        let (run, segments) = draw_run(&mut app);
+        let pieces: Vec<document::Handle> = {
+            let document = &app.tabs[app.active_tab].scene.document;
+            document
+                .entities()
+                .map(|entity| entity.common().handle)
+                .filter(|handle| {
+                    crate::pid::persist::PidAuthor::load(document, *handle)
+                        .is_some_and(|author| author.tag == record.tag)
+                })
+                .collect()
+        };
+        assert_eq!(pieces.len(), 2, "三个点的管线是两段实体，都带管线位号");
+
+        app.collab.apply(crate::app::collab::CollabEvent::OpApplied {
+            op_id: "op-peer-line".to_owned(),
+            revision: 1,
+            changes: vec![json!({
+                "kind": "set_property",
+                "object_ref": record.tag,
+                "field": "公称直径",
+                "value": "DN80",
+            })],
+        });
+        app.apply_remote_changes();
+
+        assert_eq!(app.collab.last_apply_error, None);
+        assert_eq!(app.collab.diverged, None);
+        let diameter = |app: &OpenCADStudio, handle: document::Handle| {
+            props_of(&app.tabs[app.active_tab].scene.document, handle)
+                .get("公称直径")
+                .cloned()
+                .unwrap_or_default()
+        };
+        for piece in &pieces {
+            assert_eq!(diameter(&app, *piece), "DN80", "管线的每一段");
+        }
+        assert_eq!(diameter(&app, line), "DN80", "拓扑表读值的那一段");
+        assert_eq!(diameter(&app, run), "DN80", "管路应跟随管线");
+        for segment in &segments {
+            assert_eq!(diameter(&app, *segment), "DN80", "管段应跟随管路");
+        }
+    }
+
     /// `VAL-PIPE-007`：管路创建时全量继承管线五个字段，且不打覆盖标记。
     #[test]
     fn a_new_run_inherits_all_five_line_fields() {

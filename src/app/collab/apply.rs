@@ -146,11 +146,19 @@ impl OpenCADStudio {
         // `push_undo_entry`: the fold must not go back out as this client's op.
         self.applying_remote = true;
         for remote in pending {
-            let parsed = broadcast::changes_from_payload(&remote.changes);
+            let read = broadcast::changes_from_payload(&remote.changes);
+            if !read.unread.is_empty() {
+                // Said, whether or not the rest of the op can be applied:
+                // the room has these changes and this drawing does not.
+                failure.get_or_insert(format!(
+                    "操作 {} 里有 {} 项变更本客户端不认识（{}），没有应用",
+                    remote.op_id,
+                    read.unread.len(),
+                    read.unread.join("、")
+                ));
+            }
+            let parsed = read.changes;
             if parsed.is_empty() {
-                // Reported, not guessed at: half-applying an op diverges the
-                // two documents.
-                failure = Some(format!("操作 {} 的变更无法识别，已跳过", remote.op_id));
                 continue;
             }
             // Opening a step closes the one before it, so each op is its own.
@@ -160,8 +168,8 @@ impl OpenCADStudio {
                 broadcast::apply_changes(document, &parsed)
             };
             if !applied.unresolved.is_empty() {
-                failure = Some(format!(
-                    "操作 {}：本图找不到位号 {}，这部分变更未应用",
+                failure.get_or_insert(format!(
+                    "操作 {}：位号 {} 在本图里对不上一个对象（没有，或者有好几个），这部分变更未应用",
                     remote.op_id,
                     applied.unresolved.join("、")
                 ));
@@ -835,6 +843,36 @@ mod tests {
             "an op went out from a drawing known to differ: {:?}",
             app.collab.own_ops
         );
+    }
+
+    /// An op this client can read only in part is applied as far as it can
+    /// be, and said to have left the drawing short: the change it could not
+    /// read took effect in the room all the same. It used to be passed over
+    /// in silence as long as anything else in the op could be applied.
+    #[test]
+    fn an_op_read_only_in_part_is_applied_as_far_as_it_goes_and_said_to_be_short() {
+        let (mut app, vessel) = app_with_vessel("P-1001");
+        app.collab.apply(CollabEvent::OpApplied {
+            op_id: "op-peer".to_owned(),
+            revision: 1,
+            changes: vec![
+                serde_json::json!({
+                    "kind": "set_tag", "object_ref": "P-1001", "field": "tag", "value": "P-1009",
+                }),
+                serde_json::json!({"kind": "insert_symbol", "object_ref": "V-1001"}),
+            ],
+        });
+        app.apply_remote_changes();
+        assert_eq!(
+            PidAuthor::load(&app.tabs[app.active_tab].scene.document, vessel)
+                .expect("author")
+                .tag,
+            "P-1009",
+            "what could be read is applied"
+        );
+        let said = app.collab.last_apply_error.clone().expect("it is reported");
+        assert!(said.contains("insert_symbol"), "{said}");
+        assert!(app.collab.diverged.is_some(), "and the session is marked");
     }
 
     /// An op none of whose changes this client can read is the same thing: the

@@ -184,7 +184,8 @@ impl OpenCADStudio {
     /// request on the transport's outbound queue, so the panel's click never
     /// blocks the UI thread on a socket write.
     pub(in crate::app) fn on_collab_claim(&mut self, tag: &str, claim: bool) -> Task<Message> {
-        let tag = tag.trim();
+        let tag = self.canonical_tag(tag);
+        let tag = tag.as_str();
         if tag.is_empty() {
             self.command_line
                 .push_error("协同：位号为空，未发起占用请求。");
@@ -207,6 +208,46 @@ impl OpenCADStudio {
             }
         }
         Task::none()
+    }
+
+    /// A tag as the session's drawing spells it.
+    ///
+    /// On the wire a tag is the text the drawing stores: that is what an
+    /// `object_ref` is compared as, and what the server keys a claim by. What
+    /// a person types is looked up to that text first, the way `PIDTAG`
+    /// finds the tag it is to change: the same letters in another case are
+    /// that tag, when the drawing — or, for a release, the claims this
+    /// session knows of — has exactly one spelling of them. Typed as
+    /// `p-1001`, a claim used to be for a tag nothing carries, beside the
+    /// claim somebody else holds on `P-1001`.
+    ///
+    /// With no such tag here, or with two spellings, what was typed stands.
+    pub(in crate::app) fn canonical_tag(&mut self, typed: &str) -> String {
+        let typed = typed.trim();
+        let mut spellings: Vec<String> = Vec::new();
+        let mut note = |tag: &str| {
+            let tag = tag.trim();
+            if tag.eq_ignore_ascii_case(typed) && !spellings.iter().any(|known| known == tag) {
+                spellings.push(tag.to_owned());
+            }
+        };
+        for tag in self.collab.claims.keys() {
+            note(tag);
+        }
+        if let Some(i) = self.collab_tab() {
+            let document = &self.tabs[i].scene.document;
+            for entity in document.entities() {
+                if let Some(author) =
+                    crate::pid::persist::PidAuthor::load(document, entity.common().handle)
+                {
+                    note(&author.tag);
+                }
+            }
+        }
+        match spellings.as_slice() {
+            [only] if only != typed => only.clone(),
+            _ => typed.to_owned(),
+        }
     }
 
     /// `PIDCLAIM <tag>` / `PIDRELEASE <tag>`.
@@ -641,5 +682,70 @@ mod tests {
         });
         app.sync_claim_colors();
         assert!(app.tabs[app.active_tab].scene.claim_display.is_none());
+    }
+
+    fn app_with_tags(tags: &[&str]) -> crate::app::OpenCADStudio {
+        use crate::pid::persist::PidAuthor;
+        use document::entities::Insert;
+        use document::types::Vector3;
+
+        let mut app = crate::app::OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let document = &mut app.tabs[i].scene.document;
+        for (n, tag) in tags.iter().enumerate() {
+            let handle = document
+                .add_entity(document::EntityType::Insert(Insert::new(
+                    "PID_SYM_equipment_vessel",
+                    Vector3::new(40.0 * n as f64, 0.0, 0.0),
+                )))
+                .unwrap();
+            PidAuthor {
+                type_code: "EQUIPMENT".to_owned(),
+                tag: (*tag).to_owned(),
+                tag_source: "auto".to_owned(),
+                tag_status: "ok".to_owned(),
+                ..PidAuthor::default()
+            }
+            .store(document, handle);
+        }
+        app
+    }
+
+    /// A claim names a tag as the drawing spells it. Typed in another case it
+    /// is still that tag — the claim used to go out for `p-1001`, a tag
+    /// nothing carries, beside whatever claim there was on `P-1001`.
+    #[test]
+    fn a_typed_tag_is_claimed_as_the_drawing_spells_it() {
+        let mut app = app_with_tags(&["P-1001", "V-1001"]);
+        assert_eq!(app.canonical_tag("P-1001"), "P-1001");
+        assert_eq!(app.canonical_tag("p-1001"), "P-1001");
+        assert_eq!(app.canonical_tag("  v-1001 "), "V-1001");
+        // A tag this drawing does not have stands as typed (less the blanks).
+        assert_eq!(app.canonical_tag(" x-9 "), "x-9");
+        assert_eq!(app.canonical_tag(""), "");
+    }
+
+    /// Two spellings in one drawing are two tags, and neither is guessed at.
+    #[test]
+    fn a_typed_tag_fitting_two_spellings_stands_as_typed() {
+        let mut app = app_with_tags(&["P-1001", "p-1001"]);
+        assert_eq!(app.canonical_tag("p-1001"), "p-1001");
+        assert_eq!(app.canonical_tag("P-1001"), "P-1001");
+        assert_eq!(app.canonical_tag("P-1001 "), "P-1001");
+    }
+
+    /// A release names a claim, and the claim may be on a tag the drawing no
+    /// longer carries: the claims this session knows of are looked through
+    /// as well.
+    #[test]
+    fn a_release_finds_the_claim_by_the_spelling_it_was_made_under() {
+        use crate::app::collab::CollabEvent;
+
+        let mut app = app_with_tags(&["V-1001"]);
+        app.collab.apply(CollabEvent::ClaimGranted {
+            tag: "P-1001".to_owned(),
+        });
+        assert_eq!(app.canonical_tag("p-1001"), "P-1001");
     }
 }
