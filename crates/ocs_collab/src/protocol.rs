@@ -204,6 +204,10 @@ pub mod codes {
     /// that would give an object such a tag. The claim stands until its
     /// holder releases it or it runs out (`VAL-CROSS-002`).
     pub const CLAIM_HELD: &str = "CLAIM_HELD";
+    /// An inflow connector on a line of a drawing that has one already
+    /// (`VAL-PIPE-024`, `VAL-CROSS-009`). The editor refuses it before it is
+    /// made; the server refuses the second of two made at once.
+    pub const DUPLICATE_INFLOW_CONNECTOR: &str = "DUPLICATE_INFLOW_CONNECTOR";
 }
 
 /// Reasons carried by [`ServerMessage::ClaimReleased`].

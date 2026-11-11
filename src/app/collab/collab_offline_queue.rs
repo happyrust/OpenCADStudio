@@ -222,7 +222,7 @@ impl Room {
                     codes::OBJECT_REFERENCED.to_owned(),
                     format!("{object_ref} 仍被引用"),
                 )),
-                other @ Verdict::BehindTopology { .. } => {
+                other @ (Verdict::BehindTopology { .. } | Verdict::DuplicateInflow { .. }) => {
                     panic!("these tests draw no pipes: {other:?}")
                 }
             }

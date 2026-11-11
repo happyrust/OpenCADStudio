@@ -1063,6 +1063,17 @@ async fn op(
             .await
             .advance_base_revision(&session.drawing_id, revision);
     }
+    // An op that made a connector, or wrote a field of a line that flows
+    // out along one, was followed by ops of the server's own — on this
+    // drawing, on the drawing at the other end — each told to its room
+    // already. The sessions of those drawings are at those revisions now.
+    for (drawing_id, revision) in crate::ops::revisions_reached(&outcome.reactions) {
+        state
+            .sessions
+            .lock()
+            .await
+            .advance_base_revision(&drawing_id, revision);
+    }
     outcome.reactions
 }
 

@@ -7,6 +7,7 @@
 
 pub mod conflict;
 pub mod ids;
+pub mod link;
 pub mod occupancy;
 pub mod permission;
 pub mod protocol;

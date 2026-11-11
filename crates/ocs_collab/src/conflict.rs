@@ -30,6 +30,12 @@ pub const KIND_CREATE_PIPE_LINE: &str = "create_pipe_line";
 pub const KIND_ADD_PIPE_RUN: &str = "add_pipe_run";
 pub const KIND_INSERT_FITTING: &str = "insert_fitting";
 pub const KIND_CREATE_CONNECTOR: &str = "create_connector";
+/// A connector is gone from a line: erased, or its making taken back.
+pub const KIND_DELETE_CONNECTOR: &str = "delete_connector";
+/// A connector has an other end on another drawing — or has none any more.
+/// Said by the server, which pairs them ([`crate::link`]); from a client it
+/// is one more change the judgment has no rule for.
+pub const KIND_PAIR_CONNECTOR: &str = "pair_connector";
 /// A run's parts as they are after a step that changed them otherwise than
 /// by adding the run or putting a fitting on it: parts erased, an insertion
 /// taken back. It carries the same account of the run (`run`) the two
@@ -110,7 +116,11 @@ impl Change {
     pub fn changes_topology(&self) -> bool {
         matches!(
             self.kind.as_str(),
-            KIND_ADD_PIPE_RUN | KIND_INSERT_FITTING | KIND_CREATE_CONNECTOR | KIND_UPDATE_PIPE_RUN
+            KIND_ADD_PIPE_RUN
+                | KIND_INSERT_FITTING
+                | KIND_CREATE_CONNECTOR
+                | KIND_DELETE_CONNECTOR
+                | KIND_UPDATE_PIPE_RUN
         )
     }
 
@@ -210,6 +220,9 @@ pub enum Verdict {
     /// change to the same line. Connections do not merge field by field: the
     /// sender has to look at the line as it now is and ask again.
     BehindTopology { line_tag: String, touched_revision: i64 },
+    /// An inflow connector on a line of the drawing that has one of that
+    /// family already: a line comes in from one place.
+    DuplicateInflow { line_tag: String },
 }
 
 /// An object that was deleted, kept so that a change still on its way to it
@@ -279,6 +292,15 @@ impl DrawingModel {
         self.revision = revision;
     }
 
+    /// The drawing's connectors, as far as the ops that made them said
+    /// which line each is on and what kind it is.
+    pub fn connectors(&self) -> Vec<crate::link::Connector> {
+        self.connectors
+            .iter()
+            .filter_map(crate::link::Connector::read)
+            .collect()
+    }
+
     /// Every object the server has seen written, by current tag.
     pub fn objects(&self) -> impl Iterator<Item = (&String, &ObjectState)> {
         self.objects.iter()
@@ -318,6 +340,22 @@ impl DrawingModel {
         let object_ref = self.current_name(&change.subject(), base_revision);
         if change.changes_topology() {
             let line_tag = self.line_of(change);
+            if change.kind == KIND_CREATE_CONNECTOR {
+                // The same connector said again — a making put on again —
+                // is not a second one.
+                let second_inflow = crate::link::Connector::read(&change.raw).is_some_and(|said| {
+                    said.is_inflow()
+                        && self.connectors().iter().any(|known| {
+                            known.is_inflow()
+                                && known.family() == said.family()
+                                && known.line_tag == line_tag
+                                && !known.is(&said)
+                        })
+                });
+                if second_inflow {
+                    return Verdict::DuplicateInflow { line_tag };
+                }
+            }
             return match self.line_touched.get(&line_tag) {
                 Some((revision, by)) if *revision > base_revision && by != session_id => {
                     Verdict::BehindTopology {
@@ -731,7 +769,58 @@ impl DrawingModel {
                     }
                 }
             }
-            KIND_CREATE_CONNECTOR => self.connectors.push(change.raw.clone()),
+            KIND_CREATE_CONNECTOR => {
+                let said = crate::link::Connector::read(&change.raw);
+                // What the drawing of whoever made it has for the fields
+                // that go along it: all the server knows of a line nobody
+                // has written a field of while it was listening. A value it
+                // has heard written stands.
+                if let (Some(said), Some(props)) = (
+                    &said,
+                    change.raw.get("line_props").and_then(Value::as_object),
+                ) {
+                    let object = self.objects.entry(object_ref.to_owned()).or_default();
+                    for (field, value) in props {
+                        if said.carried_fields().contains(&field.as_str()) {
+                            object
+                                .fields
+                                .entry(field.clone())
+                                .or_insert_with(|| stamp(&value_text(value)));
+                        }
+                    }
+                }
+                // Said again (its making put on again), it is the one
+                // connector it was.
+                if let Some(said) = &said {
+                    self.connectors.retain(|known| {
+                        crate::link::Connector::read(known).is_none_or(|known| !known.is(said))
+                    });
+                }
+                let mut entry = change.raw.clone();
+                if let Some(entry) = entry.as_object_mut() {
+                    entry.remove("line_props");
+                }
+                self.connectors.push(entry);
+            }
+            KIND_DELETE_CONNECTOR => {
+                if let Some(gone) = crate::link::Connector::read(&change.raw) {
+                    self.connectors.retain(|known| {
+                        crate::link::Connector::read(known).is_none_or(|known| !known.is(&gone))
+                    });
+                }
+            }
+            KIND_PAIR_CONNECTOR => {
+                if let Some(said) = crate::link::Connector::read(&change.raw) {
+                    for known in &mut self.connectors {
+                        if crate::link::Connector::read(known).is_some_and(|known| known.is(&said)) {
+                            for key in ["peer_drawing", "peer_line_tag", "peer_connector"] {
+                                known[key] = change.raw.get(key).cloned().unwrap_or(Value::Null);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
             _ => return,
         }
         if change.changes_topology() {
