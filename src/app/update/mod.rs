@@ -1352,8 +1352,17 @@ impl OpenCADStudio {
                         }
                     }
                     super::collab::CollabEvent::ReadonlyDowngrade { reason, .. } => {
-                        self.command_line
-                            .push_warning(&format!("协同：只读降级（{reason}）"));
+                        if self.collab.readonly {
+                            self.command_line
+                                .push_warning(&format!("协同：只读降级（{reason}）"));
+                        } else {
+                            // Named as the holder: this session goes on
+                            // writing, and the person should know why the
+                            // others have stopped.
+                            self.command_line.push_info(&format!(
+                                "协同：{reason}，编辑权在本会话，可以继续修改"
+                            ));
+                        }
                     }
                     super::collab::CollabEvent::OpApplied { revision, .. } => {
                         self.command_line

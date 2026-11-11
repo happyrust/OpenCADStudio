@@ -3,6 +3,7 @@
 //! `main.rs` only parses the CLI and starts the runtime; everything testable
 //! lives here so integration tests can build the same router the binary serves.
 
+pub mod access;
 pub mod bus;
 pub mod http;
 pub mod ops;
@@ -48,6 +49,11 @@ pub struct AppState {
     /// tie window. One std mutex: an op is judged, committed and recorded
     /// under it with no await in between.
     pub drawings: Arc<Mutex<HashMap<String, ops::DrawingOps>>>,
+    /// For each drawing that is 只读: the session that held the edit right
+    /// when it went 只读, and goes on writing. Absent for a drawing nobody
+    /// was editing at that moment, and for every drawing that is not 只读.
+    /// In memory only: sessions do not outlive the process either.
+    pub holders: Arc<Mutex<HashMap<String, String>>>,
     /// How long an op made against the current revision is held before it
     /// commits, so that another made against the same revision can be seen
     /// to tie with it (`--tie-window-ms`). Zero — the default — holds
@@ -74,6 +80,7 @@ impl AppState {
             revisions: Arc::new(Mutex::new(HashMap::new())),
             direct: Arc::new(Mutex::new(HashMap::new())),
             drawings: Arc::new(Mutex::new(HashMap::new())),
+            holders: Arc::new(Mutex::new(HashMap::new())),
             tie_window: Duration::ZERO,
             version: env!("CARGO_PKG_VERSION"),
         }

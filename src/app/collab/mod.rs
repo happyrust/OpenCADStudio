@@ -380,9 +380,19 @@ impl State {
                 self.claims.remove(&tag);
             }
             CollabEvent::ReadonlyDowngrade { reason, holder } => {
-                self.readonly = true;
+                // The server tells every session on a drawing that went 只读
+                // who holds the edit right — the holder too. A session that
+                // finds its own id there is the one that goes on writing.
+                let holds = holder
+                    .as_deref()
+                    .is_some_and(|holder| self.session_id.as_deref() == Some(holder));
+                self.readonly = !holds;
                 self.readonly_holder = holder;
-                self.last_error = Some(format!("只读降级：{reason}"));
+                self.last_error = if holds {
+                    None
+                } else {
+                    Some(format!("只读降级：{reason}"))
+                };
             }
             CollabEvent::OpApplied {
                 op_id,
@@ -873,6 +883,37 @@ mod tests {
         let state = State::new();
         assert!(state.request_claim("P-1001").is_err());
         assert!(state.request_release("P-1001").is_err());
+    }
+
+    /// A drawing that goes 只读 keeps one writer, and the server tells every
+    /// session who that is — the holder too. A session that finds its own
+    /// id named goes on writing; it used to be told nothing, and one that
+    /// had been downgraded before and was later made holder never knew.
+    #[test]
+    fn a_downgrade_naming_this_session_as_the_holder_leaves_it_writing() {
+        let mut state = State::new();
+        state.apply(CollabEvent::Connected {
+            session_id: "s-1".to_owned(),
+            base_revision: 0,
+            peers: vec![peer("s-1", "u1"), peer("s-2", "u2")],
+            claims: Vec::new(),
+        });
+        // Downgraded: somebody else holds the edit right.
+        state.apply(CollabEvent::ReadonlyDowngrade {
+            reason: "图纸已切换为只读".to_owned(),
+            holder: Some("s-2".to_owned()),
+        });
+        assert!(state.readonly);
+
+        // The drawing is settled again, and this time this session holds it.
+        state.apply(CollabEvent::ReadonlyDowngrade {
+            reason: "图纸已切换为只读".to_owned(),
+            holder: Some("s-1".to_owned()),
+        });
+        assert!(!state.readonly, "the holder goes on writing");
+        assert_eq!(state.readonly_holder.as_deref(), Some("s-1"));
+        assert_eq!(state.last_error, None);
+        assert_eq!(state.status_json()["readonly"], false);
     }
 
     fn joined_at(base_revision: i64) -> State {

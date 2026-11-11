@@ -35,6 +35,19 @@ pub enum ClientMessage {
         op_id: String,
         payload: Value,
     },
+    /// Reports a write the client itself refused: a session that may not
+    /// write turned a command away before it ran, or took an edit back.
+    /// Nothing changes on the drawing; the server keeps the record
+    /// (`audit_log`) of who tried what on which object.
+    Attempt {
+        session_id: String,
+        /// The tag of the object the write was aimed at, when it had one.
+        #[serde(default)]
+        object_ref: String,
+        /// What was tried, as the person would recognise it.
+        #[serde(default)]
+        text: String,
+    },
 }
 
 /// A message sent by the server to a client.
@@ -78,8 +91,26 @@ pub enum ServerMessage {
     PeerJoined(Peer),
     /// A peer left this drawing.
     PeerLeft(Peer),
-    /// The session lost write access.
-    ReadonlyDowngrade { reason: String, holder: Option<String> },
+    /// The session may not write. Sent to a session when its drawing goes
+    /// 只读, and after `welcome` to one that joins without write access —
+    /// its user's role does not edit, or the drawing is 只读 already.
+    ///
+    /// `holder` is the session that holds the edit right of a 只读 drawing,
+    /// when there is one. It is sent this message too, naming itself: that
+    /// is how it learns the edit right is its own.
+    ///
+    /// `level` and `code` say which tier of the permission chain refused
+    /// (`role` / `pbs` / `state`, and the `PERM_DENIED_*` code that goes
+    /// with it), so the client can answer a refused write the same way the
+    /// server would.
+    ReadonlyDowngrade {
+        reason: String,
+        holder: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        level: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
     /// A conflict entry was created and awaits adjudication.
     Conflict {
         conflict_id: String,
@@ -265,6 +296,59 @@ mod tests {
         assert_eq!(value["type"], "peer_joined");
         assert_eq!(value["session_id"], "s-2");
         assert_eq!(value["display_name"], "工艺乙");
+    }
+
+    /// A downgrade as it has always been written — `reason` and `holder`
+    /// only — still reads, and the tier it came from is said only when
+    /// there is one to say.
+    #[test]
+    fn a_downgrade_says_its_tier_only_when_it_has_one() {
+        let plain: ServerMessage =
+            serde_json::from_str(r#"{"type":"readonly_downgrade","reason":"图纸已切换为只读","holder":"s-1"}"#)
+                .expect("the two-field form must parse");
+        assert_eq!(
+            plain,
+            ServerMessage::ReadonlyDowngrade {
+                reason: "图纸已切换为只读".into(),
+                holder: Some("s-1".into()),
+                level: None,
+                code: None,
+            }
+        );
+        let text = serde_json::to_string(&plain).expect("serialize");
+        assert!(!text.contains("level") && !text.contains("code"), "{text}");
+
+        let by_role = ServerMessage::ReadonlyDowngrade {
+            reason: "角色不允许编辑图纸".into(),
+            holder: None,
+            level: Some("role".into()),
+            code: Some(codes::PERM_DENIED_ROLE.into()),
+        };
+        let value: Value = serde_json::to_value(&by_role).expect("serialize");
+        assert_eq!(value["level"], "role");
+        assert_eq!(value["code"], "PERM_DENIED_ROLE");
+        assert!(value["holder"].is_null());
+    }
+
+    /// An attempt carries what was tried and on what; both may be absent.
+    #[test]
+    fn an_attempt_round_trips_and_tolerates_missing_fields() {
+        let raw = r#"{"type":"attempt","session_id":"s-1","object_ref":"P-1001","text":"PIDTAG P-1001 P-1009"}"#;
+        let msg: ClientMessage = serde_json::from_str(raw).expect("attempt must parse");
+        assert_eq!(
+            msg,
+            ClientMessage::Attempt {
+                session_id: "s-1".into(),
+                object_ref: "P-1001".into(),
+                text: "PIDTAG P-1001 P-1009".into(),
+            }
+        );
+        let bare: ClientMessage =
+            serde_json::from_str(r#"{"type":"attempt","session_id":"s-1"}"#).expect("bare attempt");
+        assert!(matches!(
+            bare,
+            ClientMessage::Attempt { object_ref, text, .. } if object_ref.is_empty() && text.is_empty()
+        ));
     }
 
     #[test]

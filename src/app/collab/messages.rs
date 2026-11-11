@@ -68,7 +68,7 @@ pub(super) fn classify(text: &str) -> Frame {
             revision,
             changes,
         }),
-        ServerMessage::ReadonlyDowngrade { reason, holder } => {
+        ServerMessage::ReadonlyDowngrade { reason, holder, .. } => {
             Frame::Event(CollabEvent::ReadonlyDowngrade { reason, holder })
         }
         ServerMessage::Error {

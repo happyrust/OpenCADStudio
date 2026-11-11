@@ -546,6 +546,9 @@ pub async fn handle_message(
             payload,
             ..
         } => op(state, &session, &conn.peer_addr, base_revision, op_id, payload, now).await,
+        ClientMessage::Attempt {
+            object_ref, text, ..
+        } => attempt(state, &session, &conn.peer_addr, &object_ref, &text, now).await,
         ClientMessage::Hello { .. } => unreachable!("hello is handled before the session check"),
     }
 }
@@ -582,6 +585,15 @@ async fn hello(
         )
     };
     let session_id = new_session_id();
+    // A user whose role does not edit drawings joins as a viewer, whatever
+    // mode the client asked for. The session then counts as no editor
+    // anywhere: it takes no 单人编辑 slot, and is never the one left
+    // holding the edit right of a drawing that goes 只读.
+    let mode = if crate::access::role_edits(state, user_id) == Some(false) {
+        "只读"
+    } else {
+        mode
+    };
     let outcome = {
         let mut sessions = state.sessions.lock().await;
         sessions.open(OpenRequest {
@@ -703,6 +715,20 @@ async fn hello(
                     message: ServerMessage::PeerJoined(peer_of(&session)),
                 },
             ]);
+            // A session that may not write is told so as it comes in: its
+            // user's role does not edit, or the drawing is 只读 already (a
+            // downgrade used to reach only the sessions that were there
+            // when the state changed).
+            if let Some(denied) = crate::access::write_access(state, &session).await {
+                println!(
+                    "[ocs_collab_server] 单播 readonly_downgrade session={} user={user_id} level={} holder={} reason={} (hello)",
+                    session.session_id,
+                    denied.level.as_str(),
+                    denied.holder.as_deref().unwrap_or("(无)"),
+                    denied.reason
+                );
+                reactions.push(Reaction::Send(denied.downgrade()));
+            }
             reactions
         }
     }
@@ -886,6 +912,25 @@ async fn op(
         return vec![Reaction::Send(error_message(&code, "会话已失效，无法提交操作"))];
     }
 
+    // A session that may not write does not write, whatever its client
+    // believes: the client's own gate is a courtesy, and is not there at all
+    // in a client that reconnected before it heard, or is another program.
+    if let Some(denied) = crate::access::write_access(state, session).await {
+        let first = op_changes(&payload).into_iter().next().unwrap_or(Value::Null);
+        let kind = first["kind"].as_str().unwrap_or("op").to_owned();
+        let object_ref = first["object_ref"].as_str().unwrap_or_default().to_owned();
+        let tried = describe_change(&kind, &object_ref, &first);
+        record_denied_write(state, session, peer_addr, &object_ref, &tried, &denied, now);
+        println!(
+            "[ocs_collab_server] 入站 op session={} user={} op_id={op_id} base_revision={base_revision} object_ref={object_ref} -> error {} level={} at={now}",
+            session.session_id,
+            session.user_id,
+            denied.code(),
+            denied.level.as_str()
+        );
+        return vec![Reaction::Send(denied.error(&format!("操作 {op_id} ")))];
+    }
+
     // The judgment, the commit and the record of it are one synchronous
     // critical section inside `ops::receive`.
     let outcome = crate::ops::receive(
@@ -911,6 +956,81 @@ async fn op(
             .advance_base_revision(&session.drawing_id, revision);
     }
     outcome.reactions
+}
+
+/// `audit_log.action` of a write that was refused because the session may
+/// not write.
+pub const ACTION_WRITE_DENIED: &str = "write_denied";
+
+/// Puts a refused write on record: who tried what on which object, and why
+/// it did not happen (`VAL-CROSS-004`, `-011`).
+fn record_denied_write(
+    state: &AppState,
+    session: &Session,
+    peer_addr: &str,
+    object_ref: &str,
+    tried: &str,
+    denied: &crate::access::Denied,
+    now: i64,
+) {
+    let Some(store) = &state.store else {
+        return;
+    };
+    let text = format!(
+        "{tried} 被拒绝（只读，{}）：{}",
+        denied.level.as_str(),
+        denied.reason
+    );
+    let row = audit_row(
+        Some(store),
+        session,
+        ACTION_WRITE_DENIED,
+        object_ref,
+        text,
+        peer_addr,
+        now,
+    );
+    if let Err(err) = store.audit_append(&row) {
+        eprintln!("[ocs_collab_server] 写入拒绝审计失败：{err}");
+    }
+}
+
+/// One `attempt`: a client reporting a write it turned away itself. The
+/// drawing is untouched; the record is kept. The reason on record is the
+/// server's own reading of the session's access, not the client's word.
+async fn attempt(
+    state: &AppState,
+    session: &Session,
+    peer_addr: &str,
+    object_ref: &str,
+    text: &str,
+    now: i64,
+) -> Vec<Reaction> {
+    if let Some(code) = session_unavailable(state, &session.session_id).await {
+        return vec![Reaction::Send(error_message(&code, "会话已失效"))];
+    }
+    let tried = if text.trim().is_empty() {
+        "(未说明的写操作)"
+    } else {
+        text.trim()
+    };
+    let denied = crate::access::write_access(state, session)
+        .await
+        .unwrap_or(crate::access::Denied {
+            // The server would have let it through; the client refused on
+            // what it had been told. Said as it is.
+            level: ocs_collab::DenialLevel::State,
+            reason: "客户端处于只读，自行拒绝（服务器此刻判定该会话可写）".to_owned(),
+            holder: None,
+        });
+    record_denied_write(state, session, peer_addr, object_ref, tried, &denied, now);
+    println!(
+        "[ocs_collab_server] 入站 attempt session={} user={} object_ref={object_ref} level={} -> 记审计 {ACTION_WRITE_DENIED} at={now}",
+        session.session_id,
+        session.user_id,
+        denied.level.as_str()
+    );
+    vec![Reaction::Nothing]
 }
 
 /// One housekeeping pass: mark timed-out sessions stale and expire claims.
@@ -1045,7 +1165,8 @@ fn message_session_id(message: &ClientMessage) -> &str {
         ClientMessage::Heartbeat { session_id }
         | ClientMessage::Claim { session_id, .. }
         | ClientMessage::Release { session_id, .. }
-        | ClientMessage::Op { session_id, .. } => session_id,
+        | ClientMessage::Op { session_id, .. }
+        | ClientMessage::Attempt { session_id, .. } => session_id,
         ClientMessage::Hello { .. } => "",
     }
 }

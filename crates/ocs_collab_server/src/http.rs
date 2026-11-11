@@ -330,7 +330,14 @@ async fn drawing_state(
     }
 
     if next_state == DrawingState::ReadOnly {
-        downgrade_all_but_the_holder(&state, &drawing_id, &active_editors, &user_id).await;
+        settle_readonly(&state, &drawing_id, &user_id).await;
+    } else {
+        // No longer 只读: there is no edit right to hold.
+        state
+            .holders
+            .lock()
+            .expect("holders mutex poisoned")
+            .remove(&drawing_id);
     }
 
     (
@@ -340,60 +347,77 @@ async fn drawing_state(
         .into_response()
 }
 
-/// Tells every live session on a drawing that just became 只读 that it may no
-/// longer write — every session but the one holding the edit right, which
-/// goes on writing and is told nothing (`VAL-CLI-011`).
+/// Settles who writes on a drawing that just became 只读, and tells every
+/// live session on it (`VAL-CLI-011`).
 ///
-/// The holder is the earliest live editing session the drawing had when the
-/// state changed (`active_editors` is ordered by creation time), named by its
-/// session id so the same user's second session is not mistaken for it. With
-/// nobody editing there is no holder, and everybody is downgraded.
+/// One session keeps the edit right and goes on writing: the editing session
+/// that has been on the drawing longest (`access::first_editor` — join
+/// order, live, editing, and with a socket to be told on). It is named by
+/// its session id, so the same user's second session is not mistaken for it.
+/// With nobody editing there is no holder, and nobody writes.
 ///
 /// 契约未规定，待用户确认：`VAL-CLI-011` 只说「`u1`（编辑权持有者）」，没有
 /// 说以「把图纸状态改成只读」触发降级时谁算持有者。上面这条规则（切换那
-/// 一刻最早建立的活跃编辑会话）是实现方的选择，见状态文档 §13.4 之 2 与
-/// §14.3。
+/// 一刻在图上时间最长的活跃编辑会话）是实现方的选择，见状态文档 §13.4 之 2
+/// 与 §14.3。
 ///
-/// A downgrade is about one session's access, so it goes out on that
-/// session's own channel rather than to the room: the room would hand it to
-/// the holder as well.
-async fn downgrade_all_but_the_holder(
-    state: &AppState,
-    drawing_id: &str,
-    active_editors: &[(String, String)],
-    changed_by: &str,
-) {
-    let holder = active_editors
-        .first()
-        .map(|(session_id, _)| session_id.clone());
-    let downgraded: Vec<(String, String)> = state
-        .sessions
-        .lock()
-        .await
-        .active_peers(drawing_id)
-        .into_iter()
-        .filter(|session| Some(&session.session_id) != holder.as_ref())
-        .map(|session| (session.session_id, session.user_id))
-        .collect();
-    let message = ocs_collab::ServerMessage::ReadonlyDowngrade {
+/// Choosing the holder, recording it and telling the sessions are one step,
+/// under the registry's lock. They used to be read at two moments — the
+/// editors before the permission check, the sessions to tell after the
+/// write — and a holder that left in between was still named, with nobody
+/// able to write.
+///
+/// Every session is told, the holder too: the message names the holder, and
+/// a session that finds its own id there knows the edit right is its own.
+/// (It used to be told nothing — and a session downgraded once, then made
+/// holder by a later switch, went on believing it could not write.) The
+/// message is about one session's access, so it goes out on each session's
+/// own channel rather than to the room.
+///
+/// The record of the holder is what the op gate reads (`access::write_access`)
+/// and what a session joining later is told.
+async fn settle_readonly(state: &AppState, drawing_id: &str, changed_by: &str) {
+    let registry = state.sessions.lock().await;
+    let direct = state.direct.lock().expect("direct mutex poisoned");
+    let holder = registry
+        .all()
+        .iter()
+        .find(|session| {
+            session.drawing_id == drawing_id
+                && session.is_active()
+                && session.is_editing()
+                && direct.contains_key(&session.session_id)
+        })
+        .map(|session| session.session_id.clone());
+    {
+        let mut holders = state.holders.lock().expect("holders mutex poisoned");
+        match &holder {
+            Some(holder) => holders.insert(drawing_id.to_owned(), holder.clone()),
+            None => holders.remove(drawing_id),
+        };
+    }
+    let message = crate::access::Denied {
+        level: ocs_collab::DenialLevel::State,
         reason: "图纸已切换为只读".to_owned(),
         holder: holder.clone(),
-    };
+    }
+    .downgrade();
     let holder_text = holder.as_deref().unwrap_or("(无)");
+    let told = registry.active_peers(drawing_id);
     println!(
-        "[ocs_collab_server] 图纸切只读 drawing={drawing_id} by={changed_by} holder={holder_text} -> 降级 {} 个会话 at={}",
-        downgraded.len(),
+        "[ocs_collab_server] 图纸切只读 drawing={drawing_id} by={changed_by} holder={holder_text} -> 通知 {} 个会话 at={}",
+        told.len(),
         chrono::Utc::now().timestamp()
     );
-    let direct = state.direct.lock().expect("direct mutex poisoned");
-    for (session_id, user_id) in &downgraded {
+    for session in &told {
         // A session with no socket (opened over HTTP, or just disconnected)
         // has nobody to tell; it learns its access the next time it asks.
         let delivered = direct
-            .get(session_id)
+            .get(&session.session_id)
             .is_some_and(|sender| sender.send(message.clone()).is_ok());
         println!(
-            "[ocs_collab_server] 单播 readonly_downgrade session={session_id} user={user_id} holder={holder_text} delivered={delivered}"
+            "[ocs_collab_server] 单播 readonly_downgrade session={} user={} holder={holder_text} delivered={delivered}",
+            session.session_id, session.user_id
         );
     }
 }
@@ -407,7 +431,7 @@ async fn downgrade_all_but_the_holder(
 /// registry is unioned in as well, because a socket that has just opened may
 /// not have been mirrored to the table yet; a session present in both is
 /// deduplicated by id.
-async fn active_editors_on(state: &AppState, drawing_id: &str) -> Vec<(String, String)> {
+pub(crate) async fn active_editors_on(state: &AppState, drawing_id: &str) -> Vec<(String, String)> {
     let mut live: Vec<(String, String)> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
@@ -1402,8 +1426,9 @@ mod tests {
     }
 
     /// VAL-CLI-011: a drawing switched to 只读 downgrades every live session on
-    /// it except the one holding the edit right — the earliest live editing
-    /// session — which is told nothing and goes on writing.
+    /// it except the one holding the edit right — the editing session that
+    /// has been on it longest — which goes on writing. Every session is told
+    /// who that is, the holder too: finding its own id there is how it knows.
     #[tokio::test]
     async fn switching_to_readonly_downgrades_everyone_but_the_holder() {
         let state = seeded_state();
@@ -1419,26 +1444,309 @@ mod tests {
         for (who, receiver) in [
             ("the second editor", &mut second_rx),
             ("the session that was read-only already", &mut viewer_rx),
+            ("the holder itself", &mut holder_rx),
         ] {
             match receiver.try_recv() {
                 Ok(ocs_collab::ServerMessage::ReadonlyDowngrade {
                     reason,
                     holder: named,
+                    level,
+                    code,
                 }) => {
                     assert!(!reason.is_empty(), "{who}: the reason is stated");
                     assert_eq!(named.as_deref(), Some(holder.as_str()), "{who}");
+                    assert_eq!(level.as_deref(), Some("state"), "{who}");
+                    assert_eq!(code.as_deref(), Some(codes::PERM_DENIED_STATE), "{who}");
                 }
-                other => panic!("{who} must be downgraded, got {other:?}"),
+                other => panic!("{who} must be told, got {other:?}"),
             }
             assert!(receiver.try_recv().is_err(), "{who} is told once");
         }
-        assert!(
-            holder_rx.try_recv().is_err(),
-            "the holder keeps the edit right and is told nothing"
+        assert_eq!(
+            crate::access::holder_of(&state, "d-a1-coop").as_deref(),
+            Some(holder.as_str()),
+            "and the server remembers who holds it"
         );
         assert!(
             room.try_recv().is_none(),
             "a downgrade is addressed to each session, never published to the room"
+        );
+    }
+
+    /// Opens a session the way a socket does and keeps the connection, so
+    /// the test can go on speaking for it.
+    async fn live_conn(
+        state: &AppState,
+        user_id: &str,
+        now: i64,
+    ) -> (crate::ws::Connection, Vec<crate::ws::Reaction>) {
+        let mut conn = crate::ws::Connection::new("127.0.0.1");
+        let reactions = crate::ws::handle_message(
+            state,
+            &mut conn,
+            ocs_collab::ClientMessage::Hello {
+                user_id: user_id.into(),
+                drawing_id: "d-a1-coop".into(),
+                mode: "协同编辑".into(),
+                client_version: "test".into(),
+                workspace: "plant-a".into(),
+            },
+            now,
+        )
+        .await;
+        let session_id = conn.session.as_ref().expect("handshaken").session_id.clone();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        state
+            .direct
+            .lock()
+            .expect("direct mutex")
+            .insert(session_id, sender);
+        (conn, reactions)
+    }
+
+    async fn write(
+        state: &AppState,
+        conn: &mut crate::ws::Connection,
+        op_id: &str,
+        value: &str,
+    ) -> Vec<crate::ws::Reaction> {
+        let session_id = conn.session.as_ref().expect("session").session_id.clone();
+        let base_revision = crate::ws::current_revision(state, "d-a1-coop");
+        crate::ws::handle_message(
+            state,
+            conn,
+            ocs_collab::ClientMessage::Op {
+                session_id,
+                base_revision,
+                op_id: op_id.into(),
+                payload: json!({
+                    "kind": "set_property", "object_ref": "P-1001",
+                    "field": "设计压力", "value": value,
+                }),
+            },
+            ocs_collab::now_unix(),
+        )
+        .await
+    }
+
+    fn downgrade_in(reactions: &[crate::ws::Reaction]) -> Option<(Option<String>, Option<String>, Option<String>)> {
+        reactions.iter().find_map(|reaction| match reaction {
+            crate::ws::Reaction::Send(ocs_collab::ServerMessage::ReadonlyDowngrade {
+                holder,
+                level,
+                code,
+                ..
+            }) => Some((holder.clone(), level.clone(), code.clone())),
+            _ => None,
+        })
+    }
+
+    fn refusal_in(reactions: &[crate::ws::Reaction]) -> Option<(String, Option<String>)> {
+        reactions.iter().find_map(|reaction| match reaction {
+            crate::ws::Reaction::Send(ocs_collab::ServerMessage::Error { code, level, .. }) => {
+                Some((code.clone(), level.clone()))
+            }
+            _ => None,
+        })
+    }
+
+    fn applied_in(reactions: &[crate::ws::Reaction]) -> bool {
+        reactions.iter().any(|reaction| {
+            matches!(
+                reaction,
+                crate::ws::Reaction::Published {
+                    message: ocs_collab::ServerMessage::OpApplied { .. },
+                    ..
+                }
+            )
+        })
+    }
+
+    fn denied_rows(state: &AppState, user_id: &str) -> Vec<crate::store::AuditRow> {
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .audit_query(&AuditQuery {
+                user_id: Some(user_id.to_owned()),
+                ..AuditQuery::default()
+            })
+            .expect("audit")
+            .items
+            .into_iter()
+            .filter(|row| row.action == crate::ws::ACTION_WRITE_DENIED)
+            .collect()
+    }
+
+    /// `VAL-CROSS-004`: a user whose role does not edit drawings joins as a
+    /// viewer whatever mode the client asked for, and is told so as it comes
+    /// in — by tier, so its client can answer a refused write the same way.
+    #[tokio::test]
+    async fn a_role_that_does_not_edit_joins_as_a_viewer_and_is_told() {
+        let state = seeded_state();
+        let (conn, reactions) = live_conn(&state, "u-view", ocs_collab::now_unix()).await;
+        assert_eq!(conn.session.as_ref().expect("session").mode, "只读");
+        assert_eq!(
+            downgrade_in(&reactions),
+            Some((
+                None,
+                Some("role".to_owned()),
+                Some(codes::PERM_DENIED_ROLE.to_owned())
+            )),
+            "{reactions:?}"
+        );
+        // And somebody who does edit is told nothing of the kind.
+        let (editor, reactions) = live_conn(&state, "u-proc", ocs_collab::now_unix()).await;
+        assert_eq!(editor.session.as_ref().expect("session").mode, "协同编辑");
+        assert_eq!(downgrade_in(&reactions), None);
+    }
+
+    /// The server's own gate. A session that may not write and sends an op
+    /// all the same — its client never heard, reconnected, or is another
+    /// program — is refused by tier, nothing happens to the drawing, and the
+    /// attempt is on record under the object it was aimed at.
+    #[tokio::test]
+    async fn an_op_from_a_session_that_may_not_write_is_refused_and_put_on_record() {
+        let state = seeded_state();
+        let (mut checker, _) = live_conn(&state, "u-view", ocs_collab::now_unix()).await;
+        let mut room = state.bus.subscribe("d-a1-coop");
+
+        let reactions = write(&state, &mut checker, "op-1", "2.5MPa").await;
+        assert_eq!(
+            refusal_in(&reactions),
+            Some((codes::PERM_DENIED_ROLE.to_owned(), Some("role".to_owned()))),
+            "{reactions:?}"
+        );
+        assert!(!applied_in(&reactions));
+        assert!(room.try_recv().is_none(), "the room hears nothing");
+        assert_eq!(crate::ws::current_revision(&state, "d-a1-coop"), 0);
+
+        let rows = denied_rows(&state, "u-view");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].object_ref, "P-1001");
+        assert!(rows[0].change_text.contains("设计压力"), "{}", rows[0].change_text);
+        assert!(rows[0].change_text.contains("只读"), "{}", rows[0].change_text);
+    }
+
+    /// 只读 has one writer: the holder goes on writing, everybody else is
+    /// refused at the state tier and told who holds it. A session that joins
+    /// afterwards is told the same as it comes in (it used to be told
+    /// nothing, and to write). Out of 只读 again, everybody writes.
+    #[tokio::test]
+    async fn on_a_readonly_drawing_only_the_holder_writes() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let (mut holder, _) = live_conn(&state, "u-proc", now - 20).await;
+        let (mut second, _) = live_conn(&state, "u-admin", now - 10).await;
+        let holder_id = holder.session.as_ref().expect("session").session_id.clone();
+        assert_eq!(switch_state(&state, "只读").await, StatusCode::OK);
+
+        assert!(applied_in(&write(&state, &mut holder, "op-h", "1.6MPa").await));
+        let refused = write(&state, &mut second, "op-s", "2.5MPa").await;
+        assert_eq!(
+            refusal_in(&refused),
+            Some((codes::PERM_DENIED_STATE.to_owned(), Some("state".to_owned()))),
+            "{refused:?}"
+        );
+        assert_eq!(denied_rows(&state, "u-admin").len(), 1);
+
+        // A second session of a user who does edit, joining afterwards.
+        let (mut late, reactions) = live_conn(&state, "u-admin", now).await;
+        assert_eq!(
+            downgrade_in(&reactions),
+            Some((
+                Some(holder_id),
+                Some("state".to_owned()),
+                Some(codes::PERM_DENIED_STATE.to_owned())
+            )),
+            "{reactions:?}"
+        );
+        assert!(refusal_in(&write(&state, &mut late, "op-l", "4.0MPa").await).is_some());
+    }
+
+    /// The holder is a session somebody is behind: one opened over HTTP has
+    /// no socket and is passed over, however early it was. And among those
+    /// with a socket it is the one that joined first — two sessions opened
+    /// in the same second used to be told apart by their random ids.
+    #[tokio::test]
+    async fn the_holder_is_the_first_to_have_joined_among_sessions_with_a_socket() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        // An editing session with no socket, earlier than everybody.
+        {
+            let mut registry = state.sessions.lock().await;
+            registry.open(ocs_collab::OpenRequest {
+                session_id: "s-http-only",
+                drawing_id: "d-a1-coop",
+                user_id: "u-proc",
+                display_name: "u-proc",
+                mode: "协同编辑",
+                workspace: "plant-a",
+                base_revision: 0,
+                now: now - 60,
+            });
+        }
+        // Two with a socket, in the same second.
+        let (first, _) = live_conn(&state, "u-proc", now).await;
+        let (_second, _) = live_conn(&state, "u-admin", now).await;
+        let first_id = first.session.as_ref().expect("session").session_id.clone();
+
+        assert_eq!(switch_state(&state, "只读").await, StatusCode::OK);
+        assert_eq!(
+            crate::access::holder_of(&state, "d-a1-coop").as_deref(),
+            Some(first_id.as_str())
+        );
+    }
+
+    /// An `attempt` is a client saying it turned a write away itself. Nothing
+    /// happens to the drawing; the record is kept, with the server's own
+    /// reading of why the session may not write.
+    #[tokio::test]
+    async fn an_attempt_is_put_on_record_and_changes_nothing() {
+        let state = seeded_state();
+        let (mut checker, _) = live_conn(&state, "u-view", ocs_collab::now_unix()).await;
+        let session_id = checker.session.as_ref().expect("session").session_id.clone();
+        let mut room = state.bus.subscribe("d-a1-coop");
+
+        let reactions = crate::ws::handle_message(
+            &state,
+            &mut checker,
+            ocs_collab::ClientMessage::Attempt {
+                session_id,
+                object_ref: "P-1001".into(),
+                text: "PIDTAG P-1001 P-1009".into(),
+            },
+            ocs_collab::now_unix(),
+        )
+        .await;
+        assert!(refusal_in(&reactions).is_none(), "{reactions:?}");
+        assert!(room.try_recv().is_none());
+        assert_eq!(crate::ws::current_revision(&state, "d-a1-coop"), 0);
+
+        let rows = denied_rows(&state, "u-view");
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].object_ref, "P-1001");
+        assert!(rows[0].change_text.contains("PIDTAG P-1001 P-1009"));
+        assert!(rows[0].change_text.contains("角色"), "{}", rows[0].change_text);
+    }
+
+    /// 单人编辑 with two users on the drawing: the one that was there first
+    /// writes, the other does not. The chain alone says "somebody else is
+    /// editing" of both of them.
+    #[tokio::test]
+    async fn on_a_single_editor_drawing_the_first_editor_writes_and_the_second_does_not() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let (mut first, _) = live_conn(&state, "u-proc", now - 20).await;
+        let (mut second, _) = live_conn(&state, "u-admin", now - 10).await;
+        assert_eq!(switch_state(&state, "单人编辑").await, StatusCode::OK);
+
+        assert!(applied_in(&write(&state, &mut first, "op-1", "1.6MPa").await));
+        let refused = write(&state, &mut second, "op-2", "2.5MPa").await;
+        assert_eq!(
+            refusal_in(&refused),
+            Some((codes::PERM_DENIED_STATE.to_owned(), Some("state".to_owned()))),
+            "{refused:?}"
         );
     }
 
@@ -1494,6 +1802,8 @@ mod tests {
               ],
               "pbs_nodes":[{"node_id":"P-ROOT","name":"工厂","node_type":"工厂"}],
               "pbs_acl":[
+                {"node_id":"P-ROOT","subject":"u1","permission":"编辑","allowed":true},
+                {"node_id":"P-ROOT","subject":"u2","permission":"编辑","allowed":true},
                 {"node_id":"P-ROOT","subject":"u3","permission":"查看","allowed":true},
                 {"node_id":"P-ROOT","subject":"u4","permission":"编辑","allowed":true}
               ],
