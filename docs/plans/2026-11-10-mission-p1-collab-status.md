@@ -1008,19 +1008,19 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 | **S1** 只读放行名单里有写命令 | 没修 | — | — | 与 S2、`VAL-CROSS-004/011` 的只读总闸一起做 |
 | **S2** 只读只靠客户端自觉，断线即解除 | 没修 | — | — | 同上 |
 | **S3** 变更丢了基线照样前进 | 已修 | `9cc429cce` | 通道满：`a_peers_change_waits_for_room_in_the_channel_instead_of_being_dropped`、`a_waiting_change_gives_up_when_the_subscription_is_gone`、`…_when_the_app_is_quitting`。修订不连续：`a_revision_that_skips_one_marks_the_session_and_stops_its_ops`、`a_revision_already_seen_is_dropped`、`coming_back_to_a_room_that_moved_on_marks_the_session`。应用不上：`a_change_this_drawing_cannot_follow_stops_the_sessions_writes`、`an_op_this_client_cannot_read_marks_the_session_too`。面板：`a_session_that_parted_from_the_room_draws_the_badge`。服务器按提交次序发布：`an_applied_op_is_announced_before_the_drawing_is_unlocked` | 标记之后没有自动恢复，只能取得最新图纸重开。重连时由服务器补发错过的 op 放在 `cross-area-flows`（`VAL-CROSS-008`）。自己的 op 被服务器拒绝后本地改动还在，也是一种不一致，同样在那里处理 |
-| **S4** 入站变更进了本地撤销栈 | 没修 | — | — | 下一项，单独提交 |
+| **S4** 入站变更进了本地撤销栈 | 已修 | `be0582ea7`（单独提交，退回只需 revert 它） | `undo_takes_back_this_persons_step_and_leaves_a_peers_change_alone`、`undo_puts_back_ones_own_field_and_keeps_the_field_a_peer_changed`、`undoing_a_value_a_peer_has_since_overwritten_changes_nothing_and_says_nothing`、`a_peers_change_leaves_this_persons_redo_in_place`、`an_undo_after_a_peers_retag_names_the_object_by_the_tag_it_has_now`；`pidpipe` 的 `undoing_ones_own_run_edit_keeps_what_a_peer_later_set_on_the_line` | 做法见 §15.7。属性溢出到 XRecord 的对象，撤销后别人的改动由重放写回，但向房间说的差里不含这类对象的属性 |
 | **S5** 远端应用不调 `propagate_pid_chain` | 已修 | `cce14ba77` | `a_remote_line_change_is_carried_down_to_runs_and_segments`（`src/app/commands/pidpipe.rs`） | 拓扑表里的属性副本由 `propagate_pid_chain` 末尾的 `sync_props_from_document` 对齐 |
-| **S6** `object_ref` 的边界 | 部分修 | `cce14ba77` | 空位号对象：`a_change_naming_no_tag_is_not_applied_by_its_handle_alone`、`a_change_to_an_untagged_object_is_not_stated`。`already_retagged` 的两半：`a_retag_fitting_several_symbols_is_reported_even_when_the_new_tag_exists` | 多个实体同一个位号（管线、信号线）；两端各自新建的同位号对象；占用与 `object_ref` 共用的规范形式；`already_retagged` 只在句柄对得上时才算；一个 op 里认不出的变更要报。下一项 |
+| **S6** `object_ref` 的边界 | 六条里修了五条 | `cce14ba77`、`acc55ff73` | 空位号对象：`a_change_naming_no_tag_is_not_applied_by_its_handle_alone`、`a_change_to_an_untagged_object_is_not_stated`。多个实体同一个位号：`a_line_drawn_as_several_entities_is_one_object_to_a_change_naming_its_tag`、`only_the_pieces_of_one_line_count_as_one_object`、`a_change_made_to_several_entities_of_one_object_is_stated_once`、`handles_that_only_partly_match_are_not_believed`；`pidpipe` 的 `a_remote_change_to_a_line_drawn_in_several_stretches_reaches_the_line`。`already_retagged`：`a_retag_fitting_several_symbols_is_reported_even_when_the_new_tag_exists`、`a_retag_this_drawing_never_had_is_reported_though_the_new_tag_is_here`。认不出的变更：`changes_this_client_cannot_read_are_named_not_dropped`、`an_op_read_only_in_part_is_applied_as_far_as_it_goes_and_said_to_be_short`。规范形式：`a_typed_tag_is_claimed_as_the_drawing_spells_it`、`a_typed_tag_fitting_two_spellings_stands_as_typed`、`a_release_finds_the_claim_by_the_spelling_it_was_made_under` | **两端各自新建的同位号对象**没有修：根子在新建不广播，随 `cross-area-flows` 的新建与删除广播一起做（服务器保证位号唯一，`VAL-CROSS-010`） |
 | **S7** `op_id` 只在进程内唯一 | 已修 | `9cc429cce` | `two_sessions_never_make_the_same_op_id` | 被服务器拒绝的 op 的 id 仍留在 `own_ops` 里（最多 64 个）。id 带会话号之后它不会再被别人的 op 撞上 |
 | **S8** 持有者规则的竞争与边界 | 没修 | — | — | |
 | **S9** 记账 | 已改 | 本文档 | — | §0 与 §13.3 改成 13 条成立、7 条部分成立（003、005、009、011、013、018、019） |
-| **N1** 重试计数建成会话后不归零 | 没修 | — | — | |
+| **N1** 重试计数建成会话后不归零 | 已修 | `a5f28544b` | `a_session_that_came_up_starts_the_retry_ladder_again` | |
 | **N2** `shutdown()` 预算过后无条件 `join()` | 已修 | `9cc429cce` | `a_wedged_worker_does_not_hold_the_quit_past_its_budget`、`a_worker_that_stops_is_joined_within_the_budget` | |
-| **N3** 本地开着的撤销步被远端折叠关掉时不广播 | 没修 | — | — | 与 S4 一起 |
+| **N3** 本地开着的撤销步被远端折叠关掉时不广播 | 已修 | `be0582ea7` | `a_step_still_open_when_a_peers_change_arrives_goes_out_as_this_persons` | 那一步仍然会被关掉（一条命令的撤销被分成两步），只是不再丢；不截断需要让记录器暂停，文档库没有这个接口 |
 | **N4** `__overrides` 不随变更走；远端改位号一律 `manual` | 没修 | — | — | |
 | **N5** 心跳把旧基线写回；`welcome` 的修订读在进房间之前 | 已修 | `9cc429cce` | `rewriting_a_session_row_never_takes_its_baseline_back`、`a_session_that_joins_hears_the_op_right_after_the_revision_it_was_told` | |
 | **N6** 客户端日志不分级；连接地址原样进日志 | 没修 | — | — | |
-| **N7** 异步写法的检索只扫一层 | 没修 | — | — | |
+| **N7** 异步写法的检索只扫一层 | 已修 | `a5f28544b` | `nothing_under_this_module_is_asynchronous_code` 现在递归 | |
 | **N8** 证据目录里的描述文件 | 已修 | `96f21cf91` | `a_retired_descriptor_is_gone`、`publishing_does_not_overwrite_a_descriptor_already_there`、`quitting_retires_the_descriptor_this_process_published` | 删除记录见 §15.4 |
 | **N9** 证据的卫生 | 没修 | — | — | 这一批修完重跑端到端时处理：两个 GUI 之间的帧存原文、去掉恒为真的检查、`t21_claims` 进 `run_all` |
 
@@ -1055,8 +1055,34 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 | `71c95e90d`、`9cc429cce`、`96f21cf91`（同一次构建，三者改的文件互不相交） | lib 全量 8 遍；协同分组 | 每遍 6075 通过 / 0 失败 / 42 忽略（`B\r4c-lib-full\summary.txt`）；108 通过 |
 | `9cc429cce` | 服务器三个测试程序；`clippy -p ocs_collab -p ocs_collab_server --all-targets` | `ocs_collab` 76、`ocs_collab_server` lib 132、main 12，全部通过；0 警告。红灯输出 `B\r4c-srv-red.log` |
 
+| `acc55ff73`、`a5f28544b`（同一次构建，文件不相交） | lib 全量 3 遍；协同、`pidpipe` 分组 | 每遍 6087 通过 / 0 失败 / 42 忽略；119、27 通过。红灯输出 `B\r4d-s6-n1-red.log` |
+| `be0582ea7` | lib 全量 3 遍；协同、`pidpipe` 分组 | 每遍 6094 通过 / 0 失败 / 42 忽略；125、28 通过。红灯输出 `B\r4e-s4-red.log`（改回旧行为后 7 条失败） |
+
 全量 20 个测试程序、端到端场景、主程序的 clippy 在这一批修正之后一起跑，结果补在本节。
 
 ### 15.6 这一段里要用户过目的
 
 1. **会话的图关掉之后会话怎么办。** 现状：会话还连着，占用不释放，别人的变更在队列里等一张不会回来的图。选项：关图即结束会话（发 close 帧，占用随之释放）；或者保持现状。倾向关图即结束——一个没有图的会话占着位号没有意义——但这是行为上的决定，没有做。
+
+### 15.7 S4 是怎么做的（`be0582ea7`）
+
+默认决定是「撤销只撤自己的改动」。难处在于：本地撤销步里存的是它碰过的实体在那一刻的整份镜像，撤销就是把镜像放回去；别人此后改过同一个实体（哪怕是另一个字段），这个改动不在镜像里，光放回去会把它一起抹掉。
+
+做法：
+
+- 远端变更直接写进图纸，不开撤销步，不动重做栈。写之前把本地还开着的那一步关掉并作为用户自己的一步广播（N3）。
+- 每个远端变更连同它写到的实体记进一个按到达次序编号的日志；每个撤销步记下落栈时已经收过多少条。
+- 在会话那张图上撤销或重做之后，把比这一步晚的远端变更按次序再写一遍（按当时写到的实体写，不按名字找——撤销可能把位号改回去了），然后照常重算下传与位号标注。
+- 撤销、重做向房间说的话，是「撤销之前的图」对「现在的图」的差。自己改过、别人后来又改了的字段，撤销之后仍是别人的值，不向房间说任何话。
+- 没有比这一步更晚的远端变更时（包括不在协同会话里），撤销与重做走的是原来的代码，一行不变。
+
+可观察的结果：
+
+| 情形 | 撤销之后 | 向房间说 |
+|---|---|---|
+| 自己改了 A 的位号，别人改了 B 的属性 | A 的位号回去，B 的属性还在；别人的变更不占撤销栈的一步 | 只有 A 的位号改回 |
+| 同一个对象，自己改字段 F，别人改字段 G | F 回去，G 还在 | 只有 F |
+| 同一个字段，自己改成 b，别人后来改成 c | 仍是 c | 什么都不说 |
+| 自己撤销之后别人改了别的对象 | 重做栈还在，重做照常 | 重做的那一条 |
+| 自己改了属性，别人把这个对象改了名 | 属性回去，名字是别人改的新名字 | 用新名字指这个对象 |
+| 自己改了管路，别人后来改了管线的字段 | 管路自己的字段回去；管路与管段仍是管线现在的值 | 管路自己的字段 |
