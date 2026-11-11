@@ -8,7 +8,7 @@
 //!   step already carries and states what changed in P&ID semantics — a tag,
 //!   a property — instead of shipping geometry. The server only ever sees
 //!   semantics (`architecture.md` §3).
-//! * [`apply_changes`] writes those semantics onto the local document, using
+//! * [`apply_change`] writes those semantics onto the local document, using
 //!   the same `PidAuthor` store the properties panel writes through, so a
 //!   remote tag edit relabels the drawing exactly like a local one.
 //!
@@ -681,7 +681,10 @@ pub fn write_to(doc: &mut Document, targets: &[Handle], change: &Change, applied
     }
 }
 
-/// Write a whole change list onto `doc`, in order.
+/// Write a whole change list onto `doc`, in order. For the tests of this
+/// module: the app goes change by change (`write_remote_changes`), since a
+/// symbol placed or an object erased is its business, not the document's.
+#[cfg(test)]
 pub fn apply_changes(doc: &mut Document, changes: &[Change]) -> Applied {
     let mut applied = Applied::default();
     for change in changes {

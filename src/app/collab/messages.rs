@@ -2,8 +2,11 @@
 //!
 //! The wire shapes live in the shared `ocs_collab` protocol crate, so the
 //! client parses the exact same enum the server serialises instead of
-//! re-deriving field names here. Only the messages that change visible state
-//! become a [`CollabEvent`]; the rest are dropped deliberately.
+//! re-deriving field names here. Every server message is one of three things
+//! to the GUI: something to react to (a [`CollabEvent`]), the end of the
+//! session, or a frame that could not be read. None is passed over — the
+//! one that used to be, `conflict`, is how a person learns their write did
+//! not take effect.
 
 use super::{CollabEvent, PeerInfo, PendingConflict};
 use ocs_collab::protocol::Peer;
@@ -15,8 +18,6 @@ pub(super) enum Frame {
     Event(CollabEvent),
     /// The server asked for a graceful close, or the session is over.
     Close,
-    /// Well-formed JSON that carries nothing this layer acts on.
-    Ignored,
     /// The frame could not be understood at all.
     Unreadable(String),
 }

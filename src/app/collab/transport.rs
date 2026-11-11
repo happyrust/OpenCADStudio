@@ -748,7 +748,6 @@ fn run_session(
                         close(&mut ws);
                         return Ok(Ended::Closed("server closed the session".to_owned()));
                     }
-                    Frame::Ignored => {}
                     Frame::Unreadable(error) => {
                         log(&format!("无法解析服务器帧：{error}"));
                     }
