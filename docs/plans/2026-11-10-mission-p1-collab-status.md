@@ -997,6 +997,12 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 | `71c95e90d` | 测试不再靠墙钟：指针移动的合并闸、双击窗口（§15.3） |
 | `9cc429cce` | S3、S7、N2、N5：变更不再悄悄丢掉；丢了、应用不上都标出来并停止提交；服务器按提交次序发布 `op_applied` |
 | `96f21cf91` | N8：正常退出时删掉自动化通道的描述文件 |
+| `acc55ff73` | S6 余下四条：多实体对象按位号能找到、改名没应用不再当成已应用、认不出的变更要报、占用用图纸里的写法 |
+| `a5f28544b` | N1、N7：会话建成后重连阶梯从头开始；异步写法的检索递归 |
+| `be0582ea7` | S4、N3：撤销只撤自己的改动，别人的变更不进本地撤销栈（行为改动，单独提交） |
+| `97ff6d5de` | S2、S8：只读由服务器把关；后加入的会话当场被告知；持有者在一步里选定 |
+| `e8b4034de` | S1 与只读总闸：每一步编辑必经之处拦下；断线不解除只读；被拒的写操作带层级并上报留痕 |
+| `a0f33b354` | `welcome.peers` 不含连入者自己（行为改动，单独提交） |
 
 ### 15.2 发现项对照表
 
@@ -1005,14 +1011,14 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 | 项 | 现在 | 提交 | 守着的测试 | 还差什么 |
 |---|---|---|---|---|
 | **B1** 会话不绑标签页 | 已修 | `13dad6ef8`、`c1a94dfde` | (a) 入站按绑定的标签页 id 找：`a_remote_change_lands_on_the_sessions_drawing_not_on_the_tab_in_front`；找不到时留在队列里：`a_change_that_arrives_before_the_drawing_is_open_waits_for_it`（未载入）、`a_change_for_a_closed_drawing_stays_queued_and_touches_no_other`（已关闭，走 `Message::TabClose`）。(b) `push_undo_entry`、撤销、重做只在绑定的那一页广播：`an_edit_on_another_drawing_is_not_broadcast_as_the_sessions`（三步都查）。(c) 占用色只涂绑定的那一页：`a_claim_colours_the_sessions_drawing_only`。(d) 启动窗口：`on_tick` 在队列非空时回去应用（上面第二条走的就是这条路）；带文件启动的会话只认显示那个文件的标签页：`a_session_started_on_a_file_waits_for_that_file_not_the_tab_in_front` | 会话的图关掉之后会话还连着（占用不释放，队列只进不出）；同一个文件关掉再开不会重新绑上。关图要不要结束会话，见 §15.6 |
-| **S1** 只读放行名单里有写命令 | 没修 | — | — | 与 S2、`VAL-CROSS-004/011` 的只读总闸一起做 |
-| **S2** 只读只靠客户端自觉，断线即解除 | 没修 | — | — | 同上 |
+| **S1** 只读放行名单里有写命令 | 已修 | `e8b4034de` | 名单：`commands_that_write_are_refused_and_the_forms_that_read_are_not`、`every_command_a_readonly_session_may_run_leaves_the_drawing_as_it_was`。总闸（名单之外的门）：`a_write_that_gets_past_the_command_gate_is_taken_back` | 名单现在只是「提前拒绝」，真正的保障是 `push_undo_entry` 处的总闸（§15.9）。`VAL-CLI-011` 要端到端重跑之后才能改回「成立」 |
+| **S2** 只读只靠客户端自觉，断线即解除 | 已修 | `97ff6d5de`（服务器）、`e8b4034de`（客户端） | 服务器：`an_op_from_a_session_that_may_not_write_is_refused_and_put_on_record`、`on_a_readonly_drawing_only_the_holder_writes`（含后加入的会话当场降级）、`a_role_that_does_not_edit_joins_as_a_viewer_and_is_told`、`on_a_single_editor_drawing_the_first_editor_writes_and_the_second_does_not`。客户端：`a_session_that_may_not_write_still_may_not_while_disconnected` | 图纸离开只读时没有消息告诉被降级的会话；`welcome` 与紧跟的 `readonly_downgrade` 是两帧，中间有一次消息循环的空隙（期间发出的 op 服务器照样拒绝） |
 | **S3** 变更丢了基线照样前进 | 已修 | `9cc429cce` | 通道满：`a_peers_change_waits_for_room_in_the_channel_instead_of_being_dropped`、`a_waiting_change_gives_up_when_the_subscription_is_gone`、`…_when_the_app_is_quitting`。修订不连续：`a_revision_that_skips_one_marks_the_session_and_stops_its_ops`、`a_revision_already_seen_is_dropped`、`coming_back_to_a_room_that_moved_on_marks_the_session`。应用不上：`a_change_this_drawing_cannot_follow_stops_the_sessions_writes`、`an_op_this_client_cannot_read_marks_the_session_too`。面板：`a_session_that_parted_from_the_room_draws_the_badge`。服务器按提交次序发布：`an_applied_op_is_announced_before_the_drawing_is_unlocked` | 标记之后没有自动恢复，只能取得最新图纸重开。重连时由服务器补发错过的 op 放在 `cross-area-flows`（`VAL-CROSS-008`）。自己的 op 被服务器拒绝后本地改动还在，也是一种不一致，同样在那里处理 |
 | **S4** 入站变更进了本地撤销栈 | 已修 | `be0582ea7`（单独提交，退回只需 revert 它） | `undo_takes_back_this_persons_step_and_leaves_a_peers_change_alone`、`undo_puts_back_ones_own_field_and_keeps_the_field_a_peer_changed`、`undoing_a_value_a_peer_has_since_overwritten_changes_nothing_and_says_nothing`、`a_peers_change_leaves_this_persons_redo_in_place`、`an_undo_after_a_peers_retag_names_the_object_by_the_tag_it_has_now`；`pidpipe` 的 `undoing_ones_own_run_edit_keeps_what_a_peer_later_set_on_the_line` | 做法见 §15.7。属性溢出到 XRecord 的对象，撤销后别人的改动由重放写回，但向房间说的差里不含这类对象的属性 |
 | **S5** 远端应用不调 `propagate_pid_chain` | 已修 | `cce14ba77` | `a_remote_line_change_is_carried_down_to_runs_and_segments`（`src/app/commands/pidpipe.rs`） | 拓扑表里的属性副本由 `propagate_pid_chain` 末尾的 `sync_props_from_document` 对齐 |
 | **S6** `object_ref` 的边界 | 六条里修了五条 | `cce14ba77`、`acc55ff73` | 空位号对象：`a_change_naming_no_tag_is_not_applied_by_its_handle_alone`、`a_change_to_an_untagged_object_is_not_stated`。多个实体同一个位号：`a_line_drawn_as_several_entities_is_one_object_to_a_change_naming_its_tag`、`only_the_pieces_of_one_line_count_as_one_object`、`a_change_made_to_several_entities_of_one_object_is_stated_once`、`handles_that_only_partly_match_are_not_believed`；`pidpipe` 的 `a_remote_change_to_a_line_drawn_in_several_stretches_reaches_the_line`。`already_retagged`：`a_retag_fitting_several_symbols_is_reported_even_when_the_new_tag_exists`、`a_retag_this_drawing_never_had_is_reported_though_the_new_tag_is_here`。认不出的变更：`changes_this_client_cannot_read_are_named_not_dropped`、`an_op_read_only_in_part_is_applied_as_far_as_it_goes_and_said_to_be_short`。规范形式：`a_typed_tag_is_claimed_as_the_drawing_spells_it`、`a_typed_tag_fitting_two_spellings_stands_as_typed`、`a_release_finds_the_claim_by_the_spelling_it_was_made_under` | **两端各自新建的同位号对象**没有修：根子在新建不广播，随 `cross-area-flows` 的新建与删除广播一起做（服务器保证位号唯一，`VAL-CROSS-010`） |
 | **S7** `op_id` 只在进程内唯一 | 已修 | `9cc429cce` | `two_sessions_never_make_the_same_op_id` | 被服务器拒绝的 op 的 id 仍留在 `own_ops` 里（最多 64 个）。id 带会话号之后它不会再被别人的 op 撞上 |
-| **S8** 持有者规则的竞争与边界 | 没修 | — | — | |
+| **S8** 持有者规则的竞争与边界 | 已修 | `97ff6d5de` | `the_holder_is_the_first_to_have_joined_among_sessions_with_a_socket`、`switching_to_readonly_downgrades_everyone_but_the_holder`（持有者也收到点名自己的消息）；客户端 `a_downgrade_naming_this_session_as_the_holder_leaves_it_writing` | 规则本身（谁算持有者）仍待确认，见 §14.6 之 2。持有者只记在内存里 |
 | **S9** 记账 | 已改 | 本文档 | — | §0 与 §13.3 改成 13 条成立、7 条部分成立（003、005、009、011、013、018、019） |
 | **N1** 重试计数建成会话后不归零 | 已修 | `a5f28544b` | `a_session_that_came_up_starts_the_retry_ladder_again` | |
 | **N2** `shutdown()` 预算过后无条件 `join()` | 已修 | `9cc429cce` | `a_wedged_worker_does_not_hold_the_quit_past_its_budget`、`a_worker_that_stops_is_joined_within_the_budget` | |
@@ -1057,12 +1063,18 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 
 | `acc55ff73`、`a5f28544b`（同一次构建，文件不相交） | lib 全量 3 遍；协同、`pidpipe` 分组 | 每遍 6087 通过 / 0 失败 / 42 忽略；119、27 通过。红灯输出 `B\r4d-s6-n1-red.log` |
 | `be0582ea7` | lib 全量 3 遍；协同、`pidpipe` 分组 | 每遍 6094 通过 / 0 失败 / 42 忽略；125、28 通过。红灯输出 `B\r4e-s4-red.log`（改回旧行为后 7 条失败） |
+| `97ff6d5de` | 服务器三个测试程序与 clippy；客户端 lib 全量 1 遍 | `ocs_collab` 78、`ocs_collab_server` lib 138、main 12 通过，0 警告；6095 通过 / 0 失败 / 42 忽略。红灯输出 `B\r4f-srv-red.log`（去掉把关后 5 条失败） |
+| `e8b4034de` | lib 全量 3 遍；协同分组 | 每遍 6100 通过 / 0 失败 / 42 忽略；131 通过。红灯输出 `B\r4g-readonly-red.log`（3 条失败） |
+| `a0f33b354` | 服务器三个测试程序与 clippy；客户端 lib 全量 1 遍；协同分组 | 78、138、12 通过，0 警告；6102 通过 / 0 失败 / 42 忽略；133 通过 |
 
 全量 20 个测试程序、端到端场景、主程序的 clippy 在这一批修正之后一起跑，结果补在本节。
 
 ### 15.6 这一段里要用户过目的
 
 1. **会话的图关掉之后会话怎么办。** 现状：会话还连着，占用不释放，别人的变更在队列里等一张不会回来的图。选项：关图即结束会话（发 close 帧，占用随之释放）；或者保持现状。倾向关图即结束——一个没有图的会话占着位号没有意义——但这是行为上的决定，没有做。
+2. **图纸一旦切成只读，就不能再经接口切回去。** 现状：`POST /drawing/{id}/state` 要「授权配置」权限，而授权配置算写操作，只读状态在状态这一层拒绝全部写操作，于是对只读图纸的任何状态切换都回 403（做只读把关的测试时撞到的，`r4f-srv-test-2.log`；这是 M2 的行为，没有改）。`architecture.md` 第 726 行自己两句话对不上：「三态全互通，由授权配置权限持有者操作」与「只读状态下拒绝全部 5 个写操作：…授权配置…」。选项：状态切换这个接口不受状态这一层限制（只看角色与 PBS）；或者保持现状，只读是单向的，要改回去只能动数据库。倾向前者，否则「三态全互通」做不到；没有做。
+3. **图纸离开只读时怎么告诉被降级的会话。** 现状：协议里没有这样的消息，被降级的会话要到重连才知道可以写了。选项：加一条消息（比如 `access_restored`），或者复用 `readonly_downgrade` 并加一个「已恢复」的标志。倾向加一条消息；因为上一条还没定（现在根本离不开只读），没有做。
+4. **权限表之外的用户与图纸。** 现状：用户不在 `users` 表里、或图纸不在 `drawings` 表里（或由 `hello` 自动建出来、没有挂到 PBS 树上）时，服务器不限制写——没有播种的服务器什么都不限制，M1–M6 的测试与契约场景都靠这一点。选项：改成「不在表里就不能写」。倾向保持：权限表是安装时填的，没填等于没有设限；协同协议本身也没有身份认证（`--user` 是自报的）。
 
 ### 15.7 S4 是怎么做的（`be0582ea7`）
 
@@ -1086,3 +1098,54 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 | 自己撤销之后别人改了别的对象 | 重做栈还在，重做照常 | 重做的那一条 |
 | 自己改了属性，别人把这个对象改了名 | 属性回去，名字是别人改的新名字 | 用新名字指这个对象 |
 | 自己改了管路，别人后来改了管线的字段 | 管路自己的字段回去；管路与管段仍是管线现在的值 | 管路自己的字段 |
+
+### 15.8 `welcome.peers` 不含连入者自己（`a0f33b354`）
+
+用户的决定：不含。单独一个提交。
+
+做了什么：
+
+- 服务器 `hello`：`welcome.peers` 是图上其他活跃会话。
+- 客户端：在线名单就是别人；`/api/v1/collab/status` 的 `peers` 是别人（`architecture.md` A.5 的例子就是这样），另给一个诊断字段 `online`（总人数，含本会话）；协同面板把本会话那一行排在最前、标「本机」，标题里的人数是总人数，只有自己时写「暂无其他在线用户」。连上时把名单里与自己会话号相同的一项去掉，所以把自己列进去的旧服务器读出来是一样的。
+- 两条钉着「含自己」的服务器单测改了：`hello_opens_a_session_and_returns_welcome`（原来断言 peers 里有自己，现在断言第一个会话的 peers 为空）、`welcome_payload_contains_peers_and_claims`（原来长度 2，现在长度 1、是先到的那一个）。第三条 `welcome_lists_active_peers_and_outstanding_claims` 看的是注册表不是帧，没有动。
+
+契约里要跟着改的一句（契约在 `.factory` 下只读，没有动）：
+
+| 位置 | 原句 | 建议改成 |
+|---|---|---|
+| `VAL-CLI-003` 2026-11-09 裁决，条目 1 | `u2` 侧收到 `welcome` 且 `peers` 长度为 2、包含 `u1` | `u2` 侧收到 `welcome` 且 `peers` 长度为 1、包含 `u1`（`welcome.peers` 不含连入者自己，与 `VAL-CLI-013`、`VAL-CROSS-006` 一致） |
+| 同上，条目 3 | `u2` 侧自己维护的在线列表计数从 2 变 1（打印 `peersBefore` / `peersAfter`） | 不用改字面：在线列表是「自己加上 `welcome.peers` 里的别人」，2 → 1 仍然成立 |
+
+`VAL-CLI-013` 的「`welcome.peers` 为空数组（首次连入）」「`u2` 的 `welcome.peers` 长度为 1 且含 `u1`」与 `VAL-CROSS-006` 的「`welcome.peers` 为空」现在按字面成立，不用改。
+
+端到端脚本里按旧含义写的检查。原始证据脚本在 `D:\scratch\m6-validation\` 下，没有动；改的是 `E7\m6-rerun\` 里重跑用的副本，每一处都留了带日期的注释：
+
+| 脚本 | 原来 | 现在 |
+|---|---|---|
+| `t10_broadcast.py`（`VAL-CLI-013`） | 注记「契约字面：`welcome.peers` 为空数组 = False（含自己，长度 1）」 | 检查：`peers` 长度 0 且 `online` = 1 |
+| 同上 | 检查：u1 的 `peers` 长度 1 → 2 | 检查：`online` 1 → 2，`peers` 长度 0 → 1 |
+| 同上 | 注记「契约字面：u2 的 `welcome.peers` 长度为 1 = False（含 u2 自己）」 | 检查：长度为 1 |
+| `t23_stale.py`（`VAL-CLI-003`） | 检查：`welcome.peers` 长度为 2、含 u1 | 检查：长度为 1、含 u1 |
+| 同上 | 在线列表 = `welcome.peers`（含自己），2 → 1 | 在线列表 = 自己 + `welcome.peers`，2 → 1 |
+
+`t11_same_user.py`、`t20_session.py` 里的检查（「B 的 peers 含 A」「peers 是数组」）不受影响。这些脚本改完之后还没有重跑；重跑结果补在 §15.5。
+
+### 15.9 只读是怎么把关的（`97ff6d5de`、`e8b4034de`）
+
+审查 S1、S2 与 `VAL-CROSS-004` / `011` 要的是同一件事：不可写的会话改不了图，改不了要有据可查。做成两道，各管一头。
+
+**服务器**（真正的把关）：`access::write_access` 给出一个会话此刻能不能写——已有的权限链（角色 → PBS ACL → 状态，含单人编辑）加上两条链不知道的事：只读图纸仍有一个写的人（持有者）；以查看者身份进来的会话不写。
+
+- 不可写的会话发来的 `op` 被拒：`error` 帧带 `PERM_DENIED_ROLE` / `PERM_DENIED_PBS` / `PERM_DENIED_STATE` 与 `level`，图面、修订、房间都不动，`audit_log` 记一行 `write_denied`（`object_ref` 是它要改的对象，`change_text` 是它要做的改动加上拒绝的层级与原因）。
+- `hello`：角色不允许编辑的用户，会话一律以「只读」模式建立（不占单人编辑的位置，不会被选作持有者）；不可写的会话在 `welcome` 之后当场收到 `readonly_downgrade`，里面带 `level` 与 `code`。
+- 用户或图纸不在权限表里的（没有播种的服务器、测试里随手起的用户），不受限，和以前一样。
+- 持有者：切只读的那一步里，在会话注册表的锁内选定、记下、通知。选的是「在图上时间最长的、有 socket 的活跃编辑会话」（按连入次序，不按秒、不按随机的会话号）。持有者自己也收到消息（点的是它自己的会话号）。
+
+**客户端**（礼貌，加一道总闸）：
+
+- 总闸设在 `push_undo_entry`——每一步编辑不管从哪个门进来（命令、属性面板、夹点、调色板拖放、REST 直接写）最后都交到这里。只读会话在会话那张图上做出来的一步不落栈，当场退回去：图纸、撤销栈、重做栈都和这一步之前一样，不向房间说话。撤销与重做不经过这里，另外拦。
+- 命令入口的放行名单留着，只负责「在命令开口提问之前拒绝」；名单上放错了的动词现在也改不了图。`MEASURE`、`FIND`、`PIDGROUP`、`AUDIT` 移出名单，`PIDLEGEND` 只放行 `REPORT` / `LIST` / `EXPORT`。
+- 断线不解除只读。新会话建起来时由服务器重新决定。
+- 每一次拒绝都告诉服务器（新消息 `attempt`），服务器记 `write_denied`；回给调用方的是 `ok=false`、`code`、`level`，HTTP 403。`code` 在角色与 PBS 这两层是 `PERM_DENIED_ROLE` / `PERM_DENIED_PBS`，在状态这一层仍是 `COLLAB_READONLY`（`VAL-CLI-011` 一直是这个码）。
+
+协议上多了三样（都向后兼容）：`readonly_downgrade` 的可选字段 `level`、`code`；客户端消息 `attempt { object_ref, text }`；`error` 帧在拒绝写操作时带 `level`。
