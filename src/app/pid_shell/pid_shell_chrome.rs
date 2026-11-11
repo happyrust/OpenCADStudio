@@ -1,7 +1,7 @@
 //! The shell as it is drawn: the three bars and their sizes, the navigation,
 //! what the bars say about the collaboration session, what can be pressed —
-//! and the general drawing interface inside it, which has to behave in its
-//! frame exactly as it does in a window of its own.
+//! and the drawing inside it, the general interface's drawing area, which
+//! has to behave in its frame exactly as it does drawn on its own.
 
 use std::collections::BTreeMap;
 
@@ -15,13 +15,21 @@ use crate::ui::style::pid_tokens::ColorToken;
 
 /// The design's frame.
 const WINDOW: Size = Size::new(1600.0, 1000.0);
-/// What the shell leaves of it for the screen.
+/// What the shell's bars and the editor's own parts leave of it for the
+/// drawing: the frame the general interface's drawing area is laid out in.
 const CONTENT: Size = Size::new(
-    WINDOW.width - chrome::NAV_WIDTH,
-    WINDOW.height - chrome::TITLE_BAR_HEIGHT - chrome::STATUS_BAR_HEIGHT,
+    WINDOW.width - chrome::NAV_WIDTH - editor::PALETTE_WIDTH - editor::INSPECTOR_WIDTH,
+    WINDOW.height
+        - chrome::TITLE_BAR_HEIGHT
+        - chrome::STATUS_BAR_HEIGHT
+        - editor::TOOLBAR_HEIGHT
+        - editor::TABS_HEIGHT,
 );
-/// Where the content area starts in the window.
-const ORIGIN: iced::Vector = iced::Vector::new(chrome::NAV_WIDTH, chrome::TITLE_BAR_HEIGHT);
+/// Where that frame starts in the window.
+const ORIGIN: iced::Vector = iced::Vector::new(
+    chrome::NAV_WIDTH + editor::PALETTE_WIDTH,
+    chrome::TITLE_BAR_HEIGHT + editor::TOOLBAR_HEIGHT + editor::TABS_HEIGHT,
+);
 
 // ── An application in a window ───────────────────────────────────────────
 
@@ -48,10 +56,21 @@ fn shell() -> OpenCADStudio {
     launched(false, WINDOW)
 }
 
-/// The general interface on its own, in a window the size of the shell's
-/// content area: what the editor inside the shell has to match.
+/// Another application in the same state, whose drawing is drawn on its
+/// own — the same view of it, in a window the size of the drawing's frame
+/// ([`root`]): what the drawing inside the shell has to match.
 fn alone() -> OpenCADStudio {
-    launched(true, CONTENT)
+    launched(false, WINDOW)
+}
+
+/// What a window of `window` holds: the drawing alone when the window is
+/// the size of the drawing's frame, the whole main window otherwise.
+fn root(app: &OpenCADStudio, window: Size) -> iced::Element<'_, AppMessage> {
+    if window == CONTENT {
+        app.view_classic()
+    } else {
+        app.view_main()
+    }
 }
 
 fn headless() -> iced::Renderer {
@@ -70,7 +89,7 @@ fn drawn(app: &OpenCADStudio, window: Size) -> BTreeMap<String, Rectangle> {
     use iced_test::runtime::user_interface::{Cache, UserInterface};
     crate::ui::wrap_bar::forget_bounds("");
     let mut renderer = headless();
-    let mut ui = UserInterface::build(app.view_main(), window, Cache::default(), &mut renderer);
+    let mut ui = UserInterface::build(root(app, window), window, Cache::default(), &mut renderer);
     ui.draw(
         &mut renderer,
         &app.active_theme,
@@ -88,7 +107,7 @@ fn says(app: &OpenCADStudio, window: Size, label: &str) -> bool {
     use iced_test::runtime::user_interface::{Cache, UserInterface};
     use iced_test::Selector;
     let mut renderer = headless();
-    let mut ui = UserInterface::build(app.view_main(), window, Cache::default(), &mut renderer);
+    let mut ui = UserInterface::build(root(app, window), window, Cache::default(), &mut renderer);
     let mut find = Selector::find(label);
     ui.operate(&renderer, &mut widget::operation::black_box(&mut find));
     matches!(
@@ -114,7 +133,7 @@ fn pointer(app: &mut OpenCADStudio, window: Size, steps: &[(Point, Pointer)]) ->
         });
         let mut messages = Vec::new();
         {
-            let mut ui = UserInterface::build(app.view_main(), window, cache, &mut renderer);
+            let mut ui = UserInterface::build(root(app, window), window, cache, &mut renderer);
             let _ = ui.update(
                 &core_window::Headless,
                 &shell::Waker::noop(),
@@ -212,7 +231,7 @@ fn the_three_bars_have_the_sizes_the_design_gives_them() {
     assert_eq!(at["PID_CHROME:nav"], rect(0.0, 44.0, 208.0, 930.0));
     assert_eq!(at["PID_CHROME:status"], rect(0.0, 974.0, 1600.0, 26.0));
     assert_eq!(at["PID_SHELL:editor"], rect(208.0, 44.0, 1392.0, 930.0));
-    // What the general interface measures by is that area.
+    // What the drawing measures by is its own frame inside that area.
     assert_eq!(app.win_size, (CONTENT.width, CONTENT.height));
 }
 
@@ -368,12 +387,13 @@ fn the_sync_status_says_what_the_session_is() {
 fn the_bars_say_what_is_in_front() {
     let _one = crate::headless_ui_lock();
     let mut app = shell();
+    // The breadcrumb names the screen; the drawing in front is named once,
+    // on its tab in the editor.
     let name = app.tabs[app.active_tab].tab_display_name();
-    assert_eq!(
-        chrome::breadcrumb(&app, PidScreen::Editor),
-        format!("P&ID 编辑器 / {name}")
-    );
-    assert!(says(&app, WINDOW, &format!("P&ID 编辑器 / {name}")));
+    assert_eq!(chrome::breadcrumb(&app, PidScreen::Editor), "P&ID 编辑器");
+    assert!(drawn(&app, WINDOW).contains_key("PID_CHROME:crumb"));
+    assert!(says(&app, WINDOW, &name), "the tab names the drawing");
+    assert!(!says(&app, WINDOW, &format!("P&ID 编辑器 / {name}")));
 
     app.snapper.snap_enabled = true;
     app.ortho_mode = false;
@@ -387,7 +407,10 @@ fn the_bars_say_what_is_in_front() {
         chrome::status_text(&app, PidScreen::Editor),
         "编辑中 · 捕捉 关 · 正交 开"
     );
-    assert!(says(&app, WINDOW, "编辑中 · 捕捉 关 · 正交 开"));
+    // On the bar it is three parts, two of them switches.
+    for part in ["编辑中", "捕捉 关", "正交 开"] {
+        assert!(says(&app, WINDOW, part), "the status bar says {part:?}");
+    }
     app.collab.readonly = true;
     assert_eq!(
         chrome::status_text(&app, PidScreen::Editor),
@@ -422,6 +445,18 @@ fn every_part_of_the_shell_that_can_be_pressed_does_something() {
         ["open https://github.com/HakanSeven12/OpenCADStudio/wiki"]
     );
 
+    // The two drafting aids the status bar names are their switches.
+    let (snap, ortho) = (app.snapper.snap_enabled, app.ortho_mode);
+    let place = at["PID_CHROME:status:snap"].center();
+    assert_eq!(
+        pointer(&mut app, WINDOW, &click(place)),
+        ["ToggleSnapEnabled"]
+    );
+    assert_eq!(app.snapper.snap_enabled, !snap);
+    let place = at["PID_CHROME:status:ortho"].center();
+    assert_eq!(pointer(&mut app, WINDOW, &click(place)), ["ToggleOrtho"]);
+    assert_eq!(app.ortho_mode, !ortho);
+
     // The rest shows and takes no press.
     for part in ["server", "crumb", "avatar", "sync"] {
         let place = at[&format!("PID_CHROME:{part}")].center();
@@ -444,6 +479,8 @@ fn every_part_of_the_shell_that_can_be_pressed_does_something() {
             "nav:editor",
             "server",
             "status",
+            "status:ortho",
+            "status:snap",
             "sync",
             "title"
         ]
@@ -492,8 +529,8 @@ fn lines(app: &OpenCADStudio) -> Vec<([f64; 2], [f64; 2])> {
         .collect()
 }
 
-/// The general interface is laid out in the shell's content area exactly
-/// as in a window of that size, and the drawing area is where the frame
+/// The drawing is laid out in its frame inside the shell exactly as on its
+/// own in a window of that size, and the drawing area is where the frame
 /// puts it.
 #[test]
 fn the_editor_is_laid_out_in_the_content_area_as_in_a_window_of_its_own() {
@@ -539,7 +576,7 @@ fn picture_after(
         });
         let mut messages = Vec::new();
         {
-            let mut ui = UserInterface::build(app.view_main(), window, cache, &mut headless);
+            let mut ui = UserInterface::build(root(app, window), window, cache, &mut headless);
             let _ = ui.update(
                 &core_window::Headless,
                 &shell::Waker::noop(),
@@ -557,7 +594,7 @@ fn picture_after(
     if !rest.is_zero() {
         std::thread::sleep(rest);
     }
-    let mut ui = UserInterface::build(app.view_main(), window, cache, &mut headless);
+    let mut ui = UserInterface::build(root(app, window), window, cache, &mut headless);
     // An interface lays its overlay out when it is updated, and draws none
     // it has not laid out. Twice: a tooltip whose wait is over opens on the
     // first, and is laid out by the second at the latest.
@@ -667,54 +704,53 @@ fn keep_pictures(what: &str, in_shell: &[u8], on_its_own: &[u8]) {
     }
 }
 
-/// Whatever the general interface shows — a tooltip, the menu of a
-/// drawing's tab, the drawing area's own menu, a dialog, a dropdown of the
-/// ribbon, the Start page — it shows at the same place in the
-/// shell's content area as in a window of its own: the two pictures are the
-/// same, pixel for pixel (to within a level or two of anti-aliasing, see
-/// `differing`), and each has the thing in it. The drawing itself is not in
-/// them (a headless frame has no GPU scene); where the pointer lands on it
-/// is the business of the tests below.
+/// Whatever the general interface shows in the drawing's frame — the
+/// tooltip of a docked pallet, the drawing area's own menu, a dialog, and
+/// what stands there while no drawing is open — it shows at the same place
+/// inside the shell as on its own: the two pictures are the same, pixel for
+/// pixel (to within a level or two of anti-aliasing, see `differing`), and
+/// each has the thing in it. The drawing itself is not in them (a headless
+/// frame has no GPU scene); where the pointer lands on it is the business
+/// of the tests below.
+///
+/// Before the editor had its own toolbar and tabs this test held four
+/// things of the general interface's bars, which the module no longer
+/// draws. What became of each:
+///
+/// * the tooltip of a quick access button — now the tooltip of a cell of
+///   the docked symbol palette, which `PIDPALETTE` still opens beside the
+///   drawing: an overlay of a widget inside the frame, as that one was;
+/// * the menu of a drawing's tab (an `iced_aw` overlay) — the editor's tabs
+///   have no menu, and nothing in the frame opens an overlay of that kind
+///   by default; how such an overlay is placed is still held by the test
+///   after this one, on a list that drops from a picker;
+/// * the ribbon's undo-history dropdown — there is no ribbon; the dropdown
+///   the editor has is the connector tool's, outside the frame, and
+///   `pid_editor_screen` presses its rows;
+/// * the Start page — the editor shows none; what stands in its place is
+///   compared here.
 #[test]
 fn what_the_editor_shows_is_drawn_in_the_frame_where_a_window_of_its_own_draws_it() {
-    use std::time::Duration;
     let _one = crate::headless_ui_lock();
     let (mut inside, mut apart) = (shell(), alone());
     let frame = rect(ORIGIN.x, ORIGIN.y, CONTENT.width, CONTENT.height);
     let whole = rect(0.0, 0.0, CONTENT.width, CONTENT.height);
     let width = CONTENT.width as usize;
-    let at_once = Duration::ZERO;
     // One frame each first: the corner widgets of the drawing area go by
     // what the frame before measured.
-    let on_its_own = drawn(&apart, CONTENT);
-    let tab = on_its_own["DOC_TAB:1"];
-    assert_eq!(drawn(&inside, WINDOW)["DOC_TAB:1"], tab + ORIGIN);
-    // A button of the quick access bar: each of them has a tooltip.
-    let button = ["QAT_CUSTOMIZE", "QAT_USER_INTERFACE", "QAT_SWITCH_WINDOWS"]
-        .iter()
-        .find_map(|id| on_its_own.get(*id).copied())
-        .unwrap_or_else(|| {
-            panic!(
-                "a button of the quick access bar is drawn: {:?}",
-                on_its_own.keys().collect::<Vec<_>>()
-            )
-        });
+    let _ = drawn(&apart, CONTENT);
+    let _ = drawn(&inside, WINDOW);
 
     let compare = |inside: &mut OpenCADStudio,
                    apart: &mut OpenCADStudio,
                    what: &str,
-                   steps: &[(Point, Pointer)],
-                   rest: Duration| {
+                   steps: &[(Point, Pointer)]| {
         let shifted: Vec<(Point, Pointer)> = steps
             .iter()
             .map(|(at, step)| (*at + ORIGIN, *step))
             .collect();
-        let in_shell = cut(
-            &picture_after(inside, WINDOW, &shifted, rest),
-            WINDOW,
-            frame,
-        );
-        let on_its_own = cut(&picture_after(apart, CONTENT, steps, rest), CONTENT, whole);
+        let in_shell = cut(&picture(inside, WINDOW, &shifted), WINDOW, frame);
+        let on_its_own = cut(&picture(apart, CONTENT, steps), CONTENT, whole);
         keep_pictures(what, &in_shell, &on_its_own);
         let (count, within) = differing(&in_shell, &on_its_own, width);
         assert_eq!(count, 0, "{what}: {count} pixels differ, within {within:?}");
@@ -731,77 +767,75 @@ fn what_the_editor_shows_is_drawn_in_the_frame_where_a_window_of_its_own_draws_i
     };
 
     // As it starts.
-    let plain = compare(&mut inside, &mut apart, "plain", &[], at_once);
-    // The pointer resting on a button of the quick access bar: once the
-    // wait the bar gives its tooltips (0.4 s) is over, the tooltip is under
-    // the button.
+    let plain = compare(&mut inside, &mut apart, "plain", &[]);
+
+    // The symbol palette docked beside the drawing, and the tooltip of one
+    // of its cells with the pointer on it.
+    for app in [&mut inside, &mut apart] {
+        let _ = app.dispatch_command("PIDPALETTE");
+    }
+    let cells = drawn(&apart, CONTENT);
+    let (id, cell) = cells
+        .iter()
+        .find(|(id, _)| id.starts_with(crate::ui::window::pid_palette::CELL_BOUNDS_PREFIX))
+        .map(|(id, cell)| (id.clone(), *cell))
+        .unwrap_or_else(|| {
+            panic!(
+                "the palette is docked beside the drawing: {:?}",
+                cells.keys().collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(drawn(&inside, WINDOW)[&id], cell + ORIGIN);
+    let docked = compare(&mut inside, &mut apart, "docked palette", &[]);
+    shows(&docked, &plain, "the docked palette");
     let tooltip = compare(
         &mut inside,
         &mut apart,
         "tooltip",
-        &[(button.center(), Pointer::Move)],
-        Duration::from_millis(450),
+        &[(cell.center(), Pointer::Move)],
     );
-    let shown = beside(&tooltip, &plain, width, button);
+    let shown = beside(&tooltip, &docked, width, cell);
     assert!(
-        shown > 200,
-        "the tooltip is in the picture ({shown} pixels of it beside the button)"
+        shown > 100,
+        "the tooltip is in the picture ({shown} pixels of it beside the cell)"
     );
-    // The menu of a drawing's tab, while the right button that opened it is
-    // still down.
-    let menu = compare(
-        &mut inside,
-        &mut apart,
-        "tab menu",
-        &[
-            (tab.center(), Pointer::Move),
-            (tab.center(), Pointer::Press(iced::mouse::Button::Right)),
-        ],
-        at_once,
-    );
-    let shown = beside(&menu, &plain, width, tab);
-    assert!(
-        shown > 500,
-        "the tab's menu is in the picture ({shown} pixels of it beside the tab)"
-    );
+    for app in [&mut inside, &mut apart] {
+        let _ = app.dispatch_command("PIDPALETTE");
+    }
+
     // The drawing area's own menu, open at a point of the drawing area as a
     // right-click there leaves it.
     for app in [&mut inside, &mut apart] {
         let selection = &app.tabs[app.active_tab].scene.selection;
         selection.borrow_mut().menu.open(Point::new(300.0, 200.0));
     }
-    let menu = compare(&mut inside, &mut apart, "canvas menu", &[], at_once);
+    let menu = compare(&mut inside, &mut apart, "canvas menu", &[]);
     shows(&menu, &plain, "the drawing area's menu");
     for app in [&mut inside, &mut apart] {
         let selection = &app.tabs[app.active_tab].scene.selection;
         selection.borrow_mut().menu.close();
     }
+
     // A dialog.
     for app in [&mut inside, &mut apart] {
         let _ = app.dispatch_command("DWGPROPS");
         assert!(app.active_modal.is_some(), "the dialog is up");
     }
-    let dialog = compare(&mut inside, &mut apart, "dialog", &[], at_once);
+    let dialog = compare(&mut inside, &mut apart, "dialog", &[]);
     shows(&dialog, &plain, "the dialog");
     for app in [&mut inside, &mut apart] {
         let _ = app.update(AppMessage::CloseModal);
         assert!(app.active_modal.is_none());
     }
-    // A dropdown of the ribbon: the undo history, once there is a step.
+
+    // No drawing: what the editor shows where the general interface has
+    // its Start page.
     for app in [&mut inside, &mut apart] {
-        let _ = app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 100,50"}"#);
-        app.finish_all_pending_history();
-        app.ribbon.open_dropdown = Some(crate::ui::ribbon::UNDO_HISTORY_ID.to_string());
-    }
-    let dropdown = compare(&mut inside, &mut apart, "dropdown", &[], at_once);
-    shows(&dropdown, &plain, "the dropdown");
-    for app in [&mut inside, &mut apart] {
-        app.ribbon.open_dropdown = None;
-        // The Start page, which the general interface still has.
         let _ = app.update(AppMessage::TabSwitch(0));
         assert!(app.tabs[app.active_tab].is_start);
     }
-    compare(&mut inside, &mut apart, "start page", &[], at_once);
+    let empty = compare(&mut inside, &mut apart, "no drawing", &[]);
+    shows(&empty, &plain, "what stands for a drawing");
 }
 
 /// An overlay of something in a frame — the list that drops from a picker,
@@ -950,7 +984,15 @@ fn selecting_and_snapping_in_the_shell_are_what_they_are_without_it() {
     let _one = crate::headless_ui_lock();
     let (mut inside, mut apart) = (shell(), alone());
     let area = canvas(&apart, CONTENT);
-    let at = |fx: f32, fy: f32| Point::new(area.x + area.width * fx, area.y + area.height * fy);
+    // On whole pixels, as a pointer is: the frame starts on a whole pixel,
+    // so the place in the frame is then the same number in both, to the bit
+    // (a fraction would come back from the shift a rounding of `f32` off).
+    let at = |fx: f32, fy: f32| {
+        Point::new(
+            (area.x + area.width * fx).round(),
+            (area.y + area.height * fy).round(),
+        )
+    };
     let left = iced::mouse::Button::Left;
 
     let mut results = Vec::new();
@@ -1022,8 +1064,15 @@ fn a_point_picked_in_the_shell_is_the_point_picked_without_it() {
     let _one = crate::headless_ui_lock();
     let (mut inside, mut apart) = (shell(), alone());
     let area = canvas(&apart, CONTENT);
-    let from = Point::new(area.x + area.width * 0.3, area.y + area.height * 0.4);
-    let to = Point::new(area.x + area.width * 0.7, area.y + area.height * 0.6);
+    // On whole pixels, as a pointer is (see the test above).
+    let from = Point::new(
+        (area.x + area.width * 0.3).round(),
+        (area.y + area.height * 0.4).round(),
+    );
+    let to = Point::new(
+        (area.x + area.width * 0.7).round(),
+        (area.y + area.height * 0.6).round(),
+    );
 
     for (app, window, shift) in [
         (&mut apart, CONTENT, iced::Vector::ZERO),

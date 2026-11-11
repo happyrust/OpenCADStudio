@@ -14,7 +14,7 @@
 //! variables (`ui::style::pid_tokens`), read for the shell's theme. No colour
 //! is written out here.
 
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{button, column, container, opaque, row, stack, text, Space};
 use iced::{alignment, font, Background, Border, Color, Element, Fill, Font, Length, Padding};
 
 use super::{nav, Message, NavGroup, PidScreen};
@@ -32,7 +32,8 @@ pub const STATUS_BAR_HEIGHT: f32 = 26.0;
 
 /// What the shell's parts report their rectangles under, followed by the
 /// part: `title`, `nav`, `status`, `sync`, `crumb`, `help`, `server`,
-/// `avatar`, and `nav:<screen id>` for a navigation entry.
+/// `avatar`, `nav:<screen id>` for a navigation entry and
+/// `status:<name>` for a switch of the status bar.
 pub const CHROME_BOUNDS_PREFIX: &str = "PID_CHROME:";
 
 fn part(name: &str) -> String {
@@ -143,34 +144,58 @@ pub(crate) fn user_initial(app: &OpenCADStudio) -> Option<String> {
         .map(|first| first.to_uppercase().collect())
 }
 
-/// The breadcrumb: the screen, and for the editor the drawing in front.
-pub(crate) fn breadcrumb(app: &OpenCADStudio, screen: PidScreen) -> String {
-    let tab = &app.tabs[app.active_tab];
-    if screen.needs_drawing() && !tab.is_start {
-        format!("{} / {}", screen.title(), tab.tab_display_name())
-    } else {
-        screen.title().to_owned()
-    }
+/// The breadcrumb: the screen. The drawing in front is named once, on its
+/// tab in the editor, and not here as well.
+pub(crate) fn breadcrumb(_app: &OpenCADStudio, screen: PidScreen) -> String {
+    screen.title().to_owned()
 }
 
-/// The status bar's text: for the editor with a drawing in front, whether
-/// the drawing can be written and the two drafting aids the design names.
-pub(crate) fn status_text(app: &OpenCADStudio, screen: PidScreen) -> String {
+/// One part of the status bar's text.
+pub(crate) struct StatusPart {
+    /// What it says.
+    pub label: String,
+    /// For a part that is a switch: the name its rectangle is reported
+    /// under (`status:<name>`), and what a press sends.
+    pub switch: Option<(&'static str, AppMessage)>,
+}
+
+/// The status bar, part by part: for the editor with a drawing in front,
+/// whether the drawing can be written, and the two drafting aids the design
+/// names — each the switch of the aid it names.
+pub(crate) fn status_parts(app: &OpenCADStudio, screen: PidScreen) -> Vec<StatusPart> {
     let on_off = |on: bool| if on { "开" } else { "关" };
-    if screen.needs_drawing() && !app.tabs[app.active_tab].is_start {
-        let writing = if app.read_only || app.collab.readonly {
-            "只读"
-        } else {
-            "编辑中"
-        };
-        format!(
-            "{writing} · 捕捉 {} · 正交 {}",
-            on_off(app.snapper.snap_enabled),
-            on_off(app.ortho_mode)
-        )
-    } else {
-        "就绪".to_owned()
+    let said = |label: String| StatusPart {
+        label,
+        switch: None,
+    };
+    if !screen.needs_drawing() || app.tabs[app.active_tab].is_start {
+        return vec![said("就绪".to_owned())];
     }
+    let writing = if app.read_only || app.collab.readonly {
+        "只读"
+    } else {
+        "编辑中"
+    };
+    vec![
+        said(writing.to_owned()),
+        StatusPart {
+            label: format!("捕捉 {}", on_off(app.snapper.snap_enabled)),
+            switch: Some(("snap", AppMessage::ToggleSnapEnabled)),
+        },
+        StatusPart {
+            label: format!("正交 {}", on_off(app.ortho_mode)),
+            switch: Some(("ortho", AppMessage::ToggleOrtho)),
+        },
+    ]
+}
+
+/// The status bar's text in one line.
+pub(crate) fn status_text(app: &OpenCADStudio, screen: PidScreen) -> String {
+    status_parts(app, screen)
+        .into_iter()
+        .map(|part| part.label)
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// The navigation as it is drawn: the design's groups that have an
@@ -464,22 +489,62 @@ fn navigation<'a>(app: &'a OpenCADStudio, showing: PidScreen) -> Element<'a, App
 
 fn status_bar<'a>(app: &'a OpenCADStudio, screen: PidScreen) -> Element<'a, AppMessage> {
     let theme = app.pid_shell.theme;
-    container(
-        row![
-            Space::new().width(Fill),
-            text(status_text(app, screen))
-                .size(10)
-                .font(mono_font(theme, font::Weight::Normal))
-                .color(ColorToken::TextMuted.color(theme)),
-        ]
-        .align_y(alignment::Vertical::Center),
-    )
-    .width(Fill)
-    .height(STATUS_BAR_HEIGHT)
-    .padding([0, 14])
-    .align_y(alignment::Vertical::Center)
-    .style(move |_| panel(theme))
-    .into()
+    let said = move |label: String| {
+        text(label)
+            .size(10)
+            .font(mono_font(theme, font::Weight::Normal))
+            .color(ColorToken::TextMuted.color(theme))
+    };
+    let mut line = row![Space::new().width(Fill)]
+        .spacing(6)
+        .align_y(alignment::Vertical::Center);
+    for (index, status) in status_parts(app, screen).into_iter().enumerate() {
+        if index > 0 {
+            line = line.push(said("·".to_owned()));
+        }
+        line = match status.switch {
+            Some((name, message)) => line.push(PosReport::owned(
+                part(&format!("status:{name}")),
+                button(said(status.label))
+                    .padding(0)
+                    .style(bare)
+                    .on_press(message),
+            )),
+            None => line.push(said(status.label)),
+        };
+    }
+    container(line)
+        .width(Fill)
+        .height(STATUS_BAR_HEIGHT)
+        .padding([0, 14])
+        .align_y(alignment::Vertical::Center)
+        .style(move |_| panel(theme))
+        .into()
+}
+
+/// `part` of the module's own interface while the general interface has a
+/// dialog up in the drawing: dimmed as the dialog dims what is under it,
+/// and deaf to the pointer. The dialog's own backdrop reaches no further
+/// than the drawing's frame; this is the rest of the window.
+pub(super) fn shielded<'a>(
+    app: &OpenCADStudio,
+    part: Element<'a, AppMessage>,
+) -> Element<'a, AppMessage> {
+    if !app.dialog_is_up() {
+        return part;
+    }
+    let dim = container(Space::new())
+        .width(Fill)
+        .height(Fill)
+        .style(|theme: &iced::Theme| container::Style {
+            // The colour of the general interface's backdrop
+            // (`ui::modal`), so that the window dims as one.
+            background: Some(Background::Color(
+                theme.palette().background.strongest.color.scale_alpha(0.55),
+            )),
+            ..container::Style::default()
+        });
+    stack![part, opaque(dim)].into()
 }
 
 /// The shell around `content`, which is the showing screen: the title bar
@@ -491,13 +556,13 @@ pub(super) fn frame<'a>(
 ) -> Element<'a, AppMessage> {
     let theme = app.pid_shell.theme;
     container(column![
-        PosReport::owned(part("title"), title_bar(app, screen)),
+        PosReport::owned(part("title"), shielded(app, title_bar(app, screen))),
         row![
-            PosReport::owned(part("nav"), navigation(app, screen)),
+            PosReport::owned(part("nav"), shielded(app, navigation(app, screen))),
             container(content).width(Fill).height(Fill),
         ]
         .height(Fill),
-        PosReport::owned(part("status"), status_bar(app, screen)),
+        PosReport::owned(part("status"), shielded(app, status_bar(app, screen))),
     ])
     .width(Length::Fill)
     .height(Length::Fill)

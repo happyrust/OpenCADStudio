@@ -840,6 +840,11 @@ impl OpenCADStudio {
         if self.tabs[self.active_tab].is_start {
             return false;
         }
+        // The P&ID editor has an inspector of its own: the pallet it stands
+        // for is not drawn beside it.
+        if self.pid_shell.current().is_some() && id == PanelId::Properties {
+            return false;
+        }
         if self.clean_screen {
             let reopened = match id {
                 PanelId::Properties => self.clean_screen_properties,

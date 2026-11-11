@@ -57,8 +57,10 @@
 //!   pid_shell_startup.rs  tests: the first screen, switching, the navigation,
 //!                         the screen list against the design
 //!   pid_shell_chrome.rs   tests: the bars and their sizes, the session's
-//!                         state, what can be pressed, and the general
-//!                         interface in its frame (pointer, snap, popups)
+//!                         state, what can be pressed, and the drawing in
+//!                         its frame (pointer, snap, popups)
+//!   pid_editor_screen.rs  tests: the editor's tools, palette, tabs and
+//!                         inspector against the commands and the records
 //! ```
 //!
 //! # What a screen module is
@@ -118,11 +120,14 @@
 //! bar, around the showing screen. A screen's `view` is given the content
 //! area and nothing else.
 //!
-//! The editor screen is still the whole general drawing interface, which
-//! places its dropdowns, menus and dialogs by window coordinates. It is put
-//! in the content area in a frame of its own ([`rebase`]) and is told the
-//! area's size as its window size (`PidShell::editor_frame`), so that what
-//! it places lands where it should.
+//! The editor screen ([`editor`]) draws the design's toolbar, palette and
+//! inspector round the drawing. The drawing itself is the general
+//! interface's drawing area — viewport, command line, dialogs — which
+//! places what it places by window coordinates: it is put in a frame of its
+//! own ([`rebase`]) and is told the frame's size as its window size
+//! (`PidShell::editor_frame`), so that what it places lands where it
+//! should. While it has a dialog up, the rest of the window is dimmed and
+//! takes no press (`chrome::shielded`).
 //!
 //! The showing screen's rectangle is reported as `PID_SHELL:<id>`
 //! ([`bounds_id`]) and the shell's parts as `PID_CHROME:<part>`
@@ -148,6 +153,8 @@ pub mod typelib;
 pub mod validation;
 pub mod workbench;
 
+#[cfg(test)]
+mod pid_editor_screen;
 #[cfg(test)]
 mod pid_fonts_loading;
 #[cfg(test)]
@@ -421,17 +428,23 @@ impl PidShell {
 
     /// Take note of the window's size, and say what size the general drawing
     /// interface is to measure by: the window's while the module is off,
-    /// and while it is on what the title bar, the navigation and the status
-    /// bar leave of it — the area the interface is laid out in
-    /// ([`rebase::Rebase`]).
+    /// and while it is on the size of the frame the editor screen lays the
+    /// drawing out in ([`rebase::Rebase`]) — what the shell's bars and the
+    /// editor's toolbar, palette, tabs and inspector leave of the window.
     pub fn editor_frame(&mut self, window: (f32, f32)) -> (f32, f32) {
         self.window = Some(window);
         if self.current.is_none() {
             return window;
         }
         (
-            (window.0 - chrome::NAV_WIDTH).max(1.0),
-            (window.1 - chrome::TITLE_BAR_HEIGHT - chrome::STATUS_BAR_HEIGHT).max(1.0),
+            (window.0 - chrome::NAV_WIDTH - editor::PALETTE_WIDTH - editor::INSPECTOR_WIDTH)
+                .max(1.0),
+            (window.1
+                - chrome::TITLE_BAR_HEIGHT
+                - chrome::STATUS_BAR_HEIGHT
+                - editor::TOOLBAR_HEIGHT
+                - editor::TABS_HEIGHT)
+                .max(1.0),
         )
     }
 

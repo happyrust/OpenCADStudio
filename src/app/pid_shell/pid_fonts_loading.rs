@@ -71,10 +71,7 @@ fn the_fonts_of_the_theme_are_the_faces_carried_in_the_program() {
     let from = pid_fonts::faces_setting(pid_fonts::ui(theme, Weight::Normal), "编辑器 P&ID");
     let file = carried(TextToken::FontUi, 400);
     assert_eq!(from.len(), 8, "{from:?}");
-    assert!(
-        from[3..].iter().all(|face| *face == Some(file)),
-        "{from:?}"
-    );
+    assert!(from[3..].iter().all(|face| *face == Some(file)), "{from:?}");
 }
 
 /// The faces are asked for when the shell comes up, however it comes up, and
