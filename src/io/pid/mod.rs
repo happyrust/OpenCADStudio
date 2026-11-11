@@ -469,9 +469,22 @@ pub fn load_pid_with(path: &Path, options: &PidImportOptions) -> Result<PidImpor
     // 2026-09-21-a-geometry-parse-profile). On the corpus the drawn
     // entities are identical to a Full parse's; `pid_probe` and
     // `pid_plot_dump` stay on Full because they look at the probes.
+    // A failure names the file, not the folder it lies in: for a drawing of
+    // a backup that is a folder of the restore cache.
+    let file = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
     let parsed = PidParser::with_options(ParseOptions::geometry())
         .parse_file(path)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            crate::tf!(
+                "the parser cannot read {}: {}",
+                file,
+                error.to_string().replace(&path.display().to_string(), &file)
+            )
+            .into_owned()
+        })?;
     let geometry = build_normalized_geometry(&parsed);
 
     let mut doc = prepare_document(&parsed);
@@ -487,11 +500,22 @@ pub fn load_pid_with(path: &Path, options: &PidImportOptions) -> Result<PidImpor
         paper_style_scale,
     );
     if built.decoded == 0 {
-        return Err(format!(
-            "No decoded geometry in {}: pid-parse produced {} evidence item(s), none of them source-backed",
-            path.display(),
-            geometry.entities.len()
-        ));
+        // An empty sheet is the usual case; one whose graphics are all
+        // guesses is the other, and says how many there were.
+        let found = geometry.entities.len();
+        let why = if found == 0 {
+            crate::tf!(
+                "{} holds nothing to draw: the parser found no graphics in it",
+                file
+            )
+        } else {
+            crate::tf!(
+                "{} holds nothing to draw: of the {} graphic(s) the parser found, none was decoded from a record of the file",
+                file,
+                found
+            )
+        };
+        return Err(why.into_owned());
     }
     // The border is a drawing of its own, linked through the sheet's OLE
     // frame rather than carried in its records: resolve the `.igr` and

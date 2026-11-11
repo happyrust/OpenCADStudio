@@ -533,6 +533,13 @@ fn group_label(name: &str) -> String {
     }
 }
 
+/// A group's path as the details show it. The two groups the index makes
+/// up have their label for a path, and it is translated as their rows are;
+/// a plant's own path is shown as it is.
+pub(crate) fn group_path_label(path: &str) -> String {
+    group_label(path)
+}
+
 /// A backup file's row: the name it is stored under and, when the manifest
 /// says what it was on the plant's server, that (`RefData~4~680 —
 /// Ref\rules.rul`). The stored name alone tells no one what the file is.
@@ -1141,8 +1148,10 @@ fn details<'a>(state: &'a PidBackupBrowser, width: f32) -> Element<'a, Message> 
     let hint = |label: std::borrow::Cow<'static, str>| -> Element<'a, Message> {
         text(label).size(11).style(muted).into()
     };
+    // Without a backup the upper half says so, or that one is loading:
+    // the details are a node's, and there is none.
     if state.index().is_none() {
-        return hint(t!("No backup is open."));
+        return Space::new().into();
     }
     let Some(id) = state.selected.as_ref() else {
         return hint(t!("Select a node to see its details."));
@@ -1375,7 +1384,7 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
                 ));
                 lines.push(DetailLine::Field(
                     t!("Group path").into_owned(),
-                    node.path.clone(),
+                    group_path_label(&node.path),
                 ));
                 lines.push(DetailLine::Field(
                     t!("Drawing count").into_owned(),
@@ -1391,7 +1400,7 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
                 ));
                 lines.push(DetailLine::Field(
                     t!("Group path").into_owned(),
-                    entry.group_path.clone(),
+                    group_path_label(&entry.group_path),
                 ));
                 match &entry.pid_path {
                     Some(path) => {

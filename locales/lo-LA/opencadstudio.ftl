@@ -9258,6 +9258,10 @@ pid-backup =
     .cache-usage = PIDBACKUPOPEN: Cache takes a folder with its full path, Default or Clear
     .cache-how-to-name = PIDBACKUPOPEN: Cache=<folder> names the folder restored backups are kept in, Cache=Default the default one
     .cache-folder-dialog = Select the Folder for Restored Backups
+    .read-no-drawing-number = it states no drawing number (no P&IDAttributes row carries a DrawingNo)
+    .import-parser-cannot-read = the parser cannot read __ocs_fmt_0__: __ocs_fmt_1__
+    .import-nothing-to-draw = __ocs_fmt_0__ holds nothing to draw: of the __ocs_fmt_1__ graphic(s) the parser found, none was decoded from a record of the file
+    .import-nothing-to-draw-empty = __ocs_fmt_0__ holds nothing to draw: the parser found no graphics in it
 
 block-flip-frame-feedback =
     .unavailable = ກອບພາຣາມິເຕີຂອງບລັອກບໍ່ສາມາດໃຊ້ໄດ້.

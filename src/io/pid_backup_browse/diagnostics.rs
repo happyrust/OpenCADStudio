@@ -99,8 +99,14 @@ fn import(path: &Path) -> (Result<Imported, String>, Duration) {
 /// as any text of a backup is, so what looks like a credential in it is
 /// hidden the same way.
 fn parse_report(path: &Path) -> Result<TextFile, String> {
-    let fail =
-        |error: &dyn std::fmt::Display| crate::tf!("cannot read {}: {}", path.display(), error);
+    // The file by its name: its folder is the restore cache's.
+    let fail = |error: &dyn std::fmt::Display| {
+        crate::tf!(
+            "cannot read {}: {}",
+            super::file_label(path),
+            super::name_the_file_only(&error.to_string(), path)
+        )
+    };
     let package = pid_parse::PidParser::new()
         .parse_package(path)
         .map_err(|error| fail(&error).into_owned())?;
@@ -292,6 +298,46 @@ mod tests {
             .as_ref()
             .is_some_and(|diagnosis| diagnosis.items.is_err() && diagnosis.import.is_err()));
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    /// Why a drawing did not read named the whole path of the file -- which
+    /// for a backup is a folder of the restore cache, a key and all -- and
+    /// was the reader's English sentence. The reason now names the file,
+    /// and what the reader most often says is said in the user's language.
+    #[test]
+    fn a_failure_names_the_file_and_not_the_folder_it_lies_in() {
+        let folder = std::env::temp_dir().join(format!("ocs-diagnose-names-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("broken.pid");
+        std::fs::write(&path, b"not a compound file").unwrap();
+        let folder_text = folder.display().to_string();
+        let diagnosis = diagnose(&path);
+        let report = import_report(&path);
+        for (what, why) in [
+            ("the items", diagnosis.items.clone().unwrap_err()),
+            ("the import", diagnosis.import.clone().unwrap_err()),
+            ("the parser's report", report.parse_report.clone().unwrap_err()),
+        ] {
+            assert!(why.contains("broken.pid"), "{what}: {why}");
+            assert!(!why.contains(&folder_text), "{what}: {why}");
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+
+        // A drawing that states no drawing number: the reader's one reason
+        // of its own, in the application's words.
+        use crate::io::pid_backup_browse::read_failure;
+        use pid_parse::publish::pid_load::PidLoadError;
+        assert_eq!(
+            read_failure(
+                Path::new("D:/cache/0123456789abcdef/00/D03.pid"),
+                &PidLoadError::NoDrawing
+            ),
+            crate::tf!(
+                "cannot read {}: {}",
+                "D03.pid",
+                crate::t!("it states no drawing number (no P&IDAttributes row carries a DrawingNo)")
+            )
+        );
     }
 
     #[test]

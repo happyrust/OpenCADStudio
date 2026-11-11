@@ -7606,6 +7606,10 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         "PIDBACKUPOPEN: Cache takes a folder with its full path, Default or Clear" => Some(("pid-backup", "cache-usage")),
         "PIDBACKUPOPEN: Cache=<folder> names the folder restored backups are kept in, Cache=Default the default one" => Some(("pid-backup", "cache-how-to-name")),
         "Select the Folder for Restored Backups" => Some(("pid-backup", "cache-folder-dialog")),
+        "it states no drawing number (no P&IDAttributes row carries a DrawingNo)" => Some(("pid-backup", "read-no-drawing-number")),
+        "the parser cannot read {}: {}" => Some(("pid-backup", "import-parser-cannot-read")),
+        "{} holds nothing to draw: of the {} graphic(s) the parser found, none was decoded from a record of the file" => Some(("pid-backup", "import-nothing-to-draw")),
+        "{} holds nothing to draw: the parser found no graphics in it" => Some(("pid-backup", "import-nothing-to-draw-empty")),
         _ => None,
     }
 }
