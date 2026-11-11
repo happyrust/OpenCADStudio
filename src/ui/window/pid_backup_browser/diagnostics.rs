@@ -617,12 +617,13 @@ mod tests {
     #[test]
     fn the_root_offers_a_check_of_the_drawings_that_starts_from_its_button() {
         let mut state = ready();
-        // Selecting the backup reads nothing: its details say what the
-        // check is, and offer the button.
-        assert_eq!(
+        // Selecting the backup reads no drawing: its details say what the
+        // check is, and offer the button. The one thing it starts is the
+        // panel's own measuring of the restore cache.
+        assert!(matches!(
             update(&mut state, PidBackupMsg::Select(NodeId::Root)),
-            Effect::None
-        );
+            Effect::MeasureCache { .. }
+        ));
         assert_eq!(
             shown_check(&state),
             [

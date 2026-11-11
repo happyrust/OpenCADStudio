@@ -12,11 +12,26 @@
 //!                                    levels above it and selecting it
 //! PIDBACKUPOPEN Split <percent>      give the tree that much of the panel's
 //!                                    height and the details the rest
+//! PIDBACKUPOPEN Press [<n>|<label>]  press a button in the details of the
+//!                                    selected node: the n-th from the top
+//!                                    (the first when nothing is given), or
+//!                                    the one with that label
+//! PIDBACKUPOPEN Cache                say where restored backups are kept
+//!                                    and what the folder holds
+//! PIDBACKUPOPEN Cache=<folder>       keep them in <folder> from now on
+//! PIDBACKUPOPEN Cache=Default        ... in the default folder again
+//! PIDBACKUPOPEN Cache=Clear          remove every restore but the one the
+//!                                    open backup uses
 //! ```
 //!
-//! `Select` is the panel without a pointer: a script, or a client on the
-//! automation channel, shows any node with it (the walk and its matching
-//! rules are `pid_backup_browser::goto`).
+//! `Select` and `Press` are the panel without a pointer: a script, or a
+//! client on the automation channel, shows any node with the one (the walk
+//! and its matching rules are `pid_backup_browser::goto`) and presses its
+//! buttons with the other. A label is the stable way to name a button: the
+//! numbers shift when a button comes or goes above it.
+//!
+//! `Cache` is written with `=` so that it is one word: with no backup in
+//! the panel the command line takes the words after the verb one at a time.
 //!
 //! The panel is the browser: its tree, the details of the selected node and
 //! the double click that opens a drawing all live in
@@ -64,24 +79,74 @@ enum Request {
     Split(Option<f32>),
     /// Press a button in the details of the selected node: its number from
     /// one, the first when none is given; `None` when what follows the word
-    /// is no such number.
+    /// is a number no button has.
     Press(Option<usize>),
+    /// Press the button with this label, or the first whose label starts
+    /// with it.
+    PressNamed(String),
+    /// The restore cache: say what it holds, move it, clear it.
+    Cache(CacheRequest),
 }
 
-/// What follows `Press` when `rest` starts with that word: the number of
-/// the button, from one.
+/// What the word `Cache` asks about the restore cache.
 #[cfg(not(target_arch = "wasm32"))]
-fn press_number(rest: &str) -> Option<Option<usize>> {
+#[derive(Debug, PartialEq)]
+enum CacheRequest {
+    /// Say where it is and what it holds.
+    Report,
+    /// Remove every restore but the one the open backup uses.
+    Clear,
+    /// Keep restores in the default folder again.
+    Default,
+    /// Keep restores in this folder.
+    Folder(PathBuf),
+    /// What follows the word is none of these.
+    Unknown,
+}
+
+/// What follows `Cache` when `rest` starts with that word: nothing, or a
+/// value after `=` or a space.
+#[cfg(not(target_arch = "wasm32"))]
+fn cache_request(rest: &str) -> Option<CacheRequest> {
+    let (word, value) = match rest.split_once(|ch: char| ch == '=' || ch.is_whitespace()) {
+        Some((word, value)) => (word, value),
+        None => (rest, ""),
+    };
+    if !word.eq_ignore_ascii_case("CACHE") {
+        return None;
+    }
+    // `Cache = D:\x` is `Cache=D:\x` with air in it.
+    let value = unquoted(value.trim().trim_start_matches('=').trim());
+    Some(if value.is_empty() {
+        CacheRequest::Report
+    } else if value.eq_ignore_ascii_case("CLEAR") {
+        CacheRequest::Clear
+    } else if value.eq_ignore_ascii_case("DEFAULT") {
+        CacheRequest::Default
+    } else if Path::new(value).is_absolute() {
+        CacheRequest::Folder(PathBuf::from(value))
+    } else {
+        CacheRequest::Unknown
+    })
+}
+
+/// What follows `Press` when `rest` starts with that word: nothing (the
+/// first button), the number of a button from one, or the label of one.
+#[cfg(not(target_arch = "wasm32"))]
+fn press_request(rest: &str) -> Option<Request> {
     let (word, value) = match rest.split_once(char::is_whitespace) {
         Some((word, value)) => (word, value.trim()),
         None => (rest, ""),
     };
-    word.eq_ignore_ascii_case("PRESS").then(|| {
-        if value.is_empty() {
-            Some(1)
-        } else {
-            value.parse::<usize>().ok().filter(|number| *number >= 1)
-        }
+    if !word.eq_ignore_ascii_case("PRESS") {
+        return None;
+    }
+    Some(if value.is_empty() {
+        Request::Press(Some(1))
+    } else if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        Request::Press(value.parse::<usize>().ok().filter(|number| *number >= 1))
+    } else {
+        Request::PressNamed(unquoted(value).to_string())
     })
 }
 
@@ -148,8 +213,11 @@ fn parse_request(rest: &str, exists: impl Fn(&Path) -> bool) -> Option<Request> 
     if let Some(percent) = split_percent(rest) {
         return Some(Request::Split(percent));
     }
-    if let Some(number) = press_number(rest) {
-        return Some(Request::Press(number));
+    if let Some(request) = press_request(rest) {
+        return Some(request);
+    }
+    if let Some(request) = cache_request(rest) {
+        return Some(Request::Cache(request));
     }
     let mut words = Vec::new();
     let mut word = String::new();
@@ -268,13 +336,11 @@ impl OpenCADStudio {
                 Task::none()
             }
             Some(Request::Press(Some(number))) => {
-                match pid_backup_browser::selected_button(&self.pid_backup_browser, number - 1) {
-                    Some((label, node)) => {
-                        self.command_line.push_output(
-                            crate::tf!("PIDBACKUPOPEN: pressed \"{}\"", label).as_ref(),
-                        );
-                        self.on_pid_backup(PidBackupMsg::Activate(node))
-                    }
+                let button = pid_backup_browser::selected_buttons(&self.pid_backup_browser)
+                    .into_iter()
+                    .nth(number - 1);
+                match button {
+                    Some((label, msg)) => self.press_pid_backup_button(label, msg),
                     None => {
                         self.command_line.push_error(
                             crate::tf!(
@@ -286,6 +352,54 @@ impl OpenCADStudio {
                         Task::none()
                     }
                 }
+            }
+            Some(Request::PressNamed(name)) => {
+                let mut buttons = pid_backup_browser::selected_buttons(&self.pid_backup_browser);
+                // The label itself, else the first that starts with it.
+                let wanted = name.to_lowercase();
+                let found = buttons
+                    .iter()
+                    .position(|(label, _)| label.to_lowercase() == wanted)
+                    .or_else(|| {
+                        buttons
+                            .iter()
+                            .position(|(label, _)| label.to_lowercase().starts_with(&wanted))
+                    });
+                match found {
+                    Some(at) => {
+                        let (label, msg) = buttons.swap_remove(at);
+                        self.press_pid_backup_button(label, msg)
+                    }
+                    None => {
+                        self.command_line.push_error(
+                            crate::tf!(
+                                "PIDBACKUPOPEN: the details of the selected node have no button \"{}\"",
+                                name
+                            )
+                            .as_ref(),
+                        );
+                        Task::none()
+                    }
+                }
+            }
+            Some(Request::Cache(request)) => {
+                use pid_backup_browser::CacheMsg;
+                let msg = match request {
+                    CacheRequest::Report => CacheMsg::Report,
+                    CacheRequest::Clear => CacheMsg::Clear,
+                    CacheRequest::Default => CacheMsg::Folder(None),
+                    CacheRequest::Folder(folder) => CacheMsg::Folder(Some(folder)),
+                    CacheRequest::Unknown => {
+                        self.command_line.push_error(
+                            crate::t!(
+                                "PIDBACKUPOPEN: Cache takes a folder with its full path, Default or Clear"
+                            )
+                            .as_ref(),
+                        );
+                        return Task::none();
+                    }
+                };
+                self.on_pid_backup(PidBackupMsg::Cache(msg))
             }
             Some(Request::Press(None)) => {
                 self.command_line.push_error(
@@ -304,6 +418,34 @@ impl OpenCADStudio {
             Some(Request::Folder) => self.pick_backup_source(true),
             None => Task::none(),
         }
+    }
+
+    /// `Press` found its button: say which, and do what a click on it does.
+    /// The one exception is the button that opens a folder dialog -- on the
+    /// command line the folder is named in words.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn press_pid_backup_button(&mut self, label: String, msg: PidBackupMsg) -> Task<Message> {
+        if matches!(
+            msg,
+            PidBackupMsg::Cache(pid_backup_browser::CacheMsg::PickFolder)
+        ) {
+            self.say_how_the_cache_folder_is_named();
+            return Task::none();
+        }
+        self.command_line
+            .push_output(crate::tf!("PIDBACKUPOPEN: pressed \"{}\"", label).as_ref());
+        self.on_pid_backup(msg)
+    }
+
+    /// The command line's words for what the folder dialog asks.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn say_how_the_cache_folder_is_named(&mut self) {
+        self.command_line.push_info(
+            crate::t!(
+                "PIDBACKUPOPEN: Cache=<folder> names the folder restored backups are kept in, Cache=Default the default one"
+            )
+            .as_ref(),
+        );
     }
 
     /// Show the pallet where the layout has it, docking it on the right the
@@ -350,7 +492,25 @@ impl OpenCADStudio {
             }
             _ => (false, None),
         };
+        let cache_folder = pid_backup_browser::cache_folder(&self.pid_backup_browser)
+            .map(Path::to_path_buf);
         let effect = pid_backup_browser::update(&mut self.pid_backup_browser, msg);
+        // The cache folder is a preference: it goes into the settings the
+        // moment it changes, as a toggle does.
+        if pid_backup_browser::cache_folder(&self.pid_backup_browser) != cache_folder.as_deref() {
+            self.save_config();
+        }
+        // What a clearing freed, where restores are kept after a move, what
+        // the cache holds when the command line asked.
+        match pid_backup_browser::take_cache_outcome(&mut self.pid_backup_browser) {
+            Some(Ok(said)) => self
+                .command_line
+                .push_output(crate::tf!("PIDBACKUPOPEN: {}", said).as_ref()),
+            Some(Err(error)) => self
+                .command_line
+                .push_error(crate::tf!("PIDBACKUPOPEN: {}", error).as_ref()),
+            None => {}
+        }
         if let Some(error) = failure {
             self.command_line
                 .push_error(crate::tf!("PIDBACKUPOPEN: {}", error).as_ref());
@@ -439,6 +599,51 @@ impl OpenCADStudio {
             Effect::Tick => Task::perform(pid_backup_browser::tick(), |()| {
                 Message::PidBackup(PidBackupMsg::Progress)
             }),
+            // The restore cache is walked and removed off the UI thread;
+            // either way the panel hears what the folder holds afterwards.
+            Effect::MeasureCache {
+                asked,
+                root,
+                current,
+            } => Task::perform(
+                pid_backup_browser::measure_in_background(root, current),
+                move |usage| {
+                    Message::PidBackup(PidBackupMsg::Cache(
+                        pid_backup_browser::CacheMsg::Measured {
+                            asked,
+                            result: Ok(usage),
+                        },
+                    ))
+                },
+            ),
+            Effect::ClearCache {
+                asked,
+                root,
+                current,
+            } => Task::perform(
+                pid_backup_browser::clear_in_background(root, current),
+                move |result| {
+                    Message::PidBackup(PidBackupMsg::Cache(
+                        pid_backup_browser::CacheMsg::Measured { asked, result },
+                    ))
+                },
+            ),
+            // No dialogs with FILEDIA 0 or under a script: the folder is
+            // named on the command line there.
+            Effect::PickCacheFolder if self.file_prompts_on_command_line() => {
+                self.say_how_the_cache_folder_is_named();
+                Task::none()
+            }
+            Effect::PickCacheFolder => {
+                let start = pid_backup_browser::cache_folder(&self.pid_backup_browser)
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(crate::io::pid_backup::default_cache_root);
+                Task::perform(pick_cache_folder_async(start), |folder| {
+                    Message::PidBackup(PidBackupMsg::Cache(
+                        pid_backup_browser::CacheMsg::FolderPicked(folder),
+                    ))
+                })
+            }
             Effect::Batch(effects) => Task::batch(
                 effects
                     .into_iter()
@@ -470,8 +675,12 @@ impl OpenCADStudio {
         }
         self.command_line
             .push_output(crate::tf!("PIDBACKUPOPEN: restoring {} ...", source.display()).as_ref());
+        // A backup that has to be unpacked goes into the cache folder the
+        // user set, when there is one.
+        let cache = pid_backup_browser::cache_folder(&self.pid_backup_browser)
+            .map(Path::to_path_buf);
         Task::perform(
-            crate::io::pid_backup_browse::build_index_in_background(source, target),
+            crate::io::pid_backup_browse::build_index_in_background(source, target, cache),
             |result| Message::PidBackup(PidBackupMsg::Loaded(result.map(Arc::new))),
         )
     }
@@ -505,6 +714,23 @@ async fn pick_backup_source_async(folder: bool) -> Option<PathBuf> {
             .await
     };
     handle.map(|handle| crate::sys::handle_path(&handle))
+}
+
+/// The dialog for the folder restored backups are kept in, opened where
+/// they are kept now.
+#[cfg(not(target_arch = "wasm32"))]
+async fn pick_cache_folder_async(start: PathBuf) -> Option<PathBuf> {
+    let mut dialog = crate::sys::file_dialog()
+        .set_title(crate::t!("Select the Folder for Restored Backups").as_ref());
+    if start.is_dir() {
+        dialog = dialog.set_directory(&start);
+    }
+    // Not through `sys::handle_path`: that remembers the folder for the
+    // next file dialog, and nobody opens drawings from beside the cache.
+    dialog
+        .pick_folder()
+        .await
+        .map(|handle| handle.path().to_path_buf())
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -833,7 +1059,15 @@ mod tests {
         assert_eq!(parse_request("press 2", none), Some(Request::Press(Some(2))));
         // No such number.
         assert_eq!(parse_request("Press 0", none), Some(Request::Press(None)));
-        assert_eq!(parse_request("Press hard", none), Some(Request::Press(None)));
+        // What is no number is the label of a button, quoted or not.
+        assert_eq!(
+            parse_request("Press Check every drawing", none),
+            Some(Request::PressNamed("Check every drawing".to_string()))
+        );
+        assert_eq!(
+            parse_request("press \"Open drawing\"", none),
+            Some(Request::PressNamed("Open drawing".to_string()))
+        );
         // Only the whole word, and a backup really called `Press` is opened.
         assert_eq!(
             parse_request("pressure.zip", none),
@@ -860,27 +1094,263 @@ mod tests {
         assert!(app.pid_backup_browser.section_data.is_empty());
 
         let _ = app.on_pid_backup(PidBackupMsg::Select(NodeId::Root));
-        let (label, node) = pid_backup_browser::selected_button(&app.pid_backup_browser, 0)
-            .expect("the backup's details offer the check of the drawings");
-        assert_eq!(label, crate::t!("Check every drawing").as_ref());
-        // The press starts the check: the panel waits for its result.
-        let _ = app.dispatch_command("PIDBACKUPOPEN Press");
+        // The backup's details: the button that moves the restore cache,
+        // then the one that starts the check of the drawings.
+        let buttons = pid_backup_browser::selected_buttons(&app.pid_backup_browser);
+        let labels: Vec<&str> = buttons.iter().map(|(label, _)| label.as_str()).collect();
+        let folder = crate::t!("Change the cache folder…");
+        let check = crate::t!("Check every drawing");
+        assert_eq!(labels, [folder.as_ref(), check.as_ref()]);
+        let PidBackupMsg::Activate(node) = buttons[1].1.clone() else {
+            panic!("the check is started by activating its node: {:?}", buttons[1].1);
+        };
+        // By its label, as a script names it: the press starts the check,
+        // and the panel waits for its result.
+        let _ = app.dispatch_command(&format!("PIDBACKUPOPEN Press {check}"));
         let last = app.command_line.history.last().expect("一条历史");
         assert_eq!(last.kind, EntryKind::Output);
-        assert!(last.text.contains(&label), "{}", last.text);
+        assert!(last.text.contains(check.as_ref()), "{}", last.text);
         assert!(app
             .pid_backup_browser
             .section_data
             .iter()
             .any(|((_, found), _)| *found == node));
-        // A button the details do not have, and a number that is none.
+        // The first button, by number and by the start of its label, would
+        // open a folder dialog under a pointer. The command line says how
+        // the folder is named there instead, and nothing is asked.
+        for line in ["PIDBACKUPOPEN Press", "PIDBACKUPOPEN Press change the cache"] {
+            let history = app.command_line.history.len();
+            let task = app.dispatch_command(line);
+            app.drive_headless_task(task)
+                .expect("no dialog is waited for");
+            let said = app.command_line.history[history..]
+                .last()
+                .unwrap_or_else(|| panic!("{line} says nothing"));
+            assert_eq!(said.kind, EntryKind::Info, "{line}");
+            assert!(said.text.contains("Cache="), "{}", said.text);
+        }
+        assert_eq!(pid_backup_browser::cache_folder(&app.pid_backup_browser), None);
+        // A button the details do not have: by number, by a number that is
+        // none, and by a label.
         let _ = app.dispatch_command("PIDBACKUPOPEN Press 7");
         let last = app.command_line.history.last().expect("一条历史");
         assert_eq!(last.kind, EntryKind::Error);
         assert!(last.text.contains('7'), "{}", last.text);
+        let _ = app.dispatch_command("PIDBACKUPOPEN Press 0");
+        let last = app.command_line.history.last().expect("一条历史");
+        assert_eq!(last.kind, EntryKind::Error);
         let _ = app.dispatch_command("PIDBACKUPOPEN Press twice");
         let last = app.command_line.history.last().expect("一条历史");
         assert_eq!(last.kind, EntryKind::Error);
+        assert!(last.text.contains("twice"), "{}", last.text);
+    }
+
+    #[test]
+    fn cache_takes_a_folder_default_or_clear() {
+        let none = |_: &Path| false;
+        let cache = |line: &str| match parse_request(line, none) {
+            Some(Request::Cache(request)) => request,
+            other => panic!("{line} is {other:?}"),
+        };
+        assert_eq!(cache("Cache"), CacheRequest::Report);
+        assert_eq!(cache("cache="), CacheRequest::Report);
+        assert_eq!(cache("Cache=Clear"), CacheRequest::Clear);
+        assert_eq!(cache("CACHE clear"), CacheRequest::Clear);
+        assert_eq!(cache("Cache=default"), CacheRequest::Default);
+        let folder = std::env::temp_dir().join("pid cache");
+        assert_eq!(
+            cache(&format!("Cache={}", folder.display())),
+            CacheRequest::Folder(folder.clone())
+        );
+        assert_eq!(
+            cache(&format!("Cache = \"{}\"", folder.display())),
+            CacheRequest::Folder(folder.clone())
+        );
+        assert_eq!(
+            cache(&format!("Cache {}", folder.display())),
+            CacheRequest::Folder(folder)
+        );
+        // A folder is named with its full path: a bare name would be kept
+        // wherever the application happened to be started.
+        assert_eq!(cache("Cache=restores"), CacheRequest::Unknown);
+        // Only the whole word, and a backup really called `Cache` is opened.
+        assert_eq!(
+            parse_request("cached.zip", none),
+            Some(Request::Restore(PathBuf::from("cached.zip"), None))
+        );
+        let exists = |path: &Path| path == Path::new("Cache");
+        assert_eq!(
+            parse_request("Cache", exists),
+            Some(Request::Restore(PathBuf::from("Cache"), None))
+        );
+    }
+
+    /// A zip of one drawing, as small as a backup that has to be unpacked
+    /// gets.
+    fn tiny_backup(path: &Path, drawing: &str) {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file(format!("00/00/{drawing}.pid"), options).unwrap();
+        writer.write_all(drawing.as_bytes()).unwrap();
+        writer.finish().unwrap();
+    }
+
+    /// The whole way of the cache folder: named on the command line, kept
+    /// in the settings, read back by the next application, used by the
+    /// restores, measured in the backup's details and cleared.
+    #[test]
+    fn the_cache_folder_is_kept_in_the_settings_and_restores_go_into_it() {
+        let root = std::env::temp_dir()
+            .join(format!("ocs-pidbackup-cache-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let cache = root.join("restores");
+        let first = root.join("first.zip");
+        let second = root.join("second.zip");
+        tiny_backup(&first, "A-101");
+        tiny_backup(&second, "B-202");
+        // Run a line as the command line and the automation channel send
+        // it, and give what it said: the outputs and the errors.
+        let run = |app: &mut OpenCADStudio, line: String| -> Vec<(EntryKind, String)> {
+            let history = app.command_line.history.len();
+            let task = app.run_command_line(&line);
+            app.drive_headless_task(task)
+                .expect("the restore cache needs no window");
+            app.command_line.history[history..]
+                .iter()
+                .filter(|entry| matches!(entry.kind, EntryKind::Output | EntryKind::Error))
+                .map(|entry| (entry.kind.clone(), entry.text.clone()))
+                .collect()
+        };
+        let cache_text = cache.display().to_string();
+
+        // Named on the command line: the panel has it, and so have the
+        // settings the application would write.
+        let mut app = app();
+        assert_eq!(app.current_config().pid_backup.cache_dir, None);
+        let said = run(&mut app, format!("PIDBACKUPOPEN Cache={cache_text}"));
+        assert!(
+            said.iter()
+                .any(|(kind, text)| *kind == EntryKind::Output && text.contains(&cache_text)),
+            "{said:?}"
+        );
+        assert_eq!(
+            pid_backup_browser::cache_folder(&app.pid_backup_browser),
+            Some(cache.as_path())
+        );
+        let saved = serde_json::to_string(&app.current_config()).unwrap();
+        assert!(saved.contains("cache_dir"), "{saved}");
+        // Naming a folder makes none: the first restore does.
+        assert!(!cache.exists());
+
+        // The next application starts with those settings.
+        let mut app = OpenCADStudio::new_for_test();
+        app.apply_config(serde_json::from_str(&saved).unwrap());
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        assert_eq!(
+            pid_backup_browser::cache_folder(&app.pid_backup_browser),
+            Some(cache.as_path())
+        );
+        // Its restores go into the folder, each into one of its own.
+        run(&mut app, format!("PIDBACKUPOPEN {}", first.display()));
+        let restored_first = app
+            .pid_backup_browser
+            .index()
+            .expect("the first backup loads")
+            .restored
+            .clone();
+        assert_eq!(restored_first.parent(), Some(cache.as_path()));
+        assert!(restored_first.join("00/00/A-101.pid").is_file());
+        run(&mut app, format!("PIDBACKUPOPEN {}", second.display()));
+        let restored_second = app
+            .pid_backup_browser
+            .index()
+            .expect("the second backup loads")
+            .restored
+            .clone();
+        assert_eq!(restored_second.parent(), Some(cache.as_path()));
+        assert_ne!(restored_first, restored_second);
+
+        // Selecting the backup measures the folder: this backup's restore,
+        // and the other one.
+        let task = app.on_pid_backup(PidBackupMsg::Select(NodeId::Root));
+        app.drive_headless_task(task)
+            .expect("measuring needs no window");
+        let usage = pid_backup_browser::cache_usage(&app.pid_backup_browser)
+            .cloned()
+            .expect("the cache is measured");
+        assert_eq!(usage.root, cache);
+        assert_eq!(
+            usage.current.as_ref().map(|restore| restore.folder.clone()),
+            Some(restored_second.clone())
+        );
+        assert_eq!(usage.others, 1);
+        let buttons: Vec<String> = pid_backup_browser::selected_buttons(&app.pid_backup_browser)
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert_eq!(
+            buttons[..3],
+            [
+                crate::t!("Clear the other restores").into_owned(),
+                crate::t!("Change the cache folder…").into_owned(),
+                crate::t!("Use the default folder").into_owned(),
+            ]
+        );
+        // The command line says the same when asked.
+        let said = run(&mut app, "PIDBACKUPOPEN Cache".to_string());
+        assert!(
+            said.iter()
+                .any(|(kind, text)| *kind == EntryKind::Output && text.contains(&cache_text)),
+            "{said:?}"
+        );
+
+        // Clearing, here by the button's label: the other restore goes,
+        // the one in use stays, and both the panel and the command line
+        // say what was freed.
+        let said = run(
+            &mut app,
+            format!("PIDBACKUPOPEN Press {}", crate::t!("Clear the other restores")),
+        );
+        assert!(!restored_first.exists(), "the other restore is removed");
+        assert!(restored_second.join("00/00/B-202.pid").is_file());
+        let freed = pid_backup_browser::cache_usage(&app.pid_backup_browser)
+            .and_then(|usage| usage.freed)
+            .expect("the clearing says what it freed");
+        assert_eq!(freed.0, 1);
+        let freed_text = crate::tf!(
+            "{} restore(s) removed, {} freed",
+            freed.0,
+            pid_backup_browser::human_size(freed.1)
+        )
+        .into_owned();
+        assert!(
+            said.iter()
+                .any(|(kind, text)| *kind == EntryKind::Output && text.contains(&freed_text)),
+            "{said:?}"
+        );
+        assert!(said.iter().all(|(kind, _)| *kind != EntryKind::Error), "{said:?}");
+        // `Cache=Clear` with nothing left to remove removes nothing.
+        run(&mut app, "PIDBACKUPOPEN Cache=Clear".to_string());
+        assert!(restored_second.join("00/00/B-202.pid").is_file());
+        assert_eq!(
+            pid_backup_browser::cache_usage(&app.pid_backup_browser).and_then(|usage| usage.freed),
+            Some((0, 0))
+        );
+
+        // Back to the default folder: the settings no longer name one.
+        run(&mut app, "PIDBACKUPOPEN Cache=Default".to_string());
+        assert_eq!(pid_backup_browser::cache_folder(&app.pid_backup_browser), None);
+        assert_eq!(app.current_config().pid_backup.cache_dir, None);
+        // What is no folder, word or path is refused, and nothing changes.
+        let said = run(&mut app, "PIDBACKUPOPEN Cache=somewhere".to_string());
+        assert!(
+            said.last().is_some_and(|(kind, _)| *kind == EntryKind::Error),
+            "{said:?}"
+        );
+        assert_eq!(pid_backup_browser::cache_folder(&app.pid_backup_browser), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1155,6 +1625,33 @@ mod tests {
             "命令行提示接管了输入"
         );
         crate::sys::set_file_dia(true);
+    }
+
+    /// Under a script nothing asks in a dialog: the button that changes the
+    /// cache folder says how the folder is named on the command line.
+    #[test]
+    fn under_a_script_the_cache_folder_button_opens_no_dialog() {
+        let mut app = app();
+        let _ = app.on_pid_backup(PidBackupMsg::Loaded(Ok(index())));
+        app.script_running = true;
+        let history = app.command_line.history.len();
+        let task = app.on_pid_backup(PidBackupMsg::Cache(
+            pid_backup_browser::CacheMsg::PickFolder,
+        ));
+        // Driving the task proves no dialog was scheduled: a dialog task
+        // would never resolve without a window.
+        app.drive_headless_task(task)
+            .expect("no dialog is waited for");
+        let said: Vec<(&EntryKind, &str)> = app.command_line.history[history..]
+            .iter()
+            .map(|entry| (&entry.kind, entry.text.as_str()))
+            .collect();
+        assert!(
+            said.iter()
+                .any(|(kind, text)| **kind == EntryKind::Info && text.contains("Cache=")),
+            "{said:?}"
+        );
+        assert_eq!(pid_backup_browser::cache_folder(&app.pid_backup_browser), None);
     }
 
     #[test]

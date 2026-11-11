@@ -326,7 +326,9 @@ mod tests {
     /// and hand the result back. Returns whether a read was started.
     fn select(state: &mut PidBackupBrowser, node: &NodeId) -> bool {
         match update(state, PidBackupMsg::Select(node.clone())) {
-            Effect::None => false,
+            // The backup's own row has the restore cache measured, which
+            // is no read of a file.
+            Effect::None | Effect::MeasureCache { .. } => false,
             Effect::LoadSection {
                 generation,
                 section,

@@ -1128,6 +1128,138 @@ fn millis(duration: Duration) -> String {
     format!("{:.1} ms", duration.as_secs_f64() * 1000.0)
 }
 
+/// The restore cache as the backup's details state it, against the folder
+/// itself, and as the command line reports it. Nothing is cleared here: the
+/// cache is the one every walk reuses.
+fn walk_cache(
+    app: &mut OpenCADStudio,
+    audit: &mut Audit,
+    index: &BackupIndex,
+    empty: &mut Vec<String>,
+) {
+    use pid_backup_browser::human_size;
+    // Selecting the backup measures the cache, off the UI thread.
+    send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
+    let usage = pid_backup_browser::cache_usage(&app.pid_backup_browser)
+        .cloned()
+        .expect("selecting the backup measures the restore cache");
+    let configured =
+        pid_backup_browser::cache_folder(&app.pid_backup_browser).map(Path::to_path_buf);
+    let root = configured
+        .clone()
+        .unwrap_or_else(crate::io::pid_backup::default_cache_root);
+    // What the panel holds is what the folder holds, measured apart from it.
+    assert_eq!(
+        usage,
+        crate::io::pid_backup::cache::usage(&root, Some(&index.restored)),
+        "the panel's measurement is the folder's"
+    );
+    // A backup that had to be unpacked has its restore in the cache; a
+    // folder of loose drawings is read where it lies.
+    let unpacked = index.restored != index.source;
+    let this_backup = match &usage.current {
+        Some(restore) => {
+            assert!(unpacked, "a folder read in place has no restore");
+            assert_eq!(restore.folder, index.restored);
+            let drawings = index
+                .drawings
+                .iter()
+                .filter(|drawing| !drawing.is_missing())
+                .count();
+            assert!(
+                restore.files > drawings && restore.bytes > 0,
+                "the restore holds the {drawings} drawing(s) and its mark: {restore:?}"
+            );
+            crate::tf!("{} in {} file(s)", human_size(restore.bytes), restore.files).into_owned()
+        }
+        None => {
+            assert!(!unpacked, "the restore of an unpacked backup is in the cache");
+            crate::t!("the folder is read where it lies; nothing is cached").into_owned()
+        }
+    };
+
+    let details = details_of(app, &NodeId::Root, empty);
+    let heading = details
+        .iter()
+        .position(|(key, _)| *key == crate::t!("Restore cache"))
+        .expect("the backup's details have the restore cache");
+    let end = details
+        .iter()
+        .position(|(key, _)| *key == crate::t!("Check of the drawings"))
+        .unwrap_or(details.len());
+    let lines = &details[heading + 1..end];
+    audit.line("== restore cache (in the backup's details) ==");
+    for (key, value) in lines {
+        audit.line(if value.is_empty() {
+            format!("  [{key}]")
+        } else {
+            format!("  {key} = {value}")
+        });
+    }
+    let shown = |key: std::borrow::Cow<'static, str>| -> String {
+        lines
+            .iter()
+            .find(|(found, _)| *found == key)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_else(|| panic!("the restore cache does not state {key}"))
+    };
+    assert_eq!(
+        shown(crate::t!("Cache folder")),
+        if configured.is_none() {
+            crate::tf!("{} (the default folder)", root.display()).into_owned()
+        } else {
+            root.display().to_string()
+        }
+    );
+    assert_eq!(shown(crate::t!("This backup's restore")), this_backup);
+    assert_eq!(
+        shown(crate::t!("Other restores")),
+        if usage.others == 0 {
+            crate::t!("no other restores").into_owned()
+        } else {
+            crate::tf!("{}, {} together", usage.others, human_size(usage.other_bytes))
+                .into_owned()
+        }
+    );
+    // Clearing is offered when there is something to clear; moving the
+    // cache always.
+    let buttons: Vec<String> = pid_backup_browser::selected_buttons(&app.pid_backup_browser)
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+    assert_eq!(
+        buttons.contains(&crate::t!("Clear the other restores").into_owned()),
+        usage.others > 0,
+        "{buttons:?}"
+    );
+    assert!(
+        buttons.contains(&crate::t!("Change the cache folder…").into_owned()),
+        "{buttons:?}"
+    );
+    // The command line says the same when asked.
+    let history = app.command_line.history.len();
+    let task = app.run_command_line("PIDBACKUPOPEN Cache");
+    app.drive_headless_task(task)
+        .expect("measuring the cache needs no window");
+    let said = &app.command_line.history[history..];
+    for entry in said {
+        audit.line(format!("  command line [{:?}]: {}", entry.kind, entry.text));
+    }
+    assert!(
+        said.iter().any(|entry| {
+            entry.kind == crate::ui::command_line::EntryKind::Output
+                && entry.text.contains(&root.display().to_string())
+                && entry.text.contains(&human_size(usage.other_bytes))
+        }),
+        "the command line reports the cache"
+    );
+    // With most of the panel for the details the whole of them shows.
+    let share = app.pid_backup_browser.split().tree_share();
+    send(app, PidBackupMsg::SetSplit(0.3)).unwrap();
+    audit.shot(app, "restore-cache");
+    send(app, PidBackupMsg::SetSplit(share)).unwrap();
+}
+
 /// The file-level half of the walk: what the index holds, node by node.
 fn walk_index(
     app: &mut OpenCADStudio,
@@ -1142,6 +1274,7 @@ fn walk_index(
         audit.line(format!("  {key}: {value}"));
     }
     audit.shot(app, "root-details");
+    walk_cache(app, audit, index, empty);
 
     // Backup files, and the members of the archives among them.
     send(app, PidBackupMsg::Toggle(NodeId::Files)).unwrap();

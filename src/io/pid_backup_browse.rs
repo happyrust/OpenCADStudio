@@ -238,7 +238,17 @@ pub struct MatchedDrawings {
 /// `target` (default [`crate::io::pid_backup::restore_cache`]) when it has to
 /// be unpacked.
 pub fn build_index(source: &Path, target: Option<&Path>) -> Result<BackupIndex, String> {
-    let restored = crate::io::pid_backup::restore(source, target)?;
+    build_index_in(source, target, None)
+}
+
+/// [`build_index`] with the restore cache in `cache_root` instead of the
+/// default folder.
+pub fn build_index_in(
+    source: &Path,
+    target: Option<&Path>,
+    cache_root: Option<&Path>,
+) -> Result<BackupIndex, String> {
+    let restored = crate::io::pid_backup::restore_in(source, target, cache_root)?;
     let read_only = source.is_dir();
     let backup_root = if read_only && is_backup_folder(source) {
         source.to_path_buf()
@@ -945,12 +955,17 @@ pub async fn load_items_in_background(path: PathBuf) -> Result<DrawingItems, Str
 pub async fn build_index_in_background(
     source: PathBuf,
     target: Option<PathBuf>,
+    cache_root: Option<PathBuf>,
 ) -> Result<BackupIndex, String> {
     let (sender, receiver) = iced::futures::channel::oneshot::channel();
     std::thread::Builder::new()
         .name("ocs-pid-backup-index".into())
         .spawn(move || {
-            let _ = sender.send(build_index(&source, target.as_deref()));
+            let _ = sender.send(build_index_in(
+                &source,
+                target.as_deref(),
+                cache_root.as_deref(),
+            ));
         })
         .map_err(index_start_error)?;
     receiver.await.unwrap_or_else(|_| Err(index_stopped_error()))
@@ -1895,7 +1910,7 @@ mod tests {
     fn both_background_loaders_fit_a_task() {
         let source = PathBuf::from("backup");
         let _: iced::Task<Result<BackupIndex, String>> = iced::Task::perform(
-            build_index_in_background(source.clone(), None),
+            build_index_in_background(source.clone(), None, None),
             std::convert::identity,
         );
         let _: iced::Task<Result<DrawingItems, String>> =

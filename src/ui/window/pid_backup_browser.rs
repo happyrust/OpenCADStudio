@@ -21,6 +21,7 @@
 //! backup holds is a [`section`]: a module beside this one that hangs its
 //! rows under a row of the tree and states the details of its nodes.
 
+mod cache;
 mod database;
 mod datamap;
 mod diagnostics;
@@ -34,6 +35,10 @@ mod section;
 pub mod split;
 mod text_preview;
 
+pub use cache::{
+    cache_folder, cache_usage, clear_in_background, measure_in_background, set_cache_folder,
+    take_cache_outcome, CacheMsg,
+};
 pub use goto::take_outcome as take_goto_outcome;
 pub use section::{SectionData, SectionLoad};
 pub use split::reveal_selected;
@@ -159,6 +164,8 @@ pub enum PidBackupMsg {
     /// A beat of the progress clock ([`Effect::Tick`]): the panel is drawn
     /// anew, and looks whether there is still something to count.
     Progress,
+    /// The restore cache: measured, cleared, moved to another folder.
+    Cache(cache::CacheMsg),
 }
 
 /// What the application should do after [`update`] applied a message.
@@ -185,6 +192,24 @@ pub enum Effect {
         section: usize,
         node: NodeId,
     },
+    /// Measure the restore cache in `root` off the UI thread, `current`
+    /// being the restore the open backup uses, and come back with
+    /// [`CacheMsg::Measured`] carrying the same `asked`.
+    MeasureCache {
+        asked: u64,
+        root: PathBuf,
+        current: Option<PathBuf>,
+    },
+    /// Remove every restore in `root` but `current`, off the UI thread, and
+    /// come back with [`CacheMsg::Measured`] carrying the same `asked`.
+    ClearCache {
+        asked: u64,
+        root: PathBuf,
+        current: Option<PathBuf>,
+    },
+    /// Ask the user for the folder the restore cache is to be kept in, and
+    /// come back with [`CacheMsg::FolderPicked`].
+    PickCacheFolder,
     /// Wait a moment ([`tick`]) and send [`PidBackupMsg::Progress`]: the
     /// clock that keeps the panel drawn while a section counts its way
     /// through something long.
@@ -271,6 +296,9 @@ pub struct PidBackupBrowser {
     /// The progress clock is going: a beat is on its way. Not the last
     /// backup's to forget: the beat arrives all the same, and settles it.
     ticking: bool,
+    /// The restore cache: where it is and what it was last seen to hold.
+    /// The folder is the user's preference, not the backup's.
+    cache: cache::CacheState,
 }
 
 /// Whether the selection moved since this was last asked: the application
@@ -300,6 +328,7 @@ impl PidBackupBrowser {
         self.goto_outcome = None;
         self.grid = grid::GridState::default();
         self.reveal = false;
+        self.cache.forget();
     }
 
     /// How the height is shared between the tree and the details.
@@ -439,7 +468,14 @@ pub fn update(state: &mut PidBackupBrowser, msg: PidBackupMsg) -> Effect {
             state.selected = Some(id.clone());
             // Wherever the selection came from, the tree shows it.
             state.reveal = true;
-            section::after(state, section::EventKind::Selected, &id)
+            let effect = section::after(state, section::EventKind::Selected, &id);
+            // The backup's own details say what the restore cache holds:
+            // measured each time they are opened, as restores come and go.
+            if cache::shows(&id) {
+                section::both(effect, cache::measure(state))
+            } else {
+                effect
+            }
         }
         PidBackupMsg::Activate(id) => {
             let own = activate(state, id.clone());
@@ -460,6 +496,7 @@ pub fn update(state: &mut PidBackupBrowser, msg: PidBackupMsg) -> Effect {
             state.filter = text;
             Effect::None
         }
+        PidBackupMsg::Cache(msg) => cache::update(state, msg),
         // The message itself is what draws the panel anew; the clock goes
         // on for as long as something counts.
         PidBackupMsg::Progress => {
@@ -986,6 +1023,9 @@ enum DetailLine {
     /// A button that activates a node: how a section starts something that
     /// is too slow to start by itself (a check of every drawing).
     Button(String, NodeId),
+    /// A button that sends a message of the panel's own: what it does is
+    /// no node's to do (clearing the restore cache).
+    Action(String, PidBackupMsg),
     /// A table, drawn as a [`grid`] below the other lines. A node's details
     /// hold at most one: it takes what is left of the detail half.
     Table(std::sync::Arc<grid::Table>),
@@ -1002,7 +1042,8 @@ impl DetailLine {
             DetailLine::Marker(key)
             | DetailLine::Heading(key)
             | DetailLine::OpenDrawing(key)
-            | DetailLine::Button(key, _) => {
+            | DetailLine::Button(key, _)
+            | DetailLine::Action(key, _) => {
                 vec![(key, String::new())]
             }
             DetailLine::Table(table) => {
@@ -1127,6 +1168,10 @@ fn details<'a>(state: &'a PidBackupBrowser, width: f32) -> Element<'a, Message> 
                 .on_press(PidBackupMsg::Activate(node).message())
                 .padding([3, 10])
                 .into(),
+            DetailLine::Action(label, msg) => button(text(label).size(11))
+                .on_press(msg.message())
+                .padding([3, 10])
+                .into(),
             DetailLine::Table(found) => {
                 table = Some(found);
                 continue;
@@ -1249,6 +1294,7 @@ fn detail_lines(state: &PidBackupBrowser, id: &NodeId) -> Vec<DetailLine> {
             for warning in &index.warnings {
                 lines.push(DetailLine::Marker(warning.clone()));
             }
+            cache::lines(state, index, &mut lines);
         }
         NodeId::Files => {
             lines.push(DetailLine::Field(
@@ -1521,20 +1567,23 @@ pub(crate) fn detail_buttons(state: &PidBackupBrowser, id: &NodeId) -> Vec<(Stri
         .collect()
 }
 
-/// The `at`-th button (from zero) in the details of the selected node: its
-/// label and the node a press of it activates. What `PIDBACKUPOPEN Press`
-/// presses, so a script can do what a click on the button does.
-pub fn selected_button(state: &PidBackupBrowser, at: usize) -> Option<(String, NodeId)> {
-    let id = state.selected.as_ref()?;
+/// The buttons in the details of the selected node, in the order they are
+/// drawn: the label of each and the message a press of it sends. What
+/// `PIDBACKUPOPEN Press` presses, so a script can do what a click does.
+pub fn selected_buttons(state: &PidBackupBrowser) -> Vec<(String, PidBackupMsg)> {
+    let Some(id) = state.selected.as_ref() else {
+        return Vec::new();
+    };
     detail_lines(state, id)
         .into_iter()
         .filter_map(|line| match line {
-            DetailLine::Button(label, node) => Some((label, node)),
+            DetailLine::Button(label, node) => Some((label, PidBackupMsg::Activate(node))),
             // The "open drawing" button activates the drawing itself.
-            DetailLine::OpenDrawing(label) => Some((label, id.clone())),
+            DetailLine::OpenDrawing(label) => Some((label, PidBackupMsg::Activate(id.clone()))),
+            DetailLine::Action(label, msg) => Some((label, msg)),
             _ => None,
         })
-        .nth(at)
+        .collect()
 }
 
 /// Build the docked panel.
@@ -2432,9 +2481,10 @@ mod tests {
     #[test]
     fn the_root_details_list_the_manifest_read_only_marker_and_every_warning() {
         let state = detail_state();
+        let fields = detail_fields(&state, &NodeId::Root);
         assert_eq!(
-            detail_fields(&state, &NodeId::Root),
-            vec![
+            fields[..7],
+            [
                 (t!("Backup name").into_owned(), plain("Plant backup")),
                 (t!("Backup version").into_owned(), plain("7")),
                 (t!("Backup type").into_owned(), plain("Full")),
@@ -2444,6 +2494,18 @@ mod tests {
                 (t!("Restored").into_owned(), plain("D:/tmp/restore")),
             ],
             "the manifest fields come first, then where the backup came from"
+        );
+        // The one field after them: where restores are kept.
+        assert_eq!(
+            fields[7..],
+            [(
+                t!("Cache folder").into_owned(),
+                crate::tf!(
+                    "{} (the default folder)",
+                    crate::io::pid_backup::default_cache_root().display()
+                )
+                .into_owned()
+            )]
         );
         let keys = detail_keys(&state, &NodeId::Root);
         assert_eq!(
@@ -2463,9 +2525,19 @@ mod tests {
             ],
             "the read-only marker and every warning follow in order"
         );
+        // Then where the restore cache is, with the button that moves it
+        // (what it holds is measured when the backup is selected).
+        assert_eq!(
+            keys[11..14],
+            [
+                t!("Restore cache").into_owned(),
+                t!("Cache folder").into_owned(),
+                t!("Change the cache folder…").into_owned(),
+            ]
+        );
         // The backup's own lines end there; what a section adds to them --
         // the check of the drawings -- comes after, under its heading.
-        assert_eq!(keys[11], t!("Check of the drawings").as_ref());
+        assert_eq!(keys[14], t!("Check of the drawings").as_ref());
     }
 
     #[test]

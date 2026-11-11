@@ -1687,6 +1687,17 @@ impl OpenCADStudio {
                 drawing_id: self.collab.configured_drawing_id.clone(),
                 mode: self.collab.configured_mode.clone(),
             },
+            // The backup browser's panel holds the folder; the web build
+            // has no panel and no folder.
+            pid_backup: crate::app::config::PidBackupConfig {
+                #[cfg(not(target_arch = "wasm32"))]
+                cache_dir: crate::ui::window::pid_backup_browser::cache_folder(
+                    &self.pid_backup_browser,
+                )
+                .map(|folder| folder.to_string_lossy().into_owned()),
+                #[cfg(target_arch = "wasm32")]
+                cache_dir: None,
+            },
         }
     }
 
@@ -1808,6 +1819,12 @@ impl OpenCADStudio {
             self.collab.mode = cfg.collab.mode;
         }
         self.collab.sync_client_config();
+        // Where restored P&ID backups are kept, when it is not the default.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::ui::window::pid_backup_browser::set_cache_folder(
+            &mut self.pid_backup_browser,
+            cfg.pid_backup.cache_dir.map(std::path::PathBuf::from),
+        );
     }
 
     /// Write the config only when it changed since the last write, so a toggle
