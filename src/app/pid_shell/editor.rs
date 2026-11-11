@@ -1,0 +1,45 @@
+//! 03 P&ID 编辑器 — screen `editor`; in the design, frame `t4QrJ` with its
+//! content in `Ga1Mo`. What the design draws there and where each piece
+//! comes from is in `docs/plans/2026-11-11-pid-ui-overhaul-map.md`,
+//! section 3.3.
+//!
+//! Implemented as what the program already is: the drawing interface — the
+//! canvas with its tabs, ribbon, panels, command line and status bar — on
+//! which every P&ID command works (`PIDINSERT`, `PIDPIPE`, `PIDFITTING`, …).
+//! The toolbar, the small palette and the inspector the design draws are not
+//! there yet. What is there that the design does not have: the general
+//! interface's fixed Start tab, first in the tab bar, which shows the general
+//! Start page when it is picked or when the last drawing is closed.
+//!
+//! [`view`] is the whole general interface, and that interface places its
+//! dropdowns, menus and dialogs in window coordinates. It has to be given
+//! the whole window, starting at the top-left corner, until the canvas is
+//! taken out of it (see "What the shell draws today" in [`super`]).
+
+use iced::{Element, Task};
+
+use super::ViewFn;
+use crate::app::{Message as AppMessage, OpenCADStudio};
+
+/// What the screen remembers between frames. Nothing of its own yet: the
+/// drawings, the tabs and the panels are the application's.
+#[derive(Debug, Default)]
+pub struct State {}
+
+/// What the screen's widgets send. None of its own yet: the drawing
+/// interface sends the application's messages.
+#[derive(Debug, Clone)]
+pub enum Message {}
+
+/// The function that draws the screen.
+pub(crate) const VIEW: Option<ViewFn> = Some(view);
+
+/// Take one of the screen's messages.
+pub(crate) fn update(_app: &mut OpenCADStudio, message: Message) -> Task<AppMessage> {
+    match message {}
+}
+
+/// Draw the editor: today, the general drawing interface.
+pub(crate) fn view(app: &OpenCADStudio) -> Element<'_, AppMessage> {
+    app.view_classic()
+}

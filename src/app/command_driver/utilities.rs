@@ -1322,6 +1322,9 @@ impl OpenCADStudio {
             // `PIDCOLLAB SERVER|USER|DRAWING <value>` and `PIDCOLLAB ON|OFF`
             // likewise: probing the bare verb would show the panel first.
             || tokens[0].eq_ignore_ascii_case("PIDCOLLAB")
+            // `PIDSCREEN <id>` names its screen on the same line; the bare
+            // verb would first report the screen being left.
+            || tokens[0].eq_ignore_ascii_case("PIDSCREEN")
         {
             return self.dispatch_command(cmd);
         }

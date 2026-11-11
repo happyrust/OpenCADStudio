@@ -916,6 +916,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_pidclaim(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_pidscreen(cmd, i) {
+            return Some(t);
+        }
         None
     }
 
@@ -1019,6 +1022,9 @@ pub fn start_allowed(cmd: &str) -> bool {
         || matches!(
             verb,
             "OPEN" | "PIDBACKUPOPEN" | "SCRIPT" | "SCR" | "FILEDIA" | "SDI" | "EXIT"
+            // Which screen of the P&ID module shows is the application's
+            // business, not a drawing's.
+            | "PIDSCREEN"
         )
         || matches!(
             cmd,
@@ -1590,6 +1596,8 @@ inventory::submit!(crate::command::CommandRegistration {
         "PIDPIPE",
         "PIDPLOT",
         "PIDRELEASE",
+        // Which screen of the P&ID module is showing (`app::pid_shell`).
+        "PIDSCREEN",
         "PIDSETPROP",
         "PIDTAG",
         "PIDTOPOLOGY",

@@ -758,10 +758,18 @@ impl OpenCADStudio {
         element
     }
 
-    /// The primary window: viewport, ribbon, tab bar, status bar. Split out of
-    /// `view` so the single-window web build can render it directly, bypassing
-    /// the multi-window id dispatch above (the web build has no extra windows).
+    /// The primary window: the P&ID module's root view while the module is
+    /// on, the general CAD interface otherwise. Split out of `view` so the
+    /// single-window web build can render it directly, bypassing the
+    /// multi-window id dispatch above (the web build has no extra windows).
     pub fn view_main(&self) -> Element<'_, Message> {
+        super::pid_shell::view(self).unwrap_or_else(|| self.view_classic())
+    }
+
+    /// The general CAD interface: viewport, ribbon, tab bar, status bar. It
+    /// is the whole window while the P&ID module is off, and what the
+    /// module's editor screen draws while it is on.
+    pub(in crate::app) fn view_classic(&self) -> Element<'_, Message> {
         // Section marks for `view-detail`. A closure over a RefCell rather
         // than one binding per section: two of these sections sit inside a
         // nested block and would otherwise be out of scope at the report.

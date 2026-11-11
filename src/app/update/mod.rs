@@ -1420,6 +1420,7 @@ impl OpenCADStudio {
             }
             Message::CollabClaim { tag, claim } => self.on_collab_claim(&tag, claim),
             Message::PidCollab(m) => self.on_pid_collab(m),
+            Message::PidShell(m) => self.on_pid_shell(m),
             #[cfg(target_arch = "wasm32")]
             Message::PollWebControl => {
                 let control = if let Some(request) = super::control::web_request() {

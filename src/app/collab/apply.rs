@@ -825,6 +825,7 @@ pub(super) const READONLY_ALLOWED: &[&str] = &[
     "PIDCOLLAB",
     "PIDCLAIM",
     "PIDRELEASE",
+    "PIDSCREEN",
     "PIDPLOT",
     "PLOT",
     "PRINT",

@@ -9,9 +9,9 @@
 //!   - `--each SCRIPT FILES` run a script headless on each drawing, then exit
 //!   - otherwise            launch the GUI editor, configured via [`GuiConfig`]
 //!
-//! GUI-only options (open-file, `--new`, `--read-only`, `--script`) are stashed
-//! in [`GUI_CONFIG`] for `app::boot` to read, since the iced daemon boots with
-//! no arguments of its own.
+//! GUI-only options (open-file, `--new`, `--classic`, `--read-only`,
+//! `--script`) are stashed in [`GUI_CONFIG`] for `app::boot` to read, since
+//! the iced daemon boots with no arguments of its own.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -44,6 +44,13 @@ pub struct Cli {
     #[arg(long)]
     #[arg(help = crate::t!("Start with a new empty drawing.").into_owned(), long_help = None)]
     pub new: bool,
+
+    /// Start in the general CAD interface — the Start page when no drawing
+    /// is named — instead of the P&ID module, which is where the editor
+    /// starts otherwise (see `app::pid_shell`).
+    #[arg(long)]
+    #[arg(help = crate::t!("Start in the general CAD interface instead of the P&ID module.").into_owned(), long_help = None)]
+    pub classic: bool,
 
     /// Always start a new editor process, even when one is already running.
     /// Without this, opening a drawing hands it to the running editor as a tab.
@@ -268,6 +275,8 @@ pub struct GuiConfig {
     pub files: Vec<PathBuf>,
     /// Open a fresh drawing tab on launch instead of the welcome screen.
     pub new: bool,
+    /// `--classic`: the general CAD interface, not the P&ID module.
+    pub classic: bool,
     /// Saving disabled for this session.
     pub read_only: bool,
     /// Force storage-buffer-free wire and hatch pipelines.
