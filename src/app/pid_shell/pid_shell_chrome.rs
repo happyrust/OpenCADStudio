@@ -511,8 +511,19 @@ fn the_editor_is_laid_out_in_the_content_area_as_in_a_window_of_its_own() {
 /// The window after `steps`, as it is drawn then: RGBA, one pixel for each
 /// logical pixel. The pointer stays where the last step left it, so what
 /// hovering there shows is in the picture, and so is an overlay the steps
-/// opened (a context menu, a tooltip).
+/// opened (a context menu).
 fn picture(app: &mut OpenCADStudio, window: Size, steps: &[(Point, Pointer)]) -> Vec<u8> {
+    picture_after(app, window, steps, std::time::Duration::ZERO)
+}
+
+/// [`picture`], taken once the pointer has rested for `rest` where the last
+/// step left it: a tooltip that waits before it shows is in it.
+fn picture_after(
+    app: &mut OpenCADStudio,
+    window: Size,
+    steps: &[(Point, Pointer)],
+    rest: std::time::Duration,
+) -> Vec<u8> {
     use iced_test::core::renderer::Headless as _;
     use iced_test::core::{mouse, renderer, shell, window as core_window};
     use iced_test::runtime::user_interface::{Cache, UserInterface};
@@ -543,19 +554,25 @@ fn picture(app: &mut OpenCADStudio, window: Size, steps: &[(Point, Pointer)]) ->
             let _ = app.update(message);
         }
     }
+    if !rest.is_zero() {
+        std::thread::sleep(rest);
+    }
     let mut ui = UserInterface::build(app.view_main(), window, cache, &mut headless);
     // An interface lays its overlay out when it is updated, and draws none
-    // it has not laid out.
-    let _ = ui.update(
-        &core_window::Headless,
-        &shell::Waker::noop(),
-        &[iced::Event::Window(iced::window::Event::RedrawRequested(
-            iced::time::Instant::now(),
-        ))],
-        cursor,
-        &mut headless,
-        &mut Vec::new(),
-    );
+    // it has not laid out. Twice: a tooltip whose wait is over opens on the
+    // first, and is laid out by the second at the latest.
+    for _ in 0..2 {
+        let _ = ui.update(
+            &core_window::Headless,
+            &shell::Waker::noop(),
+            &[iced::Event::Window(iced::window::Event::RedrawRequested(
+                iced::time::Instant::now(),
+            ))],
+            cursor,
+            &mut headless,
+            &mut Vec::new(),
+        );
+    }
     ui.draw(
         &mut headless,
         &app.active_theme,
@@ -613,6 +630,26 @@ fn differing(a: &[u8], b: &[u8], width: usize) -> (usize, Option<(usize, usize, 
     (count, within)
 }
 
+/// How many pixels of `picture` are not what `before` has there, outside
+/// `area`: what came up beside the thing in `area` — its tooltip, its menu —
+/// and not the thing itself lighting under the pointer.
+fn beside(picture: &[u8], before: &[u8], width: usize, area: Rectangle) -> usize {
+    assert_eq!(picture.len(), before.len(), "pictures of one size");
+    picture
+        .chunks_exact(4)
+        .zip(before.chunks_exact(4))
+        .enumerate()
+        .filter(|(index, (one, other))| {
+            let at = Point::new((index % width) as f32 + 0.5, (index / width) as f32 + 0.5);
+            !area.contains(at)
+                && one
+                    .iter()
+                    .zip(other.iter())
+                    .any(|(one, other)| one.abs_diff(*other) > 2)
+        })
+        .count()
+}
+
 /// With `OCS_PID_SHELL_PICTURES` naming a folder, the two pictures a
 /// comparison is about are written there, for looking at.
 fn keep_pictures(what: &str, in_shell: &[u8], on_its_own: &[u8]) {
@@ -630,43 +667,63 @@ fn keep_pictures(what: &str, in_shell: &[u8], on_its_own: &[u8]) {
     }
 }
 
-/// Whatever the general interface shows — a hover, a dialog, a dropdown of
-/// the ribbon, the Start page — it shows at the same place in the
+/// Whatever the general interface shows — a tooltip, the menu of a
+/// drawing's tab, the drawing area's own menu, a dialog, a dropdown of the
+/// ribbon, the Start page — it shows at the same place in the
 /// shell's content area as in a window of its own: the two pictures are the
 /// same, pixel for pixel (to within a level or two of anti-aliasing, see
-/// `differing`). The drawing itself is not in them (a headless
-/// frame has no GPU scene); where the pointer lands on it is the business
-/// of the tests below.
+/// `differing`), and each has the thing in it. The drawing itself is not in
+/// them (a headless frame has no GPU scene); where the pointer lands on it
+/// is the business of the tests below.
 #[test]
 fn what_the_editor_shows_is_drawn_in_the_frame_where_a_window_of_its_own_draws_it() {
+    use std::time::Duration;
     let _one = crate::headless_ui_lock();
     let (mut inside, mut apart) = (shell(), alone());
     let frame = rect(ORIGIN.x, ORIGIN.y, CONTENT.width, CONTENT.height);
     let whole = rect(0.0, 0.0, CONTENT.width, CONTENT.height);
+    let width = CONTENT.width as usize;
+    let at_once = Duration::ZERO;
     // One frame each first: the corner widgets of the drawing area go by
     // what the frame before measured.
-    let tab = drawn(&apart, CONTENT)["DOC_TAB:1"].center();
-    assert_eq!(drawn(&inside, WINDOW)["DOC_TAB:1"].center(), tab + ORIGIN);
+    let on_its_own = drawn(&apart, CONTENT);
+    let tab = on_its_own["DOC_TAB:1"];
+    assert_eq!(drawn(&inside, WINDOW)["DOC_TAB:1"], tab + ORIGIN);
+    // A button of the quick access bar: each of them has a tooltip.
+    let button = ["QAT_CUSTOMIZE", "QAT_USER_INTERFACE", "QAT_SWITCH_WINDOWS"]
+        .iter()
+        .find_map(|id| on_its_own.get(*id).copied())
+        .unwrap_or_else(|| {
+            panic!(
+                "a button of the quick access bar is drawn: {:?}",
+                on_its_own.keys().collect::<Vec<_>>()
+            )
+        });
 
     let compare = |inside: &mut OpenCADStudio,
                    apart: &mut OpenCADStudio,
                    what: &str,
-                   steps: &[(Point, Pointer)]| {
+                   steps: &[(Point, Pointer)],
+                   rest: Duration| {
         let shifted: Vec<(Point, Pointer)> = steps
             .iter()
             .map(|(at, step)| (*at + ORIGIN, *step))
             .collect();
-        let in_shell = cut(&picture(inside, WINDOW, &shifted), WINDOW, frame);
-        let on_its_own = cut(&picture(apart, CONTENT, steps), CONTENT, whole);
+        let in_shell = cut(
+            &picture_after(inside, WINDOW, &shifted, rest),
+            WINDOW,
+            frame,
+        );
+        let on_its_own = cut(&picture_after(apart, CONTENT, steps, rest), CONTENT, whole);
         keep_pictures(what, &in_shell, &on_its_own);
-        let (count, within) = differing(&in_shell, &on_its_own, CONTENT.width as usize);
+        let (count, within) = differing(&in_shell, &on_its_own, width);
         assert_eq!(count, 0, "{what}: {count} pixels differ, within {within:?}");
         on_its_own
     };
     // That a picture shows what it is said to show: it is not the picture
     // taken before the thing was brought up.
     let shows = |picture: &[u8], before: &[u8], what: &str| {
-        let (count, _) = differing(picture, before, CONTENT.width as usize);
+        let (count, _) = differing(picture, before, width);
         assert!(
             count > 500,
             "{what} is in the picture ({count} pixels of it)"
@@ -674,20 +731,57 @@ fn what_the_editor_shows_is_drawn_in_the_frame_where_a_window_of_its_own_draws_i
     };
 
     // As it starts.
-    let plain = compare(&mut inside, &mut apart, "plain", &[]);
-    // The pointer over a tool of the ribbon.
-    compare(
+    let plain = compare(&mut inside, &mut apart, "plain", &[], at_once);
+    // The pointer resting on a button of the quick access bar: once the
+    // wait the bar gives its tooltips (0.4 s) is over, the tooltip is under
+    // the button.
+    let tooltip = compare(
         &mut inside,
         &mut apart,
-        "hover",
-        &[(Point::new(40.0, 70.0), Pointer::Move)],
+        "tooltip",
+        &[(button.center(), Pointer::Move)],
+        Duration::from_millis(450),
     );
+    let shown = beside(&tooltip, &plain, width, button);
+    assert!(
+        shown > 200,
+        "the tooltip is in the picture ({shown} pixels of it beside the button)"
+    );
+    // The menu of a drawing's tab, while the right button that opened it is
+    // still down.
+    let menu = compare(
+        &mut inside,
+        &mut apart,
+        "tab menu",
+        &[
+            (tab.center(), Pointer::Move),
+            (tab.center(), Pointer::Press(iced::mouse::Button::Right)),
+        ],
+        at_once,
+    );
+    let shown = beside(&menu, &plain, width, tab);
+    assert!(
+        shown > 500,
+        "the tab's menu is in the picture ({shown} pixels of it beside the tab)"
+    );
+    // The drawing area's own menu, open at a point of the drawing area as a
+    // right-click there leaves it.
+    for app in [&mut inside, &mut apart] {
+        let selection = &app.tabs[app.active_tab].scene.selection;
+        selection.borrow_mut().menu.open(Point::new(300.0, 200.0));
+    }
+    let menu = compare(&mut inside, &mut apart, "canvas menu", &[], at_once);
+    shows(&menu, &plain, "the drawing area's menu");
+    for app in [&mut inside, &mut apart] {
+        let selection = &app.tabs[app.active_tab].scene.selection;
+        selection.borrow_mut().menu.close();
+    }
     // A dialog.
     for app in [&mut inside, &mut apart] {
         let _ = app.dispatch_command("DWGPROPS");
         assert!(app.active_modal.is_some(), "the dialog is up");
     }
-    let dialog = compare(&mut inside, &mut apart, "dialog", &[]);
+    let dialog = compare(&mut inside, &mut apart, "dialog", &[], at_once);
     shows(&dialog, &plain, "the dialog");
     for app in [&mut inside, &mut apart] {
         let _ = app.update(AppMessage::CloseModal);
@@ -699,7 +793,7 @@ fn what_the_editor_shows_is_drawn_in_the_frame_where_a_window_of_its_own_draws_i
         app.finish_all_pending_history();
         app.ribbon.open_dropdown = Some(crate::ui::ribbon::UNDO_HISTORY_ID.to_string());
     }
-    let dropdown = compare(&mut inside, &mut apart, "dropdown", &[]);
+    let dropdown = compare(&mut inside, &mut apart, "dropdown", &[], at_once);
     shows(&dropdown, &plain, "the dropdown");
     for app in [&mut inside, &mut apart] {
         app.ribbon.open_dropdown = None;
@@ -707,7 +801,7 @@ fn what_the_editor_shows_is_drawn_in_the_frame_where_a_window_of_its_own_draws_i
         let _ = app.update(AppMessage::TabSwitch(0));
         assert!(app.tabs[app.active_tab].is_start);
     }
-    compare(&mut inside, &mut apart, "start page", &[]);
+    compare(&mut inside, &mut apart, "start page", &[], at_once);
 }
 
 /// An overlay of something in a frame — the list that drops from a picker,
