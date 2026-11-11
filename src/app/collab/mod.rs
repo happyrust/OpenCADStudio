@@ -591,12 +591,22 @@ mod tests {
             ["tok", "io"].concat(),
             ["async", "_std"].concat(),
         ];
-        let mut read = 0;
-        for entry in std::fs::read_dir(&folder).expect("the module's folder") {
-            let path = entry.expect("a directory entry").path();
-            if path.extension().is_none_or(|extension| extension != "rs") {
-                continue;
+        // Every source file under the folder, however deep: the contract's
+        // search is recursive, and a submodule added later must not slip by.
+        fn sources_under(folder: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(folder).expect("a module folder") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    sources_under(&path, out);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    out.push(path);
+                }
             }
+        }
+        let mut paths = Vec::new();
+        sources_under(&folder, &mut paths);
+        let mut read = 0;
+        for path in paths {
             let source = std::fs::read_to_string(&path).expect("a source file");
             read += 1;
             for (number, line) in source.lines().enumerate() {

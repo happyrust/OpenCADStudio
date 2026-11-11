@@ -568,12 +568,19 @@ pub(super) fn run_client(
             config.server_url,
             attempt.saturating_add(1)
         ));
-        let reason = match run_session(sender, &config, link) {
+        let mut came_up = false;
+        let reason = match run_session(sender, &config, link, &mut came_up) {
             Ok(Ended::SubscriptionGone) => return Ok(()),
             Ok(Ended::Quit) => return Ok(()),
             Ok(Ended::Closed(reason)) => reason,
             Err(error) => error,
         };
+        // The ladder counts failures in a row. A session that came up ends
+        // the row: the next drop starts from the first rung again, instead
+        // of every drop after the fifth waiting out the full five seconds.
+        if came_up {
+            attempt = 0;
+        }
         let delay = backoff_delay(attempt);
         log(&format!("断开：{reason}；{} 毫秒后重连", delay.as_millis()));
         if emit(
@@ -596,10 +603,12 @@ pub(super) fn run_client(
 }
 
 /// One connection: handshake, `hello`, then the read loop until it ends.
+/// `came_up` is set once the server has answered with `welcome`.
 fn run_session(
     sender: &mut mpsc::Sender<CollabEvent>,
     config: &ClientConfig,
     link: &Link,
+    came_up: &mut bool,
 ) -> Result<Ended, String> {
     // A request queued against a session that has since ended must not be
     // replayed into this one: the tag may belong to somebody else by now.
@@ -639,6 +648,7 @@ fn run_session(
                     } = &event
                     {
                         session_id = Some(id.clone());
+                        *came_up = true;
                     }
                     log(&format!("收到 {}", describe_event(&event)));
                     if emit(sender, link, event).is_err() {
@@ -870,6 +880,68 @@ mod tests {
             }
         });
         (url, seen, closed, handle)
+    }
+
+    /// A server that takes `sessions` connections one after the other, answers
+    /// each `hello` with `welcome` and then drops the socket; after the last
+    /// one nobody listens any more.
+    fn dropping_server(sessions: usize) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("ws://{addr}/ws");
+        let handle = std::thread::spawn(move || {
+            for _ in 0..sessions {
+                let Ok((stream, _)) = listener.accept() else {
+                    return;
+                };
+                let Ok(mut ws) = tungstenite::accept(stream) else {
+                    continue;
+                };
+                let _ = ws.read();
+                let welcome = r#"{"type":"welcome","session_id":"s-test","base_revision":0,"peers":[],"claims":[]}"#;
+                let _ = ws.send(Message::text(welcome));
+                // Dropped here, with no close frame: a server that died.
+            }
+        });
+        (url, handle)
+    }
+
+    /// The retry ladder counts failures in a row, and a session that came up
+    /// ends the row. It used to count every drop of the run: after a handful
+    /// of them each new one waited out the full five seconds, however long
+    /// the sessions in between had lasted.
+    #[test]
+    fn a_session_that_came_up_starts_the_retry_ladder_again() {
+        let (url, server) = dropping_server(2);
+        let link = Link::detached(config_for(url));
+        let (mut receiver, worker) = start_client(&link);
+
+        // Which retry the first try after each session that was up is. The
+        // very first connection is try 0; a retry after one failure is 1.
+        let mut after_a_session = Vec::new();
+        let mut was_up = false;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while after_a_session.len() < 2 && Instant::now() < deadline {
+            match receiver.try_recv() {
+                Ok(CollabEvent::Connected { .. }) => was_up = true,
+                Ok(CollabEvent::Connecting { attempt }) if was_up => {
+                    after_a_session.push(attempt);
+                    was_up = false;
+                }
+                Ok(_) => {}
+                Err(mpsc::TryRecvError::Closed) => break,
+                Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+        assert_eq!(
+            after_a_session,
+            [1, 1],
+            "each drop of a session that was up is followed by the first retry \
+             again (it read [1, 2]: the second drop went on up the ladder)"
+        );
     }
 
     /// How long a test waits for the client's session to come up. A loopback
