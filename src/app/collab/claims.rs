@@ -88,6 +88,13 @@ impl OpenCADStudio {
                 value_b: entry.value_b.clone(),
             })
             .collect();
+        // Nor does a panel that has a server go on reporting the note it
+        // drew when it had none.
+        if self.pid_collab_view.configured() != state.wanted() {
+            crate::ui::wrap_bar::forget_bounds(
+                crate::ui::window::pid_collab::NOT_CONFIGURED_BOUNDS_ID,
+            );
+        }
         // An entry that has been ruled on stops reporting its rectangle,
         // for the same reason a released claim does.
         if self.pid_collab_view.conflicts != conflicts {
@@ -1011,6 +1018,34 @@ mod tests {
             "the session is for the drawing in front when it was started"
         );
         assert!(app.pid_collab_view.configured(), "the panel was not told");
+    }
+
+    /// The note an unconfigured panel draws stops reporting where it is once
+    /// the panel has a server: a client reading the bounds takes the id's
+    /// presence for the state.
+    #[test]
+    fn a_panel_given_a_server_stops_reporting_the_unconfigured_note() {
+        use crate::ui::window::pid_collab::NOT_CONFIGURED_BOUNDS_ID;
+
+        let mut app = app_with_tags(&["P-1001"]);
+        app.collab.user_id = "u1".to_owned();
+        app.collab.drawing_id = "PID-1101".to_owned();
+        app.refresh_collab_view();
+        assert!(!app.pid_collab_view.configured());
+        // As the panel records it when it is drawn.
+        crate::ui::wrap_bar::set_drawn_bounds(
+            NOT_CONFIGURED_BOUNDS_ID,
+            iced::Rectangle { x: 0.0, y: 0.0, width: 10.0, height: 10.0 },
+        );
+
+        let done = run(&mut app, &format!("PIDCOLLAB SERVER {SERVER}"));
+        assert_eq!(done["ok"], true, "{done}");
+        let left: Vec<String> = crate::ui::wrap_bar::recorded_bounds()
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|id| id == NOT_CONFIGURED_BOUNDS_ID)
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     /// An address the transport could not dial is refused where it is typed:

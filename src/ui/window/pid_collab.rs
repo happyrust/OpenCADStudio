@@ -89,6 +89,10 @@ pub const NOT_CONFIGURED_LABEL: &str = "未配置协同服务器";
 /// And how to set one, under it.
 pub const NOT_CONFIGURED_HINT: &str = "在命令行输入 PIDCOLLAB SERVER ws://主机:端口/ws";
 
+/// `PosReport` id of those two lines. Reported only while the panel shows
+/// them, so its presence is the state.
+pub const NOT_CONFIGURED_BOUNDS_ID: &str = "pid-collab-unconfigured";
+
 /// One peer row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerRow {
@@ -309,23 +313,25 @@ pub fn view<'a>(view: &'a CollabView, width: f32, chrome: Chrome) -> Element<'a,
         // Says what to do about it as well: the address is given on the
         // command line (`PIDCOLLAB SERVER`), which is not somewhere a person
         // would look unprompted.
-        let hint = container(
+        // The two lines report where they are under an id of their own, and
+        // the panel under its usual one: a client reading the bounds can
+        // tell the panel is open, and that this is what it says
+        // (`VAL-CLI-017`, `VAL-CROSS-012`) — a screenshot was the only way.
+        let hint = container(crate::ui::wrap_bar::PosReport::new(
+            NOT_CONFIGURED_BOUNDS_ID,
             column![
                 text(NOT_CONFIGURED_LABEL).size(12).style(muted),
                 text(NOT_CONFIGURED_HINT).size(10).style(muted),
             ]
             .spacing(4)
             .align_x(iced::Center),
-        )
+        ))
         .center_x(Fill)
         .center_y(Fill)
         .width(Fill)
         .height(Fill);
-        return crate::ui::dock::frame(
-            title_bar,
-            column![hint].spacing(6).height(Fill),
-            width,
-        );
+        let reported = crate::ui::wrap_bar::PosReport::new(PANEL_BOUNDS_ID, hint);
+        return crate::ui::dock::frame(title_bar, reported, width);
     }
 
     // ── Session banner ───────────────────────────────────────────────────
@@ -597,6 +603,19 @@ mod tests {
         let other = drawn(&mut ui, "u2").expect("the other's row");
         assert!(own.y < other.y, "this session first: {own:?}, {other:?}");
         assert_eq!(drawn(&mut ui, NO_OTHERS_LABEL), None);
+    }
+
+    /// `VAL-CLI-017`, `VAL-CROSS-012`: with no server set the panel says so,
+    /// and says how to set one — and nothing else: no banner, no roster.
+    #[test]
+    fn a_panel_with_no_server_says_so_and_how_to_set_one() {
+        let view_model = CollabView::default();
+        let mut ui = draw(&view_model);
+        let said = drawn(&mut ui, NOT_CONFIGURED_LABEL).expect("the note is drawn");
+        let how = drawn(&mut ui, NOT_CONFIGURED_HINT).expect("the hint is drawn");
+        assert!(said.y < how.y, "{said:?} {how:?}");
+        assert_eq!(drawn(&mut ui, "未连接"), None);
+        assert_eq!(drawn(&mut ui, "在线用户"), None);
     }
 
     /// `VAL-CROSS-007`: an entry awaiting a ruling is listed under a header
