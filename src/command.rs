@@ -3135,6 +3135,14 @@ pub trait CadCommand: Send {
     fn table_cell(&self) -> Option<(Handle, usize, usize)> {
         None
     }
+    /// The command line that starts this command as it is running now: its
+    /// verb and the arguments that decide what it does (`PIDPIPE signal`,
+    /// `PIDINSERT <block>`). An interface that lights the tool in use reads
+    /// it, so the tool is the same however the command was started. `None`
+    /// for a command no such tool stands for.
+    fn tool_line(&self) -> Option<String> {
+        None
+    }
     /// Preserve source appearance for commands that extract existing entities.
     fn preserve_commit_style(&self) -> bool {
         false

@@ -128,6 +128,17 @@ impl CadCommand for PidPipeCommand {
         "PIDPIPE"
     }
 
+    fn tool_line(&self) -> Option<String> {
+        Some(
+            match self.mode {
+                PipeMode::Line => "PIDPIPE",
+                PipeMode::Run { .. } => "PIDPIPE run",
+                PipeMode::Signal { .. } => "PIDPIPE signal",
+            }
+            .to_owned(),
+        )
+    }
+
     fn prompt(&self) -> String {
         match self.mode {
             PipeMode::Line => match self.points.len() {

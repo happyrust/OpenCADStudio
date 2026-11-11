@@ -2311,6 +2311,9 @@ impl OpenCADStudio {
         // building the panel, and syncing the ribbon.
         let t_all = crate::perf::enabled().then(iced::time::Instant::now);
         let i = self.active_tab;
+        // The P&ID editor's inspector keeps what is typed in a row only for
+        // the object that stays selected.
+        super::pid_shell::editor::selection_refreshed(self);
         if !crate::entities::object_data::cache_is_prepared(&self.tabs[i].scene.object_data_cache) {
             self.tabs[i].scene.object_data_cache =
                 crate::entities::object_data::build_cache(&self.tabs[i].scene.document);

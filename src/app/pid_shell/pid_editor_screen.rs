@@ -832,6 +832,160 @@ fn the_inspector_says_what_kind_of_thing_is_selected() {
     assert_eq!(editor::inspected(&app), Inspected::Several(2));
 }
 
+// ── Which tool is lit, and what a row holds ──────────────────────────────
+
+/// The tools that are lit, of all the toolbar and the connector menu have.
+fn lit(app: &OpenCADStudio) -> Vec<Tool> {
+    let mut all = vec![Tool::Select];
+    all.extend(tools(app));
+    all.into_iter()
+        .filter(|tool| editor::tool_is_lit(app, tool))
+        .collect()
+}
+
+/// The squares of the palette that are lit, by block name.
+fn lit_squares(app: &OpenCADStudio) -> Vec<String> {
+    app.pid_symbols
+        .block_names()
+        .into_iter()
+        .filter(|block| editor::symbol_is_lit(app, block))
+        .collect()
+}
+
+/// Which tool is lit is read off the command that is running — its name
+/// and what it was started with — and off nothing else: it is the same
+/// whether the command was typed or a tool was pressed, and whatever was
+/// pressed before.
+#[test]
+fn the_tool_that_is_lit_is_the_command_that_is_running() {
+    let mut app = launched(false);
+    // A line for a run to go under and for a connector to sit on.
+    run(&mut app, "PIDPIPE");
+    feed(&mut app, &[[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]]);
+    run(&mut app, "PIDPIPE signal");
+    feed(&mut app, &[[0.0, 100.0, 0.0], [200.0, 100.0, 0.0]]);
+    assert_eq!(lit(&app), [Tool::Select], "nothing is running");
+    assert!(lit_squares(&app).is_empty());
+
+    // Typed, never pressed: each command lights its own tool and no other.
+    for tool in tools(&app) {
+        let line = tool.line().expect("a command");
+        run(&mut app, &line);
+        assert_eq!(lit(&app), [tool.clone()], "{line}, typed");
+        let _ = app.update(AppMessage::CommandEscape);
+        assert_eq!(lit(&app), [Tool::Select], "{line}, ended");
+    }
+    // With an argument the tool does not give: still that kind of command.
+    run(&mut app, "PIDPIPE run L-1001");
+    assert_eq!(lit(&app), [Tool::Branch]);
+    let _ = app.update(AppMessage::CommandEscape);
+
+    // What was pressed before does not count: 管线 pressed and ended, then
+    // a signal line typed.
+    let press = |app: &mut OpenCADStudio, message: editor::Message| {
+        let _ = app.update(AppMessage::PidShell(Message::Editor(message)));
+    };
+    press(&mut app, editor::Message::Tool(Tool::Pipe));
+    assert_eq!(lit(&app), [Tool::Pipe]);
+    let _ = app.update(AppMessage::CommandEscape);
+    run(&mut app, "PIDPIPE signal");
+    assert_eq!(lit(&app), [Tool::Signal], "typed after 管线 was pressed");
+    let _ = app.update(AppMessage::CommandEscape);
+
+    // A symbol being placed lights its square and its category's tool,
+    // typed by its id, typed by its block name or pressed.
+    let pump = "PID_SYM_equipment_pump".to_owned();
+    let vessel = "PID_SYM_equipment_vessel".to_owned();
+    run(&mut app, "PIDINSERT pump");
+    assert_eq!(lit_squares(&app), [pump.clone()]);
+    assert_eq!(lit(&app), [Tool::Place("equipment".to_owned())]);
+    let _ = app.update(AppMessage::CommandEscape);
+    press(&mut app, editor::Message::Symbol(pump.clone()));
+    assert_eq!(lit_squares(&app), [pump.clone()]);
+    let _ = app.update(AppMessage::CommandEscape);
+    run(&mut app, &format!("PIDINSERT {vessel}"));
+    assert_eq!(
+        lit_squares(&app),
+        [vessel],
+        "typed after the pump was pressed"
+    );
+    assert_eq!(lit(&app), [Tool::Place("equipment".to_owned())]);
+    let _ = app.update(AppMessage::CommandEscape);
+    run(&mut app, "PIDINSERT gate_valve");
+    assert_eq!(lit(&app), [Tool::Place("valve".to_owned())]);
+    let _ = app.update(AppMessage::CommandEscape);
+
+    // A command no tool stands for lights none, 选择 included.
+    run(&mut app, "LINE");
+    assert!(lit(&app).is_empty(), "{:?}", lit(&app));
+    assert!(lit_squares(&app).is_empty());
+}
+
+/// A row that was typed in and not entered holds what was typed only while
+/// its object stays the one selected. Select another object and come back:
+/// the row is the object's value again, and Enter there writes nothing.
+#[test]
+fn a_row_typed_in_is_dropped_when_another_object_is_selected() {
+    let mut app = launched(false);
+    run(&mut app, "PIDINSERT vessel");
+    feed(&mut app, &[[80.0, 150.0, 0.0]]);
+    let first = last_symbol(&app);
+    run(&mut app, "PIDINSERT pump");
+    feed(&mut app, &[[200.0, 150.0, 0.0]]);
+    let second = last_symbol(&app);
+    assert_ne!(first, second);
+    let record = |app: &OpenCADStudio, handle| PidAuthor::load(doc(app), handle).expect("a record");
+    let (before_first, before_second) = (record(&app, first), record(&app, second));
+    let send = |app: &mut OpenCADStudio, message: editor::Message| {
+        let _ = app.update(AppMessage::PidShell(Message::Editor(message)));
+    };
+
+    select(&mut app, first);
+    send(
+        &mut app,
+        editor::Message::FieldInput {
+            handle: first,
+            field: "pid_props_设计压力".to_owned(),
+            text: "1.6MPa".to_owned(),
+        },
+    );
+    // Typed, not entered; then another object, and back.
+    select(&mut app, second);
+    assert!(
+        matches!(editor::inspected(&app), Inspected::Object(object) if object.handle == second)
+    );
+    select(&mut app, first);
+    send(&mut app, editor::Message::FieldSubmit);
+    assert_eq!(
+        record(&app, first),
+        before_first,
+        "what was typed before the other object was selected is gone"
+    );
+    assert_eq!(record(&app, second), before_second);
+
+    // While the object stays selected the row keeps what is typed, and
+    // Enter writes it.
+    send(
+        &mut app,
+        editor::Message::FieldInput {
+            handle: first,
+            field: "pid_props_设计压力".to_owned(),
+            text: "2.5MPa".to_owned(),
+        },
+    );
+    send(&mut app, editor::Message::FieldSubmit);
+    let Inspected::Object(object) = editor::inspected(&app) else {
+        panic!("the first symbol is selected");
+    };
+    assert!(
+        object
+            .fields
+            .contains(&("设计压力".to_owned(), "2.5MPa".to_owned())),
+        "{:?}",
+        object.fields
+    );
+}
+
 // ── While a dialog is up, and without a drawing ──────────────────────────
 
 /// While the general interface has a dialog up in the drawing, nothing of

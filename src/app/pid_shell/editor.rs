@@ -131,17 +131,6 @@ impl Tool {
         })
     }
 
-    /// The name the command it starts goes by while it runs
-    /// (`CadCommand::name`).
-    fn verb(&self) -> Option<&'static str> {
-        match self {
-            Tool::Select => None,
-            Tool::Pipe | Tool::Branch | Tool::Signal => Some("PIDPIPE"),
-            Tool::Place(_) => Some("PIDINSERT"),
-            Tool::Connector(_) => Some("PIDCONNECTOR"),
-        }
-    }
-
     /// The name its rectangle is reported under: `tool:<key>`.
     pub fn key(&self) -> String {
         match self {
@@ -180,22 +169,12 @@ pub fn place_tools(app: &OpenCADStudio) -> Vec<(String, String)> {
 /// What the screen remembers between frames.
 #[derive(Debug, Default)]
 pub struct State {
-    /// What was last started from the toolbar or the palette. It is lit
-    /// while the command it started is the one running.
-    started: Option<Started>,
     /// Whether the list of connector kinds is open under its tool.
     pub connector_menu: bool,
     /// The row of the inspector being typed in: the object, the row's id
-    /// and the text so far. Enter commits it; another selection drops it.
+    /// and the text so far. Enter commits it; it is dropped as soon as the
+    /// object is no longer the one selected ([`selection_refreshed`]).
     editing: Option<(document::Handle, String, String)>,
-}
-
-/// What the screen started.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Started {
-    Tool(Tool),
-    /// A symbol of the palette, by block name.
-    Symbol(String),
 }
 
 /// What the screen's widgets send.
@@ -233,19 +212,12 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessa
         Message::Tool(tool) => {
             app.pid_shell.editor.connector_menu = false;
             match tool.line() {
-                None => {
-                    app.pid_shell.editor.started = None;
-                    app.update(AppMessage::CommandEscape)
-                }
-                Some(line) => {
-                    app.pid_shell.editor.started = Some(Started::Tool(tool));
-                    app.update(AppMessage::Command(line))
-                }
+                None => app.update(AppMessage::CommandEscape),
+                Some(line) => app.update(AppMessage::Command(line)),
             }
         }
         Message::Symbol(block) => {
             app.pid_shell.editor.connector_menu = false;
-            app.pid_shell.editor.started = Some(Started::Symbol(block.clone()));
             app.update(AppMessage::PidPalette(PidPaletteMsg::Insert(block)))
         }
         Message::ConnectorMenu(open) => {
@@ -278,31 +250,64 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessa
     }
 }
 
-/// The name of the command that is running in the showing drawing.
-fn running(app: &OpenCADStudio) -> Option<&'static str> {
+/// The command running in the showing drawing, as the command line that
+/// starts it (`CadCommand::tool_line`): `None` while none runs, `Some(None)`
+/// for one no tool of this screen stands for.
+fn running(app: &OpenCADStudio) -> Option<Option<String>> {
     app.tabs[app.active_tab]
         .active_cmd
         .as_ref()
-        .map(|command| command.name())
+        .map(|command| command.tool_line())
 }
 
-/// Whether `tool` is lit: 选择 while no command runs, another tool while
-/// the command it started does.
+/// The block the running command is placing, when it is a placement.
+fn placing(app: &OpenCADStudio) -> Option<String> {
+    running(app)
+        .flatten()?
+        .strip_prefix("PIDINSERT ")
+        .map(str::to_owned)
+}
+
+/// Whether `tool` is lit. That is read off the command that is running and
+/// off nothing else, so it is the same whether the command was typed or a
+/// tool was pressed: 选择 while no command runs; a line tool and a connector
+/// kind while the running command is the very one the tool starts; a
+/// category while a symbol of that category is being placed.
 pub(crate) fn tool_is_lit(app: &OpenCADStudio, tool: &Tool) -> bool {
-    match (tool.verb(), running(app)) {
-        (None, None) => true,
-        (Some(verb), Some(running)) => {
-            verb == running && app.pid_shell.editor.started == Some(Started::Tool(tool.clone()))
+    match tool {
+        Tool::Select => running(app).is_none(),
+        Tool::Place(category) => placing(app).is_some_and(|block| {
+            app.pid_symbols
+                .categories()
+                .iter()
+                .filter(|listed| listed.id == *category)
+                .flat_map(|listed| &listed.symbols)
+                .any(|symbol| block_name(category, &symbol.id) == block)
+        }),
+        Tool::Pipe | Tool::Branch | Tool::Signal | Tool::Connector(_) => {
+            running(app).flatten() == tool.line()
         }
-        _ => false,
     }
 }
 
-/// Whether the palette's square of `block` is lit: while the placement it
-/// started is the command running.
+/// Whether the palette's square of `block` is lit: while that symbol is the
+/// one being placed, however the placement was started.
 pub(crate) fn symbol_is_lit(app: &OpenCADStudio, block: &str) -> bool {
-    running(app) == Some("PIDINSERT")
-        && app.pid_shell.editor.started == Some(Started::Symbol(block.to_owned()))
+    placing(app).as_deref() == Some(block)
+}
+
+/// The general interface has rebuilt what it knows of the selection
+/// (`OpenCADStudio::refresh_properties`: the selection, or a property of
+/// what is selected, changed). A row being typed in outlives that only
+/// while its object is still the one object selected.
+pub(in crate::app) fn selection_refreshed(app: &mut OpenCADStudio) {
+    let Some((handle, ..)) = &app.pid_shell.editor.editing else {
+        return;
+    };
+    let selected = app.tabs[app.active_tab].scene.selected_handles_in_order();
+    if selected.as_slice() != [*handle] {
+        app.pid_shell.editor.editing = None;
+    }
 }
 
 /// Whether there is a drawing to draw on: the showing tab is one, and not

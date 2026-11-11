@@ -74,6 +74,10 @@ impl CadCommand for PidConnectorCommand {
         "PIDCONNECTOR"
     }
 
+    fn tool_line(&self) -> Option<String> {
+        Some(format!("PIDCONNECTOR {}", self.kind.as_str()))
+    }
+
     fn prompt(&self) -> String {
         format!(
             "PIDCONNECTOR {}  在管线/信号线上指定插入点:",
