@@ -9,6 +9,8 @@
 
 ## 0. 一页结论
 
+- **2026-11-11 交回时（§15–§18）**：独立审查的发现项里 B1、S1–S9、N1–N3、N5–N8 已修，N9 修了大半，N4 没修（§15.2、§17.5）。M7 的 `conflict-field-merge`、`conflict-object-topology`、`conflict-resolution` 三项做完（§14.5）；`cross-area-flows` 十二条里九条成立、三条没做（`003` 管线新建的广播、`008` 离线对账、`009` 连接符跨图），这一项不能记为完成（§18.2、§18.4）。代码的最终尖端 `ea7f4357b`：全量 20 个测试程序 6789 通过 / 0 失败 / 45 忽略，lib 8 遍每遍 6162 / 0 / 43，M6 的八个与 M7 的十一个端到端场景全部通过（§18.5）。要用户拍板的事在 §14.6、§15.6、§17.6、§18.6。
+
 - **第二轮之后（§13）**：M6 的 4 项功能全部提交，`collab-client-broadcast` 在 `360dd0708`。M6 的 20 条断言逐条取了证：13 条成立，7 条部分成立（003、005、009、011、013、018、019；原来写的是 15 条成立、5 条各有一句不成立，2026-11-11 按独立审查更正，见 §13.3 末与 §15）——其中 003、005、013、018、019 与 009 卡在契约自己的写法上，等契约的主人裁决（§13.4），011 是放行名单里有写命令。协同传输测试的隔离已修；全量 20 个测试程序在 `8cd274a2a` 上 6571 通过 / 0 失败 / 43 忽略，并进另一条线最后两个提交之后 6575 / 1 / 43，那 1 条是并行时偶发的测试，单独重跑通过（§13.8）。`Cargo.lock` 的欠账已补，`--locked` 能用了。M7 没有开始。
 
 - **mission 没有在跑。** `state.json` 是 `paused`，最后一条进度记录是 13:48:28 的 `mission_paused`。19:45:45 那次写入是 Factory 桌面端恢复编排会话时刷新了时间戳，之后没有任何新的运行（§2）。
@@ -1016,7 +1018,7 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 | **S3** 变更丢了基线照样前进 | 已修 | `9cc429cce` | 通道满：`a_peers_change_waits_for_room_in_the_channel_instead_of_being_dropped`、`a_waiting_change_gives_up_when_the_subscription_is_gone`、`…_when_the_app_is_quitting`。修订不连续：`a_revision_that_skips_one_marks_the_session_and_stops_its_ops`、`a_revision_already_seen_is_dropped`、`coming_back_to_a_room_that_moved_on_marks_the_session`。应用不上：`a_change_this_drawing_cannot_follow_stops_the_sessions_writes`、`an_op_this_client_cannot_read_marks_the_session_too`。面板：`a_session_that_parted_from_the_room_draws_the_badge`。服务器按提交次序发布：`an_applied_op_is_announced_before_the_drawing_is_unlocked` | 标记之后没有自动恢复，只能取得最新图纸重开。重连时由服务器补发错过的 op 放在 `cross-area-flows`（`VAL-CROSS-008`）。自己的 op 被服务器拒绝后本地改动还在，也是一种不一致，同样在那里处理 |
 | **S4** 入站变更进了本地撤销栈 | 已修 | `be0582ea7`（单独提交，退回只需 revert 它） | `undo_takes_back_this_persons_step_and_leaves_a_peers_change_alone`、`undo_puts_back_ones_own_field_and_keeps_the_field_a_peer_changed`、`undoing_a_value_a_peer_has_since_overwritten_changes_nothing_and_says_nothing`、`a_peers_change_leaves_this_persons_redo_in_place`、`an_undo_after_a_peers_retag_names_the_object_by_the_tag_it_has_now`；`pidpipe` 的 `undoing_ones_own_run_edit_keeps_what_a_peer_later_set_on_the_line` | 做法见 §15.7。属性溢出到 XRecord 的对象，撤销后别人的改动由重放写回，但向房间说的差里不含这类对象的属性 |
 | **S5** 远端应用不调 `propagate_pid_chain` | 已修 | `cce14ba77` | `a_remote_line_change_is_carried_down_to_runs_and_segments`（`src/app/commands/pidpipe.rs`） | 拓扑表里的属性副本由 `propagate_pid_chain` 末尾的 `sync_props_from_document` 对齐 |
-| **S6** `object_ref` 的边界 | 六条里修了五条 | `cce14ba77`、`acc55ff73` | 空位号对象：`a_change_naming_no_tag_is_not_applied_by_its_handle_alone`、`a_change_to_an_untagged_object_is_not_stated`。多个实体同一个位号：`a_line_drawn_as_several_entities_is_one_object_to_a_change_naming_its_tag`、`only_the_pieces_of_one_line_count_as_one_object`、`a_change_made_to_several_entities_of_one_object_is_stated_once`、`handles_that_only_partly_match_are_not_believed`；`pidpipe` 的 `a_remote_change_to_a_line_drawn_in_several_stretches_reaches_the_line`。`already_retagged`：`a_retag_fitting_several_symbols_is_reported_even_when_the_new_tag_exists`、`a_retag_this_drawing_never_had_is_reported_though_the_new_tag_is_here`。认不出的变更：`changes_this_client_cannot_read_are_named_not_dropped`、`an_op_read_only_in_part_is_applied_as_far_as_it_goes_and_said_to_be_short`。规范形式：`a_typed_tag_is_claimed_as_the_drawing_spells_it`、`a_typed_tag_fitting_two_spellings_stands_as_typed`、`a_release_finds_the_claim_by_the_spelling_it_was_made_under` | **两端各自新建的同位号对象**没有修：根子在新建不广播，随 `cross-area-flows` 的新建与删除广播一起做（服务器保证位号唯一，`VAL-CROSS-010`） |
+| **S6** `object_ref` 的边界 | 已修（管线类的新建除外） | `cce14ba77`、`acc55ff73`、`e403d035f`、`b4b302f4a` | 空位号对象：`a_change_naming_no_tag_is_not_applied_by_its_handle_alone`、`a_change_to_an_untagged_object_is_not_stated`。多个实体同一个位号：`a_line_drawn_as_several_entities_is_one_object_to_a_change_naming_its_tag`、`only_the_pieces_of_one_line_count_as_one_object`、`a_change_made_to_several_entities_of_one_object_is_stated_once`、`handles_that_only_partly_match_are_not_believed`；`pidpipe` 的 `a_remote_change_to_a_line_drawn_in_several_stretches_reaches_the_line`。`already_retagged`：`a_retag_fitting_several_symbols_is_reported_even_when_the_new_tag_exists`、`a_retag_this_drawing_never_had_is_reported_though_the_new_tag_is_here`。认不出的变更：`changes_this_client_cannot_read_are_named_not_dropped`、`an_op_read_only_in_part_is_applied_as_far_as_it_goes_and_said_to_be_short`。规范形式：`a_typed_tag_is_claimed_as_the_drawing_spells_it`、`a_typed_tag_fitting_two_spellings_stands_as_typed`、`a_release_finds_the_claim_by_the_spelling_it_was_made_under` | 两端各自新建的同位号对象：符号的新建现在广播，服务器把后到的那个改派到下一个空号（`two_symbols_placed_under_one_tag_end_up_with_two_tags`、`a_symbol_the_server_renumbered_is_renamed_where_it_was_placed`，端到端 `x10`）。只管独立放置的符号；管线、管路、管件的新建仍不广播（§18.4） |
 | **S7** `op_id` 只在进程内唯一 | 已修 | `9cc429cce` | `two_sessions_never_make_the_same_op_id` | 被服务器拒绝的 op 的 id 仍留在 `own_ops` 里（最多 64 个）。id 带会话号之后它不会再被别人的 op 撞上 |
 | **S8** 持有者规则的竞争与边界 | 已修 | `97ff6d5de` | `the_holder_is_the_first_to_have_joined_among_sessions_with_a_socket`、`switching_to_readonly_downgrades_everyone_but_the_holder`（持有者也收到点名自己的消息）；客户端 `a_downgrade_naming_this_session_as_the_holder_leaves_it_writing` | 规则本身（谁算持有者）仍待确认，见 §14.6 之 2。持有者只记在内存里 |
 | **S9** 记账 | 已改 | 本文档 | — | §0 与 §13.3 改成 13 条成立、7 条部分成立（003、005、009、011、013、018、019） |
@@ -1266,3 +1268,88 @@ mission 的说明：`POST /conflicts/{id}/resolve` 支持三种 `resolution`（�
 | `bc09302b5` | 服务器三个测试程序与 clippy；lib 全量 1 遍；协同分组 | `ocs_collab` 79、`ocs_collab_server` lib 141、main 12，0 警告；6150 / 0 / 42；149 通过。红灯 `B\r5f-srv-red.log`、`B\r5g-claims-red.log` |
 | `33e0a28e5` | `dwg_roundtrip` 分组；生成器带 `--ignored` 跑一次 | 2 通过 / 1 忽略；生成器通过，写出 23379 字节 |
 | `a0ac5b61d`、`163ae676a` | lib 全量 1 遍 | 6153 / 0 / 43。这两处没有单独取红灯：红灯就是 `x12` 第一次运行的那两项失败。`quit_is_run_with_no_drawing_open` 第一版多查了小写的 `exit`，失败了一次（`B\r5j-lib-1-quit-lowercase-failed.log`）：命令分发本来就只认大写的命令名，测试改成只查 `QUIT`、`EXIT` |
+
+## 18. 执行记录：2026-11-11 第六段（符号的新建进入协同，最终门禁，交回）
+
+### 18.1 提交（`ccb41f0cf` 之后）
+
+| 提交 | 内容 |
+|---|---|
+| `e403d035f` | 符号的新建与删除进入协同；服务器保证新符号的位号唯一并改派；`PIDSETPROP`（`VAL-CROSS-001`、`005`、`010`，审查 S6 剩下的那一条） |
+| `8ad2e9650` | 状态文档：§15.2 的 N6、N9 两行（上一条文档提交漏进暂存区的） |
+| `d8dec046d` | 合并 `upstream-merge-20261110` 到 `bcc86e1e6`（备份面板那条线的三个提交，无冲突） |
+| `b4b302f4a` | 别人放的符号一律在本图新放一个（`x10` 第一次运行查出的缺陷，见 §18.3） |
+| `ea7f4357b` | 去掉两处不再用到的代码（主程序 clippy 新增的两条告警） |
+
+### 18.2 `cross-area-flows` 十二条：交回时的建议状态
+
+| 断言 | 建议状态 | 脚本（`E7\`） | 最终尖端上的结果 | 字面上不满足或要说明的地方 |
+|---|---|---|---|---|
+| `001` 从打开到保存的完整旅程 | 成立 | `x01_journey.py` | 见 §18.5 | 图是 `E7\work\` 下种子图的副本，不是 `D:\scratch\PID-1101.dwg`。「重新打开该文件（新文档 id）」在同一个实例里做：关掉文档再打开保存的文件 |
+| `002` 占用排他 | 成立 | `x02_claim_exclusive.py` | 同上 | §17.3 |
+| `003` 管线插阀门后双方拓扑一致 | **没做** | — | — | 管线、管路、管件的新建不广播（§18.4） |
+| `004` 无编辑权限角色 | 成立 | `x04_readonly_role.py` | 同上 | §17.3 |
+| `005` M3 持久化数据穿越协同会话 | 成立 | `x05_m3_persistence.py` | 同上 | 基线图是 `E7\work\PID-1101-m3.dwg`（契约写的 `D:\scratch\PID-1101-m3.dwg` 不存在，用 `33e0a28e5` 的生成器写出，内容是 M3 往返测试的那份）。对比结果在 `E7\logs\cross-m3-m6.json`，不在 `D:\scratch\` 根下。「插入阀门」是独立放置的阀门（`PIDINSERT VALVE`），不是插在管路上的管件 |
+| `006` 首次访问 | 成立，一处字面说明 | `x06_first_visit.py` | 同上 | 「在设置中」是用命令配的（§17.3、§17.6 之 3） |
+| `007` 冲突到裁决的闭环 | 成立 | `x07_conflict_closure.py` | 同上 | §17.3 |
+| `008` 离线编辑，重连后对账 | **没做** | — | — | 离线期间的编辑不排队，重连后不补发（§18.4） |
+| `009` 连接符跨图 | **没做** | — | — | 连接符的新建不广播；服务器不在两张图之间传属性（§18.4） |
+| `010` 并发插入的位号唯一 | 成立 | `x10_concurrent_insert.py` | 同上 | 服务器的唯一性只管它见过的对象（§18.6 之 1） |
+| `011` 只读会话的截图与审计 | 成立 | `x04_readonly_role.py` | 同上 | §17.3 |
+| `012` 会话结束后独立打开 | 成立 | `x12_after_session.py` | 同上 | §17.3 |
+
+九条成立，三条没做。`cross-area-flows` 这个 feature **不能记为完成**。
+
+### 18.3 这一步里端到端查出来的缺陷
+
+**别人放的符号被当成自己的，没有放（`b4b302f4a`）。** `e403d035f` 里收到 `insert_symbol` 时有一条捷径：发送方的句柄在本图恰好带着同一位号，就当它是本图自己的符号被说回来。两张图从同一份文件打开时，各自新建的下一个实体拿到同一个句柄，所以两个人同时各插一个阀门，位号相同、句柄也相同，这条捷径就把对方的阀门认成了自己的。`x10` 第一次运行：u1 `['V-1002']`，u2 `['V-1001', 'V-1002']`（`E7\logs\x10_concurrent_insert.console.first-run-handle-collision.txt`）。单元测试当时没拦住，因为测试里对方的句柄是一个本图没有的值；改成相同的句柄之后先红后绿。
+
+**`x01` 第一次运行败了一项，是脚本的问题**：我在另一个进程里重开保存的文件，然后比两个进程的文档 id——新进程的文档 id 从头编号，两边都是 2。改成在同一个实例里关掉再打开（`E7\logs\x01_journey.console.first-run-docid-check.txt` 是那一次的输出）。
+
+### 18.4 没做的，没核实的
+
+- **管线、管路、管件的新建与删除不广播**（`VAL-CROSS-003`）。它们是几个实体加一张拓扑表，对端要重放画法（`PIDPIPE`、`PIDFITTING` 的落点与拆段）才能得到一致的拓扑。服务器认 `create_pipe_line`、`add_pipe_run`、`insert_fitting`，客户端不发也不收。画了管线的会话，对端的图里没有那条管线；此后对它的属性修改到了对端会报「对不上对象」并把对端标成不一致。
+- **离线编辑不排队，重连后不补发；重连时服务器也不补上错过的 op**（`VAL-CROSS-008`）。断线期间本地的修改只在本地；重连后若房间的修订动过，会话被标成不一致（§15.2 的 S3）。
+- **自己的 op 被服务器拒绝之后，本地的修改还留着**。拒绝的原因有过期基线、被取代、对象已删、位号被占（客户端不知道的占用，§17.6 之 2）。要让 `error` 帧带上结构化的 `op_id`，客户端据此把那一步撤回；与上一条是同一块工作，没有做。
+- **连接符跨图**（`VAL-CROSS-009`）。连接符的新建不广播；房间按图分，服务器不在两张图之间转发属性。
+- **审查 N4**（`__overrides` 不随变更走；远端改位号一律 `manual`）没有修。服务器改派的位号例外：`tag_source` 保持原样。
+- **属性溢出到 XRecord 的符号**，新建时说成「没有初始属性」，属性不随 `insert_symbol` 走。
+- **一个 op 里有两个同位号的新符号**时服务器不会给第二个改派（它逐项对照的是已提交的对象）。客户端本地的位号引擎不会在一步里产生这种 op。
+- 截图只查了文件存在（N9 的那一条），这一段里我看过其中两张（`cross-u3-panel.png`、`x07-u1-conflict.png`），其余没有逐张看。
+- M6 的 20 条断言没有重新逐条定状态：八个场景在最终尖端上全部通过，§13.3 的「13 条成立、7 条部分成立」没有改。其中 `011`（只读的门的范围）与 `013`（`welcome.peers`）所依据的缺口已经修掉并有端到端证据，是否改回「成立」留给验证方。
+
+### 18.5 最终尖端 `ea7f4357b` 上的结果
+
+代码的最终尖端是 `ea7f4357b`；它之后只有这份文档的提交。下面的结果都是在 `ea7f4357b` 的构建上跑的（`B\r6e-*`）。
+
+| 项 | 结果 |
+|---|---|
+| `build --workspace`、`test --workspace --no-run -j 4` | 退出码 0（63 秒、114 秒） |
+| 全量 20 个测试程序 | 6789 通过 / 0 失败 / 45 忽略（`B\r6e-test.log`） |
+| lib 全量 8 遍 | 每遍 6162 通过 / 0 失败 / 43 忽略（`B\r6e-lib-full\summary.txt`） |
+| 分组 | `pid_backup` 226 通过 / 3 忽略；`pidbackup` 29 通过 / 1 忽略；协同 155 通过 |
+| 服务器 | `ocs_collab` 80、`ocs_collab_server` lib 142、main 12（在 20 个程序之内）；`clippy -p ocs_collab -p ocs_collab_server --all-targets` 0 条 |
+| `check --workspace` | 退出码 0 |
+| `clippy -p OpenCADStudio` | 572 条（改前 571；多的 1 条在另一条线的文件里，§18.6 之 5）；协同的文件里 0 条。这一项是在 `ea7f4357b` 的工作区上、提交之前跑的（`B\r6d-app-clippy.log`） |
+| `pytest scripts/pid-platform` | 558 通过（在 `b4b302f4a` 上跑的；此后没有动 Python） |
+| M7 的十一个端到端场景（`E7\run_cross.ps1`） | `c01` 24、`c02` 17、`c03` 20、`x01` 13、`x02` 20、`x04` 26、`x05` 14、`x06` 21、`x07` 19、`x10` 15、`x12` 19，共 208 项全过；没有残留进程，没有留下描述文件；十一个场景前后指针位置与前台窗口都不变（`E7\logs\run_cross.summary.txt` 最后十一行） |
+| M6 的八个端到端场景（`E7\m6-rerun-2\run_all.ps1`） | `t20` 15、`t21` 15、`t23` 9、`t24` 11、`t25` 13、`t10` 32、`t11` 7、`t22` 8，共 110 项全过；没有残留进程；八个场景前后指针位置与前台窗口都不变（`E7\m6-rerun-2\logs\run_all.summary.txt` 最后八行） |
+
+同一批门禁在 `d8dec046d`（`B\r6a-*`）与 `b4b302f4a`（`B\r6c-*`）上也各跑过一遍，数字相同（20 个程序 6789 / 0 / 45，lib 8 遍每遍 6162 / 0 / 43）。这一段里没有出现零星失败。
+
+各步的红灯输出：`B\r5n-create-red.log`（符号新建，4 条失败）、`B\r6b-handle-collision-red.log`（句柄相同，1 条失败）。
+
+### 18.6 这一段里要用户过目的
+
+1. **服务器的位号唯一性只管它见过的对象。** 它的对象表是从 op 里长出来的：图里原有、从没被任何 op 提到过的对象它不知道。两个客户端打开同一份文件各插一个符号时，本地的位号引擎都会避开图里已有的位号，然后两边算出同一个新号，服务器把后到的改派——这是 `VAL-CROSS-010` 的情形，成立。但若两份文件本来就不一样，服务器可能把新符号改派到一个只在某一方图里已经有人用的位号上。选项：会话建立时客户端把图里已有的位号报给服务器；或者保持现状。倾向前者，没有做——它要一条新消息。
+2. **`PIDSETPROP <属性> <值>` 不写位号时作用于谁。** 现在：选中的带 P&ID 属性的对象；什么都没选时，本图上刚放置的那个符号（命令行或调色板放的，不含别人放的）。契约只给了 `PIDINSERT` 之后紧跟 `PIDSETPROP 公称直径 DN50` 这一种用法。
+3. **`PIDINSERT` 接受类型或类别名**（`VALVE`、`EQUIPMENT`），取该类别的第一个符号。契约写的是 `PIDINSERT VALVE 100,200`，此前只认符号 id（`gate_valve`）与块名。
+4. **证据日志里有前台窗口的标题。** 脚手架用仓库里的 `hidden_desktop.py` 在每个场景前后记指针位置与前台窗口，前台窗口记的是标题的前几十个字符——也就是你当时在用的窗口。其中有一行带一个服务器的 IP 地址，没有口令。这些日志只在 `E7` 下。要不要把探针改成只记窗口句柄、并把已有日志里的标题抹掉，请定；我没有动。
+5. **另一条线带进来一条 clippy 告警**（`src\io\pid_backup_browse\exp_views.rs`，「large size difference between variants」），主程序的告警数因此是 572 而不是 571。那是那条线的文件，我没有动。
+
+### 18.7 磁盘、环境、删除
+
+- 删除：只删了脚手架实例留下的自动化通道描述文件（§17.5，27 个，路径记在 `n8-deleted-descriptors-2.txt`），以及我自己的两个临时探查脚本（`E7\probe_records.py` 与它的图）。`D:\Rust\target-ocs-mission` 里什么都没删。
+- C 盘：我的构建目录、临时目录（`TEMP` 指到 `D:\work\plant-code\cad\ocs-mission-backup-20261110\tmp`）、证据都在 D 盘。C 盘上我写的只有 Cursor 自己的会话与终端记录。
+- 没有 push；没有碰 `C:\Users\dpc\.factory\`、备份面板那条线的 worktree、stash、`D:\work\plant-code\cad\OpenCADStudio\target`、mission 留下的进程与 `.ocs.lock`、`.tgrep/`。
+- 指针与焦点：GUI 都起在隐藏桌面上，只走 REST；没有任何一步需要点击。场景前后的探针多次记到指针或前台窗口变了，同时记到有真实的键鼠输入；不起 GUI 的 `c01`、`c02` 也记到了，所以那是机器上有人在用。
