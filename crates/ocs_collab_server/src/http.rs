@@ -666,14 +666,14 @@ async fn conflict_resolve(
         }
     };
 
-    // The ruling took effect as an op: the room hears it, and the sessions'
-    // baseline follows the revision as it does for any op.
+    // The ruling took effect as an op: the room has heard it (`ops::resolve`
+    // announces it in its turn), and the sessions' baseline follows the
+    // revision as it does for any op.
     state
         .sessions
         .lock()
         .await
         .advance_base_revision(&resolved.row.drawing_id, resolved.revision);
-    state.bus.publish(&resolved.row.drawing_id, &resolved.message);
     (
         StatusCode::OK,
         Json(json!({

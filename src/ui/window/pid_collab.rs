@@ -68,6 +68,14 @@ pub fn holder_bounds_id(user_id: &str) -> String {
 /// What the banner says of a read-only session.
 pub const READONLY_LABEL: &str = "只读";
 
+/// `PosReport` id of the badge a session wears once its drawing is known to
+/// be short of the room's changes. Reported only then, so its presence is
+/// the state.
+pub const DIVERGED_BOUNDS_ID: &str = "pid-collab-diverged";
+
+/// What the banner says of such a session.
+pub const DIVERGED_LABEL: &str = "不一致";
+
 /// What a peer row says of the session holding the edit right.
 pub const HOLDER_LABEL: &str = "编辑权";
 
@@ -99,6 +107,9 @@ pub struct CollabView {
     pub server_url: String,
     pub session_id: Option<String>,
     pub readonly: bool,
+    /// Why this drawing is no longer what the room has, once it is not: the
+    /// session then sends nothing more, and the panel says so.
+    pub diverged: Option<String>,
     pub peers: Vec<PeerRow>,
     pub claims: Vec<ClaimRow>,
     pub last_message: Option<String>,
@@ -260,6 +271,12 @@ pub fn view<'a>(view: &'a CollabView, width: f32, chrome: Chrome) -> Element<'a,
     ]
     .spacing(5)
     .align_y(iced::Center);
+    if view.diverged.is_some() {
+        banner_items = banner_items.push(crate::ui::wrap_bar::PosReport::new(
+            DIVERGED_BOUNDS_ID,
+            text(DIVERGED_LABEL).size(11).style(notice),
+        ));
+    }
     if view.readonly {
         banner_items = banner_items.push(crate::ui::wrap_bar::PosReport::new(
             READONLY_BOUNDS_ID,
@@ -269,6 +286,22 @@ pub fn view<'a>(view: &'a CollabView, width: f32, chrome: Chrome) -> Element<'a,
     let banner = container(banner_items).width(Fill).padding([2, 2]);
 
     let mut body = column![banner].spacing(6);
+    if let Some(reason) = &view.diverged {
+        // Under the banner rather than in the last-outcome line, which the
+        // next claim would overwrite: this stays true until the drawing is
+        // replaced.
+        body = body.push(
+            container(
+                text(format!(
+                    "本图与房间已不一致，本地修改不再提交。{reason}"
+                ))
+                .size(10)
+                .style(notice),
+            )
+            .width(Fill)
+            .padding([0, 2]),
+        );
+    }
 
     // ── Peers ────────────────────────────────────────────────────────────
     body = body.push(section_header("在线用户", view.peers.len()));
@@ -455,5 +488,22 @@ mod tests {
         assert!(drawn(&mut ui, "u1").is_some(), "the roster itself is drawn");
         assert_eq!(drawn(&mut ui, READONLY_LABEL), None);
         assert_eq!(drawn(&mut ui, HOLDER_LABEL), None);
+        assert_eq!(drawn(&mut ui, DIVERGED_LABEL), None);
+    }
+
+    /// A session whose drawing is short of the room's changes says so in the
+    /// banner, above the roster, for as long as it is: nothing it does goes
+    /// out any more, and the person has to know why.
+    #[test]
+    fn a_session_that_parted_from_the_room_draws_the_badge() {
+        let view_model = CollabView {
+            diverged: Some("收到修订 5，本地基线是 3".to_owned()),
+            peers: vec![peer("u1", true, false)],
+            ..view_with(Vec::new())
+        };
+        let mut ui = draw(&view_model);
+        let badge = drawn(&mut ui, DIVERGED_LABEL).expect("the badge is drawn");
+        let roster = drawn(&mut ui, "u1").expect("the roster is drawn");
+        assert!(badge.y < roster.y, "badge {badge:?}, u1 {roster:?}");
     }
 }

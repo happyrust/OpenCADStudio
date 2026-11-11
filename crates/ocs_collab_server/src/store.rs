@@ -866,6 +866,11 @@ impl Store {
 
     /// Persists one session row (status included, so restarts and takeovers
     /// stay observable through the database).
+    ///
+    /// `base_revision` only ever moves forward: the row may already be ahead
+    /// of the copy it is being rewritten from (an op's commit moves it in its
+    /// own transaction, before the registry follows), and the older number
+    /// must not go back in.
     pub fn upsert_session(&self, session: &SessionRow) -> Result<(), String> {
         let conn = self.lock()?;
         conn.execute(
@@ -876,7 +881,7 @@ impl Store {
              ON CONFLICT(session_id) DO UPDATE SET
                mode = excluded.mode,
                status = excluded.status,
-               base_revision = excluded.base_revision,
+               base_revision = MAX(sessions.base_revision, excluded.base_revision),
                last_heartbeat = excluded.last_heartbeat,
                workspace = excluded.workspace",
             params![
@@ -1630,6 +1635,39 @@ mod tests {
         };
         store.upsert_session(&row).expect("insert");
         assert_eq!(store.session_row("s-1").expect("lookup"), Some(row));
+    }
+
+    /// A session's baseline only moves forward. An op's commit moves the row
+    /// in its own transaction; a heartbeat that lands before the registry has
+    /// followed rewrites the row from the registry's older copy, and must not
+    /// take the baseline back with it (`VAL-CLI-010` reads this column).
+    #[test]
+    fn rewriting_a_session_row_never_takes_its_baseline_back() {
+        let store = Store::open_in_memory().expect("memory store");
+        store.ensure_drawing("PID-1101").expect("drawing");
+        let row = |base_revision: i64, last_heartbeat: i64| SessionRow {
+            session_id: "s-1".into(),
+            drawing_id: "PID-1101".into(),
+            user_id: "u1".into(),
+            mode: "协同编辑".into(),
+            status: "活跃".into(),
+            base_revision,
+            last_heartbeat,
+            created_at: 900,
+            workspace: "plant-a".into(),
+        };
+        store.upsert_session(&row(5, 1_000)).expect("at revision 5");
+        // The heartbeat's copy still says 3.
+        store.upsert_session(&row(3, 1_015)).expect("heartbeat");
+        let stored = store.session_row("s-1").expect("lookup").expect("row");
+        assert_eq!(stored.base_revision, 5, "the baseline went backwards");
+        assert_eq!(stored.last_heartbeat, 1_015, "the rest of the row follows");
+        // Forward it still goes.
+        store.upsert_session(&row(6, 1_030)).expect("next op");
+        assert_eq!(
+            store.session_row("s-1").expect("lookup").expect("row").base_revision,
+            6
+        );
     }
 
     /// `active_editing_sessions` is the authoritative input for the single-editor

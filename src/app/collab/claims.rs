@@ -67,11 +67,17 @@ impl OpenCADStudio {
                 crate::ui::window::pid_collab::HOLDER_BOUNDS_PREFIX,
             );
         }
+        if self.pid_collab_view.diverged.is_some() != state.diverged.is_some() {
+            crate::ui::wrap_bar::forget_bounds(
+                crate::ui::window::pid_collab::DIVERGED_BOUNDS_ID,
+            );
+        }
         self.pid_collab_view = CollabView {
             connected: state.connected,
             server_url: state.server_url.clone(),
             session_id: state.session_id.clone(),
             readonly: state.readonly,
+            diverged: state.diverged.clone(),
             peers,
             claims,
             last_message: state.last_claim_message.clone(),

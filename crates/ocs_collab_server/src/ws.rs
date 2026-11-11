@@ -67,6 +67,10 @@ pub struct Connection {
     pub session: Option<Session>,
     /// Peer IP for audit rows (loopback when the socket had no address).
     pub peer_addr: String,
+    /// The room subscription `hello` took out in the same step in which it
+    /// read the drawing's revision, for the socket loop to take over. See
+    /// [`hello`] for why it cannot wait for the reactions to be applied.
+    pub joined: Option<Subscription>,
 }
 
 impl Connection {
@@ -74,6 +78,7 @@ impl Connection {
         Connection {
             session: None,
             peer_addr: peer_addr.into(),
+            joined: None,
         }
     }
 }
@@ -95,6 +100,13 @@ pub enum Reaction {
     },
     /// Fan out to every subscriber of `drawing_id`, the originator included.
     Publish { drawing_id: String, message: ServerMessage },
+    /// Already fanned out by whoever produced it; listed so the caller can
+    /// see what went to the room. An `op_applied` is one: it is published
+    /// inside the critical section that moved the revision
+    /// (`ops::commit`), so the room hears revisions in the order they were
+    /// made. Left to the caller, two ops committed a moment apart on two
+    /// connections could reach the room newest first.
+    Published { drawing_id: String, message: ServerMessage },
     /// Join the drawing's broadcast room. Emitted by a successful `hello`
     /// *before* the `peer_joined` publish, so no room traffic is missed.
     Subscribe { drawing_id: String },
@@ -166,6 +178,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, peer_addr: S
                                 let reactions =
                                     handle_message(&state, &mut conn, client_message, now_unix())
                                         .await;
+                                if let Some(joined) = conn.joined.take() {
+                                    subscription = Some(joined);
+                                }
                                 if !apply_reactions(
                                     &mut socket,
                                     &state,
@@ -339,6 +354,9 @@ async fn wait_for_hello(
             Incoming::Message(client_message) => {
                 let reactions = handle_message(state, conn, client_message, now_unix()).await;
                 let opened = conn.session.is_some();
+                if let Some(joined) = conn.joined.take() {
+                    *subscription = Some(joined);
+                }
                 if !apply_reactions(socket, state, subscription, reactions).await {
                     return false;
                 }
@@ -430,8 +448,16 @@ async fn apply_reactions(
             } => {
                 state.bus.publish(&drawing_id, &message);
             }
+            Reaction::Published { .. } => {}
             Reaction::Subscribe { drawing_id } => {
-                *subscription = Some(state.bus.subscribe(&drawing_id));
+                // `hello` joins the room itself (`Connection::joined`), and
+                // that subscription is the one that has missed nothing.
+                let already = subscription
+                    .as_ref()
+                    .is_some_and(|joined| joined.drawing_id() == drawing_id);
+                if !already {
+                    *subscription = Some(state.bus.subscribe(&drawing_id));
+                }
             }
             Reaction::Close => {
                 let _ = socket.send(Message::Close(None)).await;
@@ -542,7 +568,19 @@ async fn hello(
             eprintln!("[ocs_collab_server] ensure_drawing({drawing_id}) 失败：{err}");
         }
     }
-    let base_revision = current_revision(state, drawing_id);
+    // Join the room and read its revision as one step, with the drawing
+    // locked. An op commits and is announced under that lock, so every op is
+    // either inside the revision read here or reaches this subscription.
+    // Reading first and subscribing when the reactions are applied left a
+    // gap: an op that took effect in between was in neither, and the session
+    // started one change short with nothing to tell it so.
+    let (joined, base_revision) = {
+        let _drawings = state.drawings.lock().expect("drawings mutex poisoned");
+        (
+            state.bus.subscribe(drawing_id),
+            current_revision(state, drawing_id),
+        )
+    };
     let session_id = new_session_id();
     let outcome = {
         let mut sessions = state.sessions.lock().await;
@@ -649,6 +687,7 @@ async fn hello(
             );
 
             conn.session = Some(session.clone());
+            conn.joined = Some(joined);
             reactions.extend([
                 Reaction::Subscribe {
                     drawing_id: drawing_id.to_owned(),
@@ -1220,11 +1259,15 @@ mod tests {
             .collect()
     }
 
+    /// What the reactions put in front of the room: what is still to be
+    /// published, and what was published as it happened.
     fn publishes(reactions: &[Reaction]) -> Vec<ServerMessage> {
         reactions
             .iter()
             .filter_map(|reaction| match reaction {
-                Reaction::Publish { message, .. } => Some(message.clone()),
+                Reaction::Publish { message, .. } | Reaction::Published { message, .. } => {
+                    Some(message.clone())
+                }
                 _ => None,
             })
             .collect()

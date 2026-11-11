@@ -161,6 +161,16 @@ pub(super) struct State {
     /// unset the session waits for the tab showing this file instead of
     /// taking the drawing in front.
     pub document_path: Option<std::path::PathBuf>,
+    /// Why this drawing can no longer be taken to be what the room has: a
+    /// revision that never arrived, or a peer's change that could not be
+    /// applied here. The baseline still reads as current — it is the
+    /// server's number, not a statement about this drawing — so this is what
+    /// keeps the session from writing on top of the difference. `None` while
+    /// nothing is known to be missing.
+    pub diverged: Option<String>,
+    /// Whether a session has been up before in this run, so that
+    /// `base_revision` is a revision this drawing was actually at.
+    pub had_session: bool,
 }
 
 /// One remote `op_applied` waiting to be applied to the local document.
@@ -182,6 +192,15 @@ impl State {
     /// URL nothing connects — the offline-first invariant of `VAL-CLI-017`.
     pub(super) fn wanted(&self) -> bool {
         !self.server_url.trim().is_empty()
+    }
+
+    /// Record that this drawing is no longer known to match the room. The
+    /// first reason is kept: it is where the two parted.
+    pub(super) fn mark_diverged(&mut self, reason: String) {
+        if self.diverged.is_none() {
+            self.last_error = Some(format!("已与房间不一致：{reason}"));
+            self.diverged = Some(reason);
+        }
     }
 
     /// Turn the holder a denial names into the user the panel should show.
@@ -258,6 +277,18 @@ impl State {
                 peers,
                 claims,
             } => {
+                // Coming back to a room that moved on while this session was
+                // away: what was applied in between is not in this drawing,
+                // and nothing resends it. (A room that is *behind* is one
+                // whose server started over; this drawing joins it as it
+                // joined the first time, taken to be what the room has.)
+                if self.had_session && base_revision > self.base_revision {
+                    self.mark_diverged(format!(
+                        "断线期间房间从修订 {} 走到了 {base_revision}，其间的变更本图没有收到",
+                        self.base_revision
+                    ));
+                }
+                self.had_session = true;
                 self.connected = true;
                 self.session_id = Some(session_id);
                 self.base_revision = base_revision;
@@ -331,6 +362,23 @@ impl State {
                 revision,
                 changes,
             } => {
+                // Said again: a revision this drawing is already at. Applying
+                // it twice is not harmless (a rename finds its old tag gone)
+                // and the baseline does not go backwards.
+                if revision <= self.base_revision {
+                    self.own_ops.retain(|own| own != &op_id);
+                    return;
+                }
+                // Every op the room applies comes here, one revision after the
+                // other. One that is not the next means something in between
+                // never arrived, and this drawing is short a change while its
+                // baseline says it is current.
+                if revision != self.base_revision + 1 {
+                    self.mark_diverged(format!(
+                        "收到修订 {revision}，本地基线是 {}：中间的变更没有收到",
+                        self.base_revision
+                    ));
+                }
                 // The room broadcast reaches the originator too; its own op is
                 // already in the local document, so only the baseline moves.
                 let mine = self.own_ops.iter().any(|own| own == &op_id);
@@ -386,6 +434,7 @@ impl State {
             "pending_remote": self.pending_remote.len(),
             "last_apply_error": self.last_apply_error,
             "document_id": self.document,
+            "diverged": self.diverged,
         })
     }
 
@@ -406,7 +455,15 @@ impl State {
         if self.readonly {
             return Err("只读会话不能提交变更".to_owned());
         }
-        let op_id = transport::next_op_id();
+        // Writing on top of a drawing known to be short of the room's changes
+        // spreads the difference: the server would take the op, its baseline
+        // being the server's own number.
+        if let Some(reason) = &self.diverged {
+            return Err(format!(
+                "本图与房间已不一致（{reason}），已停止提交变更，需要重新同步"
+            ));
+        }
+        let op_id = transport::next_op_id(&session_id);
         transport::request_op(&session_id, self.base_revision, &op_id, payload)?;
         if self.own_ops.len() >= 64 {
             self.own_ops.pop_front();
@@ -777,5 +834,101 @@ mod tests {
         let state = State::new();
         assert!(state.request_claim("P-1001").is_err());
         assert!(state.request_release("P-1001").is_err());
+    }
+
+    fn joined_at(base_revision: i64) -> State {
+        let mut state = State::new();
+        state.server_url = "ws://127.0.0.1:3240/ws".to_owned();
+        state.user_id = "u1".to_owned();
+        state.apply(CollabEvent::Connected {
+            session_id: "s-1".to_owned(),
+            base_revision,
+            peers: Vec::new(),
+            claims: Vec::new(),
+        });
+        state
+    }
+
+    fn applied(op_id: &str, revision: i64) -> CollabEvent {
+        CollabEvent::OpApplied {
+            op_id: op_id.to_owned(),
+            revision,
+            changes: vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "P-1001", "field": "设计压力", "value": "2.5MPa",
+            })],
+        }
+    }
+
+    /// The room's ops arrive one revision after the other. One that is not
+    /// the next means a change in between never got here: the baseline still
+    /// moves — it is the server's count — but the session is marked, and
+    /// sends nothing on top of a drawing it knows to be short.
+    #[test]
+    fn a_revision_that_skips_one_marks_the_session_and_stops_its_ops() {
+        let mut state = joined_at(3);
+        state.apply(applied("op-a", 4));
+        assert_eq!(state.diverged, None);
+        assert!(state.request_op(serde_json::json!({"kind": "set_tag"})).is_ok());
+
+        state.apply(applied("op-c", 6));
+        assert_eq!(state.base_revision, 6);
+        let reason = state.diverged.clone().expect("marked");
+        assert!(reason.contains('6') && reason.contains('4'), "{reason}");
+        assert_eq!(state.status_json()["diverged"], reason.as_str());
+        let refused = state
+            .request_op(serde_json::json!({"kind": "set_tag"}))
+            .expect_err("no op goes out from a drawing known to be short");
+        assert!(refused.contains("不一致"), "{refused}");
+
+        // The first reason stays: it is where the two parted.
+        state.apply(applied("op-e", 9));
+        assert_eq!(state.diverged.as_deref(), Some(reason.as_str()));
+    }
+
+    /// A revision this drawing is already at is not applied a second time,
+    /// and does not take the baseline back.
+    #[test]
+    fn a_revision_already_seen_is_dropped() {
+        let mut state = joined_at(3);
+        state.apply(applied("op-a", 4));
+        state.apply(applied("op-b", 5));
+        assert_eq!(state.pending_remote.len(), 2);
+
+        state.apply(applied("op-a", 4));
+        state.apply(applied("op-old", 2));
+        assert_eq!(state.pending_remote.len(), 2, "nothing queued twice");
+        assert_eq!(state.base_revision, 5);
+        assert_eq!(state.applied_ops, 2);
+        assert_eq!(state.diverged, None);
+    }
+
+    /// Coming back to a room that moved on while the session was away: what
+    /// it applied meanwhile is not in this drawing. Coming back to the same
+    /// revision, nothing was missed; to a lower one, the server started over
+    /// and this is a first join again.
+    #[test]
+    fn coming_back_to_a_room_that_moved_on_marks_the_session() {
+        let reconnect_at = |revision: i64| {
+            let mut state = joined_at(3);
+            state.apply(CollabEvent::Disconnected {
+                reason: "read error: ConnectionReset".to_owned(),
+                will_retry: true,
+            });
+            state.apply(CollabEvent::Connected {
+                session_id: "s-2".to_owned(),
+                base_revision: revision,
+                peers: Vec::new(),
+                claims: Vec::new(),
+            });
+            state
+        };
+        assert_eq!(reconnect_at(3).diverged, None);
+        assert_eq!(reconnect_at(0).diverged, None);
+        let moved_on = reconnect_at(5);
+        let reason = moved_on.diverged.clone().expect("marked");
+        assert!(reason.contains('3') && reason.contains('5'), "{reason}");
+        assert_eq!(moved_on.base_revision, 5);
+        // The first join of a run is taken at whatever the room is at.
+        assert_eq!(joined_at(7).diverged, None);
     }
 }

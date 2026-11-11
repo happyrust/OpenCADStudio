@@ -198,7 +198,21 @@ impl OpenCADStudio {
                 .push_info(&format!("协同：已应用远端变更（{total} 个实体）"));
         }
         match failure {
-            Some(reason) => self.report_apply_error(reason),
+            Some(reason) => {
+                // The room has a change this drawing does not. Its baseline
+                // moved all the same — that is the server's count — so the
+                // session is marked, and writes nothing more on top of the
+                // difference (`State::request_op`).
+                let first = self.collab.diverged.is_none();
+                self.collab.mark_diverged(reason.clone());
+                self.report_apply_error(reason);
+                if first {
+                    self.command_line.push_warning(
+                        "协同：本图与房间已不一致，此后的本地修改不再提交；\
+                         请取得最新图纸后重新打开",
+                    );
+                }
+            }
             None if total > 0 => self.collab.last_apply_error = None,
             None => {}
         }
@@ -366,6 +380,8 @@ mod tests {
     #[test]
     fn a_remote_op_moves_the_baseline_to_the_server_revision() {
         let (mut app, handle) = app_with_vessel("P-1001");
+        // The session is at revision 1; the room's next op is 2.
+        app.collab.base_revision = 1;
         app.collab.apply(CollabEvent::OpApplied {
             op_id: "op-peer-2".to_owned(),
             revision: 2,
@@ -382,6 +398,7 @@ mod tests {
         let author =
             PidAuthor::load(&app.tabs[app.active_tab].scene.document, handle).expect("author");
         assert!(author.props.contains("2.5MPa"), "{}", author.props);
+        assert_eq!(app.collab.diverged, None, "the next revision is no gap");
     }
 
     /// Our own op comes back from the room broadcast; applying it again would
@@ -779,6 +796,60 @@ mod tests {
         assert!(app.collab.pending_remote.is_empty());
         assert_eq!(app.collab.last_apply_error, None);
         assert_eq!(app.collab.document, Some(app.tabs[tab].id));
+    }
+
+    /// A peer's change this drawing cannot follow — here, to an object it
+    /// does not have — leaves it short of the room. The baseline moved all
+    /// the same, so nothing else would stop the next local edit from going
+    /// out on top of the difference: the session is marked and sends no more.
+    #[test]
+    fn a_change_this_drawing_cannot_follow_stops_the_sessions_writes() {
+        let (mut app, vessel) = app_with_vessel("P-1001");
+        app.collab.connected = true;
+        app.collab.session_id = Some("s-1".to_owned());
+        app.collab.apply(CollabEvent::OpApplied {
+            op_id: "op-peer".to_owned(),
+            revision: 1,
+            changes: vec![serde_json::json!({
+                "kind": "set_property", "object_ref": "P-9001", "field": "设计压力", "value": "2.5MPa",
+            })],
+        });
+        app.apply_remote_changes();
+        assert_eq!(app.collab.base_revision, 1, "the baseline is the server's count");
+        let reason = app.collab.diverged.clone().expect("the session is marked");
+        assert!(reason.contains("P-9001"), "{reason}");
+        assert_eq!(app.collab.status_json()["diverged"], reason.as_str());
+
+        // The local edit still happens — it is this person's drawing — but
+        // it does not go out.
+        let _ = app.run_command_line("PIDTAG P-1001 P-1005");
+        app.finish_all_pending_history();
+        assert_eq!(
+            PidAuthor::load(&app.tabs[app.active_tab].scene.document, vessel)
+                .expect("author")
+                .tag,
+            "P-1005"
+        );
+        assert!(
+            app.collab.own_ops.is_empty(),
+            "an op went out from a drawing known to differ: {:?}",
+            app.collab.own_ops
+        );
+    }
+
+    /// An op none of whose changes this client can read is the same thing: the
+    /// room changed in a way this drawing did not.
+    #[test]
+    fn an_op_this_client_cannot_read_marks_the_session_too() {
+        let (mut app, _) = app_with_vessel("P-1001");
+        app.collab.apply(CollabEvent::OpApplied {
+            op_id: "op-peer".to_owned(),
+            revision: 1,
+            changes: vec![serde_json::json!({"kind": "something_new", "object_ref": "P-1001"})],
+        });
+        app.apply_remote_changes();
+        assert!(app.collab.diverged.is_some());
+        assert!(app.collab.last_apply_error.is_some());
     }
 
     /// An editor started on a file has a session for that file. While it is

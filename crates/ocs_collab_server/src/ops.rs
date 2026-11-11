@@ -336,7 +336,7 @@ pub struct Resolved {
     pub final_value: String,
     /// The revision the drawing moved to when the ruling was written back.
     pub revision: i64,
-    /// The `op_applied` that tells the room.
+    /// The `op_applied` that told the room (it has gone out already).
     pub message: ServerMessage,
 }
 
@@ -513,15 +513,18 @@ pub fn resolve(
         resolved_by: Some(resolved_by.to_owned()),
         ..row
     };
+    let message = ServerMessage::OpApplied {
+        op_id,
+        revision,
+        changes: broadcast,
+    };
+    // A ruling is an op like any other, and is told to the room in its turn.
+    announce(state, &row.drawing_id, &message);
     Ok(Resolved {
         row,
         final_value,
         revision,
-        message: ServerMessage::OpApplied {
-            op_id,
-            revision,
-            changes: broadcast,
-        },
+        message,
     })
 }
 
@@ -598,7 +601,7 @@ fn commit_opaque(
         Ok((revision, message)) => {
             log_applied(incoming, payload, revision);
             Outcome {
-                reactions: vec![Reaction::Publish {
+                reactions: vec![Reaction::Published {
                     drawing_id: incoming.session.drawing_id.clone(),
                     message,
                 }],
@@ -769,7 +772,7 @@ fn judge_and_commit(
                 );
             }
             log_applied(incoming, &applied[0].0.raw, revision);
-            reactions.push(Reaction::Publish {
+            reactions.push(Reaction::Published {
                 drawing_id: session.drawing_id.clone(),
                 message,
             });
@@ -840,14 +843,25 @@ fn commit(
         }
     };
     drawing.model.set_revision(revision);
-    Ok((
+    let message = ServerMessage::OpApplied {
+        op_id: incoming.op_id.to_owned(),
         revision,
-        ServerMessage::OpApplied {
-            op_id: incoming.op_id.to_owned(),
-            revision,
-            changes,
-        },
-    ))
+        changes,
+    };
+    announce(state, &session.drawing_id, &message);
+    Ok((revision, message))
+}
+
+/// Tell the room of an op that has just taken effect.
+///
+/// Called with the drawing still locked, by the code that moved its
+/// revision: the next op cannot commit — and so cannot be announced — before
+/// this one has been, and the room hears revisions in the order they were
+/// made. A client counts on that (a revision that is not the next one means
+/// it missed a change). Announced by each connection after the lock is gone,
+/// two ops made a moment apart could go out newest first.
+fn announce(state: &AppState, drawing_id: &str, message: &ServerMessage) {
+    state.bus.publish(drawing_id, message);
 }
 
 fn log_applied(incoming: &Incoming<'_>, first: &Value, revision: i64) {
@@ -1145,7 +1159,7 @@ mod tests {
     /// `(op_id, revision, changes)` of the `op_applied` among `reactions`.
     fn applied(reactions: &[Reaction]) -> Option<(String, i64, Vec<Value>)> {
         reactions.iter().find_map(|reaction| match reaction {
-            Reaction::Publish {
+            Reaction::Published {
                 message:
                     ServerMessage::OpApplied {
                         op_id,
@@ -1202,6 +1216,92 @@ mod tests {
         items
             .first()
             .and_then(|item| item["fields"][field]["value"].as_str().map(str::to_owned))
+    }
+
+    /// The room hears of an op inside the step that made it, not when the
+    /// connection that sent it gets round to its reactions: by the time
+    /// `receive` has returned, the `op_applied` is on the room's channel.
+    /// Two connections each publishing their own op afterwards could do so
+    /// in either order, and the room would hear revision 2 before 1 — which
+    /// a client reads, rightly, as a change it never got.
+    #[tokio::test]
+    async fn an_applied_op_is_announced_before_the_drawing_is_unlocked() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        let mut room = state.bus.subscribe(DRAWING);
+
+        // Neither call's reactions are applied — nothing below publishes.
+        let first = submit(&state, &mut s1, 0, "op-1", set("设计压力", "1.6MPa")).await;
+        let second = submit(&state, &mut s2, 1, "op-2", set("公称直径", "DN50")).await;
+
+        let heard: Vec<(String, i64)> = std::iter::from_fn(|| room.try_recv())
+            .filter_map(|message| match message {
+                ServerMessage::OpApplied { op_id, revision, .. } => Some((op_id, revision)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            heard,
+            [("op-1".to_owned(), 1), ("op-2".to_owned(), 2)],
+            "the room hears each op as it commits, in revision order"
+        );
+        // And the caller is not asked to publish them a second time.
+        for reactions in [&first, &second] {
+            assert!(
+                !reactions.iter().any(|reaction| matches!(
+                    reaction,
+                    Reaction::Publish {
+                        message: ServerMessage::OpApplied { .. },
+                        ..
+                    }
+                )),
+                "{reactions:?}"
+            );
+        }
+    }
+
+    /// A session that joins is told a revision and from then on hears every
+    /// op after it. The two are one step: the subscription exists by the
+    /// time `hello` has read the revision, before any of its reactions is
+    /// applied — an op that commits right then is not lost in between.
+    #[tokio::test]
+    async fn a_session_that_joins_hears_the_op_right_after_the_revision_it_was_told() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+
+        let mut late = Connection::new("10.0.0.8");
+        let hello = ClientMessage::Hello {
+            user_id: "u2".into(),
+            drawing_id: DRAWING.into(),
+            mode: "协同编辑".into(),
+            client_version: "test".into(),
+            workspace: "plant-a".into(),
+        };
+        let welcome = handle_message(&state, &mut late, hello, T0).await;
+        let told = welcome
+            .iter()
+            .find_map(|reaction| match reaction {
+                Reaction::Send(ServerMessage::Welcome { base_revision, .. }) => Some(*base_revision),
+                _ => None,
+            })
+            .expect("welcome");
+        assert_eq!(told, 0);
+
+        // Before a single reaction of that `hello` has been applied — which
+        // is when the subscription used to be taken out — an op commits.
+        let _ = submit(&state, &mut s1, 0, "op-1", set("设计压力", "1.6MPa")).await;
+
+        let mut joined = late.joined.take().expect("hello joined the room itself");
+        let next = std::iter::from_fn(|| joined.try_recv()).find_map(|message| match message {
+            ServerMessage::OpApplied { op_id, revision, .. } => Some((op_id, revision)),
+            _ => None,
+        });
+        assert_eq!(
+            next,
+            Some(("op-1".to_owned(), 1)),
+            "the op after the revision the session was told must reach it"
+        );
     }
 
     // `VAL-CONF-001`: s1 writes one field and gets revision 1; s2, still at

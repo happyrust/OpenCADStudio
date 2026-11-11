@@ -22,6 +22,14 @@ pub struct Subscription {
     receiver: broadcast::Receiver<ServerMessage>,
 }
 
+impl std::fmt::Debug for Subscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Subscription")
+            .field("drawing_id", &self.drawing_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Subscription {
     pub fn drawing_id(&self) -> &str {
         &self.drawing_id

@@ -48,6 +48,10 @@ const BACKOFF_MAX: Duration = Duration::from_secs(5);
 /// subscription is still alive.
 const BACKOFF_SLICE: Duration = Duration::from_millis(50);
 
+/// How long [`emit`] waits before offering the UI an event again when its
+/// channel was full.
+const EMIT_RETRY: Duration = Duration::from_millis(2);
+
 /// The outbound queue: requests the UI wants on the wire, oldest first.
 type Outbox = Mutex<std::collections::VecDeque<Outbound>>;
 
@@ -151,12 +155,31 @@ pub(super) fn shutdown() {
         return;
     };
     log("退出：请求关闭协同连接");
+    stop_worker(worker, SHUTDOWN_BUDGET);
+}
+
+/// How long [`shutdown`] waits for the transport thread to say goodbye.
+const SHUTDOWN_BUDGET: Duration = Duration::from_secs(3);
+
+/// Ask `worker` to say goodbye and wait up to `budget` for it to finish.
+/// Returns whether it did.
+///
+/// A thread that has not finished by then is left behind, not joined: it is
+/// in a name lookup or a connect with a longer timeout of its own, and a join
+/// would wait that out with the quit behind it. The process is exiting and
+/// the thread goes with it.
+fn stop_worker(worker: Worker, budget: Duration) -> bool {
     worker.link.stop.store(true, Ordering::Relaxed);
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + budget;
     while !worker.handle.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
+    if !worker.handle.is_finished() {
+        log("退出：协同线程没有在预算内结束，不再等它");
+        return false;
+    }
     let _ = worker.handle.join();
+    true
 }
 
 /// Session config published for the app's client. The worker is spawned by
@@ -301,11 +324,14 @@ pub(super) fn request_release(session_id: &str, tag: &str) -> Result<(), String>
 /// within this process's session; the server echoes it back verbatim.
 static OP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// A fresh `op_id`. The room broadcast of our own change comes back with this
-/// id, which is how the app tells its own op from a peer's.
-pub(super) fn next_op_id() -> String {
+/// A fresh `op_id` for an op of `session_id`. The room broadcast of our own
+/// change comes back with this id, which is how the app tells its own op from
+/// a peer's — so it has to be the room's only one. The session id is the
+/// server's, unique among everyone on it; a process id and a counter are
+/// only unique on this machine, and two machines count from 1 alike.
+pub(super) fn next_op_id(session_id: &str) -> String {
     let n = OP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("op-{}-{n}", std::process::id())
+    format!("op-{session_id}-{n}")
 }
 
 /// Put an `op` carrying one semantic change on `outbox`. `base_revision` is
@@ -451,15 +477,37 @@ pub(super) fn backoff_delay(attempt: u32) -> Duration {
 
 /// Keep the GUI informed, and report whether the subscription still exists.
 ///
-/// `TrySendError::Full` means the UI thread is behind: dropping one status
-/// event is strictly better than blocking the socket thread.
+/// `TrySendError::Full` means the UI thread is behind. For a status line
+/// (`Connecting`) dropping it is strictly better than blocking the socket
+/// thread. For anything that changes what the session is — a peer's change,
+/// the welcome, a claim, a downgrade — it is not: the UI's picture, and for
+/// `op_applied` the drawing itself, would be short of something the server
+/// counts as delivered. Those wait for room — for as long as there is
+/// somebody to deliver to: a quit ends the wait (the UI thread is then
+/// waiting on this one and will not read the channel again), and so does a
+/// cancelled subscription.
 /// `TrySendError::Disconnected` means iced cancelled the subscription, so the
 /// thread must exit or it leaks.
-fn emit(sender: &mut mpsc::Sender<CollabEvent>, event: CollabEvent) -> Result<(), ()> {
-    match sender.try_send(event) {
-        Ok(()) => Ok(()),
-        Err(error) if error.is_disconnected() => Err(()),
-        Err(_full) => Ok(()),
+fn emit(
+    sender: &mut mpsc::Sender<CollabEvent>,
+    link: &Link,
+    event: CollabEvent,
+) -> Result<(), ()> {
+    let droppable = matches!(event, CollabEvent::Connecting { .. });
+    let mut event = event;
+    loop {
+        match sender.try_send(event) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.is_disconnected() => return Err(()),
+            Err(_full) if droppable => return Ok(()),
+            Err(full) => {
+                if link.stop_requested() {
+                    return Err(());
+                }
+                event = full.into_inner();
+                std::thread::sleep(EMIT_RETRY);
+            }
+        }
     }
 }
 
@@ -512,7 +560,7 @@ pub(super) fn run_client(
             std::thread::sleep(BACKOFF_SLICE);
             continue;
         }
-        if emit(sender, CollabEvent::Connecting { attempt }).is_err() {
+        if emit(sender, link, CollabEvent::Connecting { attempt }).is_err() {
             return Ok(());
         }
         log(&format!(
@@ -530,6 +578,7 @@ pub(super) fn run_client(
         log(&format!("断开：{reason}；{} 毫秒后重连", delay.as_millis()));
         if emit(
             sender,
+            link,
             CollabEvent::Disconnected {
                 reason,
                 will_retry: true,
@@ -592,7 +641,7 @@ fn run_session(
                         session_id = Some(id.clone());
                     }
                     log(&format!("收到 {}", describe_event(&event)));
-                    if emit(sender, event).is_err() {
+                    if emit(sender, link, event).is_err() {
                         close(&mut ws);
                         return Ok(Ended::SubscriptionGone);
                     }
@@ -1090,10 +1139,11 @@ mod tests {
     }
 
     #[test]
-    fn a_full_channel_drops_the_event_rather_than_blocking() {
+    fn a_full_channel_drops_a_status_event_rather_than_blocking() {
         // futures' bounded channel holds `size` messages plus the slot the
         // sender owns, so fill it by sending until it refuses rather than
         // assuming an exact capacity.
+        let link = Link::detached(ClientConfig::default());
         let (mut sender, _receiver) = mpsc::channel::<CollabEvent>(1);
         let mut attempt = 0u32;
         let full = loop {
@@ -1105,7 +1155,7 @@ mod tests {
         };
         assert!(!full.is_disconnected(), "full is not disconnected");
         // And the loop's `emit` treats that as "keep going".
-        assert!(emit(&mut sender, CollabEvent::Connecting { attempt }).is_ok());
+        assert!(emit(&mut sender, &link, CollabEvent::Connecting { attempt }).is_ok());
     }
 
     /// What is published to a link's config slot is what its client reads on
@@ -1331,10 +1381,146 @@ mod tests {
         assert!(drain_outbound(&outbox).is_empty());
         assert!(request_op("s-1", 0, "", serde_json::json!({})).is_err());
 
-        let first = next_op_id();
-        let second = next_op_id();
+        let first = next_op_id("s-1");
+        let second = next_op_id("s-1");
         assert!(!first.is_empty());
         assert_ne!(first, second);
+    }
+
+    /// An id is the room's only one, not this machine's: it carries the
+    /// session, which the server hands out to one connection. Two editors
+    /// with the same process id counting from the same number must not make
+    /// the same id — one would take the other's op for its own echo.
+    #[test]
+    fn two_sessions_never_make_the_same_op_id() {
+        let mine = next_op_id("s-aaaa");
+        let theirs = next_op_id("s-bbbb");
+        assert!(mine.contains("s-aaaa"), "{mine}");
+        // Whatever their counter says, the session part differs.
+        let n = mine.rsplit('-').next().expect("counter");
+        assert_ne!(mine, format!("op-s-bbbb-{n}"));
+        assert!(theirs.starts_with("op-s-bbbb-"), "{theirs}");
+    }
+
+    /// A status line may be dropped when the UI is behind. A peer's change
+    /// may not: the baseline moves with it, so dropping it leaves the drawing
+    /// short a change it claims to have. It waits for room instead.
+    #[test]
+    fn a_peers_change_waits_for_room_in_the_channel_instead_of_being_dropped() {
+        let link = Link::detached(ClientConfig::default());
+        let (mut sender, mut receiver) = mpsc::channel::<CollabEvent>(1);
+        while sender
+            .try_send(CollabEvent::Connecting { attempt: 0 })
+            .is_ok()
+        {}
+        // Full: a status event is given up without blocking.
+        assert!(emit(&mut sender, &link, CollabEvent::Connecting { attempt: 1 }).is_ok());
+
+        let change = CollabEvent::OpApplied {
+            op_id: "op-peer".to_owned(),
+            revision: 1,
+            changes: Vec::new(),
+        };
+        let waiting = std::thread::spawn(move || emit(&mut sender, &link, change));
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(!waiting.is_finished(), "it must wait, not drop");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut arrived = false;
+        while Instant::now() < deadline && !arrived {
+            match receiver.try_next() {
+                Ok(Some(CollabEvent::OpApplied { op_id, .. })) => arrived = op_id == "op-peer",
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        assert!(arrived, "the change never reached the UI");
+        assert_eq!(waiting.join().expect("emit thread"), Ok(()));
+    }
+
+    /// With nobody left to listen the wait ends: the thread must not hang on
+    /// a subscription that is gone.
+    #[test]
+    fn a_waiting_change_gives_up_when_the_subscription_is_gone() {
+        let link = Link::detached(ClientConfig::default());
+        let (mut sender, receiver) = mpsc::channel::<CollabEvent>(1);
+        while sender
+            .try_send(CollabEvent::Connecting { attempt: 0 })
+            .is_ok()
+        {}
+        let change = CollabEvent::OpApplied {
+            op_id: "op-peer".to_owned(),
+            revision: 1,
+            changes: Vec::new(),
+        };
+        let waiting = std::thread::spawn(move || emit(&mut sender, &link, change));
+        std::thread::sleep(Duration::from_millis(30));
+        drop(receiver);
+        assert_eq!(waiting.join().expect("emit thread"), Err(()));
+    }
+
+    /// The quit waits for the transport thread only as long as its budget. A
+    /// thread that is not done by then — here one that never looks at the
+    /// quit signal — is left behind; joining it would hold the quit for as
+    /// long as whatever it is stuck in takes.
+    #[test]
+    fn a_wedged_worker_does_not_hold_the_quit_past_its_budget() {
+        let link = Link::detached(ClientConfig::default());
+        let (release, wedged) = std::sync::mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            // Stuck until the test lets go, whatever the quit signal says.
+            let _ = wedged.recv();
+        });
+        let worker = Worker {
+            handle,
+            link: link.clone(),
+        };
+        // Returning at all is the assertion: a join here would never come back.
+        assert!(!stop_worker(worker, Duration::from_millis(50)));
+        assert!(link.stop_requested(), "it was asked to stop");
+        drop(release);
+    }
+
+    /// One that does stop is waited for and joined.
+    #[test]
+    fn a_worker_that_stops_is_joined_within_the_budget() {
+        let link = Link::detached(ClientConfig::default());
+        let handle = {
+            let link = link.clone();
+            std::thread::spawn(move || {
+                while !link.stop_requested() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            })
+        };
+        assert!(stop_worker(Worker { handle, link }, Duration::from_secs(30)));
+    }
+
+    /// Quitting ends the wait as well. The UI thread asks the transport to
+    /// stop and then waits for it; it will not read the channel again, so a
+    /// thread still offering it an event would hold the quit up for good.
+    #[test]
+    fn a_waiting_change_gives_up_when_the_app_is_quitting() {
+        let link = Link::detached(ClientConfig::default());
+        let (mut sender, _receiver) = mpsc::channel::<CollabEvent>(1);
+        while sender
+            .try_send(CollabEvent::Connecting { attempt: 0 })
+            .is_ok()
+        {}
+        let change = CollabEvent::OpApplied {
+            op_id: "op-peer".to_owned(),
+            revision: 1,
+            changes: Vec::new(),
+        };
+        let waiting = {
+            let link = link.clone();
+            std::thread::spawn(move || emit(&mut sender, &link, change))
+        };
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!waiting.is_finished(), "nobody has read the channel");
+        link.stop.store(true, Ordering::Relaxed);
+        assert_eq!(waiting.join().expect("emit thread"), Err(()));
     }
 
     /// What the log says of an op is the two things `VAL-CLI-010` reads off
