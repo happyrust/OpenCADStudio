@@ -418,8 +418,17 @@ impl OpenCADStudio {
     /// explicit: a new drawing command defaults to refused, which is the safe
     /// direction for a write gate.
     ///
-    /// `PIDTAG` is the one verb whose argument count changes its meaning: one
-    /// word jumps to a tag (a read), two rename it (a write).
+    /// Two verbs read or write by what follows them, and are let through
+    /// only in the forms that read: `PIDTAG` with one word jumps to a tag
+    /// (two rename it), and `PIDLEGEND` reports, lists and exports (`ON`
+    /// draws the legend, `OFF` and `PURGE` erase it — and the bare verb
+    /// defaults to `ON`).
+    ///
+    /// This list is a courtesy, not the lock: a command that does write is
+    /// better turned away before it prompts for anything than after. What
+    /// keeps a read-only session from changing its drawing is
+    /// [`Self::refuses_step`], at the one place every edit passes through;
+    /// a verb wrongly let through here still changes nothing.
     ///
     /// The gate is on the session's drawing. Another drawing open beside it
     /// is not in the session, and its commands are its own; while the session
@@ -434,15 +443,137 @@ impl OpenCADStudio {
         }
         let words: Vec<&str> = cmd.split_whitespace().collect();
         let verb = words.first().copied().unwrap_or("").to_ascii_uppercase();
-        if verb == "PIDTAG" && words.len() > 2 {
-            return true;
+        let option = words.get(1).copied().unwrap_or("").to_ascii_uppercase();
+        match verb.as_str() {
+            "PIDTAG" => words.len() > 2,
+            "PIDLEGEND" => !matches!(option.as_str(), "REPORT" | "LIST" | "EXPORT"),
+            _ => !READONLY_ALLOWED.contains(&verb.as_str()),
         }
-        !READONLY_ALLOWED.contains(&verb.as_str())
+    }
+
+    /// Turn `cmd` away if this session may not write and `cmd` would.
+    ///
+    /// Says so on the command line under the code the refusing tier calls
+    /// for (`State::refusal`) — which is what a caller over REST is answered
+    /// with — and tells the server, so the attempt is on record there with
+    /// the object it was aimed at (`VAL-CROSS-004`, `-011`).
+    pub(in crate::app) fn refuse_if_readonly(&mut self, cmd: &str) -> bool {
+        if !self.readonly_refuses_command(cmd) {
+            return false;
+        }
+        let (code, _level) = self.collab.refusal();
+        self.command_line.push_error_coded(
+            &code,
+            &format!("协同：当前会话只读，拒绝执行 {cmd}"),
+        );
+        let object_ref = self.attempted_object(cmd);
+        self.collab.report_attempt(&object_ref, cmd.trim());
+        true
+    }
+
+    /// The tag of the object a refused command was aimed at, for the record:
+    /// the tag `PIDTAG` names, else that of the first selected object that
+    /// has one. Empty when the command names nothing and nothing is selected.
+    fn attempted_object(&mut self, cmd: &str) -> String {
+        let words: Vec<&str> = cmd.split_whitespace().collect();
+        if words.first().is_some_and(|verb| verb.eq_ignore_ascii_case("PIDTAG")) {
+            if let Some(tag) = words.get(1) {
+                return self.canonical_tag(tag);
+            }
+        }
+        let Some(i) = self.collab_tab() else {
+            return String::new();
+        };
+        let tab = &self.tabs[i];
+        tab.scene
+            .selected_handles_in_order()
+            .into_iter()
+            .filter_map(|handle| crate::pid::persist::PidAuthor::load(&tab.scene.document, handle))
+            .map(|author| author.tag)
+            .find(|tag| !tag.is_empty())
+            .unwrap_or_default()
+    }
+
+    /// Whether a step that has just been made on tab `i` is one this session
+    /// may not make: it is read-only, the tab holds its drawing, and the step
+    /// is not a peer's change being written.
+    ///
+    /// This is the lock. Every edit — a command, a row of the properties
+    /// panel, a grip, a drop from the palette, a write over REST — ends as
+    /// one step handed to `push_undo_entry`, and that is where this is
+    /// asked. A step that may not be made is taken back there
+    /// ([`Self::take_back_refused_step`]) instead of being kept.
+    pub(in crate::app) fn refuses_step(&mut self, i: usize) -> bool {
+        self.collab.readonly && !self.applying_remote && self.is_collab_tab(i)
+    }
+
+    /// The tier (`role` / `pbs` / `state`) behind `code`, when `code` is what
+    /// the read-only gate has just answered a write with. `None` for any
+    /// other failure code.
+    pub(in crate::app) fn collab_refusal_level(&self, code: &str) -> Option<String> {
+        if !self.collab.readonly {
+            return None;
+        }
+        let (refusal, level) = self.collab.refusal();
+        (refusal == code).then_some(level)
+    }
+
+    /// Whether an undo or a redo on tab `i` is refused because the session
+    /// may not write — said and put on record when it is.
+    pub(in crate::app) fn refuses_history_replay(&mut self, i: usize, what: &str) -> bool {
+        if !self.refuses_step(i) {
+            return false;
+        }
+        let (code, _level) = self.collab.refusal();
+        self.command_line.push_error_coded(
+            &code,
+            &format!("协同：当前会话只读，拒绝执行 {what}"),
+        );
+        self.collab.report_attempt("", what);
+        true
+    }
+
+    /// Say that a step was taken back, and put the attempt on record.
+    /// `changes` is what the step would have told the room; `label` is the
+    /// step's own name, for a step that says nothing in P&ID terms.
+    pub(in crate::app) fn report_refused_step(
+        &mut self,
+        changes: &[broadcast::Change],
+        label: &str,
+    ) {
+        let (code, _level) = self.collab.refusal();
+        self.command_line.push_error_coded(
+            &code,
+            &format!("协同：当前会话只读，这一步修改（{label}）已撤回"),
+        );
+        let (object_ref, text) = match changes.first() {
+            Some(first) => (
+                first.object_ref.clone(),
+                changes
+                    .iter()
+                    .map(|change| {
+                        format!(
+                            "{} {}.{} = {}",
+                            change.kind, change.object_ref, change.field, change.value
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("；"),
+            ),
+            None => (String::new(), label.to_owned()),
+        };
+        self.collab.report_attempt(&object_ref, &text);
     }
 }
 
 /// Commands a read-only session may still run: looking around, inspecting, and
 /// the collaboration panel itself. Everything else is a write.
+///
+/// `PIDLEGEND` is here for its reading forms only (see
+/// `readonly_refuses_command`). Not here, though they once were: `MEASURE`
+/// (places points along an object), `FIND` (opens find-and-replace),
+/// `PIDGROUP` (every one of its forms regroups or retags) and `AUDIT`
+/// (applies its fixes when answered yes).
 pub(super) const READONLY_ALLOWED: &[&str] = &[
     "ZOOM",
     "ZO",
@@ -464,7 +595,6 @@ pub(super) const READONLY_ALLOWED: &[&str] = &[
     "AREA",
     "AA",
     "ID",
-    "MEASURE",
     "MEASUREGEOM",
     "PROPERTIES",
     "PROPS",
@@ -472,12 +602,10 @@ pub(super) const READONLY_ALLOWED: &[&str] = &[
     "QSELECT",
     "QS",
     "SELECTALL",
-    "FIND",
     "HELP",
     "PIDLEGEND",
     "PIDLINE",
     "PIDTAG",
-    "PIDGROUP",
     "PIDTOPOLOGY",
     "PIDPALETTE",
     "PIDCOLLAB",
@@ -487,7 +615,6 @@ pub(super) const READONLY_ALLOWED: &[&str] = &[
     "PLOT",
     "PRINT",
     "PREVIEW",
-    "AUDIT",
     "PERF",
     "LAYERS",
     "LA",
@@ -1269,6 +1396,226 @@ mod tests {
         undo(&mut app);
         assert_eq!(author(&app, pump).tag, "P-1001");
         assert_eq!(prop(&app, vessel, "设计压力"), "2.5MPa");
+    }
+
+    // ── A session that may not write ─────────────────────────────────────
+
+    /// Put the session in the state a `readonly_downgrade` from the server
+    /// leaves it in, refused at `level`.
+    fn told_it_may_not_write(app: &mut OpenCADStudio, level: &str, code: &str) {
+        app.collab.connected = true;
+        app.collab.session_id = Some("s-2".to_owned());
+        app.collab.apply(CollabEvent::ReadonlyDowngrade {
+            reason: "测试".to_owned(),
+            holder: None,
+            level: Some(level.to_owned()),
+            code: Some(code.to_owned()),
+        });
+        assert!(app.collab.readonly);
+    }
+
+    /// The commands that write and were once let through are refused; the
+    /// forms that only read are not.
+    #[test]
+    fn commands_that_write_are_refused_and_the_forms_that_read_are_not() {
+        let (mut app, _) = app_with_vessel("P-1001");
+        app.collab.readonly = true;
+        for cmd in [
+            "PIDLEGEND ON",
+            "PIDLEGEND OFF",
+            "PIDLEGEND PURGE",
+            // Bare, it prompts with ON as the default.
+            "PIDLEGEND",
+            "PIDGROUP",
+            "PIDGROUP GROUP",
+            "PIDGROUP TAG P-1",
+            "PIDGROUP AUTO",
+            "PIDGROUP OFF",
+            "AUDIT",
+            "AUDIT Yes",
+            "MEASURE",
+            "FIND",
+        ] {
+            assert!(app.readonly_refuses_command(cmd), "{cmd} must be refused");
+        }
+        for cmd in [
+            "PIDLEGEND REPORT",
+            "pidlegend list",
+            "PIDLEGEND EXPORT out.json",
+            "PIDLINE",
+            "PIDTAG P-1001",
+            "MEASUREGEOM",
+            "ZOOM EXTENTS",
+        ] {
+            assert!(!app.readonly_refuses_command(cmd), "{cmd} only reads");
+        }
+    }
+
+    /// What the list lets through, run as it would be typed, leaves the
+    /// drawing as it was: no step on the undo stack, the same entities, the
+    /// same record. (`QUIT`, `EXIT` and `SAVEAS` are not run here: the first
+    /// two leave the program and the third asks for a file name.)
+    #[test]
+    fn every_command_a_readonly_session_may_run_leaves_the_drawing_as_it_was() {
+        for verb in READONLY_ALLOWED {
+            if matches!(*verb, "QUIT" | "EXIT" | "SAVEAS") {
+                continue;
+            }
+            let (mut app, vessel) = app_with_vessel("P-1001");
+            let i = app.active_tab;
+            app.collab.document = Some(app.tabs[i].id);
+            app.collab.readonly = true;
+            let steps = app.tabs[i].history.undo_stack.len();
+            let entities = app.tabs[i].scene.document.entities().count();
+            let record = author(&app, vessel);
+
+            let cmd = match *verb {
+                "PIDLEGEND" => "PIDLEGEND REPORT".to_owned(),
+                "PIDTAG" => "PIDTAG P-1001".to_owned(),
+                other => other.to_owned(),
+            };
+            assert!(!app.readonly_refuses_command(&cmd), "{cmd} is on the list");
+            let _ = app.run_command_line(&cmd);
+            app.finish_all_pending_history();
+
+            let i = app.active_tab;
+            assert_eq!(
+                app.tabs[i].history.undo_stack.len(),
+                steps,
+                "{cmd} made a step in a session that may not write"
+            );
+            assert_eq!(
+                app.tabs[i].scene.document.entities().count(),
+                entities,
+                "{cmd} added or removed an entity"
+            );
+            assert_eq!(author(&app, vessel), record, "{cmd} rewrote the record");
+        }
+    }
+
+    /// The lock itself. An edit that reaches the drawing by a door the
+    /// command gate does not watch is taken back as its step closes: the
+    /// drawing and both history stacks are as they were, nothing goes to the
+    /// room, the caller is told it was refused and by which tier, and the
+    /// attempt is on record with the object it was aimed at.
+    #[test]
+    fn a_write_that_gets_past_the_command_gate_is_taken_back() {
+        let (mut app, _) = app_with_vessel("X-1");
+        let pump = add_vessel(&mut app, "P-1001", r#"{"设计压力":"1.0MPa"}"#);
+        connected(&mut app);
+        // A step of one's own from before, and one taken back, so there is
+        // an undo stack and a redo stack to be left alone.
+        put_props(&mut app, pump, r#"{"设计压力":"1.6MPa"}"#);
+        put_props(&mut app, pump, r#"{"设计压力":"2.0MPa"}"#);
+        undo(&mut app);
+        let i = app.active_tab;
+        let undo_steps = app.tabs[i].history.undo_stack.len();
+        let redo_steps = app.tabs[i].history.redo_stack.len();
+        assert_eq!((undo_steps, redo_steps), (1, 1));
+        let sent = app.collab.sent.len();
+
+        told_it_may_not_write(&mut app, "role", "PERM_DENIED_ROLE");
+
+        // Over REST: the contract's own write channel for properties.
+        let state = app.control_state();
+        let (response, task) = app.control_request(serde_json::json!({
+            "protocol": 1,
+            "op": "xdata_set",
+            "request_id": "refused-1",
+            "client_id": "test",
+            "document_id": state["document_id"],
+            "revision": state["revision"],
+            "handles": [format!("{:X}", pump.value())],
+            "app": "PID_AUTHOR",
+            "data": [{"code": 1000, "value": r#"props={"设计压力":"9.9MPa"}"#}],
+        }));
+        app.drive_headless_task(task).unwrap();
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(response["code"], "PERM_DENIED_ROLE", "{response}");
+        assert_eq!(response["level"], "role", "{response}");
+        assert_eq!(prop(&app, pump, "设计压力"), "1.6MPa", "the write was taken back");
+
+        // By a door of its own: a step opened, the record rewritten, closed.
+        app.push_undo_snapshot(i, "PANEL");
+        {
+            let document = &mut app.tabs[i].scene.document;
+            let mut record = PidAuthor::load(document, pump).expect("author");
+            record.tag = "P-1009".to_owned();
+            record.store(document, pump);
+        }
+        app.finish_all_pending_history();
+        assert_eq!(author(&app, pump).tag, "P-1001", "the retag was taken back");
+
+        assert_eq!(app.tabs[i].history.undo_stack.len(), undo_steps);
+        assert_eq!(app.tabs[i].history.redo_stack.len(), redo_steps);
+        assert_eq!(app.collab.sent.len(), sent, "nothing goes to the room");
+        let attempts = &app.collab.attempts;
+        assert_eq!(attempts.len(), 2, "{attempts:?}");
+        assert_eq!(attempts[0].0, "P-1001");
+        assert!(attempts[0].1.contains("设计压力"), "{attempts:?}");
+        assert_eq!(attempts[1].0, "P-1001");
+        assert!(attempts[1].1.contains("P-1009"), "{attempts:?}");
+
+        // Nor does it take its own earlier steps back, or put them on again.
+        undo(&mut app);
+        assert_eq!(prop(&app, pump, "设计压力"), "1.6MPa");
+        redo(&mut app);
+        assert_eq!(prop(&app, pump, "设计压力"), "1.6MPa");
+        assert_eq!(app.tabs[i].history.undo_stack.len(), undo_steps);
+        assert_eq!(app.tabs[i].history.redo_stack.len(), redo_steps);
+    }
+
+    /// A command the gate turns away answers its caller with the code and
+    /// the tier of the refusal, and reports the attempt with the object the
+    /// command names — spelled as the drawing spells it.
+    #[test]
+    fn a_refused_command_says_which_tier_refused_it_and_is_reported() {
+        let (mut app, pump) = app_with_vessel("P-1001");
+        told_it_may_not_write(&mut app, "role", "PERM_DENIED_ROLE");
+        let refused = app.automation_op(r#"{"op":"run","cmd":"PIDTAG p-1001 P-1009"}"#);
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(refused["code"], "PERM_DENIED_ROLE", "{refused}");
+        assert_eq!(refused["level"], "role", "{refused}");
+        assert_eq!(author(&app, pump).tag, "P-1001");
+        assert_eq!(
+            app.collab.attempts,
+            [("P-1001".to_owned(), "PIDTAG p-1001 P-1009".to_owned())]
+        );
+
+        // At the state tier the code is the one the gate has always given.
+        let (mut app, _) = app_with_vessel("P-1001");
+        told_it_may_not_write(&mut app, "state", "PERM_DENIED_STATE");
+        let refused = app.automation_op(r#"{"op":"run","cmd":"PIDTAG P-1001 P-1009"}"#);
+        assert_eq!(refused["code"], "COLLAB_READONLY", "{refused}");
+        assert_eq!(refused["level"], "state", "{refused}");
+    }
+
+    /// A session that may not write does not come to write by losing its
+    /// socket. It used to: `readonly` was cleared on every disconnect.
+    #[test]
+    fn a_session_that_may_not_write_still_may_not_while_disconnected() {
+        let (mut app, pump) = app_with_vessel("P-1001");
+        let i = app.active_tab;
+        app.collab.document = Some(app.tabs[i].id);
+        told_it_may_not_write(&mut app, "role", "PERM_DENIED_ROLE");
+        app.collab.apply(CollabEvent::Disconnected {
+            reason: "read error: ConnectionReset".to_owned(),
+            will_retry: true,
+        });
+        assert!(app.collab.readonly, "the downgrade was dropped with the socket");
+        let refused = app.automation_op(r#"{"op":"run","cmd":"PIDTAG P-1001 P-1009"}"#);
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(author(&app, pump).tag, "P-1001");
+
+        // A new session decides afresh: the server says so right behind the
+        // welcome if it still may not, and says nothing if it may.
+        app.collab.apply(CollabEvent::Connected {
+            session_id: "s-3".to_owned(),
+            base_revision: 0,
+            peers: Vec::new(),
+            claims: Vec::new(),
+        });
+        assert!(!app.collab.readonly);
     }
 
     /// A peer's change this drawing cannot follow — here, to an object it

@@ -1140,6 +1140,8 @@ pub(crate) fn map_status(response: Value, created: bool) -> u16 {
         | "document_not_active"
         | "gui_required"
         | "DUPLICATE_INFLOW_CONNECTOR" => 409,
+        // 协同会话不可写：请求本身没有错，是这个会话不被允许做这件事。
+        "COLLAB_READONLY" | "PERM_DENIED_ROLE" | "PERM_DENIED_PBS" | "PERM_DENIED_STATE" => 403,
         "busy" => 503,
         _ => 400,
     }
@@ -1233,6 +1235,20 @@ mod tests {
             map_status(json!({"ok": false, "code": "invalid_point"}), false),
             400
         );
+        // A write refused because the collaboration session may not write is
+        // forbidden, not malformed (`VAL-CROSS-004`: "写命令 403 响应").
+        for code in [
+            "COLLAB_READONLY",
+            "PERM_DENIED_ROLE",
+            "PERM_DENIED_PBS",
+            "PERM_DENIED_STATE",
+        ] {
+            assert_eq!(
+                map_status(json!({"ok": false, "code": code}), false),
+                403,
+                "{code}"
+            );
+        }
     }
 
     /// `ready` must not advertise the welcome (Start) tab: that tab answers

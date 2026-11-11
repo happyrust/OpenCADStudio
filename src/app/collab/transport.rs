@@ -218,6 +218,9 @@ pub(super) enum Outbound {
         op_id: String,
         payload: serde_json::Value,
     },
+    /// `attempt`: a write this session refused itself, for the server's
+    /// record.
+    Attempt { object_ref: String, text: String },
 }
 
 impl Outbound {
@@ -226,6 +229,7 @@ impl Outbound {
         match self {
             Outbound::Claim { tag } => format!("claim {tag}"),
             Outbound::Release { tag } => format!("release {tag}"),
+            Outbound::Attempt { object_ref, .. } => format!("attempt object_ref={object_ref}"),
             Outbound::Op {
                 op_id,
                 base_revision,
@@ -368,9 +372,27 @@ pub(super) fn request_op(
     queue_op(app_outbox(), base_revision, op_id, payload)
 }
 
+/// Queue an `attempt` for the app's client: a write the session refused
+/// itself, reported so the server can put it on record.
+pub(super) fn request_attempt(session_id: &str, object_ref: &str, text: &str) {
+    let _ = session_id;
+    push_outbound(
+        app_outbox(),
+        Outbound::Attempt {
+            object_ref: object_ref.to_owned(),
+            text: text.to_owned(),
+        },
+    );
+}
+
 /// Turn one queued request into the wire message for `session_id`.
 fn outbound_message(request: &Outbound, session_id: &str) -> ClientMessage {
     match request {
+        Outbound::Attempt { object_ref, text } => ClientMessage::Attempt {
+            session_id: session_id.to_owned(),
+            object_ref: object_ref.clone(),
+            text: text.clone(),
+        },
         Outbound::Claim { tag } => ClientMessage::Claim {
             session_id: session_id.to_owned(),
             tag: tag.clone(),
@@ -447,7 +469,7 @@ fn describe_event(event: &CollabEvent) -> String {
         CollabEvent::ClaimReleased { tag, reason } => {
             format!("claim_released tag={tag} reason={reason}")
         }
-        CollabEvent::ReadonlyDowngrade { reason, holder } => format!(
+        CollabEvent::ReadonlyDowngrade { reason, holder, .. } => format!(
             "readonly_downgrade holder={} reason={reason}",
             holder.as_deref().unwrap_or("(无)")
         ),

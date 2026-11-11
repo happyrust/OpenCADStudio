@@ -68,6 +68,10 @@ pub enum CollabEvent {
     ReadonlyDowngrade {
         reason: String,
         holder: Option<String>,
+        /// The tier of the permission chain that refused (`role` / `pbs` /
+        /// `state`) and its `PERM_DENIED_*` code, when the server said.
+        level: Option<String>,
+        code: Option<String>,
     },
     /// `op_applied`: the baseline moved forward, and — when somebody else made
     /// the change — here is what changed, so the local document can follow
@@ -121,8 +125,17 @@ pub(super) struct State {
     /// tag → holder user id, exactly the shape `GET /api/v1/collab/status`
     /// publishes (see `architecture.md` A.5).
     pub claims: BTreeMap<String, String>,
+    /// This session may not write to its drawing. Set by the server
+    /// (`readonly_downgrade`), kept while the connection is down — a session
+    /// that may not write does not come to write by losing its socket — and
+    /// decided afresh by the server each time a session comes up.
     pub readonly: bool,
     pub readonly_holder: Option<String>,
+    /// Which tier of the permission chain refused (`role` / `pbs` /
+    /// `state`), when the server said; a refused write is answered with it.
+    pub readonly_level: Option<String>,
+    /// The `PERM_DENIED_*` code of that tier.
+    pub readonly_code: Option<String>,
     /// Last transport-level failure, for the command line and diagnostics.
     pub last_error: Option<String>,
     /// How many reconnect attempts have failed since the last live session.
@@ -188,6 +201,10 @@ pub(super) struct State {
     /// outbound queue itself is the process's, and other tests write to it.
     #[cfg(test)]
     pub sent: Vec<Value>,
+    /// Every refused write this state reported, `(object_ref, text)`: for
+    /// tests, for the same reason as `sent`.
+    #[cfg(test)]
+    pub attempts: Vec<(String, String)>,
 }
 
 /// One change of a peer's as this drawing took it.
@@ -219,6 +236,20 @@ impl State {
     /// URL nothing connects — the offline-first invariant of `VAL-CLI-017`.
     pub(super) fn wanted(&self) -> bool {
         !self.server_url.trim().is_empty()
+    }
+
+    /// The `(code, level)` a write refused by the read-only gate is answered
+    /// with: the tier's own `PERM_DENIED_*` code when a role or a PBS entry
+    /// refused, and `COLLAB_READONLY` at the state tier — the drawing is
+    /// 只读, or somebody else is its one editor — which is what the gate has
+    /// always answered there (`VAL-CLI-011`).
+    pub(super) fn refusal(&self) -> (String, String) {
+        let level = self.readonly_level.clone().unwrap_or_else(|| "state".to_owned());
+        let code = match (level.as_str(), &self.readonly_code) {
+            ("state", _) | (_, None) => "COLLAB_READONLY".to_owned(),
+            (_, Some(code)) => code.clone(),
+        };
+        (code, level)
     }
 
     /// Record that this drawing is no longer known to match the room. The
@@ -321,10 +352,13 @@ impl State {
                 self.base_revision = base_revision;
                 self.peers = peers;
                 self.claims = claims.into_iter().collect();
-                // A fresh session re-derives write access from the server; a
-                // stale downgrade must not survive a reconnect.
+                // A fresh session re-derives write access from the server: a
+                // session that may not write is told so right behind this
+                // `welcome`, and one that hears nothing may.
                 self.readonly = false;
                 self.readonly_holder = None;
+                self.readonly_level = None;
+                self.readonly_code = None;
                 self.reconnect_attempts = 0;
                 self.last_error = None;
                 // A queued op belonged to the old session and is gone with it.
@@ -335,8 +369,9 @@ impl State {
                 self.session_id = None;
                 self.peers.clear();
                 self.claims.clear();
-                self.readonly = false;
-                self.readonly_holder = None;
+                // `readonly` stays as it is. It used to be cleared here, so
+                // a session that had been told it may not write could write
+                // again the moment its network blinked.
                 self.last_error = Some(if will_retry {
                     format!("{reason}（将自动重连）")
                 } else {
@@ -379,7 +414,12 @@ impl State {
                 self.last_claim_message = Some(format!("位号 {tag} 占用已释放（{reason}）"));
                 self.claims.remove(&tag);
             }
-            CollabEvent::ReadonlyDowngrade { reason, holder } => {
+            CollabEvent::ReadonlyDowngrade {
+                reason,
+                holder,
+                level,
+                code,
+            } => {
                 // The server tells every session on a drawing that went 只读
                 // who holds the edit right — the holder too. A session that
                 // finds its own id there is the one that goes on writing.
@@ -388,6 +428,8 @@ impl State {
                     .is_some_and(|holder| self.session_id.as_deref() == Some(holder));
                 self.readonly = !holds;
                 self.readonly_holder = holder;
+                self.readonly_level = if holds { None } else { level };
+                self.readonly_code = if holds { None } else { code };
                 self.last_error = if holds {
                     None
                 } else {
@@ -536,6 +578,21 @@ impl State {
             return Err("未连接协同服务器".to_owned());
         };
         transport::request_release(&session_id, tag)
+    }
+
+    /// Tell the server of a write this session turned away itself, so that
+    /// it is on record there (`audit_log`): what was tried, on which object.
+    /// With no session up there is nobody to tell, and nothing is queued for
+    /// later — the record would arrive under another session's name.
+    pub(super) fn report_attempt(&mut self, object_ref: &str, text: &str) {
+        // (Both unused on the web build, which has no socket to report on.)
+        let _ = (object_ref, text);
+        #[cfg(test)]
+        self.attempts.push((object_ref.to_owned(), text.to_owned()));
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(session_id) = self.session_id.clone() {
+            transport::request_attempt(&session_id, object_ref, text);
+        }
     }
 
     /// The web build has no collaboration socket, so a claim request can never
@@ -743,6 +800,8 @@ mod tests {
         state.apply(CollabEvent::ReadonlyDowngrade {
             reason: "另一会话进入单人编辑".to_owned(),
             holder: Some("s-9".to_owned()),
+            level: None,
+            code: None,
         });
         assert!(state.readonly);
         assert_eq!(state.readonly_holder.as_deref(), Some("s-9"));
@@ -764,6 +823,8 @@ mod tests {
         state.apply(CollabEvent::ReadonlyDowngrade {
             reason: "图纸已切换为只读".to_owned(),
             holder: Some("s-1".to_owned()),
+            level: None,
+            code: None,
         });
 
         let status = state.status_json();
@@ -902,6 +963,8 @@ mod tests {
         state.apply(CollabEvent::ReadonlyDowngrade {
             reason: "图纸已切换为只读".to_owned(),
             holder: Some("s-2".to_owned()),
+            level: None,
+            code: None,
         });
         assert!(state.readonly);
 
@@ -909,6 +972,8 @@ mod tests {
         state.apply(CollabEvent::ReadonlyDowngrade {
             reason: "图纸已切换为只读".to_owned(),
             holder: Some("s-1".to_owned()),
+            level: None,
+            code: None,
         });
         assert!(!state.readonly, "the holder goes on writing");
         assert_eq!(state.readonly_holder.as_deref(), Some("s-1"));

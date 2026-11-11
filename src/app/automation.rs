@@ -1683,6 +1683,11 @@ impl OpenCADStudio {
                     // named its failure code reports it, one that did not
                     // keeps the response it always had.
                     if let Some(code) = self.command_line.last_error_code.clone() {
+                        // A write the read-only gate refused also names the
+                        // tier that refused it (`VAL-CROSS-004`).
+                        if let Some(level) = self.collab_refusal_level(&code) {
+                            failure["level"] = json!(level);
+                        }
                         failure["code"] = json!(code);
                     }
                     return failure;

@@ -1176,11 +1176,7 @@ impl OpenCADStudio {
         // A read-only collaboration session refuses writes before anything is
         // parsed, so no command path can slip past it (`VAL-CLI-011`). The
         // refused command names itself with a code the control surface reports.
-        if self.readonly_refuses_command(cmd) {
-            self.command_line.push_error_coded(
-                "COLLAB_READONLY",
-                &format!("协同：当前会话只读，拒绝执行 {cmd}"),
-            );
+        if self.refuse_if_readonly(cmd) {
             return Task::none();
         }
         self.command_line.unconsumed.clear();

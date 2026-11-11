@@ -152,7 +152,21 @@ impl OpenCADStudio {
         defer_history_drop(discarded);
     }
 
-    pub(super) fn push_undo_entry(&mut self, i: usize, mut snapshot: HistorySnapshot) {
+    pub(super) fn push_undo_entry(&mut self, i: usize, snapshot: HistorySnapshot) {
+        // A collaboration session that may not write makes no step on its
+        // drawing. This is where every edit arrives, whatever door it came
+        // in by, so this is where it is turned back: the step is taken back
+        // at once rather than kept (`refuses_step`).
+        let label = snapshot.display_label().into_owned();
+        let mut snapshot = match snapshot {
+            HistorySnapshot::Delta(delta)
+                if changes_the_drawing(&delta) && self.refuses_step(i) =>
+            {
+                self.take_back_refused_step(i, delta, &label);
+                return;
+            }
+            other => other,
+        };
         if let HistorySnapshot::Delta(delta) = &mut snapshot {
             if delta.view.is_none() {
                 delta.view = Some(Box::new(self.tabs[i].scene.camera.borrow().clone()));
@@ -173,6 +187,37 @@ impl OpenCADStudio {
         self.tabs[i].edit_revision = self.tabs[i].edit_revision.wrapping_add(1);
         self.clear_redo_history(i);
         self.trim_history(i);
+    }
+
+    /// Undo a step that was not allowed to be made, without keeping it:
+    /// nothing goes on the undo stack, the redo stack is left alone, and
+    /// nothing is sent to the room. The drawing is put back as the step
+    /// found it, the way an undo of it would.
+    fn take_back_refused_step(&mut self, i: usize, mut d: Box<DeltaSnapshot>, label: &str) {
+        let stated = super::collab::broadcast::collect_changes(&d.entities);
+        let native_graph_changed =
+            !d.parametric_constraints.is_empty() || d.named_parameters.is_some();
+        let layer_panel_changed = d.structure.as_ref().is_some_and(|structure| {
+            matches!(structure, StructureSnapshot::Layers(_)) || structure.is_full()
+        }) || d.active_layer.is_some()
+            || d.entities.iter().any(|(_, before, after)| {
+                before
+                    .as_deref()
+                    .is_some_and(|entity| matches!(entity, EntityType::Viewport(_)))
+                    || after
+                        .as_deref()
+                        .is_some_and(|entity| matches!(entity, EntityType::Viewport(_)))
+            });
+        let had_full = d.structure.as_ref().is_some_and(StructureSnapshot::is_full);
+        let changes = self.apply_delta_state(i, &mut d, true);
+        self.finish_history_apply(
+            i,
+            had_full,
+            layer_panel_changed,
+            native_graph_changed,
+            &changes,
+        );
+        self.report_refused_step(&stated, label);
     }
 
     pub(super) fn push_object_visibility_history(
@@ -1566,6 +1611,12 @@ impl OpenCADStudio {
     pub(super) fn undo_steps_reported(&mut self, steps: usize, report: bool) {
         let i = self.active_tab;
         self.finish_pending_history(i);
+        // Taking a step back changes the drawing as surely as making one,
+        // and reaches here without passing the command gate (a shortcut, a
+        // REST call). A session that may not write does neither.
+        if self.refuses_history_replay(i, "UNDO") {
+            return;
+        }
         let available = self.tabs[i].history.undo_stack.len();
         let steps = steps.min(available);
         if steps == 0 {
@@ -1687,6 +1738,9 @@ impl OpenCADStudio {
     pub(super) fn redo_steps(&mut self, steps: usize) {
         let i = self.active_tab;
         self.finish_pending_history(i);
+        if self.refuses_history_replay(i, "REDO") {
+            return;
+        }
         let available = self.tabs[i].history.redo_stack.len();
         let steps = steps.min(available);
         if steps == 0 {
@@ -1763,6 +1817,18 @@ impl OpenCADStudio {
         self.command_line
             .push_output(crate::tf!("Redo: {last_label}").as_ref());
     }
+}
+
+/// Whether a step changed the drawing itself — its entities, or the tables,
+/// objects and blocks beside them — as opposed to what is only this
+/// editor's: the selection, the current layer, what is isolated or hidden.
+fn changes_the_drawing(delta: &DeltaSnapshot) -> bool {
+    !delta.entities.is_empty()
+        || delta.structure.is_some()
+        || delta.graph.is_some()
+        || delta.named_parameters.is_some()
+        || !delta.parametric_constraints.is_empty()
+        || !delta.reference_designations.is_empty()
 }
 
 /// Members of every group a structure snapshot stores, on either side: a

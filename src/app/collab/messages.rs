@@ -68,9 +68,17 @@ pub(super) fn classify(text: &str) -> Frame {
             revision,
             changes,
         }),
-        ServerMessage::ReadonlyDowngrade { reason, holder, .. } => {
-            Frame::Event(CollabEvent::ReadonlyDowngrade { reason, holder })
-        }
+        ServerMessage::ReadonlyDowngrade {
+            reason,
+            holder,
+            level,
+            code,
+        } => Frame::Event(CollabEvent::ReadonlyDowngrade {
+            reason,
+            holder,
+            level,
+            code,
+        }),
         ServerMessage::Error {
             code,
             message,
@@ -90,6 +98,8 @@ pub(super) fn classify(text: &str) -> Frame {
                     return Frame::Event(CollabEvent::ReadonlyDowngrade {
                         reason: message,
                         holder: Some(holder),
+                        level: Some("state".to_owned()),
+                        code: Some(code),
                     });
                 }
             }

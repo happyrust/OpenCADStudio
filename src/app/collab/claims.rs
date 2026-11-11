@@ -407,6 +407,8 @@ mod tests {
         app.collab.apply(CollabEvent::ReadonlyDowngrade {
             reason: "图纸已切换为只读".to_owned(),
             holder: Some("s-1".to_owned()),
+            level: None,
+            code: None,
         });
         app.refresh_collab_view();
 
@@ -437,6 +439,8 @@ mod tests {
         app.collab.apply(CollabEvent::ReadonlyDowngrade {
             reason: "图纸已切换为只读".to_owned(),
             holder: Some("s-1".to_owned()),
+            level: None,
+            code: None,
         });
         app.refresh_collab_view();
         let drawn = iced::Rectangle {
