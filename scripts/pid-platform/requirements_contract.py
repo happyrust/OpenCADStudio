@@ -2299,6 +2299,283 @@ def validate_collaboration_coverage(documents: dict) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Collaboration: the error-code table, the implementation status and the
+# open questions (added 2026-11-12 with the first revision of the document
+# against the code that exists)
+# ---------------------------------------------------------------------------
+
+# The one place a reason code is defined. The body of the document names
+# codes and never an HTTP number; every name it uses has a row here, and every
+# code the protocol library defines has one too.
+ERROR_TABLE_SECTION = "错误码表"
+ERROR_TABLE_COLUMNS = ["码名", "出现在", "含义", "提交方该怎么做", "接口状态码"]
+ERROR_CODE_NAME_RE = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+")
+# A reason code as the documents write it: upper-case words joined by
+# underscores, in a code span. One word alone (`REQ`, `UUID`) is not a code.
+ERROR_CODE_SPAN_RE = re.compile(r"`(" + ERROR_CODE_NAME_RE.pattern + r")`")
+ERROR_STATUS_CELL_RE = re.compile(r"^(?:—|\d{3}(?:、\d{3})*)$")
+# An HTTP failure status written as a value (`403`, `409`): what the body
+# used to carry instead of a code name. The table states the numbers bare, in
+# its last column, so a code span holding one is always a stray.
+HTTP_FAILURE_SPAN_RE = re.compile(r"`([45]\d\d)`")
+NO_VALUE = "—"
+
+# Where the implementation keeps its code names: the `codes` module of the
+# protocol library, one `pub const NAME: &str = "NAME";` per code.
+PROTOCOL_SOURCE = "crates/ocs_collab/src/protocol.rs"
+PROTOCOL_CODES_MODULE_RE = re.compile(r"pub mod codes \{(?P<body>.*?)\n\}", re.DOTALL)
+PROTOCOL_CODE_RE = re.compile(r'pub const (?P<name>[A-Z0-9_]+): &str = "(?P<value>[^"]*)";')
+
+# What the code does today, one row per entry of the document.
+STATUS_SECTION = "实现现状"
+STATUS_COLUMNS = ["条目", "现状", "已有的", "还缺的"]
+STATUS_VALUES = ["已实现", "部分", "未实现"]
+
+# Rules nobody has decided yet: the question and how things stand, no verdict.
+OPEN_SECTION = "未决事项"
+OPEN_COLUMNS = ["序号", "问题", "现状", "牵涉的条目"]
+OPEN_REFERENCE_RE = re.compile(r"「未决事项」第 (\d+) 条")
+OPEN_TEXT_FLOOR = 6
+
+
+def error_table_codes(text: str, path: str = None):
+    """``(codes, errors)``: the code names the 错误码表 registers, in order."""
+    path = path or AREA_FILE_OF["COLL"]
+    section = section_text(text, ERROR_TABLE_SECTION)
+    if not section.strip():
+        return [], ["%s: missing section '%s'" % (path, ERROR_TABLE_SECTION)]
+    table = _find_table(section, ERROR_TABLE_COLUMNS)
+    if table is None:
+        found = [candidate["header"] for candidate in parse_tables(section)]
+        return [], [
+            "%s: %s has no table with columns %s (found %s)"
+            % (path, ERROR_TABLE_SECTION, " | ".join(ERROR_TABLE_COLUMNS), found)
+        ]
+    codes = []
+    errors = []
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) != len(ERROR_TABLE_COLUMNS):
+            errors.append(
+                "%s:%d: error-code row has %d cells; the header has %d"
+                % (path, line, len(row), len(ERROR_TABLE_COLUMNS))
+            )
+            continue
+        code = _plain_cell(row[0])
+        if not ERROR_CODE_NAME_RE.fullmatch(code):
+            errors.append(
+                "%s:%d: '%s' is not a code name (upper-case words joined by "
+                "underscores)" % (path, line, code)
+            )
+            continue
+        if code in codes:
+            errors.append("%s:%d: code %s is registered twice" % (path, line, code))
+            continue
+        codes.append(code)
+        for position in (1, 2, 3):
+            if _cell(row, position) in ("", NO_VALUE):
+                errors.append(
+                    "%s:%d: code %s leaves column '%s' empty"
+                    % (path, line, code, ERROR_TABLE_COLUMNS[position])
+                )
+        status = _cell(row, 4)
+        if not ERROR_STATUS_CELL_RE.match(status):
+            errors.append(
+                "%s:%d: code %s has 接口状态码 '%s'; expected %s or three-digit "
+                "numbers joined by 、" % (path, line, code, status, NO_VALUE)
+            )
+    return codes, errors
+
+
+def referenced_error_codes(text: str) -> dict:
+    """``{code name: first line number}`` for every code span in the document."""
+    seen = {}
+    for number, line in enumerate(text.splitlines(), start=1):
+        for match in ERROR_CODE_SPAN_RE.finditer(line):
+            seen.setdefault(match.group(1), number)
+    return seen
+
+
+def protocol_error_codes(repo_root) -> list:
+    """The code names the protocol library defines, read from its source."""
+    source = Path(repo_root) / PROTOCOL_SOURCE
+    text = source.read_text(encoding="utf-8")
+    module = PROTOCOL_CODES_MODULE_RE.search(text)
+    if module is None:
+        raise ValueError("%s has no `pub mod codes` block" % PROTOCOL_SOURCE)
+    codes = []
+    for match in PROTOCOL_CODE_RE.finditer(module.group("body")):
+        if match.group("name") != match.group("value"):
+            raise ValueError(
+                "%s: constant %s spells its code '%s'"
+                % (PROTOCOL_SOURCE, match.group("name"), match.group("value"))
+            )
+        codes.append(match.group("value"))
+    return codes
+
+
+def validate_collaboration_error_table(
+    text: str, path: str = None, protocol_codes=None
+) -> list:
+    """The error-code table is the single source of every reason code.
+
+    Three things hold: the table parses and registers each code once with a
+    meaning and what its receiver does; every code the document names
+    anywhere is registered; and, when ``protocol_codes`` is given, so is every
+    code the implementation defines.
+    """
+    path = path or AREA_FILE_OF["COLL"]
+    codes, errors = error_table_codes(text, path)
+    if not codes:
+        return errors or ["%s: %s registers no code" % (path, ERROR_TABLE_SECTION)]
+    registered = set(codes)
+    for code, line in sorted(referenced_error_codes(text).items(), key=lambda item: item[1]):
+        if code not in registered:
+            errors.append(
+                "%s:%d: code %s is named but not registered in %s"
+                % (path, line, code, ERROR_TABLE_SECTION)
+            )
+    for code in protocol_codes or []:
+        if code not in registered:
+            errors.append(
+                "%s: %s defines %s, which %s does not register"
+                % (path, PROTOCOL_SOURCE, code, ERROR_TABLE_SECTION)
+            )
+    for number, line in enumerate(text.splitlines(), start=1):
+        for match in HTTP_FAILURE_SPAN_RE.finditer(line):
+            errors.append(
+                "%s:%d: states the HTTP status %s as a value; name the code "
+                "and leave the number to the last column of %s"
+                % (path, number, match.group(1), ERROR_TABLE_SECTION)
+            )
+    return errors
+
+
+def validate_collaboration_status(text: str, path: str = None) -> list:
+    """实现现状 says where each entry of the document stands, once."""
+    path = path or AREA_FILE_OF["COLL"]
+    section = section_text(text, STATUS_SECTION)
+    if not section.strip():
+        return ["%s: missing section '%s'" % (path, STATUS_SECTION)]
+    table = _find_table(section, STATUS_COLUMNS)
+    if table is None:
+        found = [candidate["header"] for candidate in parse_tables(section)]
+        return [
+            "%s: %s has no table with columns %s (found %s)"
+            % (path, STATUS_SECTION, " | ".join(STATUS_COLUMNS), found)
+        ]
+    errors = []
+    seen = {}
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) != len(STATUS_COLUMNS):
+            errors.append(
+                "%s:%d: status row has %d cells; the header has %d"
+                % (path, line, len(row), len(STATUS_COLUMNS))
+            )
+            continue
+        req_id = _cell(row, 0)
+        if not REQ_ID_RE.fullmatch(req_id):
+            errors.append("%s:%d: '%s' is not a requirement ID" % (path, line, req_id))
+            continue
+        if req_id in seen:
+            errors.append(
+                "%s:%d: %s has two status rows (first on line %d)"
+                % (path, line, req_id, seen[req_id])
+            )
+        seen[req_id] = line
+        status = _cell(row, 1)
+        if status not in STATUS_VALUES:
+            errors.append(
+                "%s:%d: %s has status '%s'; expected one of %s"
+                % (path, line, req_id, status, "/".join(STATUS_VALUES))
+            )
+        for position in (2, 3):
+            if not _cell(row, position):
+                errors.append(
+                    "%s:%d: %s leaves column '%s' empty"
+                    % (path, line, req_id, STATUS_COLUMNS[position])
+                )
+    defined = [entry["id"] for entry in split_entries(text)]
+    for req_id in defined:
+        if req_id not in seen:
+            errors.append("%s: %s has no row in %s" % (path, req_id, STATUS_SECTION))
+    for req_id in sorted(set(seen) - set(defined)):
+        errors.append(
+            "%s:%d: %s lists %s, which this document does not define"
+            % (path, seen[req_id], STATUS_SECTION, req_id)
+        )
+    return errors
+
+
+def validate_collaboration_open_questions(
+    text: str, documents: dict = None, path: str = None
+) -> list:
+    """未决事项 numbers its rows 1..N; each names a question and real entries.
+
+    The body cites rows as 「未决事项」第 n 条, so the numbering is contiguous
+    and no citation may point past the last row. With ``documents``, every
+    requirement ID a row names has to be defined somewhere.
+    """
+    path = path or AREA_FILE_OF["COLL"]
+    section = section_text(text, OPEN_SECTION)
+    if not section.strip():
+        return ["%s: missing section '%s'" % (path, OPEN_SECTION)]
+    table = _find_table(section, OPEN_COLUMNS)
+    if table is None:
+        found = [candidate["header"] for candidate in parse_tables(section)]
+        return [
+            "%s: %s has no table with columns %s (found %s)"
+            % (path, OPEN_SECTION, " | ".join(OPEN_COLUMNS), found)
+        ]
+    errors = []
+    if not table["rows"]:
+        errors.append("%s: %s has no rows" % (path, OPEN_SECTION))
+    defined = set(definitions(documents)) if documents is not None else None
+    for index, row in enumerate(table["rows"]):
+        line = table["line"] + 2 + index
+        if len(row) != len(OPEN_COLUMNS):
+            errors.append(
+                "%s:%d: open-question row has %d cells; the header has %d"
+                % (path, line, len(row), len(OPEN_COLUMNS))
+            )
+            continue
+        if _cell(row, 0) != str(index + 1):
+            errors.append(
+                "%s:%d: open-question row is numbered '%s'; expected %d"
+                % (path, line, _cell(row, 0), index + 1)
+            )
+        for position in (1, 2):
+            if len(_cell(row, position)) < OPEN_TEXT_FLOOR:
+                errors.append(
+                    "%s:%d: open question %d states no '%s'"
+                    % (path, line, index + 1, OPEN_COLUMNS[position])
+                )
+        cited = [match.group(0) for match in REQ_ID_RE.finditer(row[3])]
+        if not cited:
+            errors.append(
+                "%s:%d: open question %d names no requirement entry"
+                % (path, line, index + 1)
+            )
+        if defined is not None:
+            for req_id in cited:
+                if req_id not in defined:
+                    errors.append(
+                        "%s:%d: open question %d names %s, which is not defined"
+                        % (path, line, index + 1, req_id)
+                    )
+    last = len(table["rows"])
+    for number, line in enumerate(text.splitlines(), start=1):
+        for match in OPEN_REFERENCE_RE.finditer(line):
+            if not 1 <= int(match.group(1)) <= last:
+                errors.append(
+                    "%s:%d: cites open question %s; %s has %d rows"
+                    % (path, number, match.group(1), OPEN_SECTION, last)
+                )
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # Import / export matrix (VAL-REQ-011)
 # ---------------------------------------------------------------------------
 

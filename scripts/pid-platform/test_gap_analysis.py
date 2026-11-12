@@ -2,8 +2,10 @@
 
 Covers VAL-DOC-005: five-column capability matrix, at least twenty data
 rows, 处置 restricted to 复用/改造/新增, a real repository path for every
-复用/改造 row, —— for every 新增 row, and the ten confirmed-absent
-capabilities.
+复用/改造 row, —— for every 新增 row, the confirmed-absent capabilities,
+and the capabilities that were absent at the first survey and have an
+implementation now (the collaboration server, its permission chain and its
+audit log: moved out of the absent list on 2026-11-12).
 
 The positive tests read the committed document on disk. The negative
 controls build scratch documents under tmp_path so a green run proves the
@@ -20,6 +22,9 @@ from docs_contract import (
     GAP_CONFIRMED_ABSENT,
     GAP_DISPOSITIONS,
     GAP_EVIDENCE_PREFIXES,
+    GAP_IMPLEMENTED_DISPOSITION,
+    GAP_IMPLEMENTED_SECTION,
+    GAP_IMPLEMENTED_SINCE,
     GAP_MATRIX_SECTION,
     GAP_MIN_ROWS,
     GAP_NO_EVIDENCE,
@@ -55,12 +60,27 @@ def _default_rows():
                 "证据路径": "src/entities/" if i % 2 == 0 else GAP_NO_EVIDENCE,
             }
         )
+    # The capabilities built since the first survey each keep a matrix row
+    # that names code, after the filler rows so indexes 0 and 1 stay filler.
+    for item in GAP_IMPLEMENTED_SINCE:
+        rows.append(
+            {
+                "能力": item,
+                "现状": "现状说明：%s 已有实现，仍有缺口" % item,
+                "目标状态": "目标状态说明：补齐 %s" % item,
+                "处置": GAP_IMPLEMENTED_DISPOSITION,
+                "证据路径": "src/entities/",
+            }
+        )
     return rows
 
 
-def _synthetic_gap(rows=None, absent=None) -> str:
+def _synthetic_gap(rows=None, absent=None, implemented=None) -> str:
     rows = list(rows) if rows is not None else _default_rows()
     absent = list(absent) if absent is not None else list(GAP_CONFIRMED_ABSENT)
+    implemented = (
+        list(implemented) if implemented is not None else list(GAP_IMPLEMENTED_SINCE)
+    )
     lines = [
         "# 现状差距与复用映射",
         "",
@@ -89,6 +109,15 @@ def _synthetic_gap(rows=None, absent=None) -> str:
             "",
             "该能力在仓库中没有任何实现，现有近似实现不足以承担目标职责，"
             "因此处置为 新增，并在需求文档中给出可判定的验收标准与数据契约。",
+            "",
+        ]
+    lines += ["## " + GAP_IMPLEMENTED_SECTION, ""]
+    for item in implemented:
+        lines += [
+            "### " + item,
+            "",
+            "该能力在最初核查时没有实现，此后已经有了实现并有用例守着，"
+            "还缺的部分逐条登记在需求文档里，因此处置为 改造，证据路径见能力矩阵的对应行。",
             "",
         ]
     return "\n".join(lines) + "\n"
@@ -155,9 +184,9 @@ def test_structure_gap_analysis_dispositions_are_restricted_to_the_enum():
     assert counts["复用"] + counts["改造"] >= 10, (
         "expected at least ten 复用/改造 rows, got %s" % counts
     )
-    assert counts["新增"] >= 10, (
-        "expected at least ten 新增 rows (one per confirmed-absent "
-        "capability), got %s" % counts
+    assert counts["新增"] >= len(GAP_CONFIRMED_ABSENT), (
+        "expected at least %d 新增 rows (one per confirmed-absent "
+        "capability), got %s" % (len(GAP_CONFIRMED_ABSENT), counts)
     )
 
 
@@ -207,7 +236,7 @@ def test_structure_gap_analysis_new_rows_carry_no_evidence_path():
     )
 
 
-def test_structure_gap_analysis_confirmed_absent_lists_ten_items():
+def test_structure_gap_analysis_confirmed_absent_lists_exactly_the_contract_items():
     text = _text(GAP)
     body = section_body(text, 2, GAP_ABSENT_SECTION)
     assert body is not None, "missing H2 section " + GAP_ABSENT_SECTION
@@ -223,6 +252,52 @@ def test_structure_gap_analysis_confirmed_absent_lists_ten_items():
     )
     missing = [item for item in GAP_CONFIRMED_ABSENT if item not in subsections]
     assert missing == [], "confirmed-absent items not listed: %s" % missing
+
+
+def test_structure_gap_analysis_absent_and_implemented_sets_are_disjoint():
+    """A capability is confirmed absent or has been built, never both.
+
+    Ten capabilities were absent when the specification was written; the
+    two lists together must still be those ten.
+    """
+    both = sorted(set(GAP_CONFIRMED_ABSENT) & set(GAP_IMPLEMENTED_SINCE))
+    assert both == [], "capabilities in both lists: %s" % both
+    assert len(GAP_CONFIRMED_ABSENT) + len(GAP_IMPLEMENTED_SINCE) == 10, (
+        "the two lists no longer add up to the ten surveyed capabilities: "
+        "%d absent + %d implemented"
+        % (len(GAP_CONFIRMED_ABSENT), len(GAP_IMPLEMENTED_SINCE))
+    )
+
+
+def test_structure_gap_analysis_states_the_capabilities_built_since():
+    """The three built capabilities: own subsection, 改造, a row naming code."""
+    text = _text(GAP)
+    body = section_body(text, 2, GAP_IMPLEMENTED_SECTION)
+    assert body is not None, "missing H2 section " + GAP_IMPLEMENTED_SECTION
+    subsections = dict(sections_at(body, 3))
+    assert sorted(subsections) == sorted(GAP_IMPLEMENTED_SINCE), (
+        "expected exactly %s under %s, found %s"
+        % (GAP_IMPLEMENTED_SINCE, GAP_IMPLEMENTED_SECTION, list(subsections))
+    )
+    absent = dict(sections_at(section_body(text, 2, GAP_ABSENT_SECTION), 3))
+    stale = [item for item in GAP_IMPLEMENTED_SINCE if item in absent]
+    assert stale == [], "still listed as absent: %s" % stale
+    rows, errors = gap_matrix_rows(text)
+    assert errors == [], "matrix parsing failed: " + "; ".join(errors)
+    by_capability = {row["能力"].strip(): row for row in rows}
+    for item in GAP_IMPLEMENTED_SINCE:
+        row = by_capability.get(item)
+        assert row is not None, "no capability-matrix row for " + item
+        assert row["处置"] == GAP_IMPLEMENTED_DISPOSITION, (
+            "%s is %s in the matrix, expected %s"
+            % (item, row["处置"], GAP_IMPLEMENTED_DISPOSITION)
+        )
+        paths = gap_evidence_paths(row["证据路径"])
+        assert paths, "%s names no code" % item
+        for path in paths:
+            assert (REPO_ROOT / path).exists(), (
+                "%s cites a path that does not exist: %s" % (item, path)
+            )
 
 
 def test_structure_gap_analysis_does_not_name_a_nonexistent_mcp_operation():
@@ -373,6 +448,51 @@ def test_structure_gap_validator_rejects_thin_absent_entry():
     errors = validate_gap_analysis(text, None)
     assert any("too thin" in e for e in errors), (
         "thin confirmed-absent entry not reported: %s" % errors
+    )
+
+
+def test_structure_gap_validator_rejects_missing_implemented_section():
+    text = _synthetic_gap().replace("## " + GAP_IMPLEMENTED_SECTION, "## 其他进展")
+    errors = validate_gap_analysis(text, None)
+    assert any(GAP_IMPLEMENTED_SECTION in e for e in errors), (
+        "missing implemented section not reported: %s" % errors
+    )
+
+
+def test_structure_gap_validator_rejects_missing_implemented_item():
+    text = _synthetic_gap(implemented=GAP_IMPLEMENTED_SINCE[:-1])
+    errors = validate_gap_analysis(text, None)
+    assert any(
+        "does not address: " + GAP_IMPLEMENTED_SINCE[-1] in e for e in errors
+    ), "missing implemented item not reported: %s" % errors
+
+
+def test_structure_gap_validator_rejects_an_implemented_capability_still_marked_new():
+    """A built capability whose matrix row still says 新增 contradicts itself."""
+    rows = _default_rows()
+    target = next(row for row in rows if row["能力"] == GAP_IMPLEMENTED_SINCE[0])
+    target["处置"] = "新增"
+    target["证据路径"] = GAP_NO_EVIDENCE
+    errors = validate_gap_analysis(_synthetic_gap(rows=rows), None)
+    assert any("is still 新增" in e for e in errors), (
+        "stale 新增 row not reported: %s" % errors
+    )
+
+
+def test_structure_gap_validator_rejects_an_implemented_capability_listed_as_absent():
+    """Putting a built capability back under the absent section must fail."""
+    absent = list(GAP_CONFIRMED_ABSENT) + [GAP_IMPLEMENTED_SINCE[0]]
+    errors = validate_gap_analysis(_synthetic_gap(absent=absent), None)
+    assert any("which has an implementation" in e for e in errors), (
+        "built capability under the absent section not reported: %s" % errors
+    )
+
+
+def test_structure_gap_validator_rejects_implemented_entry_without_disposition():
+    text = _synthetic_gap().replace("因此处置为 改造，证据路径见能力矩阵的对应行。", "证据路径见能力矩阵的对应行，此处不写结论。")
+    errors = validate_gap_analysis(text, None)
+    assert any("does not state that the capability is 改造" in e for e in errors), (
+        "implemented entry without its disposition not reported: %s" % errors
     )
 
 

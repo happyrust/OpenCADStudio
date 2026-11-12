@@ -38,7 +38,7 @@
 | DRW | `docs/pid-platform/requirements/40-drawing-and-drafting.md` | 图纸与绘图需求，共 30 条 |
 | DATA | `docs/pid-platform/requirements/50-data-and-rule-engine.md` | 数据与设计规则检查需求，共 16 条 |
 | DELV | `docs/pid-platform/requirements/60-deliverables-and-publish.md` | 交付与发布需求，共 11 条 |
-| COLL | `docs/pid-platform/requirements/70-collaboration-and-permissions.md` | 协同与权限需求，共 12 条 |
+| COLL | `docs/pid-platform/requirements/70-collaboration-and-permissions.md` | 协同与权限需求，共 16 条 |
 | IO | `docs/pid-platform/requirements/80-import-export-matrix.md` | 导入导出矩阵需求，共 8 条 |
 | MIG | `docs/pid-platform/requirements/90-migration-and-interop.md` | 迁移与互操作需求，共 7 条 |
 
@@ -159,14 +159,18 @@
 | REQ-COLL-002 | COLL | permissions | PBS 节点的显式 ACL 与继承标记在权限屏节点树维护 |
 | REQ-COLL-003 | COLL | permissions | 单图授权行与 `继承自` 切换在权限屏图纸页签维护 |
 | REQ-COLL-004 | COLL | drawings | 图纸状态在图纸管理屏列表以状态列显示，切换入口在该屏操作菜单 |
-| REQ-COLL-005 | COLL | 无界面 | 状态 × 事件处置由服务端会话仲裁执行，14 屏原型不含协同会话屏 |
-| REQ-COLL-006 | COLL | 无界面 | 位号占用与 300 秒租约在服务端执行，原型不含占用列表屏 |
-| REQ-COLL-007 | COLL | editor | 只读降级在编辑器屏以只读标记与 409 提示呈现 |
-| REQ-COLL-008 | COLL | 无界面 | 属性合并冲突在保存链路上检测，14 屏原型不含冲突列表屏 |
-| REQ-COLL-009 | COLL | 无界面 | 冲突裁决属管理端待办，14 屏原型不含裁决屏 |
-| REQ-COLL-010 | COLL | 无界面 | 会话心跳与超时由客户端与服务端维持，无可视交互面 |
+| REQ-COLL-005 | COLL | editor | 并发处置的结果（被拒绝、让位、只读降级）在编辑器屏的协同区与提示里呈现；仲裁由协同服务器执行 |
+| REQ-COLL-006 | COLL | editor | 位号占用列表与「占用 / 释放」在编辑器屏检视面板下半的协同区呈现，占用标记画在图面上；有效期与到期释放由协同服务器执行 |
+| REQ-COLL-007 | COLL | editor | 只读降级在编辑器屏以只读标记、原因与被拒绝的提示呈现 |
+| REQ-COLL-008 | COLL | editor | 待裁决的冲突条目列在编辑器屏的协同区；冲突在提交链路上由协同服务器检测 |
+| REQ-COLL-009 | COLL | editor | 这一轮裁决经编辑器屏协同区的冲突行与命令提交；裁决列表与裁决对话框留到下一轮 |
+| REQ-COLL-010 | COLL | editor | 连接状态与在线成员名单在编辑器屏的协同区呈现；心跳与超时由客户端与协同服务器维持 |
 | REQ-COLL-011 | COLL | permissions | 角色 × 操作矩阵在权限屏以角色行与操作列勾选呈现 |
 | REQ-COLL-012 | COLL | permissions | 拒绝优先与最小权限在权限屏按格取值判定 |
+| REQ-COLL-013 | COLL | editor | 每一步编辑在编辑器屏作为一次提交发出，排队的个数在协同区呈现 |
+| REQ-COLL-014 | COLL | editor | 断线、重连与排队的步数在编辑器屏的连接状态与协同区呈现 |
+| REQ-COLL-015 | COLL | 无界面 | 图号、服务器库的标识与已应用的修订随图保存，补发在入会时完成，没有专门的屏幕 |
+| REQ-COLL-016 | COLL | 无界面 | 身份核对与登记在入会时由协同服务器执行，监听地址是服务器启动参数，14 屏原型不含登录屏 |
 | REQ-IO-001 | IO | 无界面 | 导入导出能力矩阵属规格层清单，14 屏原型不含导入导出配置屏 |
 | REQ-IO-002 | IO | 无界面 | 图纸导入的格式校验与文件名唯一在服务端执行，入口屏由 `REQ-DRW-004` 承载 |
 | REQ-IO-003 | IO | 无界面 | 四格式导出的格式契约在服务端执行，出口屏由 `REQ-DELV-006` 承载 |
