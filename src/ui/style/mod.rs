@@ -8,6 +8,7 @@ pub mod linetype;
 pub mod fusion_theme;
 pub mod mleaderstyle;
 pub mod mlstyle;
+pub mod pid_fonts;
 pub mod pid_tokens;
 pub mod plotstyle;
 pub mod point_style;

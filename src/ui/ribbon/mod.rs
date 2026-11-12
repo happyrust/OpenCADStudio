@@ -184,11 +184,34 @@ fn panel_measure_key(
     style_ctx: &StyleContext<'_>,
     visibility: Option<&crate::ui::window::block_visibility::RibbonContext>,
 ) -> u64 {
+    panel_measure_key_at(
+        (
+            crate::sys::ui_font::generation(),
+            crate::i18n::language_generation(),
+        ),
+        groups,
+        last_cmd,
+        style_ctx,
+        visibility,
+    )
+}
+
+/// [`panel_measure_key`] for the UI font and the language of `generations`
+/// (`sys::ui_font::generation`, `i18n::language_generation`). The two are
+/// counters of the whole process, so they are given, not read here: a
+/// fingerprint is then a function of its arguments alone.
+fn panel_measure_key_at(
+    generations: (u32, u64),
+    groups: &[&RibbonGroup],
+    last_cmd: &HashMap<&'static str, &'static str>,
+    style_ctx: &StyleContext<'_>,
+    visibility: Option<&crate::ui::window::block_visibility::RibbonContext>,
+) -> u64 {
     let mut hasher = DefaultHasher::new();
-    crate::sys::ui_font::generation().hash(&mut hasher);
+    generations.0.hash(&mut hasher);
     // Panel titles and labels are measured translated, so a language switch
     // has to measure them again.
-    crate::i18n::language_generation().hash(&mut hasher);
+    generations.1.hash(&mut hasher);
     groups.len().hash(&mut hasher);
     for group in groups {
         group.title.hash(&mut hasher);
@@ -2723,7 +2746,9 @@ impl Default for Ribbon {
 #[cfg(test)]
 mod tests {
     use super::widgets::is_active_tool;
-    use super::{panel_measure_key, CollapseMode, Ribbon, RibbonLayout, StyleContext};
+    use super::{
+        panel_measure_key, panel_measure_key_at, CollapseMode, Ribbon, RibbonLayout, StyleContext,
+    };
     use crate::modules::{IconKind, ModuleEvent, RibbonGroup, RibbonItem, ToolDef};
     use rustc_hash::FxHashMap;
 
@@ -2788,7 +2813,45 @@ mod tests {
         }
     }
 
+    /// The fingerprint of a one-tool panel for a UI font and a language
+    /// that do not change under the test. The two counters the fingerprint
+    /// covers are of the whole process, and a test running beside this one
+    /// may switch the language between two readings of them
+    /// (`panel_measure_fingerprint_changes_with_the_language` below does,
+    /// and so does `i18n::tests::switching_language_bumps_the_generation`).
     fn measurement_key(tool_id: &'static str, selected_command: &'static str) -> u64 {
+        measurement_key_at((0, 0), tool_id, selected_command)
+    }
+
+    fn measurement_key_at(
+        generations: (u32, u64),
+        tool_id: &'static str,
+        selected_command: &'static str,
+    ) -> u64 {
+        with_test_panel(tool_id, selected_command, |groups, last_cmd, style_ctx| {
+            panel_measure_key_at(generations, groups, last_cmd, style_ctx, None)
+        })
+    }
+
+    /// The fingerprint as the ribbon takes it: for the UI font and the
+    /// language the process has at the moment.
+    fn measurement_key_now(tool_id: &'static str, selected_command: &'static str) -> u64 {
+        with_test_panel(tool_id, selected_command, |groups, last_cmd, style_ctx| {
+            panel_measure_key(groups, last_cmd, style_ctx, None)
+        })
+    }
+
+    /// A one-tool panel, its last commands and its styles, as the
+    /// fingerprint takes them.
+    fn with_test_panel<R>(
+        tool_id: &'static str,
+        selected_command: &'static str,
+        fingerprint: impl FnOnce(
+            &[&RibbonGroup],
+            &FxHashMap<&'static str, &'static str>,
+            &StyleContext<'_>,
+        ) -> R,
+    ) -> R {
         let groups = [RibbonGroup {
             title: "Test",
             tools: vec![RibbonItem::LargeTool(ToolDef {
@@ -2817,7 +2880,7 @@ mod tests {
         let groups: Vec<_> = groups.iter().collect();
         let mut last_cmd = FxHashMap::default();
         last_cmd.insert("TEST_DROPDOWN", selected_command);
-        panel_measure_key(&groups, &last_cmd, &style_ctx, None)
+        fingerprint(&groups, &last_cmd, &style_ctx)
     }
 
     #[test]
@@ -2833,6 +2896,15 @@ mod tests {
         assert_ne!(
             measurement_key("TEST", "TEST"),
             measurement_key("TEST", "OTHER")
+        );
+        // A new UI font or a new language measures the panel again.
+        assert_ne!(
+            measurement_key_at((0, 0), "TEST", "TEST"),
+            measurement_key_at((1, 0), "TEST", "TEST")
+        );
+        assert_ne!(
+            measurement_key_at((0, 0), "TEST", "TEST"),
+            measurement_key_at((0, 1), "TEST", "TEST")
         );
     }
 
@@ -2879,12 +2951,12 @@ mod tests {
     /// language must not reuse the old measurements.
     #[test]
     fn panel_measure_fingerprint_changes_with_the_language() {
-        let before = measurement_key("TEST", "TEST");
+        let before = measurement_key_now("TEST", "TEST");
         // Reloading English bumps the language generation like any switch,
         // without changing the locale other tests see.
         crate::i18n::set_language(crate::i18n::Language::EnUs)
             .expect("English locale must be available");
-        assert_ne!(before, measurement_key("TEST", "TEST"));
+        assert_ne!(before, measurement_key_now("TEST", "TEST"));
     }
 
     #[test]

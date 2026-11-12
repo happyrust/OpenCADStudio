@@ -6506,6 +6506,10 @@ impl OpenCADStudio {
             }
             Message::WindowResized(w, h) => {
                 if is_layout_window_size(w, h) {
+                    // Inside the P&ID shell the general interface is laid out
+                    // in what the shell leaves of the window, and that area
+                    // is the "window" it measures by.
+                    let (w, h) = self.pid_shell.editor_frame((w, h));
                     self.vp_size = ((w - 440.0).max(200.0), h);
                     self.win_size = (w, h);
                     self.ribbon.set_window_size((w, h));

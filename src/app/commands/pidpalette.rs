@@ -237,6 +237,10 @@ impl CadCommand for PidInsertCommand {
         "PIDINSERT"
     }
 
+    fn tool_line(&self) -> Option<String> {
+        Some(format!("PIDINSERT {}", self.block))
+    }
+
     fn prompt(&self) -> String {
         if self.point.is_some() {
             format!("PIDINSERT {} ({})  指定插入点:", self.label, self.block)

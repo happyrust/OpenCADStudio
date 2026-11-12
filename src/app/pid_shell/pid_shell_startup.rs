@@ -162,13 +162,19 @@ fn the_first_screen_is_the_pid_root_view_and_the_start_page_is_not_drawn() {
     let _one = crate::headless_ui_lock();
     let mut app = first_launch(&GuiConfig::default());
     let frame = draw_window(&mut app);
-    // The root view hands the whole window to the screen that is showing and
-    // reports it under the screen's id.
+    // The root view gives the screen that is showing the shell's content
+    // area — the window less the title bar, the navigation and the status
+    // bar — and reports it under the screen's id.
     assert_eq!(
         frame.shell,
         vec![(
             "PID_SHELL:editor".to_owned(),
-            [0.0, 0.0, f64::from(WINDOW.width), f64::from(WINDOW.height)]
+            [
+                f64::from(chrome::NAV_WIDTH),
+                f64::from(chrome::TITLE_BAR_HEIGHT),
+                f64::from(WINDOW.width - chrome::NAV_WIDTH),
+                f64::from(WINDOW.height - chrome::TITLE_BAR_HEIGHT - chrome::STATUS_BAR_HEIGHT)
+            ]
         )]
     );
     assert!(!frame.start_page, "the general Start page is not drawn");
