@@ -5,6 +5,7 @@
 // viewport events from main.rs and returns `CmdResult` tokens that tell
 // the host what to do next.
 
+pub use crate::entities::transform::{EntityTransform, WorkingPlane};
 use crate::scene::model::hatch_model::HatchModel;
 use crate::scene::model::wire_model::WireModel;
 use crate::scene::Scene;
@@ -39,131 +40,6 @@ pub enum HatchEditOperation {
     RemoveBoundaries(Vec<Handle>),
     DrawOrderFront,
     DrawOrderBack,
-}
-
-// ── Working plane ─────────────────────────────────────────────────────────
-
-/// Full-precision coordinate frame used by interactive commands.
-///
-/// Points delivered to commands remain WCS points. Commands that construct
-/// planar geometry use this frame for their local calculations, then convert
-/// the result back to WCS for storage and preview.
-#[derive(Clone, Copy, Debug)]
-pub struct WorkingPlane {
-    pub origin: DVec3,
-    pub x: DVec3,
-    pub y: DVec3,
-    pub z: DVec3,
-}
-
-impl Default for WorkingPlane {
-    fn default() -> Self {
-        Self {
-            origin: DVec3::ZERO,
-            x: DVec3::X,
-            y: DVec3::Y,
-            z: DVec3::Z,
-        }
-    }
-}
-
-impl WorkingPlane {
-    pub fn is_identity(self) -> bool {
-        self.origin.abs_diff_eq(DVec3::ZERO, 1e-12)
-            && self.x.abs_diff_eq(DVec3::X, 1e-12)
-            && self.y.abs_diff_eq(DVec3::Y, 1e-12)
-            && self.z.abs_diff_eq(DVec3::Z, 1e-12)
-    }
-
-    pub fn new(origin: DVec3, x: DVec3, y: DVec3) -> Self {
-        let x = x.normalize_or(DVec3::X);
-        let raw_y = y.normalize_or(DVec3::Y);
-        let fallback = if x.dot(DVec3::Z).abs() < 0.999 {
-            DVec3::Z
-        } else {
-            DVec3::Y
-        };
-        let z = x.cross(raw_y).normalize_or(x.cross(fallback).normalize());
-        let y = z.cross(x).normalize();
-        Self { origin, x, y, z }
-    }
-
-    pub fn to_world(self, point: DVec3) -> DVec3 {
-        self.origin + self.x * point.x + self.y * point.y + self.z * point.z
-    }
-
-    pub fn to_local(self, point: DVec3) -> DVec3 {
-        let delta = point - self.origin;
-        DVec3::new(delta.dot(self.x), delta.dot(self.y), delta.dot(self.z))
-    }
-
-    pub fn vector_to_world(self, vector: DVec3) -> DVec3 {
-        self.x * vector.x + self.y * vector.y + self.z * vector.z
-    }
-
-    pub fn vector_to_local(self, vector: DVec3) -> DVec3 {
-        DVec3::new(vector.dot(self.x), vector.dot(self.y), vector.dot(self.z))
-    }
-
-    pub fn angle(self, from: DVec3, to: DVec3) -> Option<f64> {
-        let direction = self.vector_to_local(to - from);
-        (direction.x.hypot(direction.y) > f64::EPSILON).then(|| direction.y.atan2(direction.x))
-    }
-
-    pub fn to_world_transform(self) -> document::types::Transform {
-        use document::types::{Matrix4, Transform};
-        Transform::from_matrix(Matrix4 {
-            m: [
-                [self.x.x, self.y.x, self.z.x, self.origin.x],
-                [self.x.y, self.y.y, self.z.y, self.origin.y],
-                [self.x.z, self.y.z, self.z.z, self.origin.z],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-        })
-    }
-
-    pub fn to_local_transform(self) -> document::types::Transform {
-        use document::types::{Matrix4, Transform};
-        Transform::from_matrix(Matrix4 {
-            m: [
-                [self.x.x, self.x.y, self.x.z, -self.origin.dot(self.x)],
-                [self.y.x, self.y.y, self.y.z, -self.origin.dot(self.y)],
-                [self.z.x, self.z.y, self.z.z, -self.origin.dot(self.z)],
-                [0.0, 0.0, 0.0, 1.0],
-            ],
-        })
-    }
-
-    pub fn place_entity(self, mut entity: EntityType) -> EntityType {
-        crate::scene::view::dispatch::apply_transform(
-            &mut entity,
-            &EntityTransform::Affine(self.to_world_transform()),
-        );
-        entity
-    }
-}
-
-#[cfg(test)]
-mod working_plane_tests {
-    use super::*;
-
-    #[test]
-    fn translated_and_rotated_frame_round_trips_points_and_vectors() {
-        let plane = WorkingPlane::new(
-            DVec3::new(125_000.25, -42_000.5, 810.75),
-            DVec3::new(0.0, 1.0, 0.0),
-            DVec3::new(0.0, 0.0, 1.0),
-        );
-        let local = DVec3::new(12.5, -3.25, 7.75);
-        let vector = DVec3::new(-2.0, 5.0, 1.5);
-
-        assert!(plane
-            .to_local(plane.to_world(local))
-            .abs_diff_eq(local, 1e-9));
-        assert!(plane
-            .vector_to_local(plane.vector_to_world(vector))
-            .abs_diff_eq(vector, 1e-12));
-    }
 }
 
 /// Domain object resolved under the cursor for ObjectPick snapping.
@@ -231,32 +107,6 @@ pub enum AreaPreviewSource {
 pub struct AreaPreviewRegion {
     pub source: AreaPreviewSource,
     pub subtract: bool,
-}
-
-// ── Transform ─────────────────────────────────────────────────────────────
-
-/// A geometric transformation applied to existing entities.
-#[derive(Clone)]
-pub enum EntityTransform {
-    /// Move every point by the given world-space delta.
-    Translate(DVec3),
-    /// Rotate around the axis through `center`.
-    Rotate {
-        center: DVec3,
-        axis: DVec3,
-        angle_rad: f64,
-    },
-    /// Uniform scale from `center` by `factor`.
-    Scale { center: DVec3, factor: f64 },
-    /// Mirror through the plane containing `p1`→`p2` and the working normal.
-    Mirror {
-        p1: DVec3,
-        p2: DVec3,
-        working_normal: DVec3,
-    },
-    /// General affine transform. Used when a complete UCS basis must be baked
-    /// into block-local geometry instead of stored as drawing UCS state.
-    Affine(document::types::Transform),
 }
 
 // ── Tangent object ─────────────────────────────────────────────────────────
@@ -982,7 +832,7 @@ impl<'a> PromptAnswers<'a> {
 /// A typed option matches its full keyword or label, or the label's
 /// capitalised letters (`LA` in `LAyers`, `ST` in `textSTyles`) followed by
 /// more of the same word.
-fn keyword_matches(label: &str, keyword: &str, typed: &str) -> bool {
+pub(crate) fn keyword_matches(label: &str, keyword: &str, typed: &str) -> bool {
     let typed = typed.trim().to_uppercase();
     if typed.is_empty() {
         return false;
@@ -1905,12 +1755,6 @@ pub enum CmdResult {
         /// keeps the parameter's own default.
         options: crate::modules::block_editor::single_parameter::Options,
     },
-    /// An action type was chosen that has no geometry action of its own:
-    /// continue with Lookup parameter selection.
-    StartBlockLookupAction {
-        document: u64,
-        definition: Handle,
-    },
     /// The chosen Lookup parameter's property table should open for editing.
     OpenBlockLookupTable {
         document: u64,
@@ -1934,7 +1778,7 @@ pub enum CmdResult {
         options: crate::modules::block_editor::orientation_parameter::Options,
     },
     /// Place a native two-point parameter: Linear and Polar take a base, end and
-    /// label pick; XY takes its grip count and labels itself at the endpoint.
+    /// label pick; Linear and XY take their grip count before they are placed.
     PlaceBlockDistanceParameter {
         document_id: u64,
         definition: Handle,
@@ -1942,7 +1786,7 @@ pub enum CmdResult {
         base: DVec3,
         end: DVec3,
         label: DVec3,
-        /// XY parameter grip count chosen at authoring time, when asked.
+        /// Grips chosen at authoring time for the kinds that ask, when asked.
         grips: Option<usize>,
         /// Answers given to the base-point prompt's options; a missing answer
         /// keeps the parameter's own default.
@@ -2163,6 +2007,8 @@ pub enum CmdResult {
         kind: document::entities::UnderlayType,
         path: String,
         pages: Vec<(String, EntityType)>,
+        /// Whether eligible pages may replace the authored manual transform.
+        auto_place: bool,
     },
     /// Import the vector content of a PDF underlay (PDFIMPORT); ends the command.
     PdfImport(crate::modules::insert::pdf_import::PdfImportRequest),
@@ -2508,9 +2354,26 @@ pub enum CmdResult {
         freeze: Vec<String>,
         thaw: Vec<String>,
     },
+    /// Give a layer a per-viewport property override; command stays active.
+    VpLayerOverride {
+        vp_handle: Handle,
+        layer: String,
+        channel: VpOverrideChannel,
+        value: String,
+    },
     /// Paste clipboard entities translated so their centroid lands at `base_pt`; end command.
     PasteClipboard {
         base_pt: DVec3,
+    },
+    /// PASTESPEC's Link format: place the cells a copied range was copied
+    /// from as a table linked to them, as DATALINK places one; end command.
+    PlaceLinkedTable(crate::sys::clipboard_link::SourceLink),
+    /// PASTESPEC's Image formats: place the picture read off the system
+    /// clipboard inside the drawing as IMAGEEMBED places one (`embedded`),
+    /// or as a file the drawing points at, as IMAGE does; end command.
+    PlacePastedImage {
+        image: crate::io::ole_embed::EmbeddedImage,
+        embedded: bool,
     },
     /// Set the view's twist about its line of sight (radians,
     /// counter-clockwise); the command stays active.
@@ -3055,6 +2918,35 @@ impl CmdOption {
     }
 }
 
+/// What a step shows: its prompt and option labels. Typed text that changed
+/// it was taken by the step, even with no result to apply.
+pub fn step_signature(command: &dyn CadCommand) -> (String, Vec<String>) {
+    let labels = command.options().into_iter().map(|o| o.label).collect();
+    (command.prompt(), labels)
+}
+
+/// The refusal a point prompt prints: the command's own message, else
+/// "Point or option keyword required." where it offers keywords and
+/// "Invalid point." where it does not.
+pub fn point_rejection_line(command: &dyn CadCommand) -> String {
+    command.point_rejection().unwrap_or_else(|| {
+        if command.options().is_empty() {
+            crate::t!("Invalid point.").into_owned()
+        } else {
+            crate::t!("Point or option keyword required.").into_owned()
+        }
+    })
+}
+
+/// The per-viewport layer override channel VPLAYER writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VpOverrideChannel {
+    Color,
+    Linetype,
+    Lineweight,
+    Alpha,
+}
+
 /// What kind of input the command's current step expects from the command line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum InputKind {
@@ -3414,6 +3306,14 @@ pub trait CadCommand: Send {
         CmdResult::Cancel
     }
 
+    /// Called when an interactive control event occurs inside an open modal dialog.
+    fn on_dialog_action(
+        &mut self,
+        _event: ocs_plugin_api::dialog::DialogEvent,
+    ) -> ocs_plugin_api::dialog::DialogActionResponse {
+        ocs_plugin_api::dialog::DialogActionResponse::None
+    }
+
     /// Called when the user clicks and `needs_entity_pick()` is true.
     /// `handle` is the nearest wire's entity handle (Handle::NULL if nothing found).
     fn on_entity_pick(&mut self, _handle: Handle, _pt: DVec3) -> CmdResult {
@@ -3622,6 +3522,12 @@ pub trait CadCommand: Send {
         Vec::new()
     }
 
+    /// True when `on_preview_wires` already supplies the transformed geometry
+    /// for `preview_entities`, so the host can skip re-tessellating them.
+    fn preview_wires_replace_entities(&self) -> bool {
+        false
+    }
+
     /// Source entities replaced by the current live preview. The host removes
     /// these from the resident render until the command commits or cancels.
     /// Commands such as COPY keep their sources visible and use the default.
@@ -3663,6 +3569,14 @@ pub trait CadCommand: Send {
     /// dynamic-input distance/angle entirely. Default `false`.
     fn point_step_accepts_keywords(&self) -> bool {
         false
+    }
+
+    /// The line this point prompt prints for input it cannot use: text it
+    /// cannot read, or a typed object snap that found nothing there (measured:
+    /// both print the prompt's own message). `None` is the plain point
+    /// prompt's message, see [`point_rejection_line`].
+    fn point_rejection(&self) -> Option<String> {
+        None
     }
 
     /// Current drawing-persisted SKETCH settings.
@@ -3920,6 +3834,18 @@ pub trait CadCommand: Send {
     /// Settings edited in the Hatch panel.
     fn set_hatch_settings(&mut self, _settings: crate::modules::draw::draw::hatch::HatchSettings) {}
 
+    /// HATCHEDIT's panel edit: the hatch, the settings the panel opened
+    /// with, and the settings it shows now. Default `None`.
+    fn hatch_panel_edit(
+        &self,
+    ) -> Option<(
+        Handle,
+        crate::modules::draw::draw::hatch::HatchSettings,
+        crate::modules::draw::draw::hatch::HatchSettings,
+    )> {
+        None
+    }
+
     /// The step draws a window that selects objects rather than placing
     /// geometry: no coordinate boxes at the cursor. Default `false`.
     fn selects_by_window(&self) -> bool {
@@ -3964,6 +3890,26 @@ pub trait CadCommand: Send {
     /// the command now owns are placed through the same base-point convention
     /// as the render path. Default: no-op (no base point).
     fn attreq_set_block_base(&mut self, _base: document::types::Vector3) {}
+
+    /// The host hands a parked block placement the drawing before the
+    /// attribute questions, so it can measure the block. Default: no-op.
+    fn attreq_set_document(&mut self, _document: &document::Document) {}
+
+    /// Cancel on the attribute form keeps the defaults instead of dropping
+    /// the placement. Default: false.
+    fn attreq_cancel_keeps_defaults(&self) -> bool {
+        false
+    }
+
+    /// The host answers this placement's attribute questions from a form, so
+    /// the verify pass is not asked a second time. Default: no-op.
+    fn attreq_from_dialog(&mut self) {}
+
+    /// A section line printed once above the command's current prompt, such as
+    /// the heading of a block placement's attribute pass. Default: none.
+    fn prompt_heading(&self) -> Option<String> {
+        None
+    }
 
     /// After the host commits an ATTREQ insert: keep the command running
     /// (repeated placement) instead of ending it.
@@ -4092,6 +4038,16 @@ pub trait CadCommand: Send {
         std::collections::HashMap<String, ocs_plugin_api::dialog::DialogValue>,
     )> {
         Vec::new()
+    }
+
+    /// For out-of-process plugin commands, the owning plugin's manifest ID.
+    fn owner_plugin_id(&self) -> Option<&str> {
+        None
+    }
+
+    /// For out-of-process plugin commands, the interactive command ID in the runner.
+    fn plugin_command_id(&self) -> Option<u64> {
+        None
     }
 }
 

@@ -769,6 +769,7 @@ mod tests {
             false,
             false,
             None,
+            None,
         )
         .expect_err("duplicated tag must block the real save path");
         assert_eq!(
@@ -820,6 +821,7 @@ mod tests {
             None,
             false,
             false,
+            None,
             None,
         )
         .expect("cleared conflict saves through the same wrapper");

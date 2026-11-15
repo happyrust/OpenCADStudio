@@ -4,7 +4,6 @@ use document::entities::attribute_definition::{
 use document::entities::{AttributeDefinition, AttributeEntity};
 use document::types::Vector3;
 
-use crate::command::EntityTransform;
 use crate::entities::common::{
     edit_angle_prop as edit_angle, edit_prop as edit, parse_f64, ro_prop as ro, square_grip,
 };
@@ -13,6 +12,7 @@ use crate::entities::text_support::{
     MTextRenderOpts, MTextVAnchor, ResolvedTextStyle,
 };
 use crate::entities::traits::{Grippable, PropertyEditable, RenderConvertible, Transformable};
+use crate::entities::transform::EntityTransform;
 use crate::scene::convert::acad_to_render::{GlyphRun, RenderEntity, RenderObject, TextStroke};
 use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::model::wire_model::SnapHint;
@@ -1010,6 +1010,9 @@ impl Transformable for AttributeDefinition {
                 p1,
                 p2,
             );
+            let line_angle = (p2.y - p1.y).atan2(p2.x - p1.x);
+            entity.rotation = 2.0 * line_angle - entity.rotation;
+            entity.oblique_angle = -entity.oblique_angle;
         });
     }
 }
@@ -1094,28 +1097,17 @@ impl Grippable for AttributeEntity {
     }
 
     fn apply_grip(&mut self, grip_id: usize, apply: GripApply) {
-        if self.lock_position || self.flags.locked_position {
+        if grip_id != 0 || self.lock_position || self.flags.locked_position {
             return;
         }
-        if grip_id == 0 {
-            match apply {
-                GripApply::Translate(d) => {
-                    self.insertion_point.x += d.x;
-                    self.insertion_point.y += d.y;
-                    self.insertion_point.z += d.z;
-                    self.alignment_point.x += d.x;
-                    self.alignment_point.y += d.y;
-                    self.alignment_point.z += d.z;
-                }
-                GripApply::Absolute(p) => {
-                    self.insertion_point.x = p.x;
-                    self.insertion_point.y = p.y;
-                    self.insertion_point.z = p.z;
-                    self.alignment_point.x = p.x;
-                    self.alignment_point.y = p.y;
-                    self.alignment_point.z = p.z;
-                }
-            }
+        let delta = match apply {
+            GripApply::Translate(delta) => delta,
+            GripApply::Absolute(target) => target - dv(self.insertion_point),
+        };
+        shift(&mut self.insertion_point, delta);
+        shift(&mut self.alignment_point, delta);
+        if let Some(mtext) = self.embedded_mtext.as_mut() {
+            shift(&mut mtext.insertion_point, delta);
         }
     }
 }
@@ -1333,6 +1325,9 @@ impl Transformable for AttributeEntity {
                 p1,
                 p2,
             );
+            let line_angle = (p2.y - p1.y).atan2(p2.x - p1.x);
+            entity.rotation = 2.0 * line_angle - entity.rotation;
+            entity.oblique_angle = -entity.oblique_angle;
         });
     }
 }

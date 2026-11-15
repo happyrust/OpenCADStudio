@@ -13,6 +13,7 @@ use crate::app::settings::{CursorType, IsoPlane};
 use crate::app::Message;
 use crate::scene::model::object::GripShape;
 use crate::scene::SelectionState;
+use crate::ui::style::text::snap_point;
 
 use crate::snap::SnapType;
 use std::sync::Arc;
@@ -276,6 +277,70 @@ pub(crate) fn pick_box_aperture_px(value: i32) -> f32 {
         DEFAULT_PICK_APERTURE + (50.0 - DEFAULT_PICK_APERTURE) * scale
     };
     aperture.max(1.0)
+}
+
+/// What a crosshair paints around the pointer, in canvas pixels.
+pub(super) struct CrosshairMarks {
+    /// One entry per axis: the outward and the inward segment.
+    pub arms: Vec<[(Point, Point); 2]>,
+    pub pickbox: Option<iced::Rectangle>,
+    pub dot: Option<Point>,
+}
+
+/// The crosshair's marks, all anchored on the pointer it belongs to.
+///
+/// The pickbox is centred on the pointer because that centre is the click
+/// point; the arms begin on the box edge (or its corner when the cursor is
+/// turned) so they never enter the box the hit test uses.
+pub(super) fn crosshair_marks(
+    cp: Point,
+    sq: f32,
+    arm: f32,
+    base_angles: [f64; 2],
+    snap_deg: f32,
+    point_mode: bool,
+    pick_pending: bool,
+    hide_arms: bool,
+) -> CrosshairMarks {
+    let mut arms = Vec::new();
+    if !pick_pending && !hide_arms {
+        for angle in base_angles {
+            let rad = (angle + snap_deg as f64).to_radians();
+            let dir = Point::new(rad.cos() as f32, -rad.sin() as f32);
+            let gap = if point_mode {
+                9.0
+            } else if sq > 0.0 {
+                sq / dir.x.abs().max(dir.y.abs()).max(1e-6)
+            } else {
+                0.0
+            };
+            arms.push([
+                (
+                    Point::new(cp.x + dir.x * gap, cp.y + dir.y * gap),
+                    Point::new(cp.x + dir.x * arm, cp.y + dir.y * arm),
+                ),
+                (
+                    Point::new(cp.x - dir.x * gap, cp.y - dir.y * gap),
+                    Point::new(cp.x - dir.x * arm, cp.y - dir.y * arm),
+                ),
+            ]);
+        }
+    }
+    let (pickbox, dot) = if point_mode {
+        (None, Some(cp))
+    } else {
+        // A pending pick keeps the square visible even when the operator's
+        // PICKBOX setting would hide it.
+        let half = if pick_pending { sq.max(8.0) } else { sq };
+        let rect = (half > 0.0).then(|| iced::Rectangle {
+            x: cp.x - half,
+            y: cp.y - half,
+            width: half * 2.0,
+            height: half * 2.0,
+        });
+        (rect, None)
+    };
+    CrosshairMarks { arms, pickbox, dot }
 }
 
 /// Which interactive navigation tool is armed. Each one owns the whole
@@ -2120,7 +2185,7 @@ pub fn draw_constraint_glyph_layer(
                 };
                 frame.fill_text(canvas::Text {
                     content: label.to_string(),
-                    position: glyph_center,
+                    position: snap_point(glyph_center),
                     color,
                     size: iced::Pixels(GLYPH_SIZE),
                     align_x: iced::alignment::Horizontal::Center.into(),
@@ -3159,40 +3224,34 @@ impl canvas::Program<Message> for SelectionCanvas {
                     // The arms stay only for the normal (non-pending) cursor: a
                     // waiting pick shows the box alone, regardless of the UCS
                     // rotation, so the square is unmistakable.
-                    if !pick_pending && !self.crosshair.hide_arms {
-                        for angle in base_angles {
-                            let rad = (angle + self.crosshair.snap_angle_deg as f64).to_radians();
-                            let dir = Point::new(rad.cos() as f32, -rad.sin() as f32);
-                            let gap = if point_mode {
-                                9.0
-                            } else if sq > 0.0 {
-                                sq / dir.x.abs().max(dir.y.abs()).max(1e-6)
-                            } else {
-                                0.0
-                            };
-                            let arms = canvas::Path::new(|path| {
-                                path.move_to(Point::new(cp.x + dir.x * gap, cp.y + dir.y * gap));
-                                path.line_to(Point::new(cp.x + dir.x * arm, cp.y + dir.y * arm));
-                                path.move_to(Point::new(cp.x - dir.x * gap, cp.y - dir.y * gap));
-                                path.line_to(Point::new(cp.x - dir.x * arm, cp.y - dir.y * arm));
-                            });
-                            frame.stroke(&arms, stroke);
-                        }
+                    let marks = crosshair_marks(
+                        cp,
+                        sq,
+                        arm,
+                        base_angles,
+                        self.crosshair.snap_angle_deg,
+                        point_mode,
+                        pick_pending,
+                        self.crosshair.hide_arms,
+                    );
+                    for [outward, inward] in &marks.arms {
+                        let arms = canvas::Path::new(|path| {
+                            path.move_to(outward.0);
+                            path.line_to(outward.1);
+                            path.move_to(inward.0);
+                            path.line_to(inward.1);
+                        });
+                        frame.stroke(&arms, stroke);
                     }
-                    if point_mode {
-                        let dot = canvas::Path::circle(cp, 1.75);
-                        frame.fill(&dot, color);
-                    } else {
-                        // A pending pick keeps the square visible even when the
-                        // user's PICKBOX setting would hide it.
-                        let sq = if pick_pending { sq.max(8.0) } else { sq };
-                        if sq > 0.0 {
-                            let square = canvas::Path::rectangle(
-                                Point::new(cp.x - sq, cp.y - sq),
-                                Size::new(sq * 2.0, sq * 2.0),
-                            );
-                            frame.stroke(&square, stroke);
-                        }
+                    if let Some(dot) = marks.dot {
+                        frame.fill(&canvas::Path::circle(dot, 1.75), color);
+                    }
+                    if let Some(box_rect) = marks.pickbox {
+                        let square = canvas::Path::rectangle(
+                            Point::new(box_rect.x, box_rect.y),
+                            Size::new(box_rect.width, box_rect.height),
+                        );
+                        frame.stroke(&square, stroke);
                     }
 
                     // Locked-layer badge: a small padlock beside the crosshair when
@@ -3244,7 +3303,7 @@ impl canvas::Program<Message> for SelectionCanvas {
                         } else {
                             frame.fill_text(canvas::Text {
                                 content: label.clone(),
-                                position: center,
+                                position: snap_point(center),
                                 color: Color::WHITE,
                                 size: iced::Pixels(11.0),
                                 align_x: iced::alignment::Horizontal::Center.into(),
@@ -3639,7 +3698,10 @@ impl canvas::Program<Message> for SelectionCanvas {
                     );
                     frame.fill_text(canvas::Text {
                         content: label.to_string(),
-                        position: Point::new(left + width * 0.5, top + height * 0.5),
+                        position: snap_point(Point::new(
+                            left + width * 0.5,
+                            top + height * 0.5,
+                        )),
                         color: theme.palette().background.strong.text,
                         size: iced::Pixels(12.0),
                         align_x: iced::alignment::Horizontal::Center.into(),
@@ -4965,7 +5027,10 @@ fn draw_ucs_icon(
                 content: ax.label.to_string(),
                 // Offset beyond tip along the axis direction; subtract ~half glyph
                 // size to visually center the single character on the axis line.
-                position: Point::new(tip.x + nx * 8.0 - 3.5, tip.y + ny * 8.0 - 5.0),
+                position: snap_point(Point::new(
+                    tip.x + nx * 8.0 - 3.5,
+                    tip.y + ny * 8.0 - 5.0,
+                )),
                 color: col,
                 size: iced::Pixels(10.0),
                 shaping: iced::advanced::text::Shaping::Advanced,
@@ -4995,10 +5060,13 @@ fn draw_ucs_icon(
     frame.fill(&circle, dot_color);
 
     // Draggable grips when selected: a square at the origin and at the X / Y
-    // tips. Warm grip colour with a light border, like an entity grip.
+    // tips, and at the Z tip once it stands clear of the origin (a plan view
+    // shows Z end-on). Warm grip colour with a light border, like an entity grip.
     if selected {
         let x_tip = Point::new(icon_origin.x + geom[0].dx, icon_origin.y + geom[0].dy);
         let y_tip = Point::new(icon_origin.x + geom[1].dx, icon_origin.y + geom[1].dy);
+        let z_tip = Point::new(icon_origin.x + geom[2].dx, icon_origin.y + geom[2].dy);
+        let z_clear = geom[2].dx.hypot(geom[2].dy) > UCS_GRIP_BOX * 2.0;
         let fill = Color {
             r: 0.20,
             g: 0.85,
@@ -5011,7 +5079,8 @@ fn draw_ucs_icon(
             b: 1.0,
             a: 0.9,
         };
-        for c in [icon_origin, x_tip, y_tip] {
+        let grips = [Some(icon_origin), Some(x_tip), Some(y_tip), z_clear.then_some(z_tip)];
+        for c in grips.into_iter().flatten() {
             let h = UCS_GRIP_BOX / 2.0;
             let sq = canvas::Path::rectangle(
                 Point::new(c.x - h, c.y - h),
@@ -5185,10 +5254,10 @@ impl DynInputCanvas {
         );
         frame.fill_text(canvas::Text {
             content,
-            position: Point {
+            position: snap_point(Point {
                 x: x + DYN_PAD,
                 y: y + DYN_PAD,
-            },
+            }),
             color: text,
             size: iced::Pixels(DYN_FONT),
             // Force Advanced shaping: the default `Auto` uses Basic shaping for
@@ -5223,13 +5292,19 @@ impl DynInputCanvas {
         }
     }
 
+    /// The prompt pill's width, measured with the font it is drawn in.
+    fn prompt_width(&self) -> f32 {
+        let font = iced::Font::default();
+        crate::ui::ribbon::text_width(&self.prompt, DYN_FONT, font) + DYN_PAD * 2.0
+    }
+
     /// Prompt pill at `pos`.
     fn draw_prompt(&self, frame: &mut canvas::Frame, pos: Point, theme: &Theme) {
         if self.prompt.is_empty() {
             return;
         }
         let palette = theme.palette();
-        let pw = (self.prompt.len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0;
+        let pw = self.prompt_width();
         let rect = canvas::Path::rectangle(
             pos,
             Size {
@@ -5246,10 +5321,10 @@ impl DynInputCanvas {
         );
         frame.fill_text(canvas::Text {
             content: self.prompt.clone(),
-            position: Point {
+            position: snap_point(Point {
                 x: pos.x + DYN_PAD,
                 y: pos.y + DYN_PAD,
-            },
+            }),
             color: palette.background.strong.text,
             size: iced::Pixels(DYN_FONT),
             shaping: iced::advanced::text::Shaping::Advanced,
@@ -5284,10 +5359,10 @@ impl DynInputCanvas {
 
         frame.fill_text(canvas::Text {
             content: text.to_string(),
-            position: Point {
+            position: snap_point(Point {
                 x: pos.x + DYN_PAD,
                 y: pos.y + DYN_PAD,
-            },
+            }),
             color: palette.background.strong.text,
             size: iced::Pixels(DYN_FONT),
             shaping: iced::advanced::text::Shaping::Advanced,
@@ -5571,7 +5646,7 @@ impl DynInputCanvas {
         // value boxes a further gap below the prompt.
         let pad = DYN_OFFSET_X;
         let has_prompt = !self.prompt.is_empty();
-        let prompt_w = (self.prompt.len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0;
+        let prompt_w = self.prompt_width();
         let block_w = total_w.max(if has_prompt { prompt_w } else { 0.0 });
         let mut bx = self.cursor_screen.x + pad;
         let mut py = self.cursor_screen.y + pad;
@@ -5615,10 +5690,10 @@ impl DynInputCanvas {
             );
             frame.fill_text(canvas::Text {
                 content: texts[i].clone(),
-                position: Point {
+                position: snap_point(Point {
                     x: x + DYN_PAD,
                     y: by + DYN_PAD,
-                },
+                }),
                 color: text,
                 size: iced::Pixels(DYN_FONT),
                 shaping: iced::advanced::text::Shaping::Advanced,
@@ -5665,7 +5740,7 @@ impl canvas::Program<Message> for DynInputCanvas {
         // No boxes — just the prompt pill near the cursor.
         if self.boxes.is_empty() {
             if !self.prompt.is_empty() {
-                let pw = (self.prompt.len() as f32 * DYN_CHAR_W) + DYN_PAD * 2.0;
+                let pw = self.prompt_width();
                 let mut px = self.cursor_screen.x + DYN_OFFSET_X;
                 let mut py = self.cursor_screen.y + DYN_OFFSET_X;
                 if px + pw > bounds.width {
@@ -7307,5 +7382,79 @@ mod divider_cursor_tests {
             bounds,
             Some(off)
         ));
+    }
+}
+
+#[cfg(test)]
+mod crosshair_cursor_tests {
+    use super::crosshair_marks;
+    use iced::Point;
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 0.01
+    }
+
+    #[test]
+    fn the_pickbox_is_centred_on_the_pointer() {
+        let cp = Point::new(400.0, 300.0);
+        let marks = crosshair_marks(cp, 7.5, 60.0, [0.0, 90.0], 0.0, false, false, false);
+        let box_rect = marks.pickbox.expect("the box is drawn");
+        assert!(close(box_rect.x + box_rect.width / 2.0, cp.x));
+        assert!(close(box_rect.y + box_rect.height / 2.0, cp.y));
+        assert!(close(box_rect.width, 15.0));
+        assert!(close(box_rect.height, 15.0));
+    }
+
+    #[test]
+    fn the_arms_start_on_the_box_edge() {
+        let cp = Point::new(400.0, 300.0);
+        let marks = crosshair_marks(cp, 7.5, 60.0, [0.0, 90.0], 0.0, false, false, false);
+        let [(plus_start, plus_end), (minus_start, minus_end)] = marks.arms[0];
+        assert!(close(plus_start.x, cp.x + 7.5) && close(plus_start.y, cp.y));
+        assert!(close(plus_end.x, cp.x + 60.0) && close(plus_end.y, cp.y));
+        assert!(close(minus_start.x, cp.x - 7.5) && close(minus_start.y, cp.y));
+        assert!(close(minus_end.x, cp.x - 60.0) && close(minus_end.y, cp.y));
+        let [(up_start, up_end), (down_start, down_end)] = marks.arms[1];
+        assert!(close(up_start.y, cp.y - 7.5) && close(up_start.x, cp.x));
+        assert!(close(up_end.y, cp.y - 60.0) && close(up_end.x, cp.x));
+        assert!(close(down_start.y, cp.y + 7.5) && close(down_start.x, cp.x));
+        assert!(close(down_end.y, cp.y + 60.0) && close(down_end.x, cp.x));
+    }
+
+    #[test]
+    fn a_turned_crosshair_meets_the_box_corners() {
+        let cp = Point::new(400.0, 300.0);
+        let marks = crosshair_marks(cp, 7.5, 60.0, [0.0, 90.0], 45.0, false, false, false);
+        let [(start, _), _] = marks.arms[0];
+        assert!(close(start.x, cp.x + 7.5), "start x {}", start.x);
+        assert!(close(start.y, cp.y - 7.5), "start y {}", start.y);
+    }
+
+    #[test]
+    fn point_mode_draws_a_dot_at_the_pointer_and_keeps_the_arms_clear() {
+        let cp = Point::new(400.0, 300.0);
+        let marks = crosshair_marks(cp, 0.0, 60.0, [0.0, 90.0], 0.0, true, false, false);
+        assert!(marks.pickbox.is_none(), "a point has no box");
+        assert_eq!(marks.dot, Some(cp));
+        let [(start, _), _] = marks.arms[0];
+        assert!(close(start.x, cp.x + 9.0));
+    }
+
+    #[test]
+    fn a_pending_pick_keeps_a_visible_box_and_no_arms() {
+        let cp = Point::new(400.0, 300.0);
+        let marks = crosshair_marks(cp, 0.0, 60.0, [0.0, 90.0], 0.0, false, true, false);
+        let box_rect = marks.pickbox.expect("a waiting pick keeps the box");
+        assert!(close(box_rect.width, 16.0));
+        assert!(close(box_rect.x + box_rect.width / 2.0, cp.x));
+        assert!(marks.arms.is_empty(), "a waiting pick shows no arms");
+    }
+
+    #[test]
+    fn hidden_arms_leave_only_the_box() {
+        let cp = Point::new(400.0, 300.0);
+        let marks = crosshair_marks(cp, 7.5, 60.0, [0.0, 90.0], 0.0, false, false, true);
+        assert!(marks.arms.is_empty());
+        assert!(marks.pickbox.is_some());
     }
 }

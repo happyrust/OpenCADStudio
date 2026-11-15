@@ -57,6 +57,16 @@ pub struct PdfPlotOptions {
     /// Vector resolution in DPI: path points snap to that grid on paper,
     /// trading precision for size. `None` keeps full precision.
     pub vector_dpi: Option<u32>,
+    /// SVG: emit positioned glyph geometry instead of visible `<text>` runs.
+    /// PDF has its own text pipeline and does not read this flag.
+    pub text_as_outlines: bool,
+    /// SVG: keep stroke widths constant under subsequent SVG transforms.
+    /// CAD plot scale is unchanged and PDF ignores this flag.
+    pub non_scaling_stroke: bool,
+    /// SVG: tag every drawn item with its drawing layer as a `data-layer`
+    /// group, so SVG consumers can toggle layers dynamically in CSS. PDF
+    /// ignores this flag.
+    pub layer_attributes: bool,
 }
 
 /// End indexes of the first paper/model render group in each flat input list.
@@ -82,6 +92,10 @@ pub struct PlotContent {
     /// Drawing layer of each plotted entity, keyed by the handle its wire or
     /// hatch name carries; the PDF groups output into one layer per entry.
     pub entity_layers: std::collections::HashMap<document::Handle, String>,
+    /// Named plot style of each plotted entity (ByLayer and ByBlock already
+    /// resolved), keyed like `entity_layers`; a named (STB) table plots each
+    /// entity with this style.
+    pub entity_plot_styles: std::collections::HashMap<document::Handle, String>,
 }
 
 /// Owned geometry and settings for one page in a (multi-page) plot job.
@@ -99,6 +113,9 @@ pub struct PdfPageInput {
     pub clip: Option<(f32, f32, f32, f32)>,
     pub options: PdfPlotOptions,
     pub plot_style: Option<PlotStyleTable>,
+    /// Explicit model-space GeoPDF registration. Plot-file export may consume
+    /// this; preview and ordinary printing always ignore it.
+    pub geopdf: Option<crate::io::geopdf_export::GeoPdfFrame>,
 }
 
 impl PdfPageInput {
@@ -137,6 +154,9 @@ impl Default for PdfPlotOptions {
             quality: PlotQuality::Normal,
             raster_dpi: None,
             vector_dpi: None,
+            text_as_outlines: false,
+            non_scaling_stroke: false,
+            layer_attributes: false,
         }
     }
 }

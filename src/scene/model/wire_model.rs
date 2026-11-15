@@ -606,7 +606,7 @@ pub fn clean_searchable_text(raw: &str) -> String {
             match c {
                 b'd' | b'D' => out.push('°'),
                 b'p' | b'P' => out.push('±'),
-                b'c' | b'C' => out.push('Ø'),
+                b'c' | b'C' => out.push('∅'),
                 b'%' => out.push('%'),
                 _ if c.is_ascii_digit()
                     && i + 4 < bytes.len()
@@ -710,6 +710,10 @@ pub enum DashClosure {
 pub struct WireModel {
     /// Unique identifier — the handle value as a decimal string.
     pub name: String,
+    /// Fully resolved display/export layer for this occurrence. Block children
+    /// keep their own nonzero layer or inherit the nearest nonzero INSERT layer;
+    /// `None` retains the handle-based fallback for direct and synthetic wires.
+    pub effective_layer: Option<std::sync::Arc<str>>,
     /// Ordered world-space positions forming a strip of quads. Each entry is
     /// the "high" half of a double-single f32 pair; [`points_low`] carries the
     /// matching residual so the shader can reconstruct the f64 source.
@@ -859,6 +863,12 @@ pub struct WireModel {
     /// `true` only for a planar SOLID entity's interior. Wireframe 3D omits
     /// this fill while preserving its perimeter and every other 2-D overlay.
     pub fill_is_2d_solid: bool,
+    /// The direction a planar SOLID was drawn with, in the coordinates of the
+    /// space or block that holds it. The reference of a block turns the
+    /// triangles and leaves this alone: the fill shows when the view looks
+    /// along the solid's own direction, however its block is placed. `None`
+    /// for every other fill, whose triangles tell.
+    pub solid_normal: Option<[f32; 3]>,
     /// Shared block-render source and this placement's translation.
     pub render_instance: Option<super::instance_model::RenderInstance>,
     /// Set on a wire that stands for a translated copy of a nested block
@@ -872,6 +882,54 @@ impl WireModel {
     pub const SELECTED: [f32; 4] = [0.15, 0.55, 1.00, 1.0];
     /// Rollover (hover) highlight — orange, distinct from the blue selection.
     pub const HOVER: [f32; 4] = [0.95, 0.55, 0.10, 1.0];
+
+    /// Clone every geometry/style field while assigning `name`, avoiding a
+    /// throwaway heap clone of `self.name` on prototype leaf instantiation.
+    pub(crate) fn clone_with_name(&self, name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            effective_layer: self.effective_layer.clone(),
+            points: self.points.clone(),
+            points_low: self.points_low.clone(),
+            point_marker: self.point_marker,
+            color: self.color,
+            bg_adapt: self.bg_adapt.clone(),
+            selected: self.selected,
+            pattern_length: self.pattern_length,
+            pattern: self.pattern,
+            line_weight_px: self.line_weight_px,
+            world_width: self.world_width,
+            taper_widths: self.taper_widths.clone(),
+            pattern_stations: self.pattern_stations.clone(),
+            aci: self.aci,
+            snap_pts: self.snap_pts.clone(),
+            tangent_geoms: self.tangent_geoms.clone(),
+            key_vertices: self.key_vertices.clone(),
+            aabb: self.aabb,
+            plinegen: self.plinegen,
+            dash_from_start: self.dash_from_start,
+            element_linetype: self.element_linetype.clone(),
+            element_color: self.element_color,
+            dash_closure: self.dash_closure,
+            fill_tris: self.fill_tris.clone(),
+            fill_tris_low: self.fill_tris_low.clone(),
+            pick_tris: self.pick_tris.clone(),
+            pick_tris_low: self.pick_tris_low.clone(),
+            text_verts: self.text_verts.clone(),
+            searchable_text: self.searchable_text.clone(),
+            depth_override: self.depth_override,
+            display_visible: self.display_visible,
+            snap_only: self.snap_only,
+            region_boundary_click: self.region_boundary_click,
+            reference_only: self.reference_only,
+            plot_visible: self.plot_visible,
+            fill_is_3d: self.fill_is_3d,
+            fill_is_2d_solid: self.fill_is_2d_solid,
+            solid_normal: self.solid_normal,
+            render_instance: self.render_instance.clone(),
+            stub: self.stub.clone(),
+        }
+    }
 
     /// Drawn underlay content: shown and plotted, never picked or snapped.
     pub fn is_display_only(&self) -> bool {
@@ -940,6 +998,7 @@ impl WireModel {
             plot_visible: true,
             fill_is_3d: false,
             fill_is_2d_solid: false,
+            solid_normal: None,
             render_instance: None,
             stub: None,
             pick_tris: Vec::new(),
@@ -947,6 +1006,7 @@ impl WireModel {
             text_verts: Vec::new(),
             searchable_text: Vec::new(),
             name,
+            effective_layer: None,
             points,
             points_low: Vec::new(),
             color,
@@ -1018,6 +1078,14 @@ impl WireModel {
         out
     }
 
+    /// Like [`Self::mapped`], but preserves the wire's existing color and selection state.
+    pub fn mapped_preserving_style(&self, map: impl Fn(glam::DVec3) -> glam::DVec3) -> Self {
+        let mut out = self.mapped(map);
+        out.color = self.color;
+        out.selected = self.selected;
+        out
+    }
+
     /// Return a clone with every point rotated around `center` by `angle_rad`.
     pub fn rotated(&self, center: glam::Vec3, angle_rad: f32) -> Self {
         self.rotated_about_axis(center, glam::Vec3::Z, angle_rad)
@@ -1070,31 +1138,34 @@ impl WireModel {
 
     /// Return a clone with every point uniformly scaled from `center` by `factor`.
     pub fn scaled(&self, center: glam::Vec3, factor: f32) -> Self {
+        self.scaled_precise(center.as_dvec3(), factor as f64)
+    }
+
+    /// Uniform preview scaling without rounding a world-space base to f32.
+    pub fn scaled_precise(&self, center: glam::DVec3, factor: f64) -> Self {
         let mut out = self.clone();
         out.name = format!("preview_{}", self.name);
         out.color = Self::CYAN;
         out.selected = false;
         if let Some(marker) = out.point_marker {
-            let center = center.as_dvec3();
             let normal = marker.normal.normalize_or(glam::DVec3::Z);
-            let target_origin = center + (marker.origin - center) * factor as f64;
+            let target_origin = center + (marker.origin - center) * factor;
             map_points(&mut out.points, &mut out.points_low, |point| {
                 let delta = point - marker.origin;
                 let axial = normal * delta.dot(normal);
-                target_origin + (delta - axial) + axial * factor as f64
+                target_origin + (delta - axial) + axial * factor
             });
             if let Some(target) = &mut out.point_marker {
                 target.origin = target_origin;
             }
         } else {
-            let center = center.as_dvec3();
             map_points(&mut out.points, &mut out.points_low, |point| {
-                center + (point - center) * factor as f64
+                center + (point - center) * factor
             });
         }
         if !out.text_verts.is_empty() {
-            let (cx, cy, cz) = (center.x as f64, center.y as f64, center.z as f64);
-            let f = factor as f64;
+            let (cx, cy, cz) = (center.x, center.y, center.z);
+            let f = factor;
             out.text_verts = map_text_verts(&self.text_verts, |x, y, z| {
                 (cx + (x - cx) * f, cy + (y - cy) * f, cz + (z - cz) * f)
             });
@@ -1102,7 +1173,7 @@ impl WireModel {
         out.tangent_geoms = self
             .tangent_geoms
             .iter()
-            .map(|tg| tg.scaled(center.as_dvec3(), factor as f64))
+            .map(|tg| tg.scaled(center, factor))
             .collect();
         out.searchable_text.clear();
         out
@@ -1474,6 +1545,7 @@ impl Default for WireModel {
             text_verts: Vec::new(),
             searchable_text: Vec::new(),
             name: String::new(),
+            effective_layer: None,
             points: Vec::new(),
             points_low: Vec::new(),
             color: Self::WHITE,
@@ -1505,6 +1577,7 @@ impl Default for WireModel {
             plot_visible: true,
             fill_is_3d: false,
             fill_is_2d_solid: false,
+            solid_normal: None,
             render_instance: None,
             stub: None,
             pick_tris: Vec::new(),
@@ -1702,7 +1775,7 @@ mod tests {
         // DXF specials decode (incl. %%nnn codes).
         assert_eq!(clean_searchable_text("%%d"), "°");
         assert_eq!(clean_searchable_text("%%p"), "±");
-        assert_eq!(clean_searchable_text("%%c"), "Ø");
+        assert_eq!(clean_searchable_text("%%c"), "∅");
         assert_eq!(clean_searchable_text("%%065"), "A");
         // Stacking, unicode escapes and grouping braces.
         assert_eq!(clean_searchable_text("\\S1^2;"), "1/2");

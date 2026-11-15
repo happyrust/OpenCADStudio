@@ -23,6 +23,18 @@ impl OpenCADStudio {
     /// A command turned one layer off (or back on): one undo step, and the
     /// command stays for its next pick.
     pub(in crate::app) fn set_layer_on_from_command(&mut self, i: usize, layer: &str, on: bool) {
+        // The current layer cannot be turned off: the next object drawn would
+        // land on a hidden layer. `-LAYER` refuses the same request.
+        if !on && layer == self.tabs[i].scene.document.header.current_layer_name {
+            self.command_line.push_error(
+                crate::tf!("Cannot turn off layer \"{}\". It is the CURRENT layer.", layer)
+                    .as_ref(),
+            );
+            if let Some(prompt) = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt()) {
+                self.command_line.push_info(&prompt);
+            }
+            return;
+        }
         let names = vec![layer.to_string()];
         let undo = self.begin_layer_undo(i, "LAYOFF", &names);
         if let Some(record) = self.tabs[i].scene.document.layers.get_mut(layer) {
@@ -76,12 +88,28 @@ impl OpenCADStudio {
                         .into_iter()
                         .map(|(_, e)| e.common().layer.clone())
                         .collect();
-                    let names: Vec<String> = layers.iter().cloned().collect();
+                    let current = self.tabs[i]
+                        .scene
+                        .document
+                        .header
+                        .current_layer_name
+                        .clone();
+                    if layers.contains(&current) {
+                        self.command_line.push_error(
+                            crate::tf!(
+                                "Cannot turn off layer \"{}\". It is the CURRENT layer.",
+                                current
+                            )
+                            .as_ref(),
+                        );
+                    }
+                    let names: Vec<String> = layers
+                        .iter()
+                        .filter(|name| name.as_str() != "0" && name.as_str() != current)
+                        .cloned()
+                        .collect();
                     let undo = self.begin_layer_undo(i, "LAYOFF", &names);
-                    for name in &layers {
-                        if name == "0" {
-                            continue;
-                        }
+                    for name in &names {
                         if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
                             dl.turn_off();
                         }
@@ -114,12 +142,28 @@ impl OpenCADStudio {
                         .into_iter()
                         .map(|(_, e)| e.common().layer.clone())
                         .collect();
-                    let names: Vec<String> = layers.iter().cloned().collect();
+                    let current = self.tabs[i]
+                        .scene
+                        .document
+                        .header
+                        .current_layer_name
+                        .clone();
+                    if layers.contains(&current) {
+                        self.command_line.push_error(
+                            crate::tf!(
+                                "Cannot freeze layer \"{}\". It is the CURRENT layer.",
+                                current
+                            )
+                            .as_ref(),
+                        );
+                    }
+                    let names: Vec<String> = layers
+                        .iter()
+                        .filter(|name| name.as_str() != "0" && name.as_str() != current)
+                        .cloned()
+                        .collect();
                     let undo = self.begin_layer_undo(i, "LAYFRZ", &names);
-                    for name in &layers {
-                        if name == "0" {
-                            continue;
-                        }
+                    for name in &names {
                         if let Some(dl) = self.tabs[i].scene.document.layers.get_mut(name) {
                             dl.freeze();
                         }
@@ -244,11 +288,21 @@ impl OpenCADStudio {
                     .collect();
                 self.push_undo_snapshot(i, "LAYDEL");
                 let n = handles.len();
+                let touches_blocks = !handles.is_empty() && {
+                    let changes: Vec<_> = handles
+                        .iter()
+                        .copied()
+                        .map(|h| (h, crate::scene::ChangeKind::Removed))
+                        .collect();
+                    self.tabs[i].scene.changes_touch_block_definition(&changes)
+                };
                 if !handles.is_empty() {
                     self.tabs[i].scene.erase_entities(&handles);
                 }
                 self.tabs[i].scene.document.layers.remove(&layer);
-                self.tabs[i].scene.bump_geometry();
+                if touches_blocks {
+                    self.tabs[i].scene.bump_geometry();
+                }
                 self.tabs[i].dirty = true;
                 self.refresh_layer_panel();
                 self.command_line.push_output(
@@ -1235,6 +1289,24 @@ impl OpenCADStudio {
                 }
             }
 
+            "GROUPEDIT" => {
+                use crate::modules::draw::groups::groupedit::GroupEditCommand;
+                let groups = self.tabs[i]
+                    .scene
+                    .groups()
+                    .map(|group| (group.name.clone(), group.entities.clone()))
+                    .collect();
+                let selected: Vec<_> = self.tabs[i]
+                    .scene
+                    .selected_entities()
+                    .into_iter()
+                    .map(|(h, _)| h)
+                    .collect();
+                let cmd = GroupEditCommand::for_selection(groups, &selected);
+                self.command_line.push_info(&cmd.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(cmd));
+            }
+
             "UNGROUP" => {
                 let handles: Vec<_> = self.tabs[i]
                     .scene
@@ -1252,6 +1324,9 @@ impl OpenCADStudio {
                     // Dissolving is P&ID-aware: a drawn legend is redrawn in
                     // the same undo step (commands/pidlegend.rs).
                     let count = self.dissolve_pid_groups(i, "UNGROUP", &handles);
+                    // The picked members keep their selection, but the group
+                    // box and centre grip they showed belong to no group now.
+                    self.refresh_selected_grips();
                     if count > 0 {
                         self.command_line
                             .push_info(crate::tf!("{} group(s) dissolved.", count).as_ref());

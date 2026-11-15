@@ -47,7 +47,73 @@ pub struct DgnImportRequest {
     pub references: ReferenceMode,
     /// What an earlier translation of a reference already on disk gets.
     pub existing_reference: ExistingReference,
+    /// The text code page of a V7 file (e.g. 1250 for Czech/Slovak files).
+    /// V7 names no page; `None` keeps the historical 1252 decoding.
+    pub code_page: Option<u16>,
 }
+
+/// Named equivalents of the -DGNIMPORT prompt answers. `None` and blank model,
+/// units and mapping answers select the command's defaults. A numeric
+/// `code_page` is present only when the caller explicitly supplied one; 0 and
+/// 1252 both select the default rather than inheriting the stored page.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DgnImportOptions<'a> {
+    pub path: &'a str,
+    pub model: Option<&'a str>,
+    pub units: Option<&'a str>,
+    pub mapping: Option<&'a str>,
+    pub code_page: Option<u16>,
+}
+
+/// Why a DGN request cannot be resolved or its model cannot be imported.
+/// The command shows `Display`; semantic callers can retain the stable code
+/// and the models available when a requested model is absent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DgnImportError {
+    InvalidDgn,
+    ModelMissing {
+        requested: String,
+        path: String,
+        available_models: Vec<String>,
+    },
+    InvalidUnits,
+    InvalidMapping(String),
+    InvalidCodepage(String),
+    EmptyModel,
+    ImportFailed(String),
+}
+
+impl DgnImportError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidDgn => "invalid_dgn",
+            Self::ModelMissing { .. } => "model_missing",
+            Self::InvalidUnits => "invalid_units",
+            Self::InvalidMapping(_) => "invalid_mapping",
+            Self::InvalidCodepage(_) => "invalid_codepage",
+            Self::EmptyModel => "empty_dgn_model",
+            Self::ImportFailed(_) => "dgn_import_failed",
+        }
+    }
+}
+
+impl std::fmt::Display for DgnImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidDgn => f.write_str("Invalid or unsupported DGN file."),
+            Self::ModelMissing {
+                requested, path, ..
+            } => write!(f, "There is no {requested} in {path}."),
+            Self::InvalidUnits => f.write_str("Invalid option keyword."),
+            Self::InvalidMapping(message)
+            | Self::InvalidCodepage(message)
+            | Self::ImportFailed(message) => f.write_str(message),
+            Self::EmptyModel => f.write_str("The DGN model has nothing that can be imported."),
+        }
+    }
+}
+
+impl std::error::Error for DgnImportError {}
 
 /// The External DGN references choice: translated into drawings attached
 /// as external references, left out, or attached as DGN underlays.
@@ -1187,6 +1253,12 @@ struct Converter<'a> {
     /// Converting a shared cell definition: the cells inside it are not
     /// blocks of their own, their objects are part of the definition.
     in_definition: bool,
+    /// Self-contained cell headers whose geometry matches an already
+    /// defined one, per (base name, copy kind) → the cell's
+    /// origin-normalized parts and the block they defined. A GIS export
+    /// can place the same symbol cell thousands of times as separate
+    /// headers; those become one block and many inserts.
+    shares: HashMap<(String, bool, bool), Vec<(Vec<DgnElement>, String)>>,
     /// The construction layer of each level, once one is made.
     construction: HashMap<u32, String>,
 }
@@ -1465,14 +1537,29 @@ impl<'a> Converter<'a> {
                 } else {
                     name.as_str()
                 };
-                let block = self.unique(&block_name(base));
-                let local = crate::scene::model::underlay_vector::scaled_elements(
+                // The definition's objects are relative to the cell's own
+                // origin, which makes repeats of one symbol comparable and
+                // placeable through the insert alone.
+                let normalized = crate::scene::model::underlay_vector::scaled_elements(
                     parts,
                     1.0,
                     origin.map(|c| -c),
                 );
-                let entities = self.elements(&local, false, copy, depth + 1);
+                let key = (base.to_ascii_uppercase(), copy.active, copy.color_by_block);
+                if let Some((_, shared)) = self
+                    .shares
+                    .get(&key)
+                    .and_then(|shares| shares.iter().find(|(seen, _)| *seen == normalized).cloned())
+                {
+                    return vec![insert_entity(shared, [1.0, 0.0, 0.0, 1.0], *origin, 1.0)];
+                }
+                let block = self.unique(&block_name(base));
+                let entities = self.elements(&normalized, false, copy, depth + 1);
                 self.out.blocks.push((block.clone(), entities));
+                self.shares
+                    .entry(key)
+                    .or_default()
+                    .push((normalized, block.clone()));
                 vec![insert_entity(block, [1.0, 0.0, 0.0, 1.0], *origin, 1.0)]
             }
             DgnGeom::Cell {
@@ -1663,6 +1750,7 @@ pub fn convert(import: &DgnImport, sub_units: bool, explode_text_nodes: bool) ->
             .collect(),
         next_number: HashMap::new(),
         in_definition: false,
+        shares: HashMap::new(),
         construction: HashMap::new(),
     };
     if !import.v7 {
@@ -1809,6 +1897,8 @@ pub struct DgnImportSettings {
     pub explode_text_nodes: bool,
     pub references: ReferenceMode,
     pub existing_reference: ExistingReference,
+    /// The V7 text code page the imports keep using (None: 1252).
+    pub code_page: Option<u16>,
 }
 
 static SETTINGS: std::sync::Mutex<Option<DgnImportSettings>> = std::sync::Mutex::new(None);
@@ -1819,8 +1909,239 @@ pub fn settings() -> DgnImportSettings {
 
 pub fn set_settings(mut settings: DgnImportSettings) {
     settings.mode = settings.mode.min(2);
+    // A test that reads the settings back owns them; other tests' apps
+    // (which apply their settings on start) wait until it is done.
+    #[cfg(test)]
+    let _owner = loop {
+        let owner = SETTINGS_OWNER.lock().unwrap_or_else(|e| e.into_inner());
+        if owner.is_none_or(|id| id == std::thread::current().id()) {
+            break owner;
+        }
+        drop(owner);
+        std::thread::yield_now();
+    };
     if let Ok(mut s) = SETTINGS.lock() {
         *s = Some(settings);
+    }
+}
+
+#[cfg(test)]
+static SETTINGS_OWNER: std::sync::Mutex<Option<std::thread::ThreadId>> =
+    std::sync::Mutex::new(None);
+
+/// Keeps other threads from changing the settings until dropped.
+#[cfg(test)]
+pub(crate) struct OwnSettings;
+
+#[cfg(test)]
+impl OwnSettings {
+    pub(crate) fn take() -> Self {
+        loop {
+            let mut owner = SETTINGS_OWNER.lock().unwrap_or_else(|e| e.into_inner());
+            if owner.is_none() {
+                *owner = Some(std::thread::current().id());
+                return Self;
+            }
+            drop(owner);
+            std::thread::yield_now();
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for OwnSettings {
+    fn drop(&mut self) {
+        *SETTINGS_OWNER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// The code pages a V7 file's text can be read with, as picker labels (the
+/// encodings' own names, which conventionally stay untranslated) paired with
+/// the page the parser takes. 1252 is the default.
+/// The picker rows: the label and the page the parser takes. The auto
+/// sentinel (0) detects from the file's own text runs; 1252 is the plain
+/// default.
+const CODE_PAGE_TABLE: [(&str, u16); 14] = [
+    ("Windows-1252 (Western, default)", 1252),
+    ("Windows-1250 (Central European)", 1250),
+    ("Windows-1251 (Cyrillic)", 1251),
+    ("Windows-1253 (Greek)", 1253),
+    ("Windows-1254 (Turkish)", 1254),
+    ("Windows-1255 (Hebrew)", 1255),
+    ("Windows-1256 (Arabic)", 1256),
+    ("Windows-1257 (Baltic)", 1257),
+    ("Windows-1258 (Vietnamese)", 1258),
+    ("Windows-874 (Thai)", 874),
+    ("Shift-JIS (Japanese, 932)", 932),
+    ("GBK (Simplified Chinese, 936)", 936),
+    ("Korean Wansung (949)", 949),
+    ("Big5 (Traditional Chinese, 950)", 950),
+];
+
+/// The picker's labels in order.
+pub fn code_page_choices() -> Vec<String> {
+    CODE_PAGE_TABLE
+        .iter()
+        .map(|(label, _)| label.to_string())
+        .collect()
+}
+
+/// The picker label's page; 1252 decodes as the default.
+pub fn code_page_from_label(label: &str) -> Option<Option<u16>> {
+    CODE_PAGE_TABLE
+        .iter()
+        .find(|(choice, _)| *choice == label)
+        .map(|&(_, page)| (page != 1252).then_some(page))
+}
+
+pub fn code_page_label(code_page: Option<u16>) -> String {
+    let page = code_page.unwrap_or(1252);
+    CODE_PAGE_TABLE
+        .iter()
+        .find(|(_, known)| *known == page)
+        .map_or_else(|| format!("Windows-{page}"), |(label, _)| label.to_string())
+}
+
+fn unknown_code_page(page: &str) -> DgnImportError {
+    DgnImportError::InvalidCodepage(format!(
+        "Unknown code page {page}; use another Windows page or 65001."
+    ))
+}
+
+fn parse_mapping(text: &str) -> Result<(String, Option<u16>), DgnImportError> {
+    let (mapping, page) = text
+        .split_once(';')
+        .map_or((text, ""), |(mapping, page)| (mapping, page));
+    let page = match page.trim().to_ascii_lowercase().as_str() {
+        "" => None,
+        rest => match rest.strip_prefix("codepage=").unwrap_or(rest) {
+            "1252" | "" => None,
+            page => match page
+                .parse::<u16>()
+                .ok()
+                .filter(|p| crate::scene::model::underlay_vector::code_page_supported(*p))
+            {
+                Some(page) => Some(page),
+                None => return Err(unknown_code_page(page)),
+            },
+        },
+    };
+    Ok((mapping.trim().to_string(), page))
+}
+
+/// The mapping setup token, optionally suffixed with the V7 text code page
+/// the import keeps: `Standard;codepage=1250`. The keyword is
+/// case-insensitive, like the setup name itself.
+pub fn parse_mapping_token(text: &str) -> Result<(String, Option<u16>), String> {
+    parse_mapping(text).map_err(|error| error.to_string())
+}
+
+/// Read the same design-model list, and apply the same first-model readability
+/// check, as the command's filename step.
+fn import_models(path: &str) -> Result<Vec<String>, DgnImportError> {
+    crate::scene::model::underlay_vector::dgn_import_models(path)
+        .filter(|models| {
+            !models.is_empty()
+                && crate::scene::model::underlay_vector::dgn_import(path, &models[0], None)
+                    .is_some()
+        })
+        .ok_or(DgnImportError::InvalidDgn)
+}
+
+fn resolve_model(
+    path: &str,
+    models: &[String],
+    requested: Option<&str>,
+) -> Result<String, DgnImportError> {
+    let requested = requested.unwrap_or("").trim();
+    let name = if requested.is_empty() {
+        models.first().map(String::as_str).unwrap_or("")
+    } else {
+        requested
+    };
+    models
+        .iter()
+        .find(|model| model.eq_ignore_ascii_case(name))
+        .cloned()
+        .ok_or_else(|| DgnImportError::ModelMissing {
+            requested: name.to_string(),
+            path: path.to_string(),
+            available_models: models.to_vec(),
+        })
+}
+
+fn conversion_units(text: &str) -> Result<bool, DgnImportError> {
+    let text = text.trim().to_ascii_uppercase();
+    match text.as_str() {
+        "" => Ok(false),
+        _ if "MASTER".starts_with(&text) => Ok(false),
+        _ if "SUB".starts_with(&text) => Ok(true),
+        _ => Err(DgnImportError::InvalidUnits),
+    }
+}
+
+fn explicit_code_page(page: u16) -> Result<Option<u16>, DgnImportError> {
+    match page {
+        0 | 1252 => Ok(None),
+        page if crate::scene::model::underlay_vector::code_page_supported(page) => Ok(Some(page)),
+        page => Err(unknown_code_page(&page.to_string())),
+    }
+}
+
+/// Finish a request from its resolved path, model and units. The interactive
+/// command passes no numeric page, retaining its mapping-token/stored-setting
+/// behavior; a semantic caller's numeric page explicitly overrides both.
+fn request_from_parts(
+    path: String,
+    model: String,
+    sub_units: bool,
+    mapping: &str,
+    numeric_code_page: Option<u16>,
+) -> Result<DgnImportRequest, DgnImportError> {
+    let (mapping, suffix_code_page) = parse_mapping(mapping)?;
+    if !mapping.is_empty() && !mapping.eq_ignore_ascii_case("Standard") {
+        return Err(DgnImportError::InvalidMapping(format!(
+            "{mapping} not found."
+        )));
+    }
+    // The rest comes from DGNIMPORTMODE and the import settings the window
+    // last kept.
+    let s = settings();
+    let code_page = match numeric_code_page {
+        Some(page) => explicit_code_page(page)?,
+        None => suffix_code_page.or(s.code_page),
+    };
+    Ok(DgnImportRequest {
+        path,
+        model,
+        sub_units,
+        explode_text_nodes: s.explode_text_nodes,
+        current_drawing: s.mode != 0,
+        prefix_duplicates: s.mode == 2,
+        references: s.references,
+        existing_reference: s.existing_reference,
+        code_page,
+    })
+}
+
+impl DgnImportRequest {
+    /// Resolve named options without constructing or replaying the positional
+    /// command. All file/model/option validation finishes before app mutation.
+    pub fn from_options(options: DgnImportOptions<'_>) -> Result<Self, DgnImportError> {
+        let path = options.path.trim().trim_matches('"').to_string();
+        if path.is_empty() {
+            return Err(DgnImportError::InvalidDgn);
+        }
+        let models = import_models(&path)?;
+        let model = resolve_model(&path, &models, options.model)?;
+        let sub_units = conversion_units(options.units.unwrap_or(""))?;
+        request_from_parts(
+            path,
+            model,
+            sub_units,
+            options.mapping.unwrap_or(""),
+            options.code_page,
+        )
     }
 }
 
@@ -1842,6 +2163,8 @@ pub struct DgnImportCommand {
     models: Vec<String>,
     model: String,
     sub_units: bool,
+    /// The effective V7 text code page (None: 1252), resolved at mapping.
+    code_page: Option<u16>,
 }
 
 impl Default for DgnImportCommand {
@@ -1858,6 +2181,7 @@ impl DgnImportCommand {
             models: Vec::new(),
             model: String::new(),
             sub_units: false,
+            code_page: None,
         }
     }
 
@@ -1866,12 +2190,9 @@ impl DgnImportCommand {
         if path.is_empty() {
             return CmdResult::NeedPoint;
         }
-        let models = crate::scene::model::underlay_vector::dgn_import_models(&path).filter(|m| {
-            !m.is_empty()
-                && crate::scene::model::underlay_vector::dgn_import(&path, &m[0]).is_some()
-        });
-        let Some(models) = models else {
-            return CmdResult::ReportError("Invalid or unsupported DGN file.".to_string());
+        let models = match import_models(&path) {
+            Ok(models) => models,
+            Err(error) => return CmdResult::ReportError(error.to_string()),
         };
         self.path = path;
         self.model = models[0].clone();
@@ -1886,18 +2207,13 @@ impl DgnImportCommand {
             self.step = Step::ListModels;
             return CmdResult::NeedPoint;
         }
-        let name = if text.is_empty() {
-            self.models[0].as_str()
-        } else {
-            text
-        };
-        match self.models.iter().find(|m| m.eq_ignore_ascii_case(name)) {
-            Some(found) => {
-                self.model = found.clone();
+        match resolve_model(&self.path, &self.models, Some(text)) {
+            Ok(model) => {
+                self.model = model;
                 self.step = Step::Conversion;
                 CmdResult::NeedPoint
             }
-            None => CmdResult::ReportError(format!("There is no {name} in {}.", self.path)),
+            Err(error) => CmdResult::ReportError(error.to_string()),
         }
     }
 
@@ -1916,39 +2232,32 @@ impl DgnImportCommand {
     }
 
     fn accept_conversion(&mut self, text: &str) -> CmdResult {
-        let t = text.trim().to_ascii_uppercase();
-        self.sub_units = match t.as_str() {
-            "" => false,
-            _ if "MASTER".starts_with(&t) => false,
-            _ if "SUB".starts_with(&t) => true,
-            _ => return CmdResult::ReportError("Invalid option keyword.".to_string()),
-        };
+        match conversion_units(text) {
+            Ok(sub_units) => self.sub_units = sub_units,
+            Err(error) => return CmdResult::ReportError(error.to_string()),
+        }
         self.step = Step::Mapping;
         CmdResult::NeedPoint
     }
 
     fn accept_mapping(&mut self, text: &str) -> CmdResult {
-        let text = text.trim();
-        if text == "?" {
+        if text.trim() == "?" {
             self.step = Step::ListMappings;
             return CmdResult::NeedPoint;
         }
-        if !text.is_empty() && !text.eq_ignore_ascii_case("Standard") {
-            return CmdResult::ReportError(format!("{text} not found."));
+        match request_from_parts(
+            self.path.clone(),
+            self.model.clone(),
+            self.sub_units,
+            text,
+            None,
+        ) {
+            Ok(request) => {
+                self.code_page = request.code_page;
+                CmdResult::DgnImport(request)
+            }
+            Err(error) => CmdResult::ReportError(error.to_string()),
         }
-        // The rest comes from DGNIMPORTMODE and the import settings the
-        // window last kept.
-        let s = settings();
-        CmdResult::DgnImport(DgnImportRequest {
-            path: self.path.clone(),
-            model: self.model.clone(),
-            sub_units: self.sub_units,
-            explode_text_nodes: s.explode_text_nodes,
-            current_drawing: s.mode != 0,
-            prefix_duplicates: s.mode == 2,
-            references: s.references,
-            existing_reference: s.existing_reference,
-        })
     }
 }
 
@@ -2012,5 +2321,252 @@ impl CadCommand for DgnImportCommand {
             Step::Path => CmdResult::Cancel,
             _ => self.on_text_input("").unwrap_or(CmdResult::NeedPoint),
         }
+    }
+}
+
+#[cfg(test)]
+mod cell_sharing_tests {
+    use super::*;
+    use crate::scene::model::underlay_vector::{By, DgnColor, DgnElement, DgnGeom, DgnImport};
+
+    fn line(from: P3, to: P3) -> DgnElement {
+        DgnElement {
+            level: 1,
+            color: By::Own(DgnColor {
+                index: 3,
+                table: [8, 8, 8],
+                rgb: [8, 8, 8],
+            }),
+            weight: By::Own(1),
+            style: By::Own(0),
+            geom: DgnGeom::Line(from, to),
+            filled: false,
+            construction: false,
+        }
+    }
+
+    fn cell(name: &str, origin: P3, dx: f64) -> DgnElement {
+        let x = origin[0] + dx;
+        DgnElement {
+            level: 1,
+            color: By::Own(DgnColor {
+                index: 3,
+                table: [8, 8, 8],
+                rgb: [8, 8, 8],
+            }),
+            weight: By::Own(1),
+            style: By::Own(0),
+            geom: DgnGeom::CellGroup {
+                name: name.to_string(),
+                origin,
+                parts: vec![line([x + 10.0, origin[1], 0.0], [x + 40.0, origin[1], 0.0])],
+            },
+            filled: false,
+            construction: false,
+        }
+    }
+
+    fn import_with(elements: Vec<DgnElement>) -> DgnImport {
+        DgnImport {
+            elements,
+            cells: Vec::new(),
+            levels: [(1, ("Level 1".into(), None))].into(),
+            level_order: vec![1],
+            sub_per_master: 1.0,
+            unit_names: ("m".into(), "mm".into()),
+            v7: true,
+            references: Vec::new(),
+            text_styles: Vec::new(),
+            ..Default::default()
+        }
+    }
+
+    /// Repeats of one symbol cell become one block and one insert per
+    /// placement: a survey file that carries the same cell thousands of
+    /// times must not flood the palette with renamed definitions.
+    #[test]
+    fn identical_cells_share_one_definition() {
+        let import = import_with(vec![
+            cell("4.02", [10_000.0, 0.0, 0.0], 0.0),
+            cell("4.02", [20_000.0, 5_000.0, 0.0], 0.0),
+        ]);
+        let c = convert(&import, true, false);
+        assert_eq!(c.blocks.len(), 1, "{}", c.blocks.len());
+        assert_eq!(c.blocks[0].0, "4.02");
+        // Two inserts at the two placements.
+        assert_eq!(c.entities.len(), 2, "{}", c.entities.len());
+    }
+
+    /// Different objects under one name keep their own definitions (the
+    /// second one renamed), exactly as before.
+    #[test]
+    fn differently_shaped_same_named_cells_stay_separate() {
+        let import = import_with(vec![
+            cell("4.02", [10_000.0, 0.0, 0.0], 0.0),
+            cell("4.02", [10_000.0, 0.0, 0.0], 50.0),
+        ]);
+        let c = convert(&import, true, false);
+        assert_eq!(c.blocks.len(), 2, "{}", c.blocks.len());
+        assert_eq!(c.blocks[0].0, "4.02");
+        assert_eq!(c.blocks[1].0, "4.021");
+        assert_eq!(c.entities.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod mapping_token_tests {
+    use super::parse_mapping_token;
+
+    #[test]
+    fn mapping_token_splits_the_code_page() {
+        for (text, mapping, page) in [
+            ("Standard", "Standard", None),
+            ("", "", None),
+            ("standard;codepage=1250", "standard", Some(1250)),
+            ("Standard ; CODEPAGE=1252", "Standard", None),
+            ("Standard;codepage=1251", "Standard", Some(1251)),
+            ("Standard;codepage=1257", "Standard", Some(1257)),
+            ("Standard;codepage=65001", "Standard", Some(65001)),
+            ("Standard;codepage=932", "Standard", Some(932)),
+        ] {
+            assert_eq!(
+                parse_mapping_token(text).ok(),
+                Some((mapping.to_owned(), page)),
+                "{text}"
+            );
+        }
+        for bad in [
+            "Standard;codepage=9999",
+            "Standard;page=1250",
+            "Standard;codepage=1259",
+            "Standard;codepage=931",
+            "Standard;codepage=auto",
+        ] {
+            assert!(parse_mapping_token(bad).is_err(), "{bad}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod request_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn units_keep_the_command_prefix_rules() {
+        for master in ["", " ", "M", "ma", "MASTER", "master"] {
+            assert_eq!(conversion_units(master), Ok(false), "{master}");
+        }
+        for sub in ["S", "su", "SUB", "sub"] {
+            assert_eq!(conversion_units(sub), Ok(true), "{sub}");
+        }
+        for invalid in ["Masters", "Subs", "unit", "1"] {
+            assert_eq!(
+                conversion_units(invalid).unwrap_err().code(),
+                "invalid_units",
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn models_default_and_resolve_case_insensitively() {
+        let models = vec!["Default".to_string(), "Site Plan".to_string()];
+        assert_eq!(
+            resolve_model("site.dgn", &models, None).ok(),
+            Some("Default".into())
+        );
+        assert_eq!(
+            resolve_model("site.dgn", &models, Some("  ")).ok(),
+            Some("Default".into())
+        );
+        assert_eq!(
+            resolve_model("site.dgn", &models, Some("site plan")).ok(),
+            Some("Site Plan".into())
+        );
+        let error = resolve_model("site.dgn", &models, Some("Missing")).unwrap_err();
+        assert_eq!(error.code(), "model_missing");
+        assert_eq!(
+            error,
+            DgnImportError::ModelMissing {
+                requested: "Missing".into(),
+                path: "site.dgn".into(),
+                available_models: models,
+            }
+        );
+    }
+
+    #[test]
+    fn numeric_code_page_overrides_suffix_and_stored_settings() {
+        let _own = OwnSettings::take();
+        let previous = settings();
+        set_settings(DgnImportSettings {
+            mode: 2,
+            explode_text_nodes: true,
+            references: ReferenceMode::Underlay,
+            existing_reference: ExistingReference::Keep,
+            code_page: Some(1251),
+        });
+        let request = request_from_parts(
+            "site.dgn".into(),
+            "Site Plan".into(),
+            true,
+            "standard",
+            None,
+        )
+        .expect("stored request settings");
+        assert_eq!(request.code_page, Some(1251));
+        assert!(request.current_drawing && request.prefix_duplicates);
+        assert!(request.explode_text_nodes && request.sub_units);
+        assert_eq!(request.references, ReferenceMode::Underlay);
+        assert_eq!(request.existing_reference, ExistingReference::Keep);
+        let suffix = request_from_parts(
+            "site.dgn".into(),
+            "Default".into(),
+            false,
+            "Standard;codepage=1250",
+            None,
+        )
+        .expect("mapping suffix code page");
+        assert_eq!(suffix.code_page, Some(1250));
+
+        for (page, expected) in [
+            (1250, Some(1250)),
+            (65001, Some(65001)),
+            (0, None),
+            (1252, None),
+        ] {
+            let request = request_from_parts(
+                "site.dgn".into(),
+                "Default".into(),
+                false,
+                "Standard;codepage=1251",
+                Some(page),
+            )
+            .expect("explicit numeric code page");
+            assert_eq!(request.code_page, expected, "page {page}");
+        }
+        let mapping =
+            request_from_parts("site.dgn".into(), "Default".into(), false, "Custom", None)
+                .unwrap_err();
+        assert_eq!(mapping.code(), "invalid_mapping");
+        for result in [
+            request_from_parts(
+                "site.dgn".into(),
+                "Default".into(),
+                false,
+                "Standard;codepage=9999",
+                None,
+            ),
+            request_from_parts(
+                "site.dgn".into(),
+                "Default".into(),
+                false,
+                "Standard",
+                Some(9999),
+            ),
+        ] {
+            assert_eq!(result.unwrap_err().code(), "invalid_codepage");
+        }
+        set_settings(previous);
     }
 }

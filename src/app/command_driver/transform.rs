@@ -37,7 +37,10 @@ impl OpenCADStudio {
         transform: crate::command::EntityTransform,
     ) -> Option<Task<Message>> {
         let i = self.active_tab;
-        handles.retain(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
+        handles.retain(|handle| {
+            !self.tabs[i].scene.is_layer_locked(*handle)
+                && !self.tabs[i].scene.native_edit_disabled(*handle)
+        });
         if handles.is_empty() {
             self.tabs[i].active_cmd = None;
             return Some(Task::none());
@@ -57,7 +60,10 @@ impl OpenCADStudio {
             handles = self.tabs[i]
                 .scene
                 .parametric_connected_handles(scope, &handles, false);
-            handles.retain(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
+            handles.retain(|handle| {
+                !self.tabs[i].scene.is_layer_locked(*handle)
+                    && !self.tabs[i].scene.native_edit_disabled(*handle)
+            });
         }
         // A fixed object stays where it is and the command says why, rather
         // than moving the rest of the selection and letting the solve pull it
@@ -112,7 +118,18 @@ impl OpenCADStudio {
         // A translation carries its complete connected constraint
         // component so each member keeps its own dimensions. Other
         // transforms retain their selected-object behavior.
-        let pending = self.begin_undo(i, label, handles.len(), true);
+        // Scaling a table rebuilds its picture block and its membership.
+        let table_scale = matches!(
+            transform,
+            crate::command::EntityTransform::Scale { .. }
+                | crate::command::EntityTransform::Affine(_)
+        ) && handles.iter().any(|h| {
+            matches!(
+                self.tabs[i].scene.document.get_entity(*h),
+                Some(document::EntityType::Table(_))
+            )
+        });
+        let pending = self.begin_undo(i, label, handles.len(), !table_scale);
         // P&ID refill: a refused move writes nothing, so the whole command is
         // abandoned (including its undo step) rather than reporting a failure
         // over a half-applied move. `Scene::transform_entities_checked` owns
@@ -181,7 +198,10 @@ impl OpenCADStudio {
         transform: crate::command::EntityTransform,
     ) -> Option<Task<Message>> {
         let i = self.active_tab;
-        handles.retain(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
+        handles.retain(|handle| {
+            !self.tabs[i].scene.is_layer_locked(*handle)
+                && !self.tabs[i].scene.native_edit_disabled(*handle)
+        });
         if handles.is_empty() {
             return Some(Task::none());
         }
@@ -220,7 +240,10 @@ impl OpenCADStudio {
         else {
             unreachable!("router only routes the matching variant");
         };
-        handles.retain(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
+        handles.retain(|handle| {
+            !self.tabs[i].scene.is_layer_locked(*handle)
+                && !self.tabs[i].scene.native_edit_disabled(*handle)
+        });
         if handles.is_empty() {
             self.tabs[i].active_cmd = None;
             self.tabs[i].snap_result = None;
@@ -343,12 +366,16 @@ impl OpenCADStudio {
                             win_min.x, win_min.y, win_max.x, win_max.y,
                         ])
                         .into_iter()
-                        .filter(|&handle| !scene.is_layer_locked(handle)),
+                        .filter(|&handle| {
+                            !scene.is_layer_locked(handle) && !scene.native_edit_disabled(handle)
+                        }),
                 );
             }
         }
 
-        handles.retain(|handle| !removed_handles.contains(handle));
+        handles.retain(|handle| {
+            !removed_handles.contains(handle) && !self.tabs[i].scene.native_edit_disabled(*handle)
+        });
         handles.sort_unstable_by_key(|handle| handle.value());
         handles.dedup();
 
@@ -467,7 +494,10 @@ impl OpenCADStudio {
         delta: glam::DVec3,
     ) -> Option<Task<Message>> {
         let i = self.active_tab;
-        handles.retain(|handle| !self.tabs[i].scene.is_layer_locked(*handle));
+        handles.retain(|handle| {
+            !self.tabs[i].scene.is_layer_locked(*handle)
+                && !self.tabs[i].scene.native_edit_disabled(*handle)
+        });
         if handles.is_empty() {
             self.tabs[i].active_cmd = None;
             return Some(Task::none());
@@ -674,5 +704,75 @@ mod stretch_window_feedback_tests {
             Vec::new(),
         );
         assert!(!app.tabs[i].scene.selected.contains(&handle));
+    }
+}
+
+#[cfg(test)]
+mod selectable_custom_tests {
+    use crate::app::OpenCADStudio;
+    use document::entities::{Line, LwPolyline, LwVertex};
+    use document::types::Vector3;
+    use document::xdata::{ExtendedDataRecord, XDataValue};
+    use document::EntityType;
+    use glam::DVec3;
+
+    fn selectable_custom(entity: &mut EntityType) {
+        let mut stamp = ExtendedDataRecord::new("CVIFC-CLASS:LINE");
+        stamp.add_value(XDataValue::Integer32(1));
+        stamp.add_value(XDataValue::String(String::new()));
+        stamp.add_value(XDataValue::Integer32(1));
+        entity.common_mut().extended_data.add_record(stamp);
+    }
+
+    #[test]
+    fn copy_and_explode_skip_selectable_custom_entities() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let mut custom = EntityType::Line(Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        ));
+        selectable_custom(&mut custom);
+        let custom = app.tabs[i].scene.add_entity(custom);
+        let plain = app.tabs[i]
+            .scene
+            .add_entity(EntityType::Line(Line::from_points(
+                Vector3::new(0.0, 2.0, 0.0),
+                Vector3::new(10.0, 2.0, 0.0),
+            )));
+        app.handle_copy_selected(
+            vec![custom, plain],
+            crate::command::EntityTransform::Translate(DVec3::new(0.0, 5.0, 0.0)),
+        );
+        assert_eq!(app.tabs[i].scene.document.entities().count(), 3);
+        assert_eq!(
+            app.tabs[i]
+                .scene
+                .document
+                .entities()
+                .filter(|entity| crate::plugin::entity_labels::native_edit_disabled(entity))
+                .count(),
+            1,
+            "COPY never clones the custom façade"
+        );
+
+        let mut polyline = LwPolyline::new();
+        polyline.vertices = vec![
+            LwVertex::from_coords(0.0, 0.0),
+            LwVertex::from_coords(10.0, 0.0),
+        ];
+        let mut custom_polyline = EntityType::LwPolyline(polyline);
+        selectable_custom(&mut custom_polyline);
+        let custom_polyline = app.tabs[i].scene.add_entity(custom_polyline);
+        let count = app.tabs[i].scene.document.entities().count();
+        app.tabs[i].scene.deselect_all();
+        app.tabs[i].scene.select_entity(custom_polyline, true);
+        let _ = app.run_command_line("EXPLODE");
+        assert_eq!(app.tabs[i].scene.document.entities().count(), count);
+        assert!(matches!(
+            app.tabs[i].scene.document.get_entity(custom_polyline),
+            Some(EntityType::LwPolyline(_))
+        ));
     }
 }

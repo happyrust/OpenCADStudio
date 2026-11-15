@@ -191,6 +191,8 @@ impl OpenCADStudio {
             //   spaces inside the expression don't end the input.
             // QUICKCALC / QC show or hide the QuickCalc pallet.
             "QUICKCALC" | "QC" => return Some(self.toggle_quick_calc()),
+            // ASSISTANT shows or hides the Assistant pallet.
+            "ASSISTANT" => return Some(self.toggle_assistant()),
             // COMMANDHISTORY shows or hides the Command History pallet.
             "COMMANDHISTORY" => {
                 let id = crate::ui::dock::PanelId::CommandHistory;
@@ -1551,20 +1553,26 @@ fn add_selected_verb(entity: &document::EntityType) -> Option<&'static str> {
 fn entity_list_details(entity: &document::EntityType) -> String {
     use std::f64::consts::PI;
     match entity {
-        document::EntityType::Line(l) => crate::tf!(
-            "from ({:.4},{:.4},{:.4}) to ({:.4},{:.4},{:.4})  len={:.4}",
-            l.start.x,
-            l.start.y,
-            l.start.z,
-            l.end.x,
-            l.end.y,
-            l.end.z,
-            ((l.end.x - l.start.x).powi(2)
-                + (l.end.y - l.start.y).powi(2)
-                + (l.end.z - l.start.z).powi(2))
-            .sqrt()
-        )
-        .into_owned(),
+        document::EntityType::Line(l) => format!(
+            "{}  {}={}",
+            crate::tf!(
+                "from ({:.4},{:.4},{:.4}) to ({:.4},{:.4},{:.4})  len={:.4}",
+                l.start.x,
+                l.start.y,
+                l.start.z,
+                l.end.x,
+                l.end.y,
+                l.end.z,
+                ((l.end.x - l.start.x).powi(2)
+                    + (l.end.y - l.start.y).powi(2)
+                    + (l.end.z - l.start.z).powi(2))
+                .sqrt()
+            ),
+            crate::t!("Angle"),
+            crate::entities::common::format_direction(
+                (l.end.y - l.start.y).atan2(l.end.x - l.start.x)
+            )
+        ),
         document::EntityType::Circle(c) => crate::tf!(
             "center ({:.4},{:.4},{:.4})  r={:.4}  area={:.4}",
             c.center.x,

@@ -4,7 +4,10 @@
 // from the RasterImage entity's insertion point, u/v vectors, and pixel size.
 
 use std::collections::HashMap;
+use std::mem::size_of;
 use std::sync::{Arc, Mutex, OnceLock};
+
+use super::pdf_raster::BudgetedRasterCache;
 
 /// One textured triangle vertex of an image's visible region: an RTE-split
 /// world position (`pos` high half / `pos_low` low half) plus its texture UV.
@@ -294,6 +297,41 @@ impl ImageModel {
         background: [f32; 4],
         world_per_pixel: Option<f64>,
     ) -> Option<Self> {
+        Self::underlay(u, def, background, world_per_pixel, None, false).map(|(m, _)| m)
+    }
+
+    /// [`Self::from_underlay`] for a plan view showing the world rectangle
+    /// `view` (min x, min y, max x, max y): zoomed in past the whole-page
+    /// raster, the part of the page inside `view` is drawn again at screen
+    /// resolution (#2934). The flag tells whether it was.
+    pub fn from_underlay_in_view(
+        u: &document::entities::Underlay,
+        def: &document::entities::UnderlayDefinition,
+        background: [f32; 4],
+        world_per_pixel: Option<f64>,
+        view: Option<[f64; 4]>,
+    ) -> Option<(Self, bool)> {
+        Self::underlay(u, def, background, world_per_pixel, view, false)
+    }
+
+    /// [`Self::from_underlay`] for a plot: a PDF page at print resolution, not
+    /// the screen's (#2822), where it is not too large to draw at it.
+    pub fn from_underlay_for_print(
+        u: &document::entities::Underlay,
+        def: &document::entities::UnderlayDefinition,
+        background: [f32; 4],
+    ) -> Option<Self> {
+        Self::underlay(u, def, background, None, None, true).map(|(m, _)| m)
+    }
+
+    fn underlay(
+        u: &document::entities::Underlay,
+        def: &document::entities::UnderlayDefinition,
+        background: [f32; 4],
+        world_per_pixel: Option<f64>,
+        view: Option<[f64; 4]>,
+        print: bool,
+    ) -> Option<(Self, bool)> {
         use super::pdf_raster;
         use document::entities::{UnderlayDisplayFlags, UnderlayType};
         if !u.flags.contains(UnderlayDisplayFlags::ON) {
@@ -312,12 +350,16 @@ impl ImageModel {
             let h = (rect[3] - rect[1]) * u.y_scale.abs();
             w.max(h) / wpp
         });
+        let inches = (rect[2] - rect[0]).max(rect[3] - rect[1]);
         let (source, raster) = match def.underlay_type {
             UnderlayType::Pdf => {
                 // Hidden PDF layers come from the underlay's layer overrides.
                 let source = super::pdf_layers::underlay_source(u, &def.file_path);
-                let inches = (rect[2] - rect[0]).max(rect[3] - rect[1]);
+                let print_raster = print
+                    .then(|| pdf_raster::rasterize_page_print(&source, page))
+                    .flatten();
                 let raster = match screen_side {
+                    _ if print_raster.is_some() => print_raster?,
                     Some(side)
                         if inches > 0.0 && side / inches < pdf_raster::DISPLAY_DPI as f64 =>
                     {
@@ -335,12 +377,29 @@ impl ImageModel {
             // (`underlay_vector::display_wires`).
             _ => return None,
         };
-        let pixels = pdf_raster::adjusted_pixels(
-            &source,
-            page,
-            &raster,
-            underlay_adjust(u, def, background),
-        );
+        let adjust = underlay_adjust(u, def, background);
+        let pixels = pdf_raster::adjusted_pixels(&source, page, &raster, adjust);
+        // Zoomed in past the whole-page raster: the visible part of the page
+        // again at screen resolution, as page UV and its raster.
+        let region = match (view, screen_side) {
+            (Some(view), Some(side)) if !print && inches > 0.0 => {
+                let dpi = side / inches;
+                underlay_view_uv(u, rect, view)
+                    .filter(|_| dpi > f64::from(raster.dpi) * 1.2)
+                    .and_then(|uv| {
+                        let (pw, ph) = (rect[2] - rect[0], rect[3] - rect[1]);
+                        let (w_in, h_in) = ((uv[2] - uv[0]) * pw, (uv[3] - uv[1]) * ph);
+                        let dpi = dpi.min(pdf_raster::REGION_SIDE / w_in.max(h_in));
+                        if dpi <= f64::from(raster.dpi) * 1.2 {
+                            return None;
+                        }
+                        let inches = [uv[0] * pw, uv[1] * ph, uv[2] * pw, uv[3] * ph];
+                        pdf_raster::rasterize_page_region(&source, page, inches, dpi as f32)
+                            .map(|r| (uv, r))
+                    })
+            }
+            _ => None,
+        };
 
         // The page rectangle in drawing units (1 unit per PDF inch, or per
         // DWF/DGN sheet unit), entity scale applied, from its lower-left
@@ -373,24 +432,89 @@ impl ImageModel {
         let corners_low = [[oxl, oyl, ozl]; 4];
 
         let tris_uv = underlay_visible_uv(u, rect);
-        let verts: Vec<ImageQuadVertex> = tris_uv
-            .iter()
-            .map(|&[fu, fv]| {
-                let (fu, fv) = (fu as f32, fv as f32);
-                ImageQuadVertex {
-                    pos: [ox + ux * fu + vx * fv, oy + uy * fu + vy * fv, oz],
-                    uv: [fu, 1.0 - fv],
-                    pos_low: [oxl, oyl, ozl],
+        let vertex = |[fu, fv]: [f64; 2], tex: [f32; 2]| {
+            let (fu, fv) = (fu as f32, fv as f32);
+            ImageQuadVertex {
+                pos: [ox + ux * fu + vx * fv, oy + uy * fu + vy * fv, oz],
+                uv: tex,
+                pos_low: [oxl, oyl, ozl],
+            }
+        };
+        let (pixels, width, height, verts) = match region {
+            None => {
+                let verts = tris_uv
+                    .iter()
+                    .map(|&p| vertex(p, [p[0] as f32, 1.0 - p[1] as f32]))
+                    .collect();
+                (pixels, raster.width, raster.height, verts)
+            }
+            Some((r, sharp)) => {
+                // One texture: the whole page on top, a transparent gap row
+                // pair, the region below it. The region is cut out of the
+                // whole page's triangles so the two never draw over each other.
+                let sharp_pixels = pdf_raster::adjusted_pixels_uncached(&sharp, adjust);
+                let (fw, fh) = (raster.width as usize, raster.height as usize);
+                let (rw, rh) = (sharp.width as usize, sharp.height as usize);
+                let (w, h) = (fw.max(rw), fh + 2 + rh);
+                let mut atlas = vec![0u8; w * h * 4];
+                for y in 0..fh {
+                    atlas[y * w * 4..][..fw * 4].copy_from_slice(&pixels[y * fw * 4..][..fw * 4]);
                 }
-            })
-            .collect();
+                for y in 0..rh {
+                    atlas[(fh + 2 + y) * w * 4..][..rw * 4]
+                        .copy_from_slice(&sharp_pixels[y * rw * 4..][..rw * 4]);
+                }
+                let (wf, hf) = (w as f64, h as f64);
+                let whole = |p: [f64; 2]| {
+                    [
+                        (p[0] * fw as f64 / wf) as f32,
+                        ((1.0 - p[1]) * fh as f64 / hf) as f32,
+                    ]
+                };
+                let inside = |p: [f64; 2]| {
+                    let x = (p[0] - r[0]) / (r[2] - r[0]);
+                    let y = (p[1] - r[1]) / (r[3] - r[1]);
+                    [
+                        (x * rw as f64 / wf) as f32,
+                        ((fh + 2) as f64 + (1.0 - y) * rh as f64) as f32 / hf as f32,
+                    ]
+                };
+                let rect_ccw = |x0: f64, y0: f64, x1: f64, y1: f64| {
+                    [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+                };
+                let outside = [
+                    rect_ccw(-1.0, -1.0, r[0], 2.0),
+                    rect_ccw(r[2], -1.0, 2.0, 2.0),
+                    rect_ccw(r[0], -1.0, r[2], r[1]),
+                    rect_ccw(r[0], r[3], r[2], 2.0),
+                ];
+                let region_rect = rect_ccw(r[0], r[1], r[2], r[3]);
+                let mut verts = Vec::new();
+                for tri in tris_uv.chunks_exact(3) {
+                    let mut fan = |clip: &[[f64; 2]], tex: &dyn Fn([f64; 2]) -> [f32; 2]| {
+                        let poly = super::pdf_vector::clip_to_convex(tri, clip);
+                        for k in 1..poly.len().saturating_sub(1) {
+                            for p in [poly[0], poly[k], poly[k + 1]] {
+                                verts.push(vertex(p, tex(p)));
+                            }
+                        }
+                    };
+                    for strip in &outside {
+                        fan(strip, &whole);
+                    }
+                    fan(&region_rect, &inside);
+                }
+                (Arc::new(atlas), w as u32, h as u32, verts)
+            }
+        };
+        let sharpened = width != raster.width || height != raster.height;
 
-        Some(Self {
+        Some((Self {
             render_instance: None,
             file_path: def.file_path.clone(),
             pixels,
-            width: raster.width,
-            height: raster.height,
+            width,
+            height,
             opacity: 1.0 - u.fade.min(100) as f32 / 100.0,
             corners,
             corners_low,
@@ -398,8 +522,39 @@ impl ImageModel {
             verts,
             pixelated: false,
             use_alpha: true,
-        })
+        }, sharpened))
     }
+}
+
+/// The part of an underlay's page inside the world rectangle `view`, as page
+/// UV (min u, min v, max u, max v); `None` when they do not overlap.
+fn underlay_view_uv(
+    u: &document::entities::Underlay,
+    rect: [f64; 4],
+    view: [f64; 4],
+) -> Option<[f64; 4]> {
+    let (c, s) = (u.rotation.cos(), u.rotation.sin());
+    let o = &u.insertion_point;
+    if u.x_scale == 0.0 || u.y_scale == 0.0 {
+        return None;
+    }
+    let (pw, ph) = (rect[2] - rect[0], rect[3] - rect[1]);
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for (x, y) in [
+        (view[0], view[1]),
+        (view[2], view[1]),
+        (view[2], view[3]),
+        (view[0], view[3]),
+    ] {
+        let (dx, dy) = (x - o.x, y - o.y);
+        let lx = (dx * c + dy * s) / u.x_scale;
+        let ly = (-dx * s + dy * c) / u.y_scale;
+        let p = [(lx - rect[0]) / pw, (ly - rect[1]) / ph];
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    let uv = [lo[0].max(0.0), lo[1].max(0.0), hi[0].min(1.0), hi[1].min(1.0)];
+    (uv[2] > uv[0] && uv[3] > uv[1] && uv.iter().all(|v| v.is_finite())).then_some(uv)
 }
 
 /// Visible region of an underlay page as triangles in page UV (0..1, y up):
@@ -520,9 +675,23 @@ pub struct DecodedImage {
 
 type ImageCacheEntry = Arc<OnceLock<Option<DecodedImage>>>;
 
-fn image_cache() -> &'static Mutex<HashMap<String, ImageCacheEntry>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, ImageCacheEntry>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+/// Per-cache byte budget for the decoded-image caches (the per-path decode
+/// memo and the brightness/contrast copies each get one). A drawing's raster
+/// attachments decode to full RGBA that would otherwise stay resident for the
+/// whole process lifetime; past the budget the least recently used images are
+/// dropped and re-decoded on demand. Tunable with `OCS_IMAGE_CACHE_MB`.
+fn image_cache_budget_bytes() -> usize {
+    const DEFAULT_MIB: usize = 64;
+    std::env::var("OCS_IMAGE_CACHE_MB")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MIB)
+        .saturating_mul(1024 * 1024)
+}
+
+fn image_cache() -> &'static Mutex<BudgetedRasterCache<String, ImageCacheEntry>> {
+    static CACHE: OnceLock<Mutex<BudgetedRasterCache<String, ImageCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BudgetedRasterCache::new()))
 }
 
 /// Insertion order of the source cache's keys, so by-name resolution has a
@@ -578,7 +747,7 @@ pub fn register_source(path: &str, bytes: Arc<Vec<u8>>) {
         sources.insert(path.to_string(), bytes);
     }
     if let Ok(mut cache) = image_cache().lock() {
-        cache.retain(|cached, _| !same_file_name(cached, path));
+        cache.retain(|cached| !same_file_name(cached, path));
     }
 }
 
@@ -719,16 +888,16 @@ fn adjusted_image_pixels(
     }
     type Key = (String, usize, u8, u8);
     type Entry = (Arc<Vec<u8>>, Arc<Vec<u8>>);
-    static CACHE: OnceLock<Mutex<HashMap<Key, Entry>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<BudgetedRasterCache<Key, Entry>>> = OnceLock::new();
     let key = (
         path.to_string(),
         Arc::as_ptr(pixels) as usize,
         brightness,
         contrast,
     );
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache = CACHE.get_or_init(|| Mutex::new(BudgetedRasterCache::new()));
     if let Some((_, hit)) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
-        return Arc::clone(hit);
+        return hit;
     }
     let lut = brightness_contrast_lut(brightness, contrast);
     let mut out = pixels.as_ref().clone();
@@ -738,12 +907,17 @@ fn adjusted_image_pixels(
         }
     }
     let out = Arc::new(out);
-    let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
-    // ponytail: cleared wholesale past 64 entries; an LRU if many images are adjusted.
-    if cache.len() > 64 {
-        cache.clear();
-    }
-    cache.insert(key, (Arc::clone(pixels), Arc::clone(&out)));
+    // The entry pins both buffers, so the budget is charged for both.
+    let cost = size_of::<Key>() + pixels.capacity() + out.capacity();
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert_with_budget(
+            key,
+            (Arc::clone(pixels), Arc::clone(&out)),
+            cost,
+            image_cache_budget_bytes(),
+        );
     out
 }
 
@@ -761,17 +935,45 @@ pub fn resolve_image(path: &str) -> Option<DecodedImage> {
     if path.is_empty() {
         return None;
     }
-    let entry = {
+    let key = path.to_string();
+    let budget = image_cache_budget_bytes();
+    let (entry, fresh) = {
         let mut cache = image_cache()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        Arc::clone(
-            cache
-                .entry(path.to_string())
-                .or_insert_with(|| Arc::new(OnceLock::new())),
-        )
+        match cache.get(&key) {
+            Some(entry) => (entry, false),
+            None => {
+                let entry = Arc::new(OnceLock::new());
+                cache.insert_with_budget(key.clone(), Arc::clone(&entry), 0, budget);
+                (entry, true)
+            }
+        }
     };
-    entry.get_or_init(|| decode_reference(path)).clone()
+    let decoded = entry.get_or_init(|| decode_reference(path)).clone();
+    if fresh {
+        // A hit's cost is already settled; only a fresh decode needs re-registering.
+        let cost = size_of::<String>()
+            + decoded.as_ref().map_or(0, |image| {
+                size_of::<DecodedImage>() + image.pixels.capacity()
+            });
+        let mut cache = image_cache()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Invalidation may have dropped our entry while the decode ran.
+        let ours = cache
+            .get(&key)
+            .is_some_and(|cached| Arc::ptr_eq(&cached, &entry));
+        if ours {
+            if cost > budget {
+                // Too big to budget: drop the placeholder instead of retaining it uncounted.
+                cache.pop(&key);
+            } else {
+                cache.insert_with_budget(key, entry, cost, budget);
+            }
+        }
+    }
+    decoded
 }
 
 /// Decode a reference to RGBA pixels. Priority: registered bytes (picked or
@@ -1549,6 +1751,27 @@ mod tests {
     /// The decode peak per layout: into_rgba8 is a MOVE for Rgba8 only —
     /// every other layout pays native + RGBA coexisting. GIF additionally
     /// carries the screen-sized output beside a (clamped) frame buffer.
+    /// #2822: a plot draws a PDF underlay's page at print resolution, the
+    /// screen keeps its display raster.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_pdf_underlay_plots_at_print_resolution() {
+        use printpdf::{Mm, PdfDocument, PdfPage, PdfSaveOptions};
+        let mut pdf = PdfDocument::new("print underlay");
+        pdf.pages.push(PdfPage::new(Mm(25.4), Mm(25.4), Vec::new()));
+        let bytes = pdf.save(&PdfSaveOptions::default(), &mut Vec::new());
+        let path = "memory://print-underlay-test.pdf";
+        super::super::pdf_raster::register_source(path, std::sync::Arc::new(bytes));
+        let def = document::objects::UnderlayDefinition::pdf(path, "1");
+        let underlay = document::entities::Underlay::pdf();
+        let shown = ImageModel::from_underlay(&underlay, &def, [1.0; 4], None).expect("shown");
+        let printed =
+            ImageModel::from_underlay_for_print(&underlay, &def, [1.0; 4]).expect("printed");
+        assert_eq!(shown.width, 150);
+        assert_eq!(printed.width, 300);
+        assert_eq!(printed.corners, shown.corners, "the same place on the sheet");
+    }
+
     #[test]
     fn native_footprint_peaks_match_the_coexistence_math() {
         use image::ColorType;
@@ -1669,6 +1892,151 @@ mod tests {
         assert!(!same_file_name("site.png", "site.jpg"));
         assert!(!same_file_name("", ""));
         assert!(!same_file_name("C:\\dir\\", "dir"));
+    }
+
+    // ── Decoded-image cache byte budgets ─────────────────────────────────
+
+    /// Serialises the tests that shrink the process-wide image budget: the
+    /// env override is shared by every test thread in this process.
+    static IMAGE_BUDGET_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ImageBudgetEnvGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ImageBudgetEnvGuard {
+        fn set(mib: &str) -> Self {
+            let previous = std::env::var_os("OCS_IMAGE_CACHE_MB");
+            std::env::set_var("OCS_IMAGE_CACHE_MB", mib);
+            Self { previous }
+        }
+    }
+
+    impl Drop for ImageBudgetEnvGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var("OCS_IMAGE_CACHE_MB", value),
+                None => std::env::remove_var("OCS_IMAGE_CACHE_MB"),
+            }
+        }
+    }
+
+    /// A registered 256×256 image decodes to 256 KiB of RGBA, so a handful of
+    /// distinct references passes a 1 MiB budget.
+    fn budget_image(tag: &str) -> String {
+        let path = format!("memory://image-budget-{tag}.png");
+        register_source(&path, Arc::new(png_bytes(256, 256, 0x7f)));
+        path
+    }
+
+    #[test]
+    fn decode_sweep_past_budget_evicts_the_oldest_image() {
+        let _lock = IMAGE_BUDGET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _budget = ImageBudgetEnvGuard::set("1");
+        let oldest = budget_image("evict-oldest");
+        let first = resolve_image(&oldest).expect("first decode");
+        for i in 0..8 {
+            let path = budget_image(&format!("evict-sweep-{i}"));
+            drop(resolve_image(&path).expect("sweep decode"));
+        }
+        let again = resolve_image(&oldest).expect("re-decode");
+        assert!(
+            !Arc::ptr_eq(&first.pixels, &again.pixels),
+            "the oldest decoded image must be evicted once the sweep passes the budget"
+        );
+    }
+
+    #[test]
+    fn adjusted_sweep_past_budget_evicts_the_oldest_copy() {
+        let _lock = IMAGE_BUDGET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _budget = ImageBudgetEnvGuard::set("1");
+        // Distinct source buffers: the adjusted key embeds the buffer address,
+        // and each entry pins its source, so equal contents still differ.
+        let sources: Vec<Arc<Vec<u8>>> = (0..6)
+            .map(|_| Arc::new(vec![0x40u8; 256 * 256 * 4]))
+            .collect();
+        let first = adjusted_image_pixels("memory://adj-oldest.png", &sources[0], 60, 40);
+        for (i, src) in sources.iter().enumerate().skip(1) {
+            drop(adjusted_image_pixels(
+                &format!("memory://adj-sweep-{i}.png"),
+                src,
+                60,
+                40,
+            ));
+        }
+        let again = adjusted_image_pixels("memory://adj-oldest.png", &sources[0], 60, 40);
+        assert!(
+            !Arc::ptr_eq(&first, &again),
+            "the oldest adjusted copy must be evicted once the sweep passes the budget"
+        );
+    }
+
+    /// A cache hit must promote the entry: a re-touched older image survives a
+    /// sweep that evicts an untouched newer one. Two 256 KiB decodes fit the
+    /// 1 MiB budget before the sweep pushes past it.
+    #[test]
+    fn re_touching_an_older_image_keeps_it_cached_past_the_budget() {
+        let _lock = IMAGE_BUDGET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _budget = ImageBudgetEnvGuard::set("1");
+        let a = budget_image("recency-a");
+        let b = budget_image("recency-b");
+        let oldest = resolve_image(&a).expect("decode A");
+        let middle = resolve_image(&b).expect("decode B");
+        let touched = resolve_image(&a).expect("re-touch A");
+        assert!(
+            Arc::ptr_eq(&oldest.pixels, &touched.pixels),
+            "re-touch reads the cached decode"
+        );
+        drop(touched);
+        for i in 0..2 {
+            let path = budget_image(&format!("recency-push-{i}"));
+            drop(resolve_image(&path).expect("push decode"));
+        }
+        let b_again = resolve_image(&b).expect("re-decode B");
+        let b_cached = Arc::ptr_eq(&middle.pixels, &b_again.pixels);
+        let a_again = resolve_image(&a).expect("re-decode A");
+        let a_cached = Arc::ptr_eq(&oldest.pixels, &a_again.pixels);
+        // Recency under a shared budget: A must outlive B, not absolutely survive.
+        assert!(
+            a_cached || !b_cached,
+            "the re-touched image outlives the untouched one under eviction"
+        );
+    }
+
+    /// Regression guard (passes with and without eviction): a sweep that stays
+    /// inside the budget keeps its most recent image cached.
+    #[test]
+    fn recent_image_survives_a_sweep_within_budget() {
+        let _lock = IMAGE_BUDGET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _budget = ImageBudgetEnvGuard::set("128");
+        let mut recent = None;
+        let mut last_path = String::new();
+        for i in 0..8 {
+            last_path = budget_image(&format!("within-{i}"));
+            recent = Some(resolve_image(&last_path).expect("decode"));
+        }
+        let recent = recent.expect("last decode");
+        let again = resolve_image(&last_path).expect("re-decode");
+        assert!(
+            Arc::ptr_eq(&recent.pixels, &again.pixels),
+            "the most recent image stays cached while the sweep fits the budget"
+        );
+    }
+
+    /// An image whose decode exceeds the whole budget must not linger in the
+    /// cache at zero accounted cost: it is returned once, then re-decoded.
+    #[test]
+    fn an_image_larger_than_the_budget_is_not_retained() {
+        let _lock = IMAGE_BUDGET_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _budget = ImageBudgetEnvGuard::set("1");
+        let path = "memory://image-budget-oversized.png".to_string();
+        register_source(&path, Arc::new(png_bytes(1024, 1024, 0x7f)));
+        let first = resolve_image(&path).expect("first decode");
+        let again = resolve_image(&path).expect("second decode");
+        assert!(
+            !Arc::ptr_eq(&first.pixels, &again.pixels),
+            "an image bigger than the budget must not linger in the cache"
+        );
     }
 
     // ── Display-LOD budgets ──────────────────────────────────────────────

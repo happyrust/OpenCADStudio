@@ -161,11 +161,15 @@ pub(super) struct DocumentTab {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) disk_fingerprint: Option<crate::io::edit_lock::FileFingerprint>,
     pub(super) dirty: bool,
+    /// USERS1..USERS5: the drawing's string registers. Like the reference
+    /// application they live with the open drawing and are not saved.
+    pub(super) user_strings: [String; 5],
     /// Direct Save is redirected to Save As after open-time repairs so the
     /// source drawing cannot be overwritten accidentally.
     pub(super) recovery_save_as_required: bool,
     /// Experimental IFCCAD consent belongs only to this open document session.
     pub(super) ifccad_alpha_acknowledged: bool,
+    pub(super) ifccad_session: Option<ocs_save::IfccadSession>,
     /// Monotonic committed-edit/undo/redo revision. Background save completion
     /// uses it with scene epochs so an older snapshot never clears newer work.
     pub(super) edit_revision: u64,
@@ -221,6 +225,8 @@ pub(super) struct DocumentTab {
     /// "Previous" keyword at any Select objects prompt (#426).
     pub(super) prev_selection: Vec<document::Handle>,
     pub(super) last_cmd: Option<String>,
+    /// MULTIPLE: the command started again each time it ends, until Escape.
+    pub(super) multiple_cmd: Option<String>,
     /// INSNAME: the last block inserted in this drawing, offered as `-INSERT`'s
     /// default. It belongs to the drawing, so a name remembered here is never
     /// offered in another one.
@@ -366,9 +372,11 @@ pub(super) struct DocumentTab {
     /// The palette renders a neutral "open EXTERNALREFERENCES" notice while non-zero;
     /// never auto-opens a modal. Cleared by a clean palette refresh.
     pub(super) xref_missing: usize,
-    /// Every external reference resolved when this drawing was opened:
-    /// (name, path, status). Automation reports it in `state.xrefs`.
-    pub(super) xref_report: Vec<(String, String, crate::io::xref::XrefStatus)>,
+    /// Every external reference in this drawing: (name, path, status label).
+    /// Automation reports it in `state.xrefs`. Rebuilt on open and after every
+    /// reference operation, so the label reflects the live status (loaded,
+    /// unloaded, not_found, stale, …) rather than the open-time snapshot.
+    pub(super) xref_report: Vec<(String, String, &'static str)>,
     /// Sentinel "Welcome / Start" tab. Always at index 0 when present.
     /// Cannot be closed; the viewport area renders a welcome page instead
     /// of the model-space shader. The scene is still constructed so the
@@ -862,8 +870,10 @@ impl DocumentTab {
             #[cfg(not(target_arch = "wasm32"))]
             disk_fingerprint: None,
             dirty: false,
+            user_strings: Default::default(),
             recovery_save_as_required: false,
             ifccad_alpha_acknowledged: false,
+            ifccad_session: None,
             edit_revision: 0,
             document_opened_pending: true,
             prev_selection: Vec::new(),
@@ -882,6 +892,7 @@ impl DocumentTab {
             layiso_state: None,
             layiso_mode: LayisoMode::Off,
             last_cmd: None,
+            multiple_cmd: None,
             insname: String::new(),
             last_draw_anchor: None,
             snap_result: None,
@@ -979,11 +990,12 @@ impl DocumentTab {
     /// new, system open): the next message boundary announces
     /// `DocumentOpened` once for this load (API v9). Call after the document
     /// and its derived caches have settled.
-    pub(super) fn note_document_loaded(&mut self) {
+    pub(super) fn note_document_loaded(&mut self, ifccad_session: Option<ocs_save::IfccadSession>) {
         // The document this tab's identity remembers a placed position in is
         // gone, and its coordinates are not the new document's.
         crate::modules::draw::draw::attdef::session().forget_place_of(self.id);
         crate::modules::annotate::text::forget_place_of(self.id);
+        self.ifccad_session = ifccad_session;
         self.document_opened_pending = true;
     }
 
@@ -1174,6 +1186,11 @@ impl HistorySnapshot {
                     (before.len() + after.len()).saturating_mul(32)
                 }))
                 .saturating_add(d.reference_designations.len().saturating_mul(16))
+                .saturating_add(d.reference_session.as_ref().map_or(0, |(before, after)| {
+                    before
+                        .estimated_bytes()
+                        .saturating_add(after.estimated_bytes())
+                }))
                 .saturating_add(d.label.estimated_bytes()),
             HistorySnapshot::ObjectVisibility(v) => v
                 .before
@@ -1199,6 +1216,34 @@ pub(super) struct ObjectVisibilitySnapshot {
     pub(super) selected_before: Vec<Handle>,
     pub(super) selected_after: Vec<Handle>,
     pub(super) label: HistoryLabel,
+}
+
+/// Session-only external-reference state captured alongside a document edit.
+/// The unloaded set controls visibility; the stat cache is the corresponding
+/// load-time baseline and must follow reload/detach/bind through undo and redo.
+#[derive(Clone)]
+pub(super) struct ReferenceSessionState {
+    pub(super) xref_unloaded: crate::io::xref_model::UnloadSet,
+    pub(super) xref_stat_cache: crate::io::xref_model::RefStatCache,
+}
+
+impl PartialEq for ReferenceSessionState {
+    fn eq(&self, other: &Self) -> bool {
+        self.xref_unloaded.0 == other.xref_unloaded.0
+            && self.xref_stat_cache.0 == other.xref_stat_cache.0
+    }
+}
+
+impl Eq for ReferenceSessionState {}
+
+impl ReferenceSessionState {
+    pub(super) fn estimated_bytes(&self) -> usize {
+        self.xref_unloaded
+            .0
+            .len()
+            .saturating_mul(16)
+            .saturating_add(self.xref_stat_cache.0.len().saturating_mul(24))
+    }
 }
 
 /// A transactional undo entry: for each touched handle, its before-image and
@@ -1243,6 +1288,9 @@ pub(super) struct DeltaSnapshot {
     /// the entity it belongs to (e.g. a plugin scope that both erases and
     /// re-designates). Almost always empty.
     pub(super) reference_designations: Vec<ReferenceDesignationDelta>,
+    /// Session-only reference state changed by this transaction. Kept separate
+    /// from the serializable document because image/DWG loadedness is per-tab.
+    pub(super) reference_session: Option<(ReferenceSessionState, ReferenceSessionState)>,
     /// The node graph before and after a graph evaluation, which edits the
     /// drawing from the graph's inputs (#2731).
     pub(super) graph: Option<
@@ -1369,6 +1417,8 @@ pub(super) struct PendingHistorySnapshot {
     /// set's current state as the after-image and keeping entries whose value
     /// actually flipped.
     pub(super) reference_designations_before: Vec<(Handle, bool)>,
+    /// Per-tab reference loadedness and stat baselines when the scope opened.
+    pub(super) reference_session_before: ReferenceSessionState,
     /// Parametric constraint sets when the scope opened; the scope closes
     /// with a before/after entry for every set that changed, so undo also
     /// removes a constraint a plugin created inside its scope.

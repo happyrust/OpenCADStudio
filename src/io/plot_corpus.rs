@@ -77,6 +77,7 @@ impl Case {
                 images: Vec::new(),
                 group_splits: self.group_splits,
                 entity_layers: Default::default(),
+                entity_plot_styles: Default::default(),
             },
             paper_w: self.paper.0 as f64,
             paper_h: self.paper.1 as f64,
@@ -87,6 +88,7 @@ impl Case {
             clip: self.clip,
             options: self.options,
             plot_style: self.plot_style.clone(),
+            geopdf: None,
         }
     }
 
@@ -141,6 +143,8 @@ pub fn hatch(
         angle_offset: 0.0,
         scale: 1.0,
         draw_depth: 0.5,
+        effective_layer: None,
+        entity: None,
     }
 }
 

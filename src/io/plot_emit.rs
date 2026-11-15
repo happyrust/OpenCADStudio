@@ -1569,6 +1569,8 @@ fn emit_wire_fills<S: PlotSink>(
                     // child label and would sort the fill outside its block's
                     // band; keep the pattern fill co-sorted with its wire.
                     draw_depth: wire_depth,
+                    effective_layer: wire.effective_layer.clone(),
+                    entity: None,
                 };
                 emit_hatch(
                     sink,

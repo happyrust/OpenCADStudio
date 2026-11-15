@@ -219,6 +219,7 @@ impl OpenCADStudio {
             &self.tabs[i].scene.document,
             handle,
         ));
+        sections.extend(crate::entities::civil::properties(entity, &self.tabs[i].scene.document));
 
         // Turn the Material row into an editable picker: the source
         // options (ByLayer / ByBlock) plus every named material the
@@ -599,15 +600,14 @@ impl OpenCADStudio {
 
         if !self.tabs[i].scene.document.header.plotstyle_mode {
             let doc = &self.tabs[i].scene.document;
-            let dict_h = doc.header.acad_plotstylename_dict_handle;
             let common = entity.common();
             let mut options = vec![
                 "ByLayer".to_string(),
                 "ByBlock".to_string(),
                 "Normal".to_string(),
             ];
-            if let Some(dict) = crate::scene::annotative::as_dict(doc, dict_h) {
-                for (n, _) in &dict.entries {
+            if let Some(entries) = plot_style_entries(doc) {
+                for (n, _) in entries {
                     if !options.contains(n) {
                         options.push(n.clone());
                     }
@@ -2031,6 +2031,54 @@ impl OpenCADStudio {
             }
         }
 
+        // An annotative hatch gives its pattern scale (and the spacing and
+        // pen width that follow it) on paper, as the reference does.
+        if let Some(per_paper) = self.tabs[i]
+            .scene
+            .annotative_hatch_model_per_paper(entity.common().handle)
+        {
+            let shown = crate::scene::annotative::entity_for_annotation_context(
+                doc,
+                entity,
+                annotation_scale_handle,
+            );
+            if let document::EntityType::Hatch(hatch) = shown.as_ref() {
+                let paper = hatch.pattern_scale / per_paper;
+                for section in sections.iter_mut() {
+                    for row in section.props.iter_mut() {
+                        let read_only = matches!(
+                            row.value,
+                            crate::scene::model::object::PropValue::ReadOnly(_)
+                        );
+                        match row.field {
+                            "pattern_scale" | "spacing" => {
+                                *row = crate::entities::common::num_prop(
+                                    &row.label.clone(),
+                                    row.field,
+                                    paper,
+                                    !read_only,
+                                );
+                            }
+                            "iso_pen_width" if read_only => {
+                                row.value = crate::scene::model::object::PropValue::ReadOnly(
+                                    format!("{paper:.2} mm"),
+                                );
+                            }
+                            "iso_pen_width" => {
+                                *row = crate::entities::common::num_prop(
+                                    &row.label.clone(),
+                                    row.field,
+                                    paper,
+                                    true,
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
         // Single-line text height rows depend on both the
         // justification and the active annotation scale. Aligned
         // text derives its paper height from the two endpoints,
@@ -2103,6 +2151,71 @@ impl OpenCADStudio {
                     crate::entities::common::format_length(stored * ratio),
                 ),
             );
+            // Annotative multiline text shows its defined box twice, as on
+            // paper (editable as the box is) and in the model (read-only).
+            // Line space distance is measured on the model height (measured:
+            // 16.6667 for 2.5 paper text at 1:4).
+            if let document::EntityType::MText(text) = entity {
+                for section in sections.iter_mut() {
+                    if let Some(row) = section
+                        .props
+                        .iter_mut()
+                        .find(|row| row.field == "line_space_distance")
+                    {
+                        *row = crate::entities::common::edit_prop(
+                            &row.label.clone(),
+                            "line_space_distance",
+                            stored * ratio * 1.666_666_666_666_667 * text.line_spacing_factor,
+                        );
+                    }
+                }
+            }
+            // The box is per representation: the shown scale's is the model
+            // size, its paper size that over the scale's model-per-paper.
+            let shown = crate::scene::annotative::entity_for_annotation_context(
+                doc,
+                entity,
+                annotation_scale_handle,
+            );
+            if let document::EntityType::MText(text) = shown.as_ref() {
+                let per_paper = (model_factor * ratio).max(1.0e-12);
+                let rows = [
+                    ("rect_w", "rect_w_model", text.rectangle_width, "Paper defined width", "Model defined width"),
+                    (
+                        "rect_h",
+                        "rect_h_model",
+                        text.rectangle_height.unwrap_or(0.0),
+                        "Paper defined height",
+                        "Model defined height",
+                    ),
+                ];
+                for (field, model_field, model, paper_label, model_label) in rows {
+                    for section in sections.iter_mut() {
+                        if let Some(row) = section.props.iter_mut().find(|row| row.field == field) {
+                            let editable = !matches!(
+                                row.value,
+                                crate::scene::model::object::PropValue::ReadOnly(_)
+                            );
+                            *row = crate::entities::common::num_prop(
+                                crate::t!(paper_label).as_ref(),
+                                field,
+                                model / per_paper,
+                                editable,
+                            );
+                        }
+                    }
+
+                    insert_row_after(
+                        &mut sections,
+                        field,
+                        crate::entities::common::ro_prop(
+                            crate::t!(model_label).as_ref(),
+                            model_field,
+                            crate::entities::common::format_length(model),
+                        ),
+                    );
+                }
+            }
             // Text and multiline text: Match orientation to layout, the
             // AcadAnnoPO flag (an attribute definition has no such row).
             if !matches!(entity, document::EntityType::AttributeDefinition(_)) {
@@ -2472,7 +2585,18 @@ impl OpenCADStudio {
         // that takes what is typed and then gives it back is worse than none.
         let session_reads_only = self.collab.readonly && self.is_collab_tab(i);
         let mut new_panel = {
-            let selected = self.tabs[i].scene.selected_entities();
+            // `cur_handles` is already ordered and filtered to live entities
+            // above. Reusing it avoids rebuilding that entire selection again.
+            let selected: Vec<_> = cur_handles
+                .iter()
+                .filter_map(|&handle| {
+                    self.tabs[i]
+                        .scene
+                        .document
+                        .get_entity(handle)
+                        .map(|entity| (handle, entity))
+                })
+                .collect();
             let mut panel = match selected.len() {
                 0 => {
                     use crate::scene::model::object::{PropSection, PropValue, Property};
@@ -2989,6 +3113,43 @@ impl OpenCADStudio {
                             })
                             .unwrap_or_default();
                     }
+                    // Mixed annotative objects lose the row the per-type
+                    // builders place in different sections; keep it so the
+                    // scale list can be edited on all of them at once.
+                    let doc = &self.tabs[i].scene.document;
+                    if filtered.len() > 1
+                        && !sections
+                            .iter()
+                            .any(|s| s.props.iter().any(|p| p.field == "annotative_scale"))
+                        && filtered.iter().all(|(_, entity)| {
+                            crate::scene::annotative::supports_annotation_context(entity)
+                                && crate::scene::annotative::is_annotative(doc, entity)
+                        })
+                    {
+                        let shown = |handle: Handle| {
+                            let scale = crate::scene::annotative::active_object_context_for_scale(
+                                doc, handle, None,
+                            )?
+                            .scale;
+                            crate::scene::annotative::object_scale_memberships(doc, handle)
+                                .into_iter()
+                                .find(|(_, h)| *h == scale)
+                                .map(|(name, _)| name)
+                        };
+                        let first = shown(filtered[0].0);
+                        let value = if filtered.iter().all(|(handle, _)| shown(*handle) == first) {
+                            first.unwrap_or_else(|| doc.header.current_annotation_scale.clone())
+                        } else {
+                            VARIES_LABEL.to_string()
+                        };
+                        if let Some(section) = sections.first_mut() {
+                            section.props.push(crate::entities::common::ro_prop(
+                                t!("Annotative scale").as_ref(),
+                                "annotative_scale",
+                                value,
+                            ));
+                        }
+                    }
                     if let (Some(t), Some(groups_ms), Some(filter_ms), Some(local_ms)) =
                         (t_arm, t_groups, t_filter, t_local)
                     {
@@ -3318,16 +3479,46 @@ filter={:.1} local={:.1} aggregate={:.1} entities={}",
                         self.authoring_parameter_properties(item.handle)
                     {
                         if let Some(chain_actions) = chaining {
+                            let mut props = vec![Property {
+                                label: crate::t!("Chain actions").into_owned(),
+                                field: "authoring_chain_actions",
+                                value: PropValue::BoolToggle {
+                                    field: "authoring_chain_actions",
+                                    value: chain_actions,
+                                },
+                            }];
+                            if let Some(document::objects::ObjectType::DynamicBlock(object)) =
+                                self.tabs[i].scene.document.objects.get(&item.handle)
+                            {
+                                if let document::objects::DynamicBlockData::LinearParameter(
+                                    parameter,
+                                ) = &object.data
+                                {
+                                    props.push(Property {
+                                        label: crate::t!("Base location").into_owned(),
+                                        field: "authoring_base_location",
+                                        value: PropValue::Choice {
+                                            selected: crate::t!(if parameter
+                                                .parameter
+                                                .parameter_base_location
+                                                != 0
+                                            {
+                                                "Midpoint"
+                                            } else {
+                                                "Startpoint"
+                                            })
+                                            .into_owned(),
+                                            options: vec![
+                                                crate::t!("Startpoint").into_owned(),
+                                                crate::t!("Midpoint").into_owned(),
+                                            ],
+                                        },
+                                    });
+                                }
+                            }
                             panel.sections.push(PropSection {
                                 title: crate::t!("Behavior").into_owned(),
-                                props: vec![Property {
-                                    label: crate::t!("Chain actions").into_owned(),
-                                    field: "authoring_chain_actions",
-                                    value: PropValue::BoolToggle {
-                                        field: "authoring_chain_actions",
-                                        value: chain_actions,
-                                    },
-                                }],
+                                props,
                             });
                         }
                         if !value_sets.is_empty() {
@@ -3816,6 +4007,7 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
             grip.targets.iter().any(|target| {
                 self.tabs[i].scene.is_layer_locked(target.handle)
                     || self.tabs[i].scene.is_reference_only(target.handle)
+                    || self.tabs[i].scene.native_edit_disabled(target.handle)
             })
         });
         if locked_active_grip {
@@ -3846,21 +4038,32 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
         let wo = if is_paper { [0.0f64; 3] } else { [0.0_f64; 3] };
         let group_boxes;
         let (new_handle, new_grips, new_grip_handles) = {
-            let selected = self.tabs[i].scene.selected_entities();
+            let limit = self.grip_object_limit;
+            // The limit is based on live entities, not raw handles. Count only
+            // up to the threshold before allocating or ordering the full set.
+            let over_limit = limit > 0
+                && self.tabs[i]
+                    .scene
+                    .selected
+                    .iter()
+                    .filter(|handle| self.tabs[i].scene.document.get_entity(**handle).is_some())
+                    .take(limit as usize + 1)
+                    .count()
+                    > limit as usize;
+            let selected = if over_limit {
+                Vec::new()
+            } else {
+                self.tabs[i].scene.selected_entities()
+            };
             let single_handle = (selected.len() == 1
                 && !self.tabs[i].scene.is_layer_locked(selected[0].0)
-                && !self.tabs[i].scene.is_reference_only(selected[0].0))
+                && !self.tabs[i].scene.is_reference_only(selected[0].0)
+                && !self.tabs[i].scene.native_edit_disabled(selected[0].0))
             .then(|| selected[0].0);
             let mut grips = Vec::new();
             let mut handles = Vec::new();
             // Avoid rebuilding every entity's grip markers above the configured
             // limit. Zero disables the limit.
-            let limit = self.grip_object_limit;
-            let selected = if limit > 0 && selected.len() > limit as usize {
-                Vec::new()
-            } else {
-                selected
-            };
             // A group picked whole shows one grip at the centre of its
             // extents (GROUPDISPLAYMODE 1, 2) in place of its members' own,
             // and a box round them (2) 2.5 % of their size out on each side.
@@ -3878,7 +4081,9 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
             for (members, min, max) in &whole_groups {
                 let centre = (*min + *max) * 0.5;
                 for &member in members {
-                    if self.tabs[i].scene.is_layer_locked(member) {
+                    if self.tabs[i].scene.is_layer_locked(member)
+                        || self.tabs[i].scene.native_edit_disabled(member)
+                    {
                         continue;
                     }
                     handles.push(member);
@@ -3900,6 +4105,9 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
             // A table whose cells are picked shows no table grips.
             let picked_table = self.tabs[i].scene.table_cells_handle();
             for (handle, entity) in selected {
+                if self.tabs[i].scene.native_edit_disabled(handle) {
+                    continue;
+                }
                 if group_members.contains(&handle) {
                     continue;
                 }
@@ -4063,6 +4271,7 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
         };
         if self.tabs[i].scene.is_layer_locked(handle)
             || self.tabs[i].scene.is_reference_only(handle)
+            || self.tabs[i].scene.native_edit_disabled(handle)
         {
             return Ok(Vec::new());
         }
@@ -4084,6 +4293,7 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                 &self.tabs[i].scene.document,
                 insert,
                 self.tabs[i].scene.annotation_scale,
+                annotation_scale_handle,
             );
         }
         if crate::scene::model::solid_history::has_specialized_primitive_properties(
@@ -4196,7 +4406,9 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
     pub(super) fn property_target_handles(&self, i: usize) -> Vec<Handle> {
         // The node graph edits its own node's entity through the panel's
         // handlers, independent of the drawing selection.
-        self.resolve_property_targets(i, true, |scene, handle| !scene.is_layer_locked(handle))
+        self.resolve_property_targets(i, true, |scene, handle| {
+            !scene.is_layer_locked(handle) && !scene.native_edit_disabled(handle)
+        })
     }
 
     /// The point clouds the Locked row applies to: locked ones too, unless
@@ -4246,6 +4458,25 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
 
     pub(super) fn invalidate_property_targets(&mut self, i: usize, handles: &[Handle]) {
         self.invalidate_property_targets_with_driven(i, handles, &[]);
+    }
+
+    /// Invalidate property targets incrementally when all handles are in top-level
+    /// spaces, falling back to `bump_geometry()` if any handle belongs to a block
+    /// definition (whose assembled cache and references must rebuild).
+    pub(super) fn invalidate_property_targets_or_blocks(&mut self, i: usize, handles: &[Handle]) {
+        if handles.is_empty() {
+            return;
+        }
+        let changes: Vec<_> = handles
+            .iter()
+            .copied()
+            .map(|h| (h, crate::scene::ChangeKind::Modified))
+            .collect();
+        if self.tabs[i].scene.changes_touch_block_definition(&changes) {
+            self.tabs[i].scene.bump_geometry();
+        } else {
+            self.invalidate_property_targets(i, handles);
+        }
     }
 
     pub(super) fn invalidate_property_targets_with_driven(
@@ -4418,7 +4649,13 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                 crate::modules::annotate::data_link::link_cells(table, link, 1);
             }
             const PREFIX: &str = "__OPENCAD_LINK_PENDING__";
-            if let Some(path) = table.name.strip_prefix(PREFIX).map(str::to_string) {
+            if let Some(pending) = table.name.strip_prefix(PREFIX).map(str::to_string) {
+                // A file; or a file, a sheet of it and the cells of the
+                // sheet, each on a line (`DataLinkPlaceCommand::of_cells`).
+                let mut lines = pending.split('\n');
+                let path = lines.next().unwrap_or_default().to_string();
+                let sheet = lines.next().unwrap_or_default();
+                let cells = lines.next().filter(|cells| !cells.is_empty());
                 let document = &mut self.tabs[i].scene.document;
                 let stem = std::path::Path::new(&path)
                     .file_stem()
@@ -4441,9 +4678,12 @@ handles={handles_ms:.1} panel={:.1} ribbon={ribbon_ms:.1} tail={:.1} selected={}
                     &crate::app::annotation_data::SpreadsheetLinkSettings {
                         path: &path,
                         stored_path: &path,
-                        sheet: "",
-                        kind: crate::ui::window::annotation_data::LinkRange::EntireSheet,
-                        range: None,
+                        sheet,
+                        kind: match cells {
+                            Some(_) => crate::ui::window::annotation_data::LinkRange::CellRange,
+                            None => crate::ui::window::annotation_data::LinkRange::EntireSheet,
+                        },
+                        range: cells,
                         path_option: 1,
                         allow_write: false,
                         use_source_formatting: true,
@@ -5091,32 +5331,16 @@ fn intersect_into(
     acc: &mut Vec<crate::scene::model::object::PropSection>,
     right: &[crate::scene::model::object::PropSection],
 ) {
-    use rustc_hash::FxHashMap;
-
-    // First match wins, exactly like `right.iter().find(...)`.
-    let mut right_sections: FxHashMap<&str, usize> = FxHashMap::default();
-    let mut right_fields: Vec<FxHashMap<&'static str, usize>> = Vec::with_capacity(right.len());
-    for (section_index, section) in right.iter().enumerate() {
-        let mut fields = FxHashMap::default();
-        for (prop_index, prop) in section.props.iter().enumerate() {
-            fields.entry(prop.field).or_insert(prop_index);
-        }
-        right_fields.push(fields);
-        right_sections
-            .entry(section.title.as_str())
-            .or_insert(section_index);
-    }
-
+    // Property sections are small. Avoid allocating hash maps for every one
+    // of thousands of selected entities while retaining first-match behavior.
     acc.retain_mut(|section| {
-        let Some(&section_index) = right_sections.get(section.title.as_str()) else {
+        let Some(other_section) = right.iter().find(|other| other.title == section.title) else {
             return false;
         };
-        let fields = &right_fields[section_index];
         section.props.retain_mut(|prop| {
-            let Some(&prop_index) = fields.get(prop.field) else {
+            let Some(other) = other_section.props.iter().find(|other| other.field == prop.field) else {
                 return false;
             };
-            let other = &right[section_index].props[prop_index];
             if prop.value != other.value {
                 prop.value = merge_prop_value(&prop.value, &other.value);
             }
@@ -5651,16 +5875,36 @@ pub(crate) fn plot_style_name(
         2 => "Normal".to_string(),
         _ => handle
             .and_then(|ph| {
-                crate::scene::annotative::as_dict(doc, doc.header.acad_plotstylename_dict_handle)
-                    .and_then(|dict| {
-                        dict.entries
-                            .iter()
-                            .find(|(_, h)| *h == ph)
-                            .map(|(n, _)| n.clone())
-                    })
+                plot_style_entries(doc)?
+                    .iter()
+                    .find(|(_, h)| *h == ph)
+                    .map(|(n, _)| n.clone())
             })
             .unwrap_or_else(|| "ByLayer".to_string()),
     }
+}
+
+/// Entries of the drawing's ACAD_PLOTSTYLENAME dictionary. Drawings keep it
+/// as a dictionary with default (Normal). The root dictionary's entry wins:
+/// a DXF read leaves the header pointer empty or on the new document's own
+/// dictionary, not the file's.
+pub(crate) fn plot_style_entries(
+    doc: &document::Document,
+) -> Option<&[(String, document::Handle)]> {
+    use document::objects::ObjectType;
+    let entries = |handle: document::Handle| match doc.objects.get(&handle)? {
+        ObjectType::DictionaryWithDefault(d) => Some(&d.entries[..]),
+        ObjectType::Dictionary(d) => Some(&d.entries[..]),
+        _ => None,
+    };
+    crate::scene::annotative::as_dict(doc, doc.header.named_objects_dict_handle)
+        .and_then(|root| {
+            root.entries
+                .iter()
+                .find(|(name, _)| name == "ACAD_PLOTSTYLENAME")
+        })
+        .and_then(|(_, handle)| entries(*handle))
+        .or_else(|| entries(doc.header.acad_plotstylename_dict_handle))
 }
 
 pub(crate) fn lineweight_options() -> Vec<String> {
@@ -5960,6 +6204,56 @@ pub(crate) fn field_moves_geometry(field: &str) -> bool {
     ) || (PREFIXES.iter().any(|prefix| field.starts_with(prefix))
         && !field.ends_with("_count")
         && !matches!(field, "pl2_ltype_gen" | "pl2_current_vertex"))
+}
+
+#[cfg(test)]
+mod plot_style_name_tests {
+    use super::plot_style_name;
+    use document::objects::ObjectType;
+
+    /// A drawing whose ACAD_PLOTSTYLENAME dictionary holds `name`. Drawings
+    /// keep it as a dictionary with default (Normal), as new documents do.
+    fn drawing_with_style(name: &str) -> (document::Document, document::Handle) {
+        let mut doc = document::Document::new();
+        let placeholder = doc.allocate_handle();
+        let dict = doc.header.acad_plotstylename_dict_handle;
+        match doc.objects.get_mut(&dict) {
+            Some(ObjectType::DictionaryWithDefault(d)) => {
+                d.entries.push((name.to_string(), placeholder))
+            }
+            _ => panic!("premise: ACAD_PLOTSTYLENAME is a dictionary with default"),
+        }
+        (doc, placeholder)
+    }
+
+    #[test]
+    fn an_object_style_is_named_from_the_dictionary_with_default() {
+        let (doc, placeholder) = drawing_with_style("Black");
+        assert_eq!(plot_style_name(&doc, 3, Some(placeholder)), "Black");
+    }
+
+    /// A DXF read leaves the header pointer empty; the root dictionary's
+    /// ACAD_PLOTSTYLENAME entry still names the style.
+    #[test]
+    fn without_the_header_pointer_the_root_dictionary_names_the_style() {
+        let (mut doc, placeholder) = drawing_with_style("Black");
+        doc.header.acad_plotstylename_dict_handle = document::Handle::NULL;
+        assert_eq!(plot_style_name(&doc, 3, Some(placeholder)), "Black");
+    }
+
+    /// A header pointer left on another (empty) dictionary does not hide the
+    /// root dictionary's ACAD_PLOTSTYLENAME.
+    #[test]
+    fn a_stale_header_pointer_does_not_hide_the_root_entry() {
+        let (mut doc, placeholder) = drawing_with_style("Black");
+        let stale = doc.allocate_handle();
+        let mut empty = document::objects::DictionaryWithDefault::new();
+        empty.handle = stale;
+        doc.objects
+            .insert(stale, ObjectType::DictionaryWithDefault(empty));
+        doc.header.acad_plotstylename_dict_handle = stale;
+        assert_eq!(plot_style_name(&doc, 3, Some(placeholder)), "Black");
+    }
 }
 
 #[cfg(test)]

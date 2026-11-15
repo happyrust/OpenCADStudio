@@ -2616,6 +2616,9 @@ fn stretch_pair_sets_guide_both_frames_with_undo_and_cancel() {
         ] {
             let _ = app.feed_command(StepInput::Point(point));
         }
+        if label.starts_with("Linear") {
+            let _ = app.feed_command(StepInput::Enter);
+        }
         for (side, expected) in [
             (0, ["BaseXDelta", "BaseYDelta"]),
             (1, ["EndXDelta", "EndYDelta"]),
@@ -2694,6 +2697,9 @@ fn stretch_pair_sets_guide_both_frames_with_undo_and_cancel() {
         ] {
             let _ = app.feed_command(StepInput::Point(point));
         }
+        if label.starts_with("Linear") {
+            let _ = app.feed_command(StepInput::Enter);
+        }
         assert!(app.tabs[i].pending_action_pair.is_some());
         let _ = app.dispatch_command("LINE");
         assert!(app.tabs[i].pending_action_pair.is_none());
@@ -2727,6 +2733,9 @@ fn cancelling_a_parameter_set_takes_the_parameter_with_it() {
             let _ = app.feed_command(StepInput::Enter);
         }
         let _ = app.feed_command(StepInput::Point(glam::DVec3::new(5., 2., 0.)));
+        if label.starts_with("Linear") {
+            let _ = app.feed_command(StepInput::Enter);
+        }
         assert!(
             !distance::parameters(&app.tabs[i].scene.document, definition).is_empty(),
             "{label}: the parameter is placed before the action step"
@@ -3500,12 +3509,20 @@ fn action_type_list_offers_lookup_and_routes_the_chosen_parameter_to_its_table()
 
     let _ = app.dispatch_command("BACTIONTOOL");
     let prompt = app.command_line.history.last().unwrap().text.clone();
-    assert!(prompt.contains("Lookup"), "{prompt}");
+    assert!(prompt.contains("BACTION  Select parameter:"), "{prompt}");
     assert_eq!(app.tabs[i].active_cmd.as_ref().unwrap().name(), "BACTION");
 
-    feed(&mut app, "Lookup");
-    assert!(app.active_modal.is_none(), "the parameter comes first");
     feed(&mut app, "Lookup2");
+    assert!(
+        app.active_modal.is_none(),
+        "the action type comes after the parameter"
+    );
+    assert_eq!(
+        app.tabs[i].active_cmd.as_ref().unwrap().prompt(),
+        "BACTION  Enter action type [Lookup]:",
+        "a chosen lookup parameter offers its one action type"
+    );
+    feed(&mut app, "Lookup");
     assert_eq!(app.active_modal, Some(ModalKind::BlockLookup));
     let state = app.block_lookup.as_ref().unwrap();
     let draft = &state.drafts[state.selected];
@@ -3563,9 +3580,18 @@ fn action_type_list_appears_when_only_a_lookup_parameter_is_placed() {
     let _ = app.run_command_line("BPARAMETER LOOKUP 1,1");
     let _ = app.dispatch_command("BACTIONTOOL");
     let prompt = app.command_line.history.last().unwrap().text.clone();
-    assert!(prompt.contains("Lookup"), "{prompt}");
-    feed(&mut app, "Lookup");
+    assert!(prompt.contains("BACTION  Select parameter:"), "{prompt}");
     feed(&mut app, "Lookup1");
+    assert!(app.active_modal.is_none(), "the parameter comes first");
+    assert_eq!(
+        app.tabs[app.active_tab]
+            .active_cmd
+            .as_ref()
+            .unwrap()
+            .prompt(),
+        "BACTION  Enter action type [Lookup]:"
+    );
+    feed(&mut app, "Lookup");
     assert_eq!(app.active_modal, Some(ModalKind::BlockLookup));
     assert_eq!(
         app.block_lookup.as_ref().unwrap().drafts[0]
@@ -3944,6 +3970,7 @@ fn a_linear_takes_its_chain_description_and_palette_answers_at_the_base_prompt()
     feed(&mut app, "0,0");
     feed(&mut app, "10,0");
     feed(&mut app, "5,2");
+    feed(&mut app, "");
     assert!(app.tabs[i].active_cmd.is_none());
 
     let doc = &app.tabs[i].scene.document;
@@ -4321,6 +4348,7 @@ fn a_linear_takes_a_name_and_one_label_and_asks_for_no_angle() {
     feed(&mut app, "0,0");
     feed(&mut app, "10,0");
     feed(&mut app, "5,2");
+    feed(&mut app, "");
     assert!(app.tabs[i].active_cmd.is_none());
 
     let doc = &app.tabs[i].scene.document;
@@ -4693,6 +4721,7 @@ fn a_linear_takes_its_base_location_and_value_set() {
     feed(&mut app, "0,0");
     feed(&mut app, "10,0");
     feed(&mut app, "5,2");
+    feed(&mut app, "");
     assert!(app.tabs[i].active_cmd.is_none());
 
     let doc = &app.tabs[i].scene.document;
@@ -4729,6 +4758,7 @@ fn a_linear_takes_its_base_location_and_value_set() {
     feed(&mut app, "20,0");
     feed(&mut app, "30,0");
     feed(&mut app, "25,2");
+    feed(&mut app, "");
     assert!(app.tabs[i].active_cmd.is_none());
 
     let doc = &app.tabs[i].scene.document;
@@ -4752,6 +4782,97 @@ fn a_linear_takes_its_base_location_and_value_set() {
 }
 
 #[test]
+fn a_linear_asks_for_its_grip_count_after_the_label() {
+    use crate::scene::block_grips::config;
+    let (mut app, reference) = fixture();
+    begin(&mut app, reference);
+    let i = app.active_tab;
+    let definition = app.tabs[i].active_block_edit_session().unwrap().br_handle;
+    let placed = |app: &OpenCADStudio| {
+        crate::scene::block_distance_parameter::parameters(&app.tabs[i].scene.document, definition)
+            .into_iter()
+            .map(|parameter| parameter.handle)
+            .collect::<Vec<_>>()
+    };
+    let prompt = |app: &OpenCADStudio| {
+        app.tabs[i]
+            .active_cmd
+            .as_ref()
+            .expect("command active")
+            .prompt()
+            .to_string()
+    };
+
+    let _ = app.dispatch_command("BPARAMETER LINEAR");
+    feed(&mut app, "0,0");
+    feed(&mut app, "10,0");
+    feed(&mut app, "5,2");
+    assert_eq!(
+        prompt(&app),
+        "BPARAMETER Linear  Enter number of grips [0/1/2] <2>:",
+        "the label pick is followed by the grip count"
+    );
+    assert!(
+        placed(&app).is_empty(),
+        "the parameter waits for the grip count"
+    );
+    let before = app.tabs[i].scene.document.clone();
+    for unlisted in ["3", "-1", "9"] {
+        app.command_line.last_error = None;
+        feed(&mut app, unlisted);
+        assert_eq!(app.tabs[i].scene.document, before, "{unlisted}");
+        assert_eq!(
+            app.command_line.last_error, None,
+            "{unlisted} is a count the list does not offer, so the question repeats without a message"
+        );
+        assert!(app.tabs[i].active_cmd.is_some(), "{unlisted}");
+    }
+    app.command_line.last_error = None;
+    feed(&mut app, "four");
+    assert_eq!(app.tabs[i].scene.document, before);
+    assert_eq!(
+        app.command_line.last_error.as_deref(),
+        Some("Requires an integer value."),
+        "words are no count at all"
+    );
+    assert!(app.tabs[i].active_cmd.is_some());
+    feed(&mut app, "");
+    assert!(app.tabs[i].active_cmd.is_none());
+    let first = placed(&app)[0];
+    assert_eq!(
+        config::count(&app.tabs[i].scene.document, definition, first),
+        Some(2),
+        "Enter takes the two grips the prompt offers by default"
+    );
+
+    let _ = app.dispatch_command("BPARAMETER LINEAR");
+    feed(&mut app, "20,0");
+    feed(&mut app, "30,0");
+    feed(&mut app, "25,2");
+    feed(&mut app, "1");
+    assert!(app.tabs[i].active_cmd.is_none());
+    let second = placed(&app)[1];
+    assert_eq!(
+        config::count(&app.tabs[i].scene.document, definition, second),
+        Some(1),
+        "one grip is the middle of the list"
+    );
+
+    let _ = app.dispatch_command("BPARAMETER LINEAR");
+    feed(&mut app, "40,0");
+    feed(&mut app, "50,0");
+    feed(&mut app, "45,2");
+    feed(&mut app, "0");
+    assert!(app.tabs[i].active_cmd.is_none());
+    let third = placed(&app)[2];
+    assert_eq!(
+        config::count(&app.tabs[i].scene.document, definition, third),
+        Some(0),
+        "zero removes the linear's grip"
+    );
+}
+
+#[test]
 fn a_distance_keeps_the_defaults_shown_at_each_question() {
     let (mut app, reference) = fixture();
     begin(&mut app, reference);
@@ -4772,6 +4893,7 @@ fn a_distance_keeps_the_defaults_shown_at_each_question() {
     feed(&mut app, "0,0");
     feed(&mut app, "10,0");
     feed(&mut app, "5,2");
+    feed(&mut app, "");
     assert!(app.tabs[i].active_cmd.is_none());
 
     let doc = &app.tabs[i].scene.document;
@@ -5372,6 +5494,9 @@ fn distance_parameter_batch_three_picks_local_undo_redo_and_saved_parent_undo() 
         } else {
             feed(&mut app, "1,8");
         }
+        if *kind == "LINEAR" {
+            feed(&mut app, "");
+        }
         assert_eq!(distance_parameter_count(&app), index + 1);
         assert_eq!(app.tabs[i].history.undo_stack.len(), index + 1);
         assert!(app.tabs[i].scene.preview_wires.is_empty());
@@ -5598,6 +5723,9 @@ fn distance_parameter_cancel_chooser_invalid_endpoint_and_discard_are_safe() {
             feed(&mut app, "1");
         } else {
             feed(&mut app, "1,8");
+        }
+        if kind == "Linear" {
+            feed(&mut app, "");
         }
         assert_eq!(distance_parameter_count(&app), 1);
         app.undo_steps(1);
@@ -8512,7 +8640,7 @@ fn block_grip_cycling_dialog_is_staged_undoable_and_rejects_stale_grips() {
     assert!(app.block_cycle_order.as_ref().unwrap().rows.is_empty());
     assert_eq!(app.block_cycle_order.as_ref().unwrap().selected, None);
     let _ = app.update(Message::CloseModal);
-    let _ = app.run_command_line("BPARAMETER LINEAR 0,0 10,0 5,2");
+    let _ = app.run_command_line("BPARAMETER LINEAR 0,0 10,0 5,2 1");
     let _ = app.run_command_line("BPARAMETER POINT 3,4 6,6");
     let definition = app.tabs[i].active_block_edit_session().unwrap().br_handle;
     let baseline = app.tabs[i].scene.document.clone();
@@ -8603,7 +8731,7 @@ fn block_grip_cycling_ctrl_edges_use_saved_order_during_classic_insertion() {
     let (mut app, reference) = fixture();
     begin(&mut app, reference);
     let i = app.active_tab;
-    let _ = app.run_command_line("BPARAMETER LINEAR 0,0 10,0 5,2");
+    let _ = app.run_command_line("BPARAMETER LINEAR 0,0 10,0 5,2 1");
     let _ = app.run_command_line("BPARAMETER POINT 3,4 6,6");
     let definition = app.tabs[i].active_block_edit_session().unwrap().br_handle;
     let grips = crate::scene::block_grips::grips(&app.tabs[i].scene.document, definition).unwrap();
@@ -10183,7 +10311,7 @@ fn block_grip_locations_edit_undo_and_drag_in_transformed_references_and_test_bl
         let (mut app, reference) = fixture();
         begin(&mut app, reference);
         let source = app.active_tab;
-        let _ = app.run_command_line("BPARAMETER LINEAR 0,0 10,0 5,2");
+        let _ = app.run_command_line("BPARAMETER LINEAR 0,0 10,0 5,2 1");
         let definition = app.tabs[source]
             .active_block_edit_session()
             .unwrap()
@@ -10799,6 +10927,137 @@ fn block_alignment_type_placement_properties_history_and_native_roundtrips() {
     let _ = app.update(Message::PropGeomChoiceChanged {
         field: "authoring_alignment_type",
         value: "Tangent".into(),
+    });
+    assert_eq!(app.tabs[i].scene.document, before);
+}
+
+#[test]
+fn a_linear_parameter_lists_and_writes_its_base_location() {
+    use crate::scene::model::object::PropValue;
+    use document::objects::{DynamicBlockData, ObjectType};
+    use std::io::Cursor;
+    let (mut app, reference) = fixture();
+    begin(&mut app, reference);
+    let i = app.active_tab;
+    let definition = app.tabs[i].active_block_edit_session().unwrap().br_handle;
+    let _ = app.dispatch_command("BPARAMETER LINEAR");
+    feed(&mut app, "B");
+    assert_eq!(
+        app.tabs[i].active_cmd.as_ref().unwrap().prompt(),
+        "Enter base location [Startpoint/Midpoint] <Startpoint>:"
+    );
+    feed(&mut app, "M");
+    feed(&mut app, "0,0");
+    feed(&mut app, "10,0");
+    feed(&mut app, "5,2");
+    feed(&mut app, "");
+    assert!(app.tabs[i].active_cmd.is_none());
+    let parameter =
+        crate::scene::block_distance_parameter::parameters(&app.tabs[i].scene.document, definition)
+            .into_iter()
+            .find(|p| p.kind == crate::scene::block_distance_parameter::Kind::Linear)
+            .unwrap()
+            .handle;
+    let base_location = |doc: &document::Document| match &doc.objects[&parameter] {
+        ObjectType::DynamicBlock(object) => match &object.data {
+            DynamicBlockData::LinearParameter(p) => p.parameter.parameter_base_location,
+            _ => panic!(),
+        },
+        _ => panic!(),
+    };
+    assert_eq!(base_location(&app.tabs[i].scene.document), 1);
+    app.tabs[i].selected_authoring = Some(parameter);
+    app.refresh_properties();
+    let listed = app.tabs[i]
+        .properties
+        .sections
+        .iter()
+        .flat_map(|section| &section.props)
+        .find(|property| property.field == "authoring_base_location")
+        .expect("base location row");
+    assert_eq!(listed.label, "Base location");
+    assert_eq!(
+        listed.value,
+        PropValue::Choice {
+            selected: "Midpoint".into(),
+            options: vec!["Startpoint".into(), "Midpoint".into()],
+        }
+    );
+    let original = app.tabs[i].scene.document.clone();
+    let depth = app.tabs[i].history.undo_stack.len();
+    let _ = app.update(Message::PropGeomChoiceChanged {
+        field: "authoring_base_location",
+        value: "Startpoint".into(),
+    });
+    assert_eq!(base_location(&app.tabs[i].scene.document), 0);
+    assert_eq!(app.tabs[i].history.undo_stack.len(), depth + 1);
+    for (handle, object) in &original.objects {
+        if *handle != parameter {
+            assert_eq!(app.tabs[i].scene.document.objects.get(handle), Some(object));
+        }
+    }
+    app.undo_steps(1);
+    assert_eq!(base_location(&app.tabs[i].scene.document), 1);
+    app.redo_steps(1);
+    assert_eq!(base_location(&app.tabs[i].scene.document), 0);
+    app.tabs[i].selected_authoring = Some(parameter);
+    let unchanged = app.tabs[i].scene.document.clone();
+    let _ = app.update(Message::PropGeomChoiceChanged {
+        field: "authoring_base_location",
+        value: "Startpoint".into(),
+    });
+    app.command_line.last_error = None;
+    let _ = app.update(Message::PropGeomChoiceChanged {
+        field: "authoring_base_location",
+        value: "Diagonal".into(),
+    });
+    assert_eq!(app.tabs[i].scene.document, unchanged);
+    assert_eq!(app.tabs[i].history.undo_stack.len(), depth + 1);
+    assert_eq!(
+        app.command_line.last_error.as_deref(),
+        Some("Choose Startpoint or Midpoint.")
+    );
+    let _ = app.update(Message::PropGeomChoiceChanged {
+        field: "authoring_base_location",
+        value: "Midpoint".into(),
+    });
+    let doc = &app.tabs[i].scene.document;
+    for saved in [
+        document::DwgReader::from_stream(Cursor::new(
+            document::DwgWriter::write_to_vec(doc).unwrap(),
+        ))
+        .read()
+        .unwrap(),
+        document::DxfReader::from_reader(Cursor::new(
+            document::DxfWriter::new(doc).write_to_vec().unwrap(),
+        ))
+        .unwrap()
+        .read()
+        .unwrap(),
+    ] {
+        let ObjectType::DynamicBlock(object) = &saved.objects[&parameter] else {
+            panic!()
+        };
+        let DynamicBlockData::LinearParameter(p) = &object.data else {
+            panic!()
+        };
+        assert_eq!(p.parameter.parameter_base_location, 1);
+    }
+    let before = app.tabs[i].scene.document.clone();
+    assert!(crate::scene::block_distance_parameter::set_base_location(
+        &mut app.tabs[i].scene.document,
+        Handle::NULL,
+        parameter,
+        false
+    )
+    .is_err());
+    assert_eq!(app.tabs[i].scene.document, before);
+    let _ = app.dispatch_command("BSAVE");
+    let _ = app.dispatch_command("BCLOSE");
+    let before = app.tabs[i].scene.document.clone();
+    let _ = app.update(Message::PropGeomChoiceChanged {
+        field: "authoring_base_location",
+        value: "Startpoint".into(),
     });
     assert_eq!(app.tabs[i].scene.document, before);
 }
@@ -12078,6 +12337,7 @@ mod alignment_insertion;
 
 mod parameter_preview;
 
+mod action_parameter_first;
 mod array_spacing_prompts;
 mod lookup_expressions;
 mod lookup_set_row;

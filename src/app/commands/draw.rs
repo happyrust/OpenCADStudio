@@ -72,8 +72,30 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(wo_cmd));
             }
 
-            cmd if cmd == "IMAGE" || cmd == "IMAGEATTACH" || cmd == "IM" => {
-                return Some(Task::done(Message::ImagePick));
+            // IMAGE / IMAGEATTACH / -IMAGEATTACH / IM [path]
+            // A bare command opens the file picker. A path on the command
+            // line is attached the way a dropped picture is, so a script can
+            // place a raster reference without a dialog; the insertion point
+            // prompt then follows as usual.
+            cmd if {
+                let verb = cmd.split_whitespace().next().unwrap_or_default();
+                matches!(
+                    verb.trim_start_matches('-').to_ascii_uppercase().as_str(),
+                    "IMAGE" | "IMAGEATTACH" | "IM"
+                )
+            } =>
+            {
+                let rest = cmd
+                    .split_once(char::is_whitespace)
+                    .map(|(_, rest)| rest.trim())
+                    .unwrap_or("");
+                if rest.is_empty() {
+                    return Some(Task::done(Message::ImagePick));
+                }
+                let path = std::path::PathBuf::from(rest.trim_matches('"'));
+                return Some(self.update(Message::ImagePickResult(
+                    crate::io::image_file_size(path),
+                )));
             }
 
             cmd if cmd == "IMAGEEMBED" => {
@@ -150,10 +172,12 @@ impl OpenCADStudio {
                                     insert.insert_point.z,
                                 ),
                             );
+                            let handle = insert.common.handle;
                             insert
                                 .attributes
                                 .iter()
                                 .map(move |attr| AttributeCandidate {
+                                    handle,
                                     block: insert.block_name.clone(),
                                     tag: attr.tag.clone(),
                                     value: attr.get_value().to_string(),
@@ -1110,11 +1134,7 @@ impl OpenCADStudio {
                     glam::DVec3::from_array(storage.y_axis),
                 );
                 let sources_started = crate::perf::enabled().then(iced::time::Instant::now);
-                let mut boundary_sources =
-                    self.tabs[i].scene.boundary_sources_on_plane(plane, 1.0e-6);
-                self.tabs[i]
-                    .scene
-                    .retain_sources_on_screen(&mut boundary_sources, plane);
+                let boundary_sources = self.tabs[i].scene.boundary_sources_on_screen(plane, 1.0e-6);
                 let sources_ms = crate::perf::elapsed_ms(sources_started);
                 let (source_count, segment_count, curve_count) = if perf_hatch {
                     (
@@ -1220,11 +1240,7 @@ impl OpenCADStudio {
             "GRADIENT" => {
                 use crate::modules::draw::draw::hatch::HatchCommand;
                 let plane = crate::command::WorkingPlane::default();
-                let mut boundary_sources =
-                    self.tabs[i].scene.boundary_sources_on_plane(plane, 1.0e-6);
-                self.tabs[i]
-                    .scene
-                    .retain_sources_on_screen(&mut boundary_sources, plane);
+                let boundary_sources = self.tabs[i].scene.boundary_sources_on_screen(plane, 1.0e-6);
                 let new_cmd = HatchCommand::new(boundary_sources, Vec::new(), None, plane)
                     .gradient()
                     .with_origin(self.tabs[i].scene.document.hatch_origin())
@@ -1248,10 +1264,7 @@ impl OpenCADStudio {
                 } else {
                     crate::command::WorkingPlane::default()
                 };
-                let mut sources = self.tabs[i].scene.boundary_sources_on_plane(plane, 1.0e-6);
-                self.tabs[i]
-                    .scene
-                    .retain_sources_on_screen(&mut sources, plane);
+                let sources = self.tabs[i].scene.boundary_sources_on_screen(plane, 1.0e-6);
                 let selected = self.tabs[i]
                     .scene
                     .selected_entities()
@@ -1264,7 +1277,7 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
-            "ELLIPSE" => {
+            "ELLIPSE_CENTER" => {
                 use crate::modules::draw::draw::ellipse::EllipseCommand;
                 let pellipse = self.tabs[i]
                     .scene
@@ -1277,7 +1290,7 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(new_cmd));
             }
 
-            "ELLIPSE_AXIS" => {
+            "ELLIPSE" | "ELLIPSE_AXIS" => {
                 use crate::modules::draw::draw::ellipse::EllipseAxisCommand;
                 let pellipse = self.tabs[i]
                     .scene
@@ -1670,6 +1683,11 @@ impl OpenCADStudio {
                             .scene
                             .record_undo_parametric_constraints_before(scope, before);
                         let count = inferred.len();
+                        let mut per_kind: std::collections::BTreeMap<&'static str, usize> =
+                            std::collections::BTreeMap::new();
+                        for (kind, _) in &inferred {
+                            *per_kind.entry(kind.label()).or_default() += 1;
+                        }
                         for (kind, refs) in inferred {
                             let id = self.tabs[i]
                                 .scene
@@ -1702,6 +1720,14 @@ impl OpenCADStudio {
                             )
                             .as_str(),
                         );
+                        let mut breakdown: Vec<(&str, usize)> = per_kind.into_iter().collect();
+                        breakdown.sort_by(|left, right| {
+                            right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0))
+                        });
+                        for (name, n) in breakdown {
+                            self.command_line
+                                .push_output(format!("{n} {name}").as_str());
+                        }
                         self.report_pending_network_moves(i);
                         if let Some(pd) = pending {
                             self.commit_undo_delta(i, pd);
@@ -3463,7 +3489,17 @@ impl OpenCADStudio {
         };
         let number = |typed: &str| typed.trim().replace(',', ".").parse::<f64>().ok();
         match msg {
-            M::Accept => return self.feed_command(StepInput::Enter),
+            M::Accept => {
+                let edit = self.tabs[i]
+                    .active_cmd
+                    .as_ref()
+                    .and_then(|command| command.hatch_panel_edit());
+                if let Some((handle, before, after)) = edit {
+                    self.apply_hatch_panel_edit(handle, &before, &after);
+                    return Task::none();
+                }
+                return self.feed_command(StepInput::Enter);
+            }
             M::Cancel => return self.feed_command(StepInput::Escape),
             M::Kind(kind) => {
                 use crate::modules::draw::draw::hatch::HatchFill;

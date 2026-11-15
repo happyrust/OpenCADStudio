@@ -63,14 +63,25 @@ impl MTextEditorState {
 
 impl crate::app::OpenCADStudio {
     /// The edited MTEXT hosts native FIELDs the editor could not locate.
+    /// For a table cell only that cell counts: a field in another cell of
+    /// the table leaves this one editable.
     pub(super) fn unlocated_field_host(&self) -> bool {
         let doc = &self.tabs[self.active_tab].scene.document;
         self.mtext_editor.as_ref().is_some_and(|ed| {
             ed.field_host.is_none()
-                && ed
-                    .editing
-                    .and_then(|h| doc.get_entity(h))
-                    .is_some_and(|entity| crate::entities::field::hosts_field(doc, entity))
+                && ed.editing.is_some_and(|h| {
+                    let Some(entity) = doc.get_entity(h) else {
+                        return false;
+                    };
+                    match (self.table_cell_editor.as_ref(), entity) {
+                        (Some(cell), document::EntityType::Table(table)) if cell.handle == h => {
+                            table.cell(cell.row, cell.column).is_some_and(|c| {
+                                c.contents.iter().any(|item| item.field_handle.is_some())
+                            })
+                        }
+                        _ => crate::entities::field::hosts_field(doc, entity),
+                    }
+                })
         })
     }
 
@@ -139,7 +150,7 @@ impl crate::app::OpenCADStudio {
                     let symbol = match text.as_str() {
                         "d" | "D" => Some("°"),
                         "p" | "P" => Some("±"),
-                        "c" | "C" => Some("Ø"),
+                        "c" | "C" => Some("∅"),
                         _ => None,
                     };
                     if let Some(symbol) = symbol {
@@ -719,7 +730,7 @@ mod tests {
         for ch in ["%", "%", "c"] {
             app.mtext_type(ch);
         }
-        assert_eq!(app.mtext_editor.as_ref().unwrap().doc.to_plain_text(), "xØ");
+        assert_eq!(app.mtext_editor.as_ref().unwrap().doc.to_plain_text(), "x∅");
     }
 
     /// D#2575: `\U+00B2` typed after `m` becomes m².

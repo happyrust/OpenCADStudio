@@ -1,6 +1,8 @@
 pub mod about;
 pub mod alias_editor;
 pub mod annotation_data;
+pub mod anno_scale_prompt;
+pub mod assistant;
 pub mod attdef_dialog;
 pub mod attman_dialog;
 pub mod attribute_editor;
@@ -25,6 +27,7 @@ pub mod drawing_units;
 pub mod extraction_outdated;
 pub mod field_dialog;
 pub mod find_replace;
+pub mod geographic_location;
 pub mod geometric_tolerance;
 pub mod gradient_editor;
 pub mod graphic_attributes;

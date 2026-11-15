@@ -347,6 +347,27 @@ pub fn page_paths(base: &Path, pages: usize) -> Vec<std::path::PathBuf> {
 /// **A file each is not a transaction.** If page three cannot be written,
 /// pages one and two stay on disk and the error names them; nothing is rolled
 /// back and nothing left over from an earlier, longer run is deleted.
+/// Export one page to an SVG file, overwriting an existing target.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn export_svg(page: &PdfPageInput, path: &Path) -> Result<(), String> {
+    let assets = PlotAssets {
+        glyphs: crate::io::plot_emit::GlyphSnapshot::capture(),
+        ..PlotAssets::default()
+    };
+    export_svg_pages(
+        std::slice::from_ref(page),
+        None,
+        &assets,
+        path,
+        &SvgWriteOptions {
+            force: true,
+            ..Default::default()
+        },
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn export_svg_pages(
     pages: &[PdfPageInput],

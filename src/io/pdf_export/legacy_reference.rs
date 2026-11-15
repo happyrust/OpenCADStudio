@@ -772,6 +772,8 @@ fn emit_wire_fills(
                     angle_offset: 0.0,
                     scale: 1.0 / scale.max(1.0e-6),
                     draw_depth: wire.depth_override.unwrap_or(0.0),
+                    effective_layer: wire.effective_layer.clone(),
+                    entity: None,
                 };
                 emit_hatch(
                     ops,

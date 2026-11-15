@@ -181,6 +181,11 @@ impl CadCommand for CircleCommand {
     fn name(&self) -> &'static str {
         "CIRCLE"
     }
+
+    fn point_rejection(&self) -> Option<String> {
+        matches!(self.step, StepCR::Radius(_))
+            .then(|| t!("Requires numeric radius, point on circumference, or \"D\".").into_owned())
+    }
     fn prompt(&self) -> String {
         match &self.step {
             StepCR::Center => t!("CIRCLE  Specify center point:").into_owned(),
@@ -209,7 +214,7 @@ impl CadCommand for CircleCommand {
                 CmdOption::new("3P", "3P"),
                 CmdOption::new("2P", "2P"),
                 CmdOption::new("Ttr", "TTR"),
-                CmdOption::new("Ttt", "TTT"),
+                CmdOption::new("TTt", "TTT"),
             ],
             StepCR::Radius(_) => vec![CmdOption::new(t!("Diameter").as_ref(), "D")],
             StepCR::Diameter(_) => vec![],
@@ -280,7 +285,7 @@ impl CadCommand for CircleCommand {
                 "3P" => Some(CmdResult::Dispatch("CIRCLE_3P".into())),
                 "2P" => Some(CmdResult::Dispatch("CIRCLE_2P".into())),
                 "T" | "TTR" => Some(CmdResult::Dispatch("CIRCLE_TTR".into())),
-                "TTT" => Some(CmdResult::Dispatch("CIRCLE_TTT".into())),
+                "TT" | "TTT" => Some(CmdResult::Dispatch("CIRCLE_TTT".into())),
                 _ => None,
             };
         }

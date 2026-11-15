@@ -1,8 +1,8 @@
 use document::entities::Tolerance;
 
-use crate::command::EntityTransform;
 use crate::entities::common::{edit_prop as edit, ro_prop as ro, square_grip};
 use crate::entities::traits::{Grippable, PropertyEditable, RenderConvertible, Transformable};
+use crate::entities::transform::EntityTransform;
 use crate::scene::convert::acad_to_render::{
     GlyphRun, RenderEntity, RenderObject, TextPlane, TextStroke,
 };
@@ -659,6 +659,12 @@ impl Transformable for Tolerance {
                 &mut entity.insertion_point.y,
                 p1,
                 p2,
+            );
+            transform::reflect_xy_point(
+                &mut entity.direction.x,
+                &mut entity.direction.y,
+                glam::DVec3::ZERO,
+                p2 - p1,
             );
         });
     }

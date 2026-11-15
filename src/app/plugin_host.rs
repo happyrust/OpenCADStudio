@@ -13,6 +13,8 @@ use super::OpenCADStudio;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::plugin::v4_support;
 
+use super::dock::PLUGIN_PALLET_MENU_MAX_ROWS;
+
 /// Session adapter: one active document tab, command line, undo.
 pub(crate) struct HostSession<'a> {
     app: &'a mut OpenCADStudio,
@@ -83,6 +85,17 @@ impl<'a> HostSession<'a> {
         self.app.tabs[self.tab].id
     }
 
+    /// Resolve the legacy panel aliases, then enforce the authenticated
+    /// transport owner. Alias lookup must not turn into an ownership bypass:
+    /// a title/command that resolves to another plugin's panel is refused.
+    fn owned_panel_id(&self, plugin_id: &str, panel_id: &str) -> Option<String> {
+        let resolved = resolve_toggle_panel_id(self.app, panel_id)?;
+        match self.app.plugin_panels.get(&resolved) {
+            Some(panel) if panel.owner_plugin_id.as_deref() == Some(plugin_id) => Some(resolved),
+            _ => None,
+        }
+    }
+
     pub fn document_path(&self, tab_id: u64) -> Option<std::path::PathBuf> {
         self.app
             .tabs
@@ -99,7 +112,10 @@ impl<'a> HostSession<'a> {
         if tab_id != self.tab_id() {
             return None;
         }
-        v4_support::open_document_view_v4(tab_id, self.document())
+        // A failed open is honest: the error lands in the plugin error queue
+        // surface (stderr log) and the caller sees None instead of a path
+        // that cannot be served.
+        v4_support::open_document_view_v4(tab_id, self.document()).ok()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -197,15 +213,26 @@ impl<'a> HostSession<'a> {
                 // the message boundary's fingerprint guard then dedupes.
                 v4_support::publish_document_changed(key.1);
             }
-            v4_support::publish_document_view_v4(self.tab_id(), doc);
-            if key_changed {
-                // API v13 dirty regions: the plugin-write boundary carries
-                // the touched identity set, so consumers visit only what
-                // changed (empty sets mean "walk everything").
-                self.publish_plugin_dirty_regions();
+            // API v13/P1-18: the snapshot publication is fallible. A failed
+            // publication must NOT broadcast dirty regions or record the key
+            // as settled — that would claim a boundary the plugins cannot
+            // observe. The failure is logged; the next publish retries.
+            match v4_support::publish_document_view_v4(self.tab_id(), doc) {
+                Ok(()) => {
+                    if key_changed {
+                        // API v13 dirty regions: the plugin-write boundary
+                        // carries the touched identity set, so consumers
+                        // visit only what changed (empty sets mean "walk
+                        // everything").
+                        self.publish_plugin_dirty_regions();
+                    }
+                    self.app.last_plugin_document =
+                        Some((self.tab_id(), self.app.tabs[self.tab].scene.geometry_epoch));
+                }
+                Err(e) => {
+                    eprintln!("[host] document boundary for tab {} withheld: {e}", self.tab);
+                }
             }
-            self.app.last_plugin_document =
-                Some((self.tab_id(), self.app.tabs[self.tab].scene.geometry_epoch));
         }
     }
 
@@ -380,6 +407,17 @@ impl<'a> HostSession<'a> {
         Ok(())
     }
 
+    /// True when `entity` (not yet in the document) targets a locked layer.
+    /// Additions apply the same lock refusal as stamps and edits (P1-10).
+    fn new_entity_layer_locked(&self, entity: &EntityType) -> bool {
+        self.app.tabs[self.tab]
+            .scene
+            .document
+            .layers
+            .get(&entity.common().layer)
+            .is_some_and(|layer| layer.is_locked())
+    }
+
     pub fn add_entity(&mut self, mut entity: EntityType) -> Handle {
         if self.prepare_scripted_raster_image(&mut entity).is_err() {
             return Handle::NULL;
@@ -419,6 +457,12 @@ impl<'a> HostSession<'a> {
             self.publish_document_view();
             return handle;
         }
+        // Locked layers refuse additions like every other mutation path
+        // (attributes ride their owning insert, which the scene refuses).
+        if self.new_entity_layer_locked(&entity) {
+            eprintln!("[plugin] add_entity refused: the target layer is locked");
+            return Handle::NULL;
+        }
         let handle = self.app.tabs[self.tab].scene.add_entity(entity);
         self.app.sync_registered_layers(self.tab);
         self.app.tabs[self.tab].mark_plugin_entity_dirty(handle, epoch);
@@ -427,24 +471,71 @@ impl<'a> HostSession<'a> {
     }
 
     pub fn add_entities(&mut self, mut entities: Vec<EntityType>) -> Vec<Handle> {
+        // P1-10: preparation/normalization/locked-layer failures are no
+        // longer ignored. A refused item keeps its result slot as NULL (the
+        // legacy positional contract holds) instead of entering the document
+        // unprepared, unnormalized, or on a locked layer; the valid remainder
+        // proceeds.
+        let mut flags = Vec::with_capacity(entities.len());
         for entity in &mut entities {
-            let _ = self.prepare_scripted_raster_image(entity);
-            // Creation input was validated by the caller; a degenerate MLine
-            // simply keeps its supplied (unnormalized) vertices.
-            let _ = self.normalize_scripted_entity(None, entity);
+            flags.push(
+                self.prepare_scripted_raster_image(entity).is_ok()
+                    && self.normalize_scripted_entity(None, entity).is_ok()
+                    && !self.new_entity_layer_locked(entity),
+            );
+        }
+        let mut prepared = Vec::with_capacity(entities.len());
+        let mut slots: Vec<Option<usize>> = Vec::with_capacity(entities.len());
+        for (entity, ok) in entities.drain(..).zip(flags.iter().copied()) {
+            if ok {
+                slots.push(Some(prepared.len()));
+                prepared.push(entity);
+            } else {
+                slots.push(None);
+            }
         }
         let epoch = self.geometry_epoch();
-        let handles = self.app.tabs[self.tab].scene.add_entities(entities);
+        let added = self.app.tabs[self.tab].scene.add_entities(prepared);
         self.app.sync_registered_layers(self.tab);
-        for handle in &handles {
-            self.app.tabs[self.tab].mark_plugin_entity_dirty(*handle, epoch);
+        let mut added_iter = added.into_iter();
+        let mut handles = Vec::with_capacity(slots.len());
+        let mut any_added = false;
+        for slot in slots {
+            match slot {
+                Some(_) => {
+                    let handle = added_iter.next().expect("one added handle per prepared item");
+                    self.app.tabs[self.tab].mark_plugin_entity_dirty(handle, epoch);
+                    handles.push(handle);
+                    any_added = true;
+                }
+                None => handles.push(Handle::NULL),
+            }
         }
-        self.publish_document_view();
+        if any_added {
+            self.publish_document_view();
+        }
         handles
     }
 
     pub fn bump_geometry(&mut self) {
         self.app.tabs[self.tab].scene.bump_geometry();
+    }
+
+    fn bump_handles_incremental(&mut self, handles: &[Handle]) {
+        if handles.is_empty() {
+            return;
+        }
+        let changes: Vec<_> = handles
+            .iter()
+            .copied()
+            .map(|h| (h, crate::scene::ChangeKind::Modified))
+            .collect();
+        let scene = &mut self.app.tabs[self.tab].scene;
+        if scene.changes_touch_block_definition(&changes) {
+            scene.bump_geometry();
+        } else {
+            scene.bump_entities(&changes);
+        }
     }
 
     /// Replace the entity carrying `entity`'s handle in place, refreshing the
@@ -461,6 +552,25 @@ impl<'a> HostSession<'a> {
 
     fn update_entity_inner(&mut self, mut entity: EntityType) -> bool {
         let old = self.document().get_entity(entity.common().handle).cloned();
+        // P1-10 route consistency: a direct update runs the same
+        // reference-coverage validation as the transaction route (attributes
+        // keep their nested replace path, which the scene validates).
+        if !matches!(entity, EntityType::AttributeEntity(_)) {
+            let Some(existing) = old.as_ref() else {
+                return false;
+            };
+            let bound = ocs_plugin_api::entity_coverage::bind_canvas_entity_references(
+                self.document(),
+                &mut entity,
+            )
+            .is_ok();
+            let valid = bound
+                && ocs_plugin_api::entity_coverage::validate_entity_mutation(existing, &entity)
+                    .is_ok();
+            if !valid {
+                return false;
+            }
+        }
         if self
             .normalize_scripted_entity(old.as_ref(), &mut entity)
             .is_err()
@@ -540,28 +650,103 @@ impl<'a> HostSession<'a> {
         // Nested attributes keep their special replace path (they are not
         // scene-model entities).
         let mut plain = Vec::with_capacity(entities.len());
+        // Before-images for a defensive rollback. Validation above makes the
+        // commit effectively infallible while the session owns the document
+        // exclusively, but the host must never PANIC on plugin input: a late
+        // refusal (locked layer re-locked mid-batch, hash miss, memory
+        // pressure) previously aborted the process AFTER earlier entries had
+        // already mutated. The applied writes are rolled back through the
+        // same plugin-write paths, so caches, undo deltas and the geometry
+        // bump see a coherent restored state and the caller gets an honest
+        // error.
+        let mut rollback_nested: Vec<EntityType> = Vec::new();
+        let mut rollback_plain: Vec<EntityType> = Vec::new();
         for entity in entities {
             match entity {
                 EntityType::AttributeEntity(attribute) => {
-                    // Validation above makes this infallible while the
-                    // session owns the document exclusively.
-                    assert!(self.replace_nested_attribute(attribute));
+                    let owner = attribute.common.owner_handle;
+                    if let Some(before) = self.host_model_entity(owner) {
+                        rollback_nested.push(before);
+                    }
+                    if !self.replace_nested_attribute(attribute) {
+                        self.rollback_transaction_writes(
+                            &mut rollback_nested,
+                            &mut rollback_plain,
+                            usize::MAX,
+                        );
+                        self.discard_pending_transaction_scope();
+                        return Err("transaction commit refused a nested attribute write after \
+                                    validation; applied writes were rolled back"
+                            .into());
+                    }
                 }
                 entity => plain.push(entity),
             }
         }
         if !plain.is_empty() {
+        rollback_plain = plain
+            .iter()
+            .filter_map(|entity| self.host_model_entity(entity.common().handle))
+            .collect();
             let expected = plain.len();
             let moved = self.app.tabs[self.tab].scene.update_entities_plugin(plain);
-            // Validation above makes the batch infallible while the session
-            // owns the document exclusively.
-            assert_eq!(moved, expected);
+            if moved != expected {
+                // Only the first `moved` entries were applied — restore those.
+                self.rollback_transaction_writes(
+                    &mut rollback_nested,
+                    &mut rollback_plain,
+                    moved,
+                );
+                self.discard_pending_transaction_scope();
+                return Err(format!(
+                    "transaction commit wrote {moved} of {expected} entities after \
+                     validation; applied writes were rolled back"
+                ));
+            }
         }
         self.app.sync_registered_layers(self.tab);
         self.set_dirty();
         self.publish_document_view();
         self.refresh_grips_of_active_tab();
         Ok(())
+    }
+
+    /// Restore the before-images of a partially applied transaction commit.
+    /// `plain_applied` bounds how many plain before-images to restore
+    /// (usize::MAX = all nested images and the whole plain set).
+    fn rollback_transaction_writes(
+        &mut self,
+        nested: &mut Vec<EntityType>,
+        plain: &mut Vec<EntityType>,
+        plain_applied: usize,
+    ) {
+        // Exact reverse of the application order (plain entries ride the
+        // batched write AFTER the nested attribute writes, and one batch can
+        // contain BOTH a nested attribute of insert H and H itself): undo the
+        // plain writes first, then the nested attribute writes. Restoring in
+        // the other order would splice the pre-plain (but already
+        // attribute-mutated) before-image over the original content.
+        if !plain.is_empty() {
+            let applied = plain.len().min(plain_applied);
+            let _ = self.app.tabs[self.tab]
+                .scene
+                .update_entities_plugin(plain.drain(..applied).collect());
+        }
+        for before in nested.drain(..).rev() {
+            let _ = self.app.tabs[self.tab].scene.update_entity_plugin(before);
+        }
+        self.app.sync_registered_layers(self.tab);
+        self.publish_document_view();
+    }
+
+    /// Close a failed transaction's pending undo scope so subsequent plugin
+    /// writes cannot silently merge into it: the rollback above restored the
+    /// content, and the scope's delta records are dropped (net-zero change,
+    /// no undo entry).
+    fn discard_pending_transaction_scope(&mut self) {
+        if self.app.tabs[self.tab].history.pending.is_some() {
+            self.app.discard_last_undo_entry(self.tab);
+        }
     }
 
     pub fn selection(&self) -> Vec<Handle> {
@@ -591,9 +776,12 @@ impl<'a> HostSession<'a> {
                     self.app.tabs[self.tab].scene.selection_fingerprint(),
                 ));
             }
-            crate::plugin::v4_support::publish_selection_changed_v4(
+            let revision = self.app.bump_selection_revision(self.tab_id());
+            crate::plugin::v4_support::publish_selection_changed_versioned(
                 self.tab_id(),
                 self.selection(),
+                revision,
+                false,
             );
         }
         Ok(())
@@ -623,13 +811,18 @@ impl<'a> HostSession<'a> {
 
     /// Delete the entity with `handle`, keeping the scene's render caches in
     /// sync. Returns `false` when the entity is absent or on a locked layer
-    /// (which `erase_entities` refuses to remove).
+    /// (which `erase_entities` refuses to remove). A failed removal no longer
+    /// marks the entity dirty (P1-17): the dirty-region claim follows the
+    /// actual outcome.
     pub fn remove_entity(&mut self, handle: Handle) -> bool {
-        // API v13 dirty regions: mark before the boundary publish; a removed
-        // handle still rides the set (consumers detect its absence).
+        self.remove_entity_inner(handle)
+    }
+
+    /// Dirty-region mark for a successful removal: a removed handle still
+    /// rides the set — consumers detect its absence.
+    fn mark_removed_entity_dirty(&mut self, handle: Handle) {
         let epoch = self.geometry_epoch();
         self.app.tabs[self.tab].mark_plugin_entity_dirty(handle, epoch);
-        self.remove_entity_inner(handle)
     }
 
     fn remove_entity_inner(&mut self, handle: Handle) -> bool {
@@ -649,6 +842,7 @@ impl<'a> HostSession<'a> {
                 .scene
                 .update_entity(EntityType::Insert(insert));
             if removed {
+                self.mark_removed_entity_dirty(handle);
                 self.publish_document_view();
                 self.refresh_grips_of_active_tab();
             }
@@ -674,6 +868,7 @@ impl<'a> HostSession<'a> {
                     record.entity_handles.retain(|member| *member != handle);
                 }
             }
+            self.mark_removed_entity_dirty(handle);
             self.publish_document_view();
             self.refresh_grips_of_active_tab();
         }
@@ -699,6 +894,19 @@ impl<'a> HostSession<'a> {
     /// missing so the file stays valid for other CAD apps. Returns `false` when
     /// the entity does not exist.
     pub fn write_record(&mut self, handle: Handle, record: ExtendedDataRecord) -> bool {
+        if !self.write_record_quiet(handle, record) {
+            return false;
+        }
+        self.bump_geometry();
+        self.set_dirty();
+        self.publish_document_view();
+        true
+    }
+
+    /// [`Self::write_record`] without the boundary publish/bump: batch paths
+    /// that stamp many records publish ONCE at the end (P1-17). The dirty
+    /// (entity, app) mark still runs so the final boundary carries it.
+    fn write_record_quiet(&mut self, handle: Handle, record: ExtendedDataRecord) -> bool {
         if self.app.tabs[self.tab].scene.is_layer_locked(handle) {
             return false;
         }
@@ -732,9 +940,7 @@ impl<'a> HostSession<'a> {
         // boundary notification — marked BEFORE the publish that carries it.
         let epoch = self.geometry_epoch();
         self.app.tabs[self.tab].mark_plugin_record_dirty(handle, app, epoch);
-        self.bump_geometry();
-        self.set_dirty();
-        self.publish_document_view();
+        self.bump_handles_incremental(&[handle]);
         true
     }
 
@@ -775,7 +981,7 @@ impl<'a> HostSession<'a> {
         if let Some(ah) = app_handle {
             xd.raw_dwg_eed.retain(|(a, _)| *a != ah);
         }
-        self.bump_geometry();
+        self.bump_handles_incremental(&[handle]);
         self.set_dirty();
         self.publish_document_view();
         true
@@ -1631,7 +1837,8 @@ impl<'a> HostSession<'a> {
             | TableOperation::LayoutRename { .. }
             | TableOperation::LayoutDelete { .. }
             | TableOperation::LayoutSetCurrent { .. }
-            | TableOperation::LayoutSetPage { .. }) => self.layout_operation(other),
+            | TableOperation::LayoutSetPage { .. }
+            | TableOperation::LayoutSetTabOrder { .. }) => self.layout_operation(other),
             other => self.style_operation(other),
         }
     }
@@ -1758,8 +1965,8 @@ impl<'a> HostSession<'a> {
                 if !editor_before {
                     self.app.text_inline = None;
                 }
-                if !mtext_before {
-                    self.app.mtext_editor = None;
+                if !mtext_before && self.app.mtext_editor.is_some() {
+                    self.app.mtext_cancel();
                 }
                 if !modal_before {
                     self.app.active_modal = None;
@@ -1983,8 +2190,7 @@ impl<'a> HostSession<'a> {
         self.app.tabs[self.tab].dirty = true;
         self.app.tabs[self.tab]
             .scene
-            .invalidate_layer_dependencies(names);
-        self.app.tabs[self.tab].scene.bump_geometry();
+            .invalidate_linetype_dependencies(names);
         if self.tab == self.app.active_tab {
             self.app.sync_ribbon_layers();
             self.app.sync_ribbon_from_selection();
@@ -2108,6 +2314,37 @@ impl<'a> HostSession<'a> {
                 self.finish_layout_change();
                 Ok(handle)
             }
+            TableOperation::LayoutSetTabOrder { names } => {
+                let current: Vec<String> = self.app.tabs[self.tab]
+                    .scene
+                    .layout_names()
+                    .into_iter()
+                    .filter(|name| !name.eq_ignore_ascii_case("Model"))
+                    .collect();
+                let mut ordered = Vec::with_capacity(names.len());
+                for name in &names {
+                    let name = name.trim();
+                    let Some(found) = current.iter().find(|n| n.eq_ignore_ascii_case(name)) else {
+                        return Err(format!("layout {name:?} is not a paper-space layout"));
+                    };
+                    if ordered.contains(found) {
+                        return Err(format!("layout {found:?} is listed twice"));
+                    }
+                    ordered.push(found.clone());
+                }
+                if let Some(missing) = current.iter().find(|n| !ordered.contains(n)) {
+                    return Err(format!(
+                        "the order must list every paper-space layout; {missing:?} is missing"
+                    ));
+                }
+                if ordered == current {
+                    return Ok(Handle::NULL);
+                }
+                self.push_undo("Layout order");
+                self.app.tabs[self.tab].scene.set_layout_tab_order(&ordered);
+                self.finish_layout_change();
+                Ok(Handle::NULL)
+            }
             TableOperation::LayoutSetCurrent { name } => {
                 let name = name.trim();
                 if name.eq_ignore_ascii_case("Model") {
@@ -2218,6 +2455,8 @@ impl<'a> HostSession<'a> {
 
     fn finish_layout_change(&mut self) {
         self.app.tabs[self.tab].dirty = true;
+        // The layout tab bar reads `cached_layout_names`, keyed on this epoch.
+        self.app.tabs[self.tab].scene.bump_layout_epoch();
         self.app.tabs[self.tab].scene.bump_geometry();
         self.publish_document_view();
     }
@@ -2689,6 +2928,10 @@ impl<'a> HostSession<'a> {
             }
             TableOperation::StyleSetCurrent { kind, name } => {
                 let (name, handle) = stored(self.document(), kind, name.trim())?;
+                // P1-16 route consistency: the "set current" arm runs the same
+                // undo scope + finish path as the rename/delete arms above
+                // (it used to bypass both).
+                self.push_undo("Set current style");
                 let header = &mut self.document_mut().header;
                 match kind {
                     TableStyleKind::Text => {
@@ -2702,7 +2945,7 @@ impl<'a> HostSession<'a> {
                         self.app.ribbon.active_dim_style = name;
                     }
                 }
-                self.app.tabs[self.tab].dirty = true;
+                self.finish_style_change(kind_of(kind));
                 Ok(handle)
             }
             _ => Err("unsupported table operation".to_owned()),
@@ -2739,8 +2982,20 @@ impl<'a> HostSession<'a> {
             None => None,
         };
 
+        if self.document().layers.get(trimmed).is_none() {
+            return false;
+        }
+        // P1-16 route consistency: the direct route opens its own undo scope
+        // exactly like the table route, so a plugin-driven layer edit is one
+        // undoable step instead of landing outside history. Refusals above
+        // never touch the scope.
+        let own_scope = self.ensure_xrecord_undo_scope("Modify layer");
         let doc = self.document_mut();
         let Some(existing) = doc.layers.get_mut(trimmed) else {
+            // Checked above; an empty scope is closed to keep the contract.
+            if own_scope {
+                self.app.finish_pending_history(self.tab);
+            }
             return false;
         };
 
@@ -2784,6 +3039,9 @@ impl<'a> HostSession<'a> {
             .invalidate_layer_dependencies(&[trimmed.to_string()]);
         self.app.refresh_layer_panel();
         self.publish_document_view();
+        if own_scope {
+            self.app.finish_pending_history(self.tab);
+        }
         true
     }
 
@@ -3027,7 +3285,8 @@ impl<'a> HostSession<'a> {
     /// its own scope.
     fn ensure_xrecord_undo_scope(&mut self, label: &str) -> bool {
         if self.app.tabs[self.tab].history.pending.is_none() {
-            self.push_undo(label);
+        self.push_undo(label);
+
             true
         } else {
             false
@@ -3126,6 +3385,23 @@ impl<'a> HostSession<'a> {
         name: &str,
         entries: Vec<document::objects::XRecordEntry>,
     ) -> Result<Handle, String> {
+        let handle = self.update_xrecord_quiet(dictionary_path, name, entries)?;
+        self.set_dirty();
+        self.publish_document_view();
+        Ok(handle)
+    }
+
+    /// [`Self::update_xrecord`] without the boundary publish/settle — the
+    /// batch route publishes once for the whole set (P1-17). The undo-scope
+    /// handling matches the visible variant: a mutation inside a plugin-opened
+    /// `push_undo` scope joins it; a scope-less call opens its own and the
+    /// visible wrapper finishes it.
+    fn update_xrecord_quiet(
+        &mut self,
+        dictionary_path: &[&str],
+        name: &str,
+        entries: Vec<document::objects::XRecordEntry>,
+    ) -> Result<Handle, String> {
         use document::objects::ObjectType;
         validated_xrecord_entries(&entries)?;
         let (_, _, handle) = self.xrecord_lookup(dictionary_path, name)?;
@@ -3145,12 +3421,16 @@ impl<'a> HostSession<'a> {
         record.raw_dwg_data = None;
         record.raw_dwg_handle_bits = 0;
         record.raw_dwg_version = None;
-        self.set_dirty();
         // API v13 dirty regions — before the publish that carries them.
         let epoch = self.geometry_epoch();
         self.app.tabs[self.tab].mark_plugin_record_dirty(handle, "NOD".to_string(), epoch);
-        self.publish_document_view();
         if own_scope {
+            // The dirty flag must flip BEFORE the scope closes:
+            // finish_pending_history snapshots `dirty_after` into the undo
+            // entry, and redo replays that — a clean-tab XRecord update that
+            // closes first would record dirty=false and redo silently loses
+            // the change on close (review finding 1).
+            self.set_dirty();
             self.app.finish_pending_history(self.tab);
         }
         Ok(handle)
@@ -3188,6 +3468,78 @@ impl<'a> HostSession<'a> {
             self.app.finish_pending_history(self.tab);
         }
         Ok(removed)
+    }
+
+    /// Create or update the model-space GEODATA object (API v22, additive):
+    /// the CRS through the same path as GEOGRAPHICLOCATION, then the plugin's
+    /// design/reference points and north. Every refusal happens before the
+    /// undo scope is touched.
+    pub fn set_geo_location(
+        &mut self,
+        location: &ocs_plugin_api::host::GeoLocation,
+    ) -> Result<Handle, String> {
+        use document::objects::ObjectType;
+        use document::types::{Vector2, Vector3};
+        let crs = crate::io::crs::CrsDefinition::from_text(&location.coordinate_system)?;
+        crs.apply_to_geodata(&mut document::objects::GeoData::default())?;
+        let values = location
+            .design_point
+            .iter()
+            .chain(&location.reference_point)
+            .chain(&location.north_direction);
+        if !values.into_iter().all(|value| value.is_finite()) {
+            return Err("geographic location values must be finite".to_owned());
+        }
+        let [nx, ny] = location.north_direction;
+        let length = nx.hypot(ny);
+        if length < 1e-12 {
+            return Err("north direction must not be zero".to_owned());
+        }
+        if !self.document().block_records.contains("*Model_Space") {
+            return Err("The drawing has no model-space block record".to_owned());
+        }
+        let own_scope = self.ensure_xrecord_undo_scope("Set Geographic Location");
+        let handle = crate::io::crs::set_document_crs(self.document_mut(), &crs)?;
+        if let Some(ObjectType::GeoData(geo)) = self.document_mut().objects.get_mut(&handle) {
+            let [x, y, z] = location.design_point;
+            geo.design_point = Vector3::new(x, y, z);
+            let [x, y, z] = location.reference_point;
+            geo.reference_point = Vector3::new(x, y, z);
+            geo.north_direction = Vector2::new(nx / length, ny / length);
+        }
+        self.app.tabs[self.tab].scene.refresh_object_data_cache();
+        self.app.tabs[self.tab].scene.bump_geometry();
+        self.set_dirty();
+        self.publish_document_view();
+        if own_scope {
+            self.app.finish_pending_history(self.tab);
+        }
+        Ok(handle)
+    }
+
+    /// Remove the model-space GEODATA object and its extension-dictionary
+    /// entry (API v22, additive). `Ok(false)` when there was none.
+    pub fn remove_geo_location(&mut self) -> Result<bool, String> {
+        use document::objects::ObjectType;
+        let Some(handle) = crate::io::crs::model_space_geo_data_handle(self.document()) else {
+            return Ok(false);
+        };
+        let own_scope = self.ensure_xrecord_undo_scope("Remove Geographic Location");
+        let document = self.document_mut();
+        document.objects.remove(&handle);
+        for object in document.objects.values_mut() {
+            if let ObjectType::Dictionary(dictionary) = object {
+                dictionary.entries.retain(|(_, value)| *value != handle);
+            }
+        }
+        self.app.tabs[self.tab].scene.refresh_object_data_cache();
+        self.app.tabs[self.tab].scene.bump_geometry();
+        self.set_dirty();
+        self.publish_document_view();
+        if own_scope {
+            self.app.finish_pending_history(self.tab);
+        }
+        Ok(true)
     }
 
     /// List the XRecord names under the dictionary addressed by
@@ -3269,10 +3621,9 @@ impl<'a> HostSession<'a> {
             "designation state was checked before the mutation"
         );
         // The wires carry the click-through stamp baked at tessellation, so a
-        // designation change must rebuild them: bump_geometry clears the
-        // tessellation memos and resident wire sets exactly like an entity
-        // edit would.
-        self.bump_geometry();
+        // designation change must rebuild them incrementally (or rebuild block
+        // caches when the entity belongs to a block definition).
+        self.bump_handles_incremental(&[handle]);
         self.set_dirty();
         self.publish_document_view();
         if own_scope {
@@ -3454,7 +3805,7 @@ impl<'a> HostSession<'a> {
                 .scene
                 .set_reference_only_membership(*handle, true);
         }
-        self.bump_geometry();
+        self.bump_handles_incremental(&handles);
         self.set_dirty();
         self.publish_document_view();
         if own_scope {
@@ -3616,9 +3967,28 @@ impl<'a> HostSession<'a> {
             // Zero-geometry designs record nothing, like zero-length chains.
             return Ok(Vec::new());
         }
+        // P1-11 preflight: every staged entity's layer is checked BEFORE any
+        // insertion, so a locked layer refuses the whole instance instead of
+        // leaving entities without their identity stamp (the old behavior
+        // staged first and stamped after — a refusal mid-way left a
+        // partially-staged instance no re-stage could complete).
+        if let Some(entity) = entities
+            .iter()
+            .find(|entity| self.new_entity_layer_locked(entity))
+        {
+            return Err(format!(
+                "instance of class {:?} targets locked layer {:?}; refusing the whole instance",
+                instance.class_id,
+                entity.common().layer
+            ));
+        }
         let own_scope = self.ensure_xrecord_undo_scope("Stage plugin class instance");
         let handles = self.add_entities(entities);
-        for handle in &handles {
+        // All-or-nothing stamping: after the preflight a stamp refusal can
+        // only mean an unexpected condition — the staged entities are erased
+        // again so no half-staged instance survives (P1-11).
+        let mut stamp_failed: Option<usize> = None;
+        for (index, handle) in handles.iter().enumerate() {
             // Identity stamp: the class key as the XDATA application on every
             // staged entity (write_record registers the APPID so the stamp
             // survives the file), carrying the schema version and the record
@@ -3636,7 +4006,19 @@ impl<'a> HostSession<'a> {
                     instance.design_record.clone(),
                 ));
             }
-            self.write_record(*handle, stamp);
+            if instance.selectable_custom {
+                // Flags have a fixed third slot, even without record linkage.
+                if instance.design_record.is_empty() {
+                    stamp.add_value(ocs_plugin_api::host::document::xdata::XDataValue::String(
+                        String::new(),
+                    ));
+                }
+                stamp.add_value(ocs_plugin_api::host::document::xdata::XDataValue::Integer32(1));
+            }
+            if !self.write_record_quiet(*handle, stamp) {
+                stamp_failed = Some(index);
+                break;
+            }
             // Designation inside the SAME scope, the before-image
             // pending-scoped the way set_reference_only does.
             let before = self.app.tabs[self.tab]
@@ -3647,7 +4029,26 @@ impl<'a> HostSession<'a> {
                 .record_reference_designation_before_pending(self.tab, *handle, before);
             self.app.tabs[self.tab]
                 .scene
-                .set_reference_only_membership(*handle, true);
+                .set_reference_only_membership(*handle, !instance.selectable_custom);
+        }
+        if let Some(index) = stamp_failed {
+            self.app.tabs[self.tab]
+                .scene
+                .erase_entities_plugin(&handles);
+            self.app.sync_registered_layers(self.tab);
+            self.bump_geometry();
+            self.set_dirty();
+            self.publish_document_view();
+            // Close the staging scope before the error so follow-up plugin
+            // writes cannot silently merge into it (review finding 8).
+            if own_scope {
+                self.app.finish_pending_history(self.tab);
+            }
+            return Err(format!(
+                "stamping the staged instance of class {:?} failed at entity {:?}; the whole \
+                 staged instance was rolled back",
+                instance.class_id, handles[index]
+            ));
         }
         self.bump_geometry();
         self.set_dirty();
@@ -3743,13 +4144,21 @@ impl<'a> HostSession<'a> {
         &mut self,
         updates: &[ocs_plugin_api::host::XRecordUpdate],
     ) -> Result<Vec<Result<Handle, String>>, String> {
-        Ok(updates
+        // P1-17: the batch publishes ONCE for the whole set instead of once
+        // per record — a 100-record batch no longer fans out into 100
+        // publication passes.
+        let results: Vec<Result<Handle, String>> = updates
             .iter()
             .map(|update| {
                 let path: Vec<&str> = update.dictionary_path.iter().map(|s| s.as_str()).collect();
-                self.update_xrecord(&path, &update.name, update.entries.clone())
+                self.update_xrecord_quiet(&path, &update.name, update.entries.clone())
             })
-            .collect())
+            .collect();
+        if results.iter().any(|result| result.is_ok()) {
+            self.set_dirty();
+            self.publish_document_view();
+        }
+        Ok(results)
     }
 
     /// List a dictionary's XRecords WITH their entries in one call (API v13):
@@ -3832,6 +4241,17 @@ impl<'a> HostSession<'a> {
     ) -> Vec<bool> {
         let known = crate::plugin::grip_points::visibility(&self.app.disabled_plugins)(plugin_id);
         if !known {
+            if plugin_id.is_empty() {
+                // The boot-window registration storm fires before the handshake
+                // pins the process's manifest id (the empty-attribution class —
+                // HOST-FIXES-TODO #1). The plugin genuinely registered nothing
+                // in its own name, so the refusals that would follow name a
+                // plugin that never spoke: SILENCE is the honest noise law the
+                // user ordered (2026-11-13). Replay-after-handshake stays the
+                // #1 fix's direction; until then these requests simply do not
+                // exist for the user.
+                return vec![false; panels.len()];
+            }
             for panel in panels {
                 self.push_error(&format!(
                     "quad panel {id:?} refused: plugin {plugin_id:?} is not a loaded, alive \
@@ -4205,24 +4625,43 @@ fn parse_parameter_value(
 }
 
 /// True when block `outer` (transitively) contains an insert of `target`.
-fn block_nests(doc: &Document, outer: &str, target: &str, depth: usize) -> bool {
-    if depth > 64 {
-        return true;
+fn block_nests(doc: &Document, outer: &str, target: &str, _depth: usize) -> bool {
+    // Visited-set traversal (P1-13): the depth-capped recursion re-explored
+    // shared sub-blocks once per referencing instance, so a document with N
+    // shared instances of one block multiplied the whole subtree N times —
+    // exponential on deep, heavily-shared block trees. Every block is now
+    // visited at most once per top-level check (linear in the block count);
+    // the depth cap stays as a belt-and-braces guard with its old
+    // conservative `true`.
+    fn walk(
+        doc: &Document,
+        outer: &str,
+        target: &str,
+        visited: &mut std::collections::HashSet<String>,
+        depth: usize,
+    ) -> bool {
+        if depth > 64 {
+            return true;
+        }
+        if !visited.insert(outer.to_ascii_uppercase()) {
+            return false;
+        }
+        let Some(record) = doc.block_records.get(outer) else {
+            return false;
+        };
+        record
+            .entity_handles
+            .iter()
+            .filter_map(|h| doc.get_entity(*h))
+            .any(|entity| match entity {
+                EntityType::Insert(insert) => {
+                    insert.block_name.eq_ignore_ascii_case(target)
+                        || walk(doc, &insert.block_name, target, visited, depth + 1)
+                }
+                _ => false,
+            })
     }
-    let Some(record) = doc.block_records.get(outer) else {
-        return false;
-    };
-    record
-        .entity_handles
-        .iter()
-        .filter_map(|h| doc.get_entity(*h))
-        .any(|entity| match entity {
-            EntityType::Insert(insert) => {
-                insert.block_name.eq_ignore_ascii_case(target)
-                    || block_nests(doc, &insert.block_name, target, depth + 1)
-            }
-            _ => false,
-        })
+    walk(doc, outer, target, &mut std::collections::HashSet::new(), 0)
 }
 
 /// A layer name AutoCAD would accept: 1-255 characters, none of `<>/\":;?*|=\``.
@@ -4394,6 +4833,38 @@ fn resolve_linetype(doc: &mut document::Document, name: &str) -> Option<String> 
     })
 }
 
+/// The registered panel `panel_id` names: its id, or loosely its title or
+/// command.
+fn resolve_toggle_panel_id(app: &OpenCADStudio, panel_id: &str) -> Option<String> {
+    if app.plugin_panel_ids.contains_key(panel_id) {
+        return Some(panel_id.to_string());
+    }
+    let lower = panel_id.to_lowercase();
+    let stripped = lower.replace([' ', '_', '-'], "");
+    app.plugin_panel_ids
+        .keys()
+        .find(|key| {
+            key.to_lowercase() == lower
+                || key.replace([' ', '_', '-'], "").to_lowercase() == stripped
+        })
+        .cloned()
+        .or_else(|| {
+            app.plugin_panels
+                .iter()
+                .find(|(key, state)| {
+                    key.to_lowercase() == lower
+                        || key.replace([' ', '_', '-'], "").to_lowercase() == stripped
+                        || state.def.title.to_lowercase() == lower
+                        || state.def.title.replace([' ', '_', '-'], "").to_lowercase() == stripped
+                        || state.def.command.as_ref().is_some_and(|command| {
+                            command.to_lowercase() == lower
+                                || command.replace([' ', '_', '-'], "").to_lowercase() == stripped
+                        })
+                })
+                .map(|(key, _)| key.clone())
+        })
+}
+
 /// The stable contract a plugin's `dispatch` sees. Each method forwards to the
 /// inherent `HostSession` method of the same name (inherent methods take
 /// resolution priority, so this is plain delegation, not recursion). The
@@ -4481,7 +4952,7 @@ impl HostApi for HostSession<'_> {
         self.app.tabs[self.tab].active_cmd =
             Some(Box::new(PluginInteractiveAdapter { inner: command }));
         if let Some(def) = dialog {
-            self.app.open_plugin_dialog(def);
+            self.app.open_plugin_dialog_on_tab(self.tab, def, None);
         }
     }
     fn plugin_state_any(&self, plugin_id: &str) -> Option<&(dyn Any + Send + Sync)> {
@@ -4593,6 +5064,15 @@ impl HostApi for HostSession<'_> {
     fn list_xrecords(&self, dictionary_path: &[&str]) -> Result<Vec<String>, String> {
         self.list_xrecords(dictionary_path)
     }
+    fn set_geo_location(
+        &mut self,
+        location: &ocs_plugin_api::host::GeoLocation,
+    ) -> Result<Handle, String> {
+        self.set_geo_location(location)
+    }
+    fn remove_geo_location(&mut self) -> Result<bool, String> {
+        self.remove_geo_location()
+    }
     fn set_reference_only(&mut self, handle: Handle, reference_only: bool) -> Result<(), String> {
         self.set_reference_only(handle, reference_only)
     }
@@ -4682,7 +5162,16 @@ impl HostApi for HostSession<'_> {
         &mut self,
         dialog: ocs_plugin_api::dialog::DialogDef,
     ) -> ocs_plugin_api::dialog::DialogResponse {
-        self.app.open_plugin_dialog(dialog);
+        self.app.open_plugin_dialog_on_tab(self.tab, dialog, None);
+        ocs_plugin_api::dialog::DialogResponse::Cancelled
+    }
+    fn show_dialog_for_plugin(
+        &mut self,
+        plugin_id: &str,
+        dialog: ocs_plugin_api::dialog::DialogDef,
+    ) -> ocs_plugin_api::dialog::DialogResponse {
+        self.app
+            .open_plugin_dialog_on_tab(self.tab, dialog, Some(plugin_id.to_string()));
         ocs_plugin_api::dialog::DialogResponse::Cancelled
     }
     fn register_panel(&mut self, panel: ocs_plugin_api::dialog::PanelDef) -> bool {
@@ -4711,6 +5200,16 @@ impl HostApi for HostSession<'_> {
 
         let state = crate::ui::window::plugin_panel::PluginPanelState::from_def(panel);
         self.app.plugin_panels.insert(id.clone(), state);
+
+        // Pallet-menu listing is capped per edge so a plugin cannot widen
+        // the palette beyond a bounded length (see docs/plugin-pallet-menu.md).
+        if self.app.plugin_panels.len() > PLUGIN_PALLET_MENU_MAX_ROWS {
+            eprintln!(
+                "[plugin] {id}: registered beyond the {}-row pallet-menu cap; \
+                 the edge (+) menu lists the first {} plugin panels only",
+                PLUGIN_PALLET_MENU_MAX_ROWS, PLUGIN_PALLET_MENU_MAX_ROWS
+            );
+        }
 
         // Keep command line autocomplete updated with dynamic panel commands
         if let Some(ref c) = cmd_opt {
@@ -4745,40 +5244,19 @@ impl HostApi for HostSession<'_> {
             panel.update_values(values);
             return true;
         }
+        if let Some(state) = &mut self.app.plugin_dialog_state {
+            if panel_id.is_empty()
+                || state.def.title == panel_id
+                || state.def.title.eq_ignore_ascii_case(panel_id)
+            {
+                state.update_values(values);
+                return true;
+            }
+        }
         false
     }
     fn toggle_panel(&mut self, panel_id: &str, show: Option<bool>) -> bool {
-        let matched_id = if self.app.plugin_panel_ids.contains_key(panel_id) {
-            Some(panel_id.to_string())
-        } else {
-            let lower = panel_id.to_lowercase();
-            let stripped = lower.replace([' ', '_', '-'], "");
-            self.app
-                .plugin_panel_ids
-                .keys()
-                .find(|k| {
-                    k.to_lowercase() == lower
-                        || k.replace([' ', '_', '-'], "").to_lowercase() == stripped
-                })
-                .cloned()
-                .or_else(|| {
-                    self.app
-                        .plugin_panels
-                        .iter()
-                        .find(|(k, state)| {
-                            k.to_lowercase() == lower
-                                || k.replace([' ', '_', '-'], "").to_lowercase() == stripped
-                                || state.def.title.to_lowercase() == lower
-                                || state.def.title.replace([' ', '_', '-'], "").to_lowercase()
-                                    == stripped
-                                || state.def.command.as_ref().is_some_and(|c| {
-                                    c.to_lowercase() == lower
-                                        || c.replace([' ', '_', '-'], "").to_lowercase() == stripped
-                                })
-                        })
-                        .map(|(k, _)| k.clone())
-                })
-        };
+        let matched_id = resolve_toggle_panel_id(self.app, panel_id);
 
         if let Some(ref id) = matched_id {
             if let Some(&num) = self.app.plugin_panel_ids.get(id) {
@@ -4817,6 +5295,115 @@ impl HostApi for HostSession<'_> {
         }
         false
     }
+
+    fn register_panel_for_plugin(
+        &mut self,
+        plugin_id: &str,
+        panel: ocs_plugin_api::dialog::PanelDef,
+    ) -> bool {
+        if plugin_id.is_empty() || panel.id.trim().is_empty() {
+            return false;
+        }
+        let panel_id = panel.id.clone();
+        if let Some(existing) = self.app.plugin_panels.get(&panel_id) {
+            if existing.owner_plugin_id.as_deref() != Some(plugin_id) {
+                return false;
+            }
+            if existing.def == panel {
+                // Re-registering an unchanged form is idempotent: do not
+                // discard values, collapsed sections or focus mid-edit.
+                return true;
+            }
+        }
+        if !self.register_panel(panel) {
+            return false;
+        }
+        if let Some(state) = self.app.plugin_panels.get_mut(&panel_id) {
+            state.owner_plugin_id = Some(plugin_id.to_owned());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn update_panel_for_plugin(
+        &mut self,
+        plugin_id: &str,
+        panel_id: &str,
+        values: std::collections::HashMap<String, ocs_plugin_api::dialog::DialogValue>,
+    ) -> bool {
+        if let Some(panel_id) = self.owned_panel_id(plugin_id, panel_id) {
+            return self.update_panel(&panel_id, values);
+        }
+        // A modal dialog the plugin opened is updated in place; it is never
+        // routed through `update_panel`, whose side-panel lookup by name
+        // could reach another plugin's panel with the same title.
+        if let Some(state) = &mut self.app.plugin_dialog_state {
+            if state.plugin_id.as_deref() == Some(plugin_id)
+                && (panel_id.is_empty() || state.def.title.eq_ignore_ascii_case(panel_id))
+            {
+                state.update_values(values);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn toggle_panel_for_plugin(
+        &mut self,
+        plugin_id: &str,
+        panel_id: &str,
+        show: Option<bool>,
+    ) -> bool {
+        let Some(panel_id) = self.owned_panel_id(plugin_id, panel_id) else {
+            return false;
+        };
+        self.toggle_panel(&panel_id, show)
+    }
+
+    fn panel_snapshot(
+        &self,
+        panel_id: &str,
+    ) -> Result<ocs_plugin_api::dialog::PanelSnapshot, String> {
+        let Some(resolved) = resolve_toggle_panel_id(self.app, panel_id) else {
+            return Err(format!("panel {panel_id:?} is not registered"));
+        };
+        let panel = self
+            .app
+            .plugin_panels
+            .get(&resolved)
+            .ok_or_else(|| format!("panel {panel_id:?} is not registered"))?;
+        // A direct HostApi command is already executing in a document-bound
+        // command context. Unlike the IPC entry point, there is no second
+        // transport identity to authenticate here; the caller's command is
+        // the capability. The snapshot still carries the registered owner
+        // and the actual session tab for the plugin's own target checks.
+        Ok(panel.snapshot(self.tab_id()))
+    }
+
+    fn panel_snapshot_for_plugin(
+        &self,
+        plugin_id: &str,
+        panel_id: &str,
+    ) -> Result<ocs_plugin_api::dialog::PanelSnapshot, String> {
+        let Some(resolved) = resolve_toggle_panel_id(self.app, panel_id) else {
+            return Err(format!("panel {panel_id:?} is not registered"));
+        };
+        let panel = self
+            .app
+            .plugin_panels
+            .get(&resolved)
+            .ok_or_else(|| format!("panel {panel_id:?} is not registered"))?;
+        if panel.owner_plugin_id.as_deref() != Some(plugin_id) {
+            return Err(format!(
+                "panel {panel_id:?} is not owned by plugin {plugin_id:?}"
+            ));
+        }
+        // HostSession is created by the normal, document-bound command
+        // dispatcher. The tab is attached here, never supplied by the form.
+        Ok(panel.snapshot(self.tab_id()))
+    }
+
     fn register_quad_panels(
         &mut self,
         plugin_id: &str,
@@ -5053,6 +5640,15 @@ impl crate::command::CadCommand for PluginInteractiveAdapter {
         .map(plugin_step_to_result)
         .unwrap_or(crate::command::CmdResult::Cancel)
     }
+    fn on_dialog_action(
+        &mut self,
+        event: ocs_plugin_api::dialog::DialogEvent,
+    ) -> ocs_plugin_api::dialog::DialogActionResponse {
+        crate::plugin::guard("InteractiveCommand::on_dialog_action", || {
+            self.inner.on_dialog_action(event)
+        })
+        .unwrap_or(ocs_plugin_api::dialog::DialogActionResponse::None)
+    }
     fn take_pending_panel_updates(
         &mut self,
     ) -> Vec<(
@@ -5276,6 +5872,16 @@ impl crate::command::CadCommand for PluginProcessInteractiveAdapter {
             .ok()
             .flatten()
     }
+    fn on_dialog_action(
+        &mut self,
+        event: ocs_plugin_api::dialog::DialogEvent,
+    ) -> ocs_plugin_api::dialog::DialogActionResponse {
+        // A runner without `DialogAction` answers with an error; the host
+        // then falls back to the panel-action notification.
+        self.process
+            .dialog_action(self.command_id, event)
+            .unwrap_or(ocs_plugin_api::dialog::DialogActionResponse::None)
+    }
     fn on_dialog_response(
         &mut self,
         response: ocs_plugin_api::dialog::DialogResponse,
@@ -5299,6 +5905,12 @@ impl crate::command::CadCommand for PluginProcessInteractiveAdapter {
             self.refresh();
         }
         result
+    }
+    fn owner_plugin_id(&self) -> Option<&str> {
+        Some(self.process.id())
+    }
+    fn plugin_command_id(&self) -> Option<u64> {
+        Some(self.command_id)
     }
 }
 
@@ -5470,6 +6082,113 @@ mod tests {
             panic!("the insert is gone");
         };
         assert_eq!(insert.attributes[0].common.linetype, "Rails");
+    }
+
+    /// A layout a plugin creates, renames or deletes shows in the layout tab
+    /// bar at once, as one made from the tab bar does.
+    #[test]
+    fn plugin_layout_changes_reach_the_layout_tab_bar() {
+        use ocs_plugin_api::host::TableOperation as Op;
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        let tabs = |app: &OpenCADStudio| app.tabs[0].scene.cached_layout_names().to_vec();
+        let before = tabs(&app);
+        assert!(!before.iter().any(|n| n == "Plugin Sheet"));
+
+        let mut host = HostSession::new(&mut app, 0);
+        host.layout_operation(Op::LayoutCreate {
+            name: "Plugin Sheet".to_owned(),
+        })
+        .unwrap();
+        drop(host);
+        assert!(
+            tabs(&app).iter().any(|n| n == "Plugin Sheet"),
+            "the new layout is missing from the tab bar: {:?}",
+            tabs(&app)
+        );
+
+        let mut host = HostSession::new(&mut app, 0);
+        host.layout_operation(Op::LayoutRename {
+            from: "Plugin Sheet".to_owned(),
+            to: "Renamed Sheet".to_owned(),
+        })
+        .unwrap();
+        drop(host);
+        let names = tabs(&app);
+        assert!(names.iter().any(|n| n == "Renamed Sheet"), "{names:?}");
+        assert!(!names.iter().any(|n| n == "Plugin Sheet"), "{names:?}");
+
+        let mut host = HostSession::new(&mut app, 0);
+        host.layout_operation(Op::LayoutDelete {
+            name: "Renamed Sheet".to_owned(),
+        })
+        .unwrap();
+        drop(host);
+        assert_eq!(tabs(&app), before);
+    }
+
+    /// A plugin puts the paper-space layout tabs in a new order in one undo
+    /// step, and a list that is not exactly the paper-space layouts is refused.
+    #[test]
+    fn plugin_sets_the_layout_tab_order_in_one_undo_step() {
+        use ocs_plugin_api::host::TableOperation as Op;
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        let tabs = |app: &OpenCADStudio| app.tabs[0].scene.cached_layout_names().to_vec();
+        let mut host = HostSession::new(&mut app, 0);
+        for name in ["Sheet A", "Sheet B"] {
+            host.layout_operation(Op::LayoutCreate {
+                name: name.to_owned(),
+            })
+            .unwrap();
+        }
+        drop(host);
+        let before = tabs(&app);
+        let paper: Vec<String> = before.iter().skip(1).cloned().collect();
+        assert!(paper.len() >= 3, "{before:?}");
+        let mut wanted = paper.clone();
+        wanted.reverse();
+
+        let order = |names: &[&str]| Op::LayoutSetTabOrder {
+            names: names.iter().map(|n| (*n).to_owned()).collect(),
+        };
+        let mut host = HostSession::new(&mut app, 0);
+        let first = paper[0].as_str();
+        assert!(
+            host.table_operation(order(&[first])).is_err(),
+            "a layout left out"
+        );
+        assert!(
+            host.table_operation(order(&[first, first])).is_err(),
+            "a layout listed twice"
+        );
+        let mut with_model: Vec<&str> = paper.iter().map(String::as_str).collect();
+        with_model.push("Model");
+        assert!(
+            host.table_operation(order(&with_model)).is_err(),
+            "Model listed"
+        );
+        drop(host);
+        assert_eq!(tabs(&app), before, "a refused order changes nothing");
+
+        app.finish_pending_history(0);
+        let undo_before = app.tabs[0].history.undo_stack.len();
+        let mut host = HostSession::new(&mut app, 0);
+        let lower: Vec<String> = wanted.iter().map(|n| n.to_lowercase()).collect();
+        let lower: Vec<&str> = lower.iter().map(String::as_str).collect();
+        host.table_operation(order(&lower)).unwrap();
+        drop(host);
+        app.finish_pending_history(0);
+        let after = tabs(&app);
+        assert_eq!(after[0], "Model");
+        assert_eq!(after[1..], wanted[..], "the tab bar shows the new order");
+        assert_eq!(
+            app.tabs[0].history.undo_stack.len(),
+            undo_before + 1,
+            "one undo step"
+        );
+        app.undo_steps(1);
+        assert_eq!(tabs(&app), before, "one undo restores the old order");
     }
 
     #[test]
@@ -6093,6 +6812,7 @@ mod tests {
             &plugin_path,
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .expect("spawn staged Python plugin");
         assert_eq!(process.id(), "opencad.python");
@@ -6225,6 +6945,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .expect("spawn staged Python plugin");
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -6425,6 +7146,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .expect("spawn staged Python plugin");
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -6644,6 +7366,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .expect("spawn staged Python plugin");
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -6920,6 +7643,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -7121,6 +7845,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -7352,6 +8077,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -7696,6 +8422,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -7984,6 +8711,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -8323,6 +9051,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -8591,6 +9320,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -8854,6 +9584,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -10247,6 +10978,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -10605,6 +11337,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -10901,6 +11634,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -10985,6 +11719,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -11267,6 +12002,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -11663,6 +12399,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -11984,6 +12721,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -12086,6 +12824,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -12177,6 +12916,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -12318,6 +13058,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dispatch = |host: &mut HostSession<'_>, command: &str| {
@@ -12523,6 +13264,7 @@ mod tests {
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dir = std::env::temp_dir();
@@ -12565,8 +13307,8 @@ mod tests {
             r#"
 L.create('Walls', color=1, lineweight=50, description='load bearing', transparency=30)
 L.create('Grid', color=(10, 200, 30), linetype='Continuous', off=True, plottable=False)
-L.modify('Walls', color=5, locked=True)
 doc.create_entity('Line', start=P(0, 0, 0), end=P(1, 0, 0), layer='Walls')
+L.modify('Walls', color=5, locked=True)
 L.rename('Walls', 'Structure')
 check('dup', lambda: L.create('structure'))
 check('badname', lambda: L.create('a<b'))
@@ -12727,6 +13469,7 @@ L.delete('Structure', erase_objects=True)
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dir = std::env::temp_dir();
@@ -12962,6 +13705,7 @@ S.delete('Heading')
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dir = std::env::temp_dir();
@@ -13226,6 +13970,7 @@ B.delete('Widget2')
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dir = std::env::temp_dir();
@@ -13428,6 +14173,7 @@ check('unknown_insert_block', lambda: doc.create_entity('Insert', block_name='Gh
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dir = std::env::temp_dir();
@@ -13697,6 +14443,7 @@ LT.delete('Temp')
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let dir = std::env::temp_dir();
@@ -14102,6 +14849,7 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let script = std::env::temp_dir().join(format!("ocs_nested_{}.py", std::process::id()));
@@ -14297,6 +15045,7 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
             std::path::Path::new(&plugin_path),
             &mut host,
             crate::plugin::v4_support::notification_handler(),
+            None,
         )
         .unwrap();
         let script = dir.join(format!("ocs_link_{}.py", std::process::id()));
@@ -14439,6 +15188,7 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
                     std::path::Path::new(&plugin_path),
                     &mut host,
                     crate::plugin::v4_support::notification_handler(),
+                    None,
                 )
                 .expect("spawn staged Python plugin"),
             )
@@ -14584,6 +15334,7 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
                     std::path::Path::new(&plugin_path),
                     &mut host,
                     crate::plugin::v4_support::notification_handler(),
+                    None,
                 )
                 .expect("spawn staged Python plugin"),
             )
@@ -16424,13 +17175,9 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
         // The sink marks the plugin loaded+alive for the visibility predicate
         // (the register tests' idiom): with the removed synthesis this is
         // exactly the case that used to grow an auto tab.
-        //
-        // The plugin has a name of its own. The quad store is the process's,
-        // and which plugins are alive is each thread's: under the shared
-        // "PLUGIN" this feed held, for a moment, the panel the register test
-        // beside this one keeps there while it runs.
-        const PLAIN: &str = "PLUGIN_WITH_PLAIN_COMMANDS";
-        crate::plugin::grip_points::install_in_process_sink(PLAIN, |_host, _event| {
+        // An id of its own: the quad store is process-wide, and other tests
+        // register panels for "PLUGIN" while this one runs.
+        crate::plugin::grip_points::install_in_process_sink("PLUGIN_NO_QUAD", |_host, _event| {
             ocs_plugin_api::host::CustomGripResponse::default()
         });
         let feed = crate::app::plugin_host::plugin_quad_panels(&app.disabled_plugins);
@@ -16446,7 +17193,7 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
             0,
             "no registration, no contribution: the feed stays empty"
         );
-        crate::plugin::grip_points::remove_in_process_sink(PLAIN);
+        crate::plugin::grip_points::remove_in_process_sink("PLUGIN_NO_QUAD");
     }
 
     // ── API v14: plugin class objects ──────────────────────────────────────
@@ -16482,7 +17229,60 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
             tolerance: 1e-3,
             layer: "PLUGIN_PROFILE".to_string(),
             design_record: "PLUGIN_ALIGN_DISPLAY".to_string(),
+            selectable_custom: false,
         }
+    }
+
+    #[test]
+    fn boot_time_declaration_is_attributed_to_the_declared_package_id() {
+        // HOST-FIXES-TODO 1: the spawn bootstrap registers entity classes and
+        // quad panels while GetManifest is still in flight — the registry
+        // entry does not exist yet, and the manifest window used to serve
+        // with an empty identity ("plugin \"\" is not a loaded, alive
+        // plugin"). The declaration law now treats the IN-FLIGHT BOOT as the
+        // live, authenticated transport: the package's declared id rides the
+        // connection before the manifest and the manifest must confirm it,
+        // while the empty identity still refuses.
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        let mut host = HostSession::new(&mut app, 0);
+        crate::plugin::external::with_fresh_installed_manager(|| {
+            // An empty identity is never attributable, boot window or not.
+            let empty_err = host
+                .register_plugin_class("", &traverse_class())
+                .unwrap_err();
+            assert!(
+                empty_err.contains("not a loaded, alive plugin"),
+                "got: {empty_err}"
+            );
+
+            // The declared package id in its boot window passes the law.
+            crate::plugin::external::with_manager(|m| m.begin_boot("opencad.example"));
+            assert!(
+                host.register_plugin_class("opencad.example", &traverse_class())
+                    .is_ok()
+            );
+
+            // After the boot window closes (and without a registry entry at
+            // that id) the law refuses again: a different class key under the
+            // same owner must not register.
+            crate::plugin::external::with_manager(|m| m.end_boot("opencad.example"));
+            let mut unrelated = traverse_class();
+            unrelated.class_id = "OTHER_KEY".to_string();
+            let closed_err = host
+                .register_plugin_class("opencad.example", &unrelated)
+                .unwrap_err();
+            assert!(
+                closed_err.contains("not a loaded, alive plugin"),
+                "got: {closed_err}"
+            );
+
+            // The empty identity law survives the whole exercise.
+            let still_empty = host
+                .register_plugin_class("", &traverse_class())
+                .unwrap_err();
+            assert!(still_empty.contains("not a loaded, alive plugin"));
+        });
     }
 
     #[test]
@@ -16560,6 +17360,63 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
             .expect("the class outlives its declaring session");
         assert!(!handles.is_empty());
         assert!(host.app.tabs[0].scene.is_reference_only(handles[0]));
+        assert!(!host.app.tabs[0].scene.native_edit_disabled(handles[0]));
+        let stamp = host
+            .read_record(handles[0], "PLUGIN_ALIGN_DISPLAY")
+            .expect("legacy owner stamp");
+        assert_eq!(stamp.values.len(), 2, "unflagged staging is unchanged");
+    }
+
+    #[test]
+    fn selectable_custom_instances_are_selectable_but_native_edit_disabled() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        install_class_owner();
+        let mut host = HostSession::new(&mut app, 0);
+        assert!(host
+            .register_plugin_class("PLUGIN", &traverse_class())
+            .is_ok());
+        let mut instance = traverse_instance();
+        instance.selectable_custom = true;
+        instance.design_record.clear();
+        let handles = host
+            .stage_plugin_class_instance("PLUGIN", &instance)
+            .expect("the selectable custom instance stages");
+        assert!(!handles.is_empty());
+        for &handle in &handles {
+            assert!(!host.app.tabs[0].scene.is_reference_only(handle));
+            assert!(host.app.tabs[0].scene.native_edit_disabled(handle));
+            let stamp = host
+                .read_record(handle, "PLUGIN_ALIGN_DISPLAY")
+                .expect("selectable custom owner stamp");
+            assert_eq!(stamp.values.len(), 3);
+            assert!(matches!(
+                &stamp.values[1],
+                document::xdata::XDataValue::String(value) if value.is_empty()
+            ));
+            assert!(matches!(
+                stamp.values[2],
+                document::xdata::XDataValue::Integer32(1)
+            ));
+            assert!(host.entity_grips(handle).expect("grip read").is_empty());
+
+            let original = host.document().get_entity(handle).unwrap().clone();
+            assert!(!host.app.tabs[0].scene.update_entity(original.clone()));
+            host.app.tabs[0].scene.erase_entities(&[handle]);
+            assert!(host.document().get_entity(handle).is_some());
+        }
+
+        let handle = handles[0];
+        host.app.tabs[0].scene.select_entity(handle, true);
+        assert!(host.app.tabs[0].scene.selected.contains(&handle));
+        assert!(host.app.property_target_handles(0).is_empty());
+        let original = host.document().get_entity(handle).unwrap().clone();
+        assert!(
+            host.update_entity(original),
+            "plugin updates remain allowed"
+        );
+        assert!(host.remove_entity(handle), "plugin erases remain allowed");
+        assert!(host.document().get_entity(handle).is_none());
     }
 
     #[test]
@@ -16640,7 +17497,8 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
         // The stamp's file-level law: the identity stamp (the XDATA record
         // under the auto-registered APPID) and the staged display set
         // survive BOTH file formats with empty loss rows; the stamp values
-        // (schema version + record linkage) stay byte-identical.
+        // (schema version + record linkage + selectable-custom flags) stay
+        // byte-identical.
         use document::{Dwg, Dxf, Format};
 
         let mut app = OpenCADStudio::new_for_test();
@@ -16652,9 +17510,11 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
             assert!(host
                 .register_plugin_class("PLUGIN", &traverse_class())
                 .is_ok());
+            let mut instance = traverse_instance();
+            instance.selectable_custom = true;
             handles = host
-                .stage_plugin_class_instance("PLUGIN", &traverse_instance())
-                .expect("the class instance stages");
+                .stage_plugin_class_instance("PLUGIN", &instance)
+                .expect("the selectable custom class instance stages");
         }
         let read_stamp = |document: &document::Document, handle: document::Handle| {
             let entity = document
@@ -16694,6 +17554,12 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
                     stamp(&back, *handle),
                     expected,
                     "{name}: the class stamp must be byte-identical"
+                );
+                assert!(
+                    crate::plugin::entity_labels::native_edit_disabled(
+                        back.get_entity(*handle).expect("flagged entity survives"),
+                    ),
+                    "{name}: the selectable-custom flag survives"
                 );
             }
         }
@@ -17390,5 +18256,375 @@ step('undo_move', lambda: M.move([u], (0, 0, 0), (7, 0, 0)))
                 .all(|section| section.title != crate::t!("Plugin class parameters").into_owned()),
             "an unstamped selection rides no class rows"
         );
+    }
+
+    fn api16_text_panel() -> ocs_plugin_api::dialog::PanelDef {
+        use ocs_plugin_api::dialog::{DialogControl, PanelDef};
+
+        PanelDef::new("panel", "Panel")
+            .with_control(DialogControl::Text {
+                id: "length".into(),
+                label: "Length".into(),
+                default: "1.0".into(),
+            })
+            .with_control(DialogControl::Button {
+                id: "submit".into(),
+                label: "Submit".into(),
+                action: Some("PANEL_SUBMIT".into()),
+                align_h: None,
+                width: None,
+            })
+    }
+
+    fn api16_number_panel() -> ocs_plugin_api::dialog::PanelDef {
+        let mut panel = api16_text_panel();
+        panel.controls[0] = ocs_plugin_api::dialog::DialogControl::Number {
+            id: "length".into(),
+            label: "Length".into(),
+            default: 1.0,
+            min: None,
+            max: None,
+            step: None,
+        };
+        panel
+    }
+
+    #[test]
+    fn api16_panel_registration_is_idempotent_and_owner_authenticated() {
+        use ocs_plugin_api::dialog::DialogValue;
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        let tab_id = app.tabs[0].id;
+        let mut host = HostSession::new(&mut app, 0);
+
+        assert!(host.register_panel_for_plugin("OWNER", api16_text_panel()));
+        assert!(host.update_panel_for_plugin(
+            "OWNER",
+            "panel",
+            std::collections::HashMap::from([(
+                "length".to_string(),
+                DialogValue::Text("2.5".to_string()),
+            )]),
+        ));
+        assert!(
+            host.register_panel_for_plugin("OWNER", api16_text_panel()),
+            "unchanged re-registration must not reset the live draft"
+        );
+        let before = host.app.plugin_panels["panel"].clone();
+
+        let mut foreign_panel = api16_text_panel();
+        foreign_panel.title = "Foreign replacement".into();
+        assert!(!host.register_panel_for_plugin("OTHER", foreign_panel));
+        assert!(!host.update_panel_for_plugin(
+            "OTHER",
+            "panel",
+            std::collections::HashMap::from([(
+                "length".to_string(),
+                DialogValue::Text("99.0".to_string()),
+            )]),
+        ));
+        assert!(!host.toggle_panel_for_plugin("OTHER", "panel", Some(true)));
+        assert!(host.panel_snapshot_for_plugin("OTHER", "panel").is_err());
+        assert_eq!(host.app.plugin_panels.get("panel"), Some(&before));
+
+        let snapshot = host.panel_snapshot_for_plugin("OWNER", "panel").unwrap();
+        assert_eq!(snapshot.plugin_id, "OWNER");
+        assert_eq!(snapshot.panel_id, "panel");
+        assert_eq!(snapshot.tab_id, tab_id);
+        assert_eq!(snapshot.values.len(), 1);
+        assert_eq!(
+            snapshot.values.get("length"),
+            Some(&DialogValue::Text("2.5".to_string()))
+        );
+        assert_eq!(snapshot.raw_text.len(), 1);
+        assert_eq!(
+            snapshot.raw_text.get("length").map(String::as_str),
+            Some("2.5")
+        );
+        assert!(snapshot.errors.is_empty(), "{:?}", snapshot.errors);
+        let direct = host
+            .panel_snapshot("PANEL")
+            .expect("ordinary HostApi command read-back works");
+        assert_eq!(direct.tab_id, tab_id);
+        assert_eq!(direct.values.get("length"), snapshot.values.get("length"));
+        assert!(!host.app.plugin_panels["panel"].visible);
+        assert_eq!(host.app.plugin_panels.get("panel"), Some(&before));
+    }
+
+    #[test]
+    fn api16_panel_snapshot_uses_the_real_session_tab_without_document_writes() {
+        use ocs_plugin_api::dialog::DialogValue;
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        let first_tab_id = app.tabs[0].id;
+        {
+            let mut host = HostSession::new(&mut app, 0);
+            assert!(host.register_panel_for_plugin("OWNER", api16_text_panel()));
+        }
+        let second_tab_id = app.push_test_document();
+        assert_eq!(second_tab_id, app.tabs[1].id);
+        assert_ne!(first_tab_id, second_tab_id);
+        assert_eq!(app.active_tab, 0);
+
+        let first_document = app.tabs[0].scene.document.clone();
+        let second_document = app.tabs[1].scene.document.clone();
+        let first = HostSession::new(&mut app, 0)
+            .panel_snapshot_for_plugin("OWNER", "panel")
+            .unwrap();
+        let second = HostSession::new(&mut app, 1)
+            .panel_snapshot_for_plugin("OWNER", "panel")
+            .unwrap();
+
+        assert_eq!(first.tab_id, first_tab_id);
+        assert_eq!(second.tab_id, second_tab_id);
+        assert_ne!(first.tab_id, second.tab_id);
+        for snapshot in [&first, &second] {
+            assert_eq!(snapshot.plugin_id, "OWNER");
+            assert_eq!(snapshot.panel_id, "panel");
+            assert_eq!(snapshot.values.len(), 1);
+            assert_eq!(
+                snapshot.values.get("length"),
+                Some(&DialogValue::Text("1.0".to_string()))
+            );
+            assert_eq!(snapshot.raw_text.len(), 1);
+            assert_eq!(
+                snapshot.raw_text.get("length").map(String::as_str),
+                Some("1.0")
+            );
+            assert!(snapshot.errors.is_empty(), "{:?}", snapshot.errors);
+        }
+        assert_eq!(app.tabs[0].scene.document, first_document);
+        assert_eq!(app.tabs[1].scene.document, second_document);
+        assert_eq!(app.active_tab, 0);
+        assert!(app.tabs[0].history.pending.is_none());
+        assert!(app.tabs[1].history.pending.is_none());
+    }
+
+    #[test]
+    fn api16_panel_snapshot_rejects_malformed_and_missing_panels_without_writes() {
+        use ocs_plugin_api::dialog::DialogValue;
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        let document_before = app.tabs[0].scene.document.clone();
+        let undo_before = app.tabs[0].history.undo_stack.len();
+        let mut host = HostSession::new(&mut app, 0);
+        assert!(host.register_panel_for_plugin("OWNER", api16_number_panel()));
+        assert!(host.update_panel_for_plugin(
+            "OWNER",
+            "panel",
+            std::collections::HashMap::from([(
+                "length".to_string(),
+                DialogValue::Text("-".to_string()),
+            )]),
+        ));
+        let snapshot = host.panel_snapshot_for_plugin("OWNER", "panel").unwrap();
+
+        assert_eq!(
+            snapshot.raw_text.get("length").map(String::as_str),
+            Some("-")
+        );
+        assert!(!snapshot.values.contains_key("length"));
+        assert!(
+            snapshot.errors.iter().any(|error| {
+                error.contains("invalid finite number")
+                    && error.contains("'length'")
+                    && error.contains("'-'")
+            }),
+            "{:?}",
+            snapshot.errors
+        );
+
+        let error = host
+            .panel_snapshot_for_plugin("OWNER", "missing")
+            .unwrap_err();
+        assert!(error.contains("not registered"), "{error}");
+        assert_eq!(host.document(), &document_before);
+        assert_eq!(host.app.tabs[0].history.undo_stack.len(), undo_before);
+        assert!(host.app.tabs[0].history.pending.is_none());
+    }
+
+    #[test]
+    fn api17_panel_reset_preserves_owner_and_aliases_remain_authenticated() {
+        use crate::app::Message;
+        use ocs_plugin_api::dialog::DialogValue;
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        {
+            let mut host = HostSession::new(&mut app, 0);
+            assert!(host.register_panel_for_plugin("OWNER", api16_text_panel()));
+            assert!(host.update_panel_for_plugin(
+                "OWNER",
+                "panel",
+                std::collections::HashMap::from([(
+                    "length".to_string(),
+                    DialogValue::Text("2.5".to_string()),
+                )]),
+            ));
+        }
+
+        // The built-in reset path must retain the authenticated owner and
+        // restore the declaration's defaults, not brick subsequent access.
+        let _ = app.update(Message::PluginPanelButtonClick(
+            "panel".to_string(),
+            "reset".to_string(),
+            Some("reset".to_string()),
+        ));
+        let mut host = HostSession::new(&mut app, 0);
+        let snapshot = host
+            .panel_snapshot_for_plugin("OWNER", "panel")
+            .expect("owner remains able to read after reset");
+        assert_eq!(
+            snapshot.values.get("length"),
+            Some(&DialogValue::Text("1.0".into()))
+        );
+        assert!(host.register_panel_for_plugin("OWNER", api16_text_panel()));
+        assert!(host.update_panel_for_plugin(
+            "OWNER",
+            "PANEL",
+            std::collections::HashMap::from([(
+                "length".to_string(),
+                DialogValue::Text("3.0".to_string()),
+            )]),
+        ));
+        assert!(host.toggle_panel_for_plugin("OWNER", "Panel", Some(true)));
+        assert!(!host.update_panel_for_plugin("OTHER", "panel", std::collections::HashMap::new(),));
+        assert!(host.panel_snapshot_for_plugin("OTHER", "Panel").is_err());
+    }
+
+    #[test]
+    fn api17_explicit_plugin_panel_reopens_in_clean_screen_without_document_writes() {
+        use ocs_plugin_api::dialog::{DialogControl, PanelDef};
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        app.clean_screen = true;
+        let mut host = HostSession::new(&mut app, 0);
+        for id in ["cvifc.ifc_h_properties", "cvifc.ifc_v_properties"] {
+            let panel = PanelDef::new(id, "IFC Alignment Segment")
+                .with_command(format!(
+                    "CVI_IFC_{}_PANEL",
+                    if id.ends_with("h_properties") { "H" } else { "V" }
+                ))
+                .with_control(DialogControl::Text {
+                    id: "source_record".into(),
+                    label: "Source record".into(),
+                    default: "Alignment-Axis-h-seg-001".into(),
+                })
+                .with_control(DialogControl::Button {
+                    id: "apply".into(),
+                    label: "Apply".into(),
+                    action: Some("CVI_IFC_PANEL_APPLY".into()),
+                    align_h: None,
+                    width: None,
+                });
+            assert!(host.register_panel_for_plugin("opencad.civil_ifc", panel));
+        }
+        let panel_id = crate::ui::dock::PanelId::Plugin(1);
+        let other_id = crate::ui::dock::PanelId::Plugin(2);
+        assert!(!host.app.dock_panel_visible(panel_id));
+        assert!(host.toggle_panel_for_plugin(
+            "opencad.civil_ifc",
+            "cvifc.ifc_h_properties",
+            Some(true),
+        ));
+        assert!(host.app.dock_panel_visible(panel_id));
+        assert!(
+            matches!(
+                host.app.dock.location(panel_id),
+                Some((crate::app::config::DockSide::Right, _))
+            ),
+            "an explicit show places a new panel into the default dock"
+        );
+        assert!(host.app.dock_panel_on_screen(panel_id));
+        assert!(!host.app.dock_panel_visible(other_id));
+        assert!(host.app.plugin_panels["cvifc.ifc_h_properties"].visible);
+        assert!(!host.app.plugin_panels["cvifc.ifc_v_properties"].visible);
+        assert_eq!(host.app.tabs[0].history.undo_stack.len(), 0);
+        assert!(host.app.tabs[0].history.pending.is_none());
+    }
+
+    #[test]
+    fn plugin_panels_toggle_like_graphic_attributes_including_clean_screen() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        app.clean_screen = true;
+        let graphic_id = crate::ui::dock::PanelId::GraphicAttributes;
+        assert!(!app.dock_panel_visible(graphic_id));
+        let _ = app.update(crate::app::Message::ToggleGraphicAttributes);
+        assert!(app.show_graphic_attributes);
+        assert!(!app.dock_panel_visible(graphic_id));
+        let _ = app.update(crate::app::Message::ToggleGraphicAttributes);
+        assert!(!app.show_graphic_attributes);
+        assert!(!app.dock_panel_visible(graphic_id));
+        let _ = app.update(crate::app::Message::ToggleGraphicAttributes);
+        assert!(app.show_graphic_attributes);
+        assert!(!app.dock_panel_visible(graphic_id));
+
+        let mut host = HostSession::new(&mut app, 0);
+        let panel_id = crate::ui::dock::PanelId::Plugin(1);
+        assert!(host.register_panel_for_plugin("opencad.civil_ifc", api16_text_panel()));
+        // Like Graphic Attributes, the panel stays hidden in Clean Screen;
+        // opening it still binds its values without a document edit.
+        app.clean_screen = false;
+        let mut host = HostSession::new(&mut app, 0);
+        assert!(!host.app.dock_panel_visible(panel_id));
+        assert!(host.toggle_panel_for_plugin("opencad.civil_ifc", "panel", None));
+        assert!(host.app.dock_panel_visible(panel_id));
+        assert!(host.app.dock_panel_on_screen(panel_id));
+        assert!(host.toggle_panel_for_plugin("opencad.civil_ifc", "panel", None));
+        assert!(!host.app.dock_panel_visible(panel_id));
+        assert!(!host.app.plugin_panels["panel"].visible);
+        assert!(host.toggle_panel_for_plugin("opencad.civil_ifc", "panel", None));
+        assert!(host.app.dock_panel_visible(panel_id));
+        assert!(host.app.plugin_panels["panel"].visible);
+        assert_eq!(host.app.tabs[0].history.undo_stack.len(), 0);
+        assert!(host.app.tabs[0].history.pending.is_none());
+    }
+
+    #[test]
+    fn api17_update_panel_for_plugin_allows_owned_modal_dialog() {
+        use ocs_plugin_api::dialog::{DialogControl, DialogDef, DialogValue};
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.tabs[0].is_start = false;
+        let dlg = DialogDef::new("Test Dialog")
+            .with_control(DialogControl::Text {
+                id: "field1".into(),
+                label: "Field 1".into(),
+                default: "initial".into(),
+            });
+        app.open_plugin_dialog_on_tab(0, dlg, Some("MY_PLUGIN".to_string()));
+
+        let mut host = HostSession::new(&mut app, 0);
+
+        // Foreign plugin cannot update the dialog
+        assert!(!host.update_panel_for_plugin(
+            "OTHER_PLUGIN",
+            "Test Dialog",
+            std::collections::HashMap::from([("field1".into(), DialogValue::Text("hacked".into()))]),
+        ));
+
+        // Owner plugin can update by title
+        assert!(host.update_panel_for_plugin(
+            "MY_PLUGIN",
+            "Test Dialog",
+            std::collections::HashMap::from([("field1".into(), DialogValue::Text("updated".into()))]),
+        ));
+        let field1 = |host: &HostSession| {
+            host.app.plugin_dialog_state.as_ref().unwrap().text_values.get("field1").cloned()
+        };
+        assert_eq!(field1(&host).as_deref(), Some("updated"));
+
+        // Owner plugin can also update with empty panel_id (active dialog convention)
+        assert!(host.update_panel_for_plugin(
+            "MY_PLUGIN",
+            "",
+            std::collections::HashMap::from([("field1".into(), DialogValue::Text("empty_id_update".into()))]),
+        ));
+        assert_eq!(field1(&host).as_deref(), Some("empty_id_update"));
     }
 }

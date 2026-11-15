@@ -750,24 +750,17 @@ impl Scene {
     /// the drawing's, and costs one refit.
     fn frame_keeping_drawing_depth(&mut self, min: glam::Vec3, max: glam::Vec3) {
         let aspect = self.active_camera_aspect();
-        let pixels = self.active_camera_pixels();
-        let drawing = (self.projection_bounds_epoch.get() == self.geometry_epoch)
-            .then(|| self.camera.borrow().fitted_model_bounds())
-            .flatten();
-        self.camera
-            .borrow_mut()
-            .fit_to_bounds_bordered_f32(min, max, aspect, pixels);
-        match drawing {
-            Some((lo, hi)) => {
-                self.camera
-                    .borrow_mut()
-                    .fit_depth_to_bounds_f64(lo.min(min.as_dvec3()), hi.max(max.as_dvec3()));
-                self.projection_bounds_epoch.set(self.geometry_epoch);
-            }
-            None => {
-                self.camera.borrow_mut().invalidate_model_bounds();
-                self.refresh_projection_bounds();
-            }
+        let mut camera = self.camera.borrow_mut();
+        let known = camera.known_depth_bounds();
+        camera.fit_to_bounds(min, max, aspect);
+        if known.is_some() {
+            camera.keep_depth_bounds(known);
+            drop(camera);
+            self.projection_bounds_epoch.set(self.geometry_epoch);
+        } else {
+            camera.invalidate_model_bounds();
+            drop(camera);
+            self.refresh_projection_bounds();
         }
         self.camera_generation += 1;
     }
@@ -859,9 +852,21 @@ impl Scene {
         if self.active_viewport.is_some() {
             return self.fit_active_viewport_to_bounds(min, max);
         }
-        // The entities' own box frames the view; the depth stays the drawing's
-        // (a valve on the plane, its tag lettering a hundred units above it).
-        self.frame_keeping_drawing_depth(min, max);
+        let aspect = self.active_camera_aspect();
+        let pixels = self.active_camera_pixels();
+        let mut camera = self.camera.borrow_mut();
+        let known = camera.known_depth_bounds();
+        camera.fit_to_bounds_bordered_f32(min, max, aspect, pixels);
+        if known.is_some() {
+            camera.keep_depth_bounds(known);
+            drop(camera);
+            self.projection_bounds_epoch.set(self.geometry_epoch);
+        } else {
+            camera.invalidate_model_bounds();
+            drop(camera);
+            self.refresh_projection_bounds();
+        }
+        self.camera_generation += 1;
         true
     }
 
@@ -1178,6 +1183,7 @@ impl Scene {
             // fills it in from $EXTMIN/$EXTMAX right after, so the near/far tracks
             // the eye direction once the view is orbited.
             model_bounds: None,
+            stale_bounds: None,
         })
     }
 
@@ -1687,6 +1693,17 @@ impl Scene {
     /// Restore the camera from the file's saved view (called once on open).
     /// Falls back to fit_all() if no saved view is available.
     pub fn restore_saved_camera(&mut self) {
+        self.restore_saved_camera_inner(true);
+    }
+
+    /// Restore only camera/view state for automation's layout activation.
+    /// Unlike an interactive first open, this never initializes a page setup,
+    /// creates a viewport, or consumes the layout's unopened marker.
+    pub fn restore_saved_camera_view_only(&mut self) {
+        self.restore_saved_camera_inner(false);
+    }
+
+    fn restore_saved_camera_inner(&mut self, initialize_layout: bool) {
         let restored = if self.current_layout == "Model" {
             // Tiled-layout restore takes precedence — it sets the camera too.
             // Single-tile files fall through to the *Active branch.
@@ -1700,14 +1717,16 @@ impl Scene {
             // with no paper), or it was created in this session and not
             // opened yet. Its page setup is initialized and, with
             // LAYOUTCREATEVIEWPORT, it gets its first viewport.
-            let unopened = self.unopened_layouts.remove(&layout);
-            let initialized = self.initialize_layout_page_setup(&layout);
-            if unopened && !initialized {
-                self.fit_layout_sheet(&layout);
-            }
-            self.ensure_sheet_viewport(&layout);
-            if unopened || initialized {
-                self.add_layout_default_viewport(&layout);
+            if initialize_layout {
+                let unopened = self.unopened_layouts.remove(&layout);
+                let initialized = self.initialize_layout_page_setup(&layout);
+                if unopened && !initialized {
+                    self.fit_layout_sheet(&layout);
+                }
+                self.ensure_sheet_viewport(&layout);
+                if unopened || initialized {
+                    self.add_layout_default_viewport(&layout);
+                }
             }
             self.apply_sheet_viewport_camera()
         };
@@ -1871,7 +1890,7 @@ impl Scene {
     /// refused to reach it. `SANE_EXTENT` and the finite test are the only
     /// filters now; the ±1e6 display segments that motivated the old heuristic
     /// come from XLine / Ray, which are handled explicitly below.
-    pub(super) fn visible_block_bounds(&self, block: Handle) -> Option<(glam::DVec3, glam::DVec3)> {
+    pub(crate) fn visible_block_bounds(&self, block: Handle) -> Option<(glam::DVec3, glam::DVec3)> {
         if block.is_null() {
             return None;
         }

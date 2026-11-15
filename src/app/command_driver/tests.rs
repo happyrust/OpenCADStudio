@@ -3399,6 +3399,19 @@ mod dash_layer_properties_tests {
             .expect("WALLS layer")
     }
 
+    /// A quoted name or description keeps its spaces, as in AutoCAD.
+    #[test]
+    fn dash_layer_takes_quoted_names_with_spaces() {
+        let mut app = app_with_layer();
+        let _ = app.run_command_line(r#"-LAYER NEW "Power Cables""#);
+        let _ = app.run_command_line(r#"-LAYER D "outer walls" WALLS"#);
+        let _ = app.run_command_line(r#"-LAYER R WALLS "Main Walls""#);
+        let layers = &app.tabs[app.active_tab].scene.document.layers;
+        assert!(layers.get("Power Cables").is_some());
+        assert!(layers.get("WALLS").is_none());
+        assert_eq!(layers.get("Main Walls").expect("renamed").description, "outer walls");
+    }
+
     #[test]
     fn dash_layer_sets_transparency_and_description() {
         let mut app = app_with_layer();
@@ -3618,6 +3631,61 @@ mod attedit_dash_tests {
                 ("TAG2".into(), "two".into())
             ],
             "the reference follows the definition without losing the value it carried"
+        );
+    }
+
+    /// A tag the definition renames is a new tag with the definition's default:
+    /// the value the old tag carried is dropped rather than moved onto it.
+    #[test]
+    fn attsync_drops_the_value_of_a_tag_the_definition_renamed() {
+        use document::entities::AttributeDefinition;
+        use document::EntityType;
+
+        let definition = |tag: &str, default: &str| {
+            EntityType::AttributeDefinition(AttributeDefinition {
+                insertion_point: Vector3::new(2.0, 2.0, 0.0),
+                height: 1.0,
+                ..AttributeDefinition::new(tag.into(), format!("{tag} prompt"), default.into())
+            })
+        };
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        app.tabs[i].scene.define_block_raw(
+            "RENAMED",
+            Vector3::new(0.0, 0.0, 0.0),
+            vec![definition("TITLE", "")],
+        );
+        let mut insert = Insert::new("RENAMED", Vector3::new(100.0, 100.0, 0.0));
+        insert
+            .attributes
+            .push(AttributeEntity::new("TITLE".into(), "kept".into()));
+        let reference = app.tabs[i].scene.add_entity(EntityType::Insert(insert));
+        assert!(!reference.is_null(), "the reference is placed");
+        app.tabs[i]
+            .scene
+            .redefine_block_raw(
+                "RENAMED",
+                Vector3::new(0.0, 0.0, 0.0),
+                vec![definition("SHEET", "fresh")],
+            )
+            .expect("the definition renames its tag");
+
+        let _ = app.run_command_line("ATTSYNC RENAMED");
+
+        let document = &app.tabs[i].scene.document;
+        let EntityType::Insert(insert) = document.get_entity(reference).expect("reference") else {
+            panic!("not an insert");
+        };
+        let pairs: Vec<(String, String)> = insert
+            .attributes
+            .iter()
+            .map(|a| (a.tag.clone(), a.get_value().to_string()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("SHEET".into(), "fresh".into())],
+            "the renamed tag arrives with its default and the old tag leaves"
         );
     }
 
@@ -4887,7 +4955,7 @@ mod mission_m055_tests {
                 {
                     Some((
                         (vp.center.x * 1000.0).round() as i64,
-                        (vp.center.z * 1000.0).round() as i64,
+                        (vp.center.y * 1000.0).round() as i64,
                         (vp.width * 1000.0).round() as i64,
                         (vp.height * 1000.0).round() as i64,
                     ))
@@ -4906,6 +4974,7 @@ mod mission_m055_tests {
         enter_layout(&mut app);
 
         let _ = app.run_command_line("VPORTS 4");
+        let _ = app.feed_active_cmd("F");
         assert_eq!(viewport_rects(&app).len(), 4, "{}", all_output(&app));
         let saved = viewport_rects(&app);
 
@@ -4945,6 +5014,7 @@ mod mission_m055_tests {
         let _ = app.automation_op(r#"{"op":"new"}"#);
         enter_layout(&mut app);
         let _ = app.run_command_line("VPORTS 2V");
+        let _ = app.feed_active_cmd("F");
         let _ = app.run_command_line("VPORTS SAVE TWO");
 
         let _ = app.run_command_line("VPORTS LIST");
@@ -5039,6 +5109,7 @@ mod mission_m058_tests {
         let _ = app.automation_op(r#"{"op":"new"}"#);
         enter_layout(&mut app);
         let _ = app.run_command_line("VPORTS 2H");
+        let _ = app.feed_active_cmd("F");
         let handles = viewports(&app);
         assert_eq!(handles.len(), 2, "{}", all_output(&app));
         let (target, other) = (handles[0], handles[1]);
@@ -5105,6 +5176,7 @@ mod mission_m058_tests {
         let _ = app.automation_op(r#"{"op":"new"}"#);
         enter_layout(&mut app);
         let _ = app.run_command_line("VPORTS SINGLE");
+        let _ = app.feed_active_cmd("F");
 
         let _ = app.run_command_line("VPMIN");
 
@@ -6352,6 +6424,7 @@ mod batch4_tests {
         let _ = app.automation_op(r#"{"op":"new"}"#);
         enter_layout(&mut app);
         let _ = app.run_command_line("VPORTS SINGLE");
+        let _ = app.feed_active_cmd("F");
         let handles = layout_viewport_handles(&app);
         assert_eq!(handles.len(), 1, "{}", out(&app));
 
@@ -6383,6 +6456,7 @@ mod batch4_tests {
         let _ = app.automation_op(r#"{"op":"new"}"#);
         enter_layout(&mut app);
         let _ = app.run_command_line("VPORTS SINGLE");
+        let _ = app.feed_active_cmd("F");
         let handles = layout_viewport_handles(&app);
         assert_eq!(handles.len(), 1, "{}", out(&app));
 
@@ -6552,6 +6626,95 @@ mod batch4_tests {
             "{:?}",
             app.command_line.last_error
         );
+    }
+
+    /// #2805: GROUPEDIT picks a group by a member, takes members out one
+    /// pick at a time, adds a selection and renames, each one undo step.
+    #[test]
+    fn groupedit_removes_adds_and_renames() {
+        use crate::app::Message;
+        use crate::command::StepInput;
+        use glam::DVec3;
+        let mut app = new_app();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let _ = app.run_command_line("LINE 0,0 10,0");
+        let _ = app.run_command_line("LINE 0,5 10,5");
+        let _ = app.run_command_line("LINE 0,9 10,9");
+        let lines = model_lines(&app);
+        app.tabs[i]
+            .scene
+            .create_group("G".to_string(), vec![lines[0], lines[1]]);
+        let members = |app: &OpenCADStudio| {
+            app.tabs[i]
+                .scene
+                .groups()
+                .map(|g| (g.name.clone(), g.entities.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        let _ = app.dispatch_command("GROUPEDIT");
+        let _ = app.feed_command(StepInput::EntityPick(lines[1], DVec3::ZERO));
+        let _ = app.feed_command(StepInput::Text("R".into()));
+        let _ = app.feed_command(StepInput::EntityPick(lines[0], DVec3::ZERO));
+        let _ = app.feed_command(StepInput::Enter);
+        assert_eq!(members(&app), vec![("G".to_string(), vec![lines[1]])]);
+
+        let _ = app.dispatch_command("GROUPEDIT");
+        let _ = app.feed_command(StepInput::Text("N".into()));
+        let _ = app.feed_command(StepInput::Text("G".into()));
+        let _ = app.feed_command(StepInput::Text("A".into()));
+        let _ = app.feed_command(StepInput::SelectionComplete(vec![lines[2]]));
+        let _ = app.dispatch_command("GROUPEDIT");
+        let _ = app.feed_command(StepInput::Text("N".into()));
+        let _ = app.feed_command(StepInput::Text("G".into()));
+        let _ = app.feed_command(StepInput::Text("REN".into()));
+        let _ = app.feed_command(StepInput::Text("H".into()));
+        assert!(app.command_line.last_error.is_none(), "{}", out(&app));
+        assert_eq!(members(&app), vec![("H".to_string(), vec![lines[1], lines[2]])]);
+
+        let _ = app.update(Message::Undo);
+        assert_eq!(members(&app), vec![("G".to_string(), vec![lines[1], lines[2]])]);
+    }
+
+    /// UNGROUP on a group picked whole drops its box and centre grip at
+    /// once, not at the next click.
+    #[test]
+    fn ungroup_clears_the_group_box_and_grip() {
+        crate::app::commands::set_group_display_mode(2);
+        let mut app = new_app();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let _ = app.run_command_line("LINE 0,0 10,0");
+        let _ = app.run_command_line("LINE 0,5 10,5");
+        let lines = model_lines(&app);
+        let group_grips = |app: &OpenCADStudio| {
+            app.tabs[i]
+                .selected_grips
+                .iter()
+                .filter(|grip| grip.id == crate::scene::GROUP_GRIP_ID)
+                .count()
+        };
+        app.tabs[i]
+            .scene
+            .create_group("G".to_string(), vec![lines[0], lines[1]]);
+        app.tabs[i].scene.select_entities(&lines);
+        app.refresh_selected_grips();
+        assert_eq!(app.tabs[i].group_boxes.len(), 1, "{}", out(&app));
+        assert!(group_grips(&app) > 0, "{}", out(&app));
+
+        let _ = app.run_command_line("UNGROUP");
+        assert_eq!(app.tabs[i].scene.groups().count(), 0, "{}", out(&app));
+        assert!(app.tabs[i].group_boxes.is_empty(), "{}", out(&app));
+        assert_eq!(group_grips(&app), 0, "{}", out(&app));
+        // The members stay picked, now with their own grips.
+        assert_eq!(
+            app.tabs[i].scene.selected_entities().len(),
+            2,
+            "{}",
+            out(&app)
+        );
+        assert!(!app.tabs[i].selected_grips.is_empty(), "{}", out(&app));
     }
 
     #[test]
@@ -7159,3 +7322,2127 @@ mod batch5_tests {
         assert!(text.contains("reset 1 entity"), "{text}");
     }
 }
+/// Batch 6: per-viewport layer overrides and other gaps closed on HEAD.
+#[cfg(test)]
+mod batch6_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+
+    fn out_text(app: &OpenCADStudio) -> String {
+        app.command_line.history_plain_text().trim().to_string()
+    }
+
+    fn new_app() -> OpenCADStudio {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        app
+    }
+
+    fn add_layer(app: &mut OpenCADStudio, name: &str, color: document::types::Color) -> document::Handle {
+        let i = app.active_tab;
+        let doc = &mut app.tabs[i].scene.document;
+        let mut layer = document::tables::Layer::new(name);
+        layer.handle = doc.allocate_handle();
+        layer.color = color;
+        let handle = layer.handle;
+        doc.layers.add(layer).unwrap();
+        handle
+    }
+
+    /// Add a layout (with its page setup) and a viewport to it; call again
+    /// with the same name to add another viewport to that layout.
+    fn add_viewport(app: &mut OpenCADStudio, layout: &str) -> document::Handle {
+        let i = app.active_tab;
+        if app.tabs[i].scene.add_layout(layout).is_ok() {
+            app.tabs[i].scene.initialize_layout_page_setup(layout);
+        }
+        let next_id = app.tabs[i]
+            .scene
+            .document
+            .entities()
+            .filter_map(|entity| match entity {
+                document::EntityType::Viewport(vp) => Some(vp.id),
+                _ => None,
+            })
+            .max()
+            .map(|id| id + 1)
+            .unwrap_or(2);
+        let mut viewport = document::entities::Viewport::new();
+        viewport.center = document::types::Vector3::new(0.0, 0.0, 0.0);
+        viewport.width = 200.0;
+        viewport.height = 150.0;
+        viewport.id = next_id;
+        viewport.status = document::entities::ViewportStatusFlags::default_on();
+        app.tabs[i]
+            .scene
+            .document
+            .add_entity_to_layout(document::EntityType::Viewport(Box::new(viewport)), layout)
+            .expect("the layout accepts a viewport")
+    }
+
+    #[test]
+    fn vplayer_sets_colour_linetype_lineweight_and_alpha_overrides() {
+        use document::objects::KnownXRecordKind as Kind;
+        type Channel = crate::command::VpOverrideChannel;
+
+        let mut app = new_app();
+        let i = app.active_tab;
+        let walls = add_layer(&mut app, "WALLS", document::types::Color::Index(1));
+        let viewport = add_viewport(&mut app, "Sheet1");
+        let other_viewport = add_viewport(&mut app, "Sheet1");
+
+        // COLOR
+        app.handle_vp_layer_override(viewport, "WALLS", Channel::Color, "3");
+        let color_overrides = app.tabs[i].scene.document.layer_viewport_overrides(
+            walls,
+            Kind::LayerViewportColorOverride,
+        );
+        assert_eq!(color_overrides, vec![(viewport, document::objects::XRecordValue::Int32(0xC300_0003u32 as i32))]);
+        assert!(
+            !color_overrides.iter().any(|(handle, _)| *handle == other_viewport),
+            "viewport 2 must not carry the override: {color_overrides:?}"
+        );
+
+        // LINETYPE (dashed ships in the default linetypes)
+        app.handle_vp_layer_override(viewport, "WALLS", Channel::Linetype, "DASHED");
+        let line_overrides = app.tabs[i].scene.document.layer_viewport_overrides(
+            walls,
+            Kind::LayerViewportLinetypeOverride,
+        );
+        let lt_handle = line_overrides.iter().next().cloned();
+        assert!(lt_handle.is_some(), "{line_overrides:?}");
+
+        // LINEWEIGHT
+        app.handle_vp_layer_override(viewport, "WALLS", Channel::Lineweight, "0.53");
+        let lw_overrides = app.tabs[i].scene.document.layer_viewport_overrides(
+            walls,
+            Kind::LayerViewportLineweightOverride,
+        );
+        assert!(lw_overrides
+            .iter()
+            .any(|(handle, value)| *handle == viewport && *value == document::objects::XRecordValue::Int32(53)));
+
+        // ALPHA (77% transparent)
+        app.handle_vp_layer_override(viewport, "WALLS", Channel::Alpha, "77");
+        let alpha_overrides = app.tabs[i].scene.document.layer_viewport_overrides(
+            walls,
+            Kind::LayerViewportAlphaOverride,
+        );
+        assert!(alpha_overrides.iter().any(|(handle, _)| *handle == viewport));
+    }
+
+    #[test]
+    fn vplayer_rejects_a_bad_value_and_changes_nothing() {
+        type Channel = crate::command::VpOverrideChannel;
+
+        let mut app = new_app();
+        let i = app.active_tab;
+        let walls = add_layer(&mut app, "WALLS", document::types::Color::Index(1));
+        let viewport = add_viewport(&mut app, "Sheet2");
+
+        app.handle_vp_layer_override(viewport, "WALLS", Channel::Color, "not-a-color");
+        let color_overrides = app.tabs[i].scene.document.layer_viewport_overrides(
+            walls,
+            document::objects::KnownXRecordKind::LayerViewportColorOverride,
+        );
+        assert!(color_overrides.is_empty(), "{color_overrides:?}");
+
+        app.handle_vp_layer_override(viewport, "WALLS", Channel::Linetype, "NoSuchLinetype");
+        let lt_overrides = app.tabs[i].scene.document.layer_viewport_overrides(
+            walls,
+            document::objects::KnownXRecordKind::LayerViewportLinetypeOverride,
+        );
+        assert!(lt_overrides.is_empty(), "{lt_overrides:?}");
+
+        app.handle_vp_layer_override(viewport, "WALLS", Channel::Alpha, "99");
+        let alpha_overrides = app.tabs[i].scene.document.layer_viewport_overrides(
+            walls,
+            document::objects::KnownXRecordKind::LayerViewportAlphaOverride,
+        );
+        assert!(alpha_overrides.is_empty(), "{alpha_overrides:?}");
+    }
+
+    #[test]
+    fn vplayer_freeze_stays_in_the_viewport_and_leaves_the_layer_thawed() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let walls = add_layer(&mut app, "WALLS", document::types::Color::Index(1));
+        let viewport = add_viewport(&mut app, "Sheet3");
+        let other_viewport = add_viewport(&mut app, "Sheet3");
+
+        app.handle_vp_layer_update(viewport, vec!["WALLS".into()], vec![]);
+
+        // VP Freeze is a separate property: the global layer stays thawed.
+        let global = app
+            .tabs[i]
+            .scene
+            .document
+            .layers
+            .get("WALLS")
+            .expect("the layer exists");
+        assert!(!global.flags.frozen, "the layer itself must stay thawed");
+        let frozen_of = |app: &OpenCADStudio, handle: document::Handle| match app.tabs[i].scene.document.get_entity(handle) {
+            Some(document::EntityType::Viewport(vp)) => vp.frozen_layers.clone(),
+            other => panic!("expected a viewport, got {other:?}"),
+        };
+        assert!(
+            frozen_of(&app, viewport).contains(&walls),
+            "viewport 1 carries the VP freeze"
+        );
+        assert!(
+            !frozen_of(&app, other_viewport).contains(&walls),
+            "viewport 2 is unchanged"
+        );
+
+        // Thawing takes the freeze out of the viewport again.
+        app.handle_vp_layer_update(viewport, vec![], vec!["WALLS".into()]);
+        assert!(
+            !frozen_of(&app, viewport).contains(&walls),
+            "viewport 1 is thawed again"
+        );
+    }
+
+    #[test]
+    fn dimstyle_variables_dumps_the_variable_table() {
+        let mut app = new_app();
+        let _ = app.run_command_line(r#"-DIMSTYLE ["VARIABLES", "ISO-25"]"#);
+        let out = out_text(&app);
+        // The history holds 64 entries, so the listing arrives as a suffix of
+        // the 79-line dump; the complete content is checked in the module's
+        // unit tests. Here the trailing rows must be there, aligned, with
+        // current values.
+        let rows = crate::app::dim_variables::DIM_VARIABLES
+            .iter()
+            .filter(|variable| out.contains(variable.name))
+            .count();
+        assert!(rows >= 60, "expected the tail of the table, got {rows}: {out}");
+        let line = out
+            .lines()
+            .find(|line| line.trim_start().starts_with("DIMTXT"))
+            .expect("the DIMTXT row prints");
+        assert!(line.contains("2.5"), "{line}");
+        let line = out
+            .lines()
+            .find(|line| line.trim_start().starts_with("DIMASZ"))
+            .expect("the DIMASZ row prints");
+        assert!(line.contains("2.5"), "{line}");
+        assert!(
+            out.contains("Dimension text height"),
+            "descriptions print: {out}"
+        );
+    }
+
+    #[test]
+    fn dimstyle_create_with_variables_set_current_marks_new_dimensions() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let _ = app.run_command_line(r#"-DIMSTYLE ["SAVE", "SHEET-1-50"]"#);
+        let _ = app.run_command_line(r#"-DIMSTYLE ["VARIABLES", "SHEET-1-50", "DIMTXT", "2.5"]"#);
+        let _ = app.run_command_line(r#"-DIMSTYLE ["RESTORE", "SHEET-1-50"]"#);
+        let out = out_text(&app);
+        assert!(out.contains("SHEET-1-50"), "{out}");
+        assert_eq!(
+            app.tabs[i]
+                .scene
+                .document
+                .header
+                .current_dimstyle_name,
+            "SHEET-1-50"
+        );
+
+        let _ = app.run_command_line("DIMLINEAR 0,0 10,0 5,2");
+        let dimension = app.tabs[i]
+            .scene
+            .document
+            .entities()
+            .find_map(|entity| match entity {
+                document::EntityType::Dimension(dimension) => Some(dimension),
+                _ => None,
+            })
+            .expect("the DIMLINEAR command placed a dimension");
+        assert_eq!(
+            dimension.base().style_name,
+            "SHEET-1-50",
+            "the new dimension carries the new style"
+        );
+    }
+
+    #[test]
+    fn blocks_palette_menu_renames_a_definition_and_rekeys_its_references() {
+        use crate::app::Message;
+        use crate::ui::window::block_palette::{BlockPaletteMsg, Item, MenuAction};
+
+        let mut app = new_app();
+        let i = app.active_tab;
+        {
+            let doc = &mut app.tabs[i].scene.document;
+            let mut record = document::tables::BlockRecord::new("VALVE");
+            record.handle = doc.allocate_handle();
+            let owner = record.handle;
+            doc.block_records.add(record).unwrap();
+            let mut line = document::entities::Line::new();
+            line.start = document::types::Vector3::ZERO;
+            line.end = document::types::Vector3::new(10.0, 0.0, 0.0);
+            line.common.owner_handle = owner;
+            let line_handle = doc.add_entity(document::EntityType::Line(line)).unwrap();
+            doc.block_records.get_mut("VALVE").unwrap().entity_handles = vec![line_handle];
+            let insert = document::entities::Insert::new(
+                "VALVE",
+                document::types::Vector3::new(5.0, 5.0, 0.0),
+            );
+            let _ = doc.add_entity(document::EntityType::Insert(insert)).unwrap();
+        }
+
+        // Right-click the current-drawing entry and choose Rename Block.
+        let _ = app.update(Message::BlockPalette(BlockPaletteMsg::Menu(
+            Item::Current("VALVE".into()),
+            MenuAction::Rename,
+        )));
+        let out = out_text(&app);
+        assert!(out.contains("Enter new block name"), "{out}");
+
+        // Type the new name; nothing happens until it is submitted.
+        let _ = app.feed_active_cmd("GATE-VALVE");
+        let out = out_text(&app);
+        assert!(out.contains("RENAME"), "{out}");
+        let doc = &app.tabs[i].scene.document;
+        assert!(doc.block_records.get("VALVE").is_none(), "old name is gone");
+        assert!(
+            doc.block_records.get("GATE-VALVE").is_some(),
+            "the new name exists in the table"
+        );
+        let insert = doc
+            .entities()
+            .find_map(|entity| match entity {
+                document::EntityType::Insert(insert) => Some(insert),
+                _ => None,
+            })
+            .expect("the reference exists");
+        assert_eq!(insert.block_name, "GATE-VALVE", "the reference follows");
+    }
+
+    #[test]
+    fn blocks_palette_rename_cancelled_with_empty_input_changes_nothing() {
+        use crate::app::Message;
+        use crate::ui::window::block_palette::{BlockPaletteMsg, Item, MenuAction};
+
+        let mut app = new_app();
+        let i = app.active_tab;
+        {
+            let doc = &mut app.tabs[i].scene.document;
+            let mut record = document::tables::BlockRecord::new("VALVE");
+            record.handle = doc.allocate_handle();
+            doc.block_records.add(record).unwrap();
+        }
+
+        let _ = app.update(Message::BlockPalette(BlockPaletteMsg::Menu(
+            Item::Current("VALVE".into()),
+            MenuAction::Rename,
+        )));
+        assert!(app.tabs[i].active_cmd.is_some(), "the rename command starts");
+        let _ = app.feed_active_cmd("");
+        assert!(
+            app.tabs[i]
+                .scene
+                .document
+                .block_records
+                .contains("VALVE"),
+            "the empty input leaves the definition alone"
+        );
+    }
+
+    #[test]
+    fn dimstyle_compare_reports_all_differing_variables() {
+        let mut app = new_app();
+        let _ = app.run_command_line(r#"-DIMSTYLE ["SAVE", "SHEET-A"]"#);
+        let _ = app.run_command_line(r#"-DIMSTYLE ["VARIABLES", "SHEET-A", "DIMTXT", "9.0"]"#);
+        let _ = app.run_command_line(r#"-DIMSTYLE ["COMPARE", "ISO-25", "SHEET-A"]"#);
+        let out = out_text(&app);
+        assert!(out.contains("DIMTXT"), "{out}");
+
+        let _ = app.run_command_line(r#"-DIMSTYLE ["COMPARE", "ISO-25", "ISO-25"]"#);
+        let out = out_text(&app);
+        assert!(out.contains("identical"), "{out}");
+    }
+
+    #[test]
+    fn dimstyle_variables_sets_dimtxt_to_3_and_keeps_it() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let _ = app.run_command_line(r#"-DIMSTYLE ["VARIABLES", "ISO-25", "DIMTXT", "3.0"]"#);
+        let out = out_text(&app);
+        assert!(out.contains("DIMTXT = 3"), "{out}");
+        let style = app.tabs[i]
+            .scene
+            .document
+            .dim_styles
+            .get("ISO-25")
+            .expect("ISO-25 exists");
+        assert_eq!(style.dimtxt, 3.0);
+    }
+
+    #[test]
+    fn dimstyle_variables_rejects_an_out_of_range_value_and_keeps_the_style() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let before = app.tabs[i]
+            .scene
+            .document
+            .dim_styles
+            .get("ISO-25")
+            .unwrap()
+            .dimtxt;
+        let _ = app.run_command_line(r#"-DIMSTYLE ["VARIABLES", "ISO-25", "DIMTXT", "-1"]"#);
+        let out = out_text(&app);
+        assert!(out.contains("DIMSTYLE"), "{out}");
+        assert!(out.contains("must be greater than 0"), "{out}");
+        let after = app.tabs[i]
+            .scene
+            .document
+            .dim_styles
+            .get("ISO-25")
+            .unwrap()
+            .dimtxt;
+        assert_eq!(before, after, "the refused value is not written");
+
+        // And a boolean keyword with a wrong kind of value is refused too.
+        let _ = app.run_command_line(r#"-DIMSTYLE ["VARIABLES", "ISO-25", "DIMTOL", "banana"]"#);
+        let out = out_text(&app);
+        assert!(out.contains("DIMSTYLE"), "{out}");
+        assert_eq!(
+            app.tabs[i]
+                .scene
+                .document
+                .dim_styles
+                .get("ISO-25")
+                .unwrap()
+                .dimtol,
+            false,
+            "the refused value is not written"
+        );
+    }
+
+    #[test]
+    fn dimstyle_rename_and_delete_through_the_command_line() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        // Create a style from the current one, rename it, restyle a
+        // dimension to it, and delete it after deleting the dimension.
+        let _ = app.run_command_line(r#"-DIMSTYLE ["SAVE", "SHEET-1-50"]"#);
+        let _ = app.run_command_line(r#"-DIMSTYLE ["RENAME", "SHEET-1-50", "SHEET_1_50"]"#);
+        let out = out_text(&app);
+        assert!(out.contains("SHEET_1_50"), "{out}");
+        assert!(app
+            .tabs[i]
+            .scene
+            .document
+            .dim_styles
+            .get("SHEET-1-50")
+            .is_none());
+        assert!(app
+            .tabs[i]
+            .scene
+            .document
+            .dim_styles
+            .contains("SHEET_1_50"));
+
+        // Set it current, confirm it is current, then delete it.
+        let _ = app.run_command_line(r#"-DIMSTYLE ["RESTORE", "SHEET_1_50"]"#);
+        let _ = app.run_command_line(r#"-DIMSTYLE ["DELETE", "SHEET_1_50"]"#);
+        let out = out_text(&app);
+        assert!(out.contains("current style"), "{out}");
+        assert!(app
+            .tabs[i]
+            .scene
+            .document
+            .dim_styles
+            .contains("SHEET_1_50"), "the current style is not deleted");
+
+        let _ = app.run_command_line(r#"-DIMSTYLE ["RESTORE", "ISO-25"]"#);
+        let _ = app.run_command_line(r#"-DIMSTYLE ["DELETE", "SHEET_1_50"]"#);
+        let out = out_text(&app);
+        assert!(out.contains("deleted"), "{out}");
+        assert!(!app
+            .tabs[i]
+            .scene
+            .document
+            .dim_styles
+            .contains("SHEET_1_50"));
+    }
+}
+
+/// Batch 7: remaining gaps found in the HEAD audit (evidence-only missions
+/// and the four WEAK ones), implemented on HEAD.
+#[cfg(test)]
+mod batch7_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+
+    fn out_text(app: &OpenCADStudio) -> String {
+        app.command_line.history_plain_text().trim().to_string()
+    }
+
+    fn new_app() -> OpenCADStudio {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        app
+    }
+
+    #[test]
+    fn dimoverride_list_reports_the_override_and_clear_returns_the_style() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let _ = app.run_command_line("DIMLINEAR 0,0 10,0 5,2");
+        let dimension = app
+            .tabs[i]
+            .scene
+            .document
+            .entities()
+            .find_map(|entity| match entity {
+                document::EntityType::Dimension(dimension) => Some(dimension.base().common.handle),
+                _ => None,
+            })
+            .expect("DIMLINEAR placed a dimension");
+        app.tabs[i].scene.select_entities(&[dimension]);
+
+        let _ = app.run_command_line("DIMOVERRIDE_APPLY DIMTXT=4");
+        let out = out_text(&app);
+        assert!(out.contains("DIMOVERRIDE: updated"), "{out}");
+
+        let _ = app.run_command_line("DIMOVERRIDELIST");
+        let out = out_text(&app);
+        assert!(out.contains("DIMTXT = 4"), "{out}");
+        assert!(out.contains("Dimension"), "{out}");
+
+        let _ = app.run_command_line("DIMOVERRIDE_APPLY CLEAR");
+        let _ = app.run_command_line("DIMOVERRIDELIST");
+        let out = out_text(&app);
+        assert!(out.contains("No overrides"), "{out}");
+        // The style itself never changed.
+        let style = app.tabs[i]
+            .scene
+            .document
+            .dim_styles
+            .get("ISO-25")
+            .unwrap();
+        assert_eq!(style.dimtxt, 2.5);
+    }
+
+    #[test]
+    fn mleader_edit_adds_then_removes_a_leader_and_reports_both_vertex_lists() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let mut leader = document::entities::MultiLeader::with_text(
+            "office note",
+            document::types::Vector3::new(20.0, 0.0, 0.0),
+            vec![
+                document::types::Vector3::ZERO,
+                document::types::Vector3::new(5.0, 5.0, 0.0),
+            ],
+        );
+        leader.text_height = 0.18;
+        leader.context.text_height = 0.18;
+        let handle = app.tabs[i]
+            .scene
+            .add_entity(document::EntityType::MultiLeader(Box::new(leader)));
+
+        // The initial note: one leader, two vertices.
+        let q = app.automation_op(&format!(
+            r#"{{"op":"query","handle":"{handle:X}","detail":"full"}}"#
+        ));
+        assert_eq!(q["entities"][0]["leader_count"], 1, "{q}");
+        let leaders = q["entities"][0]["leaders"].as_array().unwrap();
+        assert_eq!(leaders[0]["points"].as_array().unwrap().len(), 2, "{q}");
+
+        // Add a second leader through the edit command.
+        let _ = app.automation_op(&format!(
+            r#"{{"op":"select","handles":["{handle:X}"]}}"#
+        ));
+        let _ = app.run_command_line("MLEADEREDIT");
+        assert!(app.tabs[i].active_cmd.is_some());
+        let _ = app.feed_active_cmd("40,10");
+        let _ = app.feed_active_cmd("");
+        let q = app.automation_op(&format!(
+            r#"{{"op":"query","handle":"{handle:X}","detail":"full"}}"#
+        ));
+        assert_eq!(q["entities"][0]["leader_count"], 2, "{q}");
+        let leaders = q["entities"][0]["leaders"].as_array().unwrap();
+        assert_eq!(leaders.len(), 2, "{q}");
+        let lists: Vec<&Vec<serde_json::Value>> = leaders
+            .iter()
+            .map(|leader| leader["points"].as_array().unwrap())
+            .collect();
+        assert_eq!(lists[0].len(), 2, "{q}");
+        assert_eq!(lists[1].len(), 1, "{q}");
+        assert_ne!(lists[0], lists[1], "{q}");
+
+        // Remove the first leader — one leader remains.
+        let _ = app.automation_op(&format!(
+            r#"{{"op":"select","handles":["{handle:X}"]}}"#
+        ));
+        let _ = app.run_command_line("MLEADEREDIT");
+        let _ = app.feed_active_cmd("R");
+        let _ = app.feed_active_cmd("0,0");
+        let _ = app.feed_active_cmd("");
+        let q = app.automation_op(&format!(
+            r#"{{"op":"query","handle":"{handle:X}","detail":"full"}}"#
+        ));
+        assert_eq!(q["entities"][0]["leader_count"], 1, "{q}");
+    }
+
+    #[test]
+    fn sheet_set_with_a_custom_property_and_a_field() {
+        use document::objects::{Dictionary, ObjectType};
+        use serde_json::json;
+
+        fn request(app: &mut OpenCADStudio, mut req: serde_json::Value) -> serde_json::Value {
+            let state = app.control_state();
+            req["protocol"] = json!(1);
+            req["document_id"] = state["document_id"].clone();
+            req["revision"] = state["revision"].clone();
+            req["client_id"] = json!("test");
+            if req.get("request_id").is_none() {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                req["request_id"] = json!(format!(
+                    "req-{}",
+                    NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                ));
+            }
+            let (r, task) = app.control_request(req.clone());
+            app.drive_headless_task(task).unwrap();
+            if matches!(r["status"].as_str(), Some("accepted" | "running")) {
+                app.control_request(json!({"op":"operation","request_id":req["request_id"]}))
+                    .0
+            } else {
+                r
+            }
+        }
+        let sheet = |app: &mut OpenCADStudio, value: &str| {
+            request(app, json!({"op":"action","name":"sheet_set","value":value}))
+        };
+
+        let dir = std::env::temp_dir().join(format!("ocs-ss-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let mut app = new_app();
+
+        // Create the set through the wizard.
+        let _ = sheet(&mut app, "new");
+        let _ = sheet(&mut app, "existing=0");
+        let _ = sheet(&mut app, "name=PROJECTSET");
+        let _ = sheet(&mut app, &format!("folder={}", dir.display()));
+        let _ = sheet(&mut app, "ok");
+
+        // Two subsets.
+        let _ = sheet(&mut app, "menu=new_subset:set");
+        let _ = sheet(&mut app, "title=Architectural");
+        let _ = sheet(&mut app, "ok");
+        let _ = sheet(&mut app, "menu=new_subset:set");
+        let _ = sheet(&mut app, "title=Structural");
+        let _ = sheet(&mut app, "ok");
+
+        // Three sheets.
+        for (subset, number, title) in [
+            ("Architectural", "A-101", "Plans"),
+            ("Architectural", "A-102", "Sections"),
+            ("Structural", "S-201", "Framing"),
+        ] {
+            let _ = sheet(&mut app, &format!("menu=new_sheet:{subset}"));
+            let _ = sheet(&mut app, &format!("number={number}"));
+            let _ = sheet(&mut app, &format!("title={title}"));
+            let _ = sheet(&mut app, &format!("folder={}", dir.display()));
+            let _ = sheet(&mut app, "ok");
+        }
+
+        // A custom property on the set.
+        let _ = sheet(&mut app, "menu=properties:set");
+        let _ = sheet(&mut app, "add_custom");
+        let _ = sheet(&mut app, "custom_name=PROJECT");
+        let _ = sheet(&mut app, "custom_owner=0");
+        let _ = sheet(&mut app, "add_custom_ok");
+        let _ = sheet(&mut app, "custom=0:The Aragorn Project");
+        let _ = sheet(&mut app, "ok");
+
+        // The set round-trips from disk with both subsets, the three sheets
+        // and the custom property.
+        let dst = dir.join("PROJECTSET.dst");
+        assert!(dst.is_file(), "the wizard wrote {}", dst.display());
+        let db = crate::app::commands::sheet_set::read_set(&dst.to_string_lossy())
+            .expect("the set round-trips from disk");
+        let subset_count = db
+            .sheet_set()
+            .children
+            .iter()
+            .filter(|child| child.name == "AcSmSubset")
+            .count();
+        let sheet_count = db
+            .sheet_set()
+            .children
+            .iter()
+            .filter(|child| child.name == "AcSmSubset")
+            .map(|subset| {
+                subset
+                    .children
+                    .iter()
+                    .filter(|child| child.name == "AcSmSheet")
+                    .count()
+            })
+            .sum::<usize>();
+        assert_eq!(subset_count, 2, "two subsets");
+        assert_eq!(sheet_count, 3, "three sheets across the subsets");
+        let custom = document::sheet_set::custom_properties(db.sheet_set());
+        assert!(
+            custom
+                .iter()
+                .any(|(name, value, _)| name == "PROJECT" && value == "The Aragorn Project"),
+            "{custom:?}"
+        );
+
+        // A field on the first sheet's layout reads the custom property.
+        let sheet_path = dir.join("A-101 Plans.dwg");
+        assert!(sheet_path.is_file());
+        let mut doc = crate::io::load_file(&sheet_path).expect("the sheet drawing loads");
+        let host = doc
+            .add_entity_to_layout(
+                document::EntityType::Point(document::entities::Point::new()),
+                "A-101 Plans",
+            )
+            .expect("the layout accepts a point");
+        let root_h = doc.allocate_handle();
+        let fields_h = doc.allocate_handle();
+        let text_h = doc.allocate_handle();
+        let child_h = doc.allocate_handle();
+        let mut root = Dictionary::new();
+        root.handle = root_h;
+        root.owner = host;
+        root.add_entry("ACAD_FIELD", fields_h);
+        let mut fields = Dictionary::new();
+        fields.handle = fields_h;
+        fields.owner = root_h;
+        fields.add_entry("TEXT", text_h);
+        doc.objects.insert(root_h, ObjectType::Dictionary(root));
+        doc.objects.insert(fields_h, ObjectType::Dictionary(fields));
+        doc.fields.insert(
+            text_h,
+            document::document::FieldDef {
+                handle: text_h,
+                owner: fields_h,
+                evaluator: "_text".to_string(),
+                code: r"%<\_FldIdx 0>%".to_string(),
+                objects: vec![],
+            },
+        );
+        doc.fields.insert(
+            child_h,
+            document::document::FieldDef {
+                handle: child_h,
+                owner: text_h,
+                evaluator: "AcSm".to_string(),
+                code: r"\AcSm SheetSet.PROJECT".to_string(),
+                objects: vec![],
+            },
+        );
+
+        // The custom property field reads the set through the open sheet.
+        let resolved = crate::entities::field::resolve(&doc, host);
+        assert_eq!(
+            resolved.as_deref(),
+            Some("The Aragorn Project"),
+            "the field reads the set's custom property on the sheet's layout"
+        );
+
+        // And the other sheet's own field shows its sheet number instead.
+        doc.fields.insert(
+            child_h,
+            document::document::FieldDef {
+                handle: child_h,
+                owner: text_h,
+                evaluator: "AcSm".to_string(),
+                code: r"\AcSm Sheet.Number".to_string(),
+                objects: vec![],
+            },
+        );
+        let resolved = crate::entities::field::resolve(&doc, host);
+        assert_eq!(
+            resolved.as_deref(),
+            Some("A-101"),
+            "the sheet field reads the sheet number"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn add_line(app: &mut OpenCADStudio, x1: f64, y1: f64, x2: f64, y2: f64) -> document::Handle {
+        use document::entities::Line;
+        use document::types::Vector3;
+        let i = app.active_tab;
+        let doc = &mut app.tabs[i].scene.document;
+        let line = Line::from_points(Vector3::new(x1, y1, 0.0), Vector3::new(x2, y2, 0.0));
+        doc.add_entity(document::EntityType::Line(line)).unwrap()
+    }
+
+    fn reported_lines(app: &OpenCADStudio, before: usize) -> Vec<String> {
+        app.command_line.history[before..]
+            .iter()
+            .map(|entry| entry.text.trim().to_string())
+            .collect()
+    }
+
+    fn breakdown_sum(said: &[String]) -> usize {
+        said.iter()
+            .filter_map(|text| {
+                let mut parts = text.splitn(2, ' ');
+                let (n, rest) = (parts.next()?, parts.next()?);
+                n.parse::<usize>()
+                    .ok()
+                    .filter(|_| !rest.contains("constraint(s) applied"))
+            })
+            .sum()
+    }
+
+    #[test]
+    fn autoconstrain_reports_the_breakdown_for_a_rectangle() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let a = add_line(&mut app, 0.0, 0.0, 100.0, 0.0);
+        let b = add_line(&mut app, 100.0, 0.0, 100.0, 50.0);
+        let c = add_line(&mut app, 100.0, 50.0, 0.0, 50.0);
+        let d = add_line(&mut app, 0.0, 50.0, 0.0, 0.0);
+        let _ = app.automation_op(&format!(
+            r#"{{"op":"select","handles":["{a:X}","{b:X}","{c:X}","{d:X}"]}}"#
+        ));
+        let before = app.command_line.history.len();
+        let inferred = app.automation_op(r#"{"op":"run","cmd":"AUTOCONSTRAIN"}"#);
+        assert_eq!(inferred["ok"], true, "{inferred}");
+        let said = reported_lines(&app, before);
+        let out = said.join("\n");
+        assert!(out.contains("constraint(s) applied"), "{out}");
+        let reported = said
+            .iter()
+            .find_map(|text| text.split_whitespace().next().and_then(|n| n.parse::<usize>().ok()))
+            .expect("the total line prints");
+        assert_eq!(breakdown_sum(&said), reported, "{out}");
+        assert!(out.contains("Coincident"), "{out}");
+        assert!(out.contains("Horizontal"), "{out}");
+        assert!(out.contains("Vertical"), "{out}");
+    }
+
+    #[test]
+    fn autoconstrain_honours_the_enabled_kinds() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        app.auto_constrain_settings
+            .enabled
+            .retain(|kind| *kind != crate::app::settings::AutoConstraintKind::Coincident);
+        let a = add_line(&mut app, 0.0, 0.0, 100.0, 0.0);
+        let b = add_line(&mut app, 100.0, 0.0, 100.0, 50.0);
+        let c = add_line(&mut app, 100.0, 50.0, 0.0, 50.0);
+        let d = add_line(&mut app, 0.0, 50.0, 0.0, 0.0);
+        let _ = app.automation_op(&format!(
+            r#"{{"op":"select","handles":["{a:X}","{b:X}","{c:X}","{d:X}"]}}"#
+        ));
+        let before = app.command_line.history.len();
+        let inferred = app.automation_op(r#"{"op":"run","cmd":"AUTOCONSTRAIN"}"#);
+        assert_eq!(inferred["ok"], true, "{inferred}");
+        let said = reported_lines(&app, before);
+        let out = said.join("\n");
+        assert!(out.contains("constraint(s) applied"), "{out}");
+        assert!(!out.contains("Coincident"), "{out}");
+        assert!(out.contains("Horizontal"), "{out}");
+        assert!(out.contains("Vertical"), "{out}");
+    }
+
+    #[test]
+    fn autoconstrain_honours_the_distance_tolerance() {
+        // Two lines whose endpoints are 0.02 apart: within the default
+        // tolerance they become coincident; with a 1e-6 tolerance they do not.
+        for (tolerance, expect_coincident) in [(0.05, true), (1e-6, false)] {
+            let mut app = new_app();
+            app.auto_constrain_settings.distance_tolerance = tolerance;
+            let i = app.active_tab;
+            let a = add_line(&mut app, 0.0, 0.0, 100.0, 0.0);
+            let b = add_line(&mut app, 100.0, 0.02, 200.0, 0.0);
+            let _ = app.automation_op(&format!(
+                r#"{{"op":"select","handles":["{a:X}","{b:X}"]}}"#
+            ));
+            let before = app.command_line.history.len();
+            let inferred = app.automation_op(r#"{"op":"run","cmd":"AUTOCONSTRAIN"}"#);
+            assert_eq!(inferred["ok"], true, "{inferred}");
+            let said = reported_lines(&app, before);
+            let out = said.join("\n");
+            assert_eq!(out.contains("Coincident"), expect_coincident, "{out}");
+        }
+    }
+
+    fn temp_named(stem: &str, extension: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ocs-{stem}-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join(format!("{stem}.{extension}"))
+    }
+
+    /// A fresh tab as a host drawing referencing `source`; returns the tab
+    /// index and the reference's block-record handle.
+    fn host_with_xref(
+        app: &mut OpenCADStudio,
+        source: &std::path::Path,
+    ) -> (usize, document::Handle) {
+        app.tabs
+            .push(crate::app::tab_document::DocumentTab::new_drawing(
+                app.tabs.len(),
+            ));
+        let idx = app.tabs.len() - 1;
+        app.active_tab = idx;
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let _ = app.run_command_line("-XREF");
+        let _ = app.feed_active_cmd("ATTACH");
+        let _ = app.feed_active_cmd(&source.display().to_string());
+        let _ = app.feed_active_cmd("0,0");
+        let _ = app.feed_active_cmd("1");
+        let _ = app.feed_active_cmd("");
+        let _ = app.feed_active_cmd("");
+        let record = app.tabs[idx]
+            .scene
+            .document
+            .block_records
+            .iter()
+            .find(|br| br.flags.is_xref || br.flags.is_xref_overlay)
+            .map(|br| br.handle)
+            .expect("the host carries the reference");
+        (idx, record)
+    }
+
+    fn referenced_entity_count(
+        app: &OpenCADStudio,
+        tab: usize,
+        record: document::Handle,
+    ) -> usize {
+        app.tabs[tab]
+            .scene
+            .document
+            .entities()
+            .filter(|entity| entity.common().owner_handle == record)
+            .count()
+    }
+
+    #[test]
+    fn saving_the_source_reloads_the_host_reference() {
+        let source = temp_named("m071-src", "dwg");
+        let mut app = new_app();
+
+        // Backslashes would escape out of the JSON string; the resolver
+        // normalises forward slashes.
+        let source_fwd = source.display().to_string().replace('\\', "/");
+        // Tab 0: the source drawing with one line.
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let _ = app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 10,0"}"#);
+        let _ = app.automation_op(&format!(r#"{{"op":"save","path":"{source_fwd}"}}"#));
+
+        let (host, record) = host_with_xref(&mut app, &source);
+        assert_eq!(referenced_entity_count(&app, host, record), 1);
+
+        // A second tab opens the source, gains a line and saves — the
+        // host must reload the reference from disk.
+        app.tabs
+            .push(crate::app::tab_document::DocumentTab::new_drawing(9));
+        let source_tab = app.tabs.len() - 1;
+        app.active_tab = source_tab;
+        let _ = app.automation_op(&format!(r#"{{"op":"open","path":"{source_fwd}"}}"#));
+        let _ = app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 20,0"}"#);
+        let _ = app.automation_op(r#"{"op":"save"}"#);
+
+        assert_eq!(
+            referenced_entity_count(&app, host, record),
+            2,
+            "the host reloaded the saved source"
+        );
+    }
+
+    #[test]
+    fn xopen_asks_to_pick_a_reference_and_resolves_it_under_the_point() {
+        let source = temp_named("m071-pick", "dwg");
+        let mut app = new_app();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let source_fwd = source.display().to_string().replace('\\', "/");
+        let _ = app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 10,0"}"#);
+        let _ = app.automation_op(&format!(r#"{{"op":"save","path":"{source_fwd}"}}"#));
+
+        let (host, _record) = host_with_xref(&mut app, &source);
+        // No selection: XOPEN asks for a pick.
+        let _ = app.run_command_line("XOPEN");
+        assert!(
+            app.tabs[host].active_cmd.is_some(),
+            "the pick command starts"
+        );
+        let out = out_text(&app);
+        assert!(out.contains("Select an external reference"), "{out}");
+        // A pick on the reference under the point resolves to its source.
+        let _ = app.feed_active_cmd("2.5,0");
+        let out = out_text(&app);
+        assert!(out.contains("XOPEN: opening"), "{out}");
+        assert!(out.contains(&source.display().to_string()), "{out}");
+    }
+
+    #[test]
+    fn xopen_reports_a_missing_source_and_leaves_the_host_alone() {
+        let source = temp_named("m071-missing", "dwg");
+        let mut app = new_app();
+
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let source_fwd = source.display().to_string().replace('\\', "/");
+        let _ = app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 10,0"}"#);
+        let _ = app.automation_op(&format!(r#"{{"op":"save","path":"{source_fwd}"}}"#));
+
+        let (host, record) = host_with_xref(&mut app, &source);
+        std::fs::remove_file(&source).expect("the source is removed for the test");
+
+        let insert = app.tabs[host]
+            .scene
+            .document
+            .entities()
+            .find_map(|entity| match entity {
+                document::EntityType::Insert(insert) => Some(insert.common.handle),
+                _ => None,
+            })
+            .expect("the host carries the reference insert");
+        let _ = app.automation_op(&format!(r#"{{"op":"select","handles":["{insert:X}"]}}"#));
+        let before = referenced_entity_count(&app, host, record);
+        let _ = app.run_command_line("XOPEN");
+        let out = out_text(&app);
+        assert!(out.contains("cannot find"), "{out}");
+        assert_eq!(
+            referenced_entity_count(&app, host, record),
+            before,
+            "the missing-file refusal leaves the reference alone"
+        );
+    }
+
+    use crate::command::CmdResult;
+    use crate::scene::parametric_constraints::{ConstraintKind, ParametricRef, ParametricScope};
+
+    /// M098: a constrained pair draws its constraint bar. The horizontal and
+    /// coincident glyphs of the pair are placed and listed, so showing the bar
+    /// surfaces what constrains the geometry.
+    #[test]
+    fn constraint_bar_lists_the_glyphs_of_a_constrained_pair() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let first = add_line(&mut app, 0.0, 0.0, 100.0, 0.0);
+        let second = add_line(&mut app, 40.0, 0.0, 60.0, 0.0);
+        let scope = ParametricScope::ModelSpace;
+        let set = app.tabs[i].scene.parametric_constraint_set_mut(scope);
+        let horizontal = set.add(
+            ConstraintKind::Horizontal,
+            vec![ParametricRef::whole(first), ParametricRef::whole(second)],
+            None,
+        );
+        let coincident = set.add(
+            ConstraintKind::Coincident,
+            vec![ParametricRef::whole(first), ParametricRef::whole(second)],
+            None,
+        );
+        app.tabs[i].scene.note_parametric_constraint_applied(scope, horizontal, 3);
+        app.tabs[i].scene.note_parametric_constraint_applied(scope, coincident, 3);
+        app.tabs[i].scene.selection.borrow_mut().view.vp_size = (800.0, 600.0);
+
+        let placements = app.tabs[i].scene.constraint_glyph_placements_screen(
+            scope,
+            (800.0, 600.0),
+            true,
+            3,
+            4095,
+        );
+        let labels: Vec<&str> = placements.iter().map(|p| p.3.as_str()).collect();
+        assert!(!placements.is_empty(), "a constrained pair draws a bar");
+        assert!(labels.iter().any(|label| *label == "—"), "{labels:?}");
+        assert!(labels.iter().any(|label| *label == "≡"), "{labels:?}");
+    }
+
+    /// M098: hiding the bar removes its glyphs, and deleting the constraint
+    /// the bar named frees it again — the bar's own remove path.
+    #[test]
+    fn constraint_bar_hide_removes_the_glyphs_and_delete_frees_the_constraint() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let first = add_line(&mut app, 0.0, 0.0, 100.0, 0.0);
+        let _ = app.apply_cmd_result(CmdResult::AddParametricConstraint {
+            kind: ConstraintKind::Horizontal,
+            refs: vec![ParametricRef::whole(first)],
+            driving_param: None,
+            label: "Horizontal constraint",
+        });
+        let scope = ParametricScope::ModelSpace;
+        let id = app.tabs[i]
+            .scene
+            .parametric_constraint_set(scope)
+            .unwrap()
+            .constraints[0]
+            .id;
+
+        let hidden = app.tabs[i].scene.set_parametric_constraint_visibility(
+            scope,
+            None,
+            false,
+            false,
+        );
+        assert_eq!(hidden, 1);
+        app.tabs[i].scene.selection.borrow_mut().view.vp_size = (800.0, 600.0);
+        assert!(app.tabs[i]
+            .scene
+            .constraint_glyph_placements_screen(scope, (800.0, 600.0), true, 3, 4095)
+            .is_empty());
+
+        app.delete_parametric_constraint(id);
+        assert!(app.tabs[i]
+            .scene
+            .parametric_constraint_set(scope)
+            .unwrap()
+            .constraints
+            .is_empty());
+        app.undo_steps(1);
+        assert_eq!(
+            app.tabs[i]
+                .scene
+                .parametric_constraint_set(scope)
+                .unwrap()
+                .constraints
+                .len(),
+            1
+        );
+    }
+
+    /// The live status of one reference as the automation surface reports it.
+    fn xref_status(app: &OpenCADStudio, name: &str) -> String {
+        app.control_state()["xrefs"]
+            .as_array()
+            .and_then(|xs| xs.iter().find(|x| x["name"].as_str() == Some(name)))
+            .and_then(|x| x["status"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The name of the host's external reference block record.
+    fn xref_name(app: &OpenCADStudio, tab: usize) -> String {
+        app.tabs[tab]
+            .scene
+            .document
+            .block_records
+            .iter()
+            .find(|br| br.flags.is_xref || br.flags.is_xref_overlay)
+            .map(|br| br.name.clone())
+            .expect("the host carries a reference")
+    }
+
+    /// A saved one-line source drawing and a host that references it, so the
+    /// reference loads from disk. Returns the app, the source path, the host
+    /// tab, the reference's block record and its name.
+    fn m074_host(
+        stem: &str,
+    ) -> (
+        OpenCADStudio,
+        std::path::PathBuf,
+        usize,
+        document::Handle,
+        String,
+    ) {
+        let source = temp_named(stem, "dwg");
+        let mut app = new_app();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let source_fwd = source.display().to_string().replace('\\', "/");
+        let _ = app.automation_op(r#"{"op":"run","cmd":"LINE 0,0 10,0"}"#);
+        let _ = app.automation_op(&format!(r#"{{"op":"save","path":"{source_fwd}"}}"#));
+        let (host, record) = host_with_xref(&mut app, &source);
+        let name = xref_name(&app, host);
+        // Save the host so it has a folder: a relative reference path only
+        // resolves (and only reloads) against a saved drawing.
+        let host_path = source.with_file_name(format!("{stem}-host.dwg"));
+        let host_fwd = host_path.display().to_string().replace('\\', "/");
+        app.active_tab = host;
+        let _ = app.automation_op(&format!(r#"{{"op":"save","path":"{host_fwd}"}}"#));
+        (app, source, host, record, name)
+    }
+
+    /// M074: unloading a reference reports the unloaded status and hides its
+    /// merged geometry.
+    #[test]
+    fn xref_unload_reports_status_and_hides_geometry() {
+        let (mut app, _source, host, record, name) = m074_host("m074-unload");
+        assert_eq!(referenced_entity_count(&app, host, record), 1);
+        assert_eq!(xref_status(&app, &name), "loaded");
+
+        let _ = app.run_command_line(&format!("XREF Unload {name}"));
+        let out = out_text(&app);
+        assert!(out.contains("unloaded"), "{out}");
+        assert_eq!(xref_status(&app, &name), "unloaded");
+        assert_eq!(
+            referenced_entity_count(&app, host, record),
+            0,
+            "the unloaded reference's merged geometry is hidden"
+        );
+    }
+
+    /// M074: reloading clears the unloaded status and restores the geometry.
+    #[test]
+    fn xref_reload_reports_status_and_restores_geometry() {
+        let (mut app, _source, host, record, name) = m074_host("m074-reload");
+        let _ = app.run_command_line(&format!("XREF Unload {name}"));
+        assert_eq!(xref_status(&app, &name), "unloaded");
+
+        let _ = app.run_command_line(&format!("XREF Reload {name}"));
+        let out = out_text(&app);
+        assert!(out.contains("Reloaded"), "{out}");
+        assert_eq!(xref_status(&app, &name), "loaded");
+        assert_eq!(
+            referenced_entity_count(&app, host, record),
+            1,
+            "the reloaded reference's geometry is back"
+        );
+    }
+
+    /// M074: a source that disappears is reported not-found, on demand.
+    #[test]
+    fn xref_status_reports_a_missing_source() {
+        let (mut app, source, _host, _record, name) = m074_host("m074-missing");
+        assert_eq!(xref_status(&app, &name), "loaded");
+
+        std::fs::remove_file(&source).expect("the source file is removed");
+        let _ = app.run_command_line("XREF ?");
+        let out = out_text(&app);
+        assert!(out.contains("Not found"), "{out}");
+        assert!(out.contains("not found"), "{out}");
+        assert_eq!(xref_status(&app, &name), "not_found");
+    }
+
+    /// A Text hosting a whole-text FILENAME field, so its value is the
+    /// drawing's file name. The drawing is named first so the field resolves.
+    fn file_name_field_text(app: &mut OpenCADStudio, name: &str) -> document::Handle {
+        let i = app.active_tab;
+        app.tabs[i].scene.document.source_path = Some(format!(r"C:\work\{name}.dwg"));
+        let text = app.tabs[i]
+            .scene
+            .add_entity(document::EntityType::Text(
+                document::entities::Text::with_value("OLD", document::types::Vector3::ZERO),
+            ));
+        let _ = app.run_command_line(&format!("-FIELD {:X} FILENAME", text.value()));
+        text
+    }
+
+    fn field_text_value(app: &OpenCADStudio, handle: document::Handle) -> String {
+        match app.tabs[app.active_tab].scene.document.get_entity(handle) {
+            Some(document::EntityType::Text(text)) => text.value.clone(),
+            _ => panic!("the field host disappeared"),
+        }
+    }
+
+    /// M043: FIELDEVAL masks the automatic events, while UPDATEFIELD always
+    /// runs. With every bit cleared the save event evaluates nothing and the
+    /// cached text survives; the explicit command still catches it up.
+    #[test]
+    fn fieldeval_zero_masks_automatic_updates_but_not_updatefield() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let text = file_name_field_text(&mut app, "ONE");
+        assert_eq!(field_text_value(&app, text), "ONE.dwg");
+
+        let _ = app.run_command_line("FIELDEVAL 0");
+        let out = out_text(&app);
+        assert_eq!(
+            crate::entities::field::fieldeval(&app.tabs[i].scene.document),
+            0,
+            "{out}"
+        );
+
+        app.tabs[i].scene.document.source_path = Some(r"C:\work\TWO.dwg".into());
+        assert_eq!(
+            app.tabs[i].scene.update_fields(2, None),
+            (0, 0),
+            "the save event is masked off"
+        );
+        assert_eq!(field_text_value(&app, text), "ONE.dwg");
+
+        // UPDATEFIELD is explicit: the mask never applies to it.
+        app.tabs[i].scene.select_entities(&[text]);
+        let _ = app.run_command_line("UPDATEFIELD");
+        let out = out_text(&app);
+        assert!(out.contains("field(s) found"), "{out}");
+        assert_eq!(field_text_value(&app, text), "TWO.dwg", "{out}");
+    }
+
+    /// M043: the mask is per event. A save-only drawing keeps its cached text
+    /// at open time and catches up through the real save path.
+    #[test]
+    fn fieldeval_save_bit_skips_the_open_event() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let text = file_name_field_text(&mut app, "ONE");
+        // The SETVAR spelling takes the same path as the bare variable.
+        let _ = app.run_command_line("SETVAR FIELDEVAL 2");
+        assert_eq!(
+            crate::entities::field::fieldeval(&app.tabs[i].scene.document),
+            2
+        );
+
+        app.tabs[i].scene.document.source_path = Some(r"C:\work\THREE.dwg".into());
+        assert_eq!(
+            app.tabs[i].scene.update_fields(1, None),
+            (0, 0),
+            "open is masked off"
+        );
+        assert_eq!(field_text_value(&app, text), "ONE.dwg");
+
+        // The save path is allowed and the value follows the written file.
+        let path = temp_named("m043-save", "dwg");
+        let forward = path.display().to_string().replace('\\', "/");
+        let saved = app.automation_op(&format!(r#"{{"op":"save","path":"{forward}"}}"#));
+        assert_eq!(saved["ok"], true, "{saved}");
+        assert_eq!(field_text_value(&app, text), "m043-save.dwg");
+
+        // The file on disk carries its own name too: reopening must not be
+        // what corrects a title block that shipped with the previous one.
+        let bytes = std::fs::read(&path).expect("the saved drawing is readable");
+        let reopened =
+            crate::io::load_bytes_finalized(&path, bytes).expect("the saved drawing reparses");
+        let stored = reopened
+            .entities()
+            .find_map(|entity| match entity {
+                document::EntityType::Text(text) => Some(text.value.clone()),
+                _ => None,
+            })
+            .expect("the saved drawing keeps its text");
+        assert_eq!(stored, "m043-save.dwg");
+    }
+
+    /// M072: IMAGEATTACH takes a path on the command line and places the
+    /// picture without the file picker; the insertion-point prompt follows as
+    /// after a dropped file.
+    #[test]
+    fn imageattach_takes_a_path_from_the_command_line() {
+        use base64::Engine as _;
+        let mut app = new_app();
+        let path = temp_named("m072-pic", "png");
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+            .expect("the fixture is valid base64");
+        std::fs::write(&path, png).expect("the picture is written");
+
+        let _ = app.run_command_line(&format!("IMAGEATTACH \"{}\"", path.display()));
+        let out = out_text(&app);
+        assert!(out.contains("1×1 px"), "{out}");
+        assert!(out.contains("Specify insertion point"), "{out}");
+
+        let _ = app.feed_active_cmd("0,0");
+        let _ = app.feed_active_cmd("5,0");
+        let after = out_text(&app);
+        let image = app.tabs[app.active_tab]
+            .scene
+            .document
+            .entities()
+            .find_map(|entity| match entity {
+                document::EntityType::RasterImage(image) => Some(image.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the command placed a raster image; said: {after}"));
+        assert_eq!(image.file_path, path.to_string_lossy());
+        // One pixel wide placed 5 units across: the u-vector is one pixel.
+        let world_width = image.u_vector.length() * image.size.x;
+        assert!((world_width - 5.0).abs() < 1.0e-6, "{world_width}");
+    }
+
+    /// A table with a title row merged across both columns. Columns are 20
+    /// wide and rows 10 high; the insertion point is the world origin.
+    fn merged_title_table(app: &mut OpenCADStudio) -> document::Handle {
+        use document::entities::table::CellRange;
+        let mut table = document::entities::Table::new(document::types::Vector3::ZERO, 3, 2);
+        for column in &mut table.columns {
+            column.width = 20.0;
+        }
+        for row in &mut table.rows {
+            row.height = 10.0;
+        }
+        table.merge_cells(CellRange::new(0, 0, 0, 1));
+        table.cell_mut(0, 0).unwrap().set_text("before");
+        app.tabs[app.active_tab]
+            .scene
+            .add_entity(document::EntityType::Table(Box::new(table)))
+    }
+
+    /// M047: a merged cell is one cell. A TABLEDIT that lands in the covered
+    /// half must write the merged cell the drawing shows, not the hidden one
+    /// underneath it; the in-place editor and the command-line form have to
+    /// agree on which cell is being edited.
+    #[test]
+    fn tabledit_in_a_merged_cell_edits_the_merged_cell() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let handle = merged_title_table(&mut app);
+
+        // (30, -5) is the right half of the merged title row: column 1 is
+        // covered by the merge that starts in column 0.
+        let _ = app.run_command_line("TABLEDIT 30,-5 after");
+        let out = out_text(&app);
+        assert!(out.contains("TABLE CELL  Enter text for [0,0]"), "{out}");
+
+        let Some(document::EntityType::Table(table)) =
+            app.tabs[i].scene.document.get_entity(handle)
+        else {
+            panic!("the table disappeared");
+        };
+        assert_eq!(
+            table.cell_text(0, 0),
+            Some("after"),
+            "the merged cell takes the text"
+        );
+        assert_eq!(
+            table.cell_text(0, 1),
+            Some(""),
+            "the covered cell must not hold the text"
+        );
+    }
+}
+
+#[cfg(test)]
+mod batch8_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+
+    fn out_text(app: &OpenCADStudio) -> String {
+        app.command_line.history_plain_text().trim().to_string()
+    }
+
+    fn new_app() -> OpenCADStudio {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        app
+    }
+
+    fn add_line(app: &mut OpenCADStudio, x1: f64, y1: f64, x2: f64, y2: f64) -> document::Handle {
+        use document::entities::Line;
+        use document::types::Vector3;
+        let i = app.active_tab;
+        let doc = &mut app.tabs[i].scene.document;
+        let line = Line::from_points(Vector3::new(x1, y1, 0.0), Vector3::new(x2, y2, 0.0));
+        doc.add_entity(document::EntityType::Line(line)).unwrap()
+    }
+
+    /// M086: SELECTSIMILAR is a selection command, so it may only add objects
+    /// the user can see and pick. An object on an off layer is never drawn and
+    /// never hit-tested; the old path walked every top-level handle and added
+    /// it anyway, so a following MOVE or ERASE silently changed geometry the
+    /// user could not see.
+    #[test]
+    fn selectsimilar_skips_objects_on_an_off_layer() {
+        let mut app = new_app();
+        let i = app.active_tab;
+        let visible = add_line(&mut app, 0.0, 0.0, 10.0, 0.0);
+        let hidden = add_line(&mut app, 0.0, 5.0, 10.0, 5.0);
+
+        let _ = app.run_command_line("-LAYER NEW HIDDEN");
+        let _ = app.run_command_line("-LAYER OFF HIDDEN");
+        app.tabs[i]
+            .scene
+            .document
+            .get_entity_mut(hidden)
+            .unwrap()
+            .common_mut()
+            .layer = "HIDDEN".to_string();
+
+        app.tabs[i].scene.select_entities(&[visible]);
+        // Type-only similarity: both objects are lines, so layer is the only
+        // thing that can keep the hidden one out.
+        app.select_similar_mode = 0;
+        let _ = app.run_command_line("SELECTSIMILAR");
+
+        let out = out_text(&app);
+        assert!(out.contains("Select Similar: 0 added"), "{out}");
+        assert!(app.tabs[i].scene.selected.contains(&visible));
+        assert!(
+            !app.tabs[i].scene.selected.contains(&hidden),
+            "an object on an off layer must not be selected"
+        );
+    }
+
+    /// A field on an attribute definition is what makes its references show
+    /// live text. ATTSYNC rebuilds every reference from the definitions, but
+    /// it built fresh attributes without copying the definition's field, so a
+    /// field added after the references were placed never reached them and a
+    /// field they already had was dropped.
+    #[test]
+    fn attsync_copies_a_field_from_the_attribute_definition() {
+        use document::entities::{AttributeDefinition, AttributeEntity, Insert};
+        use document::types::Vector3;
+        use document::EntityType;
+
+        let mut app = new_app();
+        let i = app.active_tab;
+        app.tabs[i].scene.document.source_path = Some(r"C:\work\PLAN.dwg".to_string());
+        app.tabs[i].scene.define_block_raw(
+            "TAGGED",
+            Vector3::ZERO,
+            vec![EntityType::AttributeDefinition(AttributeDefinition {
+                insertion_point: Vector3::new(2.0, 2.0, 0.0),
+                height: 1.0,
+                ..AttributeDefinition::new("TITLE".into(), "Title".into(), String::new())
+            })],
+        );
+        let mut insert = Insert::new("TAGGED", Vector3::new(100.0, 100.0, 0.0));
+        insert
+            .attributes
+            .push(AttributeEntity::new("TITLE".into(), String::new()));
+        let reference = app.tabs[i].scene.add_entity(EntityType::Insert(insert));
+        assert!(!reference.is_null(), "the reference is placed");
+
+        let definition = app.tabs[i]
+            .scene
+            .document
+            .block_records
+            .get("TAGGED")
+            .expect("the definition")
+            .entity_handles
+            .iter()
+            .copied()
+            .find(|handle| {
+                matches!(
+                    app.tabs[i].scene.document.get_entity(*handle),
+                    Some(EntityType::AttributeDefinition(_))
+                )
+            })
+            .expect("the definition carries an ATTDEF");
+        crate::entities::field::set_text_field(
+            &mut app.tabs[i].scene.document,
+            definition,
+            Some((r#"\AcVar Filename \f "%fn6""#.to_string(), Vec::new())),
+            "PLAN.dwg",
+        );
+
+        let _ = app.run_command_line("ATTSYNC TAGGED");
+
+        let document = &app.tabs[i].scene.document;
+        let EntityType::Insert(insert) = document.get_entity(reference).expect("reference") else {
+            panic!("not an insert");
+        };
+        let attribute = insert
+            .attributes
+            .iter()
+            .find(|a| a.tag == "TITLE")
+            .expect("the rebuilt attribute");
+        assert!(
+            crate::entities::field::common_hosts_field(document, &attribute.common),
+            "the rebuilt attribute must host the definition's field"
+        );
+        assert_eq!(
+            attribute.get_value(),
+            "PLAN.dwg",
+            "the field is resolved for the reference"
+        );
+    }
+}
+
+#[cfg(test)]
+mod text_mask_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+
+    /// A mask is a wipeout around the text, so it must turn with the text.
+    /// The old bounds were the axis-aligned box of the rotated glyph wires,
+    /// and the rectangle built from it covered far more than the text did —
+    /// on a 45-degree label it hid a large square of the drawing around it.
+    #[test]
+    fn a_rotated_text_gets_a_mask_that_turns_with_it() {
+        use document::entities::Text;
+        use document::types::Vector3;
+
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let mut text = Text::with_value("MASK", Vector3::new(20.0, 20.0, 0.0));
+        text.height = 2.0;
+        text.rotation = std::f64::consts::FRAC_PI_4;
+        let handle = app.tabs[i]
+            .scene
+            .add_entity(document::EntityType::Text(text));
+        app.tabs[i].scene.select_entities(&[handle]);
+
+        let _ = app.run_command_line("TEXTMASK");
+        let _ = app.feed_active_cmd("");
+
+        let wipeout = app.tabs[i]
+            .scene
+            .document
+            .entities()
+            .find_map(|entity| match entity {
+                document::EntityType::Wipeout(wipeout) => Some(wipeout.clone()),
+                _ => None,
+            })
+            .expect("the text is masked");
+        assert_ne!(
+            wipeout.clip_type,
+            document::entities::WipeoutClipType::Rectangular,
+            "a rotated text needs a turned polygon, not an axis-aligned box"
+        );
+        let corners = wipeout.world_boundary_vertices();
+        assert_eq!(corners.len(), 4);
+        // The first edge follows the text's 45-degree rotation.
+        let (dx, dy) = (corners[1].x - corners[0].x, corners[1].y - corners[0].y);
+        assert!(
+            dx.abs() > 0.2 && dy.abs() > 0.2,
+            "the mask edge must not stay on an axis: {dx}, {dy}"
+        );
+        assert!(
+            (dx.abs() - dy.abs()).abs() < 1e-6,
+            "the mask edge turns 45 degrees: {dx}, {dy}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod change_properties_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::entities::Line;
+    use document::types::{Color, Vector3};
+
+    fn color_of(app: &OpenCADStudio, handle: document::Handle) -> Color {
+        app.tabs[app.active_tab]
+            .scene
+            .document
+            .get_entity(handle)
+            .expect("the object stays")
+            .common()
+            .color
+    }
+
+    /// CHPROP's prompt offers "name / 1-255 / ByLayer", but its parser read
+    /// the value as a bare index, so every named colour and ByLayer itself was
+    /// rejected as invalid. The objects kept their old colour.
+    #[test]
+    fn chprop_color_accepts_the_names_and_bylayer_its_prompt_offers() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let line = app.tabs[i].scene.add_entity(document::EntityType::Line(
+            Line::from_points(Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)),
+        ));
+        app.tabs[i].scene.select_entities(&[line]);
+
+        let _ = app.run_command_line("CHPROP COLOR GREEN");
+        assert_eq!(color_of(&app, line), Color::Index(3), "a named colour");
+
+        let _ = app.run_command_line("CHPROP COLOR BYLAYER");
+        assert_eq!(color_of(&app, line), Color::ByLayer, "ByLayer itself");
+
+        let _ = app.run_command_line("CHPROP COLOR CHARTREUSE");
+        assert_eq!(
+            color_of(&app, line),
+            Color::ByLayer,
+            "an unknown colour leaves the object alone"
+        );
+    }
+}
+
+#[cfg(test)]
+mod table_style_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::objects::ObjectType;
+
+    fn style(app: &OpenCADStudio, name: &str) -> document::objects::TableStyle {
+        app.tabs[app.active_tab]
+            .scene
+            .document
+            .objects
+            .values()
+            .find_map(|object| match object {
+                ObjectType::TableStyle(style) if style.name.eq_ignore_ascii_case(name) => {
+                    Some(style.clone())
+                }
+                _ => None,
+            })
+            .expect("the style exists")
+    }
+
+    /// TABLESTYLE could create a style and make it current but every style it
+    /// created kept the standard margins and text height: SET took the name and
+    /// ignored the rest, so a style could not be authored from the command
+    /// line at all.
+    #[test]
+    fn tablestyle_set_authors_the_style_properties() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+
+        let _ = app.run_command_line("TABLESTYLE NEW LEDGER");
+        let _ = app.run_command_line("TABLESTYLE SET LEDGER HMARGIN 0.25");
+        assert_eq!(style(&app, "LEDGER").horizontal_margin, 0.25);
+
+        let _ = app.run_command_line("TABLESTYLE SET LEDGER TEXTHEIGHT 3.5");
+        let ledger = style(&app, "LEDGER");
+        assert_eq!(ledger.data_row_style.text_height, 3.5);
+        assert_eq!(ledger.header_row_style.text_height, 3.5);
+        assert_eq!(ledger.title_row_style.text_height, 3.5);
+
+        let _ = app.run_command_line("TABLESTYLE SET LEDGER ANNOTATIVE YES");
+        assert!(style(&app, "LEDGER").annotative);
+
+        // Without a property, SET still picks the style new tables take.
+        let _ = app.run_command_line("TABLESTYLE SET LEDGER");
+        assert_eq!(
+            app.tabs[i].scene.document.header.current_table_style_name,
+            "LEDGER"
+        );
+    }
+}
+
+#[cfg(test)]
+mod layer_command_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::types::Color;
+
+    fn layer_color(app: &OpenCADStudio, name: &str) -> Color {
+        app.tabs[app.active_tab]
+            .scene
+            .document
+            .layers
+            .get(name)
+            .map(|layer| layer.color)
+            .expect("the layer exists")
+    }
+
+    /// The layer manager's colour prompt accepts a name as readily as an ACI
+    /// index, and the layer may come before or after the colour. The plain
+    /// LAYER command used to take a number only, in name-first order, so
+    /// `LAYER COLOR WALLS RED` and `LAYER COLOR 3 WALLS` both failed.
+    #[test]
+    fn layer_color_takes_the_names_and_either_order() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let _ = app.run_command_line("LAYER NEW WALLS");
+
+        let _ = app.run_command_line("LAYER COLOR WALLS RED");
+        assert_eq!(layer_color(&app, "WALLS"), Color::Index(1));
+
+        let _ = app.run_command_line("LAYER COLOR 3 WALLS");
+        assert_eq!(layer_color(&app, "WALLS"), Color::Index(3));
+
+        let _ = app.run_command_line("LAYER COLOR WALLS CHARTREUSE");
+        assert_eq!(
+            layer_color(&app, "WALLS"),
+            Color::Index(3),
+            "an unknown colour leaves the layer alone"
+        );
+    }
+}
+
+#[cfg(test)]
+mod layer_tool_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::entities::Line;
+    use document::types::Vector3;
+
+    fn draw_on(app: &mut OpenCADStudio, layer: &str, x: f64) -> document::Handle {
+        let mut line = Line::from_points(
+            Vector3::new(x, 0.0, 0.0),
+            Vector3::new(x, 10.0, 0.0),
+        );
+        line.common.layer = layer.to_string();
+        app.tabs[app.active_tab]
+            .scene
+            .add_entity(document::EntityType::Line(line))
+    }
+
+    fn layer(app: &OpenCADStudio, name: &str) -> document::tables::Layer {
+        app.tabs[app.active_tab]
+            .scene
+            .document
+            .layers
+            .get(name)
+            .cloned()
+            .expect("the layer exists")
+    }
+
+    /// LAYOFF and LAYFRZ pick the layers of the selection; the layer new
+    /// objects are drawn on has to survive, exactly as `-LAYER OFF` and
+    /// `-LAYER FREEZE` refuse the current layer. The plain commands used to
+    /// hide it like any other, leaving no visible layer for the next line.
+    #[test]
+    fn layer_tools_leave_the_current_layer_alone() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let _ = app.run_command_line("-LAYER NEW WALLS");
+        let _ = app.run_command_line("-LAYER NEW DIMS");
+        let _ = app.run_command_line("-LAYER SET WALLS");
+        let current = draw_on(&mut app, "WALLS", 0.0);
+        let other = draw_on(&mut app, "DIMS", 5.0);
+        let i = app.active_tab;
+
+        app.tabs[i].scene.select_entities(&[current, other]);
+        let _ = app.run_command_line("LAYFRZ");
+        assert!(
+            !layer(&app, "WALLS").flags.frozen,
+            "the current layer must stay thawed"
+        );
+        assert!(
+            layer(&app, "DIMS").flags.frozen,
+            "the picked layer still freezes"
+        );
+
+        let _ = app.run_command_line("-LAYER THAW DIMS");
+        app.tabs[i].scene.select_entities(&[current, other]);
+        let _ = app.run_command_line("LAYOFF");
+        assert!(
+            !layer(&app, "WALLS").flags.off,
+            "the current layer must stay on"
+        );
+        assert!(layer(&app, "DIMS").flags.off, "the picked layer still turns off");
+
+        // The one-at-a-time pick path refuses the same layer.
+        let _ = app.run_command_line("-LAYER ON DIMS");
+        app.set_layer_on_from_command(i, "WALLS", false);
+        assert!(
+            !layer(&app, "WALLS").flags.off,
+            "a pick on the current layer must leave it on"
+        );
+    }
+}
+
+#[cfg(test)]
+mod attedit_one_at_a_time_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::entities::{AttributeEntity, Insert};
+    use document::types::Vector3;
+
+    fn two_typed_references() -> (OpenCADStudio, document::Handle, document::Handle) {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let mut make = |name: &str, value: &str| {
+            let mut insert = Insert::new(name, Vector3::ZERO);
+            insert
+                .attributes
+                .push(AttributeEntity::new("NUMBER".into(), value.into()));
+            app.tabs[i]
+                .scene
+                .add_entity(document::EntityType::Insert(insert))
+        };
+        let alpha = make("ALPHA", "111");
+        let beta = make("BETA", "222");
+        (app, alpha, beta)
+    }
+
+    /// The one-at-a-time branch still asks for the block, tag and value
+    /// specifications, so it must edit the reference those specs name —
+    /// not fall back to a bare `ATTEDIT` that re-asks for a pick despite
+    /// the selection and the specs.
+    #[test]
+    fn attedit_one_at_a_time_opens_the_editor_on_the_specified_reference() {
+        let (mut app, alpha, beta) = two_typed_references();
+        let i = app.active_tab;
+        app.tabs[i].scene.select_entities(&[alpha, beta]);
+
+        let _ = app.run_command_line("-ATTEDIT");
+        let _ = app.feed_script_line("Y");
+        let _ = app.feed_script_line("BETA");
+        let _ = app.feed_script_line("");
+        let _ = app.feed_script_line("");
+
+        assert_eq!(
+            app.attr_editor_handle,
+            Some(beta),
+            "the editor must open on the reference the block name specification names"
+        );
+        assert_eq!(app.attr_editor_rows.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod viewport_annotation_sync_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::entities::Viewport;
+    use document::EntityType;
+
+    /// The status pill's sync action re-links the viewport it describes to
+    /// its annotation scale, from the headless dispatch path. A clean round
+    /// trip: the viewport has the scale stored, the stored link is cleared,
+    /// and the sync message re-establishes it.
+    #[test]
+    fn the_sync_action_relinks_a_viewport_to_its_scale() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let handle = {
+            let i = app.active_tab;
+            let scene = &mut app.tabs[i].scene;
+            scene.add_layout("P1").unwrap();
+            scene.current_layout = "P1".to_string();
+            let mut viewport = Viewport::new();
+            viewport.width = 200.0;
+            viewport.height = 100.0;
+            let handle = scene
+                .document
+                .add_entity_to_layout(EntityType::Viewport(Box::new(viewport)), "P1")
+                .unwrap();
+            assert!(scene.add_scale("1:100", 1.0, 100.0));
+            assert!(scene.set_viewport_scale_named_for(handle, "1:100").is_some());
+            // Clear the link the render paths see, as a drawing from an
+            // older file or a bad reference would carry.
+            scene
+                .document
+                .set_viewport_annotation_scale(handle, document::Handle::NULL);
+            assert_eq!(
+                scene.document.viewport_annotation_scale(handle),
+                Some(document::Handle::NULL)
+            );
+            handle
+        };
+
+        let _ = app.update(crate::app::Message::SyncViewportAnnotationScale);
+
+        let scene = &mut app.tabs[app.active_tab].scene;
+        let stored = scene.document.viewport_annotation_scale(handle);
+        let named = scene
+            .scale_handle_ensuring("1:100")
+            .expect("the 1:100 scale exists");
+        assert_eq!(
+            stored,
+            Some(named),
+            "the sync action links the viewport the pill describes"
+        );
+    }
+}
+
+
+
+#[cfg(test)]
+mod data_extraction_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::entities::Line;
+    use document::types::Vector3;
+
+    /// `-DATAEXTRACTION <settings> <point>` runs a saved extraction end to
+    /// end: the external file the wizard offers is written with the rows,
+    /// and the extraction table lands at the point. This pins the whole
+    /// path an automated run needs — no point of it stops at a prompt
+    /// nobody can answer headlessly.
+    #[test]
+    fn a_saved_extraction_writes_the_file_and_places_the_table() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let _ = app.run_command_line("-LAYER NEW WALLS");
+        let mut line = Line::from_points(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0));
+        line.common.layer = "WALLS".to_string();
+        app.tabs[i].scene.add_entity(document::EntityType::Line(line));
+
+        let folder = std::env::temp_dir().join(format!(
+            "ocs-extraction-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&folder).expect("the folder");
+        let ext = folder.join("lines.csv");
+        let settings_path = folder.join("lines.dxex");
+        let settings = serde_json::json!({
+            "version": 1,
+            "source": "currentDrawing",
+            "includeCurrent": true,
+            "includeSubfolders": false,
+            "objectTypes": ["Line"],
+            "properties": ["Layer"],
+            "combineIdentical": false,
+            "showCount": true,
+            "showName": true,
+            "outputTable": true,
+            "outputFile": true,
+            "outputPath": ext.display().to_string(),
+            "tableTitle": "LINES",
+            "propertyHeaders": true,
+            "inUseOnly": false,
+            "blocksOnly": false,
+            "attributedBlocksOnly": false,
+            "displayAllTypes": true,
+            "hiddenCategories": [],
+        });
+        std::fs::write(&settings_path, settings.to_string()).expect("the settings file");
+
+        let settings_text = settings_path.display().to_string().replace('\\', "/");
+        let line = format!("-DATAEXTRACTION {settings_text} 0,0");
+        let _ = app.run_command_line(&line);
+
+        let written = std::fs::read_to_string(&ext).expect("the extraction file was written");
+        assert!(
+            written.to_uppercase().contains("WALLS"),
+            "the file names the layer: {written}"
+        );
+        let tables: Vec<document::entities::Table> = app.tabs[i]
+            .scene
+            .document
+            .entities()
+            .filter_map(|entity| match entity {
+                document::EntityType::Table(table) => Some((**table).clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tables.len(), 1, "one extraction table was placed");
+        assert_eq!(
+            tables[0].cell_text(0, 0).map(|text| text.to_string()).as_deref(),
+            Some("LINES"),
+        );
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+}
+
+#[cfg(test)]
+mod attsync_order_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::entities::{AttributeDefinition, AttributeEntity, Insert};
+    use document::EntityType;
+    use document::types::Vector3;
+
+    fn redefine(app: &mut OpenCADStudio, name: &str, attributes: &[(&str, &str)]) {
+        let definition = |tag: &str, index: usize| {
+            EntityType::AttributeDefinition(AttributeDefinition {
+                insertion_point: Vector3::new(2.0, 2.0 + index as f64 * 3.0, 0.0),
+                height: 1.0,
+                ..AttributeDefinition::new(tag.into(), format!("{tag} prompt"), String::new())
+            })
+        };
+        app.tabs[app.active_tab].scene.define_block_raw(
+            name,
+            Vector3::ZERO,
+            attributes
+                .iter()
+                .enumerate()
+                .map(|(index, (tag, _))| definition(tag, index))
+                .collect(),
+        );
+    }
+
+    fn placed(app: &mut OpenCADStudio, name: &str, values: &[(&str, &str)]) -> document::Handle {
+        let mut insert = Insert::new(name, Vector3::new(100.0, 100.0, 0.0));
+        for (tag, value) in values {
+            insert
+                .attributes
+                .push(AttributeEntity::new(tag.to_string(), value.to_string()));
+        }
+        app.tabs[app.active_tab]
+            .scene
+            .add_entity(EntityType::Insert(insert))
+    }
+
+    #[test]
+    fn attsync_reorders_the_reference_to_follow_the_definition() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        redefine(&mut app, "PANEL", &[("ALPHA", "a"), ("BRAVO", "b")]);
+        let reference = placed(&mut app, "PANEL", &[("ALPHA", "first"), ("BRAVO", "second")]);
+        app.tabs[i]
+            .scene
+            .redefine_block_raw(
+                "PANEL",
+                Vector3::ZERO,
+                vec![
+                    EntityType::AttributeDefinition(AttributeDefinition {
+                        insertion_point: Vector3::new(2.0, 5.0, 0.0),
+                        height: 1.0,
+                        ..AttributeDefinition::new("BRAVO".into(), "b".into(), String::new())
+                    }),
+                    EntityType::AttributeDefinition(AttributeDefinition {
+                        insertion_point: Vector3::new(2.0, 2.0, 0.0),
+                        height: 1.0,
+                        ..AttributeDefinition::new("ALPHA".into(), "a".into(), String::new())
+                    }),
+                ],
+            )
+            .expect("the definition takes the reordered tags");
+
+        let _ = app.run_command_line("ATTSYNC PANEL");
+
+        let document = &app.tabs[i].scene.document;
+        let EntityType::Insert(insert) = document.get_entity(reference).expect("reference")
+        else {
+            panic!("not an insert");
+        };
+        let pairs: Vec<(String, String)> = insert
+            .attributes
+            .iter()
+            .map(|attribute| (attribute.tag.clone(), attribute.get_value().to_string()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("BRAVO".into(), "second".into()),
+                ("ALPHA".into(), "first".into())
+            ],
+            "the reference follows the definition's order, by tag"
+        );
+    }
+}
+
+#[cfg(test)]
+mod battman_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::entities::{AttributeDefinition, AttributeEntity, Insert};
+    use document::EntityType;
+    use document::types::Vector3;
+
+    /// BATTMAN asks the picked reference's block for its definitions and
+    /// writes the edited list back to the block, tag-for-tag, values kept.
+    /// The reference an editing session renames keeps the value it held.
+    #[test]
+    fn battman_applies_the_edited_definition_to_its_references() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        app.tabs[i].scene.define_block_raw(
+            "PANEL",
+            Vector3::ZERO,
+            vec![EntityType::AttributeDefinition(AttributeDefinition {
+                insertion_point: Vector3::new(2.0, 2.0, 0.0),
+                height: 1.0,
+                ..AttributeDefinition::new("TAGGED".into(), "Tag".into(), String::new())
+            })],
+        );
+        let mut insert = Insert::new("PANEL", Vector3::new(100.0, 100.0, 0.0));
+        insert
+            .attributes
+            .push(AttributeEntity::new("TAGGED".into(), "kept".into()));
+        let reference = app.tabs[i]
+            .scene
+            .add_entity(EntityType::Insert(insert));
+
+        app.tabs[i].scene.select_entities(&[reference]);
+        let _ = app.dispatch_command("BATTMAN");
+        assert_eq!(
+            app.active_modal,
+            Some(crate::app::ModalKind::AttMan),
+            "BATTMAN opens on the picked reference's block"
+        );
+
+        let _ = app.update(crate::app::Message::AttMan(
+            crate::ui::window::attman_dialog::AttManMsg::Tag("RENAMED".to_string()),
+        ));
+        let _ = app.update(crate::app::Message::AttMan(
+            crate::ui::window::attman_dialog::AttManMsg::Apply,
+        ));
+
+        let document = &app.tabs[i].scene.document;
+        let EntityType::Insert(insert) = document.get_entity(reference).expect("reference")
+        else {
+            panic!("not an insert");
+        };
+        let tags: Vec<String> = insert.attributes.iter().map(|a| a.tag.clone()).collect();
+        assert_eq!(tags, vec!["RENAMED".to_string()]);
+        let values: Vec<String> = insert
+            .attributes
+            .iter()
+            .map(|a| a.get_value().to_string())
+            .collect();
+        assert_eq!(values, vec!["kept".to_string()]);
+    }
+}
+

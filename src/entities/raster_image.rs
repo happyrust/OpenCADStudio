@@ -1,13 +1,13 @@
 use crate::t;
 use document::entities::{RasterImage, Wipeout};
 
-use crate::command::EntityTransform;
 use crate::entities::common::{
     center_grip, edit_angle_prop as edit_angle, edit_prop as edit, parse_angle_deg, parse_f64,
     ro_prop as ro, square_grip,
 };
 use crate::entities::text_support::{resolve_text_style, text_local_bounds};
 use crate::entities::traits::{Grippable, PropertyEditable, RenderConvertible, Transformable};
+use crate::entities::transform::EntityTransform;
 use crate::scene::convert::acad_to_render::{GlyphRun, RenderEntity, RenderObject, TextStroke};
 use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::scene::model::wire_model::SnapHint;
@@ -502,6 +502,48 @@ fn wipeout_world_to_clip(wipeout: &Wipeout, world: [f64; 3]) -> Option<document:
         x - wipeout.size.x * 0.5,
         wipeout.size.y * 0.5 - y,
     ))
+}
+
+/// STRETCH for a wipeout: its frame corners for which `in_window` holds move
+/// by `delta`, the rest stay. A wipeout with every corner inside moves whole;
+/// a rectangular frame becomes the same four corner polygon first, so one
+/// corner can move on its own. Returns whether anything moved.
+pub(crate) fn stretch_wipeout(
+    wipeout: &mut Wipeout,
+    in_window: &dyn Fn(f64, f64) -> bool,
+    delta: glam::DVec3,
+) -> bool {
+    let boundary = wipeout_boundary(wipeout);
+    let inside: Vec<bool> = boundary.iter().map(|p| in_window(p[0], p[1])).collect();
+    if !inside.contains(&true) {
+        return false;
+    }
+    if !inside.contains(&false) {
+        wipeout.insertion_point.x += delta.x;
+        wipeout.insertion_point.y += delta.y;
+        wipeout.insertion_point.z += delta.z;
+        return true;
+    }
+    let mut clip = Vec::with_capacity(boundary.len() + 1);
+    for (point, moves) in boundary.iter().zip(&inside) {
+        let target = if *moves {
+            [point[0] + delta.x, point[1] + delta.y, point[2] + delta.z]
+        } else {
+            *point
+        };
+        let Some(vertex) = wipeout_world_to_clip(wipeout, target) else {
+            return false;
+        };
+        clip.push(vertex);
+    }
+    if !wipeout_is_polygonal(wipeout) {
+        // Closed like a polygon drawn here: the first corner repeats.
+        clip.push(clip[0]);
+        wipeout.clip_type = document::entities::WipeoutClipType::Polygonal;
+        wipeout.clipping_enabled = true;
+    }
+    wipeout.clip_boundary_vertices = clip;
+    true
 }
 
 impl RenderConvertible for Wipeout {

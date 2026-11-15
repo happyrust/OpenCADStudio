@@ -1145,6 +1145,144 @@ pub(crate) fn place_attribute_for_annotation_scale(
     true
 }
 
+/// Move the stored representations of an INSERT-owned ATTRIB with its grip.
+/// The ATTRIB is not a top-level document entity, so the normal entity
+/// context synchronization cannot reach these leaves.
+pub(crate) fn translate_insert_attribute_contexts(
+    doc: &mut Document,
+    attribute: &document::entities::AttributeEntity,
+    delta: glam::DVec3,
+) -> bool {
+    let mut changed = false;
+    for handle in insert_attribute_context_handles(doc, attribute) {
+        let Some(ObjectType::ObjectContextData(leaf)) = doc.objects.get_mut(&handle) else {
+            continue;
+        };
+        let ObjectContextKind::MTextAttribute(context) = &mut leaf.kind else {
+            continue;
+        };
+        context.insertion.x += delta.x;
+        context.insertion.y += delta.y;
+        context.alignment.x += delta.x;
+        context.alignment.y += delta.y;
+        if let Some(embedded) = context.context.as_mut() {
+            embedded.mtext.insertion.x += delta.x;
+            embedded.mtext.insertion.y += delta.y;
+            embedded.mtext.insertion.z += delta.z;
+        }
+        changed = true;
+    }
+    changed
+}
+
+/// Carry every annotation-scale representation of each INSERT-owned ATTRIB
+/// through the same MOVE/ROTATE/SCALE/MIRROR transform as the reference.
+/// These attributes are inline on the INSERT, so the top-level entity context
+/// walker cannot see their individual dictionaries.
+pub(crate) fn transform_insert_attribute_contexts(
+    doc: &mut Document,
+    attributes_before: &[document::entities::AttributeEntity],
+    transform: &crate::entities::transform::EntityTransform,
+) -> bool {
+    let mut changed = false;
+    for attribute in attributes_before {
+        for handle in insert_attribute_context_handles(doc, attribute) {
+            let scale = match doc.objects.get(&handle) {
+                Some(ObjectType::ObjectContextData(leaf)) => leaf.scale,
+                _ => continue,
+            };
+            let mut placed = attribute.clone();
+            if !place_attribute_for_annotation_scale(doc, &mut placed, Some(scale)) {
+                continue;
+            }
+            let mut entity = EntityType::AttributeEntity(placed);
+            crate::scene::view::dispatch::apply_transform(&mut entity, transform);
+            let EntityType::AttributeEntity(transformed) = entity else {
+                continue;
+            };
+            let Some(ObjectType::ObjectContextData(leaf)) = doc.objects.get_mut(&handle) else {
+                continue;
+            };
+            let ObjectContextKind::MTextAttribute(context) = &mut leaf.kind else {
+                continue;
+            };
+            context.horizontal_mode = transformed.horizontal_alignment.to_value();
+            context.rotation = transformed.rotation;
+            context.insertion =
+                Vector2::new(transformed.insertion_point.x, transformed.insertion_point.y);
+            context.alignment =
+                Vector2::new(transformed.alignment_point.x, transformed.alignment_point.y);
+            if let (Some(embedded), Some(mtext)) =
+                (&mut context.context, &transformed.embedded_mtext)
+            {
+                sync_mtext_context(&mut embedded.mtext, mtext);
+            }
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn insert_attribute_context_handles(
+    doc: &Document,
+    attribute: &document::entities::AttributeEntity,
+) -> Vec<Handle> {
+    if explicit_annotation_flag(doc, &attribute.common) == Some(false) {
+        return Vec::new();
+    }
+    attribute
+        .common
+        .xdictionary_handle
+        .and_then(|xdictionary| annotation_scales_in_xdictionary(doc, xdictionary))
+        .and_then(|collection| as_dict(doc, collection))
+        .map(|collection| {
+            collection
+                .entries
+                .iter()
+                .map(|(_, handle)| *handle)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Capture the context leaves changed by a transform or grip edit. INSERT
+/// attributes have their own dictionaries in addition to the INSERT's tree.
+pub(crate) fn annotation_context_objects_for_entity(
+    doc: &Document,
+    entity: &EntityType,
+) -> Vec<(Handle, ObjectType)> {
+    let mut seen = std::collections::HashSet::new();
+    let entity_handles: Vec<Handle> = annotation_scales_dict(doc, entity.common().handle)
+        .and_then(|collection| as_dict(doc, collection))
+        .map(|collection| {
+            collection
+                .entries
+                .iter()
+                .map(|(_, handle)| *handle)
+                .collect()
+        })
+        .unwrap_or_default();
+    let attribute_handles: Vec<Handle> = match entity {
+        EntityType::Insert(insert) => insert
+            .attributes
+            .iter()
+            .flat_map(|attribute| insert_attribute_context_handles(doc, attribute))
+            .collect(),
+        _ => Vec::new(),
+    };
+    attribute_handles
+        .into_iter()
+        .chain(entity_handles)
+        .filter(|handle| seen.insert(*handle))
+        .filter_map(|handle| {
+            doc.objects
+                .get(&handle)
+                .cloned()
+                .map(|object| (handle, object))
+        })
+        .collect()
+}
+
 fn apply_hatch_context(hatch: &mut document::entities::Hatch, context: &HatchScaleContext) {
     hatch.pattern.lines.clone_from(&context.pattern_lines);
     hatch.pattern_scale = context.pattern_scale;
@@ -1550,7 +1688,7 @@ pub fn translate_annotation_contexts(
     transform_annotation_contexts(
         doc,
         entity_handle,
-        &crate::command::EntityTransform::Translate(delta),
+        &crate::entities::transform::EntityTransform::Translate(delta),
     )
 }
 
@@ -1560,7 +1698,7 @@ pub fn translate_annotation_contexts(
 pub fn transform_annotation_contexts(
     doc: &mut Document,
     entity_handle: Handle,
-    t: &crate::command::EntityTransform,
+    t: &crate::entities::transform::EntityTransform,
 ) -> bool {
     let Some(base_entity) = doc.get_entity(entity_handle).cloned() else {
         return false;
@@ -1591,7 +1729,7 @@ pub fn transform_annotation_contexts(
         // while the complete per-segment list is a separate persisted field.
         if let (
             EntityType::MultiLeader(mleader),
-            crate::command::EntityTransform::Translate(delta),
+            crate::entities::transform::EntityTransform::Translate(delta),
         ) = (&mut placed, t)
         {
             let offset = Vector3::new(delta.x, delta.y, delta.z);
@@ -1701,6 +1839,56 @@ pub fn text_style_is_annotative(doc: &Document, name: &str) -> bool {
         .iter()
         .find(|s| name_matches(&s.name, name))
         .is_some_and(|s| s.annotative)
+}
+
+/// Whether the text style with this handle matches its text orientation to
+/// the layout: its `AcadAnnoPO` flag.
+pub fn text_style_orientation(doc: &Document, handle: Handle) -> bool {
+    doc.object_xdata(handle)
+        .and_then(|data| data.get_record("AcadAnnoPO"))
+        .is_some_and(|record| {
+            record.values.iter().any(|value| {
+                matches!(value, document::xdata::XDataValue::Integer16(n) if *n != 0)
+            })
+        })
+}
+
+/// Set or clear the text style's `AcadAnnoPO` flag.
+pub fn set_text_style_orientation(doc: &mut Document, handle: Handle, on: bool) {
+    if on == text_style_orientation(doc, handle) {
+        return;
+    }
+    if on {
+        crate::scene::block_metadata::ensure_application(doc, "AcadAnnoPO");
+        let mut record = document::xdata::ExtendedDataRecord::new("AcadAnnoPO");
+        record.values = vec![document::xdata::XDataValue::Integer16(1)];
+        doc.set_object_xdata_record(handle, record);
+    } else {
+        doc.remove_object_xdata_record(handle, "AcadAnnoPO");
+    }
+}
+
+/// A new text of the annotative style `name` that matches its orientation to
+/// the layout takes the same `AcadAnnoPO` flag.
+pub fn apply_style_orientation(doc: &mut Document, handle: Handle, style: &str) {
+    let Some(style) = doc
+        .text_styles
+        .iter()
+        .find(|s| name_matches(&s.name, style))
+        .filter(|s| s.annotative)
+        .map(|s| s.handle)
+    else {
+        return;
+    };
+    if text_style_orientation(doc, style) {
+        crate::scene::block_metadata::ensure_application(doc, "AcadAnnoPO");
+        crate::scene::view::dispatch::set_entity_xdata(
+            doc,
+            handle,
+            "AcadAnnoPO",
+            Some(vec![document::xdata::XDataValue::Integer16(1)]),
+        );
+    }
 }
 
 pub fn dim_style_is_annotative(doc: &Document, name: &str) -> bool {

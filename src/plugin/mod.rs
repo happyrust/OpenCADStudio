@@ -36,6 +36,16 @@ pub mod v4_support {
     ) {
     }
 
+    pub fn publish_panel_action_to_plugin(
+        _plugin_id: Option<&str>,
+        _command_id: Option<u64>,
+        _panel_id: String,
+        _control_id: String,
+        _action: String,
+        _value: Option<ocs_plugin_api::dialog::DialogValue>,
+    ) {
+    }
+
     pub fn publish_quad_action(
         _plugin_id: &str,
         _panel_id: &str,
@@ -71,35 +81,33 @@ pub(crate) fn guard<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> {
             // The plugin hooks run deep inside the update / render loop where
             // the app's command line isn't reachable, so queue the error and
             // let the next update tick drain it into the command line. (#145)
-            with_errors(|queue| queue.push(line));
+            with_errors(|errors| errors.push(line));
             None
         }
     }
 }
 
-/// Process-wide queue of plugin-guard errors waiting to surface in the host's
+/// Queue of plugin-guard errors waiting to surface in the host's
 /// command-line history. Flushed by [`drain_errors`] from the app loop.
 ///
-/// In tests the queue is the thread's own. Every application drains it on
-/// its tick, and tests run side by side with an application each: with one
-/// queue for the process, a test that queued three lines and then counted
-/// them found the ones no other test's tick had taken first.
+/// Process-wide in the app. Under `cfg(test)` each thread has its own, so
+/// tests running in parallel drain only the errors their own app queued:
+/// errors are queued and drained on the thread that runs the app's update.
 #[cfg(not(target_arch = "wasm32"))]
 fn with_errors<R>(f: impl FnOnce(&mut Vec<String>) -> R) -> R {
+    #[cfg(test)]
+    {
+        use std::cell::RefCell;
+        thread_local! {
+            static E: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        }
+        E.with(|errors| f(&mut errors.borrow_mut()))
+    }
     #[cfg(not(test))]
     {
         static E: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
-        f(&mut E
-            .get_or_init(|| std::sync::Mutex::new(Vec::new()))
-            .lock()
-            .unwrap())
-    }
-    #[cfg(test)]
-    {
-        thread_local! {
-            static E: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
-        }
-        E.with(|queue| f(&mut queue.borrow_mut()))
+        let errors = E.get_or_init(|| std::sync::Mutex::new(Vec::new()));
+        f(&mut errors.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
 
@@ -114,7 +122,7 @@ pub(crate) fn drain_errors() -> Vec<String> {
 /// failures). Surfaced by [`drain_errors`] on the next update tick.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn push_guard_error(line: String) {
-    with_errors(|queue| queue.push(line));
+    with_errors(|errors| errors.push(line));
 }
 
 #[cfg(test)]

@@ -40,6 +40,9 @@ pub struct AppConfig {
     pub show_layers: bool,
     /// Whether the document file tabs are shown (FILETAB).
     pub show_file_tabs: bool,
+    /// The drawing tabs run across the window above the palettes, instead
+    /// of between them over the drawing (the default).
+    pub file_tabs_above_docks: bool,
     /// Whether the layout tabs are shown (LAYOUTTAB).
     pub show_layout_tabs: bool,
     /// Graphic Attributes creates fills on the current layer instead of the
@@ -78,6 +81,7 @@ impl Default for AppConfig {
             show_command_history: false,
             show_layers: false,
             show_file_tabs: true,
+            file_tabs_above_docks: false,
             show_layout_tabs: true,
             graphic_fills_on_current_layer: false,
             annotation_auto_scale: -4,
@@ -408,6 +412,8 @@ pub struct ModelSpaceThemeConfig {
     pub selection_effect: bool,
     /// SELECTIONPREVIEW bitmask: 1 = idle, 2 = during a command, 3 = both.
     pub selection_preview: u8,
+    /// Maximum number of entities highlighted while a selection box is open.
+    pub selection_preview_limit: u32,
     /// GRIPSIZE: grip marker half-size in pixels (1–25, default 5).
     pub grip_size: u8,
     /// GRIPCOLOR: unselected grip ACI color (0 = Theme Primary outline, 1..=255 = ACI).
@@ -450,6 +456,7 @@ impl Default for ModelSpaceThemeConfig {
             selection_highlight_widen: 0,
             selection_effect: true,
             selection_preview: 3,
+            selection_preview_limit: 20_000,
             grip_size: 5,
             grip_color: 0,
             grip_hot: 0,
@@ -835,6 +842,54 @@ mod tests {
         let serialized = serde_json::to_string(&original).expect("serialize config");
         let restored: AppConfig = serde_json::from_str(&serialized).expect("deserialize config");
         assert!(restored.show_graphic_attributes);
+    }
+
+    #[test]
+    fn svg_text_as_outlines_defaults_off_and_round_trips() {
+        let old: AppConfig = serde_json::from_str(r#"{"plot":{}}"#).expect("old config");
+        assert!(!old.plot.text_as_outlines);
+
+        let mut original = AppConfig::default();
+        original.plot.text_as_outlines = true;
+        let serialized = serde_json::to_string(&original).expect("serialize config");
+        let restored: AppConfig = serde_json::from_str(&serialized).expect("deserialize config");
+        assert!(restored.plot.text_as_outlines);
+    }
+
+    #[test]
+    fn non_scaling_stroke_config_default_and_round_trip() {
+        let old: AppConfig = serde_json::from_str(r#"{"plot":{}}"#).expect("old config");
+        assert!(!old.plot.non_scaling_stroke);
+
+        let mut original = AppConfig::default();
+        original.plot.non_scaling_stroke = true;
+        let serialized = serde_json::to_string(&original).expect("serialize config");
+        let restored: AppConfig = serde_json::from_str(&serialized).expect("deserialize config");
+        assert!(restored.plot.non_scaling_stroke);
+    }
+
+    #[test]
+    fn layer_attributes_config_default_and_round_trip() {
+        let old: AppConfig = serde_json::from_str(r#"{"plot":{}}"#).expect("old config");
+        assert!(!old.plot.layer_attributes);
+
+        let mut original = AppConfig::default();
+        original.plot.layer_attributes = true;
+        let serialized = serde_json::to_string(&original).expect("serialize config");
+        let restored: AppConfig = serde_json::from_str(&serialized).expect("deserialize config");
+        assert!(restored.plot.layer_attributes);
+    }
+
+    #[test]
+    fn geopdf_config_defaults_off_and_round_trips() {
+        let old: AppConfig = serde_json::from_str(r#"{"plot":{}}"#).expect("old config");
+        assert!(!old.plot.geopdf);
+
+        let mut original = AppConfig::default();
+        original.plot.geopdf = true;
+        let serialized = serde_json::to_string(&original).expect("serialize config");
+        let restored: AppConfig = serde_json::from_str(&serialized).expect("deserialize config");
+        assert!(restored.plot.geopdf);
     }
 
     #[test]

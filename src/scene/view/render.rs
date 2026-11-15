@@ -139,6 +139,7 @@ pub struct ViewportData {
     /// Non-current scale representations of selected or hovered annotative
     /// entities. Uploaded with the xray highlight instead of the resident set.
     pub(in crate::scene) annotation_context_wires: Arc<Vec<WireModel>>,
+    pub(in crate::scene) selected_annotation_context_wires: Arc<Vec<WireModel>>,
     /// One/few live hatch models for grip editing. Uploaded through a separate
     /// tiny GPU batch so the resident hatch buffer remains untouched.
     pub(in crate::scene) preview_hatches: Arc<Vec<HatchModel>>,
@@ -1284,37 +1285,41 @@ retained_contributors={}",
                     !(previous.is_empty() && vp.annotation_context_wires.is_empty())
                         && !Arc::ptr_eq(previous, &vp.annotation_context_wires)
                 });
-            if selection_changed || highlighted_geometry_changed || annotation_context_changed {
+            let selected_annotation_changed = inner
+                .cached_selected_annotation_source
+                .as_ref()
+                .map_or(!vp.selected_annotation_context_wires.is_empty(), |previous| {
+                    !(previous.is_empty() && vp.selected_annotation_context_wires.is_empty())
+                        && !Arc::ptr_eq(previous, &vp.selected_annotation_context_wires)
+                });
+            if selection_changed
+                || highlighted_geometry_changed
+                || annotation_context_changed
+                || selected_annotation_changed
+            {
+                inner.prepare_highlight_wire_cache(vp.wire_content_id, vp.draw_depth_generation);
                 let sel_color = if self.selection_effect {
                     Some(self.selection_color)
                 } else {
                     None
                 };
-                inner.upload_selected_wires(
+                inner.upload_split_highlights(
                     device,
                     queue,
                     &vp_wires[..],
                     &vp.selected_handles,
                     &vp.hover_handles,
+                    &vp.selected_annotation_context_wires,
                     &vp.annotation_context_wires,
                     &draw_depths,
                     sel_color,
-                );
-                // Text highlight rides the same selection key: a pick / rollover
-                // recolours the selected / hovered glyphs without touching the
-                // base text buffer.
-                inner.upload_text_highlight(
-                    device,
-                    queue,
-                    &vp_wires[..],
-                    &vp.selected_handles,
-                    &vp.hover_handles,
-                    &vp.annotation_context_wires,
-                    &draw_depths,
-                    sel_color,
+                    vp.wire_content_id,
+                    vp.draw_depth_generation,
                 );
                 inner.cached_annotation_highlight_source =
                     Some(Arc::clone(&vp.annotation_context_wires));
+                inner.cached_selected_annotation_source =
+                    Some(Arc::clone(&vp.selected_annotation_context_wires));
             }
             // Advance the content id even when an unrelated entity patch kept
             // the existing overlay valid, so future deltas compare to the
@@ -1349,11 +1354,15 @@ retained_contributors={}",
                 Arc::as_ptr(&vp.meshes) as usize as u64,
                 vp.selection_generation,
             );
-            if hl_key != inner.cached_highlight_key {
+            if hl_key != inner.cached_highlight_key
+                || selected_annotation_changed
+                || annotation_context_changed
+            {
                 inner.update_mesh_highlight(
                     &vp.selected_handles,
                     &vp.hover_handles,
                     &vp.annotation_context_wires,
+                    &vp.selected_annotation_context_wires,
                 );
                 inner.cached_highlight_key = hl_key;
             }
@@ -1815,6 +1824,7 @@ fn hash_preview_wires(wires: &[WireModel], h: &mut impl std::hash::Hasher) {
         w.display_visible.hash(h);
         w.fill_is_3d.hash(h);
         w.fill_is_2d_solid.hash(h);
+        w.solid_normal.map(|normal| normal.map(f32::to_bits)).hash(h);
         bytemuck::cast_slice::<_, u8>(&w.text_verts).hash(h);
         w.point_marker.is_some().hash(h);
         if let Some(marker) = w.point_marker {
@@ -3609,10 +3619,13 @@ impl Scene {
         if let Some(style) = self.display_plot_style_cache.borrow().get(&key) {
             return style.clone();
         }
-        let style =
-            crate::io::plot_style::PlotStyleTable::load_named(&settings.current_style_sheet)
-                .ok()
-                .map(Arc::new);
+        let base = crate::io::drawing_dir(&self.document);
+        let style = crate::io::plot_style::PlotStyleTable::load_named_at(
+            &settings.current_style_sheet,
+            base,
+        )
+        .ok()
+        .map(Arc::new);
         self.display_plot_style_cache
             .borrow_mut()
             .insert(key, style.clone());
@@ -3795,6 +3808,8 @@ impl Scene {
                 }
                 boundary.push(boundary[0]);
                 hatches.push(HatchModel {
+                    entity: None,
+                    effective_layer: wire.effective_layer.clone(),
                     pattern_origin: None,
                     render_instance: wire.render_instance,
                     world_origin: [0.0, 0.0],
@@ -3832,14 +3847,18 @@ impl Scene {
     }
 }
 
+/// Whether a named layer is currently locked (safe from parallel tessellation).
+pub(in crate::scene) fn layer_locked_by_name(document: &Document, layer: &str) -> bool {
+    document
+        .layers
+        .get(layer)
+        .is_some_and(|l| l.is_locked())
+}
+
 /// Whether an entity sits on a locked layer (via the document's layer table).
 /// Document-only so it is safe from the parallel tessellation path.
 pub(in crate::scene) fn layer_locked(document: &Document, e: &EntityType) -> bool {
-    document
-        .layers
-        .get(&e.common().layer)
-        .map(|l| l.is_locked())
-        .unwrap_or(false)
+    layer_locked_by_name(document, &e.common().layer)
 }
 
 // ── Document-only render-style helpers (no &self, safe to call from parallel contexts) ──
@@ -3940,18 +3959,56 @@ pub(crate) fn pack_layer_override_color(color: &AcadColor) -> Option<i32> {
     Some(packed as i32)
 }
 
+fn viewport_override_for_layer(
+    document: &Document,
+    layer: Option<&document::tables::Layer>,
+    viewport: Option<Handle>,
+    kind: document::objects::KnownXRecordKind,
+) -> Option<document::objects::XRecordValue> {
+    let viewport = viewport.filter(|handle| handle.is_valid())?;
+    let layer = layer?;
+    document
+        .layer_viewport_overrides(layer.handle, kind)
+        .into_iter()
+        .find_map(|(handle, value)| (handle == viewport).then_some(value))
+}
+
 fn viewport_override(
     document: &Document,
     layer_name: &str,
     viewport: Option<Handle>,
     kind: document::objects::KnownXRecordKind,
 ) -> Option<document::objects::XRecordValue> {
-    let viewport = viewport.filter(|handle| handle.is_valid())?;
-    let layer = document.layers.get(layer_name)?;
-    document
-        .layer_viewport_overrides(layer.handle, kind)
-        .into_iter()
-        .find_map(|(handle, value)| (handle == viewport).then_some(value))
+    viewport.filter(|handle| handle.is_valid())?;
+    viewport_override_for_layer(document, document.layers.get(layer_name), viewport, kind)
+}
+
+fn layer_linetype_for_layer<'a>(
+    document: &'a Document,
+    layer: Option<&'a document::tables::Layer>,
+    viewport: Option<Handle>,
+) -> &'a str {
+    if viewport.is_some() {
+        if let Some(handle) = viewport_override_for_layer(
+            document,
+            layer,
+            viewport,
+            document::objects::KnownXRecordKind::LayerViewportLinetypeOverride,
+        )
+        .and_then(|value| value.as_handle())
+        {
+            if let Some(line_type) = document
+                .line_types
+                .iter()
+                .find(|line_type| line_type.handle == handle)
+            {
+                return line_type.name.as_str();
+            }
+        }
+    }
+    layer
+        .map(|l| l.line_type.as_str())
+        .unwrap_or("Continuous")
 }
 
 pub(crate) fn render_style_for_common_viewport(
@@ -3963,6 +4020,7 @@ pub(crate) fn render_style_for_common_viewport(
         return crate::scene::block_construction::display_style();
     }
     let layer_name = &common.layer;
+    let layer = document.layers.get(layer_name);
     let (entity_color, aci) = {
         let book_color = common
             .color_book_handle
@@ -3976,9 +4034,9 @@ pub(crate) fn render_style_for_common_viewport(
         let viewport_color =
             (book_color.is_none() && *ec == AcadColor::ByLayer && viewport.is_some())
                 .then(|| {
-                    viewport_override(
+                    viewport_override_for_layer(
                         document,
-                        layer_name,
+                        layer,
                         viewport,
                         document::objects::KnownXRecordKind::LayerViewportColorOverride,
                     )
@@ -3987,13 +4045,9 @@ pub(crate) fn render_style_for_common_viewport(
                 })
                 .flatten();
         let resolved = if *ec == AcadColor::ByLayer {
-            viewport_color.as_ref().unwrap_or_else(|| {
-                document
-                    .layers
-                    .get(layer_name)
-                    .map(|l| &l.color)
-                    .unwrap_or(&AcadColor::WHITE)
-            })
+            viewport_color
+                .as_ref()
+                .unwrap_or_else(|| layer.map(|l| &l.color).unwrap_or(&AcadColor::WHITE))
         } else {
             ec
         };
@@ -4004,9 +4058,9 @@ pub(crate) fn render_style_for_common_viewport(
         let [r, g, b, _] = tess_util::aci_to_rgba(resolved);
         let transparency = if common.transparency.is_by_layer() {
             let vp_trans = if viewport.is_some() {
-                viewport_override(
+                viewport_override_for_layer(
                     document,
-                    layer_name,
+                    layer,
                     viewport,
                     document::objects::KnownXRecordKind::LayerViewportAlphaOverride,
                 )
@@ -4016,12 +4070,7 @@ pub(crate) fn render_style_for_common_viewport(
                 None
             };
             vp_trans
-                .or_else(|| {
-                    document
-                        .layers
-                        .get(layer_name)
-                        .map(|layer| layer.transparency)
-                })
+                .or_else(|| layer.map(|l| l.transparency))
                 .unwrap_or(common.transparency)
         } else {
             common.transparency
@@ -4030,7 +4079,12 @@ pub(crate) fn render_style_for_common_viewport(
         ([r, g, b, alpha], aci)
     };
 
-    let lt_name = linetype_name_for_common_viewport(document, common, viewport);
+    let elt = &common.linetype;
+    let lt_name = if elt.is_empty() || elt.eq_ignore_ascii_case("bylayer") {
+        layer_linetype_for_layer(document, layer, viewport)
+    } else {
+        elt.as_str()
+    };
     // Effective scale = global LTSCALE × per-entity scale (both default to 1.0).
     let lt_scale = document.header.linetype_scale as f32 * common.linetype_scale as f32;
     let (pattern_length, pattern) = resolve_pattern(&document.line_types, lt_name, lt_scale);
@@ -4040,9 +4094,9 @@ pub(crate) fn render_style_for_common_viewport(
         let viewport_lineweight = (viewport.is_some()
             && matches!(ew, LineWeight::ByLayer | LineWeight::Default))
         .then(|| {
-            viewport_override(
+            viewport_override_for_layer(
                 document,
-                layer_name,
+                layer,
                 viewport,
                 document::objects::KnownXRecordKind::LayerViewportLineweightOverride,
             )
@@ -4053,7 +4107,7 @@ pub(crate) fn render_style_for_common_viewport(
         let resolved = match ew {
             LineWeight::ByLayer | LineWeight::ByBlock | LineWeight::Default => viewport_lineweight
                 .as_ref()
-                .or_else(|| document.layers.get(layer_name).map(|l| &l.line_weight))
+                .or_else(|| layer.map(|l| &l.line_weight))
                 .unwrap_or(&LineWeight::Default),
             _ => ew,
         };
@@ -4474,7 +4528,11 @@ impl Scene {
         verts
     }
 
-    fn annotation_context_highlight_wires(&self, inst: &ViewportInstance) -> Arc<Vec<WireModel>> {
+    fn annotation_context_highlight_wires(
+        &self,
+        inst: &ViewportInstance,
+        selected_part: bool,
+    ) -> Arc<Vec<WireModel>> {
         if self.selected.is_empty()
             && self.hover_highlight.is_none()
             && self.constraint_hover_highlights.is_empty()
@@ -4528,7 +4586,9 @@ impl Scene {
         let mut mix =
             |value: u64| key = key.rotate_left(17) ^ value.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         mix(self.geometry_epoch);
-        mix(self.selection_generation);
+        if !selected_part {
+            mix(self.selection_generation);
+        }
         mix(target_block.value());
         mix(annotation_scale_handle.map_or(0, |handle| handle.value()));
         mix(annotation_scale.to_bits() as u64);
@@ -4537,7 +4597,7 @@ impl Scene {
         mix(crate::scene::annotative::selection_anno_display() as u64);
         mix(self.active_viewport.map_or(0, |handle| handle.value()));
         mix(crate::scene::text::sdf_atlas::generation());
-        for component in bg {
+        for component in bg.into_iter().chain(self.selection_color) {
             mix(component.to_bits() as u64);
         }
         let mut frozen_sig = frozen.len() as u64;
@@ -4546,26 +4606,40 @@ impl Scene {
         }
         mix(frozen_sig);
 
-        if let Some(wires) = self.annotation_highlight_cache.borrow().get(&key) {
+        if selected_part {
+            if let Some((selected, segments, wires)) =
+                self.annotation_selected_cache.borrow().get(&key)
+            {
+                if selected == &self.selected && segments == &self.sub_segments {
+                    return Arc::clone(wires);
+                }
+            }
+        } else if let Some(wires) = self.annotation_highlight_cache.borrow().get(&key) {
             return Arc::clone(wires);
         }
 
-        let mut highlighted: Vec<(Handle, bool)> = self
-            .selected
-            .iter()
-            .copied()
-            .map(|handle| (handle, true))
-            .collect();
-        highlighted.extend(
+        let mut highlighted: Vec<(Handle, bool)> = if selected_part {
+            self.selected.iter().copied().map(|handle| (handle, true)).collect()
+        } else {
             self.hover_highlight_handles()
                 .into_iter()
                 .filter(|handle| !self.selected.contains(handle))
-                .map(|handle| (handle, false)),
-        );
+                .map(|handle| (handle, false))
+                .collect()
+        };
         highlighted.sort_unstable_by_key(|(handle, _)| handle.value());
 
         let empty_selection = rustc_hash::FxHashSet::default();
         let interaction_meshes = self.interaction_meshes_arc();
+        // Avoid rescanning every mesh for every highlighted entity. A large
+        // cumulative selection contains mostly non-mesh entities, so index
+        // the comparatively small mesh set once for this rebuild.
+        let mut meshes_by_handle = rustc_hash::FxHashMap::<Handle, Vec<_>>::default();
+        for mesh in interaction_meshes.iter() {
+            if let Some(handle) = mesh.entity_handle() {
+                meshes_by_handle.entry(handle).or_default().push(mesh);
+            }
+        }
         let mut wires = Vec::new();
         for (handle, selected) in highlighted {
             let Some(entity) = self.document.get_entity(handle) else {
@@ -4598,10 +4672,7 @@ impl Scene {
                 ));
                 continue;
             }
-            for set in interaction_meshes
-                .iter()
-                .filter(|set| set.entity_handle() == Some(handle))
-            {
+            for set in meshes_by_handle.get(&handle).into_iter().flatten() {
                 let (edges, edges_low) = set.geometry_edges();
                 if edges.len() < 2 {
                     continue;
@@ -4733,11 +4804,26 @@ impl Scene {
         }
 
         let wires = Arc::new(wires);
-        let mut cache = self.annotation_highlight_cache.borrow_mut();
-        if cache.len() > 16 {
-            cache.clear();
+        if selected_part {
+            let mut cache = self.annotation_selected_cache.borrow_mut();
+            if cache.len() > 16 {
+                cache.clear();
+            }
+            cache.insert(
+                key,
+                (
+                    self.selected.clone(),
+                    self.sub_segments.clone(),
+                    Arc::clone(&wires),
+                ),
+            );
+        } else {
+            let mut cache = self.annotation_highlight_cache.borrow_mut();
+            if cache.len() > 16 {
+                cache.clear();
+            }
+            cache.insert(key, Arc::clone(&wires));
         }
-        cache.insert(key, Arc::clone(&wires));
         wires
     }
 
@@ -5117,10 +5203,13 @@ impl Scene {
             } else {
                 inst.paper_sheet
             };
-        let annotation_context_wires = if show_live_overlay {
-            self.annotation_context_highlight_wires(inst)
+        let (selected_annotation_context_wires, annotation_context_wires) = if show_live_overlay {
+            (
+                self.annotation_context_highlight_wires(inst, true),
+                self.annotation_context_highlight_wires(inst, false),
+            )
         } else {
-            Arc::new(Vec::new())
+            (Arc::new(Vec::new()), Arc::new(Vec::new()))
         };
         vp_mark("annotation-highlight");
         // The P&ID tag-group highlight rides with the command preview: the
@@ -5147,6 +5236,7 @@ impl Scene {
                 && self.preview_wires.is_empty()
                 && self.constraint_hover_wires.is_empty()
                 && pid_group.is_empty()
+                && self.ducs_face_wires.is_empty()
                 && cloud_2d_wires.is_empty()
                 && indicator_wires.is_empty())
         {
@@ -5156,6 +5246,7 @@ impl Scene {
                 self.preview_wires.len()
                     + self.constraint_hover_wires.len()
                     + pid_group.len()
+                    + self.ducs_face_wires.len()
                     + cloud_2d_wires.len()
                     + 1,
             );
@@ -5165,6 +5256,7 @@ impl Scene {
             v.extend(self.preview_wires.iter().cloned());
             v.extend(self.constraint_hover_wires.iter().cloned());
             v.extend(pid_group.iter().cloned());
+            v.extend(self.ducs_face_wires.iter().cloned());
             v.extend(cloud_2d_wires);
             v.extend(indicator_wires);
             Arc::new(v)
@@ -5512,6 +5604,7 @@ impl Scene {
             clip_boundary_ndc,
             preview_wires,
             annotation_context_wires,
+            selected_annotation_context_wires,
             preview_hatches,
             face3d_wires,
             text_verts,
@@ -5665,7 +5758,7 @@ pub(crate) fn resolve_pattern(
     }
 
     // Keep dots (element length exactly 0) as 0.0 so the shader can render
-    // them as a fixed ~1 px mark; trailing array slots stay 0.0 padding and
+    // them round at the stroke's width; trailing array slots stay 0.0 padding and
     // the shader tells the two apart by position (a 0.0 before the last
     // non-zero element is a dot, trailing 0.0s are padding). The old code
     // encoded dots as `0.01 * scale` — a tiny world-length dash that went

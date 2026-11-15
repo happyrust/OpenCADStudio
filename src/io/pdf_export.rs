@@ -61,21 +61,46 @@ pub async fn pick_plot_path_owned(stem: String) -> Option<std::path::PathBuf> {
 
 // ── Public entry point ────────────────────────────────────────────────────
 
-/// Export one page to a PDF file.
+/// Export one page to a PDF file without geospatial metadata. This is also the
+/// printer/preview path, even if the page carries an optional GeoPDF frame.
 pub fn export_pdf(page: &PdfPageInput, path: &Path) -> Result<(), String> {
     export_pdf_pages(std::slice::from_ref(page), path, None)
 }
 
-/// Export several independently sized pages into one PDF file.
+/// Export one page as a plot file, including its explicitly opted-in GeoPDF
+/// frame when present.
+pub fn export_plot_pdf(page: &PdfPageInput, path: &Path) -> Result<(), String> {
+    export_plot_pdf_pages(std::slice::from_ref(page), path, None)
+}
+
+/// Export several independently sized pages into one PDF file without geospatial metadata.
 pub fn export_pdf_pages(
     pages: &[PdfPageInput],
     path: &Path,
     plot_style: Option<&PlotStyleTable>,
 ) -> Result<(), String> {
+    export_pdf_pages_impl(pages, path, plot_style, false)
+}
+
+/// Export plot-file pages, preserving each page's independent GeoPDF opt-in.
+pub fn export_plot_pdf_pages(
+    pages: &[PdfPageInput],
+    path: &Path,
+    plot_style: Option<&PlotStyleTable>,
+) -> Result<(), String> {
+    export_pdf_pages_impl(pages, path, plot_style, true)
+}
+
+fn export_pdf_pages_impl(
+    pages: &[PdfPageInput],
+    path: &Path,
+    plot_style: Option<&PlotStyleTable>,
+    include_geopdf: bool,
+) -> Result<(), String> {
     if pages.is_empty() {
         return Err("No pages were selected.".into());
     }
-    let bytes = render_pdf_bytes(pages, plot_style)?;
+    let bytes = render_pdf_bytes_impl(pages, plot_style, include_geopdf)?;
     persist_pdf(path, &bytes)
 }
 
@@ -151,9 +176,28 @@ pub async fn pick_pdf_path_async(stem: String) -> Option<std::path::PathBuf> {
 
 // ── PDF builder ───────────────────────────────────────────────────────────
 
+/// Render pages to complete PDF bytes without geospatial metadata. Preview and
+/// ordinary printing deliberately use this path even for an opted-in page.
 pub(crate) fn render_pdf_bytes(
     pages: &[PdfPageInput],
     plot_style: Option<&PlotStyleTable>,
+) -> Result<Vec<u8>, String> {
+    render_pdf_bytes_impl(pages, plot_style, false)
+}
+
+/// Render plot-file bytes, honoring each page's explicit GeoPDF opt-in.
+#[cfg(test)]
+pub(crate) fn render_plot_pdf_bytes(
+    pages: &[PdfPageInput],
+    plot_style: Option<&PlotStyleTable>,
+) -> Result<Vec<u8>, String> {
+    render_pdf_bytes_impl(pages, plot_style, true)
+}
+
+fn render_pdf_bytes_impl(
+    pages: &[PdfPageInput],
+    plot_style: Option<&PlotStyleTable>,
+    include_geopdf: bool,
 ) -> Result<Vec<u8>, String> {
     let mut doc = PdfDocument::new("Open CAD Studio Export");
     // One atlas snapshot for the whole document, and the subset fonts it
@@ -189,11 +233,28 @@ pub(crate) fn render_pdf_bytes(
     // for a CAD sheet — went out uncompressed: a 16-sheet set weighed 280 MB.
     // Serialise through lopdf ourselves and Flate-compress the streams.
     let mut lo = printpdf::to_lopdf_doc(&doc, &PdfSaveOptions::default(), &mut warnings);
-    lo.compress();
-    let mut bytes = Vec::new();
-    lo.save_to(&mut bytes)
-        .map_err(|error| format!("PDF serialisation failed: {error}"))?;
-    Ok(bytes)
+    // printpdf writes page boxes rounded to whole points (an A3 sheet came
+    // out 1191 x 842 instead of 1190.55 x 841.89); write the exact size.
+    for (page, id) in pages.iter().zip(lo.get_pages().into_values()) {
+        let size = [page.paper_w, page.paper_h].map(|mm| (mm * 72.0 / 25.4) as f32);
+        let Some(dict) = lo.get_object_mut(id).ok().and_then(|o| o.as_dict_mut().ok()) else {
+            continue;
+        };
+        for key in [&b"MediaBox"[..], b"TrimBox", b"CropBox"] {
+            if let Some(rect) = dict.get_mut(key).ok().and_then(|o| o.as_array_mut().ok()) {
+                if rect.len() == 4 {
+                    rect[2] = size[0].into();
+                    rect[3] = size[1].into();
+                }
+            }
+        }
+    }
+    let precise = if include_geopdf {
+        crate::io::geopdf_export::apply_metadata(&mut lo, pages)?
+    } else {
+        Vec::new()
+    };
+    crate::io::geopdf_export::save_document(&mut lo, &precise)
 }
 
 /// Run the shared emitter for one page and append the result to `doc`.
@@ -682,6 +743,93 @@ mod tests {
             clip: None,
             options: PdfPlotOptions::default(),
             plot_style: None,
+            geopdf: None,
+        }
+    }
+
+    fn geopdf_test_page(rotation_deg: i32) -> PdfPageInput {
+        let mut page = test_page(Vec::new());
+        let origin = [-742_925.271_389_167_2, -1_043_020.310_123_933_5];
+        page.paper_w = 200.0;
+        page.paper_h = 100.0;
+        page.offset_x = -origin[0];
+        page.offset_y = -origin[1];
+        page.scale = 2.0;
+        page.rotation_deg = rotation_deg;
+        let crs = crate::io::crs::CrsDefinition::from_epsg(5514).unwrap();
+        page.geopdf = Some(
+            crate::io::geopdf_export::GeoPdfFrame::for_window(
+                &crs,
+                Some(1000.0),
+                (origin[0], origin[1], origin[0] + 20.0, origin[1] + 10.0),
+            )
+            .unwrap(),
+        );
+        page
+    }
+
+    #[test]
+    fn geopdf_plot_export_is_opt_in_precise_and_excluded_from_plain_rendering() {
+        let page = geopdf_test_page(0);
+        let plain = render_pdf_bytes(std::slice::from_ref(&page), None).unwrap();
+        assert!(plain.starts_with(b"%PDF-1.3"));
+        assert!(!plain.windows(b"/VP".len()).any(|window| window == b"/VP"));
+
+        let bytes = render_plot_pdf_bytes(std::slice::from_ref(&page), None).unwrap();
+        assert!(bytes.starts_with(b"%PDF-2.0"));
+        assert!(bytes
+            .windows(b"\nxref\n".len())
+            .any(|window| window == b"\nxref\n"));
+        let text = String::from_utf8_lossy(&bytes);
+        for expected in ["/VP", "/GEOGCS", "/PROJCS", "4156", "5514"] {
+            assert!(text.contains(expected), "missing {expected}");
+        }
+        let frame = page.geopdf.as_ref().unwrap();
+        let precise = format!("{} {}", frame.gpts[0][0], frame.gpts[0][1]);
+        assert!(text.contains(&precise), "GPTS lost f64 tokens: {precise}");
+
+        let pdf = hayro::hayro_syntax::Pdf::new(std::sync::Arc::new(bytes)).unwrap();
+        assert_eq!(pdf.pages().len(), 1);
+        assert!(pdf.pages()[0].raw().contains_key(b"VP"));
+        let crs = crate::io::crs::CrsDefinition::from_epsg(5514).unwrap();
+        let placement = crate::io::geopdf::placement_for_pdf_page(&pdf, 0, &crs, 1000.0)
+            .expect("exported page must round-trip through the underlay reader");
+        let origin = [-742_925.271_389_167_2, -1_043_020.310_123_933_5];
+        for (actual, expected) in placement.insertion.into_iter().zip(origin) {
+            assert!((actual - expected).abs() < 1e-5, "{actual} != {expected}");
+        }
+        assert!((placement.x_scale - 12.7).abs() < 1e-5);
+        assert!((placement.y_scale - 12.7).abs() < 1e-5);
+        assert!(placement.rotation.abs() < 1e-9);
+    }
+
+    #[test]
+    fn geopdf_opt_in_is_per_page_and_supports_upside_down_frames() {
+        let geo = geopdf_test_page(180);
+        let plain = test_page(Vec::new());
+        let bytes = render_plot_pdf_bytes(&[geo, plain], None).unwrap();
+        let pdf = hayro::hayro_syntax::Pdf::new(std::sync::Arc::new(bytes)).unwrap();
+        assert_eq!(pdf.pages().len(), 2);
+        assert!(pdf.pages()[0].raw().contains_key(b"VP"));
+        assert!(!pdf.pages()[1].raw().contains_key(b"VP"));
+        let crs = crate::io::crs::CrsDefinition::from_epsg(5514).unwrap();
+        let placement = crate::io::geopdf::placement_for_pdf_page(&pdf, 0, &crs, 1000.0)
+            .expect("180-degree GeoPDF frame");
+        assert!((placement.rotation.abs() - std::f64::consts::PI).abs() < 1e-8);
+        assert!((placement.x_scale - 12.7).abs() < 1e-5);
+        assert!((placement.y_scale - 12.7).abs() < 1e-5);
+    }
+
+    #[test]
+    fn invalid_geopdf_page_transforms_are_export_errors() {
+        for case in 0..3 {
+            let mut page = geopdf_test_page(0);
+            match case {
+                0 => page.scale = 0.0,
+                1 => page.paper_w = f64::NAN,
+                _ => page.rotation_deg = 45,
+            }
+            assert!(render_plot_pdf_bytes(std::slice::from_ref(&page), None).is_err());
         }
     }
 

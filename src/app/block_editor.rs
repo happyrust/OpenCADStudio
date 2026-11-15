@@ -77,7 +77,7 @@ pub(super) fn block_reference_count(
         .count()
 }
 
-fn normalize_allocation(document: &mut Document, next: u64) {
+pub(super) fn normalize_allocation(document: &mut Document, next: u64) {
     if document.next_handle() < next {
         document.header.handle_seed = next - 1;
         document.allocate_handle();
@@ -329,6 +329,7 @@ impl OpenCADStudio {
             structure,
             parametric_constraints,
             reference_designations: Vec::new(),
+            reference_session: None,
             graph: None,
             named_parameters,
             remote_mark: 0,

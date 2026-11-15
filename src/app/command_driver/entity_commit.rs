@@ -1004,7 +1004,8 @@ impl OpenCADStudio {
             hatch.common.color = *color;
         }
         if let Some(percent) = settings.transparency {
-            hatch.common.transparency = document::types::Transparency::from_percent(percent as f64);
+            hatch.common.transparency =
+                document::types::Transparency::from_percent(f64::from(percent) / 100.0);
         }
         if let Some(background) = &settings.background {
             crate::entities::hatch::set_background_color(&mut hatch, background);
@@ -1335,6 +1336,12 @@ impl OpenCADStudio {
                 }
             }
         }
+        {
+            let tab = &mut self.tabs[i];
+            if let Some(cmd) = tab.active_cmd.as_mut() {
+                cmd.attreq_set_document(&tab.scene.document);
+            }
+        }
         // Collect the full AttributeDefinitions owned by this block
         // record so each created attribute keeps its geometry (#255).
         let mut attdefs: Vec<document::entities::AttributeDefinition> = {
@@ -1369,6 +1376,20 @@ impl OpenCADStudio {
                 .active_cmd
                 .as_mut()
                 .and_then(|c| c.attreq_take_insert());
+            // A leader's block content ends its command like any other leader.
+            if let Some(entity) = entity
+                .as_ref()
+                .filter(|entity| !matches!(entity, document::EntityType::Insert(_)))
+            {
+                return Some(self.apply_cmd_result(CmdResult::CommitAndExit(entity.clone())));
+            }
+            if entity.is_none() {
+                // The command goes on (a leader's arrowhead is still to come).
+                let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
+                if let Some(p) = prompt {
+                    self.command_line.push_info(&p);
+                }
+            }
             if let Some(entity) = entity {
                 let insert_name = match &entity {
                     document::EntityType::Insert(ins) => Some(ins.block_name.clone()),
@@ -1450,6 +1471,13 @@ impl OpenCADStudio {
             if asks {
                 self.open_insert_attr_dialog(&block_name, &askable);
                 return None;
+            }
+            if let Some(heading) = self.tabs[i]
+                .active_cmd
+                .as_ref()
+                .and_then(|c| c.prompt_heading())
+            {
+                self.command_line.push_info(&heading);
             }
             let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
             if let Some(p) = prompt {
@@ -1571,5 +1599,55 @@ impl OpenCADStudio {
         if let Some(p) = prompt {
             self.command_line.push_info(&p);
         }
+    }
+}
+
+#[cfg(test)]
+mod hatch_transparency_tests {
+    use crate::app::OpenCADStudio;
+    use crate::command::StepInput;
+    use document::types::{Transparency, Vector2};
+    use glam::DVec3;
+
+    /// The Hatch panel's transparency is a percent (0–90). A new hatch made
+    /// with 50 on the panel is half transparent; before, every non-zero
+    /// percent was taken as a 0..1 fraction and the hatch came out fully
+    /// transparent (invisible).
+    #[test]
+    fn a_new_hatch_takes_the_panel_transparency_percent() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let mut square = document::entities::LwPolyline::from_points(vec![
+            Vector2::new(0.0, 0.0),
+            Vector2::new(10.0, 0.0),
+            Vector2::new(10.0, 10.0),
+            Vector2::new(0.0, 10.0),
+        ]);
+        square.is_closed = true;
+        let _ = app.tabs[i]
+            .scene
+            .add_entity(document::EntityType::LwPolyline(square));
+
+        let _ = app.dispatch_command("HATCH");
+        let command = app.tabs[i].active_cmd.as_mut().expect("HATCH runs");
+        let mut settings = command.hatch_settings().expect("HATCH has panel settings");
+        settings.transparency = Some(50);
+        command.set_hatch_settings(settings);
+        let _ = app.feed_command(StepInput::Point(DVec3::new(5.0, 5.0, 0.0)));
+        if app.tabs[i].active_cmd.is_some() {
+            let _ = app.feed_command(StepInput::Enter);
+        }
+
+        let hatch = app.tabs[i]
+            .scene
+            .document
+            .entities()
+            .find_map(|entity| match entity {
+                document::EntityType::Hatch(hatch) => Some(hatch.clone()),
+                _ => None,
+            })
+            .expect("HATCH made a hatch");
+        assert_eq!(hatch.common.transparency, Transparency::from_percent(0.5));
     }
 }

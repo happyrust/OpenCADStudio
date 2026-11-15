@@ -13,6 +13,8 @@ mod annotation_data;
 mod array_grips;
 mod block_action_bars;
 mod block_actions;
+#[doc(hidden)]
+pub use block_actions::BlockBenchHarness;
 mod block_alignment;
 mod block_authoring_edit;
 mod block_constraint_status;
@@ -44,9 +46,11 @@ mod insert_attributes_tests;
 pub(crate) use command_driver::{
     copy_to_clipboard_kernel, define_block_raw_doc, paste_entities_kernel, PasteSpace,
 };
+mod assistant;
 pub(crate) mod commands;
 #[cfg(test)]
 mod dim_constraint_value_tests;
+mod dim_variables;
 pub(crate) mod dim_viewport;
 #[cfg(test)]
 mod dimension_convert_tests;
@@ -55,9 +59,9 @@ mod dimension_preview_tests;
 mod dock;
 mod drafting_settings;
 mod drawing_properties;
-pub(crate) mod expr_eval;
 pub(crate) mod filter_dialog;
 mod find_replace;
+mod geographic_location;
 pub(crate) mod helpers;
 mod history;
 mod layer_filter_store;
@@ -68,6 +72,8 @@ mod layer_walk;
 #[cfg(test)]
 mod layer_walk_tests;
 mod layers;
+#[cfg(test)]
+mod linetype_manager_tests;
 mod measurement;
 mod model_ops;
 mod mtext_editor;
@@ -80,10 +86,12 @@ pub(crate) mod node_graph;
 #[cfg(test)]
 mod object_isolation_tests;
 mod options_session;
+#[cfg(test)]
+mod paste_special_tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugin_host;
 mod presspull_ops;
-mod properties;
+pub(crate) mod properties;
 mod purge_dialog;
 #[cfg(test)]
 mod qselect_tests;
@@ -109,8 +117,6 @@ mod text_style_font_picker_tests;
 #[cfg(test)]
 mod text_style_layout_tests;
 #[cfg(test)]
-mod linetype_manager_tests;
-#[cfg(test)]
 mod text_style_manager_tests;
 #[cfg(test)]
 mod text_style_pending_tests;
@@ -131,6 +137,11 @@ mod viewport_dimension_tests;
 mod visibility;
 
 pub use style_ops::StyleKind;
+
+// The expression evaluator lives in `entities::expr_eval`. This private
+// import keeps `crate::app::expr_eval` working for the code in `app`, and
+// only for it: code outside `app` uses the `entities` path.
+use crate::entities::expr_eval;
 
 /// The Quad display-option message. Defined in `update/context_menu.rs` next
 /// to the quad glue and re-exported so the whole crate reaches it as
@@ -156,13 +167,15 @@ use crate::scene::CubeRegion;
 
 /// Which UCS-icon grip is being dragged. `Origin` slides the UCS origin within
 /// its own plane; `XAxis`/`YAxis` rotate the UCS so that axis points at the
-/// cursor (the other in-plane axis follows, Z fixed). The cursor is mapped onto
-/// the UCS plane every move, so no extra drag-start state is needed.
+/// cursor (the other in-plane axis follows, Z fixed); `ZAxis` turns Z to the
+/// cursor, keeping X as close to where it was as it can. The cursor is mapped
+/// onto the UCS plane every move, so no extra drag-start state is needed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UcsGripKind {
     Origin,
     XAxis,
     YAxis,
+    ZAxis,
 }
 
 /// Cursor dwelling over a grip. When `started.elapsed() >=` the popup
@@ -188,6 +201,25 @@ pub struct HoverDwell {
     pub point: iced::Point,
     pub tile_size: (f32, f32),
     pub tab: usize,
+}
+
+/// Raw (unfiltered) box hits from the last preview. This is only used for
+/// an unchanged, indexed, flat model view; all other views use a full pick.
+struct BoxPreviewCache {
+    tab_id: u64,
+    geometry_epoch: u64,
+    camera_generation: u64,
+    anchor: iced::Point,
+    cursor: iced::Point,
+    crossing: bool,
+    bounds: iced::Rectangle,
+    view: glam::Mat4,
+    eye: glam::DVec3,
+    wires: Arc<Vec<crate::scene::WireModel>>,
+    index: Arc<crate::scene::pick::interaction_index::InteractionIndex>,
+    handles: rustc_hash::FxHashSet<document::Handle>,
+    #[cfg(test)]
+    incremental: bool,
 }
 
 /// What the last executed settled-rollover pick saw, so a re-armed tick can
@@ -632,7 +664,6 @@ pub(crate) enum FindMatchKey {
 use crate::snap::Snapper;
 use crate::ui::{CommandLine, Ribbon, StatusBar};
 use document::types::{Color as AcadColor, LineWeight};
-use document::Document;
 
 use iced::time::Instant;
 use iced::window;
@@ -775,6 +806,12 @@ pub(super) struct OpenCADStudio {
     tabs: Vec<DocumentTab>,
     active_tab: usize,
     hovered_doc_tab: Option<usize>,
+    /// The drawing-tab bar's ☰ menu is open.
+    doc_tab_menu: bool,
+    /// The tab whose layouts list is open.
+    doc_tab_layouts: Option<usize>,
+    /// Bumped on every tab hover change, so a stale rest is ignored.
+    doc_tab_hover_gen: u64,
     tab_counter: usize,
     ribbon: Ribbon,
     /// Recently opened files, newest first — backs the Start page panel.
@@ -907,6 +944,7 @@ pub(super) struct OpenCADStudio {
     block_edit_picker: Option<crate::ui::window::block_edit_picker::State>,
     rename_dialog: Option<crate::ui::window::rename::State>,
     drawing_properties: Option<crate::ui::window::drawing_properties::State>,
+    geographic_location: Option<crate::ui::window::geographic_location::State>,
     purge_dialog: Option<crate::ui::window::purge::State>,
     /// The Purge dialog's choice, for the PURGE it runs.
     purge_only: Option<purge_dialog::PurgeOnly>,
@@ -954,6 +992,8 @@ pub(super) struct OpenCADStudio {
     table_cell_block: Option<crate::ui::window::table_cell_dialog::CellBlockState>,
     /// The picked table cells' Cell Data Format window.
     table_cell_format: Option<crate::ui::window::table_cell_dialog::CellFormatState>,
+    /// The annotation scale asked for before a session's first annotative text.
+    anno_scale_prompt: Option<crate::ui::window::anno_scale_prompt::AnnoScalePrompt>,
     /// A data format waiting on the invalid data type warning, and the
     /// cells whose values read as no such type.
     table_cell_warning: Option<(
@@ -1458,6 +1498,11 @@ pub(super) struct OpenCADStudio {
     /// positions the cursor had long left. A superseded position is overwritten
     /// here unanswered, and `MoveCoalesceTick` answers the last one.
     move_owed: Option<(iced::Point, usize)>,
+    /// Latest box-preview position awaiting a frame, and its tab.
+    box_preview_pending: Option<(iced::Point, usize, u64)>,
+    /// Adaptive earliest time for the next expensive preview calculation.
+    box_preview_due: Option<Instant>,
+    box_preview_cache: Option<BoxPreviewCache>,
     /// When the next full pointer-move pass may run, set only after a pass
     /// expensive enough to be worth coalescing (`MOVE_COALESCE_FROM_MS`).
     /// `None` means every move runs its pass, as before.
@@ -1622,6 +1667,8 @@ pub(super) struct OpenCADStudio {
     pub(crate) count_palette: crate::ui::window::count_palette::CountPalette,
     /// The QuickCalc pallet (QUICKCALC / QC).
     pub(crate) quick_calc: crate::ui::window::quick_calc::QuickCalcPalette,
+    /// The Assistant pallet (ASSISTANT): chat with an external AI agent about this drawing.
+    pub(crate) assistant: crate::ui::window::assistant::AssistantPalette,
     /// Sheet Set Manager palette, the open sheet sets and their dialogs.
     pub(crate) sheet_set: crate::ui::window::sheet_set::SheetSetManager,
     /// A sheet opened from the manager: its drawing (path key) and layout,
@@ -1680,6 +1727,10 @@ pub(super) struct OpenCADStudio {
     pub(crate) dock_float_menu_at: iced::Point,
     /// Group whose edge band (group grip) the pointer is over.
     pub(crate) dock_grip_hover: Option<(crate::app::config::DockSide, usize)>,
+    /// The group grip that has been hovered long enough to light.
+    pub(crate) dock_grip_lit: Option<(crate::app::config::DockSide, usize)>,
+    /// Counts grip hovers, so only the latest hover's timer lights a grip.
+    pub(crate) dock_grip_gen: u32,
     /// Reference-table column currently being width-resized (column index),
     /// with the last pointer position. Mirrors the Layers Name-column drag.
     pub(crate) xref_col_drag: Option<usize>,
@@ -1692,6 +1743,9 @@ pub(super) struct OpenCADStudio {
     pub(crate) xref_manager: crate::ui::window::xref_manager::XrefManagerPanel,
     /// Whether the document file tabs are shown at the top (FILETAB).
     show_file_tabs: bool,
+    /// The drawing tabs run across the window above the palettes instead
+    /// of between them.
+    file_tabs_above_docks: bool,
     /// Whether the layout/paper-space tabs are shown at the bottom (LAYOUTTAB).
     show_layout_tabs: bool,
     /// Last point committed by a drawing command — used as ortho/polar base.
@@ -1839,6 +1893,11 @@ pub(super) struct OpenCADStudio {
     modal_dragging: bool,
     /// Layer Manager Name column width in px, adjusted by the divider drag.
     layer_name_col_w: f32,
+    /// Widths of the Layer Manager columns the user sized (the rest keep
+    /// their default).
+    layer_col_w: std::collections::HashMap<crate::ui::window::layers::LayerSortCol, f32>,
+    /// Widths of Layer Walk's name and object-count columns.
+    layer_walk_col_w: [f32; 2],
     /// How far the user has dragged the modal's corner resize grip from the
     /// dialog's natural size (added to its measured width/height). Reset
     /// with `modal_offset` so every dialog opens at its own size.
@@ -1869,6 +1928,10 @@ pub(super) struct OpenCADStudio {
     /// `SelectionChangedV4` fires once per real change rather than per message.
     #[cfg(not(target_arch = "wasm32"))]
     last_plugin_selection: Option<(u64, u64)>,
+    /// Monotonic per-tab selection revisions, bumped only on an actual
+    /// selection change; carried by the v22 `SelectionChangedDigest`.
+    #[cfg(not(target_arch = "wasm32"))]
+    selection_revision_by_tab: rustc_hash::FxHashMap<u64, u64>,
     /// `(tab id, geometry epoch)` last published to the V4 document view.
     /// Built-in edits bypass HostSession, so this is checked at message
     /// boundaries as well as after plugin-initiated writes.
@@ -1932,6 +1995,8 @@ pub(super) struct OpenCADStudio {
     font_source_url: String,
     /// Template a new drawing starts from (QNEW); empty = blank.
     qnew_template: String,
+    /// Source-relative, type-structured, or flat ETRANSMIT/ARCHIVE package.
+    transmittal_layout: crate::io::transmit::TransmittalLayout,
     /// The start page's template list, while it is open: the drawing
     /// templates beside the default one.
     start_templates: Option<Vec<std::path::PathBuf>>,
@@ -1983,6 +2048,9 @@ pub(super) struct OpenCADStudio {
     /// Cursor-anchored one-shot snap override menu (Shift+RMB): the canvas
     /// point it opened at, or `None` when closed (#337).
     snap_override_popup: Option<iced::Point>,
+    /// The Shift+letter temporary override held during a point prompt
+    /// (#3016): the typed key and what it changed, undone on release.
+    held_override: Option<(char, crate::app::update::viewport_snap::HeldOverride)>,
     /// Hard axis lock (#312): the WCS direction captured when Shift went down
     /// during a rubber-band point pick. While `Some`, every candidate point —
     /// osnap hits included — projects onto this ray from `last_point` (or the
@@ -2082,8 +2150,8 @@ pub(super) struct OpenCADStudio {
 
     // ── MLeaderStyle Dialog ───────────────────────────────────────────────
     mleaderstyle_selected: String,
-    mleaderstyle_tab: u8,
-    mleaderstyle_compare: String,
+    /// The manager's faces and choosers (New, Modify, Delete, notices).
+    mls: crate::ui::style::mleaderstyle::Dialog,
     /// Colour field whose expanded palette is open (line/text/block).
     mls_color_open: Option<&'static str>,
     mls_landing_distance: String,
@@ -2092,19 +2160,12 @@ pub(super) struct OpenCADStudio {
     mls_text_height: String,
     mls_scale_factor: String,
     mls_break_gap: String,
-    mls_first_seg_angle: String,
-    mls_second_seg_angle: String,
     mls_max_points: String,
     mls_default_text: String,
     mls_line_color: String,
     mls_text_color: String,
-    mls_description: String,
-    mls_align_space: String,
     mls_block_color: String,
-    mls_block_rotation: String,
-    mls_block_scale_x: String,
-    mls_block_scale_y: String,
-    mls_block_scale_z: String,
+    mls_block_scale: String,
 
     // ── TableStyle Dialog ─────────────────────────────────────────────────
     tablestyle_selected: String,
@@ -2142,6 +2203,10 @@ pub(super) struct OpenCADStudio {
     /// in-dialog preview but only persist on Apply; closing without Apply
     /// restores this snapshot. `None` when no style manager is staging.
     style_stage: Option<style_ops::StyleStage>,
+    /// The transaction of the manager a child manager was opened from (the
+    /// Text Style manager from the multileader style window): it goes on
+    /// when the child closes.
+    style_parent_stage: Option<style_ops::StyleStage>,
     style_import: Option<update::style_import::StyleImportDraft>,
 
     // ── TextStyle Font Browser ────────────────────────────────────────────
@@ -2157,6 +2222,10 @@ pub(super) struct OpenCADStudio {
     /// Working copy of the selected style; written into the document before
     /// any list operation and on Apply.
     textstyle_draft: text_style_draft::TextStyleDraft,
+    /// A question or notice over the text style window.
+    textstyle_card: Option<crate::ui::style::textstyle::Card>,
+    /// The text style whose actions (right click) show under it.
+    textstyle_context: Option<String>,
     textstyle_font_picker: crate::ui::font_picker::FontPickerState,
     textstyle_bigfont_picker: crate::ui::font_picker::FontPickerState,
     /// The texts of every text style (ASCII-lowercase name), for "Where
@@ -2249,9 +2318,17 @@ pub(super) struct OpenCADStudio {
     scale_manager_selected: String,
     scale_manager_paper_buf: String,
     scale_manager_drawing_buf: String,
-    /// The scale row being renamed inline (double-click), + its edit buffer.
+    /// The scale the Edit card edits (double-click or Edit...), + the name
+    /// buffer; the card adds a new scale when `scale_edit_adding`.
     scale_rename: Option<String>,
     scale_rename_buf: String,
+    scale_edit_adding: bool,
+    /// The scale card's refusal (no name, a taken name, a bad ratio).
+    scale_edit_error: Option<String>,
+    /// Every picked row of the scale list (Ctrl adds, Shift extends).
+    scale_manager_multi: Vec<String>,
+    /// Delete asks whether to drop the picked scales not in use.
+    scale_delete_asking: bool,
     /// The entity the Annotation Object Scale dialog is editing (its per-object
     /// annotation-scale membership).
     anno_object_scale_target: Option<document::types::Handle>,
@@ -2397,97 +2474,13 @@ pub(super) struct OpenCADStudio {
     // ── DimStyle Dialog ───────────────────────────────────────────────────
     /// Name of the style currently shown in the dialog.
     dimstyle_selected: String,
-    /// The arrowhead field whose User Arrow block list is open.
-    dimstyle_user_arrow: Option<&'static str>,
+    /// The dimension style window's faces and drafts.
+    dsd: crate::ui::style::dimstyle::Dialog,
     /// The next EnterViewport moves to another viewport within a running
     /// command (Ctrl+R) and must not cancel it.
     viewport_switch_keeps_command: bool,
     /// CHSPACE from paper space waiting for its target viewport: the objects.
     chspace_pending: Option<Vec<document::Handle>>,
-    /// Which colour field currently has its expanded palette open (if any).
-    ds_color_open: Option<DsField>,
-    /// Active property group in the dimension style manager.
-    dimstyle_tab: u8,
-    /// Style used by the manager's comparison summary.
-    dimstyle_compare: String,
-    // Edit buffers (strings while typing):
-    ds_dimdle: String,
-    ds_dimdli: String,
-    ds_dimgap: String,
-    ds_dimexe: String,
-    ds_dimexo: String,
-    ds_dimsd1: bool,
-    ds_dimsd2: bool,
-    ds_dimse1: bool,
-    ds_dimse2: bool,
-    ds_dimasz: String,
-    ds_dimcen: String,
-    ds_dimtsz: String,
-    ds_dimtxt: String,
-    ds_dimtxsty: String,
-    ds_dimtad: String,
-    ds_dimtih: bool,
-    ds_dimtoh: bool,
-    ds_dimscale: String,
-    ds_dimlfac: String,
-    ds_dimlunit: String,
-    ds_dimdec: String,
-    ds_dimpost: String,
-    ds_dimtol: bool,
-    ds_dimlim: bool,
-    ds_dimtp: String,
-    ds_dimtm: String,
-    ds_dimtdec: String,
-    ds_dimtfac: String,
-    ds_annotative: bool,
-    // Lines (colors / lineweights / fixed-length extension)
-    ds_dimclrd: String,
-    ds_dimlwd: String,
-    ds_dimclre: String,
-    ds_dimlwe: String,
-    ds_dimfxl: String,
-    ds_dimfxlon: bool,
-    // Symbols & Arrows
-    ds_dimsah: bool,
-    ds_dimarcsym: String,
-    ds_dimjogang: String,
-    // Text
-    ds_dimclrt: String,
-    ds_dimjust: String,
-    ds_dimtvp: String,
-    ds_dimtfill: String,
-    ds_dimtfillclr: String,
-    ds_dimtxtdirection: bool,
-    // Fit
-    ds_dimatfit: String,
-    ds_dimtix: bool,
-    ds_dimsoxd: bool,
-    ds_dimtmove: String,
-    ds_dimupt: bool,
-    ds_dimtofl: bool,
-    ds_dimfit: String,
-    // Primary units
-    ds_dimdsep: String,
-    ds_dimrnd: String,
-    ds_dimzin: String,
-    ds_dimfrac: String,
-    ds_dimaunit: String,
-    ds_dimadec: String,
-    ds_dimunit: String,
-    ds_dimazin: String,
-    // Alternate units
-    ds_dimalt: bool,
-    ds_dimaltf: String,
-    ds_dimaltd: String,
-    ds_dimaltu: String,
-    ds_dimalttd: String,
-    ds_dimaltrnd: String,
-    ds_dimapost: String,
-    ds_dimaltz: String,
-    ds_dimalttz: String,
-    // Tolerances (extra)
-    ds_dimtolj: String,
-    ds_dimtzin: String,
 }
 
 /// What triggered the "unsaved changes" dialog.
@@ -2688,7 +2681,7 @@ pub enum ColorPickTarget {
     Gradient(u8),
     GraphicAttributesLine,
     GraphicAttributesSolid,
-    DimStyle(DsField),
+    DimStyle(&'static str),
     MLeader(&'static str),
     Table(&'static str),
     /// Plot-style colour override for the currently selected ACI entry.
@@ -2772,6 +2765,10 @@ pub struct ClipboardDeps {
     /// the same name, so it never names an object of the source drawing.
     #[serde(with = "dim_style_refs_serde", default)]
     pub dim_style_refs: rustc_hash::FxHashMap<document::Handle, String>,
+    /// The FIELD objects the copied tables' cells use, nested fields
+    /// included, by source handle. A paste gives each pasted table its own
+    /// clones of them, in this drawing or another.
+    pub table_fields: Vec<document::objects::Field>,
 }
 
 mod dim_style_refs_serde {
@@ -3145,6 +3142,16 @@ impl ClipboardDeps {
             app_ids,
             dim_style_refs,
             mleader_styles,
+            table_fields: entities
+                .iter()
+                .filter_map(|e| match e {
+                    EntityType::Table(table) => {
+                        Some(crate::scene::table_fields::table_fields(doc, table))
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .collect(),
         }
     }
 
@@ -3404,6 +3411,8 @@ pub enum ModalKind {
     TableCellBlock,
     TableCellFormat,
     TableCellWarning,
+    /// The annotation scale asked for before a session's first annotative text.
+    AnnotationScalePrompt,
     /// A value typed into a cell that is not of the cell's data type.
     TableCellEntry,
     PdfShxSettings,
@@ -3445,6 +3454,7 @@ pub enum ModalKind {
     Rename,
     Purge,
     DrawingProperties,
+    GeographicLocation,
     SelectSimilarSettings,
     BlockSaveAs,
     BlockVisibility,
@@ -3545,81 +3555,6 @@ pub enum LayerStateLayerFlag {
     NewViewport,
 }
 
-/// Identifies a DimStyle field that can be edited in the dialog.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DsField {
-    Dimdle,
-    Dimdli,
-    Dimgap,
-    Dimexe,
-    Dimexo,
-    Dimsd1,
-    Dimsd2,
-    Dimse1,
-    Dimse2,
-    Dimasz,
-    Dimcen,
-    Dimtsz,
-    Dimtxt,
-    Dimtxsty,
-    Dimtad,
-    Dimtih,
-    Dimtoh,
-    Dimscale,
-    Dimlfac,
-    Dimlunit,
-    Dimdec,
-    Dimpost,
-    Dimtol,
-    Dimlim,
-    Dimtp,
-    Dimtm,
-    Dimtdec,
-    Dimtfac,
-    Annotative,
-    Dimclrd,
-    Dimlwd,
-    Dimclre,
-    Dimlwe,
-    Dimfxl,
-    Dimfxlon,
-    Dimsah,
-    Dimarcsym,
-    Dimjogang,
-    Dimclrt,
-    Dimjust,
-    Dimtvp,
-    Dimtfill,
-    Dimtfillclr,
-    Dimtxtdirection,
-    Dimatfit,
-    Dimtix,
-    Dimsoxd,
-    Dimtmove,
-    Dimupt,
-    Dimtofl,
-    Dimfit,
-    Dimdsep,
-    Dimrnd,
-    Dimzin,
-    Dimfrac,
-    Dimaunit,
-    Dimadec,
-    Dimunit,
-    Dimazin,
-    Dimalt,
-    Dimaltf,
-    Dimaltd,
-    Dimaltu,
-    Dimalttd,
-    Dimaltrnd,
-    Dimapost,
-    Dimaltz,
-    Dimalttz,
-    Dimtolj,
-    Dimtzin,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum ArrowKey {
     Up,
@@ -3678,6 +3613,8 @@ pub enum Message {
         redrew: bool,
     },
     ControlToggle,
+    /// Copy a ready-to-paste MCP client config for this install (#2401).
+    ControlCopySetup,
     /// Node graph overlay interaction.
     Graph(crate::ui::node_graph::GraphMsg),
     Tick(Instant),
@@ -3711,8 +3648,13 @@ pub enum Message {
     PasteShortcut,
     /// Which text input held focus when `PasteShortcut` arrived.
     PasteShortcutResolved(PasteFocus),
-    /// Completion of the system text clipboard read PASTESPEC starts.
-    PasteSpecial(Option<String>),
+    /// Completion of the system clipboard read PASTESPEC starts: its text,
+    /// its picture and the source a copied range of cells links to.
+    PasteSpecial(
+        Option<String>,
+        Option<crate::io::ole_embed::EmbeddedImage>,
+        Option<crate::sys::clipboard_link::SourceLink>,
+    ),
     /// Completion of the system text clipboard read PASTEASHYPERLINK starts.
     PasteAsHyperlink(Option<String>),
     /// Completion of a system text clipboard read requested by PASTECLIP.
@@ -3803,7 +3745,7 @@ pub enum Message {
     WebFileCached(u64, crate::io::WebOpenOutcome, Result<(), String>),
     FileOpened(
         u64,
-        Result<(String, PathBuf, Document, crate::scene::DerivedCaches), crate::io::OpenLoadError>,
+        Result<crate::io::OpenedDrawing, crate::io::OpenLoadError>,
     ),
     RecoveryClose,
     RecoveryAttempt,
@@ -3892,6 +3834,8 @@ pub enum Message {
     /// Options → Files: the default template for new drawings.
     QnewTemplateChanged(String),
     QnewTemplateBrowse,
+    /// Options → Open and Save: preserve, structured-by-type, or flat packages.
+    TransmittalLayoutChanged(crate::io::transmit::TransmittalLayout),
     /// NEW: the picked template a new drawing starts from (`None` = cancelled).
     NewFromTemplate(Option<std::path::PathBuf>),
     /// Open (true) or close the start page's template list.
@@ -4156,6 +4100,8 @@ pub enum Message {
     PluginDialogFilePick(String),
     /// File chosen from OS dialog for a file picker control.
     PluginDialogFilePicked(String, Option<std::path::PathBuf>),
+    /// Live text edit in a file picker text input in a plugin modal dialog.
+    PluginDialogFileTextChange(String, String),
     /// Table cell text change in a plugin modal dialog.
     PluginDialogTableCellChange(String, usize, usize, String),
     /// Add empty row to a table in a plugin modal dialog.
@@ -4168,6 +4114,8 @@ pub enum Message {
     PluginDialogSubmit,
     /// Cancel clicked in a plugin modal dialog.
     PluginDialogCancel,
+    PluginDialogButtonClick(String, Option<String>),
+    PluginDialogControlEvent(String, String, Option<ocs_plugin_api::dialog::DialogValue>),
     // ── Plugin dock panels ─────────────────────────────────────────────────
     PluginPanelButtonClick(String, String, Option<String>),
     PluginPanelTextChange(String, String, String),
@@ -4175,6 +4123,7 @@ pub enum Message {
     PluginPanelChoiceSelect(String, String, usize, String),
     PluginPanelFilePick(String, String),
     PluginPanelFilePicked(String, String, Option<std::path::PathBuf>),
+    PluginPanelFileTextChange(String, String, String),
     PluginPanelTableCellChange(String, String, usize, usize, String),
     PluginPanelTableAddRow(String, String),
     PluginPanelTableRemoveRow(String, String, usize),
@@ -4186,6 +4135,19 @@ pub enum Message {
     TabSwitch(usize),
     /// Drawing tab currently under the pointer; controls integrated close affordance.
     DocTabHover(Option<usize>),
+    /// Open or close the tab bar's ☰ menu; with a tab index, also switch to
+    /// that tab (a pick from the menu).
+    DocTabMenu(bool, Option<usize>),
+    /// The pointer has rested on tab `usize` (hover generation `u64`): list
+    /// its layouts if it is still there.
+    DocTabLayoutsSettled(usize, u64),
+    /// Close a tab's layouts list.
+    DocTabLayoutsClose,
+    /// Switch to drawing tab `usize` and its layout `String`.
+    DocTabLayout(usize, String),
+    /// Run the drawing tabs across the window above the palettes (`true`)
+    /// or between the palettes, over the drawing.
+    DocTabsAboveDocks(bool),
     /// Move a drawing tab before/after another drawing tab.
     TabReorder {
         from: usize,
@@ -4249,6 +4211,7 @@ pub enum Message {
     Rename(crate::ui::window::rename::RenameMsg),
     Purge(crate::ui::window::purge::PurgeMsg),
     DwgProps(crate::ui::window::drawing_properties::DwgPropsMsg),
+    GeographicLocation(crate::ui::window::geographic_location::GeographicLocationMsg),
     /// Select Similar settings: flip one SELECTSIMILARMODE bit.
     SelectSimilarSettingsToggle(u16),
     SelectSimilarSettingsOk,
@@ -4364,6 +4327,7 @@ pub enum Message {
         filename: String,
         deps: Vec<(String, Vec<u8>)>,
         skipped: Vec<String>,
+        warnings: Vec<String>,
         result: Result<Vec<u8>, String>,
     },
     /// Retry the failed save after the other application releases the file.
@@ -4426,6 +4390,8 @@ pub enum Message {
     /// itself isn't focused (focus parked on viewport / button / etc.)
     /// so typing still routes to the command line.
     CommandAppendChar(String),
+    /// A character key went up: ends a held Shift+letter override.
+    HeldOverrideRelease,
     /// Pop the trailing character off the command-line input — backspace
     /// counterpart to `CommandAppendChar`.
     CommandBackspace,
@@ -4479,6 +4445,8 @@ pub enum Message {
     CommandHistoryHeightReset,
     /// Start dragging the Layer Manager's Name-column divider.
     LayerNameColGrab,
+    /// Start dragging the divider after a Layer Manager column.
+    LayerColGrab(crate::ui::window::layers::LayerSortCol),
     /// Open or close the Layer Manager's column chooser.
     LayerColumnsMenu(bool),
     /// Show or hide a Layer Manager column.
@@ -4773,6 +4741,7 @@ pub enum Message {
     /// Frame pulse while a coalesced pointer move is owed an answer; runs the
     /// full pass at the position the gate withheld.
     MoveCoalesceTick,
+    BoxPreviewTick,
     /// Large projected interaction index finished preparing off the UI thread.
     InteractionIndexReady {
         tab_id: u64,
@@ -4899,6 +4868,12 @@ pub enum Message {
     ScaleRenameCommit,
     /// Delete the selected scale.
     ScaleManagerDelete,
+    /// The delete question: drop the picked scales not in use, or not.
+    ScaleManagerDeleteChoice(bool),
+    /// Opens the Edit card on the picked scale.
+    ScaleManagerEdit,
+    /// Closes the Edit / Add card without a change.
+    ScaleManagerEditCancel,
     /// Set the selected scale as the current annotation scale.
     ScaleManagerSetCurrent,
     /// Apply the editor fields to the selected scale (rename / re-ratio).
@@ -5230,6 +5205,8 @@ pub enum Message {
     PropGroupToggle(String),
     /// Toggle an entire Properties-panel section, keyed by its title.
     PropSectionToggle(String),
+    /// Select a Properties row by pressing its name, keyed `section/name`.
+    PropRowSelect(String),
     /// Toggle an editable-dropdown row's option list open/closed, by field.
     PropEditChoiceToggle(&'static str),
     /// User is typing in a block-attribute value field (live buffer update),
@@ -5514,6 +5491,9 @@ pub enum Message {
     ModalDragMove(Point),
     /// Title-bar released: stop dragging.
     ModalDragRelease,
+    MTextToolbarGrab,
+    MTextToolbarMove(Point),
+    MTextToolbarRelease,
     AboutCopyInfo,
     // ── Plugin Manager window ───────────────────────────────────────────
     PluginManagerOpen,
@@ -5669,6 +5649,7 @@ pub enum Message {
     MTextRectWidthField(String),
     /// A ruler drag: the width while it moves, `None` when it ends.
     MTextBoxDrag(Option<f64>),
+    MTextHeightDrag(Option<f64>),
     /// Column layout controls.
     MTextColumnMode(String),
     MTextColumnCount(String),
@@ -6014,6 +5995,11 @@ pub enum Message {
     },
     /// Commit edits to the selected text style.
     TextStyleApply,
+    /// The text style window's cards: New, a refused name, Delete, a style
+    /// in use, unsaved changes.
+    TextStyleCard(crate::ui::style::textstyle::CardMsg),
+    /// A right click on a text style: select it and show its actions.
+    TextStyleContext(String),
     /// The font picker: open, search or pick a stroke or TrueType font.
     TextStyleFont(crate::ui::font_picker::FontPickerEvent),
     /// The big font picker: open, search or pick a double-byte SHX font.
@@ -6105,15 +6091,8 @@ pub enum Message {
     MlStyleElementDelete(usize),
     // ── MLeaderStyle Dialog ───────────────────────────────────────────────
     MLeaderStyleDialogOpen,
-    #[allow(dead_code)]
-    MLeaderStyleDialogClose,
-    MLeaderStyleDialogSelect(String),
-    MLeaderStyleDialogTab(u8),
-    MLeaderStyleDialogCompare(String),
-    MLeaderStyleDialogSetCurrent,
-    MLeaderStyleDialogNew,
-    MLeaderStyleDialogCopy,
-    MLeaderStyleDialogDelete,
+    /// The manager's list, faces and choosers.
+    MLeaderStyleDlg(crate::ui::style::mleaderstyle::MlsMsg),
     MLeaderStyleEdit {
         field: &'static str,
         value: String,
@@ -6132,38 +6111,10 @@ pub enum Message {
         field: &'static str,
         value: String,
     },
-    MLeaderStyleApply,
     // ── DimStyle Dialog ───────────────────────────────────────────────────
     DimStyleDialogOpen,
-    DimStyleDialogClose,
-    /// Apply edits to the selected style.
-    DimStyleDialogApply,
-    /// Select a different style in the dialog list.
-    DimStyleDialogSelect(String),
-    /// Switch the active tab.
-    DimStyleDialogTab(u8),
-    /// Change the style used by the comparison summary.
-    DimStyleDialogCompare(String),
-    /// Create a new empty style (prompts via command line).
-    DimStyleDialogNew,
-    DimStyleDialogCopy,
-    /// Set the selected style as the document's current dim style.
-    DimStyleDialogSetCurrent,
-    /// Delete the selected style.
-    DimStyleDialogDelete,
-    // Field edit messages:
-    DsEdit(DsField, String),
-    DsToggle(DsField),
-    /// Select the mutually-exclusive tolerance presentation.
-    DsToleranceMode(String),
-    /// Change the feet/inches mode in a zero-suppression bit field.
-    DsZeroBase(DsField, i16),
-    /// Toggle leading/trailing suppression in a zero-suppression bit field.
-    DsZeroFlag(DsField, i16),
-    /// Select no center mark, a mark, or centerlines.
-    DsCenterMarkMode(String),
-    /// Toggle the expanded colour palette for a DimStyle colour field.
-    DsColorMore(DsField),
+    /// Interaction in the dimension style window.
+    DimStyleDlg(crate::ui::style::dimstyle::DsMsg),
     /// Open the shared CAD colour picker for a field and its current colour.
     OpenColorWindow(ColorPickTarget, AcadColor),
     /// Interaction inside the Select Color panel.
@@ -6176,12 +6127,6 @@ pub enum Message {
     /// An `.acb` file was read (and, on desktop, copied into the first
     /// colour book folder).
     ColorBookLoaded(Result<crate::ui::color_select::book::ColorBook, String>),
-    /// Set a block/linetype Handle field on the selected dim style from a
-    /// dropdown of available block-records / linetypes (by name).
-    DsSetHandle {
-        field: &'static str,
-        value: String,
-    },
     // ── Raster Image ──────────────────────────────────────────────────────
     /// Open file-picker dialog for IMAGE command (async).
     ImagePick,
@@ -6224,6 +6169,7 @@ pub enum Message {
     DimInspect(crate::ui::window::dim_inspect_dialog::DimInspectMsg),
     /// An edit in a picked table cell window (Cell Borders, Cell Contents).
     TableCellDialog(crate::ui::window::table_cell_dialog::TableCellDialogMsg),
+    AnnoScalePrompt(crate::ui::window::anno_scale_prompt::AnnoScaleMsg),
     HyperlinkDialog(crate::ui::window::hyperlink_dialog::HyperlinkMsg),
     /// Check Spelling window.
     Spell(crate::ui::window::spell_dialog::SpellMsg),
@@ -6235,6 +6181,8 @@ pub enum Message {
     Laywalk(crate::ui::window::layer_walk::LayerWalkMsg),
     /// The QuickCalc pallet.
     QuickCalc(crate::ui::window::quick_calc::QuickCalcMsg),
+    /// The Assistant pallet.
+    Assistant(crate::ui::window::assistant::AssistantMsg),
     SheetSet(crate::ui::window::sheet_set::SheetSetMsg),
     ToolPalettes(crate::ui::window::tool_palettes::ToolPalettesMsg),
     PdfImportPickResult(Result<(std::path::PathBuf, std::sync::Arc<Vec<u8>>), String>),
@@ -6328,6 +6276,10 @@ pub enum Message {
     DataExtractionSave(String),
     /// Path chosen (or None = cancelled).
     DataExtractionSaveResult(String, Option<std::path::PathBuf>),
+    /// ATTOUT text and the picked output file.
+    AttOutSave(String, Option<std::path::PathBuf>),
+    /// ATTIN file contents, `None` when the picker was cancelled.
+    AttInPicked(Option<String>),
     // ── STL export ────────────────────────────────────────────────────────
     /// Trigger STL export: collect meshes and show save dialog.
     StlExport,
@@ -6356,7 +6308,7 @@ pub enum Message {
     ObjImportFinished(
         u64,
         std::path::PathBuf,
-        Result<crate::scene::model::mesh_model::MeshModel, String>,
+        Result<Vec<document::entities::mesh::Mesh>, String>,
     ),
     /// An edit in the Import File or DGN Import window.
     ImportDialog(crate::ui::window::import_dialogs::ImportDialogMsg),
@@ -6406,6 +6358,9 @@ impl OpenCADStudio {
             tabs: vec![start_tab],
             active_tab: 0,
             hovered_doc_tab: None,
+            doc_tab_menu: false,
+            doc_tab_layouts: None,
+            doc_tab_hover_gen: 0,
             tab_counter: 0,
             ribbon: Ribbon::new(),
             // Populated from the consolidated config after construction
@@ -6478,6 +6433,7 @@ impl OpenCADStudio {
             block_edit_picker: None,
             rename_dialog: None,
             drawing_properties: None,
+            geographic_location: None,
             purge_dialog: None,
             purge_only: None,
             select_similar_settings: None,
@@ -6509,6 +6465,7 @@ impl OpenCADStudio {
             table_cell_contents: None,
             table_cell_block: None,
             table_cell_format: None,
+            anno_scale_prompt: None,
             table_cell_warning: None,
             table_cell_entry: None,
             table_cell_entry_typed: false,
@@ -6716,6 +6673,9 @@ impl OpenCADStudio {
             grip_preview_handles: Vec::new(),
             hover_dwell: None,
             move_owed: None,
+            box_preview_pending: None,
+            box_preview_due: None,
+            box_preview_cache: None,
             move_pass_due: None,
             #[cfg(test)]
             move_pass_cost_for_test: None,
@@ -6777,6 +6737,7 @@ impl OpenCADStudio {
             pc_manager: Default::default(),
             count_palette: Default::default(),
             quick_calc: Default::default(),
+            assistant: Default::default(),
             sheet_set: Default::default(),
             sheet_set_pending_layout: None,
             sheet_set_import_parent: None,
@@ -6806,11 +6767,14 @@ impl OpenCADStudio {
             dock_edge_menu_y: None,
             dock_strip_pointer_y: 0.0,
             dock_grip_hover: None,
+            dock_grip_lit: None,
+            dock_grip_gen: 0,
             dock_icon_hover: None,
             xref_col_drag: None,
             xref_col_last: None,
             xref_split_drag: false,
             show_file_tabs: true,
+            file_tabs_above_docks: false,
             show_layout_tabs: true,
             last_point: None,
             vp_snap_frame: None,
@@ -6873,6 +6837,8 @@ impl OpenCADStudio {
             modal_drag_last: None,
             modal_dragging: false,
             layer_name_col_w: 130.0,
+            layer_col_w: std::collections::HashMap::new(),
+            layer_walk_col_w: crate::ui::window::layer_walk::DEFAULT_COL_W,
             modal_resize: iced::Vector::ZERO,
             modal_content_size: None,
             modal_resizing: false,
@@ -6884,6 +6850,8 @@ impl OpenCADStudio {
             disabled_plugins: rustc_hash::FxHashSet::default(),
             #[cfg(not(target_arch = "wasm32"))]
             last_plugin_selection: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            selection_revision_by_tab: rustc_hash::FxHashMap::default(),
             #[cfg(not(target_arch = "wasm32"))]
             last_plugin_document: None,
             external_plugins: Vec::new(),
@@ -6910,6 +6878,7 @@ impl OpenCADStudio {
             check_missing_fonts: true,
             font_source_url: String::new(),
             qnew_template: String::new(),
+            transmittal_layout: crate::io::transmit::TransmittalLayout::Structured,
             start_templates: None,
             font_source_input: String::new(),
             donation_prompt_version: String::new(),
@@ -6931,6 +6900,7 @@ impl OpenCADStudio {
             pending_command_editor_text: None,
             text_inline: None,
             snap_override_popup: None,
+            held_override: None,
             axis_lock_dir: None,
             angle_override: None,
             drag_move: None,
@@ -7048,6 +7018,10 @@ impl OpenCADStudio {
             scale_manager_paper_buf: String::new(),
             scale_manager_drawing_buf: String::new(),
             scale_rename: None,
+            scale_edit_adding: false,
+            scale_edit_error: None,
+            scale_manager_multi: Vec::new(),
+            scale_delete_asking: false,
             anno_object_scale_target: None,
             anno_object_scale_extra: Vec::new(),
             anno_object_scale: Default::default(),
@@ -7070,6 +7044,7 @@ impl OpenCADStudio {
             style_rename_buf: String::new(),
             style_rename_kind: None,
             style_stage: None,
+            style_parent_stage: None,
             style_import: None,
             textstyle_selected: "Standard".to_string(),
             textstyle_counts: Default::default(),
@@ -7077,6 +7052,8 @@ impl OpenCADStudio {
             textstyle_sample: String::new(),
             textstyle_compare: String::new(),
             textstyle_draft: Default::default(),
+            textstyle_card: None,
+            textstyle_context: None,
             textstyle_font_picker: Default::default(),
             textstyle_bigfont_picker: Default::default(),
             textstyle_users: Default::default(),
@@ -7113,8 +7090,7 @@ impl OpenCADStudio {
             mln_elements: Vec::new(),
             // MLeaderStyle dialog
             mleaderstyle_selected: "Standard".to_string(),
-            mleaderstyle_tab: 0,
-            mleaderstyle_compare: String::new(),
+            mls: Default::default(),
             mls_color_open: None,
             mls_landing_distance: String::new(),
             mls_landing_gap: String::new(),
@@ -7122,97 +7098,17 @@ impl OpenCADStudio {
             mls_text_height: String::new(),
             mls_scale_factor: String::new(),
             mls_break_gap: String::new(),
-            mls_first_seg_angle: String::new(),
-            mls_second_seg_angle: String::new(),
             mls_max_points: String::new(),
             mls_default_text: String::new(),
             mls_line_color: String::new(),
             mls_text_color: String::new(),
-            mls_description: String::new(),
-            mls_align_space: String::new(),
             mls_block_color: String::new(),
-            mls_block_rotation: String::new(),
-            mls_block_scale_x: String::new(),
-            mls_block_scale_y: String::new(),
-            mls_block_scale_z: String::new(),
+            mls_block_scale: String::new(),
             // DimStyle dialog
             dimstyle_selected: "Standard".to_string(),
-            dimstyle_user_arrow: None,
+            dsd: Default::default(),
             viewport_switch_keeps_command: false,
             chspace_pending: None,
-            ds_color_open: None,
-            dimstyle_tab: 0,
-            dimstyle_compare: String::new(),
-            ds_dimdle: "0".to_string(),
-            ds_dimdli: "3.75".to_string(),
-            ds_dimgap: "0.625".to_string(),
-            ds_dimexe: "1.25".to_string(),
-            ds_dimexo: "0.625".to_string(),
-            ds_dimsd1: false,
-            ds_dimsd2: false,
-            ds_dimse1: false,
-            ds_dimse2: false,
-            ds_dimasz: "0.18".to_string(),
-            ds_dimcen: "0.09".to_string(),
-            ds_dimtsz: "0".to_string(),
-            ds_dimtxt: "0.18".to_string(),
-            ds_dimtxsty: "Standard".to_string(),
-            ds_dimtad: "1".to_string(),
-            ds_dimtih: false,
-            ds_dimtoh: false,
-            ds_dimscale: "1".to_string(),
-            ds_dimlfac: "1".to_string(),
-            ds_dimlunit: "2".to_string(),
-            ds_dimdec: "2".to_string(),
-            ds_dimpost: "<>".to_string(),
-            ds_dimtol: false,
-            ds_dimlim: false,
-            ds_dimtp: "0".to_string(),
-            ds_dimtm: "0".to_string(),
-            ds_dimtdec: "2".to_string(),
-            ds_dimtfac: "1".to_string(),
-            ds_annotative: false,
-            ds_dimclrd: "0".to_string(),
-            ds_dimlwd: "-2".to_string(),
-            ds_dimclre: "0".to_string(),
-            ds_dimlwe: "-2".to_string(),
-            ds_dimfxl: "1".to_string(),
-            ds_dimfxlon: false,
-            ds_dimsah: false,
-            ds_dimarcsym: "0".to_string(),
-            ds_dimjogang: "45".to_string(),
-            ds_dimclrt: "0".to_string(),
-            ds_dimjust: "0".to_string(),
-            ds_dimtvp: "0".to_string(),
-            ds_dimtfill: "0".to_string(),
-            ds_dimtfillclr: "0".to_string(),
-            ds_dimtxtdirection: false,
-            ds_dimatfit: "3".to_string(),
-            ds_dimtix: false,
-            ds_dimsoxd: false,
-            ds_dimtmove: "0".to_string(),
-            ds_dimupt: false,
-            ds_dimtofl: false,
-            ds_dimfit: "3".to_string(),
-            ds_dimdsep: "46".to_string(),
-            ds_dimrnd: "0".to_string(),
-            ds_dimzin: "0".to_string(),
-            ds_dimfrac: "0".to_string(),
-            ds_dimaunit: "0".to_string(),
-            ds_dimadec: "0".to_string(),
-            ds_dimunit: "2".to_string(),
-            ds_dimazin: "0".to_string(),
-            ds_dimalt: false,
-            ds_dimaltf: "25.4".to_string(),
-            ds_dimaltd: "2".to_string(),
-            ds_dimaltu: "2".to_string(),
-            ds_dimalttd: "2".to_string(),
-            ds_dimaltrnd: "0".to_string(),
-            ds_dimapost: String::new(),
-            ds_dimaltz: "0".to_string(),
-            ds_dimalttz: "0".to_string(),
-            ds_dimtolj: "1".to_string(),
-            ds_dimtzin: "0".to_string(),
         };
         crate::sys::startup_times::mark("App::new: struct built");
         // Restore the consolidated user config (settings.json) into live state
@@ -7274,12 +7170,282 @@ impl OpenCADStudio {
         id
     }
 
-    /// Open a declarative plugin modal dialog.
+    /// Open a declarative plugin modal dialog on the currently active tab.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn open_plugin_dialog(&mut self, def: ocs_plugin_api::dialog::DialogDef) {
-        self.plugin_dialog_state = Some(crate::ui::window::plugin_dialog::PluginDialogState::new(
-            def,
-        ));
+        let tab = self.active_tab;
+        self.open_plugin_dialog_on_tab(tab, def, None);
+    }
+
+    /// Open a declarative plugin modal dialog associated with `tab` and an optional `explicit_plugin_id`.
+    pub(crate) fn open_plugin_dialog_on_tab(
+        &mut self,
+        tab: usize,
+        def: ocs_plugin_api::dialog::DialogDef,
+        explicit_plugin_id: Option<String>,
+    ) {
+        let (tab_id, plugin_id, command_id) = if let Some(t) = self.tabs.get(tab) {
+            let pid = explicit_plugin_id.or_else(|| {
+                t.active_cmd
+                    .as_ref()
+                    .and_then(|c| c.owner_plugin_id().map(str::to_string))
+            });
+            let cid = t.active_cmd.as_ref().and_then(|c| c.plugin_command_id());
+            (Some(t.id), pid, cid)
+        } else {
+            (None, explicit_plugin_id, None)
+        };
+        self.plugin_dialog_state = Some(
+            crate::ui::window::plugin_dialog::PluginDialogState::new(def)
+                .with_owner(tab_id, plugin_id, command_id),
+        );
         self.active_modal = Some(ModalKind::PluginDialog);
+    }
+
+    /// Resolve the tab index that owns the currently open plugin dialog, falling back to `active_tab`.
+    pub(crate) fn dialog_target_tab_index(&self) -> usize {
+        if let Some(tid) = self.plugin_dialog_state.as_ref().and_then(|s| s.tab_id) {
+            if let Some(idx) = self.tabs.iter().position(|t| t.id == tid) {
+                return idx;
+            }
+        }
+        self.active_tab
+    }
+
+    /// Apply queued `(panel_or_dialog_id, values)` updates from `take_pending_panel_updates`
+    /// to matching registered panels or the currently open modal dialog.
+    pub(crate) fn apply_panel_or_dialog_updates(
+        &mut self,
+        updates: Vec<(
+            String,
+            std::collections::HashMap<String, ocs_plugin_api::dialog::DialogValue>,
+        )>,
+    ) {
+        for (target_id, values) in updates {
+            if let Some(panel) = self.plugin_panels.get_mut(&target_id) {
+                panel.update_values(values);
+                continue;
+            }
+            let lower = target_id.to_lowercase();
+            if let Some((_, panel)) = self
+                .plugin_panels
+                .iter_mut()
+                .find(|(k, _)| k.to_lowercase() == lower)
+            {
+                panel.update_values(values);
+                continue;
+            }
+            if let Some(state) = &mut self.plugin_dialog_state {
+                if target_id.is_empty()
+                    || state.def.title == target_id
+                    || state.def.title.eq_ignore_ascii_case(&target_id)
+                {
+                    state.update_values(values);
+                }
+            }
+        }
+    }
+
+    /// Update control values in an active modal dialog in-place.
+    #[allow(dead_code)]
+    pub fn update_dialog(
+        &mut self,
+        values: std::collections::HashMap<String, ocs_plugin_api::dialog::DialogValue>,
+    ) -> bool {
+        if let Some(state) = &mut self.plugin_dialog_state {
+            state.update_values(values);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Dispatch a reactive action event from an open plugin modal dialog to the owning command/plugin.
+    pub(crate) fn dispatch_plugin_dialog_action(
+        &mut self,
+        control_id: String,
+        action: String,
+        value: Option<ocs_plugin_api::dialog::DialogValue>,
+    ) -> Task<Message> {
+        let tab_idx = self.dialog_target_tab_index();
+        let (action_resp, panel_updates, fallback_notify) =
+            if let Some(state) = &self.plugin_dialog_state {
+                let current_values = state.collect_response_map();
+                let dialog_title = state.def.title.clone();
+                let owner_plugin_id = state.plugin_id.clone();
+                let owner_command_id = state.command_id;
+                let event = ocs_plugin_api::dialog::DialogEvent {
+                    control_id: control_id.clone(),
+                    action: action.clone(),
+                    value: value.clone(),
+                    current_values: current_values.clone(),
+                };
+                if let Some(cmd) = self
+                    .tabs
+                    .get_mut(tab_idx)
+                    .and_then(|t| t.active_cmd.as_mut())
+                {
+                    let resp = cmd.on_dialog_action(event);
+                    let updates = cmd.take_pending_panel_updates();
+                    (
+                        Some(resp),
+                        updates,
+                        Some((
+                            dialog_title,
+                            owner_plugin_id,
+                            owner_command_id,
+                            current_values,
+                        )),
+                    )
+                } else {
+                    (
+                        None,
+                        Vec::new(),
+                        Some((
+                            dialog_title,
+                            owner_plugin_id,
+                            owner_command_id,
+                            current_values,
+                        )),
+                    )
+                }
+            } else {
+                (None, Vec::new(), None)
+            };
+
+        self.apply_panel_or_dialog_updates(panel_updates);
+
+        match action_resp {
+            Some(ocs_plugin_api::dialog::DialogActionResponse::UpdateValues(values)) => {
+                if let Some(state) = &mut self.plugin_dialog_state {
+                    state.update_values(values);
+                }
+            }
+            Some(ocs_plugin_api::dialog::DialogActionResponse::ReplaceDialog(new_def)) => {
+                if let Some(state) = &mut self.plugin_dialog_state {
+                    let tab_id = state.tab_id;
+                    let plugin_id = state.plugin_id.clone();
+                    let command_id = state.command_id;
+                    *state = crate::ui::window::plugin_dialog::PluginDialogState::new(*new_def)
+                        .with_owner(tab_id, plugin_id, command_id);
+                }
+            }
+            Some(ocs_plugin_api::dialog::DialogActionResponse::Submit) => {
+                return self.on_plugin_dialog_submit();
+            }
+            Some(ocs_plugin_api::dialog::DialogActionResponse::Close) => {
+                return self.on_plugin_dialog_cancel();
+            }
+            Some(ocs_plugin_api::dialog::DialogActionResponse::None) | None => {
+                if let Some((dialog_title, owner_plugin_id, owner_command_id, mut current_vals)) =
+                    fallback_notify
+                {
+                    if let Some(v) = value {
+                        current_vals.insert("__event_value__".to_string(), v);
+                    }
+                    crate::plugin::v4_support::publish_panel_action_to_plugin(
+                        owner_plugin_id.as_deref(),
+                        owner_command_id,
+                        dialog_title,
+                        control_id,
+                        action,
+                        Some(ocs_plugin_api::dialog::DialogValue::Fields(current_vals)),
+                    );
+                }
+            }
+        }
+        Task::none()
+    }
+
+    pub(crate) fn on_plugin_dialog_submit(&mut self) -> Task<Message> {
+        let tab_idx = self.dialog_target_tab_index();
+        let owner_plugin_id = self
+            .plugin_dialog_state
+            .as_ref()
+            .and_then(|s| s.plugin_id.clone());
+        let response = if let Some(state) = &self.plugin_dialog_state {
+            state.collect_response()
+        } else {
+            ocs_plugin_api::dialog::DialogResponse::Cancelled
+        };
+        self.close_active_modal();
+
+        let (cmd_result, next_dialog, panel_updates) = if let Some(cmd) = self
+            .tabs
+            .get_mut(tab_idx)
+            .and_then(|t| t.active_cmd.as_mut())
+        {
+            let res = cmd.on_dialog_response(response);
+            let next = if matches!(
+                res,
+                crate::command::CmdResult::CommitAndExit(_)
+                    | crate::command::CmdResult::CommitEntitiesAndExit(_)
+                    | crate::command::CmdResult::Cancel
+            ) {
+                None
+            } else {
+                cmd.modal_dialog()
+            };
+            let updates = cmd.take_pending_panel_updates();
+            (Some(res), next, updates)
+        } else {
+            (None, None, Vec::new())
+        };
+
+        self.apply_panel_or_dialog_updates(panel_updates);
+
+        if let Some(def) = next_dialog {
+            self.open_plugin_dialog_on_tab(tab_idx, def, owner_plugin_id);
+        }
+
+        if let Some(res) = cmd_result {
+            self.apply_cmd_result(res)
+        } else {
+            Task::none()
+        }
+    }
+
+    pub(crate) fn on_plugin_dialog_cancel(&mut self) -> Task<Message> {
+        let tab_idx = self.dialog_target_tab_index();
+        let owner_plugin_id = self
+            .plugin_dialog_state
+            .as_ref()
+            .and_then(|s| s.plugin_id.clone());
+        self.close_active_modal();
+
+        let (cmd_result, next_dialog, panel_updates) = if let Some(cmd) = self
+            .tabs
+            .get_mut(tab_idx)
+            .and_then(|t| t.active_cmd.as_mut())
+        {
+            let res = cmd.on_dialog_response(ocs_plugin_api::dialog::DialogResponse::Cancelled);
+            let next = if matches!(
+                res,
+                crate::command::CmdResult::CommitAndExit(_)
+                    | crate::command::CmdResult::CommitEntitiesAndExit(_)
+                    | crate::command::CmdResult::Cancel
+            ) {
+                None
+            } else {
+                cmd.modal_dialog()
+            };
+            let updates = cmd.take_pending_panel_updates();
+            (Some(res), next, updates)
+        } else {
+            (None, None, Vec::new())
+        };
+
+        self.apply_panel_or_dialog_updates(panel_updates);
+
+        if let Some(def) = next_dialog {
+            self.open_plugin_dialog_on_tab(tab_idx, def, owner_plugin_id);
+        }
+
+        if let Some(res) = cmd_result {
+            self.apply_cmd_result(res)
+        } else {
+            Task::none()
+        }
     }
 
     /// Install `cmd` as the active interactive command for tab `tab`.
@@ -7290,11 +7456,24 @@ impl OpenCADStudio {
         cmd: Box<dyn crate::command::CadCommand>,
     ) {
         let dialog = cmd.modal_dialog();
+        let owner_pid = cmd.owner_plugin_id().map(str::to_string);
+        let cmd_id = cmd.plugin_command_id();
+        let tab_id = self.tabs.get(tab).map(|t| t.id);
         if let Some(t) = self.tabs.get_mut(tab) {
             t.active_cmd = Some(cmd);
         }
         if let Some(dialog_def) = dialog {
-            self.open_plugin_dialog(dialog_def);
+            self.open_plugin_dialog_on_tab(tab, dialog_def, owner_pid);
+        } else if let Some(state) = &mut self.plugin_dialog_state {
+            if state.tab_id.is_none() {
+                state.tab_id = tab_id;
+            }
+            if state.plugin_id.is_none() {
+                state.plugin_id = owner_pid;
+            }
+            if state.command_id.is_none() {
+                state.command_id = cmd_id;
+            }
         }
     }
 
@@ -7517,14 +7696,22 @@ impl OpenCADStudio {
     fn boot_web() -> (Self, Task<Message>) {
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut s = Self::new();
+        let embed_mode = crate::io::host_bridge::is_embed_mode();
+        if embed_mode {
+            s.donation_prompt_version = env!("OCS_APP_VERSION").to_string();
+            s.control.automation_seen = true;
+            s.control.enabled = crate::io::host_bridge::is_automation_allowed();
+            crate::io::host_bridge::install();
+        }
         // A web host that intends to automate can opt in before the first
         // control request by setting `opencadstudio.automation` to "1" in
         // localStorage (the same pre-load mechanism the settings use): the
         // startup donation prompt then never queues (#1349).
-        if web_sys::window()
-            .and_then(|window| window.local_storage().ok().flatten())
-            .and_then(|storage| storage.get_item("opencadstudio.automation").ok().flatten())
-            == Some("1".to_string())
+        if !embed_mode
+            && web_sys::window()
+                .and_then(|window| window.local_storage().ok().flatten())
+                .and_then(|storage| storage.get_item("opencadstudio.automation").ok().flatten())
+                == Some("1".to_string())
         {
             s.control.automation_seen = true;
         }
@@ -7546,13 +7733,21 @@ impl OpenCADStudio {
             crate::discussions::fetch_discussions_web(),
             Message::DiscussionsFetched,
         );
-        let thumbs_fetch = s.refresh_recent_thumbs();
+        let thumbs_fetch = if embed_mode {
+            Task::none()
+        } else {
+            s.refresh_recent_thumbs()
+        };
         // Crash-recovery scan: OPFS snapshots newer than a drawing's last
         // saved copy come back as a restore prompt (stale ones are deleted).
-        let autosave_scan = Task::perform(
-            crate::io::web_autosave::scan(),
-            Message::WebAutosavesScanned,
-        );
+        let autosave_scan = if embed_mode {
+            Task::none()
+        } else {
+            Task::perform(
+                crate::io::web_autosave::scan(),
+                Message::WebAutosavesScanned,
+            )
+        };
         // URL deep link (`?file=…`): a shareable/embeddable link that opens a
         // drawing at boot. An http(s) URL is fetched with the same capped
         // streaming reader the remote-image fetch uses and handed to the
@@ -7562,9 +7757,13 @@ impl OpenCADStudio {
         // same scheme gate the image fetch applies. Pure parsing/validation
         // lives in `io::web_link` and is unit-tested there.
         let deep_link: Task<Message> = {
-            let search = web_sys::window()
-                .and_then(|window| window.location().search().ok())
-                .unwrap_or_default();
+            let search = if embed_mode {
+                String::new()
+            } else {
+                web_sys::window()
+                    .and_then(|window| window.location().search().ok())
+                    .unwrap_or_default()
+            };
             match crate::io::web_link::parse_link(&search) {
                 crate::io::web_link::ParsedLink::Target(target) => {
                     // Opening a URL from the query string is an implicit trust
@@ -7683,13 +7882,15 @@ pub fn run_web() -> iced::Result {
     // Best-effort, fire-and-forget: ask the browser not to evict the origin's
     // storage under pressure — settings (localStorage) and the OPFS recent
     // copies / autosave snapshots live there. A denial changes nothing.
-    wasm_bindgen_futures::spawn_local(async {
-        if let Some(window) = web_sys::window() {
-            if let Ok(promise) = window.navigator().storage().persist() {
-                let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    if !crate::io::host_bridge::is_embed_mode() {
+        wasm_bindgen_futures::spawn_local(async {
+            if let Some(window) = web_sys::window() {
+                if let Ok(promise) = window.navigator().storage().persist() {
+                    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+                }
             }
-        }
-    });
+        });
+    }
     iced::application(
         OpenCADStudio::boot_web,
         OpenCADStudio::update_root,

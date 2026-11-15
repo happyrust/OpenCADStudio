@@ -78,6 +78,20 @@ impl CadCommand for RayCommand {
         }
     }
 
+    // Through points are drawn from the start point, so ortho / polar keep
+    // measuring from it rather than from the last through point (#2984).
+    fn on_point_with_tangent(
+        &mut self,
+        pt: DVec3,
+        _tangent: Option<crate::command::TangentObject>,
+    ) -> Option<CmdResult> {
+        Some(self.on_point(pt))
+    }
+
+    fn resolved_anchor(&self) -> Option<DVec3> {
+        self.base
+    }
+
     fn on_enter(&mut self) -> CmdResult {
         CmdResult::Cancel
     }
@@ -103,6 +117,7 @@ impl CadCommand for RayCommand {
             plot_visible: true,
             fill_is_3d: false,
             fill_is_2d_solid: false,
+            solid_normal: None,
             render_instance: None,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
@@ -305,6 +320,23 @@ impl CadCommand for XLineCommand {
         }
     }
 
+    // A point or bisect xline passes through its root, so ortho / polar
+    // keep measuring from it rather than from the last through point (#2984).
+    fn on_point_with_tangent(
+        &mut self,
+        pt: DVec3,
+        _tangent: Option<crate::command::TangentObject>,
+    ) -> Option<CmdResult> {
+        Some(self.on_point(pt))
+    }
+
+    fn resolved_anchor(&self) -> Option<DVec3> {
+        match self.mode {
+            XLineMode::Points | XLineMode::Bisect if self.value_origin.is_none() => self.base,
+            _ => None,
+        }
+    }
+
     fn set_working_plane(&mut self, plane: WorkingPlane) {
         self.plane = plane;
     }
@@ -446,6 +478,7 @@ impl CadCommand for XLineCommand {
             plot_visible: true,
             fill_is_3d: false,
             fill_is_2d_solid: false,
+            solid_normal: None,
             render_instance: None,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),

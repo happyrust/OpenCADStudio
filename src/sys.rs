@@ -1,6 +1,7 @@
 // Small platform shims for things the desktop build does natively but the web
 // (wasm) build must handle differently or skip.
 
+pub mod clipboard_link;
 pub mod startup_times;
 pub mod ui_font;
 
@@ -135,6 +136,10 @@ thread_local! {
 pub fn set_unsaved_changes_warning(active: bool) {
     use wasm_bindgen::JsCast;
 
+    if crate::io::host_bridge::is_embed_mode() {
+        crate::io::host_bridge::emit_dirty(active);
+        return;
+    }
     let Some(window) = web_sys::window() else {
         return;
     };

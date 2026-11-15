@@ -62,7 +62,7 @@ fn is_dgn(path: &str) -> bool {
     crate::scene::model::underlay_vector::dgn_import_models(path)
         .and_then(|models| models.into_iter().next())
         .is_some_and(|model| {
-            crate::scene::model::underlay_vector::dgn_import(path, &model).is_some()
+            crate::scene::model::underlay_vector::dgn_import(path, &model, None).is_some()
         })
 }
 
@@ -74,6 +74,7 @@ enum Route {
     Wmf,
     Svg,
     Tds,
+    Obj,
 }
 
 /// The importer for `path` chosen as `format` (an index of [`FORMATS`]; `None`
@@ -87,6 +88,10 @@ fn route(path: &str, format: Option<usize>) -> Result<Route, String> {
     }
     let ext = extension(path);
     let by_extension = f.is_none_or(|f| f.support == Support::ByExtension);
+    // Wavefront OBJ is not among the listed types; All Files still reads it.
+    if by_extension && ext == "obj" {
+        return Ok(Route::Obj);
+    }
     // The chosen format, or the one whose patterns name the extension.
     let named = if by_extension {
         FORMATS
@@ -201,7 +206,10 @@ impl OpenCADStudio {
     pub(in crate::app) fn open_dgn_import_dialog(&mut self, path: &str) -> Result<(), String> {
         use crate::scene::model::underlay_vector::{dgn_import, dgn_import_models};
         let models = dgn_import_models(path).unwrap_or_default();
-        let Some(import) = models.first().and_then(|m| dgn_import(path, m)) else {
+        let Some(import) = models
+            .first()
+            .and_then(|m| dgn_import(path, m, dgn_import::settings().code_page))
+        else {
             return Err(crate::t!("Invalid or unsupported DGN file.").into_owned());
         };
         // The options chosen last (DGNIMPORTMODE and the kept import
@@ -226,6 +234,7 @@ impl OpenCADStudio {
             prefix_duplicates: keep(|s| s.prefix_duplicates, saved.mode == 2),
             sub_units: keep(|s| s.sub_units, false),
             explode_text_nodes: keep(|s| s.explode_text_nodes, saved.explode_text_nodes),
+            code_page: previous.as_ref().map_or(saved.code_page, |s| s.code_page),
             references: previous.as_ref().map_or(saved.references, |s| s.references),
             existing_reference: previous
                 .as_ref()
@@ -289,6 +298,10 @@ impl OpenCADStudio {
                     self.command_line.push_error(&error);
                 }
                 Task::none()
+            }
+            Ok(Route::Obj) => {
+                self.remember_import(path);
+                self.on_obj_import_path_some(path.into())
             }
             Err(error) => {
                 self.command_line.push_error(&error);
@@ -426,6 +439,11 @@ impl OpenCADStudio {
                             self.command_line.push_error(&error);
                         }
                     }
+                    Ok(Route::Obj) => {
+                        self.remember_import(&path);
+                        self.close_active_modal();
+                        return self.on_obj_import_path_some(path.into());
+                    }
                 }
             }
             // ── 3D Studio Import ─────────────────────────────────────────
@@ -527,7 +545,10 @@ impl OpenCADStudio {
                 use crate::scene::model::underlay_vector::dgn_import;
                 if let Some(s) = self.import_dialogs.dgn.as_mut() {
                     if let Some(model) = s.models.get(k) {
-                        if let Some(import) = dgn_import(&s.path, &model.label) {
+                        // Re-decode the mapping rows for the page the window
+                        // chose, so the layer names match what the import uses.
+                        let code_page = s.code_page;
+                        if let Some(import) = dgn_import(&s.path, &model.label, code_page) {
                             s.mapping =
                                 [0, 1, 2, 3].map(|tab| dgn_import::mapping_rows(&import, tab));
                             s.units = import.unit_names.clone();
@@ -554,6 +575,29 @@ impl OpenCADStudio {
             ImportDialogMsg::DgnExplode(on) => {
                 if let Some(s) = self.import_dialogs.dgn.as_mut() {
                     s.explode_text_nodes = on;
+                }
+            }
+            ImportDialogMsg::DgnCodePage(label) => {
+                use crate::scene::model::underlay_vector::dgn_import;
+                if let Some(s) = self.import_dialogs.dgn.as_mut() {
+                    // The picker labels map to the page the parser takes; an
+                    // unknown label keeps the dialog as it was.
+                    let Some(code_page) =
+                        crate::modules::insert::dgn_import::code_page_from_label(&label)
+                    else {
+                        return Task::none();
+                    };
+                    s.code_page = code_page;
+                    // Re-decode the mapping rows and unit names with the new
+                    // page, the way switching models does, so the preview
+                    // layer names match the level names the import will use.
+                    if let Some(model) = s.models.get(s.model) {
+                        if let Some(import) = dgn_import(&s.path, &model.label, code_page) {
+                            s.mapping =
+                                [0, 1, 2, 3].map(|tab| dgn_import::mapping_rows(&import, tab));
+                            s.units = import.unit_names.clone();
+                        }
+                    }
                 }
             }
             ImportDialogMsg::DgnReferences(mode) => {
@@ -588,6 +632,9 @@ impl OpenCADStudio {
                     prefix_duplicates: s.prefix_duplicates,
                     references: s.references,
                     existing_reference: s.existing_reference,
+                    // The window's picker chooses the V7 text code page; it
+                    // overrides the code-page token the command line stored.
+                    code_page: s.code_page,
                 };
                 // The window's choices become DGNIMPORTMODE and the kept
                 // settings the command line imports with.
@@ -600,6 +647,7 @@ impl OpenCADStudio {
                     explode_text_nodes: s.explode_text_nodes,
                     references: s.references,
                     existing_reference: s.existing_reference,
+                    code_page: s.code_page,
                 });
                 self.save_config();
                 self.close_active_modal();
@@ -610,26 +658,54 @@ impl OpenCADStudio {
     }
 
     /// The import: into a new drawing (or the current one), one undo step;
-    /// then the model's reference attachments as the request says.
+    /// then the model's reference attachments as the request says. The GUI and
+    /// positional command keep their command-line error reporting.
     pub(in crate::app) fn run_dgn_import(
         &mut self,
         i: usize,
         request: DgnImportRequest,
     ) -> Task<Message> {
-        let Some(import) =
-            crate::scene::model::underlay_vector::dgn_import(&request.path, &request.model)
-        else {
-            self.command_line
-                .push_error(crate::t!("Invalid or unsupported DGN file.").as_ref());
-            return Task::none();
+        match self.try_run_dgn_import(i, request) {
+            Ok((task, _)) => task,
+            Err(error) => {
+                match error {
+                    dgn_import::DgnImportError::InvalidDgn => self
+                        .command_line
+                        .push_error(crate::t!("Invalid or unsupported DGN file.").as_ref()),
+                    dgn_import::DgnImportError::EmptyModel => self.command_line.push_error(
+                        crate::t!("The DGN model has nothing that can be imported.").as_ref(),
+                    ),
+                    other => {
+                        let message = other.to_string();
+                        self.command_line.push_error(&message);
+                    }
+                }
+                Task::none()
+            }
+        }
+    }
+
+    /// Fallible execution for semantic callers. On success the count is the
+    /// model's top-level converted entities, excluding block-definition members
+    /// and any reference entities attached afterwards.
+    pub(in crate::app) fn try_run_dgn_import(
+        &mut self,
+        i: usize,
+        request: DgnImportRequest,
+    ) -> Result<(Task<Message>, usize), dgn_import::DgnImportError> {
+        let Some(import) = crate::scene::model::underlay_vector::dgn_import(
+            &request.path,
+            &request.model,
+            request.code_page,
+        ) else {
+            return Err(dgn_import::DgnImportError::InvalidDgn);
         };
         let converted = dgn_import::convert(&import, request.sub_units, request.explode_text_nodes);
+        let entities = converted.entities.len();
         let no_references =
             request.references == ReferenceMode::Ignore || import.references.is_empty();
         if converted.entities.is_empty() && no_references {
-            self.command_line
-                .push_error(crate::t!("The DGN model has nothing that can be imported.").as_ref());
-            return Task::none();
+            return Err(dgn_import::DgnImportError::EmptyModel);
         }
         let mut task = Task::none();
         let i = if request.current_drawing {
@@ -672,7 +748,7 @@ impl OpenCADStudio {
         self.command_line.push_output("Regenerating model.");
         self.refresh_layer_panel();
         self.refresh_properties();
-        task
+        Ok((task, entities))
     }
 
     /// One reference attachment: its file translated to "<file>-<model>.dwg"
@@ -750,7 +826,7 @@ impl OpenCADStudio {
         // drawing, like "Do not overwrite"; add a confirmation if wanted.
         let write = !target.is_file() || request.existing_reference == ExistingReference::Overwrite;
         if write {
-            let Some(source) = dgn_import(&path, &model) else {
+            let Some(source) = dgn_import(&path, &model, request.code_page) else {
                 return;
             };
             let mut scene = crate::scene::Scene::new();
@@ -1034,4 +1110,82 @@ fn placed_dimension_text(
         }
     }
     entity
+}
+
+#[cfg(test)]
+mod dgn_dialog_tests {
+    use super::*;
+    use crate::scene::model::underlay_vector::dgn_import;
+    use crate::ui::window::pdf_dialogs::PageThumb;
+
+    fn stub_dialog() -> DgnImportState {
+        DgnImportState {
+            path: "/tmp/no-such-ocs-drawing.dgn".into(),
+            version: "V7",
+            models: vec![PageThumb {
+                label: "Default".into(),
+                image: None,
+            }],
+            model: 0,
+            current_drawing: false,
+            prefix_duplicates: false,
+            sub_units: false,
+            explode_text_nodes: false,
+            code_page: None,
+            references: crate::modules::insert::dgn_import::ReferenceMode::Translate,
+            existing_reference: crate::modules::insert::dgn_import::ExistingReference::Prompt,
+            units: ("m".into(), "mm".into()),
+            mapping_tab: 0,
+            mapping: Default::default(),
+        }
+    }
+
+    #[test]
+    fn dialog_code_page_choice_stores_the_v7_page() {
+        use crate::modules::insert::dgn_import::DgnImportSettings;
+        let _own = crate::modules::insert::dgn_import::OwnSettings::take();
+        // The checkbox must win over the stored code page for this window
+        // even when a command-line import earlier kept 1250.
+        dgn_import::set_settings(DgnImportSettings {
+            mode: 0,
+            explode_text_nodes: false,
+            references: crate::modules::insert::dgn_import::ReferenceMode::Translate,
+            existing_reference: crate::modules::insert::dgn_import::ExistingReference::Prompt,
+            code_page: Some(1250),
+        });
+        let mut app = OpenCADStudio::new_for_test();
+        app.import_dialogs.dgn = Some(stub_dialog());
+
+        let _ = app.update_import_dialog(ImportDialogMsg::DgnCodePage(
+            crate::modules::insert::dgn_import::code_page_label(None),
+        ));
+        assert_eq!(
+            app.import_dialogs.dgn.as_ref().expect("dialog").code_page,
+            None
+        );
+
+        // Unticking and importing resets the stored page to the default; the
+        // stub path only fails the import itself, after the choice is stored.
+        let _ = app.update_import_dialog(ImportDialogMsg::DgnOk);
+        assert_eq!(dgn_import::settings().code_page, None);
+
+        let mut app = OpenCADStudio::new_for_test();
+        app.import_dialogs.dgn = Some(stub_dialog());
+        let _ = app.update_import_dialog(ImportDialogMsg::DgnCodePage(
+            crate::modules::insert::dgn_import::code_page_label(Some(1250)),
+        ));
+        let _ = app.update_import_dialog(ImportDialogMsg::DgnOk);
+        assert_eq!(dgn_import::settings().code_page, Some(1250));
+        // Unpicked defaults stay the plain 1252: the label round-trips.
+        assert_eq!(
+            crate::modules::insert::dgn_import::code_page_label(None),
+            "Windows-1252 (Western, default)"
+        );
+        assert_eq!(
+            crate::modules::insert::dgn_import::code_page_from_label(
+                &crate::modules::insert::dgn_import::code_page_label(Some(1257))
+            ),
+            Some(Some(1257))
+        );
+    }
 }

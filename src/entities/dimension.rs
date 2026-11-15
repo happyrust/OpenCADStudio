@@ -5,12 +5,12 @@ use document::entities::{
 };
 use glam::{DVec3, Vec3};
 
-use crate::command::EntityTransform;
 use crate::entities::common::{
     center_grip, edit_angle_prop as edit_angle, edit_prop as edit, lineweight_label,
     lineweight_options, parse_f64, ro_prop as ro, square_grip,
 };
 use crate::entities::traits::{Grippable, PropertyEditable, Transformable};
+use crate::entities::transform::EntityTransform;
 use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::t;
 
@@ -1651,6 +1651,35 @@ use document::entities::{MText, Text};
 use document::tables::DimStyle;
 use document::types::{Color as AcadColor, Vector3};
 
+/// The style a dimension draws with: its style's family member for the
+/// dimension's type when the drawing has one (`Name$0` linear and aligned,
+/// `$2` angular, `$3` diameter, `$4` radius, `$6` ordinate), else the style
+/// itself; a dimension without a style name uses Standard.
+pub(crate) fn dimension_source_style<'a>(
+    document: &'a Document,
+    dim: &Dimension,
+) -> Option<&'a DimStyle> {
+    let name = dim.base().style_name.trim();
+    let name = if name.is_empty() { "Standard" } else { name };
+    let find = |wanted: &str| {
+        document
+            .dim_styles
+            .iter()
+            .find(|style| style.name.eq_ignore_ascii_case(wanted))
+    };
+    let suffix = match dim {
+        Dimension::Linear(_) | Dimension::Aligned(_) => Some("$0"),
+        Dimension::Angular2Ln(_) | Dimension::Angular3Pt(_) => Some("$2"),
+        Dimension::Diameter(_) => Some("$3"),
+        Dimension::Radius(_) | Dimension::LargeRadial(_) => Some("$4"),
+        Dimension::Ordinate(_) => Some("$6"),
+        _ => None,
+    };
+    suffix
+        .and_then(|suffix| find(&format!("{name}{suffix}")))
+        .or_else(|| find(name))
+}
+
 pub(crate) fn resolved_dimension_style(
     source: &DimStyle,
     dimension: &Dimension,
@@ -1660,123 +1689,8 @@ pub(crate) fn resolved_dimension_style(
 
     let mut style = source.clone();
     let data = &dimension.base().common.extended_data;
-    macro_rules! real {
-        ($field:ident, $code:ident) => {
-            if let Some(value) = ov::real(data, ov::$code) {
-                style.$field = value;
-            }
-        };
-    }
-    macro_rules! int {
-        ($field:ident, $code:ident) => {
-            if let Some(value) = ov::int(data, ov::$code) {
-                style.$field = value;
-            }
-        };
-    }
-    macro_rules! flag {
-        ($field:ident, $code:ident) => {
-            if let Some(value) = ov::int(data, ov::$code) {
-                style.$field = value != 0;
-            }
-        };
-    }
-    macro_rules! handle {
-        ($field:ident, $code:ident) => {
-            if let Some(value) = ov::handle(data, ov::$code) {
-                style.$field = value;
-            }
-        };
-    }
-
-    real!(dimscale, DIMSCALE);
-    real!(dimasz, DIMASZ);
-    real!(dimexo, DIMEXO);
-    real!(dimdli, DIMDLI);
-    real!(dimexe, DIMEXE);
-    real!(dimrnd, DIMRND);
-    real!(dimdle, DIMDLE);
-    real!(dimtp, DIMTP);
-    real!(dimtm, DIMTM);
-    real!(dimfxl, DIMFXL);
-    real!(dimjogang, DIMJOGANG);
-    real!(dimtxt, DIMTXT);
-    real!(dimcen, DIMCEN);
-    real!(dimtsz, DIMTSZ);
-    real!(dimaltf, DIMALTF);
-    real!(dimlfac, DIMLFAC);
-    real!(dimtvp, DIMTVP);
-    real!(dimtfac, DIMTFAC);
-    real!(dimgap, DIMGAP);
-    real!(dimaltrnd, DIMALTRND);
-    real!(dimaltmzf, DIMALTMZF);
-    real!(dimmzf, DIMMZF);
-    flag!(dimtol, DIMTOL);
-    flag!(dimlim, DIMLIM);
-    flag!(dimtih, DIMTIH);
-    flag!(dimtoh, DIMTOH);
-    flag!(dimse1, DIMSE1);
-    flag!(dimse2, DIMSE2);
-    flag!(dimalt, DIMALT);
-    flag!(dimtofl, DIMTOFL);
-    flag!(dimsah, DIMSAH);
-    flag!(dimtix, DIMTIX);
-    flag!(dimsoxd, DIMSOXD);
-    flag!(dimsd1, DIMSD1);
-    flag!(dimsd2, DIMSD2);
-    flag!(dimupt, DIMUPT);
-    flag!(dimfxlon, DIMFXLON);
-    flag!(dimtxtdirection, DIMTXTDIRECTION);
-    int!(dimzin, DIMZIN);
-    int!(dimtad, DIMTAD);
-    int!(dimazin, DIMAZIN);
-    int!(dimarcsym, DIMARCSYM);
-    int!(dimclrd, DIMCLRD);
-    int!(dimclre, DIMCLRE);
-    int!(dimclrt, DIMCLRT);
-    int!(dimadec, DIMADEC);
-    int!(dimaltd, DIMALTD);
-    int!(dimdec, DIMDEC);
-    int!(dimtdec, DIMTDEC);
-    int!(dimaltu, DIMALTU);
-    int!(dimalttd, DIMALTTD);
-    int!(dimaunit, DIMAUNIT);
-    int!(dimfrac, DIMFRAC);
-    int!(dimlunit, DIMLUNIT);
-    int!(dimdsep, DIMDSEP);
-    int!(dimtmove, DIMTMOVE);
-    int!(dimjust, DIMJUST);
-    int!(dimtolj, DIMTOLJ);
-    int!(dimtzin, DIMTZIN);
-    int!(dimaltz, DIMALTZ);
-    int!(dimalttz, DIMALTTZ);
-    int!(dimatfit, DIMATFIT);
-    int!(dimtfill, DIMTFILL);
-    int!(dimtfillclr, DIMTFILLCLR);
-    int!(dimlwd, DIMLWD);
-    int!(dimlwe, DIMLWE);
-    handle!(dimldrblk, DIMLDRBLK);
-    handle!(dimblk, DIMBLK);
-    handle!(dimblk1, DIMBLK1);
-    handle!(dimblk2, DIMBLK2);
-    handle!(dimltex_handle, DIMLTYPE);
-    handle!(dimltex1_handle, DIMLTEX1);
-    handle!(dimltex2_handle, DIMLTEX2);
-
-    if let Some(value) = ov::string(data, ov::DIMPOST) {
-        style.dimpost = value;
-    }
-    if let Some(value) = ov::string(data, ov::DIMAPOST) {
-        style.dimapost = value;
-    }
-    if let Some(value) = ov::string(data, ov::DIMALTMZS) {
-        style.dimaltmzs = value;
-    }
-    if let Some(value) = ov::string(data, ov::DIMMZS) {
-        style.dimmzs = value;
-    }
+    ov::apply_pairs(&mut style, &ov::pairs(data));
     if let Some(value) = ov::handle(data, ov::DIMTXSTY) {
-        style.dimtxsty_handle = value;
         if let Some(record) = document
             .text_styles
             .iter()
@@ -1895,9 +1809,9 @@ pub fn style_sections(
             label,
             field,
             if editable {
-                PropValue::EditText(format!("{value:.4}"))
+                PropValue::EditText(crate::entities::common::format_decimal(value))
             } else {
-                PropValue::ReadOnly(format!("{value:.4}"))
+                PropValue::ReadOnly(crate::entities::common::format_decimal(value))
             },
         )
     };
@@ -2280,30 +2194,29 @@ pub fn style_sections(
                     "dim_text_inside_align",
                     on(int(ov::DIMTIH, s.dimtih as i16) == 0),
                     &["On", "Off"],
-                    dimtix
-                        || matches!(
-                            dimension,
-                            Dimension::LargeRadial(_)
-                                | Dimension::Angular2Ln(_)
-                                | Dimension::Angular3Pt(_)
-                        ),
+                    // Editable whether or not text is forced inside
+                    // (measured on a linear dimension with Text inside Off).
+                    true,
                 ),
                 property(
                     t!("Text position X").as_ref(),
                     "text_x",
-                    PropValue::EditText(format!("{:.4}", dimension.base().text_middle_point.x)),
+                    PropValue::EditText(crate::entities::common::format_decimal(
+                        dimension.base().text_middle_point.x,
+                    )),
                 ),
                 property(
                     t!("Text position Y").as_ref(),
                     "text_y",
-                    PropValue::EditText(format!("{:.4}", dimension.base().text_middle_point.y)),
+                    PropValue::EditText(crate::entities::common::format_decimal(
+                        dimension.base().text_middle_point.y,
+                    )),
                 ),
                 property(
                     t!("Text rotation").as_ref(),
                     "text_rotation",
-                    PropValue::EditText(format!(
-                        "{:.4}",
-                        dimension.base().text_rotation.to_degrees()
+                    PropValue::EditText(crate::entities::common::format_decimal(
+                        dimension.base().text_rotation.to_degrees(),
                     )),
                 ),
                 choice(
@@ -2323,9 +2236,8 @@ pub fn style_sections(
                     // The value the dimension text reports (DIMLFAC applied,
                     // including viewport compensation) — not the raw paper
                     // distance, which would disagree with what is drawn.
-                    PropValue::ReadOnly(format!(
-                        "{:.4}",
-                        displayed_measurement(dimension, Some(s))
+                    PropValue::ReadOnly(crate::entities::common::format_decimal(
+                        displayed_measurement(dimension, Some(s)),
                     )),
                 ),
                 property(
@@ -2342,6 +2254,26 @@ pub fn style_sections(
         PropSection {
             title: t!("Fit").into_owned(),
             props: vec![
+                choice(
+                    t!("Dim line forced").as_ref(),
+                    "dim_line_forced",
+                    on(int(ov::DIMTOFL, s.dimtofl as i16) != 0),
+                    &["On", "Off"],
+                    true,
+                ),
+                choice(
+                    t!("Dim line inside").as_ref(),
+                    "dim_line_inside",
+                    on(int(ov::DIMSOXD, s.dimsoxd as i16) == 0),
+                    &["On", "Off"],
+                    true,
+                ),
+                number(
+                    t!("Dim scale overall").as_ref(),
+                    "dim_scale_overall",
+                    real(ov::DIMSCALE, s.dimscale),
+                    !annotative,
+                ),
                 choice(
                     t!("Fit").as_ref(),
                     "dim_fit",
@@ -2365,26 +2297,6 @@ pub fn style_sections(
                         "Move text, add leader",
                         "Move text, no leader",
                     ],
-                    true,
-                ),
-                number(
-                    t!("Dim scale overall").as_ref(),
-                    "dim_scale_overall",
-                    real(ov::DIMSCALE, s.dimscale),
-                    !annotative,
-                ),
-                choice(
-                    t!("Dim line forced").as_ref(),
-                    "dim_line_forced",
-                    on(int(ov::DIMTOFL, s.dimtofl as i16) != 0),
-                    &["On", "Off"],
-                    true,
-                ),
-                choice(
-                    t!("Dim line inside").as_ref(),
-                    "dim_line_inside",
-                    on(int(ov::DIMSOXD, s.dimsoxd as i16) == 0),
-                    &["On", "Off"],
                     true,
                 ),
             ],
@@ -3292,13 +3204,7 @@ pub(crate) fn materialize_large_radial_text_position(
     if !matches!(&**dimension, Dimension::LargeRadial(_)) || dimension.base().text_user_positioned {
         return;
     }
-    let source = document.dim_styles.iter().find(|style| {
-        style
-            .name
-            .eq_ignore_ascii_case(&dimension.base().style_name)
-            || (dimension.base().style_name.trim().is_empty()
-                && style.name.eq_ignore_ascii_case("Standard"))
-    });
+    let source = dimension_source_style(document, dimension);
     let position = source
         .map(|style| resolved_dimension_style(style, dimension, document))
         .map(|style| styled_dimension_text_position(dimension, &style, 1.0, Some(&*document)))
@@ -3802,11 +3708,7 @@ fn tessellate_dimension_inner(
     let shifted = (origin != Vector3::ZERO).then(|| shift_dimension(dim, origin));
     let dim = shifted.as_ref().unwrap_or(dim);
 
-    let style_name = &dim.base().style_name;
-    let source_style = document.dim_styles.iter().find(|s| {
-        s.name.eq_ignore_ascii_case(style_name)
-            || (style_name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
-    });
+    let source_style = dimension_source_style(document, dim);
     let effective_style = source_style.map(|style| resolved_dimension_style(style, dim, document));
     let style = effective_style.as_ref();
 
@@ -3980,7 +3882,7 @@ fn tessellate_dimension_inner(
             flip2: dim.base().flip_arrow2,
             text_position: text_layout.position,
             horizontal_text: text_layout.horizontal,
-            text_lifted: style.map(|s| s.dimtad).unwrap_or(1) != 0,
+            text_lifted: style.map(|s| s.dimtad).unwrap_or(1) != 0 || text_splits_at_line(dim),
             text_movement,
             text_break: text_layout.break_box,
             leader_anchor: style
@@ -4042,11 +3944,18 @@ fn tessellate_dimension_inner(
         let jog_angle = style
             .map(|style| style.dimjogang as f32)
             .unwrap_or(std::f32::consts::FRAC_PI_4);
+        // The jog is as tall as the style's jog height factor times the text
+        // height: its two sides rise by tan(angle / 2) of their run.
+        let jog_height = style.map_or(1.5, |style| {
+            crate::scene::creation_style::dim_style_extras(document, style.handle).jog_height
+        }) as f32
+            * dim_txt as f32;
+        let rise = (jog_angle * 0.5).tan().abs().max(0.35);
         apply_dimension_jog(
             &mut geom.dim_lines,
             vec3_local(point_from_origin(point, origin)),
             vec3_local(dim.base().normal),
-            dim_txt as f32 * CELL_WIDTH as f32,
+            jog_height * 0.5 / rise,
             jog_angle,
         );
     }
@@ -4162,6 +4071,7 @@ fn tessellate_dimension_inner(
                     plot_visible: true,
                     fill_is_3d: false,
                     fill_is_2d_solid: false,
+                    solid_normal: None,
                     render_instance: None,
                     pick_tris: Vec::new(),
                     pick_tris_low: Vec::new(),
@@ -4200,6 +4110,7 @@ fn tessellate_dimension_inner(
                     plot_visible: true,
                     fill_is_3d: false,
                     fill_is_2d_solid: false,
+                    solid_normal: None,
                     render_instance: None,
                     pick_tris: Vec::new(),
                     pick_tris_low: Vec::new(),
@@ -4238,6 +4149,7 @@ fn tessellate_dimension_inner(
                 plot_visible: true,
                 fill_is_3d: false,
                 fill_is_2d_solid: false,
+                solid_normal: None,
                 render_instance: None,
                 pick_tris: Vec::new(),
                 pick_tris_low: Vec::new(),
@@ -4277,6 +4189,7 @@ fn tessellate_dimension_inner(
         plot_visible: true,
         fill_is_3d: false,
         fill_is_2d_solid: false,
+        solid_normal: None,
         render_instance: None,
         pick_tris: Vec::new(),
         pick_tris_low: Vec::new(),
@@ -4346,6 +4259,7 @@ fn tessellate_dimension_inner(
             plot_visible: true,
             fill_is_3d: false,
             fill_is_2d_solid: false,
+            solid_normal: None,
             render_instance: None,
             pick_tris: Vec::new(),
             pick_tris_low: Vec::new(),
@@ -4401,6 +4315,7 @@ fn tessellate_dimension_inner(
                     plot_visible: true,
                     fill_is_3d: false,
                     fill_is_2d_solid: false,
+                    solid_normal: None,
                     render_instance: None,
                     pick_tris: Vec::new(),
                     pick_tris_low: Vec::new(),
@@ -4456,6 +4371,7 @@ fn tessellate_dimension_inner(
                 plot_visible: true,
                 fill_is_3d: false,
                 fill_is_2d_solid: false,
+                solid_normal: None,
                 render_instance: None,
                 pick_tris: Vec::new(),
                 pick_tris_low: Vec::new(),
@@ -5141,6 +5057,8 @@ struct TextBreak {
     half_height: f32,
     padding: f32,
     rotation: f64,
+    /// `\X` text: the line runs between its parts, unbroken.
+    through: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -5180,6 +5098,7 @@ fn dimension_text_layout(
         half_height: dimension_text_extent_height(dimension, style, text_height) as f32 * 0.5,
         padding: gap,
         rotation: dimension_text_rotation(dimension, style),
+        through: text_splits_at_line(dimension),
     });
     let outside = dimension_text_is_outside(dimension, style);
     let horizontal =
@@ -5590,7 +5509,7 @@ fn add_segment_with_text_break(
     if length <= 1.0e-6 {
         return;
     }
-    let Some(text_break) = text_break else {
+    let Some(text_break) = text_break.filter(|text_break| !text_break.through) else {
         add_segment(points, start, end);
         return;
     };
@@ -5680,24 +5599,27 @@ fn append_linear_dimension(
 ) {
     let perp = Vec3::new(-axis.y, axis.x, 0.0);
     let dim_line_pos = def.dot(perp);
-    let offset1 = dim_line_pos - first.dot(perp);
-    let offset2 = dim_line_pos - second.dot(perp);
-    let d1 = first + perp * offset1;
-    let d2 = second + perp * offset2;
-    let sign1 = if offset1 >= 0.0 { 1.0_f32 } else { -1.0 };
-    let sign2 = if offset2 >= 0.0 { 1.0_f32 } else { -1.0 };
-
-    // ext_line_rotation (DIMEDIT "Oblique"): rotate the extension lines by
-    // this angle relative to perpendicular. The ext line still starts at
-    // the def point; only the direction differs.
-    let ext_dir = if ext_line_rotation.abs() > 1e-6 {
-        let c = ext_line_rotation.cos();
-        let s = ext_line_rotation.sin();
-        // Rotate `perp` by ext_line_rotation around Z.
-        Vec3::new(perp.x * c - perp.y * s, perp.x * s + perp.y * c, 0.0)
+    // ext_line_rotation (DIMEDIT "Oblique", DXF 52): the extension lines'
+    // angle from the X axis; 0 means none (perpendicular). Each extension
+    // line runs from its def point along that angle until it meets the
+    // dimension line, so the dimension line ends where the lines cross it.
+    let oblique = Vec3::new(ext_line_rotation.cos(), ext_line_rotation.sin(), 0.0);
+    let ext_dir = if ext_line_rotation.abs() > 1e-6 && oblique.dot(perp).abs() > 1e-3 {
+        oblique / oblique.dot(perp)
     } else {
         perp
     };
+    // `ext_dir` advances one unit of perpendicular offset per step, so the
+    // same offsets reach the dimension line; lengths below use its unit form.
+    let offset1 = dim_line_pos - first.dot(perp);
+    let offset2 = dim_line_pos - second.dot(perp);
+    let d1 = first + ext_dir * offset1;
+    let d2 = second + ext_dir * offset2;
+    let sign1 = if offset1 >= 0.0 { 1.0_f32 } else { -1.0 };
+    let sign2 = if offset2 >= 0.0 { 1.0_f32 } else { -1.0 };
+    let along1 = offset1.abs() * ext_dir.length();
+    let along2 = offset2.abs() * ext_dir.length();
+    let ext_dir = normalized_or(ext_dir, perp);
 
     // DIMFXLON / DIMFXL: fixed extension-line length from the dim line back
     // toward (but not past) the definition point. Otherwise grow from the
@@ -5707,8 +5629,8 @@ fn append_linear_dimension(
         let fxl = params.dimfxl.max(0.0);
         // Never past the DIMEXO gap at the definition point: a length longer
         // than the line itself would otherwise shoot far beyond the object.
-        let fxl1 = fxl.min((offset1.abs() - params.dimexo).max(0.0));
-        let fxl2 = fxl.min((offset2.abs() - params.dimexo).max(0.0));
+        let fxl1 = fxl.min((along1 - params.dimexo).max(0.0));
+        let fxl2 = fxl.min((along2 - params.dimexo).max(0.0));
         let s1 = d1 - ext_dir * (sign1 * fxl1);
         let e1 = d1 + ext_dir * (sign1 * params.dimexe);
         let s2 = d2 - ext_dir * (sign2 * fxl2);
@@ -6147,14 +6069,7 @@ pub(crate) fn dimension_text_break_world(
     let origin = dimension_precision_origin(dim);
     let shifted = (origin != Vector3::ZERO).then(|| shift_dimension(dim, origin));
     let local = shifted.as_ref().unwrap_or(dim);
-    let style_name = &local.base().style_name;
-    let style = document
-        .dim_styles
-        .iter()
-        .find(|s| {
-            s.name.eq_ignore_ascii_case(style_name)
-                || (style_name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
-        })
+    let style = dimension_source_style(document, local)
         .map(|style| resolved_dimension_style(style, local, document));
     let style = style.as_ref();
     let scale = style.map_or(1.0, |s| if s.dimscale > 1e-6 { s.dimscale } else { 1.0 });
@@ -6892,13 +6807,10 @@ fn dimension_text_style_name(
         .unwrap_or_else(|| dim.base().style_name.clone())
 }
 
-/// A dimension's text box as drawn — its middle point, width and height —
-/// for markers placed beside the text (ANNOMONITOR).
-pub(crate) fn text_box(dim: &Dimension, document: &Document) -> Option<(Vector3, f64, f64)> {
-    let source = document
-        .dim_styles
-        .iter()
-        .find(|style| style.name.eq_ignore_ascii_case(&dim.base().style_name))?;
+/// A dimension's text box as drawn — its middle point, width, height and
+/// reading angle — for markers placed beside the text (ANNOMONITOR).
+pub(crate) fn text_box(dim: &Dimension, document: &Document) -> Option<(Vector3, f64, f64, f64)> {
+    let source = dimension_source_style(document, dim)?;
     let style = resolved_dimension_style(source, dim, document);
     let scale = if style.dimscale > 1e-9 {
         style.dimscale
@@ -6907,7 +6819,9 @@ pub(crate) fn text_box(dim: &Dimension, document: &Document) -> Option<(Vector3,
     };
     let height = style.dimtxt * scale;
     let width = dimension_text_width(dim, Some(&style), height, Some(document));
-    Some((dim.base().text_middle_point, width, height))
+    // An automatic text point is not stored: use where the text draws.
+    let middle = stored_text_point(dim).or_else(|| automatic_text_position(document, dim))?;
+    Some((middle, width, height, dimension_text_rotation(dim, Some(&style))))
 }
 
 /// The width of a dimension's text as it draws: the extent of its ink in
@@ -7255,11 +7169,7 @@ pub(crate) fn dynamic_dimension_lock_anchor(
     dim: &Dimension,
     anno_scale: f64,
 ) -> Option<(Vector3, Vector3)> {
-    let style_name = &dim.base().style_name;
-    let source_style = document.dim_styles.iter().find(|s| {
-        s.name.eq_ignore_ascii_case(style_name)
-            || (style_name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
-    });
+    let source_style = dimension_source_style(document, dim);
     let effective_style = source_style.map(|style| resolved_dimension_style(style, dim, document));
     let style = effective_style.as_ref();
     let dim_scale = style
@@ -7411,12 +7321,34 @@ fn dimension_text_parts(
         if user_text.is_empty() || user_text.trim().is_empty() {
             return None;
         }
-        return Some((user_text.replace("<>", &primary), tolerance_suffix));
+        return Some((split_at_line(&user_text.replace("<>", &primary)), tolerance_suffix));
     }
-    if !base.text.trim().is_empty() {
-        return Some((base.text.replace("<>", &primary), tolerance_suffix));
+    // The stored text the same way: empty is the measurement, blank (" ")
+    // hides it.
+    if !base.text.is_empty() {
+        if base.text.trim().is_empty() {
+            return None;
+        }
+        return Some((split_at_line(&base.text.replace("<>", &primary)), tolerance_suffix));
     }
     Some((primary, tolerance_suffix))
+}
+
+/// The text the user typed, or the stored text when there is none.
+fn typed_text(dim: &Dimension) -> &str {
+    let base = dim.base();
+    base.user_text.as_deref().unwrap_or(&base.text)
+}
+
+/// Whether the text carries `\X`, which puts what follows below the
+/// dimension line.
+fn text_splits_at_line(dim: &Dimension) -> bool {
+    typed_text(dim).contains(r"\X")
+}
+
+/// `\X` laid out as a line break; the text is then centred on the line.
+fn split_at_line(text: &str) -> String {
+    text.replacen(r"\X", r"\P", 1)
 }
 
 /// The value the text reports. An angular dimension whose extension point
@@ -8533,11 +8465,7 @@ fn stored_text_point(dim: &Dimension) -> Option<Vector3> {
 /// extension line (DIMJUST 1/2) is measured by the glyphs of its font, not
 /// by character cells.
 pub(crate) fn automatic_text_position(document: &Document, dim: &Dimension) -> Option<Vector3> {
-    let name = &dim.base().style_name;
-    let source = document.dim_styles.iter().find(|s| {
-        s.name.eq_ignore_ascii_case(name)
-            || (name.trim().is_empty() && s.name.eq_ignore_ascii_case("Standard"))
-    })?;
+    let source = dimension_source_style(document, dim)?;
     let style = resolved_dimension_style(source, dim, document);
     let scale = if style.dimscale > 1e-6 {
         style.dimscale
@@ -8809,6 +8737,9 @@ fn dimension_text_pos_f64(
     let dimtvp = style.map(|s| s.dimtvp).unwrap_or(0.0);
     let perp_off = if dimtad == 0 {
         dimtvp * text_height
+    } else if text_splits_at_line(dim) {
+        // `\X`: the first part above the line, the rest below it.
+        0.0
     } else {
         dimension_text_extent_height(dim, style, text_height) * 0.5 + dimgap
     };
@@ -9080,14 +9011,7 @@ pub(crate) fn baked_large_radial_geometry(
     let origin = dimension_precision_origin(dimension);
     let shifted = (origin != Vector3::ZERO).then(|| shift_dimension(dimension, origin));
     let dimension = shifted.as_ref().unwrap_or(dimension);
-    let style_name = dimension.base().style_name.as_str();
-    let effective_style = document
-        .dim_styles
-        .iter()
-        .find(|style| {
-            style.name.eq_ignore_ascii_case(style_name)
-                || (style_name.trim().is_empty() && style.name.eq_ignore_ascii_case("Standard"))
-        })
+    let effective_style = dimension_source_style(document, dimension)
         .map(|style| resolved_dimension_style(style, dimension, document));
     let style = effective_style.as_ref();
     let scale = style
@@ -9247,14 +9171,7 @@ fn baked_dimension_text(
     document: &Document,
     anno_scale: f64,
 ) -> Option<(EntityType, f64)> {
-    let style_name = dim.base().style_name.as_str();
-    let effective_style = document
-        .dim_styles
-        .iter()
-        .find(|style| {
-            style.name.eq_ignore_ascii_case(style_name)
-                || (style_name.trim().is_empty() && style.name.eq_ignore_ascii_case("Standard"))
-        })
+    let effective_style = dimension_source_style(document, dim)
         .map(|style| resolved_dimension_style(style, dim, document));
     let style = effective_style.as_ref();
     let dim_scale = style
@@ -9278,11 +9195,7 @@ pub(crate) fn baked_arc_length_symbol_points(
     if !matches!(dim, Dimension::Arc(_)) {
         return Vec::new();
     }
-    let style_name = dim.base().style_name.as_str();
-    let style = document.dim_styles.iter().find(|style| {
-        style.name.eq_ignore_ascii_case(style_name)
-            || (style_name.trim().is_empty() && style.name.eq_ignore_ascii_case("Standard"))
-    });
+    let style = dimension_source_style(document, dim);
     let dim_scale = style
         .map(|style| {
             if style.dimscale > 1.0e-6 {
@@ -9720,6 +9633,7 @@ mod dimtmove_leader_tests {
                 half_height: 1.0,
                 padding: 0.0,
                 rotation: 0.0,
+                through: false,
             }),
             horizontal: true,
         }

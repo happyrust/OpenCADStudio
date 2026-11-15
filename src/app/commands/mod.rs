@@ -8,6 +8,7 @@ pub(crate) use anno_scaling::{
     anno_monitor, selection_anno_display, set_anno_monitor, set_selection_anno_display,
 };
 mod attdef;
+mod attout;
 mod attman;
 mod block_cmdline;
 mod blocks;
@@ -51,8 +52,10 @@ pub(crate) use log_file::write_line as write_log_line;
 pub(crate) use log_file::{
     log_file_folder_setting, log_file_mode, set_log_file_folder, set_log_file_mode,
 };
+mod anno_scale_prompt;
 mod hyperlink;
 pub(crate) use group_display::{group_display_mode, set_group_display_mode};
+pub(crate) use anno_scale_prompt::{annotation_scale_prompt, set_annotation_scale_prompt};
 pub(crate) use hyperlink::{hyperlink_options, set_hyperlink_options};
 mod inquiry;
 mod layerprops;
@@ -166,6 +169,7 @@ impl OpenCADStudio {
     pub(super) fn dispatch_command(&mut self, cmd: &str) -> Task<Message> {
         self.remember_selection_before_command(cmd);
         let task = self.dispatch_command_inner(cmd, false);
+        self.ask_annotation_scale_if_first();
         self.clear_idle_tool_highlight();
         task
     }
@@ -194,6 +198,9 @@ impl OpenCADStudio {
     /// part answers the running command's prompt, or starts a command when
     /// none runs (`PDFIMPORT;FILE`).
     pub(super) fn dispatch_ribbon_command(&mut self, cmd: &str) -> Task<Message> {
+        if self.mtext_editor.is_some() {
+            self.mtext_cancel();
+        }
         if !cmd.contains(';') {
             return self.dispatch_command(cmd);
         }
@@ -236,6 +243,7 @@ impl OpenCADStudio {
     /// and never get silent substitution.
     pub(super) fn dispatch_command_or_suggest(&mut self, cmd: &str) -> Task<Message> {
         let task = self.dispatch_command_inner(cmd, true);
+        self.ask_annotation_scale_if_first();
         self.clear_idle_tool_highlight();
         task
     }
@@ -850,6 +858,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_count(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_attout(cmd, i) {
+            return Some(t);
+        }
         if let Some(t) = self.dispatch_draw(cmd, i) {
             return Some(t);
         }
@@ -1032,6 +1043,7 @@ pub fn start_allowed(cmd: &str) -> bool {
             | "ABOUT"
             | "PLUGINS"
             | "PLUGINMANAGER"
+            | "APPLOAD"
             | "DONATE"
             | "WEBVERSION"
             | "HELP"
@@ -1123,6 +1135,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "LAYDEL",
         "LAYTRANS",
         "DWGUNITS",
+        "GEOGRAPHICLOCATION",
         "LAYMRG",
         "LAYERSTATE",
         "LAS",
@@ -1133,6 +1146,8 @@ inventory::submit!(crate::command::CommandRegistration {
         "QLEADER",
         // Restore the last-erased objects.
         "OOPS",
+        // Repeat the next command until it is cancelled.
+        "MULTIPLE",
         // Plan (top) view.
         "PICKADD",
         "PICKDRAG",
@@ -1229,6 +1244,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "VISUALSTYLES",
         "QUICKCALC",
         "QC",
+        "ASSISTANT",
         "COMMANDHISTORY",
         "HYPERLINK",
         "XOPEN",
@@ -1451,6 +1467,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "WINDOWAREACOLOR",
         "CROSSINGAREACOLOR",
         "SELECTIONPREVIEW",
+        "SELECTIONPREVIEWLIMIT",
         "GRIPSIZE",
         "GRIPCOLOR",
         "GRIPHOT",
@@ -1481,6 +1498,8 @@ inventory::submit!(crate::command::CommandRegistration {
         "ATTACH",
         "ATTDISP",
         "ATTEXT",
+        "ATTIN",
+        "ATTOUT",
         "BACKGROUND",
         "CDIMSTY",
         "CELTSCALE",
@@ -1547,6 +1566,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "LIST",
         "LTSCALE",
         "LWDISPLAY",
+        "LWEIGHT",
         "MASSPROP",
         "MLEADERSTYLE",
         "MLSTYLE",
@@ -1616,6 +1636,7 @@ inventory::submit!(crate::command::CommandRegistration {
         "SA",
         "SAVE",
         "SAVEAS",
+        "DXFOUT",
         "SCALETEXT",
         "SELECTALL",
         "SELECTSIMILAR",
@@ -2171,6 +2192,39 @@ mod stretch_preselection_tests {
         };
         assert_eq!(l.start, Vector3::new(0.0, 0.0, 0.0));
         assert_eq!(l.end, Vector3::new(15.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn a_crossing_window_stretches_a_wipeout_frame() {
+        let mut app = fresh();
+        let i = app.active_tab;
+        let wipeout = document::EntityType::Wipeout(document::entities::Wipeout::rectangular(
+            Vector3::new(0.0, 0.0, 0.0),
+            4.0,
+            2.0,
+        ));
+        let handle = app.tabs[i].scene.document.add_entity(wipeout).unwrap();
+        app.tabs[i].scene.select_entities(&[handle]);
+        app.tabs[i].last_crossing_window = Some(([3.0, -1.0], [5.0, 3.0]));
+
+        let _ = app.dispatch_command("STRETCH");
+        for point in [DVec3::new(4.0, 0.0, 0.0), DVec3::new(6.0, 0.0, 0.0)] {
+            let res = app.tabs[i].active_cmd.as_mut().unwrap().on_point(point);
+            let _ = app.apply_cmd_result(res);
+        }
+
+        let ent = app.tabs[i].scene.document.get_entity(handle).unwrap();
+        let document::EntityType::Wipeout(w) = ent else {
+            panic!("expected wipeout");
+        };
+        let xs: Vec<f64> = w
+            .world_boundary_vertices()
+            .iter()
+            .map(|p| (p.x * 1e6).round() / 1e6)
+            .collect();
+        assert!(xs.contains(&0.0), "left side stays: {xs:?}");
+        assert!(xs.contains(&6.0), "right side moves to x = 6: {xs:?}");
+        assert!(!xs.contains(&4.0), "no corner left at x = 4: {xs:?}");
     }
 
     #[test]

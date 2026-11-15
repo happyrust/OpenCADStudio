@@ -6,12 +6,59 @@ use std::path::{Path, PathBuf};
 
 use crate::app::settings::PaletteBlockRef;
 use crate::app::{Message, OpenCADStudio};
+use crate::command::{CadCommand, CmdResult, InputKind};
 use crate::modules::insert::insert_block::{BlockCatalog, InsertBlockCommand};
 use crate::ui::window::block_palette::{
     BlockEntry, BlockPaletteMsg, BlockPreview, ChangeHint, Item, LibraryEntry, MenuAction,
     OptionMsg, Tab,
 };
+use glam::DVec3;
 use iced::Task;
+
+/// A one-line prompt for a palette block's new name. The answer runs
+/// through the shared `RENAME` dispatcher, so the palette, the command
+/// line and plugins all re-key the definition and its references the
+/// same way.
+struct PaletteBlockRenameCommand {
+    old: String,
+}
+
+impl CadCommand for PaletteBlockRenameCommand {
+    fn name(&self) -> &'static str {
+        "BLOCKRENAME"
+    }
+
+    fn prompt(&self) -> String {
+        crate::t!("Enter new block name <%{old}>:", old = self.old.as_str()).into_owned()
+    }
+
+    fn input_kind(&self) -> InputKind {
+        InputKind::FreeText
+    }
+
+    fn wants_text_input(&self) -> bool {
+        true
+    }
+
+    fn on_text_input(&mut self, text: &str) -> Option<CmdResult> {
+        let value = text.trim();
+        if value.is_empty() {
+            return None;
+        }
+        Some(CmdResult::Dispatch(format!(
+            "RENAME BLOCK {} {value}",
+            self.old
+        )))
+    }
+
+    fn on_point(&mut self, _pt: DVec3) -> CmdResult {
+        CmdResult::NeedPoint
+    }
+
+    fn on_enter(&mut self) -> CmdResult {
+        CmdResult::Cancel
+    }
+}
 
 /// Library folders remembered in the Libraries list.
 const MAX_LIBRARIES: usize = 10;
@@ -554,6 +601,15 @@ impl OpenCADStudio {
                     self.persist_settings_if_changed();
                 }
             }
+            MenuAction::Rename => {
+                let name = item.name();
+                let i = self.active_tab;
+                self.tabs[i].active_cmd = Some(Box::new(PaletteBlockRenameCommand {
+                    old: name.clone(),
+                }));
+                self.command_line
+                    .push_info(&crate::tf!("Enter new block name <{name}>:"));
+            }
             MenuAction::Edit => {
                 let name = item.name();
                 let i = self.active_tab;
@@ -1015,7 +1071,10 @@ fn read_thumbnails(
     let read = |paths: &[PathBuf]| -> Vec<_> {
         paths
             .iter()
-            .map(|p| (p.clone(), crate::io::thumbnail::read_handle(p)))
+            .map(|p| {
+                let thumb = crate::io::thumbnail::read_handle(p).or_else(|| drawn_thumbnail(p));
+                (p.clone(), thumb)
+            })
             .collect()
     };
     #[cfg(not(target_arch = "wasm32"))]
@@ -1035,4 +1094,28 @@ fn read_thumbnails(
         let all: Vec<_> = paths.chunks(BATCH).map(read).collect();
         iced::futures::stream::iter(all)
     }
+}
+
+/// A drawing without an embedded preview (a DXF, or a DWG saved without one)
+/// shown by its model-space geometry, drawn the way block previews are.
+fn drawn_thumbnail(path: &Path) -> Option<iced::widget::image::Handle> {
+    const SIZE: usize = 128;
+    let mut scene = crate::scene::Scene::new();
+    scene.document = crate::io::load_file(path).ok()?;
+    let bgra = crate::scene::wire_thumbnail_bgra(
+        &scene.block_preview_wires("*Model_Space"),
+        SIZE,
+    )?;
+    // Bottom-up BGRA rows to top-down RGBA.
+    let rgba: Vec<u8> = bgra
+        .chunks(SIZE)
+        .rev()
+        .flatten()
+        .flat_map(|&[b, g, r, a]| [r, g, b, a])
+        .collect();
+    Some(iced::widget::image::Handle::from_rgba(
+        SIZE as u32,
+        SIZE as u32,
+        rgba,
+    ))
 }

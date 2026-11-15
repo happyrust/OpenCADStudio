@@ -2,12 +2,12 @@ use document::entities::Spline;
 use kernel::geom2d::Curve as KernelCurve;
 use kernel::space::{NurbsCurve3, Parameterization};
 
-use crate::command::EntityTransform;
 use crate::entities::common::{
     dropdown_grip, edit_prop as edit, edit_scalar_prop as edit_scalar, parse_f64, ro_prop as ro,
     round_grip, square_grip,
 };
 use crate::entities::traits::RenderConvertible;
+use crate::entities::transform::EntityTransform;
 use crate::scene::convert::acad_to_render::{RenderEntity, RenderObject};
 use crate::scene::model::object::{GripApply, GripDef, PropSection, PropValue, Property};
 use crate::t;
@@ -93,15 +93,15 @@ pub(crate) fn nurbs3(spline: &Spline) -> Option<NurbsCurve3> {
 /// `n + 1` knots. Returns the same curve as a plain NURBS: the first
 /// `degree` points repeat at the end and the knots run one period further
 /// on both sides. `None` for every other spline.
-fn unwrapped_periodic(spline: &Spline) -> Option<(Vec<[f64; 3]>, Vec<f64>, Vec<f64>)> {
+pub(crate) fn unwrapped_periodic(spline: &Spline) -> Option<(Vec<[f64; 3]>, Vec<f64>, Vec<f64>)> {
     let degree = usize::try_from(spline.degree).ok()?;
     let n = spline.control_points.len();
     let knots = &spline.knots;
-    if !spline.flags.periodic || degree == 0 || n <= degree || knots.len() != n + 1 {
+    if !spline.flags.periodic || degree == 0 || n < degree || knots.len() != n + 1 {
         return None;
     }
     let period = knots[n] - knots[0];
-    if !(period > 0.0) {
+    if !period.is_finite() || period <= 0.0 {
         return None;
     }
     let weight = |i: usize| spline.weights.get(i % n).copied().unwrap_or(1.0);
@@ -453,6 +453,12 @@ pub(crate) fn measurement_polyline(spl: &Spline) -> Vec<[f64; 3]> {
         } else {
             fit_spline_polyline(spl)
         };
+    }
+
+    if let Some((points, knots, weights)) = unwrapped_periodic(spl) {
+        if let Some(curve) = NurbsCurve3::new_strict(spl.degree as usize, points, knots, weights) {
+            return curve.tessellate_angle(kernel::tessellation::DEFAULT_ANGLE);
+        }
     }
 
     let count = spl.control_points.len();

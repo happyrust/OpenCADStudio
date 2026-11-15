@@ -431,6 +431,12 @@ mod windows_impl {
             "OpenCADStudio.PID",
             "Smart P&ID Drawing (read-only import)",
         )?;
+        // Backups keep the system's generic icon so they stand apart from the
+        // drawings next to them (#2875).
+        let bak_icon = wide(r"Software\Classes\OpenCADStudio.BAK\DefaultIcon");
+        unsafe {
+            RegDeleteTreeW(HKEY_CURRENT_USER, bak_icon.as_ptr());
+        }
         // Also offer the ProgIDs in each extension's Open-with list.
         set_string(
             r"Software\Classes\.dwg\OpenWithProgids",

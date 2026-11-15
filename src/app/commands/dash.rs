@@ -6,6 +6,13 @@
 
 use super::*;
 use crate::command::{PromptAnswers, PromptFlow, PromptStep, ScriptPromptCommand};
+
+/// A translated line without Fluent's isolation marks around its values.
+macro_rules! trp {
+    ($($arg:tt)*) => {
+        crate::i18n::plain(crate::tr!($($arg)*))
+    };
+}
 use crate::io::xref_model::wildcard_match;
 
 /// Run a flow written as straight-line prompts (`?` returns the step).
@@ -349,88 +356,172 @@ fn purge_flow() -> PromptFlow {
 #[derive(Clone)]
 struct StyleDefaults {
     name: String,
+    /// The font as the font prompt offers it: the TrueType family, or the
+    /// SHX file (with its big font after a comma).
     font: String,
     height: f64,
     width: f64,
     oblique: f64,
+    annotative: bool,
+    orientation: bool,
+    /// The font is a TrueType family.
+    true_type: bool,
 }
 
-fn style_flow(current: String, styles: Vec<StyleDefaults>) -> PromptFlow {
+/// What -STYLE knows before it asks: the styles, the fonts it can find and
+/// the drawing's precisions.
+#[derive(Clone)]
+struct StyleFlowContext {
+    current: String,
+    styles: Vec<StyleDefaults>,
+    /// The fonts a typed name is looked up in (lower case): stroke font
+    /// stems and TrueType families.
+    fonts: Vec<String>,
+    angle_places: usize,
+}
+
+/// `name` names a font -STYLE can use: a known stroke font (with or without
+/// `.shx`, a big font after a comma) or an installed TrueType family or file.
+fn style_font_available(fonts: &[String], name: &str) -> bool {
+    let font = name.split(',').next().unwrap_or("").trim().to_ascii_lowercase();
+    let stem = font
+        .strip_suffix(".shx")
+        .or_else(|| font.strip_suffix(".ttf"))
+        .unwrap_or(&font);
+    !stem.is_empty() && fonts.iter().any(|known| known == stem || *known == font)
+}
+
+/// A Yes/No answer whose refusal is "Yes or No, please."
+fn style_yes_no(q: &mut PromptAnswers, prompt: String, default: bool) -> Result<bool, PromptStep> {
+    match q.yes_no(prompt, default) {
+        Err(PromptStep::Retry(_)) => Err(PromptStep::Retry("Yes or No, please.")),
+        other => other,
+    }
+}
+
+fn style_flow(context: StyleFlowContext) -> PromptFlow {
     flow(move |q| {
+        let current = &context.current;
         let name = q.text(
-            crate::t!(
-                "-STYLE  Enter name of text style or [?] <%{name}>:",
-                name = current
-            )
-            .into_owned(),
+            trp!("text-style", "cmd-name", name = current.clone()),
             Some(current.clone()),
         )?;
         if name == "?" {
-            return Ok(PromptStep::Run("STYLE LIST".into()));
+            let pattern = q.text(trp!("text-style", "cmd-list"), Some("*".into()))?;
+            return run("-STYLE", &["?", &pattern]);
         }
-        let base = styles
+        let existing = context
+            .styles
             .iter()
             .find(|style| style.name.eq_ignore_ascii_case(&name))
-            .or_else(|| styles.iter().find(|style| style.name == current))
-            .cloned()
-            .unwrap_or(StyleDefaults {
-                name: String::new(),
-                font: "txt.shx".into(),
-                height: 0.0,
-                width: 1.0,
-                oblique: 0.0,
-            });
+            .cloned();
+        let base = existing.clone().unwrap_or(StyleDefaults {
+            name: String::new(),
+            font: "txt".into(),
+            height: 0.0,
+            width: 1.0,
+            oblique: 0.0,
+            annotative: false,
+            orientation: false,
+            true_type: false,
+        });
+        // The name's answer: a new style, or an existing one with its
+        // TrueType face named.
+        let info = match &existing {
+            None => trp!("text-style", "info-new"),
+            Some(style) if style.true_type => format!(
+                "{}{}",
+                trp!("text-style", "info-existing"),
+                trp!("text-style", "info-full-font", font = style.font.clone())
+            ),
+            Some(_) => trp!("text-style", "info-existing"),
+        };
         let font = q.text(
-            crate::t!(
-                "-STYLE  Specify full font name or font filename (TTF or SHX) <%{font}>:",
-                font = base.font
-            )
-            .into_owned(),
+            format!(
+                "{info}
+{}",
+                trp!("text-style", "cmd-font", font = base.font.clone())
+            ),
             Some(base.font.clone()),
         )?;
-        let height = q.number(
-            crate::t!(
-                "-STYLE  Specify height of text <%{value}>:",
-                value = base.height
-            )
-            .into_owned(),
-            base.height,
+        if !style_font_available(&context.fonts, &font) {
+            return run("-STYLE", &["FONT_MISSING"]);
+        }
+        // Annotative is an option of the height prompt, which is asked again
+        // after it.
+        let mut annotative = base.annotative;
+        let mut orientation = base.orientation;
+        let height = loop {
+            let answer = q.text(
+                trp!("text-style", "cmd-height", value = format!("{:.4}", base.height)),
+                Some(base.height.to_string()),
+            )?;
+            let answer = answer.trim();
+            if answer.eq_ignore_ascii_case("A") || answer.eq_ignore_ascii_case("ANNOTATIVE") {
+                annotative = style_yes_no(q, trp!("text-style", "cmd-annotative"), true)?;
+                orientation = annotative
+                    && style_yes_no(q, trp!("text-style", "cmd-orientation"), false)?;
+                continue;
+            }
+            match answer.parse::<f64>().ok().filter(|v| v.is_finite()) {
+                None => {
+                    return Err(PromptStep::Retry(
+                        "Requires numeric distance, two points, or option keyword.",
+                    ))
+                }
+                Some(value) if value < 0.0 => {
+                    return Err(PromptStep::Retry("Value must be positive."))
+                }
+                Some(value) => break value,
+            }
+        };
+        let width = q.text(
+            trp!("text-style", "cmd-width", value = format!("{:.4}", base.width)),
+            Some(base.width.to_string()),
         )?;
-        let width = q.number(
-            crate::t!(
-                "-STYLE  Specify width factor <%{value}>:",
-                value = base.width
-            )
-            .into_owned(),
-            base.width,
+        let width = match width.trim().parse::<f64>().ok().filter(|v| v.is_finite()) {
+            None => return Err(PromptStep::Retry("Requires numeric value.")),
+            Some(value) if value <= 0.0 => {
+                return Err(PromptStep::Retry("Value must be positive and nonzero."))
+            }
+            Some(value) if !(0.01..=100.0).contains(&value) => {
+                return Err(PromptStep::Retry("Width factor out of range (0.01 to 100.0)."))
+            }
+            Some(value) => value,
+        };
+        let oblique = q.text(
+            trp!(
+                "text-style",
+                "cmd-oblique",
+                value = format!("{:.*}", context.angle_places, base.oblique)
+            ),
+            Some(base.oblique.to_string()),
         )?;
-        let oblique = q.number(
-            crate::t!(
-                "-STYLE  Specify obliquing angle <%{value}>:",
-                value = base.oblique
-            )
-            .into_owned(),
-            base.oblique,
-        )?;
-        let backwards = q.yes_no(
+        let oblique = match oblique.trim().parse::<f64>().ok().filter(|v| v.is_finite()) {
+            None => return Err(PromptStep::Retry("Requires valid numeric angle or two points.")),
+            Some(value) if value.abs() > 85.0 => {
+                return Err(PromptStep::Retry("Obliquing angle too large."))
+            }
+            Some(value) => value,
+        };
+        let backwards = style_yes_no(
+            q,
             crate::t!("-STYLE  Display text backwards? [Yes/No] <No>:").into_owned(),
             false,
         )?;
-        let upside_down = q.yes_no(
+        let upside_down = style_yes_no(
+            q,
             crate::t!("-STYLE  Display text upside-down? [Yes/No] <No>:").into_owned(),
             false,
         )?;
         // Only shape fonts can stand vertically, so only they ask.
         let vertical = shape_font(&font)
-            && q.yes_no(
-                crate::t!("-STYLE  Vertically? [Yes/No] <No>:").into_owned(),
-                false,
-            )?;
+            && style_yes_no(q, trp!("text-style", "cmd-vertical"), false)?;
         let flag = |on: bool| if on { "Y" } else { "N" };
         run(
             "-STYLE",
             &[
-                &name,
+                existing.as_ref().map_or(name.trim(), |style| style.name.as_str()),
                 &font,
                 &height.to_string(),
                 &width.to_string(),
@@ -438,23 +529,26 @@ fn style_flow(current: String, styles: Vec<StyleDefaults>) -> PromptFlow {
                 flag(backwards),
                 flag(upside_down),
                 flag(vertical),
+                flag(annotative),
+                flag(orientation),
             ],
         )
     })
 }
 
-/// A font named without an extension is a shape font (`romans` →
-/// `romans.shx`), as a reference script expects.
 fn shape_font(font: &str) -> bool {
-    let lower = font.to_ascii_lowercase();
-    lower.ends_with(".shx") || !lower.contains('.')
+    let font = font.split(',').next().unwrap_or("").trim();
+    matches!(
+        crate::ui::font_picker::FontChoice::of_name(font),
+        crate::ui::font_picker::FontChoice::Stroke(_)
+    ) || (!font.contains('.') && !crate::scene::text::sysfont::has_family(font))
 }
 
 fn dimstyle_flow(current: String, existing: Vec<String>) -> PromptFlow {
     flow(move |q| {
         let option = q.keyword(
             crate::t!(
-                "-DIMSTYLE  Enter a dimension style option [ANnotative/Save/Restore/STatus/Variables/Compare/Apply/?] <Restore>:"
+                "-DIMSTYLE  Enter a dimension style option [ANnotative/Save/Restore/STatus/Variables/Compare/Rename/Delete/Apply/?] <Restore>:"
             )
             .into_owned(),
             Some("RESTORE"),
@@ -465,6 +559,8 @@ fn dimstyle_flow(current: String, existing: Vec<String>) -> PromptFlow {
                 ("STatus", "STATUS"),
                 ("Variables", "VARIABLES"),
                 ("Compare", "COMPARE"),
+                ("Rename", "RENAME"),
+                ("Delete", "DELETE"),
                 ("Apply", "APPLY"),
                 ("?", "?"),
             ],
@@ -540,6 +636,40 @@ fn dimstyle_flow(current: String, existing: Vec<String>) -> PromptFlow {
                 )?;
                 if name == "?" {
                     return run("-DIMSTYLE", &["?", "*"]);
+                }
+                run("-DIMSTYLE", &[option, &name])
+            }
+            "RENAME" => {
+                let old = q.text(
+                    crate::t!("-DIMSTYLE  Enter the dimension style name to rename:")
+                        .into_owned(),
+                    None,
+                )?;
+                if old == "?" {
+                    return run("-DIMSTYLE", &["?", "*"]);
+                }
+                let new_name = q.text(
+                    crate::t!("-DIMSTYLE  Enter the new name for the style:")
+                        .into_owned(),
+                    None,
+                )?;
+                run("-DIMSTYLE", &[option, &old, &new_name])
+            }
+            "DELETE" => {
+                let name = q.text(
+                    crate::t!("-DIMSTYLE  Enter the dimension style name to delete:")
+                        .into_owned(),
+                    None,
+                )?;
+                if name == "?" {
+                    return run("-DIMSTYLE", &["?", "*"]);
+                }
+                if !q.yes_no(
+                    crate::tf!("-DIMSTYLE  Delete style '{}'? [Yes/No] <No>:", name)
+                        .into_owned(),
+                    false,
+                )? {
+                    return Ok(PromptStep::Finish);
                 }
                 run("-DIMSTYLE", &[option, &name])
             }
@@ -957,20 +1087,48 @@ impl OpenCADStudio {
                     .filter(|style| !style.name.is_empty())
                     .map(|style| StyleDefaults {
                         name: style.name.clone(),
-                        font: if style.font_file.is_empty() {
-                            style.true_type_font.clone()
-                        } else {
+                        font: if !style.true_type_font.trim().is_empty() {
+                            style.true_type_font.trim().to_string()
+                        } else if style.big_font_file.trim().is_empty() {
                             style.font_file.clone()
+                        } else {
+                            format!("{},{}", style.font_file, style.big_font_file)
                         },
                         height: style.height,
                         width: style.width_factor,
                         oblique: style.oblique_angle.to_degrees(),
+                        annotative: style.annotative,
+                        true_type: !style.true_type_font.trim().is_empty(),
+                        orientation: crate::scene::annotative::text_style_orientation(
+                            doc,
+                            style.handle,
+                        ),
                     })
                     .collect();
-                let current = doc.header.current_text_style_name.clone();
+                let fonts = crate::ui::font_picker::catalogue(doc, false)
+                    .into_iter()
+                    .filter(|entry| entry.missing.is_none())
+                    .map(|entry| match entry.choice {
+                        crate::ui::font_picker::FontChoice::Stroke(file) => {
+                            let file = file.to_ascii_lowercase();
+                            file.strip_suffix(".shx").unwrap_or(&file).to_string()
+                        }
+                        crate::ui::font_picker::FontChoice::TrueType(family) => {
+                            family.to_ascii_lowercase()
+                        }
+                        crate::ui::font_picker::FontChoice::StyleDefault => String::new(),
+                    })
+                    .filter(|name| !name.is_empty())
+                    .collect();
+                let context = StyleFlowContext {
+                    current: doc.header.current_text_style_name.clone(),
+                    styles,
+                    fonts,
+                    angle_places: doc.header.angular_unit_precision.clamp(0, 8) as usize,
+                };
                 start(
                     self,
-                    ScriptPromptCommand::new("-STYLE", style_flow(current, styles)),
+                    ScriptPromptCommand::new("-STYLE", style_flow(context)),
                 );
             }
             "-STYLE" => self.dash_style(i, &args),
@@ -1344,8 +1502,7 @@ impl OpenCADStudio {
 
     fn finish_linetype_change(&mut self, i: usize, names: &[String]) {
         self.tabs[i].dirty = true;
-        self.tabs[i].scene.invalidate_layer_dependencies(names);
-        self.tabs[i].scene.bump_geometry();
+        self.tabs[i].scene.invalidate_linetype_dependencies(names);
         self.sync_ribbon_layers();
         self.sync_ribbon_from_selection();
     }
@@ -1398,7 +1555,8 @@ impl OpenCADStudio {
             }
             "NEW" => self.create_layers(i, &arg(1)),
             "RENAME" => {
-                return self.dispatch_command(&format!("RENAME LAYER {} {}", arg(1), arg(2)))
+                // Direct call: a name with spaces must not be re-split as text.
+                self.rename_named_object(i, "LAYER", &arg(1), &arg(2));
             }
             "COLOR" => {
                 let names = self.listed_layers(i, &arg(2));
@@ -1542,37 +1700,166 @@ impl OpenCADStudio {
     }
 
     fn dash_style(&mut self, i: usize, args: &[String]) {
-        let [name, font, height, width, oblique, backwards, upside_down, vertical] =
-            std::array::from_fn(|n| args.get(n).cloned().unwrap_or_default());
-        let undo = self.begin_text_style_undo(i, "STYLE", std::slice::from_ref(&name));
+        let arg = |n: usize| args.get(n).cloned().unwrap_or_default();
+        // A style is set with ten arguments; the list and the missing font
+        // take fewer, so no style name is mistaken for them.
+        match (arg(0).as_str(), args.len()) {
+            ("?", 2 | 3) => {
+                self.list_text_styles(i, &arg(1), arg(2).parse().unwrap_or(0));
+                return;
+            }
+            ("FONT_MISSING", 1) => {
+                self.command_line
+                    .push_output(&trp!("text-style", "font-missing"));
+                return;
+            }
+            _ => {}
+        }
+        let [name, font, height, width, oblique, backwards, upside_down, vertical, annotative, orientation] =
+            std::array::from_fn(|n| arg(n));
+        // The style, its orientation flag and the current style are one undo
+        // step.
+        let before = self.capture_style_state(false);
+        let dirty_before = self.tabs[i].dirty;
         let doc = &mut self.tabs[i].scene.document;
         if doc.text_styles.get(&name).is_none() {
             let mut style = document::tables::TextStyle::new(&name);
             style.handle = doc.allocate_handle();
             let _ = doc.text_styles.add(style);
         }
+        let mut handle = document::Handle::NULL;
         if let Some(style) = doc.text_styles.get_mut(&name) {
-            let font = if font.contains('.') {
-                font
-            } else {
-                format!("{font}.shx")
+            handle = style.handle;
+            // The font as the dialog sets it: a TrueType family keeps its
+            // face file, a stroke font its SHX file and big font.
+            let mut draft = crate::app::text_style_draft::TextStyleDraft::load(style);
+            let (main, big) = match font.split_once(',') {
+                Some((main, big)) => (main.trim(), Some(big.trim())),
+                None => (font.trim(), None),
             };
+            match crate::ui::font_picker::FontChoice::of_name(main) {
+                crate::ui::font_picker::FontChoice::TrueType(family)
+                    if !shape_font(main) =>
+                {
+                    draft.pick_system_font(
+                        crate::scene::text::sysfont::canonical_family_name(&family)
+                            .unwrap_or(family),
+                    )
+                }
+                _ => {
+                    draft.pick_stroke_font(crate::ui::font_picker::stroke_file(main));
+                    draft.style.big_font_file = big
+                        .filter(|big| !big.is_empty())
+                        .map(crate::ui::font_picker::stroke_file)
+                        .unwrap_or_default();
+                }
+            }
+            *style = draft.resolved();
             style.is_shape_file = false;
-            style.true_type_font.clear();
-            style.font_file = font;
             style.height = height.parse().unwrap_or(0.0);
             style.width_factor = width.parse().unwrap_or(1.0);
             style.oblique_angle = oblique.parse::<f64>().unwrap_or(0.0).to_radians();
             style.flags.backward = backwards == "Y";
             style.flags.upside_down = upside_down == "Y";
             style.is_vertical = vertical == "Y";
+            style.annotative = annotative == "Y";
         }
+        crate::scene::annotative::set_text_style_orientation(
+            doc,
+            handle,
+            annotative == "Y" && orientation == "Y",
+        );
+        doc.header.current_text_style_name = name.clone();
         self.tabs[i].dirty = true;
         self.tabs[i].scene.invalidate_text_style_dependencies(&name);
-        self.commit_text_style_undo(i, undo);
+        let after = self.capture_style_state(false);
+        self.commit_style_undo(i, before, after, Vec::new(), dirty_before, None);
         let _ = self.on_ribbon_style_changed(crate::modules::StyleKey::TextStyle, name.clone());
         self.command_line
-            .push_output(crate::tf!("{} is now the current text style.", name).as_ref());
+            .push_output(&trp!("text-style", "now-current", name = name));
+    }
+
+    /// -STYLE `?`: the styles matching `pattern`, then the current style,
+    /// from line `from` on. The list stops every 22 lines (even inside a
+    /// style's lines) at "Press ENTER to continue:", whose answer lists on.
+    fn list_text_styles(&mut self, i: usize, pattern: &str, from: usize) {
+        let doc = &self.tabs[i].scene.document;
+        let mut styles: Vec<&document::tables::TextStyle> = doc
+            .text_styles
+            .iter()
+            .filter(|style| !style.name.is_empty() && listed(&style.name, pattern))
+            .collect();
+        styles.sort_by_key(|style| style.name.to_lowercase());
+        let mut lines = vec![trp!("text-style", "list-title")];
+        for style in styles {
+            let head = trp!("text-style", "list-name", name = style.name.clone());
+            let pad = 26usize.saturating_sub(head.chars().count()).max(2);
+            let font = if style.true_type_font.trim().is_empty() {
+                let files = if style.big_font_file.trim().is_empty() {
+                    style.font_file.clone()
+                } else {
+                    format!("{}, {}", style.font_file, style.big_font_file)
+                };
+                trp!("text-style", "list-files", files = files)
+            } else {
+                trp!(
+                    "text-style",
+                    "list-typeface",
+                    face = style.true_type_font.trim().to_string()
+                )
+            };
+            lines.push(format!("{head}{}{font}", " ".repeat(pad)));
+            let places = doc.header.angular_unit_precision.clamp(0, 8) as usize;
+            lines.push(trp!(
+                "text-style",
+                "list-values",
+                height = format!("{:.4}", style.height),
+                width = format!("{:.4}", style.width_factor),
+                oblique = format!("{:.*}", places, style.oblique_angle.to_degrees())
+            ));
+            let mut generation = Vec::new();
+            if style.flags.backward {
+                generation.push(trp!("text-style", "gen-backwards"));
+            }
+            if style.flags.upside_down {
+                generation.push(trp!("text-style", "gen-upside-down"));
+            }
+            if style.is_vertical {
+                generation.push(trp!("text-style", "gen-vertical"));
+            }
+            if generation.is_empty() {
+                generation.push(trp!("text-style", "gen-normal"));
+            }
+            lines.push(trp!(
+                "text-style",
+                "list-generation",
+                generation = generation.join(", ")
+            ));
+        }
+        lines.push(trp!(
+            "text-style",
+            "current",
+            name = doc.header.current_text_style_name.clone()
+        ));
+        const PAGE: usize = 22;
+        let end = (from + PAGE).min(lines.len());
+        for line in lines.get(from..end).unwrap_or_default() {
+            self.command_line.push_output(line);
+        }
+        if end < lines.len() {
+            let pattern = pattern.to_string();
+            let next = end.to_string();
+            let command = ScriptPromptCommand::new(
+                "-STYLE",
+                flow(move |q| {
+                    q.text(trp!("text-style", "cmd-press-enter"), Some(String::new()))?;
+                    run("-STYLE", &["?", &pattern, &next])
+                }),
+            );
+            self.command_line.push_info(&command.prompt());
+            self.command_line.set_step_options(command.options());
+            self.tabs[i].active_cmd = Some(Box::new(command));
+        }
     }
 
     /// "Current dimension style: X   Annotative: No".
@@ -1725,27 +2012,186 @@ impl OpenCADStudio {
                         .push_error(crate::tf!("DIMSTYLE: '{}' not found.", name).as_ref()),
                 }
             }
+            "RENAME" => {
+                let new_name = arg(2);
+                if new_name.trim().is_empty() {
+                    self.command_line.push_info(
+                        crate::t!("Usage: -DIMSTYLE RENAME <old> <new>").as_ref(),
+                    );
+                    return;
+                }
+                let Some(old_name) = self
+                    .tabs[i]
+                    .scene
+                    .document
+                    .dim_styles
+                    .iter()
+                    .find(|style| style.name.eq_ignore_ascii_case(&name))
+                    .map(|style| style.name.clone())
+                else {
+                    self.command_line.push_error(
+                        crate::tf!("DIMSTYLE: '{}' not found.", name).as_ref(),
+                    );
+                    return;
+                };
+                if self
+                    .tabs[i]
+                    .scene
+                    .document
+                    .dim_styles
+                    .iter()
+                    .any(|style| style.name.eq_ignore_ascii_case(&new_name))
+                {
+                    self.command_line.push_error(
+                        crate::tf!("DIMSTYLE: '{}' is already in use.", new_name).as_ref(),
+                    );
+                    return;
+                }
+                // Whole-document snapshot: the table rekey and the restyle of
+                // the dimensions using the style land in one undo step.
+                self.push_undo_snapshot(i, "DIMSTYLE RENAME");
+                match self
+                    .tabs[i]
+                    .scene
+                    .document
+                    .dim_styles
+                    .rename(&old_name, new_name.clone())
+                {
+                    Ok(()) => {
+                        let restyle: Vec<document::Handle> = self.tabs[i]
+                            .scene
+                            .document
+                            .entities()
+                            .filter_map(|entity| match entity {
+                                document::EntityType::Dimension(dimension)
+                                    if dimension.base().style_name.eq_ignore_ascii_case(&old_name) =>
+                                {
+                                    Some(dimension.base().common.handle)
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        let mut restyled = 0usize;
+                        for handle in &restyle {
+                            if let Some(document::EntityType::Dimension(dimension)) =
+                                self.tabs[i].scene.document.get_entity_mut(*handle)
+                            {
+                                dimension.base_mut().style_name = new_name.clone();
+                                restyled += 1;
+                            }
+                            self.tabs[i].scene.invalidate_dim_block_recorded(*handle);
+                        }
+                        if self.tabs[i]
+                            .scene
+                            .document
+                            .header
+                            .current_dimstyle_name
+                            .eq_ignore_ascii_case(&old_name)
+                        {
+                            let _ = self.on_ribbon_style_changed(
+                                crate::modules::StyleKey::DimStyle,
+                                new_name.clone(),
+                            );
+                        }
+                        self.tabs[i].dirty = true;
+                        self.tabs[i].scene.invalidate_dim_style_dependencies(&old_name);
+                        self.tabs[i].scene.invalidate_dim_style_dependencies(&new_name);
+                        self.command_line.push_output(
+                            crate::tf!(
+                                "DIMSTYLE: '{}' renamed to '{}'{}.",
+                                old_name,
+                                new_name,
+                                if restyled > 0 {
+                                    format!(", {restyled} dimension(s) restyled")
+                                } else {
+                                    String::new()
+                                }
+                            )
+                            .as_ref(),
+                        );
+                    }
+                    Err(error) => {
+                        self.command_line.push_error(
+                            crate::tf!("DIMSTYLE: {}.", error).as_ref(),
+                        );
+                    }
+                }
+                return;
+            }
+            "DELETE" => {
+                let Some(style_name) = self
+                    .tabs[i]
+                    .scene
+                    .document
+                    .dim_styles
+                    .iter()
+                    .find(|style| style.name.eq_ignore_ascii_case(&name))
+                    .map(|style| style.name.clone())
+                else {
+                    self.command_line.push_error(
+                        crate::tf!("DIMSTYLE: '{}' not found.", name).as_ref(),
+                    );
+                    return;
+                };
+                let current = self.tabs[i]
+                    .scene
+                    .document
+                    .header
+                    .current_dimstyle_name
+                    .clone();
+                if style_name.eq_ignore_ascii_case(&current) {
+                    self.command_line.push_error(
+                        crate::tf!(
+                            "DIMSTYLE: '{}' is the current style and cannot be deleted.",
+                            current
+                        )
+                        .as_ref(),
+                    );
+                    return;
+                }
+                let in_use = self.tabs[i]
+                    .scene
+                    .document
+                    .entities()
+                    .filter(|entity| {
+                        matches!(entity, document::EntityType::Dimension(dimension)
+                            if dimension.base().style_name.eq_ignore_ascii_case(&style_name))
+                    })
+                    .count();
+                if in_use > 0 {
+                    self.command_line.push_error(
+                        crate::tf!(
+                            "DIMSTYLE: '{}' is used by {} dimension(s); delete those first.",
+                            style_name,
+                            in_use
+                        )
+                        .as_ref(),
+                    );
+                    return;
+                }
+                let pending = self.begin_dim_style_undo(
+                    i,
+                    "DIMSTYLE DELETE",
+                    std::slice::from_ref(&style_name),
+                );
+                let _ = self.tabs[i].scene.document.dim_styles.remove(&style_name);
+                self.commit_dim_style_undo(i, pending);
+                self.tabs[i].dirty = true;
+                self.tabs[i].scene.invalidate_dim_style_dependencies(&style_name);
+                let _ =
+                    self.on_ribbon_style_changed(crate::modules::StyleKey::DimStyle, current);
+                self.command_line.push_output(
+                    crate::tf!("DIMSTYLE: '{}' deleted.", style_name).as_ref(),
+                );
+                return;
+            }
             "VARIABLES" => {
                 if args.len() >= 4 {
-                    // Write form: VARIABLES <style> <var> <value>. Listing is
-                    // unchanged; the value goes through an undo step and the
-                    // style's dependencies are refreshed.
+                    // Write form: VARIABLES <style> <var> <value>. The value
+                    // goes through the shared variable table: name lookup,
+                    // per-variable validation and an undo step.
                     let variable = arg(2).to_ascii_uppercase();
-                    let parsed: f64 = match arg(3).trim().parse::<f64>() {
-                        Ok(value) if value.is_finite() => value,
-                        _ => {
-                            self.command_line.push_error(
-                                crate::tf!(
-                                    "DIMSTYLE: '{}' is not a valid value for {}.",
-                                    arg(3),
-                                    variable
-                                )
-                                .as_ref(),
-                            );
-                            return;
-                        }
-                    };
-                    let Some(style) = self
+                    let Some(style_name) = self
                         .tabs[i]
                         .scene
                         .document
@@ -1759,51 +2205,71 @@ impl OpenCADStudio {
                         );
                         return;
                     };
-                    let selectable = matches!(
-                        variable.as_str(),
-                        "DIMASZ" | "DIMCEN" | "DIMDLE" | "DIMDLI" | "DIMEXE" | "DIMEXO"
-                            | "DIMGAP" | "DIMLFAC" | "DIMTSZ" | "DIMTVP"
-                    ) || (matches!(variable.as_str(), "DIMSCALE" | "DIMTXT") && parsed > 0.0);
-                    if !selectable {
-                        self.command_line.push_error(
-                            crate::tf!(
-                                "DIMSTYLE: '{}' cannot be set to {}.",
-                                variable,
-                                parsed
-                            )
-                            .as_ref(),
-                        );
-                        return;
-                    }
                     let pending = self.begin_dim_style_undo(
                         i,
                         "DIMSTYLE VARIABLES",
-                        std::slice::from_ref(&style),
+                        std::slice::from_ref(&style_name),
                     );
-                    if let Some(s) = self.tabs[i].scene.document.dim_styles.get_mut(&style) {
-                        let slot = match variable.as_str() {
-                            "DIMASZ" => &mut s.dimasz,
-                            "DIMCEN" => &mut s.dimcen,
-                            "DIMDLE" => &mut s.dimdle,
-                            "DIMDLI" => &mut s.dimdli,
-                            "DIMEXE" => &mut s.dimexe,
-                            "DIMEXO" => &mut s.dimexo,
-                            "DIMGAP" => &mut s.dimgap,
-                            "DIMLFAC" => &mut s.dimlfac,
-                            "DIMSCALE" => &mut s.dimscale,
-                            "DIMTSZ" => &mut s.dimtsz,
-                            "DIMTVP" => &mut s.dimtvp,
-                            _ => &mut s.dimtxt,
-                        };
-                        *slot = parsed;
+                    let result = {
+                        let doc = &mut self.tabs[i].scene.document;
+                        // Owned lookup tables: the closures that resolve block
+                        // and text-style names hold nothing borrowed from the
+                        // document, so the style table can be borrowed mutably.
+                        let block_names: std::collections::HashMap<String, (document::Handle, String)> =
+                            doc.block_records
+                                .iter()
+                                .map(|record| (record.name.to_lowercase(), (record.handle, record.name.clone())))
+                                .collect();
+                        let text_style_names: std::collections::HashMap<String, (document::Handle, String)> =
+                            doc.text_styles
+                                .iter()
+                                .map(|ts| (ts.name.to_lowercase(), (ts.handle, ts.name.clone())))
+                                .collect();
+                        let resolve_block = move |text: &str| block_names.get(&text.to_lowercase()).cloned();
+                        let resolve_style = move |text: &str| text_style_names.get(&text.to_lowercase()).cloned();
+                        match doc.dim_styles.get_mut(&style_name) {
+                            Some(s) => Some(crate::app::dim_variables::set(
+                                s,
+                                &variable,
+                                arg(3).trim(),
+                                &resolve_block,
+                                &resolve_style,
+                            )),
+                            None => None,
+                        }
+                    };
+                    match result {
+                        Some(Ok((_old, new_value))) => {
+                            self.commit_dim_style_undo(i, pending);
+                            self.tabs[i].dirty = true;
+                            self.tabs[i].scene.invalidate_dim_style_dependencies(&style_name);
+                            let _ = self.on_ribbon_style_changed(
+                                crate::modules::StyleKey::DimStyle,
+                                style_name.clone(),
+                            );
+                            self.command_line.push_output(
+                                crate::tf!(
+                                    "DIMSTYLE: {} = {} in '{}'.",
+                                    variable,
+                                    new_value,
+                                    style_name
+                                )
+                                .as_ref(),
+                            );
+                        }
+                        Some(Err(reason)) => {
+                            self.commit_dim_style_undo(i, pending);
+                            self.command_line.push_error(
+                                crate::tf!("DIMSTYLE: {}.", reason).as_ref(),
+                            );
+                        }
+                        None => {
+                            self.commit_dim_style_undo(i, pending);
+                            self.command_line.push_error(
+                                crate::tf!("DIMSTYLE: '{}' not found.", style_name).as_ref(),
+                            );
+                        }
                     }
-                    self.commit_dim_style_undo(i, pending);
-                    self.tabs[i].scene.invalidate_dim_style_dependencies(&style);
-                    let _ = self
-                        .on_ribbon_style_changed(crate::modules::StyleKey::DimStyle, style.clone());
-                    self.command_line.push_output(
-                        crate::tf!("DIMSTYLE: {} = {} in '{}'.", variable, parsed, style).as_ref(),
-                    );
                     return;
                 }
                 let doc = &self.tabs[i].scene.document;
@@ -1812,26 +2278,8 @@ impl OpenCADStudio {
                         .push_error(crate::tf!("DIMSTYLE: '{}' not found.", name).as_ref());
                     return;
                 };
-                let lines: Vec<String> = [
-                    ("DIMASZ", s.dimasz),
-                    ("DIMCEN", s.dimcen),
-                    ("DIMDLE", s.dimdle),
-                    ("DIMDLI", s.dimdli),
-                    ("DIMEXE", s.dimexe),
-                    ("DIMEXO", s.dimexo),
-                    ("DIMGAP", s.dimgap),
-                    ("DIMLFAC", s.dimlfac),
-                    ("DIMSCALE", s.dimscale),
-                    ("DIMTSZ", s.dimtsz),
-                    ("DIMTVP", s.dimtvp),
-                    ("DIMTXT", s.dimtxt),
-                ]
-                .iter()
-                .map(|(var, value)| format!("{var:<10}{value:.4}"))
-                .chain(std::iter::once(format!("{:<10}{}", "DIMTXSTY", s.dimtxsty)))
-                .collect();
                 self.command_line.push_output(&s.name.clone());
-                for line in lines {
+                for line in crate::app::dim_variables::dump(s) {
                     self.command_line.push_output(&line);
                 }
             }
@@ -1867,27 +2315,25 @@ impl OpenCADStudio {
                     );
                     return;
                 };
-                let fields: Vec<(&str, f64, f64)> = vec![
-                    ("DIMASZ", first.dimasz, second.dimasz),
-                    ("DIMCEN", first.dimcen, second.dimcen),
-                    ("DIMDLE", first.dimdle, second.dimdle),
-                    ("DIMDLI", first.dimdli, second.dimdli),
-                    ("DIMEXE", first.dimexe, second.dimexe),
-                    ("DIMEXO", first.dimexo, second.dimexo),
-                    ("DIMGAP", first.dimgap, second.dimgap),
-                    ("DIMLFAC", first.dimlfac, second.dimlfac),
-                    ("DIMSCALE", first.dimscale, second.dimscale),
-                    ("DIMTSZ", first.dimtsz, second.dimtsz),
-                    ("DIMTVP", first.dimtvp, second.dimtvp),
-                    ("DIMTXT", first.dimtxt, second.dimtxt),
-                ];
+                let fields: Vec<(&str, String, String)> = crate::app::dim_variables::DIM_VARIABLES
+                    .iter()
+                    .map(|variable| {
+                        (
+                            variable.name,
+                            crate::app::dim_variables::get(&first, variable.name)
+                                .unwrap_or_default(),
+                            crate::app::dim_variables::get(&second, variable.name)
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect();
                 let mut differences = 0;
                 for (var, first, second) in fields {
-                    if (first - second).abs() > 1e-9 {
+                    if first != second {
                         differences += 1;
                         self.command_line.push_output(
                             crate::tf!(
-                                "{} {:.4} vs {:.4}",
+                                "{} {} vs {}",
                                 var,
                                 first,
                                 second
@@ -1895,12 +2341,6 @@ impl OpenCADStudio {
                             .as_ref(),
                         );
                     }
-                }
-                if first.dimtxsty != second.dimtxsty {
-                    differences += 1;
-                    self.command_line.push_output(
-                        crate::tf!("DIMTXSTY {} vs {}", first.dimtxsty, second.dimtxsty).as_ref(),
-                    );
                 }
                 if differences == 0 {
                     self.command_line.push_output(
@@ -1915,13 +2355,25 @@ impl OpenCADStudio {
                 return;
             }
             _ => {
+                let current = self.tabs[i]
+                    .scene
+                    .document
+                    .header
+                    .current_dimstyle_name
+                    .clone();
                 let names: Vec<String> = self.tabs[i]
                     .scene
                     .document
                     .dim_styles
                     .iter()
                     .filter(|style| listed(&style.name, &name))
-                    .map(|style| style.name.clone())
+                    .map(|style| {
+                        if style.name.eq_ignore_ascii_case(&current) {
+                            format!("{} (current)", style.name)
+                        } else {
+                            style.name.clone()
+                        }
+                    })
                     .collect();
                 self.command_line
                     .push_output(crate::tf!("DimStyles: {}", names.join(", ")).as_ref());

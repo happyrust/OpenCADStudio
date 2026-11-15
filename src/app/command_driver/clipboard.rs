@@ -129,9 +129,26 @@ impl OpenCADStudio {
             .active_cmd
             .as_ref()
             .is_some_and(|c| c.name() == "SS_CATCHMENT");
+        let table_cell = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .and_then(|c| c.table_cell());
         self.push_undo_snapshot(i, label);
         for (handle, entities) in replacements {
             self.replace_command_entity(i, handle, entities);
+        }
+        // A formula typed on the command line is stored as a formula field,
+        // as the cell editor does.
+        if let Some((table, row, column)) = table_cell {
+            let document = &mut self.tabs[i].scene.document;
+            if crate::entities::table::typed_formula_to_field(document, table, row, column) {
+                if let Some(document::EntityType::Table(target)) = document.get_entity_mut(table) {
+                    target.block_record_handle = None;
+                }
+                self.tabs[i]
+                    .scene
+                    .bump_entities(&[(table, crate::scene::ChangeKind::Modified)]);
+            }
         }
         for entity in additions {
             self.tabs[i].scene.add_entity(entity);
@@ -1229,7 +1246,21 @@ pub(crate) fn paste_entities_kernel(
                     }
                 }
             }
-            add_entity_clone_doc(doc, entity, space)
+            let source = entity.common().handle;
+            let is_table = matches!(entity, document::EntityType::Table(_));
+            let pasted = add_entity_clone_doc(doc, entity, space);
+            // A pasted table gets its own clones of its cell fields, taken
+            // from the clipboard (the source may be gone or in another
+            // drawing).
+            if is_table && !pasted.is_null() {
+                crate::scene::table_fields::adopt_table_fields(
+                    doc,
+                    pasted,
+                    source,
+                    &deps.table_fields,
+                );
+            }
+            pasted
         })
         .collect();
 

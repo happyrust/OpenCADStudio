@@ -82,6 +82,8 @@ pub static DOCK_BACK: &[u8] = include_bytes!("../../assets/icons/ui/window_dock_
 pub static PIN: &[u8] = include_bytes!("../../assets/icons/ui/pin.svg");
 /// `PIN` tilted 30°: the pin while auto-hide is on.
 pub static PIN_ACTIVE: &[u8] = include_bytes!("../../assets/icons/ui/pin_active.svg");
+/// `PIN` turned 90°: a docked palette's pin while it auto-hides.
+pub static PIN_SIDE: &[u8] = include_bytes!("../../assets/icons/ui/pin_side.svg");
 pub static SPLIT_V: &[u8] = include_bytes!("../../assets/icons/ui/split_v.svg");
 pub static SPLIT_H: &[u8] = include_bytes!("../../assets/icons/ui/split_h.svg");
 pub static GRID: &[u8] = include_bytes!("../../assets/icons/ui/grid.svg");
@@ -105,6 +107,9 @@ pub static DOT: &[u8] = include_bytes!("../../assets/icons/ui/dot.svg");
 pub static DIRTY_DOT: &[u8] = include_bytes!("../../assets/icons/ui/dirty_dot.svg");
 pub static ARROW_LONG_RIGHT: &[u8] = include_bytes!("../../assets/icons/ui/arrow_long_right.svg");
 pub static MORE: &[u8] = include_bytes!("../../assets/icons/ui/more.svg");
+/// A docked side panel outline with the sidebar field filled: the generic
+/// icon of plugin-registered pallets (`PanelId::Plugin`).
+pub static PLUGIN_PANEL: &[u8] = include_bytes!("../../assets/icons/ui/plugin_panel.svg");
 pub static INFO: &[u8] = include_bytes!("../../assets/icons/ui/info.svg");
 pub static MESH: &[u8] = include_bytes!("../../assets/icons/ui/mesh.svg");
 pub static ALERT: &[u8] = include_bytes!("../../assets/icons/ui/alert.svg");

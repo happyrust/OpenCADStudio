@@ -47,8 +47,14 @@ impl OpenCADStudio {
         }
         let targets = Targets::from_scene(&tab.scene, insert, alignment.plane);
         let anchor = alignment.anchor;
-        let command = crate::modules::block_editor::alignment::AlignmentCommand::new(
-            tab.id, alignment, targets,
+        let cached_wires = tab
+            .scene
+            .wires_for_entities(&[document::EntityType::Insert(alignment.reference.clone())]);
+        let command = crate::modules::block_editor::alignment::AlignmentCommand::with_cached_wires(
+            tab.id,
+            alignment,
+            targets,
+            cached_wires,
         );
         self.command_line.push_info(&command.prompt());
         self.tabs[i].active_cmd = Some(Box::new(command));
@@ -83,8 +89,7 @@ impl OpenCADStudio {
                 );
                 let mut staged = self.tabs[i].scene.document.clone();
                 *staged.get_entity_mut(insert).unwrap() = entity;
-                self.apply_action_document(i, staged);
-                self.tabs[i].scene.bump_geometry();
+                self.apply_action_document_and_bump(i, staged);
                 self.tabs[i].dirty = true;
                 self.finish_pending_history(i);
             }

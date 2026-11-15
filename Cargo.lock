@@ -19,10 +19,12 @@ dependencies = [
  "clap",
  "console_error_panic_hook",
  "cosmic-text 0.15.0",
+ "crs-definitions",
  "dwg-thumbnailer",
  "e3d-attlib",
  "e3d-io",
  "e3d-model",
+ "encoding_rs",
  "env_logger",
  "flate2",
  "fluent-syntax",
@@ -44,10 +46,12 @@ dependencies = [
  "kurbo 0.13.1",
  "libloading",
  "log",
+ "lopdf 0.39.0",
  "lru",
  "lyon_tessellation",
  "md-5 0.10.6",
  "meshopt",
+ "mimalloc",
  "naga",
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
@@ -65,6 +69,8 @@ dependencies = [
  "pid-plot",
  "pollster",
  "printpdf",
+ "proj4rs",
+ "proj4wkt",
  "rayon",
  "regex",
  "resvg",
@@ -123,7 +129,7 @@ dependencies = [
 [[package]]
 name = "acadrust"
 version = "0.6.8"
-source = "git+https://github.com/hakanaktt/acadrust.git?rev=f8e1a934#f8e1a934c2574b073ba17ff9279e723a8bec0123"
+source = "git+https://github.com/hakanaktt/acadrust.git?rev=f946e8d#f946e8d0c15508c4581b228a1efe44c18dc96234"
 dependencies = [
  "anyhow",
  "bitflags 2.13.1",
@@ -2250,6 +2256,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "console_log"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86919cef3e37b9356ccf54d4421208c17ecfda01beae61393e7ffd72916c0ef1"
+dependencies = [
+ "log",
+ "web-sys",
+]
+
+[[package]]
 name = "const-fnv1a-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2488,6 +2504,12 @@ name = "crossbeam-utils"
 version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
+
+[[package]]
+name = "crs-definitions"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed764c927c2a19ec1cb85deb88e93560872c04653b0e9e63fbdf6a8edf968bcb"
 
 [[package]]
 name = "crunchy"
@@ -4440,8 +4462,8 @@ dependencies = [
 
 [[package]]
 name = "ifccad"
-version = "2026.45.1"
-source = "git+https://github.com/OpenAEC-Foundation/ifccad.git?rev=21660ce10453bf8a32afd22281e085d16980f70a#21660ce10453bf8a32afd22281e085d16980f70a"
+version = "2026.46.0"
+source = "git+https://github.com/OpenAEC-Foundation/ifccad.git?rev=a09aeb27c5964f39c2b94ac99ac49255339cb3ff#a09aeb27c5964f39c2b94ac99ac49255339cb3ff"
 dependencies = [
  "base64",
  "fpmath",
@@ -5054,6 +5076,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
+name = "libmimalloc-sys"
+version = "0.1.49"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "libredox"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5400,6 +5431,15 @@ name = "micromap"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
+
+[[package]]
+name = "mimalloc"
+version = "0.1.52"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
+dependencies = [
+ "libmimalloc-sys",
+]
 
 [[package]]
 name = "mime"
@@ -6204,6 +6244,7 @@ dependencies = [
  "cargo-lock",
  "getrandom 0.2.17",
  "interprocess",
+ "libc",
  "libloading",
  "memmap2",
  "opencaddocument",
@@ -6213,6 +6254,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "thiserror 1.0.69",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6284,10 +6326,11 @@ dependencies = [
 [[package]]
 name = "opencaddocument"
 version = "0.1.0"
-source = "git+https://github.com/HakanSeven12/opencaddocument.git?rev=ed9653a#ed9653a1240b56a174643843752ec07b6d968e58"
+source = "git+https://github.com/HakanSeven12/opencaddocument.git?rev=ae40a59#ae40a5921f678aa94bf143aaf39d01e739db58bb"
 dependencies = [
  "acadrust",
  "ifccad",
+ "rmp-serde",
  "serde",
  "web-time",
 ]
@@ -6303,7 +6346,7 @@ dependencies = [
 [[package]]
 name = "opencadkernel"
 version = "0.1.0"
-source = "git+https://github.com/HakanSeven12/opencadkernel.git?rev=802f751#802f75134a5606d34bd34dac0d3508565537b067"
+source = "git+https://github.com/HakanSeven12/opencadkernel.git?rev=353ffb2#353ffb25c55a7fce4f09a22862fb1df4ca587a47"
 dependencies = [
  "cavalier_contours",
  "opencadkernel-ssi",
@@ -6314,7 +6357,7 @@ dependencies = [
 [[package]]
 name = "opencadkernel-constraints"
 version = "0.1.0"
-source = "git+https://github.com/HakanSeven12/opencadkernel.git?rev=802f751#802f75134a5606d34bd34dac0d3508565537b067"
+source = "git+https://github.com/HakanSeven12/opencadkernel.git?rev=353ffb2#353ffb25c55a7fce4f09a22862fb1df4ca587a47"
 dependencies = [
  "nalgebra",
 ]
@@ -6322,7 +6365,7 @@ dependencies = [
 [[package]]
 name = "opencadkernel-ssi"
 version = "0.1.0"
-source = "git+https://github.com/HakanSeven12/opencadkernel.git?rev=802f751#802f75134a5606d34bd34dac0d3508565537b067"
+source = "git+https://github.com/HakanSeven12/opencadkernel.git?rev=353ffb2#353ffb25c55a7fce4f09a22862fb1df4ca587a47"
 
 [[package]]
 name = "openssl-probe"
@@ -6966,6 +7009,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "proj4rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c237a4e4da4e0f2eae7a5d078df926894ccf1b315043dbccebc413888487d562"
+dependencies = [
+ "console_log",
+ "crs-definitions",
+ "js-sys",
+ "proj4rs-geodesic",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "proj4rs-geodesic"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdb2ff6e4d7329dc428ca2cb40f4c1ea85ef6c10aa6bd410294a1c835cd55567"
+dependencies = [
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "proj4wkt"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58c81c82adeaefed1216edce88aae980cba2c1eff3e8be8fc0f405b04765f82a"
+dependencies = [
+ "console_log",
+ "js-sys",
+ "nom 8.0.0",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "ptr_meta"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7576,6 +7657,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52e599a477cf9840e92f2cde9a7189e67b42c57532749bf90aea6ec10facd4db"
+dependencies = [
+ "byteorder",
+ "rmp",
+ "serde",
 ]
 
 [[package]]

@@ -211,16 +211,7 @@ impl OpenCADStudio {
                         );
                         return Some(Task::none());
                     }
-                    "BYLAYER" => Some(Color::ByLayer),
-                    "BYBLOCK" => Some(Color::ByBlock),
-                    "RED" => Some(Color::Index(1)),
-                    "YELLOW" => Some(Color::Index(2)),
-                    "GREEN" => Some(Color::Index(3)),
-                    "CYAN" => Some(Color::Index(4)),
-                    "BLUE" => Some(Color::Index(5)),
-                    "MAGENTA" => Some(Color::Index(6)),
-                    "WHITE" => Some(Color::Index(7)),
-                    n => n.parse::<i16>().ok().map(Color::from_index),
+                    other => command_color(other),
                 };
                 match color {
                     Some(c) => {
@@ -629,14 +620,8 @@ impl OpenCADStudio {
                             .push_error(crate::t!("CHPROP: no entities selected.").as_ref());
                     } else {
                         // Validate value early to give clear errors
-                        let color_val: Option<document::types::Color> = if prop == "COLOR" {
-                            value
-                                .parse::<i16>()
-                                .ok()
-                                .map(document::types::Color::from_index)
-                        } else {
-                            None
-                        };
+                        let color_val: Option<document::types::Color> =
+                            if prop == "COLOR" { command_color(&value) } else { None };
                         let ltscale_val: Option<f64> = if prop == "LTSCALE" {
                             value.parse().ok()
                         } else {
@@ -1158,6 +1143,7 @@ impl OpenCADStudio {
                     | "WINDOWAREACOLOR"
                     | "CROSSINGAREACOLOR"
                     | "SELECTIONPREVIEW"
+                    | "SELECTIONPREVIEWLIMIT"
                     | "GRIPSIZE"
                     | "GRIPCOLOR"
                     | "GRIPHOT"
@@ -1177,6 +1163,10 @@ impl OpenCADStudio {
                     | "TXT2MTXTLINESPACING"
             ) =>
             {
+                return self.dispatch_styleprops(&format!("SETVAR {cmd}"), i);
+            }
+
+            cmd if user_register(cmd).is_some() => {
                 return self.dispatch_styleprops(&format!("SETVAR {cmd}"), i);
             }
 
@@ -1216,6 +1206,10 @@ impl OpenCADStudio {
                         "CANNOSCALE" | "ANNOALLVISIBLE" | "ANNOAUTOSCALE" | "HPLAYER" | "MSLTSCALE"
                     ) {
                         return Some(self.annotation_setvar(i, &name, value.as_deref()));
+                    }
+                    if let Some((kind, slot)) = user_register(&name) {
+                        self.user_register_setvar(i, kind, slot, value.as_deref());
+                        return Some(self.finish_dispatch(cmd));
                     }
                     if name == "GROUPDISPLAYMODE" {
                         self.group_display_setvar(value.as_deref());
@@ -3013,6 +3007,16 @@ impl OpenCADStudio {
                                     false,
                                 )),
                             },
+                            "SELECTIONPREVIEWLIMIT" => match &value {
+                                Some(v) => match v.parse::<u32>() {
+                                    Ok(limit) => {
+                                        self.model_space.selection_preview_limit = limit;
+                                        Ok((format!("SELECTIONPREVIEWLIMIT = {limit}"), true))
+                                    }
+                                    _ => Err("SETVAR: non-negative integer required.".into()),
+                                },
+                                None => Ok((format!("SELECTIONPREVIEWLIMIT = {}", self.model_space.selection_preview_limit), false)),
+                            },
                             "GRIPSIZE" => match &value {
                                 Some(v) => match v.parse::<u8>() {
                                     Ok(size @ 1..=25) => {
@@ -3802,6 +3806,7 @@ impl OpenCADStudio {
                                         | "WINDOWAREACOLOR"
                                         | "CROSSINGAREACOLOR"
                                         | "SELECTIONPREVIEW"
+                                        | "SELECTIONPREVIEWLIMIT"
                                         | "GRIPSIZE"
                                         | "GRIPCOLOR"
                                         | "GRIPHOT"
@@ -4063,48 +4068,40 @@ impl OpenCADStudio {
                 self.tabs[i].active_cmd = Some(Box::new(c));
             }
             cmd if cmd.starts_with("AUDIT ") => {
+                // Report as other CAD auditors do: "N objects audited" and
+                // "Total errors found X fixed Y".
                 let fix = cmd[6..].trim().to_uppercase().starts_with('Y');
                 let report = self.tabs[i].scene.document.audit();
-                let total = {
-                    let doc = &self.tabs[i].scene.document;
-                    doc.entities().count() + doc.objects.len()
-                };
-                self.command_line
-                    .push_output(crate::tf!("AUDIT: scanned {total} object(s).").as_ref());
-                if report.is_clean() {
-                    self.command_line
-                        .push_output(crate::t!("AUDIT: no issues found.").as_ref());
-                    return Some(Task::none());
-                }
-                self.command_line.push_error(
-                    crate::tf!(
-                        "AUDIT: {} error(s), {} warning(s) found.",
-                        report.error_count(),
-                        report.warning_count()
-                    )
-                    .as_ref(),
-                );
-                // ponytail: first 50 issues only; the counts above cover the rest.
+                // ponytail: first 50 issues only; the totals below cover the rest.
                 for issue in report.issues.iter().take(50) {
                     self.command_line
                         .push_info(&format!("  {:?}: {}", issue.code, issue.message));
                 }
-                if fix {
+                let mut fixed = 0;
+                if fix && !report.is_clean() {
                     self.push_undo_snapshot(i, "AUDIT");
                     let repair = self.tabs[i].scene.document.repair();
-                    self.command_line.push_output(
-                        crate::tf!(
-                            "AUDIT: {} repair(s) applied, {} issue(s) left unresolved.",
-                            repair.actions.len(),
-                            repair.unresolved.len()
-                        )
-                        .as_ref(),
-                    );
+                    fixed = report
+                        .error_count()
+                        .saturating_sub(repair.after.error_count());
                     if !repair.actions.is_empty() {
                         self.tabs[i].dirty = true;
                         self.tabs[i].scene.rebuild_derived_caches();
                         self.refresh_layer_panel();
                     }
+                }
+                self.command_line.push_output(
+                    crate::tf!("{} objects audited", report.scanned_records).as_ref(),
+                );
+                let total = crate::tf!(
+                    "Total errors found {} fixed {}",
+                    report.error_count(),
+                    fixed
+                );
+                if report.error_count() == 0 {
+                    self.command_line.push_output(total.as_ref());
+                } else {
+                    self.command_line.push_error(total.as_ref());
                 }
             }
 
@@ -4497,6 +4494,37 @@ impl OpenCADStudio {
                     }
                 }
             }
+            "LWEIGHT" => {
+                let c = crate::command::FreeTextValuePromptCommand::new(
+                    "LWEIGHT",
+                    "LWEIGHT  default lineweight for new objects  [ByLayer / ByBlock / Default / 0.00-2.11 mm]:",
+                );
+                self.command_line.push_info(&c.prompt());
+                self.tabs[i].active_cmd = Some(Box::new(c));
+            }
+            cmd if cmd.starts_with("LWEIGHT ") => {
+                use crate::ui::window::attman_dialog::{lineweight_label, parse_lineweight};
+                let value = cmd.trim_start_matches("LWEIGHT").trim();
+                if value.is_empty() {
+                    let current = document::types::LineWeight::from_value(
+                        self.tabs[i].scene.document.header.current_line_weight,
+                    );
+                    self.command_line.push_output(
+                        crate::tf!("LWEIGHT = {}", lineweight_label(current)).as_ref(),
+                    );
+                } else if let Some(lw) = parse_lineweight(value) {
+                    self.tabs[i].scene.document.header.current_line_weight = lw.value();
+                    self.tabs[i].dirty = true;
+                    self.ribbon.active_lineweight = lw;
+                    self.refresh_properties();
+                    self.command_line.push_output(
+                        crate::tf!("LWEIGHT = {}", lineweight_label(lw)).as_ref(),
+                    );
+                } else {
+                    self.command_line
+                        .push_error(crate::t!("LWEIGHT: invalid lineweight.").as_ref());
+                }
+            }
             "CELTSCALE" => {
                 use crate::command::ValuePromptCommand;
                 let c = ValuePromptCommand::new(
@@ -4795,6 +4823,11 @@ impl OpenCADStudio {
             if type_str != "LAYER" {
                 self.tabs[i].scene.bump_geometry_no_blocks();
             }
+            if type_str == "BLOCK" {
+                // The palette's rows show definition names; a rename moves
+                // them.
+                self.refresh_block_palette();
+            }
             if type_str == "UCS" {
                 self.tabs[i].scene.bump_ucs_epoch();
                 if let Some(active) = self.tabs[i].active_ucs.as_mut() {
@@ -4829,6 +4862,24 @@ impl OpenCADStudio {
 
 /// A VSEDGECOLOR value: an index, a colour name or R,G,B, with BLACK (or 0)
 /// for the default black edges (`Some(None)`).
+/// A colour named the way the COLOR prompt accepts it: ByLayer, ByBlock, one
+/// of the seven named ACI colours, or an index.
+fn command_color(arg: &str) -> Option<document::types::Color> {
+    use document::types::Color;
+    match arg.trim().to_ascii_uppercase().as_str() {
+        "BYLAYER" => Some(Color::ByLayer),
+        "BYBLOCK" => Some(Color::ByBlock),
+        "RED" => Some(Color::Index(1)),
+        "YELLOW" => Some(Color::Index(2)),
+        "GREEN" => Some(Color::Index(3)),
+        "CYAN" => Some(Color::Index(4)),
+        "BLUE" => Some(Color::Index(5)),
+        "MAGENTA" => Some(Color::Index(6)),
+        "WHITE" => Some(Color::Index(7)),
+        index => index.parse::<i16>().ok().map(Color::from_index),
+    }
+}
+
 fn parse_edge_color(value: &str) -> Option<Option<[u8; 3]>> {
     let value = value.trim().trim_start_matches("RGB:");
     if value.eq_ignore_ascii_case("BLACK") || value == "0" {
@@ -5467,5 +5518,94 @@ impl OpenCADStudio {
                 tab.scene.bump_geometry();
             }
         }
+    }
+}
+
+/// `USERI1`..`USERI5`, `USERR1`..`USERR5`, `USERS1`..`USERS5`: the register
+/// kind (`I`, `R` or `S`) and its index 0..=4.
+fn user_register(name: &str) -> Option<(char, usize)> {
+    let rest = name.strip_prefix("USER")?;
+    let mut chars = rest.chars();
+    let kind = chars.next().filter(|c| matches!(c, 'I' | 'R' | 'S'))?;
+    let slot = match chars.as_str() {
+        "1" => 0,
+        "2" => 1,
+        "3" => 2,
+        "4" => 3,
+        "5" => 4,
+        _ => return None,
+    };
+    Some((kind, slot))
+}
+
+impl OpenCADStudio {
+    /// Reads or sets one user register. Integers and reals are saved with
+    /// the drawing (header USERI/USERR); strings stay with the open tab.
+    fn user_register_setvar(&mut self, i: usize, kind: char, slot: usize, value: Option<&str>) {
+        fn int(h: &mut document::document::HeaderVariables, slot: usize) -> &mut i16 {
+            match slot {
+                0 => &mut h.user_int1,
+                1 => &mut h.user_int2,
+                2 => &mut h.user_int3,
+                3 => &mut h.user_int4,
+                _ => &mut h.user_int5,
+            }
+        }
+        fn real(h: &mut document::document::HeaderVariables, slot: usize) -> &mut f64 {
+            match slot {
+                0 => &mut h.user_real1,
+                1 => &mut h.user_real2,
+                2 => &mut h.user_real3,
+                3 => &mut h.user_real4,
+                _ => &mut h.user_real5,
+            }
+        }
+        let name = format!("USER{kind}{}", slot + 1);
+        let tab = &mut self.tabs[i];
+        let h = &mut tab.scene.document.header;
+        let current = match kind {
+            'I' => int(h, slot).to_string(),
+            'R' => real(h, slot).to_string(),
+            _ => tab.user_strings[slot].clone(),
+        };
+        let accepted = match value.map(str::trim).filter(|v| !v.is_empty()) {
+            None => None,
+            Some(value) => Some(match kind {
+                'I' => value.parse::<i16>().map(|v| *int(h, slot) = v).is_ok(),
+                'R' => value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .map(|v| *real(h, slot) = v)
+                    .is_some(),
+                _ => {
+                    tab.user_strings[slot] = value.to_string();
+                    true
+                }
+            }),
+        };
+        match accepted {
+            Some(true) => {
+                if kind != 'S' {
+                    tab.dirty = true;
+                }
+                return;
+            }
+            Some(false) => {
+                if kind == 'I' {
+                    let (min, max) = (i16::MIN, i16::MAX);
+                    self.command_line.push_rejection(&crate::tf!(
+                        "Requires an integer between {min} and {max}."
+                    ));
+                } else {
+                    self.command_line
+                        .push_rejection(crate::t!("Requires a number.").as_ref());
+                }
+            }
+            None => {}
+        }
+        self.command_line
+            .push_output(&crate::tf!("Enter new value for {name} <{current}>:"));
+        self.pending_setvar = Some(name);
     }
 }

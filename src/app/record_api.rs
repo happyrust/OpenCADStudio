@@ -1443,16 +1443,30 @@ impl OpenCADStudio {
                 "block_define":true,
                 "block_delete":true,
                 "embed_image":true,
+                "dgn_import":true,
                 "close":true,
                 "entities_copy_to":true,
                 "entities_create":true,
                 "pid_insert_batch":true,
+                "entities_set":true,
+                "xrefs":true,
+                "xref_reload":true,
+                "xref_unload":true,
+                "xref_detach":true,
+                "xref_bind":true,
+                "xref_set_path":true,
+                "xref_set_type":true,
                 "entities_delete":true,
                 "entities_transform":true,
                 "file_identity":true,
                 "group_create":true,
                 "node_graph":true,
                 "layout_create":true,
+                "layout_rename":true,
+                "layout_activate":true,
+                "layout_delete":true,
+                "layouts":true,
+                "page_setup_get":true,
                 "page_setup_set":true,
                 "selection_set_load":true,
                 "selection_set_save":true,
@@ -1713,6 +1727,12 @@ impl OpenCADStudio {
                         "entity is reference-only (plugin-owned display data)",
                     ));
                 }
+                if self.tabs[i].scene.native_edit_disabled(handle) {
+                    return Err(failure(
+                        "native_edit_disabled",
+                        "entity is selectable custom geometry; use its plugin write path",
+                    ));
+                }
                 let source = self.tabs[i]
                     .scene
                     .document
@@ -1800,7 +1820,7 @@ impl OpenCADStudio {
                 if changed {
                     self.push_undo_snapshot(i, "MCP SET_PROPERTIES");
                     self.tabs[i].scene.document.summary_info = edited;
-                    self.tabs[i].scene.bump_geometry();
+                    self.tabs[i].scene.update_summary_field_hosts();
                     self.tabs[i].dirty = true;
                 }
                 result_name = Some("summary_info".to_string());
@@ -1983,6 +2003,40 @@ mod tests {
         mark(&mut app, handle, false);
         let records = app.record_query(&json!({"collection":"entities"}));
         assert_eq!(records["records"][0]["reference_only"], json!(false));
+    }
+
+    #[test]
+    fn selectable_custom_record_updates_are_refused() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        let mut entity = EntityType::Line(document::entities::Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        ));
+        let mut stamp = document::xdata::ExtendedDataRecord::new("CVIFC-CLASS:LINE");
+        stamp.add_value(document::xdata::XDataValue::Integer32(1));
+        stamp.add_value(document::xdata::XDataValue::String(String::new()));
+        stamp.add_value(document::xdata::XDataValue::Integer32(1));
+        entity.common_mut().extended_data.add_record(stamp);
+        let handle = app.tabs[i].scene.add_entity(entity);
+
+        let refused = execute(
+            &mut app,
+            json!({
+                "op":"set_properties",
+                "collection":"entities",
+                "handle": format!("{:X}", handle.value()),
+                "updates":[{"path":"/end/x","value":20.0}],
+            }),
+            "selectable-custom",
+        );
+        assert_eq!(refused["ok"], json!(false));
+        assert_eq!(refused["code"], json!("native_edit_disabled"));
+        let Some(EntityType::Line(line)) = app.tabs[i].scene.document.get_entity(handle) else {
+            panic!("the selectable custom line survives")
+        };
+        assert_eq!(line.end.x, 10.0);
     }
 
     #[test]

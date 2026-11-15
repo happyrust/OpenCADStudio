@@ -261,7 +261,7 @@ fn main() {
         OpenCADStudio::scene::build_derived_caches_with_progress(&doc, &|_| {}, Some(base));
     record(&mut stages, "derived_caches", start);
     let start = Instant::now();
-    let (doc, geometry) = OpenCADStudio::scene::prepare_open_geometry(
+    let (doc, geometry, _) = OpenCADStudio::scene::prepare_open_geometry(
         doc,
         &mut caches,
         [33.0 / 255.0, 40.0 / 255.0, 48.0 / 255.0, 1.0],

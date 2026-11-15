@@ -127,11 +127,7 @@ impl OpenCADStudio {
             .as_mut()
             .map(|c| c.take_pending_panel_updates())
             .unwrap_or_default();
-        for (panel_id, values) in panel_updates {
-            if let Some(panel) = self.plugin_panels.get_mut(&panel_id) {
-                panel.update_values(values);
-            }
-        }
+        self.apply_panel_or_dialog_updates(panel_updates);
         if let CmdResult::ReturnPoint(pt) = result {
             self.tabs[i].scene.clear_preview_wire();
             if let Some(mut suspended) = self.tabs[i].suspended_cmd.take() {
@@ -247,6 +243,8 @@ impl OpenCADStudio {
                 | CmdResult::SliceSurfaceEntities { .. }
                 // An array arrow keeps the array selected for the next arrow.
                 | CmdResult::EditAssocArray { .. }
+                // A parameter grip keeps its references selected, as other grips do.
+                | CmdResult::EvaluateBlockParameter { insert: Some(_), .. }
         );
         self.result_depth += 1;
         let task = self.apply_cmd_result_inner(result);
@@ -825,12 +823,6 @@ impl OpenCADStudio {
             result @ CmdResult::PlaceBlockSingleParameter { .. } => {
                 return self.handle_place_block_single_parameter(result);
             }
-            CmdResult::StartBlockLookupAction {
-                document,
-                definition,
-            } => {
-                return self.start_block_lookup_action(document, definition);
-            }
             CmdResult::OpenBlockLookupTable {
                 document,
                 definition,
@@ -958,12 +950,17 @@ impl OpenCADStudio {
                 self.attach_point_cloud(i, label, placement);
                 self.restore_pre_cmd_tangent();
             }
-            CmdResult::AttachPdfPages { kind, path, pages } => {
+            CmdResult::AttachPdfPages {
+                kind,
+                path,
+                pages,
+                auto_place,
+            } => {
                 let label = self.history_label_from_active_cmd(i, "PDFATTACH");
                 self.tabs[i].scene.clear_preview_wire();
                 self.tabs[i].active_cmd = None;
                 self.tabs[i].snap_result = None;
-                self.attach_pdf_pages(i, label, kind, &path, pages);
+                self.attach_pdf_pages(i, label, kind, &path, pages, auto_place);
                 self.restore_pre_cmd_tangent();
             }
             CmdResult::PdfImport(request) => {
@@ -1224,6 +1221,20 @@ impl OpenCADStudio {
             CmdResult::PasteClipboard { base_pt } => {
                 self.handle_paste_clipboard(base_pt);
             }
+            CmdResult::PlaceLinkedTable(link) => {
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.tabs[i].scene.clear_preview_wire();
+                self.restore_pre_cmd_tangent();
+                self.place_linked_table(link);
+            }
+            CmdResult::PlacePastedImage { image, embedded } => {
+                self.tabs[i].active_cmd = None;
+                self.tabs[i].snap_result = None;
+                self.tabs[i].scene.clear_preview_wire();
+                self.restore_pre_cmd_tangent();
+                dispatched = self.place_pasted_image(image, embedded);
+            }
             CmdResult::CreateGroup { handles, name } => {
                 if let Some(task) = self.handle_create_group(handles, name) {
                     return task;
@@ -1234,6 +1245,15 @@ impl OpenCADStudio {
                     return task;
                 }
             }
+            CmdResult::VpLayerOverride {
+                vp_handle,
+                layer,
+                channel,
+                value,
+            } => {
+                self.handle_vp_layer_override(vp_handle, &layer, channel, &value);
+            }
+
             CmdResult::VpLayerUpdate {
                 vp_handle,
                 freeze,
@@ -1494,7 +1514,13 @@ impl OpenCADStudio {
             self.focus_cmd_input()
         };
         crate::ui::ribbon::keytip_note_command_finished();
-        Task::batch([dispatched, focus])
+        // MULTIPLE: the command ended without Escape, so it starts again.
+        let tab = &self.tabs[self.active_tab];
+        let again = match (&tab.active_cmd, &tab.multiple_cmd) {
+            (None, Some(cmd)) => Task::done(Message::Command(cmd.clone())),
+            _ => Task::none(),
+        };
+        Task::batch([dispatched, focus, again])
     }
 
     // --- C2a handlers: flow / lifecycle (thin-router targets, bodies moved verbatim) ---
@@ -1518,6 +1544,13 @@ impl OpenCADStudio {
             self.command_line.set_step_options(Vec::new());
             self.open_attribute_editor(ins_handle);
             return Some(Task::none());
+        }
+        let heading = self.tabs[i]
+            .active_cmd
+            .as_ref()
+            .and_then(|c| c.prompt_heading());
+        if let Some(h) = heading.filter(|_| !quiet) {
+            self.command_line.push_info(&h);
         }
         let prompt = self.tabs[i].active_cmd.as_ref().map(|c| c.prompt());
         if let Some(p) = prompt.filter(|_| !quiet) {
@@ -1611,6 +1644,7 @@ impl OpenCADStudio {
     fn handle_cancel(&mut self, cancel: CmdResult) {
         crate::ui::ribbon::keytip_note_command_finished();
         let i = self.active_tab;
+        self.tabs[i].multiple_cmd = None;
         if self.tabs[i].pending_parameter_set_follow_up.is_some()
             || self.tabs[i].pending_xy_box_set.is_some()
             || self.tabs[i].pending_action_pair.is_some()
@@ -2072,6 +2106,8 @@ impl OpenCADStudio {
         }
         // Skips the members on locked layers, as the plain UNGROUP did.
         let count = self.dissolve_pid_groups(i, "UNGROUP", &handles);
+        // Grips picked before UNGROUP still show the dissolved group's box.
+        self.refresh_selected_grips();
         if count > 0 {
             self.command_line
                 .push_info(crate::tf!("{} group(s) dissolved.", count).as_ref());
@@ -2323,6 +2359,24 @@ fn entity_at_typed_point(
                         .max(0.0);
                     let dy = (bounds.min.y - point.y)
                         .max(point.y - bounds.max.y)
+                        .max(0.0);
+                    dx.hypot(dy)
+                }
+                // An insert answers by the box of its expanded definition, the
+                // way a click on its box picks it.
+                None if matches!(entity, document::EntityType::Insert(_)) => {
+                    let document::EntityType::Insert(insert) = entity else {
+                        continue;
+                    };
+                    let Some(world) = crate::app::helpers::insert_world_bounds(document, insert)
+                    else {
+                        continue;
+                    };
+                    let dx = (world.min.x - point.x)
+                        .max(point.x - world.max.x)
+                        .max(0.0);
+                    let dy = (world.min.y - point.y)
+                        .max(point.y - world.max.y)
                         .max(0.0);
                     dx.hypot(dy)
                 }
