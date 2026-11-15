@@ -37,8 +37,14 @@ rustflags = ["-C", "link-arg=/STACK:67108864"]
 # rustc 1.99 overflow 8 MiB compiling this crate in release on Windows/macOS.
 # 64 MiB covers both, and is what the msvc binaries' main thread gets above.
 # (Windows only reserves it.)
+[build]
+# Disable sccache / any global rustc wrapper for this workspace.
+rustc-wrapper = ""
+
 [env]
 RUST_MIN_STACK = "67108864"
+# Prevent manifold-csg-sys CMake builds from routing C/C++ compiles through sccache.
+MANIFOLD_CSG_NO_SCCACHE = "1"
 # UI tests render through iced_test, which picks wgpu by default. Several
 # test threads opening GPU devices at once crash the driver (SIGSEGV, about
 # every other parallel `cargo test` run); the software renderer is safe.
