@@ -10,6 +10,13 @@
 * 每个实例用自己的 APPDATA / TEMP，不碰用户的 settings.json。
 * 端口只用 3210-3259：协同服务器 3240（或给定端口），GUI 3210-3239。要和同一台
   机器上别的在跑的实例错开时，用 OCS_E2E_PORT_SHIFT 把整段平移（`shifted()`）。
+* GUI 的端口先查后用（VAL-INFRA-008）：不在 3210-3239（平移之后的那一段）里的直接
+  拒绝；已经有人在监听的，在这一段里换一个；每次启动记一行到 logs/gui-starts.jsonl。
+* 等就绪有上限（VAL-INFRA-014）：到时还没就绪的实例判为不可用——结束进程、留下
+  日志尾部、换一个端口再起一次，只重试这一次（logs/gui-retries.jsonl）。
+* 就绪过的实例中途不见了（VAL-INFRA-007）：记下退出码、日志尾部和时刻
+  （logs/vanished-*.json），场景以退出码 75 结束，由入口把整个场景重跑一次；
+  重跑时又不见了，结果里记一条 FAIL，不再跑第三次。
 * 结束时把自己起的进程全部关掉（`cleanup()`）。
 
 路径不写死，由本文件所在的位置和环境变量决定：
@@ -28,6 +35,7 @@
 import base64
 import ctypes
 import ctypes.wintypes as wt
+import http.client
 import json
 import os
 import secrets
@@ -77,6 +85,32 @@ PORT_SHIFT = int(os.environ.get("OCS_E2E_PORT_SHIFT") or 0)
 def shifted(port):
     """A port of the contract's range (3210-3259), moved by OCS_E2E_PORT_SHIFT."""
     return port + PORT_SHIFT
+
+
+GUI_PORTS = (3210, 3239)   # the contract's range for GUI instances, both ends included (VAL-INFRA-008)
+READY_BUDGET = 60          # seconds the contract gives an instance to become ready (VAL-INFRA-001, 014)
+VANISHED_EXIT = 75         # exit code of a scenario that lost an instance; the entry then runs it once more
+SCENARIO = Path(sys.argv[0]).stem
+ATTEMPT = int(os.environ.get("OCS_E2E_ATTEMPT") or 1)
+
+
+def gui_port_range():
+    """The GUI range as this run uses it: the contract's, moved by the port shift."""
+    return shifted(GUI_PORTS[0]), shifted(GUI_PORTS[1])
+
+
+class InstanceVanished(SystemExit):
+    """A GUI instance that was ready is gone, and this script neither ended it
+    nor told it to quit (VAL-INFRA-007). Raised out of `Gui.api()` once what
+    happened is written down; it ends the scenario with VANISHED_EXIT, and the
+    entry that started the scenario keeps this attempt and runs it once more.
+    `Results.summary()` raises it too, so a loss noticed where the exception
+    ends nothing (a worker thread) still ends the scenario the same way."""
+
+    def __init__(self, record):
+        super().__init__(VANISHED_EXIT)
+        self.record = record
+
 
 for _d in (ROOT, LOGS, SHOTS, WORK):
     _d.mkdir(parents=True, exist_ok=True)
@@ -134,6 +168,7 @@ k32.AssignProcessToJobObject.argtypes = [wt.HANDLE, wt.HANDLE]
 k32.AssignProcessToJobObject.restype = wt.BOOL
 
 _started = []          # everything this process started, for cleanup()
+_vanished = []         # what was written down about each instance this process lost (Gui.check_vanished)
 _desktop = {"name": None, "handle": None}
 
 # The repository's own hidden-desktop library (merged from the other line at
@@ -316,6 +351,15 @@ class Gui:
         self.thread_id = 0
         self.launched = 0.0
         self.starts = 0
+        self.asked = self.port     # what the scenario named; start() may move it inside the range
+        self.avoid = set()         # ports start() must not pick (the one a retry is leaving)
+        self.port_check = []       # [port, "free" | "listening" | "held by this run"], in the order looked at
+        self.was_ready = False
+        self.leaving = False       # the scenario told it to quit: its going away is expected
+        self.gone = None           # what was written down when it vanished
+        self.retried = None        # what was written down when wait_ready() started it once more
+        self.polls = 0             # /ready requests of the last wait_ready()
+        self.ready_at = None       # when /ready first answered 200 (epoch seconds)
 
     def args(self):
         a = []
@@ -349,7 +393,40 @@ class Gui:
             except OSError:
                 pass
 
+    def pick_port(self):
+        """VAL-INFRA-008: a GUI port lies inside the range, and nothing listens on
+        it before the instance starts. A port outside the range is refused; one
+        that is taken gives way to another port inside the range."""
+        low, high = gui_port_range()
+        if not low <= self.port <= high:
+            raise ValueError(f"gui {self.name}: port {self.port} is outside the GUI range {low}-{high}")
+        held = {obj.port for kind, _pid, obj in _started if kind == "gui" and obj is not self and obj.running()}
+        self.port_check = []
+        for port in [self.port] + [p for p in range(high, low - 1, -1) if p != self.port]:
+            if port in self.avoid:
+                continue
+            state = "held by this run" if port in held else ("listening" if port_listening(port) else "free")
+            self.port_check.append([port, state])
+            if state == "free":
+                if port != self.port:
+                    why = "is the one this retry leaves" if self.port in self.avoid else "is not free"
+                    say(f"gui {self.name}: port {self.port} {why}, using {port} instead")
+                self.port = port
+                return port
+        raise RuntimeError(f"gui {self.name}: no free port in {low}-{high}: {self.port_check}")
+
+    def record_start(self):
+        """One line per start: the command line and what the port check found."""
+        low, high = gui_port_range()
+        entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "epoch": round(self.launched, 3), "scenario": SCENARIO,
+                 "gui": self.name, "start": self.starts, "pid": self.pid, "asked": self.asked, "port": self.port,
+                 "range": [low, high], "checked": self.port_check, "args": self.args()}
+        with open(LOGS / "gui-starts.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
     def start(self):
+        self.pick_port()
+        say(f"gui {self.name}: port check before start: {self.port_check}")
         desktop = hidden_desktop()
         self.appdata.mkdir(parents=True, exist_ok=True)
         # What an earlier, killed run of this instance left behind is not this run's.
@@ -389,6 +466,11 @@ class Gui:
         k32.CloseHandle(info.hThread)
         k32.AssignProcessToJobObject(job(), self.process)
         _started.append(("gui", self.pid, self))
+        self.was_ready = False
+        self.leaving = False
+        self.gone = None
+        self.retried = None
+        self.record_start()
         say(f"gui {self.name} pid={self.pid} port={self.port} desktop={desktop} args={' '.join(self.args())}")
         return self
 
@@ -443,6 +525,66 @@ class Gui:
                 return e.code, json.loads(raw)
             except ValueError:
                 return e.code, {"raw": raw.decode("utf-8", "replace")}
+        except (OSError, http.client.HTTPException) as error:
+            self.check_vanished(error, f"{method} /api/v1{path}")
+            raise
+
+    def ready_refused(self):
+        """True when a connection to /api/v1/ready is refused: nothing listens there."""
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/v1/ready",
+                                     headers={"Authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=3) as r:
+                r.read()
+            return False
+        except urllib.error.HTTPError:
+            return False
+        except urllib.error.URLError as e:
+            return isinstance(e.reason, ConnectionRefusedError)
+        except (OSError, http.client.HTTPException):
+            return False
+
+    def check_vanished(self, error, what):
+        """VAL-INFRA-007: tell an instance that vanished from an ordinary failure.
+
+        Vanished means: it was ready, this script neither ended it nor told it to
+        quit, and now its process has exited or /api/v1/ready refuses the
+        connection three times in a row. What happened is written down (exit
+        code, tail of the log, time) and the scenario ends with VANISHED_EXIT.
+        Anything else returns, and the caller raises the error it had.
+        """
+        if not self.was_ready or self.leaving or self.process is None:
+            return
+        if self.gone is not None:
+            raise InstanceVanished(self.gone)
+        if self.running():
+            if not isinstance(getattr(error, "reason", error), ConnectionError):
+                return                      # a timeout is not a refusal
+            for _ in range(3):
+                if not self.running():
+                    break
+                if not self.ready_refused():
+                    return
+                time.sleep(0.5)
+        exited = not self.running()
+        record = {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "scenario": SCENARIO, "attempt": ATTEMPT,
+            "gui": self.name, "pid": self.pid, "port": self.port,
+            "how": "process exited" if exited else "/api/v1/ready refused the connection 3 times in a row",
+            "exit_code": self.exit_code() if exited else None,
+            "request": what, "error": str(error),
+            "args": self.args(), "log_tail": log_tail(self.err_text()),
+        }
+        path = LOGS / f"vanished-{SCENARIO}-{self.name}-{time.strftime('%Y%m%d-%H%M%S')}.json"
+        path.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
+        record["path"] = str(path)
+        self.gone = record
+        _vanished.append(record)
+        code = f" with exit code {record['exit_code']}" if exited else ""
+        say(f"!!! instance vanished: gui {self.name} pid={self.pid} port={self.port}: {record['how']}{code} "
+            f"(noticed at {what}); written to {path.name}; the scenario ends with exit code {VANISHED_EXIT} "
+            f"and the entry runs it once more")
+        raise InstanceVanished(record)
 
     def ready(self, timeout=5):
         try:
@@ -451,18 +593,73 @@ class Gui:
             return 0, {"error": str(e)}
 
     def wait_ready(self, seconds=120):
+        """Seconds from the start of the process to the first 200 of /ready, or None.
+
+        VAL-INFRA-014: an instance that is not ready within `seconds`, or whose
+        process ended before it was, is unusable. It is ended, the tail of its
+        log is kept, and one more is started on another port. There is no third.
+        """
+        if self.process is None:
+            return None                 # never started, or ended by the scenario itself: nothing to wait for
+        took = self._wait_ready(seconds)
+        if took is not None or self.retried is not None:
+            return took
+        self.restart_elsewhere(seconds)
+        took = self._wait_ready(seconds)
+        record = self.retried
+        if took is None:
+            record["retry_result"] = "not ready either; ended, no third start"
+            record["retry_log_tail"] = log_tail(self.err_text())
+            self.kill()
+        else:
+            record["retry_result"] = f"ready after {took:.1f}s"
+        with open(LOGS / "gui-retries.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        say(f"gui {self.name} second start, port {record['retry_port']}: {record['retry_result']}")
+        return took
+
+    def _wait_ready(self, seconds):
         deadline = time.time() + seconds
-        while time.time() < deadline:
+        self.polls = 0
+        while self.process is not None and time.time() < deadline:
             if not self.running():
                 say(f"gui {self.name} exited early: code {self.exit_code()}")
                 return None
+            self.polls += 1
             status, body = self.ready()
             if status == 200:
-                elapsed = time.time() - self.launched
+                self.ready_at = time.time()
+                self.was_ready = True
+                elapsed = self.ready_at - self.launched
                 say(f"gui {self.name} ready in {elapsed:.1f}s")
                 return elapsed
             time.sleep(0.4)
         return None
+
+    def restart_elsewhere(self, seconds):
+        """The instance did not become ready: end it, keep the tail of its log,
+        and start one more on another port of the range."""
+        ended = not self.running()
+        record = {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "scenario": SCENARIO, "gui": self.name,
+            "pid": self.pid, "port": self.port,
+            "launched": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self.launched)),
+            "waited_seconds": round(time.time() - self.launched, 1), "budget_seconds": seconds, "polls": self.polls,
+            "state": (f"its process had ended with code {self.exit_code()}" if ended
+                      else "its process was running and /api/v1/ready never answered 200"),
+            "args": self.args(), "log_tail": log_tail(self.err_text()),
+        }
+        left = self.port
+        self.kill()
+        say(f"gui {self.name} not ready within {seconds}s on port {left} ({record['state']}): pid={record['pid']} "
+            f"ended, the tail of its log kept, starting once more on another port")
+        self.avoid = {left}
+        try:
+            self.start()
+        finally:
+            self.avoid = set()
+        record["retry_port"], record["retry_pid"] = self.port, self.pid
+        self.retried = record
 
     def state(self):
         return self.api("GET", "/state")[1] or {}
@@ -479,6 +676,8 @@ class Gui:
     def run(self, cmd, doc=None, **more):
         body = {"document_id": doc if doc is not None else self.doc_id(), "cmd": cmd}
         body.update(more)
+        if str(cmd).strip().upper() == "QUIT":
+            self.leaving = True         # from here on, its going away is what the scenario asked for
         return self.api("POST", "/run", body)
 
     def op(self, name, doc=None, **fields):
@@ -726,6 +925,11 @@ def this_run(text):
     return text[cut + 1:] if cut >= 0 else text
 
 
+def log_tail(text, lines=40, width=400):
+    """The last lines an instance wrote since its last start, for a record of what went wrong."""
+    return [line[:width] for line in this_run(text).splitlines()[-lines:]]
+
+
 def lines_with(text, *needles):
     """Lines of this run's log that contain every needle."""
     return [line for line in this_run(text).splitlines() if all(n in line for n in needles)]
@@ -817,6 +1021,8 @@ class Results:
         self.rows = []
         # Where the pointer and the foreground window were before anything ran.
         self.desktop_before = hd.desktop_state()
+        if ATTEMPT > 1:
+            self.note(f"attempt {ATTEMPT}: the first attempt lost an instance and is kept as {scenario}.attempt1.result.txt")
 
     def note(self, text):
         say(f"      {text}")
@@ -845,6 +1051,18 @@ class Results:
         return p
 
     def summary(self):
+        # VAL-INFRA-007: a scenario that lost an instance ends with VANISHED_EXIT
+        # and is run once more by the entry. The second attempt is the last:
+        # losing an instance again is a failure, there is no third attempt.
+        lost = list(_vanished)
+        if lost:
+            what = "; ".join(f"gui {v['gui']} on port {v['port']}: {v['how']}"
+                             + (f", exit code {v['exit_code']}" if v["exit_code"] is not None else "") for v in lost)
+            if ATTEMPT > 1:
+                self.check("harness", False, f"attempt {ATTEMPT} lost an instance as well ({what}); a scenario is not run a third time")
+            else:
+                self.note(f"this attempt lost an instance ({what}): the scenario ends with exit code {VANISHED_EXIT}; "
+                          f"an entry keeps this file as {self.scenario}.attempt1.result.txt and runs the scenario once more")
         passed = sum(1 for _, ok, _ in self.rows if ok)
         failed = sum(1 for _, ok, _ in self.rows if not ok)
         # Whether the run reached the desktop a person is using: the pointer
@@ -854,4 +1072,6 @@ class Results:
         say(line)
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+        if lost:
+            raise InstanceVanished(lost[0])
         return failed == 0

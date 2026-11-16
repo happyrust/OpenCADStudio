@@ -1,29 +1,40 @@
-# Runs the end-to-end scenarios in four groups, one after another, and writes
-# one summary: the eleven conflict and cross-area scenarios (run_cross.ps1),
-# the eight desktop-client scenarios (run_all.ps1), the later cross-area
-# scenarios (every y<digit>*.py in this directory), then the server-process
-# scenarios (every s<digit>*.py: the collaboration server and WS sessions
-# only, no GUI).
+# Runs the end-to-end scenarios in five groups, one after another, and writes
+# one summary: the harness's own scenarios (t00_smoke, t02_harness_rules,
+# t03_vanish_retry, t04_entry_rerun), the eleven conflict and cross-area
+# scenarios (run_cross.ps1), the eight desktop-client scenarios (run_all.ps1), the later
+# cross-area scenarios (every y<digit>*.py in this directory), then the
+# server-process scenarios (every s<digit>*.py: the collaboration server and
+# WS sessions only, no GUI). Whatever was picked, r01_entry_rules.py runs last:
+# it checks the rules of the run as a whole (nothing of the run in the
+# repository, the port of every GUI start, the dependency tree).
 #
-#   powershell -File run19.ps1 [-Label <name>] [-Only19] [-OnlyNew] [-OnlyServer]
+#   powershell -File run19.ps1 [-Label <name>] [-OnlyHarness] [-Only19] [-OnlyNew] [-OnlyServer]
 #                              [-EvidenceDir <dir>] [-BinDir <dir>] [-PortShift <n>]
 #
 # -Label     names this run: the summary is summary-<Label>-<time>.txt in the
 #            evidence directory.
-# -Only19    only the first two groups; -OnlyNew only the third; -OnlyServer
-#            only the fourth. Given together, they add up.
+# -OnlyHarness only the first group; -Only19 only the second and the third;
+#            -OnlyNew only the fourth; -OnlyServer only the fifth. Given
+#            together, they add up.
 # -EvidenceDir, -BinDir and -PortShift are explained in e2e_env.ps1; each can
 # be given by its environment variable instead.
 #
 # Drawings the scenarios read but do not make are made first when missing: the
 # M3 baseline drawing (by the ignored test write_the_m3_baseline_drawing, which
 # needs cargo) and the two seed drawings (x00_seed.py, t01_seed.py). The
-# server-process scenarios read no drawing, so -OnlyServer makes none.
+# harness's own and the server-process scenarios read none of them, so
+# -OnlyHarness and -OnlyServer make none.
+# A scenario that loses an application instance is run once more and both
+# results are kept (Invoke-E2eScenario in e2e_env.ps1); the summary shows the
+# first attempt on a line of its own and does not count it. A scenario is
+# clean when no check failed and its process ended with exit code 0.
 # No process this run did not start is touched; the summary only records how
 # many other instances of the two programs were running, to explain a failure by.
-param([string]$Label = 'run', [switch]$Only19, [switch]$OnlyNew, [switch]$OnlyServer,
+# The only git command is the read-only `git status` of r01_entry_rules.py.
+param([string]$Label = 'run', [switch]$OnlyHarness, [switch]$Only19, [switch]$OnlyNew, [switch]$OnlyServer,
       [string]$EvidenceDir = '', [string]$BinDir = '', [string]$PortShift = '')
-$picked = $Only19 -or $OnlyNew -or $OnlyServer
+$picked = $OnlyHarness -or $Only19 -or $OnlyNew -or $OnlyServer
+$runHarness = (-not $picked) -or $OnlyHarness
 $run19 = (-not $picked) -or $Only19
 $runNew = (-not $picked) -or $OnlyNew
 $runServer = (-not $picked) -or $OnlyServer
@@ -44,10 +55,17 @@ $version = (& (Join-Path $e2e.Bin 'OpenCADStudio.exe') --version 2>&1 | Select-O
 Say "### $(Get-Date -Format s) label=$Label bin=$($e2e.Bin) port-shift=$($e2e.PortShift) :: $version"
 Say "other instances running at start: $(@(Get-E2eProcesses $e2e -Other).Count)"
 
-# Inputs the scenarios read but do not make.
 $m7work = Join-Path $root 'm7\work'; $m6work = Join-Path $root 'm6\work'
 $m7logs = Join-Path $root 'm7\logs'; $m6logs = Join-Path $root 'm6\logs'
 New-Item -ItemType Directory -Force -Path $m7work, $m6work, $m7logs, $m6logs | Out-Null
+
+# Before anything runs: when the run began and what the repository looked
+# like. r01_entry_rules.py compares with it at the end.
+Push-Location $e2e.Scripts
+python r01_entry_rules.py --begin *> (Join-Path $m7logs 'r01_begin.console.txt'); Say "run rules: the state before the run is recorded, exit=$LASTEXITCODE"
+Pop-Location
+
+# Inputs the scenarios read but do not make.
 $m3 = Join-Path $m7work 'PID-1101-m3.dwg'
 $drawings = $run19 -or $runNew
 if ($drawings -and -not (Test-Path $m3)) {
@@ -60,26 +78,46 @@ if ($drawings -and -not (Test-Path $m3)) {
 }
 Push-Location $e2e.Scripts
 if ($drawings -and -not (Test-Path (Join-Path $m7work 'PID-1101-seed.dwg'))) {
-    python x00_seed.py *> (Join-Path $m7logs 'x00_seed.console.txt'); Say "x00_seed exit=$LASTEXITCODE"
+    Invoke-E2eScenario -E2e $e2e -Suite 'm7' -Name 'x00_seed' -Summary $out -Descriptors
 }
 if ($drawings -and -not (Test-Path (Join-Path $m6work 'PID-1101-seed.dwg'))) {
-    python t01_seed.py *> (Join-Path $m6logs 't01_seed.console.txt'); Say "t01_seed exit=$LASTEXITCODE"
+    Invoke-E2eScenario -E2e $e2e -Suite 'm6' -Name 't01_seed' -Summary $out
 }
 Pop-Location
 
 $rows = @()
+function Read-Row([string]$suite, [string]$name, [string]$log, [int]$code, [bool]$first) {
+    $tail = if (Test-Path $log) { (Get-Content $log -Encoding UTF8 | Select-String -Pattern '=== .*: (\d+) PASS / (\d+) FAIL ===' | Select-Object -Last 1) } else { $null }
+    $pass = 0; $fail = -1
+    if ($tail) { $pass = [int]$tail.Matches[0].Groups[1].Value; $fail = [int]$tail.Matches[0].Groups[2].Value }
+    [pscustomobject]@{ Suite = $suite; Name = $name; Pass = $pass; Fail = $fail; Exit = $code; First = $first }
+}
+# One row per scenario, from its console log (the checks) and its runs file
+# (the exit code of each attempt). A first attempt that lost an instance gets
+# a row of its own, marked First.
 function Collect([string]$suite, [string[]]$names) {
     foreach ($name in $names) {
-        $log = Join-Path $root "$suite\logs\$name.console.txt"
-        $tail = if (Test-Path $log) { (Get-Content $log -Encoding UTF8 | Select-String -Pattern '=== .*: (\d+) PASS / (\d+) FAIL ===' | Select-Object -Last 1) } else { $null }
-        if ($tail) {
-            $script:rows += [pscustomobject]@{ Suite = $suite; Name = $name; Pass = [int]$tail.Matches[0].Groups[1].Value; Fail = [int]$tail.Matches[0].Groups[2].Value }
-        } else {
-            $script:rows += [pscustomobject]@{ Suite = $suite; Name = $name; Pass = 0; Fail = -1 }
+        $logs = Join-Path $root "$suite\logs"
+        $runs = Join-Path $logs "$name.runs.txt"
+        $codes = @()
+        if (Test-Path $runs) {
+            $codes = @(Get-Content $runs | Where-Object { $_ -match '^attempt=\d+ exit=-?\d+' } |
+                ForEach-Object { [int]([regex]::Match($_, 'exit=(-?\d+)').Groups[1].Value) })
         }
+        if ($codes.Count -gt 1) {
+            $script:rows += Read-Row $suite "$name.attempt1" (Join-Path $logs "$name.attempt1.console.txt") $codes[0] $true
+        }
+        $last = -1
+        if ($codes.Count -gt 0) { $last = $codes[$codes.Count - 1] }
+        $script:rows += Read-Row $suite $name (Join-Path $logs "$name.console.txt") $last $false
     }
 }
 
+if ($runHarness) {
+    $harness = 't00_smoke', 't02_harness_rules', 't03_vanish_retry', 't04_entry_rerun'
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $client -Only ($harness -join ',') -New | ForEach-Object { Say "  $_" }
+    Collect 'm6' $harness
+}
 if ($run19) {
     $m7 = 'c01_field_merge', 'c02_object_topology', 'c03_resolution', 'x01_journey', 'x02_claim_exclusive', 'x04_readonly_role',
           'x05_m3_persistence', 'x06_first_visit', 'x07_conflict_closure', 'x10_concurrent_insert', 'x12_after_session'
@@ -105,15 +143,29 @@ if ($runServer) {
         Collect 'm7' $server
     }
 }
+# The rules of the run as a whole, last.
+& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $cross -Only 'r01_entry_rules' -New | ForEach-Object { Say "  $_" }
+Collect 'm7' @('r01_entry_rules')
 
 Say ''
-foreach ($row in $rows) { Say ("{0,-3} {1,-28} pass={2,3} fail={3,2}" -f $row.Suite, $row.Name, $row.Pass, $row.Fail) }
-$old = @($rows | Where-Object { $_.Name -notmatch '^[ys]\d' })
-$newRows = @($rows | Where-Object { $_.Name -match '^y\d' })
-$serverRows = @($rows | Where-Object { $_.Name -match '^s\d' })
-$sum = { param($set) (($set | Measure-Object -Property Pass -Sum).Sum, (($set | Where-Object { $_.Fail -ne 0 }) | Measure-Object).Count) }
+foreach ($row in $rows) {
+    $note = ''
+    if ($row.First) { $note = '  (first attempt: lost an instance; kept, not counted)' }
+    Say (("{0,-3} {1,-28} pass={2,3} fail={3,2} exit={4}" -f $row.Suite, $row.Name, $row.Pass, $row.Fail, $row.Exit) + $note)
+}
+$counted = @($rows | Where-Object { -not $_.First })
+$harnessRows = @($counted | Where-Object { $_.Name -match '^t0\d' })
+$old = @($counted | Where-Object { $_.Name -notmatch '^([ysr]\d|t0\d)' })
+$newRows = @($counted | Where-Object { $_.Name -match '^y\d' })
+$serverRows = @($counted | Where-Object { $_.Name -match '^s\d' })
+$ruleRows = @($counted | Where-Object { $_.Name -match '^r\d' })
+$sum = { param($set) (($set | Measure-Object -Property Pass -Sum).Sum, (($set | Where-Object { $_.Fail -ne 0 -or $_.Exit -ne 0 }) | Measure-Object).Count) }
+if ($harnessRows.Count) { $s = & $sum $harnessRows; Say ("harness scenarios: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $harnessRows.Count, $s[0], $s[1]) }
 if ($old.Count) { $s = & $sum $old; Say ("old scenarios: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $old.Count, $s[0], $s[1]) }
 if ($newRows.Count) { $s = & $sum $newRows; Say ("new scenarios: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $newRows.Count, $s[0], $s[1]) }
 if ($serverRows.Count) { $s = & $sum $serverRows; Say ("server scenarios: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $serverRows.Count, $s[0], $s[1]) }
+if ($ruleRows.Count) { $s = & $sum $ruleRows; Say ("run rules: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $ruleRows.Count, $s[0], $s[1]) }
+$twice = @($rows | Where-Object { $_.First } | ForEach-Object { $_.Name -replace '\.attempt1$', '' })
+if ($twice.Count) { Say "run twice (the first attempt lost an instance): $($twice -join ', ')" }
 Say "other instances running at end: $(@(Get-E2eProcesses $e2e -Other).Count)"
 Say "### $(Get-Date -Format s) done -> $out"

@@ -1,15 +1,32 @@
 # -*- coding: utf-8 -*-
 """VAL-CLI-001 (welcome and session), VAL-CLI-002 (15 s heartbeat cadence),
-VAL-CLI-016 (a clean quit retires the session at once).
+VAL-CLI-016 (a clean quit retires the session at once), and on the way
+VAL-INFRA-012 (the GUI and the server run side by side, each on its own port).
 
 One GUI instance (u1, 3210) against a fresh server on 3240 with the default
 90 s heartbeat timeout. Takes a little over a minute: 002 watches 60 s.
 """
 import json
+import subprocess
 import sys
 import time
 
 import m6h
+
+
+def listeners(*ports):
+    """Which process listens on each of these ports, as Get-NetTCPConnection tells it: {port: {pid}} and its lines."""
+    command = (f"Get-NetTCPConnection -State Listen -LocalPort {','.join(str(p) for p in ports)} -ErrorAction SilentlyContinue | "
+               "ForEach-Object { '{0} {1} {2}' -f $_.LocalAddress, $_.LocalPort, $_.OwningProcess }")
+    out = subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True, text=True, errors="replace")
+    lines = [line.strip() for line in out.stdout.splitlines() if line.strip()]
+    owners = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+            owners.setdefault(int(parts[1]), set()).add(int(parts[2]))
+    return owners, lines
+
 
 r = m6h.Results("t20_session")
 try:
@@ -21,6 +38,16 @@ try:
     # ── VAL-CLI-001 ───────────────────────────────────────────────────────
     g = m6h.Gui("t20-u1", 3210, dwg=dwg, user="u1").start()
     r.check("setup", g.wait_ready(180) is not None, "u1 GUI 就绪")
+    # VAL-INFRA-012: both programs up at the same moment, each answering on its own port.
+    gui_status, gui_body = g.ready()
+    srv_status, srv_body = srv.health()
+    owners, listening = listeners(g.port, srv.port)
+    r.check("VAL-INFRA-012", gui_status == 200 and (gui_body or {}).get("ready") is True and srv_status == 200
+            and g.running() and srv.running() and g.port != srv.port
+            and owners.get(g.port) == {g.pid} and owners.get(srv.port) == {srv.proc.pid},
+            f"GUI（--http {g.port}）和协同服务器（--port {srv.port}）同时在跑、各用各的端口：GET /api/v1/ready → {gui_status}，"
+            f"GET /health → {srv_status} {json.dumps(srv_body, ensure_ascii=False)[:120]}；两个端口的监听方"
+            f"（Get-NetTCPConnection，地址 端口 进程号）{listening}，正是 GUI 进程 {g.pid} 和服务器进程 {srv.proc.pid}")
     st = g.wait_status(lambda s: s.get("connected") and s.get("session_id"), 30)
     t0 = time.time()
     r.check("setup", st is not None, "u1 已连接")

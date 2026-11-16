@@ -1,15 +1,20 @@
 # Run the M7 scenarios one after another, each to its own console log, and
 # check after each one that nothing it started is left running and that it
-# left no automation descriptor behind. No git commands in here.
+# left no automation descriptor behind. No git commands in here; of the
+# scenarios, only r01_entry_rules runs one, a read-only `git status`.
 #
 #   powershell -File run_cross.ps1 [-Only <name>[,<name>...]] [-New]
 #                                  [-EvidenceDir <dir>] [-BinDir <dir>] [-PortShift <n>]
 #
 # -Only picks from the eleven scenarios listed below; with -New it names the
-# scenarios to run itself (the later ones: y03 / y08 / y09, and the
-# server-process ones, s01 ... s04, which start no GUI).
+# scenarios to run itself (the later ones: y03 / y08 / y09, the
+# server-process ones, s01 ... s04, which start no GUI, and r01_entry_rules,
+# which run19.ps1 runs last).
 # -EvidenceDir, -BinDir and -PortShift are explained in e2e_env.ps1; each can
 # be given by its environment variable instead. Logs go to <EvidenceDir>\m7.
+#
+# A scenario that loses an application instance (exit code 75) is run once
+# more and both results are kept: Invoke-E2eScenario in e2e_env.ps1.
 param([string[]]$Only = @(), [switch]$New, [string]$EvidenceDir = '', [string]$BinDir = '', [string]$PortShift = '')
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $ErrorActionPreference = 'Continue'
@@ -27,21 +32,7 @@ $summary = Join-Path $root 'logs\run_cross.summary.txt'
 "### $(Get-Date -Format s) run_cross: $($all -join ', ')" | Out-File -Encoding utf8 -Append $summary
 Push-Location $e2e.Scripts
 try {
-    foreach ($name in $all) {
-        $log = Join-Path $root "logs\$name.console.txt"
-        $sw = [Diagnostics.Stopwatch]::StartNew()
-        python "$name.py" *> $log
-        $code = $LASTEXITCODE
-        $left = @(Get-E2eProcesses $e2e)
-        $descriptors = @(Get-ChildItem (Join-Path $root 'work\appdata') -Recurse -Filter '*.json' -ErrorAction SilentlyContinue |
-            Where-Object { $_.DirectoryName -match '\\OpenCADStudio\\automation$' })
-        $tail = (Get-Content $log -Encoding UTF8 | Select-String -Pattern '^\d\d:\d\d:\d\d === ' | Select-Object -Last 1).Line
-        $desk = (Get-Content $log -Encoding UTF8 | Select-String -Pattern 'desktop (untouched|CHANGED)' | Select-Object -Last 1).Line
-        $line = "$(Get-Date -Format s) $name exit=$code $([int]$sw.Elapsed.TotalSeconds)s leftover=$($left.Count) descriptors=$($descriptors.Count) :: $tail :: $desk"
-        $line | Out-File -Encoding utf8 -Append $summary
-        Write-Host $line
-        foreach ($p in $left) { Write-Host "    LEFTOVER pid=$($p.ProcessId) $($p.CommandLine)" }
-    }
+    foreach ($name in $all) { Invoke-E2eScenario -E2e $e2e -Suite 'm7' -Name $name -Summary $summary -Descriptors }
 } finally {
     Pop-Location
 }

@@ -28,8 +28,9 @@ function Get-Hunks([string]$path) {
     if ($null -ne $body) { $hunks += [pscustomobject]@{ Head = $head; Body = ($body -join "`n") } }
     return $hunks
 }
-$before = Get-Hunks $Base
-$after = Get-Hunks $Current
+# @(...): one hunk comes back as a single object, which has no Count in Windows PowerShell 5.1.
+$before = @(Get-Hunks $Base)
+$after = @(Get-Hunks $Current)
 $known = @{}
 foreach ($h in $before) { $known[$h.Body] = 1 + [int]$known[$h.Body] }
 $new = @()
