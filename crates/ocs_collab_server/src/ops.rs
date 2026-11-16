@@ -76,12 +76,25 @@ pub struct Outcome {
 impl DrawingOps {
     /// The drawing as the op log has it: every applied change replayed in
     /// order, then the revision the `drawings` row says.
+    ///
+    /// The tags clients listed as in their own copies ([`report_tags`]) go
+    /// in between the ops, each where it was heard: behind the op that took
+    /// the drawing to the revision it was heard at, and ahead of the next —
+    /// which may be the one that takes it away again.
     fn load(state: &AppState, drawing_id: &str) -> Self {
         let mut model = DrawingModel::default();
         if let Some(store) = &state.store {
+            let reported = store.reported_tags(drawing_id).unwrap_or_else(|err| {
+                eprintln!("[ocs_collab_server] 读取 {drawing_id} 上报的位号失败：{err}");
+                Vec::new()
+            });
+            let mut reported = reported.into_iter().peekable();
             match store.load_ops(drawing_id, 0) {
                 Ok(ops) => {
                     for op in ops {
+                        while let Some((tag, at)) = reported.next_if(|(_, at)| *at < op.revision) {
+                            model.report_tags([tag], at);
+                        }
                         // A pairing is the server's to say: one a client
                         // sent was passed on as it came and is not one.
                         let servers = op.session_id.starts_with(LINK_SESSION_PREFIX);
@@ -97,6 +110,9 @@ impl DrawingOps {
                     }
                 }
                 Err(err) => eprintln!("[ocs_collab_server] 读取 {drawing_id} 的操作日志失败：{err}"),
+            }
+            for (tag, at) in reported {
+                model.report_tags([tag], at);
             }
         }
         model.set_revision(ws::current_revision(state, drawing_id));
@@ -531,6 +547,59 @@ pub fn objects(
         })
         .collect();
     (drawing.model.revision(), items)
+}
+
+/// Registers the tags a client says the objects of its own copy of
+/// `drawing_id` carry (`hello.existing_tags`): no op told of them, and the
+/// server gives none of them to a symbol somebody else places. `drawings`
+/// is the caller's lock on the drawings; `seen` is the revision the
+/// client's copy is at, `current` the one the drawing is at.
+///
+/// The tags that are news are kept in the store with `current` — the
+/// point of the op log they came in at — so that a server that starts
+/// again has them ([`DrawingOps::load`]). Returns how many were news.
+pub fn report_tags(
+    state: &AppState,
+    drawings: &mut HashMap<String, DrawingOps>,
+    drawing_id: &str,
+    tags: &[String],
+    seen: i64,
+    current: i64,
+) -> usize {
+    // Nothing listed: the drawing is not read for it.
+    if tags.is_empty() {
+        return 0;
+    }
+    let drawing = drawings
+        .entry(drawing_id.to_owned())
+        .or_insert_with(|| DrawingOps::load(state, drawing_id));
+    let news = drawing.model.report_tags(tags, seen);
+    if news.is_empty() {
+        return 0;
+    }
+    if let Some(store) = &state.store {
+        if let Err(err) = store.report_tags(drawing_id, &news, current) {
+            eprintln!("[ocs_collab_server] 记录 {drawing_id} 上报的位号失败：{err}");
+        }
+    }
+    news.len()
+}
+
+/// The tags in use in some client's own copy of the drawing that no op
+/// told of ([`report_tags`]), in order — or `object_ref` alone, when one is
+/// named and is one of them. With the objects [`objects`] lists, these are
+/// the tags a new symbol is not given.
+pub fn reported_tags(state: &AppState, drawing_id: &str, object_ref: Option<&str>) -> Vec<String> {
+    let mut drawings = state.drawings.lock().expect("drawings mutex poisoned");
+    let drawing = drawings
+        .entry(drawing_id.to_owned())
+        .or_insert_with(|| DrawingOps::load(state, drawing_id));
+    drawing
+        .model
+        .reported_tags()
+        .filter(|tag| object_ref.is_none_or(|wanted| wanted == tag.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// The three rulings (`architecture.md` §2.5).
@@ -2656,5 +2725,147 @@ mod tests {
         let later = submit(&state, &mut u1, base, "op-grade-2", line_field("L-1001", "管道等级", "B2")).await;
         assert_eq!(told(&later).len(), 1, "{later:?}");
         assert_eq!(line_value(&state, OTHER, "L-1001", "管道等级").as_deref(), Some("A1A"));
+    }
+
+    // ── The tags of a client's own copy (`hello.existing_tags`) ──────────
+
+    /// A `hello` from `user_id`, whose own copy of the drawing — at
+    /// revision `since` of the room, when it says so — has objects under
+    /// `tags`.
+    async fn join_with(
+        state: &AppState,
+        user_id: &str,
+        since: Option<i64>,
+        tags: &[&str],
+    ) -> Connection {
+        let mut conn = Connection::new("10.0.0.8");
+        let hello = ClientMessage::Hello {
+            user_id: user_id.into(),
+            drawing_id: DRAWING.into(),
+            mode: "协同编辑".into(),
+            client_version: "test".into(),
+            workspace: "plant-a".into(),
+            since,
+            existing_tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+        };
+        handle_message(state, &mut conn, hello, T0).await;
+        assert!(conn.session.is_some(), "hello must open a session");
+        conn
+    }
+
+    /// `conn` places a valve it calls `tag`: the tag the room hears it by.
+    async fn place(state: &AppState, conn: &mut Connection, op_id: &str, tag: &str) -> String {
+        let valve = json!({"kind": "insert_symbol", "type": "VALVE", "tag": tag,
+            "position": [0, 0]});
+        let base = base_of(state, conn).await;
+        let reactions = submit(state, conn, base, op_id, valve).await;
+        let (_, _, changes) = applied(&reactions).expect("the valve is placed");
+        changes[0]["tag"].as_str().expect("its tag").to_owned()
+    }
+
+    /// `conn` deletes what goes by `tag`.
+    async fn remove(state: &AppState, conn: &mut Connection, op_id: &str, tag: &str) {
+        let delete = json!({"kind": "delete_object", "object_ref": tag});
+        let base = base_of(state, conn).await;
+        let reactions = submit(state, conn, base, op_id, delete).await;
+        assert!(applied(&reactions).is_some(), "{reactions:?}");
+    }
+
+    /// The tags the server holds on a client's word alone.
+    fn on_word(state: &AppState) -> Vec<String> {
+        reported_tags(state, DRAWING, None)
+    }
+
+    /// Two people open a file each and work on one drawing. u1's has two
+    /// valves in it that never went through the room; u2's has neither.
+    /// u1 lists them as it joins, and the first valve u2 places — V-1001,
+    /// for all u2's copy knows — goes out under a tag neither copy has. It
+    /// used to keep V-1001, and u1's copy had two of them from then on.
+    ///
+    /// Once an op deletes what went by a tag, nobody's copy has it and it
+    /// can be given out.
+    #[tokio::test]
+    async fn collab_existing_tags_a_symbol_is_not_given_a_tag_another_copy_has() {
+        let state = state();
+        let mut u1 = join_with(&state, "u1", None, &["V-1001", "V-1002"]).await;
+        let mut u2 = join(&state, "u2").await;
+        assert_eq!(on_word(&state), ["V-1001", "V-1002"]);
+
+        assert_eq!(place(&state, &mut u2, "op-1", "V-1001").await, "V-1003");
+
+        remove(&state, &mut u1, "op-2", "V-1002").await;
+        assert_eq!(on_word(&state), ["V-1001"]);
+        assert_eq!(place(&state, &mut u2, "op-3", "V-1002").await, "V-1002");
+    }
+
+    /// What the server knows of a drawing is the op log, and what clients
+    /// said is in their own copies. A server that starts again has both:
+    /// the tags are kept beside the log, each at the point of the log it
+    /// was heard at, so that what an op took away after that is free again
+    /// and what was heard of after that is not.
+    #[tokio::test]
+    async fn collab_existing_tags_are_held_again_after_a_restart() {
+        let state = state();
+        let tags = ["V-1001", "V-1002", "V-1003", "V-1004"];
+        let mut u1 = join_with(&state, "u1", None, &tags).await;
+        // V-1002 and V-1003 are deleted. A third copy that always had a
+        // V-1003 of its own then joins. And a write that says nothing new
+        // drops the record that V-1002 was ever deleted: only its place in
+        // the log tells that the tag is free.
+        remove(&state, &mut u1, "op-1", "V-1002").await;
+        remove(&state, &mut u1, "op-2", "V-1003").await;
+        let _u3 = join_with(&state, "u3", None, &["V-1003"]).await;
+        let same = json!({"kind": "set_tag", "object_ref": "V-1002", "value": "V-1002"});
+        submit(&state, &mut u1, 2, "op-3", same).await;
+        assert_eq!(on_word(&state), ["V-1001", "V-1003", "V-1004"]);
+
+        state.drawings.lock().expect("drawings").clear();
+
+        assert_eq!(on_word(&state), ["V-1001", "V-1003", "V-1004"]);
+        let mut u2 = join(&state, "u2").await;
+        assert_eq!(place(&state, &mut u2, "op-4", "V-1001").await, "V-1002");
+        assert_eq!(place(&state, &mut u2, "op-5", "V-1003").await, "V-1005");
+    }
+
+    /// A copy that comes back lists what it has — and is behind: the room
+    /// deleted two valves since, and the replay that follows its welcome
+    /// takes them out of that copy too. Their tags are not registered, or
+    /// they would be held for objects nobody has. A copy that is sent no
+    /// replay keeps what it lists, and the tags stay taken.
+    #[tokio::test]
+    async fn collab_existing_tags_a_copy_that_is_behind_holds_no_tag_the_replay_takes_away() {
+        let state = state();
+        let mut u1 = join(&state, "u1").await;
+        place(&state, &mut u1, "op-1", "V-1001").await;
+        place(&state, &mut u1, "op-2", "V-1002").await;
+        remove(&state, &mut u1, "op-3", "V-1001").await;
+        remove(&state, &mut u1, "op-4", "V-1002").await;
+
+        // u2 left at revision 2 with both valves, and is sent op-3 and op-4.
+        let _u2 = join_with(&state, "u2", Some(2), &["V-1001", "V-1002"]).await;
+        assert!(on_word(&state).is_empty(), "{:?}", on_word(&state));
+        // u3's file has a V-1002 that was never the room's; u4 names a
+        // revision this drawing has not reached. Neither is sent a replay.
+        let _u3 = join_with(&state, "u3", None, &["V-1002"]).await;
+        let _u4 = join_with(&state, "u4", Some(9), &["V-1003"]).await;
+        assert_eq!(on_word(&state), ["V-1002", "V-1003"]);
+
+        assert_eq!(place(&state, &mut u1, "op-5", "V-1001").await, "V-1001");
+        assert_eq!(place(&state, &mut u1, "op-6", "V-1002").await, "V-1004");
+    }
+
+    /// Without a database the tags are still told apart, for as long as
+    /// this process lives.
+    #[tokio::test]
+    async fn collab_existing_tags_are_told_apart_without_a_database() {
+        let state = AppState::new(
+            None,
+            Some("no database".into()),
+            "missing.db",
+            SessionConfig::default(),
+        );
+        let _u1 = join_with(&state, "u1", None, &["V-1001"]).await;
+        let mut u2 = join(&state, "u2").await;
+        assert_eq!(place(&state, &mut u2, "op-1", "V-1001").await, "V-1002");
     }
 }

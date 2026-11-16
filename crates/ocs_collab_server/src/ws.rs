@@ -508,6 +508,7 @@ pub async fn handle_message(
         mode,
         workspace,
         since,
+        existing_tags,
         ..
     } = &message
     {
@@ -517,7 +518,18 @@ pub async fn handle_message(
                 "会话已完成 hello，重复的 hello 被拒绝",
             ))];
         }
-        return hello(state, conn, user_id, drawing_id, mode, workspace, *since, now).await;
+        return hello(
+            state,
+            conn,
+            user_id,
+            drawing_id,
+            mode,
+            workspace,
+            *since,
+            existing_tags,
+            now,
+        )
+        .await;
     }
 
     let Some(session) = conn.session.clone() else {
@@ -586,7 +598,10 @@ fn missed_ops(
 /// Opens a session for a `hello`: ensures the drawing row, applies the
 /// takeover rules and answers `welcome` + `peer_joined`. A session that
 /// says where its drawing was (`since`) is sent, right behind the
-/// `welcome`, every op the room applied after that (`VAL-CROSS-008`).
+/// `welcome`, every op the room applied after that (`VAL-CROSS-008`). One
+/// that lists the tags the objects of its own copy carry (`existing_tags`)
+/// has them registered, so that no symbol placed by anybody is given one
+/// of them.
 #[allow(clippy::too_many_arguments)]
 async fn hello(
     state: &AppState,
@@ -596,6 +611,7 @@ async fn hello(
     mode: &str,
     workspace: &str,
     since: Option<i64>,
+    existing_tags: &[String],
     now: i64,
 ) -> Vec<Reaction> {
     if let Some(store) = &state.store {
@@ -615,16 +631,35 @@ async fn hello(
     // What a returning session missed is read in the same step, for the
     // same reason: every op is then in the replay, or reaches the
     // subscription, and none is in both.
-    let (joined, base_revision, missed) = {
-        let _drawings = state.drawings.lock().expect("drawings mutex poisoned");
+    //
+    // The tags of the client's own copy are registered in that step as
+    // well, whether or not the session is then let in: they are judged
+    // against the drawing as it is at the revision read here, and a symbol
+    // placed right behind this `hello` already finds them taken.
+    let (joined, base_revision, missed, registered) = {
+        let mut drawings = state.drawings.lock().expect("drawings mutex poisoned");
         let joined = state.bus.subscribe(drawing_id);
         let base_revision = current_revision(state, drawing_id);
-        (
-            joined,
+        let missed = missed_ops(state, drawing_id, since, base_revision);
+        // A copy that is sent a replay is at `since` until it has applied
+        // it: what the replay deletes or retags, it lists and will not keep.
+        let seen = missed.as_ref().and(since).unwrap_or(base_revision);
+        let registered = crate::ops::report_tags(
+            state,
+            &mut drawings,
+            drawing_id,
+            existing_tags,
+            seen,
             base_revision,
-            missed_ops(state, drawing_id, since, base_revision),
-        )
+        );
+        (joined, base_revision, missed, registered)
     };
+    if !existing_tags.is_empty() {
+        println!(
+            "[ocs_collab_server] 入站 hello user={user_id} drawing={drawing_id} 上报本机已有位号 {} 个 -> 新登记 {registered} 个（图面修订 {base_revision}）",
+            existing_tags.len()
+        );
+    }
     let session_id = new_session_id();
     // A user whose role does not edit drawings joins as a viewer, whatever
     // mode the client asked for. The session then counts as no editor
@@ -1594,6 +1629,15 @@ mod tests {
         }
     }
 
+    /// [`hello`], from a client whose own copy of the drawing has `tags`.
+    fn hello_with(user_id: &str, mode: &str, tags: &[&str]) -> ClientMessage {
+        let mut hello = hello(user_id, mode, "");
+        if let ClientMessage::Hello { existing_tags, .. } = &mut hello {
+            *existing_tags = tags.iter().map(|tag| (*tag).to_owned()).collect();
+        }
+        hello
+    }
+
     fn session_id(conn: &Connection) -> String {
         conn.session
             .as_ref()
@@ -1915,6 +1959,32 @@ mod tests {
             "a rejected hello must close the socket"
         );
         assert!(b.session.is_none());
+    }
+
+    /// `hello.existing_tags` are registered in the step that reads the
+    /// drawing's revision, whoever the `hello` is from. A session that only
+    /// views has those objects in its copy as much as one that edits; and
+    /// so has one that is refused — the drawing has its one editor — and
+    /// will be back. A `hello` that lists nothing leaves the drawing unread.
+    #[tokio::test]
+    async fn collab_existing_tags_are_registered_whoever_the_hello_is_from() {
+        let state = state();
+        let mut editor = conn();
+        handle_message(&state, &mut editor, hello("u1", "单人编辑", ""), T0).await;
+        let unread = state.drawings.lock().expect("drawings").is_empty();
+        assert!(unread, "nothing was listed");
+
+        let mut viewer = conn();
+        let listing = hello_with("u2", "只读", &["P-2001"]);
+        handle_message(&state, &mut viewer, listing, T0).await;
+        assert!(viewer.session.is_some(), "a viewer is let in");
+        let mut refused = conn();
+        let listing = hello_with("u3", "单人编辑", &["V-1001", ""]);
+        let reactions = handle_message(&state, &mut refused, listing, T0).await;
+        assert!(reactions.contains(&Reaction::Close), "{reactions:?}");
+
+        let held = crate::ops::reported_tags(&state, "PID-1101", None);
+        assert_eq!(held, ["P-2001", "V-1001"]);
     }
 
     #[tokio::test]

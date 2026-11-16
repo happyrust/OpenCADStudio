@@ -634,6 +634,62 @@ impl Store {
         Ok(rows)
     }
 
+    /// Records that `tags` are in use in a client's own copy of
+    /// `drawing_id` (`hello.existing_tags`), heard of when the drawing was
+    /// at `revision`. A tag heard of again keeps the later revision: an op
+    /// took it away in between, or it would have been no news.
+    pub fn report_tags(
+        &self,
+        drawing_id: &str,
+        tags: &[String],
+        revision: i64,
+    ) -> Result<(), String> {
+        let conn = self.lock()?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|err| format!("begin reported tags of {drawing_id}: {err}"))?;
+        // All of one listing or none of it. Only `conn` in here: `lock()`
+        // is not reentrant.
+        let written = tags.iter().try_for_each(|tag| {
+            conn.execute(
+                "INSERT INTO reported_tags (drawing_id, tag, revision) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(drawing_id, tag) DO UPDATE SET
+                   revision = MAX(revision, excluded.revision)",
+                params![drawing_id, tag, revision],
+            )
+            .map(|_| ())
+            .map_err(|err| format!("report tag {tag} of {drawing_id}: {err}"))
+        });
+        match written {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(|err| {
+                let _ = conn.execute_batch("ROLLBACK");
+                format!("commit reported tags of {drawing_id}: {err}")
+            }),
+            Err(err) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    /// The tags reported for `drawing_id`, each with the revision the
+    /// drawing was at when it was heard of, in that order: where in the op
+    /// log each belongs when the drawing is rebuilt from it.
+    pub fn reported_tags(&self, drawing_id: &str) -> Result<Vec<(String, i64)>, String> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT tag, revision FROM reported_tags
+                 WHERE drawing_id = ?1 ORDER BY revision, tag",
+            )
+            .map_err(|err| format!("prepare reported tags of {drawing_id}: {err}"))?;
+        let rows = stmt
+            .query_map(params![drawing_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|err| format!("query reported tags of {drawing_id}: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("read reported tags of {drawing_id}: {err}"))?;
+        Ok(rows)
+    }
+
     /// `(node_id, parent_id)` for every PBS node, in storage order.
     pub fn list_pbs_nodes(&self) -> Result<Vec<(String, Option<String>)>, String> {
         let conn = self.lock()?;
@@ -1207,6 +1263,17 @@ CREATE TABLE IF NOT EXISTS ops (
   at            INTEGER NOT NULL,
   changes       TEXT NOT NULL,
   PRIMARY KEY (drawing_id, revision)
+);
+
+-- The tags in use in a client's own copy of a drawing that no op told of
+-- (`hello.existing_tags`), each with the revision the drawing was at when
+-- the server heard of it: its place in the op log. The log and these, read
+-- back in that order, are the tags the server gives to no new symbol.
+CREATE TABLE IF NOT EXISTS reported_tags (
+  drawing_id TEXT NOT NULL,
+  tag        TEXT NOT NULL,
+  revision   INTEGER NOT NULL,
+  PRIMARY KEY (drawing_id, tag)
 );
 
 CREATE INDEX IF NOT EXISTS audit_by_tag ON audit_log(object_ref, at DESC);
@@ -2050,5 +2117,33 @@ mod tests {
             })
             .expect("query");
         assert_eq!(page.total, 1, "one op, one audit row");
+    }
+
+    /// `hello.existing_tags`: what clients said is in their own copies of a
+    /// drawing is kept per drawing, each tag with the revision the drawing
+    /// was at when it was heard of — the later one, when it is heard of
+    /// again — and is not what a restart clears.
+    #[test]
+    fn collab_existing_tags_are_kept_per_drawing_with_the_revision_they_were_heard_at() {
+        let store = Store::open_in_memory().expect("memory store");
+        let report = |drawing: &str, list: &[&str], at: i64| {
+            let tags: Vec<String> = list.iter().map(|tag| (*tag).to_owned()).collect();
+            store.report_tags(drawing, &tags, at).expect("report");
+        };
+        let listed = |drawing: &str| store.reported_tags(drawing).expect("rows");
+        let row = |tag: &str, at: i64| (tag.to_owned(), at);
+
+        report("PID-1101", &["V-1002", "V-1001"], 0);
+        report("PID-1101", &["V-1001", "P-2001"], 4);
+        report("PID-1102", &["V-1001"], 2);
+        let expected = [row("V-1002", 0), row("P-2001", 4), row("V-1001", 4)];
+        assert_eq!(listed("PID-1101"), expected);
+        // Heard of once more at an earlier point: the later one stands.
+        report("PID-1101", &["V-1001"], 3);
+        assert_eq!(listed("PID-1101")[2], row("V-1001", 4));
+
+        store.clear_ephemeral().expect("clear");
+        assert_eq!(listed("PID-1102"), [row("V-1001", 2)]);
+        assert!(listed("PID-1103").is_empty());
     }
 }

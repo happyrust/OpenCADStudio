@@ -527,18 +527,25 @@ struct ObjectsParams {
 }
 
 /// `GET /drawing/{id}/objects[?object_ref=TAG]` → 200
-/// `{"drawing_id","revision","items":[{"object_ref","fields":{...}}],"total"}`.
+/// `{"drawing_id","revision","items":[{"object_ref","fields":{...}}],"total",
+/// "reported_tags":[…]}`.
 ///
 /// The server's own picture of the drawing: every object an op has written,
 /// by the tag it goes by now, with the value each field holds, the revision
 /// that put it there and whose op it was. It is what a client with no drawing
 /// of its own reads a field back from (`VAL-CONF-001`).
+///
+/// `reported_tags` are the tags the server holds on a client's word alone:
+/// in use in that client's own copy of the drawing, told of by no op
+/// (`hello.existing_tags`). `total` does not count them.
 async fn drawing_objects(
     State(state): State<Arc<AppState>>,
     Path(drawing_id): Path<String>,
     Query(params): Query<ObjectsParams>,
 ) -> Response {
-    let (revision, items) = crate::ops::objects(&state, &drawing_id, params.object_ref.as_deref());
+    let object_ref = params.object_ref.as_deref();
+    let (revision, items) = crate::ops::objects(&state, &drawing_id, object_ref);
+    let reported_tags = crate::ops::reported_tags(&state, &drawing_id, object_ref);
     let total = items.len();
     (
         StatusCode::OK,
@@ -547,6 +554,7 @@ async fn drawing_objects(
             "revision": revision,
             "items": items,
             "total": total,
+            "reported_tags": reported_tags,
         })),
     )
         .into_response()
@@ -1855,6 +1863,54 @@ mod tests {
         assert_eq!(inserted.len(), 2, "{inserted:?}");
         assert!(inserted.contains(&"u-proc:V-1001".to_owned()), "{inserted:?}");
         assert!(inserted.contains(&"u-admin:V-1002".to_owned()), "{inserted:?}");
+    }
+
+    /// The body of `GET /drawing/{drawing_id}/objects[?object_ref=…]`.
+    async fn objects_listing(
+        state: &Arc<AppState>,
+        drawing_id: &str,
+        object_ref: Option<&str>,
+    ) -> serde_json::Value {
+        let params = ObjectsParams {
+            object_ref: object_ref.map(str::to_owned),
+        };
+        let (state, path) = (State(state.clone()), Path(drawing_id.to_owned()));
+        let response = drawing_objects(state, path, Query(params)).await;
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("json body")
+    }
+
+    /// `GET /drawing/{id}/objects` names the tags the server holds on a
+    /// client's word alone (`hello.existing_tags`), beside the objects the
+    /// ops told of: the two together are what a new symbol is not called.
+    /// With `?object_ref=` it says of one tag whether it is one of them.
+    #[tokio::test]
+    async fn collab_existing_tags_the_objects_listing_names_the_tags_held_on_a_clients_word() {
+        let state = seeded_state();
+        let mut conn = crate::ws::Connection::new("127.0.0.1");
+        let hello = ocs_collab::ClientMessage::Hello {
+            user_id: "u-proc".into(),
+            drawing_id: "d-a1-coop".into(),
+            mode: "协同编辑".into(),
+            client_version: "test".into(),
+            workspace: "plant-a".into(),
+            since: None,
+            existing_tags: vec!["V-1002".into(), "P-2001".into()],
+        };
+        crate::ws::handle_message(&state, &mut conn, hello, ocs_collab::now_unix()).await;
+
+        let all = objects_listing(&state, "d-a1-coop", None).await;
+        assert_eq!(all["reported_tags"], json!(["P-2001", "V-1002"]), "{all}");
+        assert_eq!(all["total"], 0, "no op told of an object: {all}");
+        let one = objects_listing(&state, "d-a1-coop", Some("V-1002")).await;
+        assert_eq!(one["reported_tags"], json!(["V-1002"]), "{one}");
+        let other = objects_listing(&state, "d-a1-coop", Some("V-1009")).await;
+        assert_eq!(other["reported_tags"], json!([]), "{other}");
+        // Another drawing's room heard nothing of the kind.
+        let elsewhere = objects_listing(&state, "d-a2-solo", None).await;
+        assert_eq!(elsewhere["reported_tags"], json!([]), "{elsewhere}");
     }
 
     /// A claim is on a tag of one drawing. The same tag on another drawing
