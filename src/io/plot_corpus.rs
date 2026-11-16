@@ -158,6 +158,33 @@ pub fn square(x: f32, y: f32, size: f32) -> Vec<[f32; 2]> {
     ]
 }
 
+/// An arc the way a hatch boundary holds one: sampled into `steps` chords
+/// from `from_deg` through `sweep_deg`, both ends included.
+pub fn arc(
+    center: [f64; 2],
+    radius: f64,
+    from_deg: f64,
+    sweep_deg: f64,
+    steps: usize,
+) -> Vec<[f32; 2]> {
+    (0..=steps)
+        .map(|i| {
+            let t = (from_deg + sweep_deg * i as f64 / steps as f64).to_radians();
+            [
+                (center[0] + radius * t.cos()) as f32,
+                (center[1] + radius * t.sin()) as f32,
+            ]
+        })
+        .collect()
+}
+
+/// A full circle of `steps` chords, closed on the point it starts from.
+pub fn circle(center: [f64; 2], radius: f64, steps: usize) -> Vec<[f32; 2]> {
+    let mut ring = arc(center, radius, 0.0, 360.0, steps);
+    ring[steps] = ring[0];
+    ring
+}
+
 /// A wire carrying the SDF glyph quads for `text` in the embedded "txt" stroke
 /// font, laid out into the process-wide atlas `emit_text` reads.
 ///
@@ -493,6 +520,69 @@ pub fn corpus() -> Vec<Case> {
     let mut m = c.clone_for("hatches, merge_lines");
     m.options.merge_lines = true;
     cases.push(c);
+    cases.push(m);
+
+    // Hatch boundaries that hold arcs, which the plot draws as curves instead
+    // of the chords they were sampled into (upstream #3076): a half disc; a
+    // disc with a round hole; a pattern clipped by a circle; a slot, straight
+    // edges between two half circles, under a gradient; a round wipeout. The
+    // second page is the first a UTM zone away from the drawing origin, and
+    // unlike the hatch page above it stays on the sheet, so the curves are
+    // fitted to coordinates whose offset has only just cancelled.
+    let mut c = Case::new("hatch arcs");
+    let mut half_disc = vec![[10.0, 20.0]];
+    half_disc.extend(arc([20.0, 20.0], 10.0, 0.0, 180.0, 24));
+    c.hatches.push(hatch(
+        "SOLID",
+        half_disc,
+        HatchPattern::Solid,
+        [0.3, 0.6, 0.2, 1.0],
+    ));
+    let mut washer = circle([50.0, 20.0], 12.0, 48);
+    washer.push([f32::NAN, f32::NAN]);
+    washer.extend(circle([50.0, 20.0], 5.0, 24));
+    c.hatches.push(hatch(
+        "SOLID",
+        washer,
+        HatchPattern::Solid,
+        [0.2, 0.2, 0.9, 1.0],
+    ));
+    c.hatches.push(hatch(
+        "ANSI37-ish",
+        circle([80.0, 20.0], 12.0, 24),
+        plot_style_fill_pattern(67).unwrap(),
+        [0.9, 0.5, 0.1, 1.0],
+    ));
+    let mut slot = vec![[110.0, 10.0]];
+    slot.extend(arc([130.0, 20.0], 10.0, -90.0, 180.0, 12));
+    slot.extend(arc([110.0, 20.0], 10.0, 90.0, 180.0, 12));
+    c.hatches.push(hatch(
+        "GRADIENT",
+        slot,
+        HatchPattern::Gradient {
+            angle_deg: 30.0,
+            color2: [0.95, 0.95, 0.2, 1.0],
+            kind: crate::scene::model::hatch_model::GradientKind::Linear,
+            invert: false,
+            shift: 0.0,
+        },
+        [0.2, 0.4, 0.8, 1.0],
+    ));
+    c.wipeouts.push(hatch(
+        "WIPEOUT_FILL",
+        circle([20.0, 24.0], 3.0, 24),
+        HatchPattern::Solid,
+        [0.1, 0.1, 0.1, 1.0],
+    ));
+    let mut utm = c.clone_for("hatch arcs, utm origin");
+    for model in utm.hatches.iter_mut().chain(utm.wipeouts.iter_mut()) {
+        model.world_origin = [500_000.25, 4_500_000.5];
+    }
+    utm.offset = (-500_000.0, -4_500_000.0);
+    let mut m = c.clone_for("hatch arcs, merge_lines");
+    m.options.merge_lines = true;
+    cases.push(c);
+    cases.push(utm);
     cases.push(m);
 
     // CTB: colour / pen / screening / cap / join overrides, grayscale

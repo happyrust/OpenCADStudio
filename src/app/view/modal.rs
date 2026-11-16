@@ -2112,7 +2112,7 @@ fn unsaved_changes_dialog_window(
                     if block_edit {
                         t!("Discard the changes")
                     } else {
-                        t!("Discard")
+                        t!("Don't Save")
                     },
                     if block_edit {
                         Message::BlockEditChangesDiscard

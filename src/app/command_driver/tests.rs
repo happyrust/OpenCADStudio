@@ -9446,3 +9446,230 @@ mod battman_tests {
     }
 }
 
+
+
+#[cfg(test)]
+mod hatch_panel_edit_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use crate::modules::draw::draw::hatch::{HatchFill, HatchSettings};
+    use document::entities::{BoundaryEdge, BoundaryPath, Hatch, PolylineEdge};
+    use document::types::{Color, Vector2};
+
+    fn app_base_settings(fill: HatchFill) -> HatchSettings {
+        HatchSettings {
+            fill,
+            angle_deg: 0.0,
+            scale: 1.0,
+            origin: [0.0, 0.0],
+            method: 0,
+            islands: document::entities::HatchStyleType::Normal,
+            associative: true,
+            separate: false,
+            keep_boundaries: false,
+            gap_tolerance: 0.0,
+            color: None,
+            background: None,
+            layer: None,
+            transparency: None,
+            gradient_colors: [Color::Index(5), Color::Index(1)],
+            draw_order: 0,
+            annotative: false,
+        }
+    }
+
+    /// The Hatch panel is one of the paths that writes onto the entity. The
+    /// prebuilt fill model has to follow, like every other editing path; a
+    /// stale cache would keep showing the old pattern after OK.
+    #[test]
+    fn the_panel_edit_rebuilds_the_cached_fill_model() {
+        use document::entities::BoundaryPath as BoundaryPathType;
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+
+        let mut hatch = Hatch::new();
+        hatch.is_solid = true;
+        let mut path = BoundaryPathType::new();
+        path.add_edge(BoundaryEdge::Polyline(PolylineEdge::new(
+            [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
+                .into_iter()
+                .map(|p| Vector2::new(p[0], p[1]))
+                .collect(),
+            true,
+        )));
+        hatch.paths.push(path);
+        let handle = app.tabs[i]
+            .scene
+            .add_entity(document::EntityType::Hatch(Box::new(hatch)));
+        app.tabs[i].scene.refresh_fill_model(handle);
+        assert_eq!(
+            app.tabs[i].scene.hatches.get(&handle).map(|m| m.name.clone()),
+            Some("SOLID".to_string())
+        );
+
+        let before = app_base_settings(HatchFill::Solid);
+        let after = app_base_settings(HatchFill::Pattern("ANSI31".to_string()));
+        app.apply_hatch_panel_edit(handle, &before, &after);
+
+        let model = app.tabs[i]
+            .scene
+            .hatches
+            .get(&handle)
+            .expect("the fill model was rebuilt");
+        assert_eq!(model.name, "ANSI31");
+    }
+}
+
+#[cfg(test)]
+mod group_roundtrip_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::entities::Line;
+    use document::types::Vector3;
+
+    fn scratch_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "ocs-groups-{}-{}.dwg",
+            std::process::id(),
+            tag
+        ))
+    }
+
+    /// Groups are document objects with real records: they must survive the
+    /// round trip through the file, with their membership, the same as every
+    /// other object. The mission this pins claimed they were missing.
+    #[test]
+    fn a_group_survives_a_save_and_reload() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let a = app.tabs[app.active_tab].scene.add_entity(
+            document::EntityType::Line(Line::from_points(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(10.0, 0.0, 0.0),
+            )),
+        );
+        let b = app.tabs[app.active_tab].scene.add_entity(
+            document::EntityType::Line(Line::from_points(
+                Vector3::new(0.0, 5.0, 0.0),
+                Vector3::new(10.0, 5.0, 0.0),
+            )),
+        );
+        let i = app.active_tab;
+        app.tabs[i].scene.create_group("FRAME".to_string(), vec![a, b]);
+        let path = scratch_path("roundtrip");
+        let saved = app.automation_op(&format!(r#"{{"op":"save","path":"{}"}}"#, path.display().to_string().replace('\\', "/")));
+        assert_eq!(saved["ok"], true, "the save reported success: {saved}");
+        let opened = app.automation_op(&format!(r#"{{"op":"open","path":"{}"}}"#, path.display().to_string().replace('\\', "/")));
+        assert_eq!(opened["ok"], true, "the open reported success: {opened}");
+
+        let groups: Vec<String> = app.tabs[app.active_tab]
+            .scene
+            .groups()
+            .map(|group| group.name.clone())
+            .collect();
+        assert_eq!(groups, vec!["FRAME".to_string()]);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+
+
+#[cfg(test)]
+mod copy_draw_order_tests {
+    use super::*;
+    use crate::app::OpenCADStudio;
+    use document::entities::Line;
+    use document::types::Vector3;
+
+    fn sort_entries(app: &OpenCADStudio) -> std::collections::HashMap<u64, u64> {
+        app.tabs[app.active_tab]
+            .scene
+            .document
+            .objects
+            .values()
+            .filter_map(|obj| match obj {
+                document::objects::ObjectType::SortEntitiesTable(t) => Some(t),
+                _ => None,
+            })
+            .flat_map(|t| t.entries().map(|e| (e.entity_handle.value(), e.sort_handle.value())))
+            .collect()
+    }
+
+    fn fresh_line(app: &mut OpenCADStudio, x: f64) -> document::Handle {
+        app.tabs[app.active_tab].scene.add_entity(
+            document::EntityType::Line(Line::from_points(
+                Vector3::new(x, 0.0, 0.0),
+                Vector3::new(x, 10.0, 0.0),
+            )),
+        )
+    }
+
+    /// When several overlapping objects are copied, the copies must keep
+    /// the original objects' drawing order: whatever was behind stays
+    /// behind, whatever was in front stays in front.
+    #[test]
+    fn copying_multiple_overlapping_objects_preserves_their_order() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let a = fresh_line(&mut app, 0.0);
+        let b = fresh_line(&mut app, 5.0);
+        let c = fresh_line(&mut app, 10.0);
+        let i = app.active_tab;
+
+        // Reverse the automatic handle order: send B behind A, keep C where it is.
+        app.tabs[i].scene.select_entities(&[b]);
+        let _ = app.run_command_line("DRAWORDER BACK");
+
+        eprintln!("before copy table: {:?}", sort_entries(&app));
+
+        app.tabs[i].scene.select_entities(&[a, b, c]);
+        let _ = app.run_command_line("COPY");
+        let _ = app.feed_script_line("0,0");
+        let _ = app.feed_script_line("100,0");
+        let _ = app.feed_script_line("");
+
+        let entries = sort_entries(&app);
+        eprintln!("after copy table:  {:?}", entries);
+        let eff = |h: document::Handle| {
+            entries
+                .get(&h.value())
+                .copied()
+                .unwrap_or(h.value())
+        };
+        let line_starts: Vec<(document::Handle, f64)> = app.tabs[i]
+            .scene
+            .document
+            .entities()
+            .filter_map(|e| match e {
+                document::EntityType::Line(l) => Some((e.common().handle, l.start.x)),
+                _ => None,
+            })
+            .collect();
+        let by_x = |x: f64| {
+            line_starts
+                .iter()
+                .find(|(_, start)| (start - x).abs() < 1e-9)
+                .map(|(h, _)| *h)
+                .expect("a line at that offset")
+        };
+        // The right-most copies correspond to the five source positions.
+        let copy_of = |source: document::Handle| {
+            let x = line_starts.iter().find(|(h, _)| *h == source).map(|(_, x)| *x).unwrap();
+            by_x(x + 100.0)
+        };
+        let cp_a = copy_of(a);
+        let cp_b = copy_of(b);
+        let cp_c = copy_of(c);
+        eprintln!(
+            "source effs: a={} b={} c={}  copies: a={} b={} c={}",
+            eff(a), eff(b), eff(c), eff(cp_a), eff(cp_b), eff(cp_c)
+        );
+        // The source order itself: B behind A behind C.
+        assert!(eff(b) < eff(a), "B stays behind A");
+        assert!(eff(a) < eff(c), "A stays behind C");
+        // And the copies replicate it.
+        assert!(eff(cp_b) < eff(cp_a), "the copy of B must stay behind the copy of A");
+        assert!(eff(cp_a) < eff(cp_c), "the copy of A must stay behind the copy of C");
+    }
+}

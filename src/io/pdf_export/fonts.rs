@@ -185,6 +185,9 @@ fn subset_face(
                 .collect::<String>()
         });
 
+    // The descriptor's /Ascent and /Descent are glyph-space (1000 per em);
+    // printpdf writes `FontMetrics` as given, so scale from font units.
+    let per_mille = |v: i16| (i32::from(v) * 1000 / i32::from(units_per_em)) as i16;
     let mut parsed = ParsedFont::with_glyph_data(
         bytes,
         0,
@@ -193,8 +196,8 @@ fn subset_face(
         glyph_widths,
         units_per_em,
         printpdf::FontMetrics {
-            ascent: face.ascender(),
-            descent: face.descender(),
+            ascent: per_mille(face.ascender()),
+            descent: per_mille(face.descender()),
         },
     );
     let bbox = face.global_bounding_box();

@@ -61,6 +61,16 @@ pub struct PlotPoint {
     pub y: f32,
 }
 
+/// A point of a ring that may hold curves ([`PlotOp::FillCurved`]): one the
+/// ring passes through, or — `control` — a control point of a cubic Bézier
+/// span. Control points come two in a row, and the span runs from the point
+/// before the pair to the point after it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CurvePoint {
+    pub at: PlotPoint,
+    pub control: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LineCap {
     Butt,
@@ -133,6 +143,16 @@ pub enum PlotOp {
     /// Fill one or more rings with the current fill colour.
     Fill {
         rings: Vec<Vec<PlotPoint>>,
+        rule: FillRule,
+    },
+    /// `Fill` for rings that hold curves: a hatch boundary whose arcs are
+    /// drawn as cubic Bézier spans instead of the chords they were sampled
+    /// into (upstream #3076). The flag on a point is printpdf's own
+    /// (`LinePoint::bezier`), so the PDF sink passes it through as the
+    /// exporter emits it. Sent only when a ring does hold a curve: a fill of
+    /// straight edges stays `Fill`.
+    FillCurved {
+        rings: Vec<Vec<CurvePoint>>,
         rule: FillRule,
     },
     /// A triangle mesh that is semantically *one* filled shape — a glyph, or a
@@ -1927,26 +1947,28 @@ fn emit_hatch<S: PlotSink>(
     let (world_ox, world_oy) = (hatch.world_origin[0], hatch.world_origin[1]);
 
     // Split the boundary into rings on every NaN-NaN separator.
-    let mut rings: Vec<Vec<PlotPoint>> = Vec::new();
-    let mut current: Vec<PlotPoint> = Vec::new();
-    for &[bx, by] in hatch.boundary.iter() {
-        if bx.is_nan() || by.is_nan() {
-            if current.len() >= 3 {
-                rings.push(std::mem::take(&mut current));
-            } else {
-                current.clear();
-            }
+    // Arcs among the chords are written as curves (#3076).
+    let mut rings: Vec<Vec<CurvePoint>> = Vec::new();
+    for ring in hatch.boundary.split(|p| p[0].is_nan() || p[1].is_nan()) {
+        if ring.len() < 3 {
             continue;
         }
-        let px = (bx as f64 + world_ox + ox) as f32;
-        let py = (by as f64 + world_oy + oy) as f32;
-        current.push(PlotPoint {
-            x: geometry_pt(px),
-            y: geometry_pt(py),
-        });
-    }
-    if current.len() >= 3 {
-        rings.push(current);
+        let points: Vec<glam::DVec2> = ring
+            .iter()
+            .map(|&[bx, by]| glam::DVec2::new(bx as f64 + world_ox + ox, by as f64 + world_oy + oy))
+            .collect();
+        rings.push(
+            crate::io::plot::curved_ring(&points)
+                .into_iter()
+                .map(|(p, control)| CurvePoint {
+                    at: PlotPoint {
+                        x: geometry_pt(p.x as f32),
+                        y: geometry_pt(p.y as f32),
+                    },
+                    control,
+                })
+                .collect(),
+        );
     }
     if rings.is_empty() {
         return Ok(());
@@ -1990,7 +2012,10 @@ fn emit_hatch<S: PlotSink>(
         } else {
             scale.max(1e-6)
         };
-        let segments = hatch.pattern_segments_for_plot();
+        // The family lines are clipped against the arcs resampled at one
+        // degree, so they end on the curve and not on its chords (#3076).
+        let fine = crate::io::plot::hatch_with_fine_arcs(hatch);
+        let segments = fine.as_ref().unwrap_or(hatch).pattern_segments_for_plot();
         if segments.is_empty() {
             return Ok(());
         }
@@ -2030,10 +2055,21 @@ fn emit_hatch<S: PlotSink>(
         sink.emit(PlotOp::Save)?;
         sink.emit(PlotOp::Blend(PlotBlend::Normal))?;
     }
-    sink.emit(PlotOp::Fill {
-        rings,
-        rule: FillRule::EvenOdd,
-    })?;
+    if rings.iter().flatten().any(|point| point.control) {
+        sink.emit(PlotOp::FillCurved {
+            rings,
+            rule: FillRule::EvenOdd,
+        })?;
+    } else {
+        // No arc in the boundary: the polygon it always was.
+        sink.emit(PlotOp::Fill {
+            rings: rings
+                .into_iter()
+                .map(|ring| ring.into_iter().map(|point| point.at).collect())
+                .collect(),
+            rule: FillRule::EvenOdd,
+        })?;
+    }
     if is_wipeout && normal_blend {
         sink.emit(PlotOp::Restore)?;
     }
@@ -2767,5 +2803,104 @@ mod tests {
             [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 0.0, 0.0]],
             "ACI-7 dot black, wipeout white, a genuine colour untouched"
         );
+    }
+
+    /// The rings of every fill on the page that holds a curve.
+    fn curved_rings(ops: &[PlotOp]) -> Vec<Vec<CurvePoint>> {
+        ops.iter()
+            .filter_map(|op| match op {
+                PlotOp::FillCurved { rings, .. } => Some(rings.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// A plotted point in millimetres of paper.
+    fn sheet_mm(p: PlotPoint) -> glam::DVec2 {
+        glam::DVec2::new(p.x as f64, p.y as f64) / GEOMETRY_MM_TO_PT as f64
+    }
+
+    /// A hatch boundary holds an arc as chords. On the sheet a run of chords
+    /// along one circle is Bézier spans (#3076), so a disc is round at any
+    /// zoom instead of a 24-gon; a boundary with no arc in it is the polygon
+    /// it always was.
+    #[test]
+    fn a_hatch_boundary_arc_is_emitted_as_bezier_spans() {
+        use crate::io::plot_corpus::{circle, hatch, square};
+        let mut case = Case::new("disc");
+        for boundary in [circle([50.0, 50.0], 20.0, 24), square(90.0, 40.0, 20.0)] {
+            case.hatches.push(hatch(
+                "SOLID",
+                boundary,
+                HatchPattern::Solid,
+                [1.0, 0.0, 0.0, 1.0],
+            ));
+        }
+        let ops = ops_for(&case);
+        let curved = curved_rings(&ops);
+        assert_eq!(curved.len(), 1, "the disc is one curved ring: {curved:?}");
+        assert_eq!(fill_rings(&ops).len(), 1, "the square stays a polygon");
+        let ring = &curved[0];
+
+        // The point the ring starts from, then spans: two control points and
+        // the point the span ends on.
+        assert!(!ring[0].control, "{ring:?}");
+        assert_eq!(ring.len() % 3, 1, "{ring:?}");
+        let spans = ring.len() / 3;
+        assert!((4..=5).contains(&spans), "{spans} spans to the full turn");
+        let centre = glam::DVec2::new(50.0, 50.0);
+        let off_circle = |p: glam::DVec2| ((p - centre).length() - 20.0).abs();
+        for span in ring.windows(4).step_by(3) {
+            let flags: Vec<bool> = span.iter().map(|p| p.control).collect();
+            assert_eq!(flags, [false, true, true, false], "{ring:?}");
+            let [p0, c1, c2, p3] = [0, 1, 2, 3].map(|i| sheet_mm(span[i].at));
+            // Both ends are on the circle and so is the middle of the span,
+            // which the chord between the ends misses by millimetres.
+            let middle = (p0 + 3.0 * c1 + 3.0 * c2 + p3) / 8.0;
+            for p in [p0, middle, p3] {
+                assert!(off_circle(p) < 0.01, "{p:?} is off the circle: {ring:?}");
+            }
+        }
+        // And it closes: the last span ends where the ring began.
+        let gap = (sheet_mm(ring[ring.len() - 1].at) - sheet_mm(ring[0].at)).length();
+        assert!(gap < 0.01, "the ring is {gap} mm short of closing");
+    }
+
+    /// The lines of a pattern fill are clipped to the boundary, and where the
+    /// boundary is an arc they end on the arc rather than on the chords it is
+    /// stored as (#3076): on a 20 mm disc of 24 chords, up to 0.17 mm short
+    /// of an outline that is drawn round.
+    #[test]
+    fn pattern_lines_end_on_the_boundary_arc() {
+        use crate::io::plot_corpus::{circle, hatch};
+        let mut case = Case::new("lined disc");
+        // Unsnapped: the ends are measured to hundredths of a millimetre.
+        case.options.vector_dpi = None;
+        let lines = crate::scene::model::hatch_model::plot_style_fill_pattern(68)
+            .expect("fill style 68 is horizontal lines");
+        case.hatches.push(hatch(
+            "LINES",
+            circle([50.0, 50.0], 20.0, 24),
+            lines,
+            [1.0, 0.0, 0.0, 1.0],
+        ));
+        let centre = glam::DVec2::new(50.0, 50.0);
+        let ends: Vec<f64> = ops_for(&case)
+            .iter()
+            .filter_map(|op| match op {
+                PlotOp::Stroke { points, .. } => Some([points[0], points[points.len() - 1]]),
+                _ => None,
+            })
+            .flatten()
+            .map(|p| ((sheet_mm(p) - centre).length() - 20.0).abs())
+            .collect();
+        assert!(
+            ends.len() >= 30,
+            "only {} line ends in the disc",
+            ends.len()
+        );
+        let worst = ends.iter().copied().fold(0.0, f64::max);
+        assert!(worst < 0.02, "a line ends {worst:.3} mm off the circle");
     }
 }

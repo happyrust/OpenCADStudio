@@ -506,6 +506,28 @@ impl PlotSink for PdfSink<'_> {
             PlotOp::Fill { rings, rule } => self.ops.push(Op::DrawPolygon {
                 polygon: polygon(rings, PaintMode::Fill, rule),
             }),
+            // The same polygon with printpdf's control-point flag set where a
+            // ring curves: two flagged points and the point after them are
+            // written as one `c` operator.
+            PlotOp::FillCurved { rings, rule } => {
+                let mut polygon = polygon(Vec::new(), PaintMode::Fill, rule);
+                polygon.rings = rings
+                    .iter()
+                    .map(|ring| PolygonRing {
+                        points: ring
+                            .iter()
+                            .map(|point| LinePoint {
+                                p: Point {
+                                    x: Pt(point.at.x),
+                                    y: Pt(point.at.y),
+                                },
+                                bezier: point.control,
+                            })
+                            .collect(),
+                    })
+                    .collect();
+                self.ops.push(Op::DrawPolygon { polygon });
+            }
             // PDF has no mesh primitive, and the exporter always drew glyph and
             // wire fills a triangle at a time — so expand the batch in order.
             PlotOp::FillMesh { tris } => {
@@ -1170,6 +1192,87 @@ mod tests {
                 "no text showing in {stream:?}"
             );
         });
+    }
+
+    /// The number a dictionary in the file gives for `key`.
+    fn dictionary_number(text: &str, key: &str) -> Option<f64> {
+        let value = text[text.find(key)? + key.len()..].trim_start();
+        let end = value
+            .find(|c: char| !(c.is_ascii_digit() || matches!(c, '-' | '+' | '.')))
+            .unwrap_or(value.len());
+        value[..end].parse().ok()
+    }
+
+    // The embedded face's descriptor is in glyph space, a thousand units to
+    // the em, like the widths beside it — not in the face's own units, which
+    // for a TrueType face are 2048 to the em and would put Arial's ascender
+    // 1.85 em above the baseline. (A face of 1000 units per em reads the same
+    // either way and proves nothing here; Arial is not one.)
+    #[test]
+    fn an_embedded_face_gives_its_ascent_and_descent_per_mille() {
+        crate::scene::text::sdf_atlas::undisturbed(|| {
+            let Some(wire) = ttf_wire("Hi", [20.0, 20.0, 0.0]) else {
+                return;
+            };
+            let source = crate::scene::text::ttf_glyph::glyph_source("Arial", 'H').unwrap();
+            let face = ttf_parser::Face::parse(&source.font.data, source.font.index).unwrap();
+            let em = f64::from(face.units_per_em());
+            let bytes = build_pdf_pages(&[test_page(vec![wire])], None).unwrap();
+            let stream = pdf_stream_text(&bytes);
+            for (key, font_units) in [("/Ascent", face.ascender()), ("/Descent", face.descender())]
+            {
+                let written = dictionary_number(&stream, key)
+                    .unwrap_or_else(|| panic!("no {key} in {stream:?}"));
+                assert!(
+                    (written / 1000.0 - f64::from(font_units) / em).abs() <= 0.001,
+                    "{key} {written}: the face has {font_units} of its {em} units per em"
+                );
+            }
+        });
+    }
+
+    /// How many curve operators (`x1 y1 x2 y2 x3 y3 c`) the content text has.
+    fn curve_operators(text: &str) -> usize {
+        let tokens: Vec<&str> = text.split_whitespace().collect();
+        tokens
+            .windows(7)
+            .filter(|run| run[6] == "c" && run[..6].iter().all(|n| n.parse::<f32>().is_ok()))
+            .count()
+    }
+
+    // The arcs of a hatch boundary reach the file as curves (#3076): a
+    // boundary that arrives as chords along a circle is `c` operators in the
+    // content stream, one for every Bézier span the sink was handed, and a
+    // boundary of straight edges has none.
+    #[test]
+    fn hatch_boundary_arcs_are_curve_operators_in_the_content_stream() {
+        let page = |name: &str| {
+            corpus()
+                .into_iter()
+                .find(|case| case.name == name)
+                .unwrap_or_else(|| panic!("no {name:?} page in the corpus"))
+        };
+        let curves = |case: &Case| {
+            let bytes = build_pdf_pages(&[case.page_input()], None).unwrap();
+            curve_operators(&pdf_stream_text(&bytes))
+        };
+        assert_eq!(curves(&page("hatches")), 0, "a square has no curve");
+
+        let arcs = page("hatch arcs");
+        // What the sink was handed: two control points to a span.
+        let spans: usize = new_ops(&arcs)
+            .iter()
+            .filter_map(|op| match op {
+                Op::DrawPolygon { polygon } => Some(polygon),
+                _ => None,
+            })
+            .flat_map(|polygon| polygon.rings.iter())
+            .map(|ring| ring.points.iter().filter(|point| point.bezier).count() / 2)
+            .sum();
+        // A half disc, a washer, a slot and a round wipeout are nine half
+        // turns of arc, and a half turn takes two spans.
+        assert!(spans >= 18, "only {spans} spans in the arc page");
+        assert_eq!(curves(&arcs), spans);
     }
 
     // ── The extraction contract ───────────────────────────────────────────

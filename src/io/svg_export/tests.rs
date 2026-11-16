@@ -19,7 +19,7 @@
 // P3 and the plan says so.
 
 use super::*;
-use crate::io::plot_corpus::{corpus, hatch, square, wire, Case};
+use crate::io::plot_corpus::{circle, corpus, hatch, square, wire, Case};
 use crate::io::plot_emit::{geometry_pt, PlotAssets, PlotGroup, RecordingSink};
 use crate::scene::model::hatch_model::HatchPattern;
 use crate::scene::WireModel;
@@ -94,6 +94,10 @@ enum Paint {
 struct Shape {
     paint: Paint,
     rings: Vec<Vec<[f64; 2]>>,
+    /// Which points of `rings` are Bézier control points rather than points
+    /// the outline passes through, ring for ring. Empty for straight edges,
+    /// which is every shape but a hatch boundary that holds an arc.
+    controls: Vec<Vec<bool>>,
     /// Stroke width in mm of paper.
     width_mm: f64,
     /// Dash run lengths in mm of paper.
@@ -110,6 +114,14 @@ struct Shape {
 }
 
 impl Shape {
+    fn is_control(&self, ring: usize, index: usize) -> bool {
+        self.controls
+            .get(ring)
+            .and_then(|flags| flags.get(index))
+            .copied()
+            .unwrap_or(false)
+    }
+
     fn area(&self) -> f64 {
         self.rings
             .iter()
@@ -239,6 +251,7 @@ fn expected_shapes(ops: &[PlotOp], paper_h: f32) -> Vec<Shape> {
                         color: channels(state.stroke),
                     },
                     rings: vec![paper(points, &state)],
+                    controls: Vec::new(),
                     width_mm: state.width_pt as f64 * scale * PT_TO_MM,
                     dash_mm: state
                         .dash
@@ -259,6 +272,27 @@ fn expected_shapes(ops: &[PlotOp], paper_h: f32) -> Vec<Shape> {
                     color: channels(state.fill),
                     rule: *rule,
                 };
+                shapes.push(shape);
+            }
+            // A ring that holds curves is its control polygon: every point,
+            // and which of them the outline only bends towards.
+            PlotOp::FillCurved { rings, rule } => {
+                let polygons = rings
+                    .iter()
+                    .map(|ring| {
+                        let points: Vec<PlotPoint> = ring.iter().map(|p| p.at).collect();
+                        paper(&points, &state)
+                    })
+                    .collect();
+                let mut shape = fill_shape(&state, polygons, false);
+                shape.paint = Paint::Fill {
+                    color: channels(state.fill),
+                    rule: *rule,
+                };
+                shape.controls = rings
+                    .iter()
+                    .map(|ring| ring.iter().map(|p| p.control).collect())
+                    .collect();
                 shapes.push(shape);
             }
             PlotOp::FillMesh { tris } => {
@@ -285,6 +319,7 @@ fn fill_shape(state: &ExpectedState, rings: Vec<Vec<[f64; 2]>>, mesh: bool) -> S
             rule: FillRule::NonZero,
         },
         rings,
+        controls: Vec::new(),
         width_mm: 0.0,
         dash_mm: Vec::new(),
         cap: state.cap,
@@ -332,15 +367,31 @@ fn collect(group: &usvg::Group, to_mm: Mat, multiply: bool, clips: usize, out: &
                 let abs = to_mm.concat(Mat::of(path.abs_transform()));
                 let scale = abs.scale();
                 let mut rings: Vec<Vec<[f64; 2]>> = Vec::new();
+                let mut controls: Vec<Vec<bool>> = Vec::new();
                 for segment in path.data().segments() {
+                    let at = |p: tiny_skia::Point| abs.apply(p.x as f64, p.y as f64);
                     match segment {
                         tiny_skia::PathSegment::MoveTo(p) => {
-                            rings.push(vec![abs.apply(p.x as f64, p.y as f64)])
+                            rings.push(vec![at(p)]);
+                            controls.push(vec![false]);
                         }
-                        tiny_skia::PathSegment::LineTo(p) => rings
-                            .last_mut()
-                            .expect("a sub-path starts with a move")
-                            .push(abs.apply(p.x as f64, p.y as f64)),
+                        tiny_skia::PathSegment::LineTo(p) => {
+                            rings
+                                .last_mut()
+                                .expect("a sub-path starts with a move")
+                                .push(at(p));
+                            controls.last_mut().unwrap().push(false);
+                        }
+                        // A span is kept as its control polygon, the two
+                        // control points flagged, so a curve is compared the
+                        // way a chord is: point for point.
+                        tiny_skia::PathSegment::CubicTo(c1, c2, p) => {
+                            rings
+                                .last_mut()
+                                .expect("a sub-path starts with a move")
+                                .extend([at(c1), at(c2), at(p)]);
+                            controls.last_mut().unwrap().extend([true, true, false]);
+                        }
                         tiny_skia::PathSegment::Close => {}
                         other => panic!("unexpected curve in the output: {other:?}"),
                     }
@@ -367,6 +418,7 @@ fn collect(group: &usvg::Group, to_mm: Mat, multiply: bool, clips: usize, out: &
                 out.push(Shape {
                     paint,
                     rings,
+                    controls,
                     width_mm: stroke.map_or(0.0, |s| s.width().get() as f64 * scale),
                     dash_mm: stroke
                         .and_then(|s| s.dasharray())
@@ -515,19 +567,40 @@ fn compare(expected: &[Shape], actual: &[Shape]) -> Result<(), String> {
                 }
             }
         }
+        // A curve has to stay a curve: the same points joined by straight
+        // edges, control points included, are a different outline.
+        for (r, ring) in want_rings.iter().enumerate() {
+            let differs = |at: &usize| want.is_control(r, *at) != got.is_control(r, *at);
+            if let Some(at) = (0..ring.len()).find(differs) {
+                let kind = |control| {
+                    if control {
+                        "a control point"
+                    } else {
+                        "a vertex"
+                    }
+                };
+                return fault(format!(
+                    "ring #{r} point #{at}: {} became {}",
+                    kind(want.is_control(r, at)),
+                    kind(got.is_control(r, at))
+                ));
+            }
+        }
     }
     Ok(())
 }
 
 /// A shape's rings with the redundant closing point dropped, for shapes whose
-/// rings are closed.
+/// rings are closed. The end of a Bézier span is never redundant, wherever it
+/// lands: the span is not one without it.
 fn closed_rings(shape: &Shape, closed: bool) -> Vec<Vec<[f64; 2]>> {
     shape
         .rings
         .iter()
-        .map(|ring| {
+        .enumerate()
+        .map(|(r, ring)| {
             let mut ring = ring.clone();
-            if closed && ring.len() > 1 {
+            if closed && ring.len() > 1 && !shape.is_control(r, ring.len() - 2) {
                 let (first, last) = (ring[0], ring[ring.len() - 1]);
                 if (first[0] - last[0]).abs() < 1e-9 && (first[1] - last[1]).abs() < 1e-9 {
                     ring.pop();
@@ -676,6 +749,74 @@ fn move_first_point(svg: &str) -> String {
     let end = at + svg[at..].find(',').expect("an x,y pair");
     let x: f64 = svg[at..end].parse().expect("a number");
     format!("{}{}{}", &svg[..at], x + 5.0, &svg[end..])
+}
+
+// The same for a curve, which the hatch page does not have: a span drawn as
+// straight edges through its control points, and a control point pushed
+// aside, must both be noticed.
+#[test]
+fn the_comparison_catches_a_broken_curve() {
+    let case = corpus()
+        .into_iter()
+        .find(|c| c.name == "hatch arcs")
+        .expect("the arc page is in the corpus");
+    let assets = shared_assets();
+    let (svg, _) = write_with(&case, &assets);
+    let expected = expected_shapes(&record_with(&case.page(), &assets), case.paper.1);
+    assert!(
+        expected.iter().any(|shape| !shape.controls.is_empty()),
+        "the arc page asks for no curve"
+    );
+    let actual = actual_shapes(&parse(&svg), case.paper.0);
+    compare(&expected, &actual).expect("the unmutated file passes");
+
+    let curve = first_curve(&svg);
+    let x_end = curve + 1 + svg[curve + 1..].find(',').expect("an x,y pair");
+    let x: f64 = svg[curve + 1..x_end].parse().expect("a number");
+    let mutations = [
+        (
+            "a curve flattened to its control polygon",
+            format!("{}L{}", &svg[..curve], &svg[curve + 1..]),
+        ),
+        (
+            "a moved control point",
+            format!("{}{}{}", &svg[..=curve], x + 5.0, &svg[x_end..]),
+        ),
+    ];
+    for (what, mutated) in mutations {
+        let actual = actual_shapes(&parse(&mutated), case.paper.0);
+        assert!(
+            compare(&expected, &actual).is_err(),
+            "{what} went unnoticed"
+        );
+    }
+
+    // And the flags are compared on their own account: every point where it
+    // was, one control point read as a vertex, is a different outline.
+    let mut misread = actual;
+    let flags = misread
+        .iter_mut()
+        .flat_map(|shape| shape.controls.iter_mut())
+        .find(|flags| flags.contains(&true))
+        .expect("a curve in the file");
+    let first = flags.iter().position(|control| *control).unwrap();
+    flags[first] = false;
+    let why = compare(&expected, &misread).expect_err("a misread control point went unnoticed");
+    assert!(why.contains("a control point became a vertex"), "{why}");
+}
+
+/// Where the first curve command of the file is: a `C` inside path data.
+fn first_curve(svg: &str) -> usize {
+    let mut from = 0;
+    while let Some(at) = svg[from..].find(" d=\"") {
+        let start = from + at + 4;
+        let end = start + svg[start..].find('"').expect("the attribute closes");
+        if let Some(curve) = svg[start..end].find('C') {
+            return start + curve;
+        }
+        from = end;
+    }
+    panic!("no curve in the file");
 }
 
 // ── R4: cap and join across the render groups ─────────────────────────────
@@ -979,6 +1120,59 @@ fn a_group_closed_that_was_never_opened_is_refused() {
     sink.emit(PlotOp::BeginGroup { tag: "T".into() }).unwrap();
     sink.emit(PlotOp::EndGroup).unwrap();
     assert!(sink.emit(PlotOp::EndGroup).is_err());
+}
+
+// ── Curves: the arcs of a hatch boundary ────────────────────────────────────
+
+fn curve_point(x: f32, y: f32, control: bool) -> CurvePoint {
+    CurvePoint {
+        at: pt(x, y),
+        control,
+    }
+}
+
+/// Two control points and the point after them are one `C` span, and a
+/// command letter holds for a run of the same command. A control point with
+/// no partner, or with no end left to reach, is a vertex: that is how
+/// printpdf reads the same flags when the ring goes into the PDF, and the two
+/// files must draw the same outline.
+#[test]
+fn a_curved_ring_is_written_as_spans_between_its_vertices() {
+    let case = Case::new("curves");
+    let mut sink = SvgSink::new(&case.page(), &SvgOptions::default()).unwrap();
+    let ring = vec![
+        curve_point(0.0, 0.0, false),
+        curve_point(10.0, 0.0, false),
+        curve_point(15.0, 0.0, true),
+        curve_point(20.0, 5.0, true),
+        curve_point(20.0, 10.0, false),
+        curve_point(20.0, 15.0, true),
+        curve_point(15.0, 20.0, true),
+        curve_point(10.0, 20.0, false),
+        curve_point(0.0, 20.0, false),
+    ];
+    let stray = vec![
+        curve_point(30.0, 0.0, false),
+        // No second control point follows this one.
+        curve_point(40.0, 0.0, true),
+        curve_point(40.0, 10.0, false),
+        // Two control points, and the ring ends before the span does.
+        curve_point(35.0, 15.0, true),
+        curve_point(30.0, 10.0, true),
+    ];
+    sink.emit(PlotOp::FillCurved {
+        rings: vec![ring, stray],
+        rule: FillRule::EvenOdd,
+    })
+    .unwrap();
+    assert!(
+        sink.body.contains(
+            " fill-rule=\"evenodd\" d=\"M0,0L10,0C15,0 20,5 20,10 20,15 15,20 10,20L0,20Z\
+             M30,0L40,0 40,10 35,15 30,10Z\"/>"
+        ),
+        "{}",
+        sink.body
+    );
 }
 
 // ── Numbers (D2) ──────────────────────────────────────────────────────────
@@ -1703,6 +1897,33 @@ fn ink_in(pixmap: &tiny_skia::Pixmap, x0: u32, y0: u32, x1: u32, y1: u32) -> f64
         }
     }
     sum / n.max(1.0)
+}
+
+// What layer 2 cannot say about a curve: that the file draws a circle. A disc
+// whose boundary arrives as 24 chords covers πr² of the sheet when its arcs go
+// out as curves, and 1.1 % less, the 24-gon, when they go out as they came.
+#[test]
+fn a_disc_sampled_into_chords_is_filled_round() {
+    let mut case = Case::new("disc");
+    case.paper = (100.0, 100.0);
+    case.hatches.push(hatch(
+        "SOLID",
+        circle([50.0, 50.0], 40.0, 24),
+        HatchPattern::Solid,
+        [0.0, 0.0, 0.0, 1.0],
+    ));
+    let (svg, _) = write(&case);
+    let px_per_mm = 4.0_f32;
+    let pixmap = render(&svg, px_per_mm);
+    let pixels = (pixmap.width() * pixmap.height()) as f64;
+    let inked = ink_in(&pixmap, 0, 0, pixmap.width(), pixmap.height()) * pixels;
+    let radius_px = 40.0 * px_per_mm as f64;
+    let disc = std::f64::consts::PI * radius_px * radius_px;
+    let polygon = 12.0 * (std::f64::consts::TAU / 24.0).sin() * radius_px * radius_px;
+    assert!(
+        (inked - disc).abs() < (disc - polygon) * 0.2,
+        "{inked:.0} px of ink: the disc is {disc:.0} px, its 24-gon {polygon:.0} px"
+    );
 }
 
 // The one thing no assertion replaces: looking at the page. Writes every

@@ -37,8 +37,8 @@
 // refused rather than approximated.
 
 use crate::io::plot_emit::{
-    emit_plot_content, FillRule, LineCap, LineJoin, PlotAssets, PlotBlend, PlotOp, PlotPage,
-    PlotPoint, PlotSink, GEOMETRY_MM_TO_PT,
+    emit_plot_content, CurvePoint, FillRule, LineCap, LineJoin, PlotAssets, PlotBlend, PlotOp,
+    PlotPage, PlotPoint, PlotSink, GEOMETRY_MM_TO_PT,
 };
 use crate::io::plot_style::PlotStyleTable;
 use crate::io::plot_types::PdfPageInput;
@@ -791,6 +791,50 @@ impl SvgSink {
         self.body.push('"');
         Ok(())
     }
+
+    /// `path_data` for closed rings that hold curves: two control points in
+    /// a row and the point after them are one `C` span, everything else is a
+    /// vertex — a stray control point included, which is how printpdf reads
+    /// the same flags for the PDF.
+    fn curved_path_data(&mut self, rings: &[Vec<CurvePoint>]) -> Result<(), SvgError> {
+        self.body.push_str(" d=\"");
+        let decimals = self.decimals;
+        for ring in rings {
+            let Some((first, rest)) = ring.split_first() else {
+                continue;
+            };
+            self.body.push('M');
+            point(&mut self.body, first.at, decimals)?;
+            let mut command = 'M';
+            let mut index = 0;
+            while index < rest.len() {
+                let curve =
+                    rest[index].control && rest.get(index + 1).is_some_and(|next| next.control);
+                let (letter, count) = if curve && index + 2 < rest.len() {
+                    ('C', 3)
+                } else {
+                    ('L', 1)
+                };
+                // A command letter holds until the next one, as in `path_data`.
+                if command == letter {
+                    self.body.push(' ');
+                } else {
+                    self.body.push(letter);
+                    command = letter;
+                }
+                for (i, p) in rest[index..index + count].iter().enumerate() {
+                    if i > 0 {
+                        self.body.push(' ');
+                    }
+                    point(&mut self.body, p.at, decimals)?;
+                }
+                index += count;
+            }
+            self.body.push('Z');
+        }
+        self.body.push('"');
+        Ok(())
+    }
 }
 
 impl PlotSink for SvgSink {
@@ -902,6 +946,17 @@ impl PlotSink for SvgSink {
                 self.blend_attribute();
                 let refs: Vec<&[PlotPoint]> = rings.iter().map(|r| r.as_slice()).collect();
                 self.path_data(&refs, true)?;
+                self.body.push_str("/>\n");
+                self.report.elements += 1;
+            }
+            PlotOp::FillCurved { rings, rule } => {
+                self.begin_style_run()?;
+                self.body.push_str("<path stroke=\"none\"");
+                if rule == FillRule::EvenOdd {
+                    self.body.push_str(" fill-rule=\"evenodd\"");
+                }
+                self.blend_attribute();
+                self.curved_path_data(&rings)?;
                 self.body.push_str("/>\n");
                 self.report.elements += 1;
             }

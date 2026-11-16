@@ -964,28 +964,28 @@ fn emit_hatch(
     let (world_ox, world_oy) = (hatch.world_origin[0], hatch.world_origin[1]);
 
     // Split the boundary into rings on every NaN-NaN separator.
+    // The fourth deliberate change (upstream 901213220, #3076; merged
+    // 2026-11-16 with the shared emitter, per the header): arcs among the
+    // chords are written as curves, and the pattern lines below are clipped
+    // against those arcs resampled at one degree. Both hunks are upstream's
+    // exporter, verbatim.
     let mut rings: Vec<PolygonRing> = Vec::new();
-    let mut current: Vec<LinePoint> = Vec::new();
-    for &[bx, by] in hatch.boundary.iter() {
-        if bx.is_nan() || by.is_nan() {
-            if current.len() >= 3 {
-                rings.push(PolygonRing {
-                    points: std::mem::take(&mut current),
-                });
-            } else {
-                current.clear();
-            }
+    for ring in hatch.boundary.split(|p| p[0].is_nan() || p[1].is_nan()) {
+        if ring.len() < 3 {
             continue;
         }
-        let px = (bx as f64 + world_ox + ox) as f32;
-        let py = (by as f64 + world_oy + oy) as f32;
-        current.push(LinePoint {
-            p: Point::new(Mm(px), Mm(py)),
-            bezier: false,
-        });
-    }
-    if current.len() >= 3 {
-        rings.push(PolygonRing { points: current });
+        let points: Vec<glam::DVec2> = ring
+            .iter()
+            .map(|&[bx, by]| glam::DVec2::new(bx as f64 + world_ox + ox, by as f64 + world_oy + oy))
+            .collect();
+        let points = crate::io::plot::curved_ring(&points)
+            .into_iter()
+            .map(|(p, bezier)| LinePoint {
+                p: Point::new(Mm(p.x as f32), Mm(p.y as f32)),
+                bezier,
+            })
+            .collect();
+        rings.push(PolygonRing { points });
     }
     if rings.is_empty() {
         return;
@@ -1035,7 +1035,8 @@ fn emit_hatch(
         } else {
             scale.max(1e-6)
         };
-        let segments = hatch.pattern_segments_for_plot();
+        let fine = crate::io::plot::hatch_with_fine_arcs(hatch);
+        let segments = fine.as_ref().unwrap_or(hatch).pattern_segments_for_plot();
         if segments.is_empty() {
             return;
         }
