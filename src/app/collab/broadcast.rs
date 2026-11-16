@@ -29,6 +29,7 @@
 
 use document::{Document, EntityType, Handle};
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 use crate::pid::persist::PidAuthor;
 use crate::pid::propagate::{join_props, split_props};
@@ -113,6 +114,21 @@ pub struct Change {
     /// (`super::pipes`); `None` for every other change. `object_ref` is
     /// then the line's tag or the run's.
     pub pipe: Option<super::pipes::Pipe>,
+    /// Where the new tag of a [`KIND_SET_TAG`] came from at the sender —
+    /// typed by hand, or worked out by the tag rule
+    /// (`PidAuthor::tag_source`) — so that the peer's record says the same.
+    /// `None` on every other change, and on a retag from a client that does
+    /// not say: that one is written as typed by hand, as every retag used
+    /// to be.
+    pub tag_source: Option<String>,
+    /// On a [`KIND_SET_PROPERTY`] of an object that carries an override
+    /// mark before the step or after it: the fields of the object that are
+    /// marked once the step is done (`__overrides` — a run's field changed
+    /// by hand no longer takes its line's value). The peer marks the
+    /// change's own field when the list names it and takes the mark off
+    /// when it does not. `None` when nothing is said about marks, and the
+    /// peer leaves its own as they are.
+    pub overrides: Option<BTreeSet<String>>,
 }
 
 impl Change {
@@ -143,6 +159,12 @@ impl Change {
             change["props"] = json!(values);
         } else if let Some(old) = &self.old {
             change["old_value"] = json!(old);
+        }
+        if let Some(source) = &self.tag_source {
+            change["tag_source"] = json!(source);
+        }
+        if let Some(marked) = &self.overrides {
+            change["overrides"] = json!(marked);
         }
         // `handle` is the first, as it has always been written; `handles`
         // appears only when there is more than one to say.
@@ -229,6 +251,8 @@ impl Change {
                     tag_source: value["tag_source"].as_str().unwrap_or("auto").to_owned(),
                 }),
                 pipe: None,
+                tag_source: None,
+                overrides: None,
             });
         }
         if kind == KIND_DELETE_OBJECT {
@@ -241,6 +265,8 @@ impl Change {
                 old: None,
                 placed: None,
                 pipe: None,
+                tag_source: None,
+                overrides: None,
             });
         }
         if kind != KIND_SET_TAG && kind != KIND_SET_PROPERTY && kind != KIND_REASSIGN_TAG {
@@ -258,6 +284,20 @@ impl Change {
             Value::Null => return None,
             other => other.to_string(),
         };
+        // What rides with the value: each on the one kind it belongs to.
+        let tag_source = value["tag_source"]
+            .as_str()
+            .filter(|source| kind == KIND_SET_TAG && !source.is_empty())
+            .map(str::to_owned);
+        let overrides = value["overrides"]
+            .as_array()
+            .filter(|_| kind == KIND_SET_PROPERTY)
+            .map(|listed| {
+                listed
+                    .iter()
+                    .filter_map(|field| field.as_str().map(str::to_owned))
+                    .collect()
+            });
         Some(Self {
             kind,
             object_ref,
@@ -267,6 +307,8 @@ impl Change {
             old: value["old_value"].as_str().map(str::to_owned),
             placed: None,
             pipe: None,
+            tag_source,
+            overrides,
         })
     }
 
@@ -280,6 +322,8 @@ impl Change {
             && self.old == other.old
             && self.placed == other.placed
             && self.pipe == other.pipe
+            && self.tag_source == other.tag_source
+            && self.overrides == other.overrides
     }
 
     /// Whether this brings an object into the drawing or takes one out —
@@ -340,6 +384,8 @@ fn placed_symbol(handle: Handle, entity: &EntityType) -> Option<Change> {
             tag_source: author.tag_source,
         }),
         pipe: None,
+        tag_source: None,
+        overrides: None,
     })
 }
 
@@ -355,11 +401,14 @@ fn erased_symbol(handle: Handle, entity: &EntityType) -> Option<Change> {
         old: None,
         placed: None,
         pipe: None,
+        tag_source: None,
+        overrides: None,
     })
 }
 
 /// What one handle's before/after images amount to in P&ID semantics: a
-/// retag, if the tag moved, then every property whose value moved.
+/// retag, if the tag moved, then every property whose value moved — or
+/// whose override mark did, which goes with the value (`Change::overrides`).
 ///
 /// The retag comes first and names the object by the tag it had; the property
 /// changes after it name it by the tag it has now, so a peer applying them in
@@ -407,6 +456,8 @@ pub fn changes_of(
             old: Some(before_author.tag.clone()),
             placed: None,
             pipe: None,
+            tag_source: Some(after_author.tag_source.clone()).filter(|source| !source.is_empty()),
+            overrides: None,
         });
     }
 
@@ -417,8 +468,14 @@ pub fn changes_of(
     if !PidAuthor::props_are_inline(before) || !PidAuthor::props_are_inline(after) {
         return changes;
     }
-    let (before_props, _) = split_props(&before_author.props);
-    let (after_props, _) = split_props(&after_author.props);
+    let (before_props, before_marks) = split_props(&before_author.props);
+    let (after_props, after_marks) = split_props(&after_author.props);
+    // The marks as the step left them go with every property change of an
+    // object that carries one, before the step or after it; a field whose
+    // mark came or went is a change of that field, whatever its value.
+    let overrides =
+        (!before_marks.is_empty() || !after_marks.is_empty()).then(|| after_marks.clone());
+    let mark_moved = |field: &str| before_marks.contains(field) != after_marks.contains(field);
     let property = |field: &str, value: &str, old: Option<&String>| Change {
         kind: KIND_SET_PROPERTY.to_owned(),
         object_ref: after_author.tag.clone(),
@@ -428,9 +485,11 @@ pub fn changes_of(
         old: old.cloned(),
         placed: None,
         pipe: None,
+        tag_source: None,
+        overrides: overrides.clone(),
     };
     for (key, value) in &after_props {
-        if before_props.get(key) != Some(value) {
+        if before_props.get(key) != Some(value) || mark_moved(key) {
             changes.push(property(key, value, before_props.get(key)));
         }
     }
@@ -438,6 +497,12 @@ pub fn changes_of(
     for (key, old) in &before_props {
         if !after_props.contains_key(key) {
             changes.push(property(key, "", Some(old)));
+        }
+    }
+    // And so does a mark that moved on a field with no value either side.
+    for key in before_marks.symmetric_difference(&after_marks) {
+        if !before_props.contains_key(key) && !after_props.contains_key(key) {
+            changes.push(property(key, "", None));
         }
     }
     changes
@@ -779,7 +844,12 @@ pub fn write_to(doc: &mut Document, targets: &[Handle], change: &Change, applied
                     continue;
                 }
                 author.tag = change.value.clone();
-                author.tag_source = TAG_SOURCE_MANUAL.to_owned();
+                // Where the sender says the tag came from. One that does
+                // not say (an older client) is taken to have typed it.
+                author.tag_source = change
+                    .tag_source
+                    .clone()
+                    .unwrap_or_else(|| TAG_SOURCE_MANUAL.to_owned());
                 author.store(doc, handle);
                 applied.retagged.push(handle);
             }
@@ -794,15 +864,33 @@ pub fn write_to(doc: &mut Document, targets: &[Handle], change: &Change, applied
                 applied.retagged.push(handle);
             }
             KIND_SET_PROPERTY => {
-                let (mut values, marks) = split_props(&author.props);
+                let (mut values, mut marks) = split_props(&author.props);
                 let current = values.get(&change.field).cloned().unwrap_or_default();
-                if current == change.value {
+                // Whether the sender holds this field marked, when it says
+                // what it holds marked. The other fields' marks are not
+                // this change's to move: each is said with its own field.
+                let marked = change
+                    .overrides
+                    .as_ref()
+                    .map(|listed| listed.contains(&change.field));
+                let mark_moves =
+                    marked.is_some_and(|marked| marked != marks.contains(&change.field));
+                if current == change.value && !mark_moves {
                     continue;
                 }
                 if change.value.is_empty() {
                     values.remove(&change.field);
                 } else {
                     values.insert(change.field.clone(), change.value.clone());
+                }
+                match marked {
+                    Some(true) => {
+                        marks.insert(change.field.clone());
+                    }
+                    Some(false) => {
+                        marks.remove(&change.field);
+                    }
+                    None => {}
                 }
                 author.props = join_props(&values, &marks);
                 author.store(doc, handle);
@@ -933,6 +1021,8 @@ mod tests {
             old: None,
             placed: None,
             pipe: None,
+            tag_source: None,
+            overrides: None,
         }
     }
 
@@ -1109,6 +1199,8 @@ mod tests {
             old: Some("P-1001".to_owned()),
             placed: None,
             pipe: None,
+            tag_source: None,
+            overrides: None,
         };
         let payload = payload_for(std::slice::from_ref(&change)).expect("payload");
         assert_eq!(payload["kind"], KIND_SET_TAG);
@@ -1318,6 +1410,8 @@ mod tests {
             old: Some("P-1001".to_owned()),
             placed: None,
             pipe: None,
+            tag_source: None,
+            overrides: None,
         };
         assert_eq!(Change::from_json(&sent.to_json()), Some(sent));
 
@@ -1632,6 +1726,263 @@ mod tests {
         assert_eq!(tag_of(&doc, first), "P-1001");
         assert_eq!(tag_of(&doc, second), "P-1001");
         assert_eq!(tag_of(&doc, other), "P-1009");
+    }
+
+    // ── Override marks, and where a tag came from (review N4) ────────────
+
+    fn marks(fields: &[&str]) -> BTreeSet<String> {
+        fields.iter().map(|field| (*field).to_owned()).collect()
+    }
+
+    /// A run carrying `tag` and `props`.
+    fn add_run(doc: &mut Document, tag: &str, props: &str) -> Handle {
+        let run = add_line_piece(doc, tag, ROLE_PIPE_RUN, "PIPE_RUN");
+        let mut author = PidAuthor::load(doc, run).expect("author");
+        author.props = props.to_owned();
+        author.store(doc, run);
+        run
+    }
+
+    /// A run's field changed by hand carries an override mark, and from
+    /// then on does not take its line's value. The change says which fields
+    /// of the run are marked once the step is done, so that a peer holds
+    /// the run the same way: it used to say the value alone, and the peer's
+    /// run went on following its line (review N4). Taken back, it says the
+    /// old value, and that the field is marked no more.
+    #[test]
+    fn collab_override_marks_a_hand_edit_says_which_fields_are_marked() {
+        let mut doc = Document::new();
+        let run = add_run(
+            &mut doc,
+            "L-1001-01",
+            r#"{"公称直径":"DN80","管道等级":"A1A"}"#,
+        );
+        let before = doc.get_entity_arc(run).expect("before");
+        crate::pid::propagate::set_prop_manual(&mut doc, run, "管道等级", "B2B").expect("a run");
+        let after = doc.get_entity_arc(run).expect("after");
+
+        let changes = changes_of(run, Some(&before), Some(&after));
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        let change = &changes[0];
+        assert_eq!(
+            (
+                change.kind.as_str(),
+                change.object_ref.as_str(),
+                change.field.as_str(),
+                change.value.as_str(),
+                change.old.as_deref(),
+            ),
+            (
+                KIND_SET_PROPERTY,
+                "L-1001-01",
+                "管道等级",
+                "B2B",
+                Some("A1A")
+            )
+        );
+        assert_eq!(change.overrides, Some(marks(&["管道等级"])));
+        let wire = change.to_json();
+        assert_eq!(wire["overrides"], json!(["管道等级"]), "{wire}");
+        assert_eq!(Change::from_json(&wire).as_ref(), Some(change));
+
+        let undone = changes_of(run, Some(&after), Some(&before));
+        assert_eq!(undone.len(), 1, "{undone:?}");
+        assert_eq!(undone[0].value, "A1A");
+        assert_eq!(undone[0].overrides, Some(BTreeSet::new()));
+        let wire = undone[0].to_json();
+        assert_eq!(wire["overrides"], json!([]), "{wire}");
+        assert_eq!(Change::from_json(&wire).as_ref(), Some(&undone[0]));
+    }
+
+    /// Every property change of an object that carries a mark lists the
+    /// marks — a field the run took from its line too, which is how the
+    /// peer hears that this one is not marked. An object that carries none,
+    /// before the step or after it, says nothing about marks: its changes
+    /// are written as they always were.
+    #[test]
+    fn collab_override_marks_only_an_object_that_carries_marks_lists_them() {
+        let mut doc = Document::new();
+        let run = add_run(
+            &mut doc,
+            "L-1001-01",
+            r#"{"公称直径":"DN80","管道等级":"A1A","__overrides":["公称直径"]}"#,
+        );
+        let before = doc.get_entity_arc(run).expect("before");
+        // As the carry-down from the line writes it: the value, no mark.
+        let mut author = PidAuthor::load(&doc, run).expect("author");
+        author.props =
+            r#"{"公称直径":"DN80","管道等级":"C3C","__overrides":["公称直径"]}"#.to_owned();
+        author.store(&mut doc, run);
+        let after = doc.get_entity_arc(run).expect("after");
+
+        let changes = changes_of(run, Some(&before), Some(&after));
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(
+            (changes[0].field.as_str(), changes[0].value.as_str()),
+            ("管道等级", "C3C")
+        );
+        assert_eq!(changes[0].overrides, Some(marks(&["公称直径"])));
+
+        let (mut doc, pump) = doc_with_author("P-1001", r#"{"设计压力":"1.6MPa"}"#);
+        let before = doc.get_entity_arc(pump).expect("before");
+        let mut author = PidAuthor::load(&doc, pump).expect("author");
+        author.props = r#"{"设计压力":"2.5MPa"}"#.to_owned();
+        author.store(&mut doc, pump);
+        let after = doc.get_entity_arc(pump).expect("after");
+
+        let changes = changes_of(pump, Some(&before), Some(&after));
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0].overrides, None);
+        let wire = changes[0].to_json();
+        assert!(wire.get("overrides").is_none(), "{wire}");
+    }
+
+    /// A mark that came or went while the value stayed is a change of the
+    /// field all the same, said with the value the field has.
+    #[test]
+    fn collab_override_marks_a_mark_that_moved_alone_is_still_said() {
+        let mut doc = Document::new();
+        let run = add_run(&mut doc, "L-1001-01", r#"{"管道等级":"A1A"}"#);
+        let before = doc.get_entity_arc(run).expect("before");
+        crate::pid::propagate::set_prop_manual(&mut doc, run, "管道等级", "A1A").expect("a run");
+        let after = doc.get_entity_arc(run).expect("after");
+
+        let changes = changes_of(run, Some(&before), Some(&after));
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(
+            (
+                changes[0].kind.as_str(),
+                changes[0].field.as_str(),
+                changes[0].value.as_str(),
+                changes[0].old.as_deref(),
+            ),
+            (KIND_SET_PROPERTY, "管道等级", "A1A", Some("A1A"))
+        );
+        assert_eq!(changes[0].overrides, Some(marks(&["管道等级"])));
+
+        let undone = changes_of(run, Some(&after), Some(&before));
+        assert_eq!(undone.len(), 1, "{undone:?}");
+        assert_eq!(undone[0].value, "A1A");
+        assert_eq!(undone[0].overrides, Some(BTreeSet::new()));
+    }
+
+    /// The receiving side marks the change's own field when the sender
+    /// lists it, and takes the mark off when the list leaves it out — also
+    /// when the value is in place already. Marks on other fields are not
+    /// this change's to move, and a change that says nothing about marks
+    /// (an older client's) moves none.
+    #[test]
+    fn collab_override_marks_a_property_change_marks_or_unmarks_its_own_field() {
+        let mut doc = Document::new();
+        let run = add_run(
+            &mut doc,
+            "L-1001-01",
+            r#"{"公称直径":"DN80","管道等级":"A1A","__overrides":["公称直径"]}"#,
+        );
+        let grade = |value: &str, listed: Option<BTreeSet<String>>| {
+            let mut said = change(KIND_SET_PROPERTY, "L-1001-01", Some(run), "管道等级", value);
+            said.overrides = listed;
+            said
+        };
+        // The run's grade, and the fields it holds marked.
+        let carried = |doc: &Document| {
+            let (values, marked) = split_props(&PidAuthor::load(doc, run).expect("author").props);
+            (values.get("管道等级").cloned(), marked)
+        };
+        let grade_of = |value: &str| Some(value.to_owned());
+
+        // Changed by hand at the sender.
+        let applied = apply_changes(&mut doc, &[grade("B2B", Some(marks(&["管道等级"])))]);
+        assert_eq!(applied.handles, vec![run]);
+        assert_eq!(
+            carried(&doc),
+            (grade_of("B2B"), marks(&["公称直径", "管道等级"]))
+        );
+
+        // Taken back there.
+        apply_changes(&mut doc, &[grade("A1A", Some(marks(&[])))]);
+        assert_eq!(carried(&doc), (grade_of("A1A"), marks(&["公称直径"])));
+
+        // The value in place already, the mark not: still a write.
+        let applied = apply_changes(&mut doc, &[grade("A1A", Some(marks(&["管道等级"])))]);
+        assert_eq!(applied.handles, vec![run]);
+        assert_eq!(
+            carried(&doc),
+            (grade_of("A1A"), marks(&["公称直径", "管道等级"]))
+        );
+        // Said again, there is nothing left to write.
+        let applied = apply_changes(&mut doc, &[grade("A1A", Some(marks(&["管道等级"])))]);
+        assert!(applied.is_empty(), "{applied:?}");
+
+        // Nothing said about marks: the value, and the marks as they are.
+        apply_changes(&mut doc, &[grade("C3C", None)]);
+        assert_eq!(
+            carried(&doc),
+            (grade_of("C3C"), marks(&["公称直径", "管道等级"]))
+        );
+    }
+
+    /// A retag says where the new tag came from — typed by hand, or worked
+    /// out by the rule — so that the peer's record says the same. Taken
+    /// back, it is the old tag, from where that one had come.
+    #[test]
+    fn collab_tag_source_a_retag_says_where_the_new_tag_came_from() {
+        let (mut doc, handle) = doc_with_author("P-1001", "");
+        let before = doc.get_entity_arc(handle).expect("before");
+        let mut author = PidAuthor::load(&doc, handle).expect("author");
+        author.tag = "P-1009".to_owned();
+        author.tag_source = "manual".to_owned();
+        author.store(&mut doc, handle);
+        let after = doc.get_entity_arc(handle).expect("after");
+
+        let changes = changes_of(handle, Some(&before), Some(&after));
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(
+            (changes[0].kind.as_str(), changes[0].value.as_str()),
+            (KIND_SET_TAG, "P-1009")
+        );
+        assert_eq!(changes[0].tag_source.as_deref(), Some("manual"));
+        let wire = changes[0].to_json();
+        assert_eq!(wire["tag_source"], "manual", "{wire}");
+        assert_eq!(Change::from_json(&wire).as_ref(), Some(&changes[0]));
+
+        let undone = changes_of(handle, Some(&after), Some(&before));
+        assert_eq!(undone.len(), 1, "{undone:?}");
+        assert_eq!(
+            (undone[0].value.as_str(), undone[0].tag_source.as_deref()),
+            ("P-1001", Some("auto"))
+        );
+    }
+
+    /// The receiving side writes the source the sender names: a tag the
+    /// rule gave there — a nozzle renamed with its equipment, a retag taken
+    /// back — is not one somebody typed here. It used to be written as
+    /// typed whatever it was (review N4), and still is when the sender
+    /// names no source.
+    #[test]
+    fn collab_tag_source_a_retag_is_written_with_the_source_the_sender_names() {
+        let (mut doc, handle) = doc_with_author("P-1001", "");
+        let retag = |from: &str, to: &str, source: Option<&str>| {
+            let mut said = change(KIND_SET_TAG, from, Some(handle), "tag", to);
+            said.tag_source = source.map(str::to_owned);
+            said
+        };
+        let stored = |doc: &Document| {
+            let author = PidAuthor::load(doc, handle).expect("author");
+            (author.tag, author.tag_source)
+        };
+        let is = |tag: &str, source: &str| (tag.to_owned(), source.to_owned());
+
+        apply_changes(&mut doc, &[retag("P-1001", "P-1005", Some("auto"))]);
+        assert_eq!(stored(&doc), is("P-1005", "auto"));
+        apply_changes(&mut doc, &[retag("P-1005", "P-1009", Some("manual"))]);
+        assert_eq!(stored(&doc), is("P-1009", "manual"));
+        // Taken back at the sender.
+        apply_changes(&mut doc, &[retag("P-1009", "P-1005", Some("auto"))]);
+        assert_eq!(stored(&doc), is("P-1005", "auto"));
+        // A sender that names no source.
+        apply_changes(&mut doc, &[retag("P-1005", "P-1001", None)]);
+        assert_eq!(stored(&doc), is("P-1001", "manual"));
     }
 
     // ── The drawing's own tags (`hello.existing_tags`) ───────────────────

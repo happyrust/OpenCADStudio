@@ -365,6 +365,8 @@ fn the_connector_statements_survive_the_wire() {
         old: None,
         placed: None,
         pipe: Some(Pipe::Connector(connector)),
+        tag_source: None,
+        overrides: None,
     };
     let made = said(
         KIND_CREATE_CONNECTOR,

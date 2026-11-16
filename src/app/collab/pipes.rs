@@ -414,6 +414,8 @@ pub(super) fn from_json(kind: &str, value: &Value) -> Option<Change> {
         old: None,
         placed: None,
         pipe: Some(pipe),
+        tag_source: None,
+        overrides: None,
     };
     match kind {
         KIND_CREATE_PIPE_LINE => {
@@ -575,6 +577,8 @@ fn gone(tag: &str) -> Change {
         old: None,
         placed: None,
         pipe: None,
+        tag_source: None,
+        overrides: None,
     }
 }
 
@@ -688,6 +692,8 @@ pub fn statements(doc: &Document, images: &[Image<'_>]) -> Vec<Change> {
                 },
                 tag_source: author.tag_source.clone(),
             })),
+            tag_source: None,
+            overrides: None,
         });
     }
     valves_gone.sort();
@@ -729,6 +735,8 @@ pub fn statements(doc: &Document, images: &[Image<'_>]) -> Vec<Change> {
                         fitting,
                         run,
                     })),
+                    tag_source: None,
+                    overrides: None,
                 });
             }
             // Not in the drawing: gone with this step, or its parts were

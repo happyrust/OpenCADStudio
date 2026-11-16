@@ -161,6 +161,8 @@ pub(super) fn from_json(kind: &str, value: &Value) -> Option<Change> {
             line_props,
             peer,
         })),
+        tag_source: None,
+        overrides: None,
     })
 }
 
@@ -238,6 +240,8 @@ fn statement(kind: &str, line_tag: String, said: ConnectorSaid) -> Change {
         old: None,
         placed: None,
         pipe: Some(Pipe::Connector(said)),
+        tag_source: None,
+        overrides: None,
     }
 }
 

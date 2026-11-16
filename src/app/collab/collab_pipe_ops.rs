@@ -10,6 +10,9 @@
 //! it speaks of entities that are there. Handles are left out of both
 //! sides of the comparison: an entity a peer made has whatever handle the
 //! peer's drawing gave it.
+//!
+//! The last section is what rides with a value (review N4): the override
+//! mark of a run's field changed by hand, and where a tag came from.
 
 use crate::app::collab::{broadcast, CollabEvent};
 use crate::app::OpenCADStudio;
@@ -808,4 +811,184 @@ fn the_pipe_statements_survive_the_wire() {
             .map(Vec::len),
         Some(2)
     );
+}
+
+// ── Override marks, and where a tag came from (review N4) ────────────────
+
+/// Run a command that asks for nothing more; the step is closed.
+fn command(app: &mut OpenCADStudio, cmd: &str) -> Value {
+    let done = request(app, json!({"op":"run","cmd":cmd}));
+    app.finish_all_pending_history();
+    done
+}
+
+const RUN: &str = "L-1001-01";
+const GRADE: &str = "管道等级";
+
+/// What run [`RUN`] says for the grade, and whether it holds it marked.
+fn grade_of_run(app: &OpenCADStudio) -> (String, bool) {
+    let body = handles_where(app, |author| {
+        author.topology == "pipe_run" && author.tag == RUN
+    });
+    assert_eq!(body.len(), 1, "one run {RUN}");
+    let document = &app.tabs[app.active_tab].scene.document;
+    let (values, marks) = split_props(&PidAuthor::load(document, body[0]).expect("author").props);
+    (
+        values.get(GRADE).cloned().unwrap_or_default(),
+        marks.contains(GRADE),
+    )
+}
+
+fn grade(value: &str, marked: bool) -> (String, bool) {
+    (value.to_owned(), marked)
+}
+
+/// A line graded `A1A` with one run on it, in both drawings.
+fn a_graded_line_and_its_run(
+    room: &mut Room,
+    a: &mut OpenCADStudio,
+    b: &mut OpenCADStudio,
+    seen: &mut usize,
+) {
+    assert_eq!(draw(a, "PIDPIPE", &LINE)["ok"], true);
+    assert_eq!(draw(a, "PIDPIPE run", &LINE)["ok"], true);
+    assert_eq!(command(a, "PIDSETPROP L-1001 管道等级 A1A")["ok"], true);
+    relay(room, a, b, seen);
+    assert_same(a, b, "to begin with");
+    assert_eq!(grade_of_run(b), grade("A1A", false));
+}
+
+/// A run's field changed by hand stops taking its line's value — in the
+/// peer's drawing as in the one it was changed in. The peer used to get the
+/// value without the mark: its run took the line's value the next time that
+/// changed, and the first drawing's kept its own (review N4).
+#[test]
+fn collab_override_marks_a_peers_run_keeps_the_field_changed_by_hand() {
+    let (mut a, mut b) = (editor("s-a"), editor("s-b"));
+    let (mut room, mut seen) = (Room::default(), 0);
+    a_graded_line_and_its_run(&mut room, &mut a, &mut b, &mut seen);
+
+    assert_eq!(
+        command(&mut a, "PIDSETPROP L-1001-01 管道等级 B2B")["ok"],
+        true
+    );
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    assert_eq!(grade_of_run(&a), grade("B2B", true));
+    assert_eq!(
+        grade_of_run(&b),
+        grade("B2B", true),
+        "the peer's run is not marked"
+    );
+    assert_same(&a, &b, "after the run's grade was changed by hand");
+
+    // The line's grade moves on: the run keeps its own, in both drawings.
+    assert_eq!(
+        command(&mut a, "PIDSETPROP L-1001 管道等级 C3C")["ok"],
+        true
+    );
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    assert_eq!(grade_of_run(&a), grade("B2B", true));
+    assert_eq!(
+        grade_of_run(&b),
+        grade("B2B", true),
+        "the peer's run followed its line"
+    );
+    assert_same(&a, &b, "after the line's grade moved on");
+
+    // And when it is the peer that changes the line's.
+    let mut seen_b = 0;
+    assert_eq!(
+        command(&mut b, "PIDSETPROP L-1001 管道等级 D4D")["ok"],
+        true
+    );
+    relay(&mut room, &mut b, &mut a, &mut seen_b);
+    assert_eq!(grade_of_run(&a), grade("B2B", true));
+    assert_eq!(grade_of_run(&b), grade("B2B", true));
+    assert_same(&a, &b, "after the peer changed the line's grade");
+}
+
+/// Taking the change back takes the mark back with it, in both drawings —
+/// the run follows its line again — and putting it on again marks both.
+#[test]
+fn collab_override_marks_a_hand_edit_taken_back_unmarks_the_peers_run() {
+    let (mut a, mut b) = (editor("s-a"), editor("s-b"));
+    let (mut room, mut seen) = (Room::default(), 0);
+    a_graded_line_and_its_run(&mut room, &mut a, &mut b, &mut seen);
+    assert_eq!(
+        command(&mut a, "PIDSETPROP L-1001-01 管道等级 B2B")["ok"],
+        true
+    );
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    assert_eq!(
+        grade_of_run(&b),
+        grade("B2B", true),
+        "the peer's run is not marked"
+    );
+
+    undo(&mut a);
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    assert_eq!(grade_of_run(&a), grade("A1A", false));
+    assert_eq!(
+        grade_of_run(&b),
+        grade("A1A", false),
+        "the peer's run is still marked"
+    );
+    assert_same(&a, &b, "after the change was taken back");
+
+    redo(&mut a);
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    assert_eq!(grade_of_run(&b), grade("B2B", true));
+    assert_same(&a, &b, "after the change was put on again");
+
+    // Taken back once more, the run takes what its line is given next.
+    undo(&mut a);
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    assert_eq!(
+        command(&mut a, "PIDSETPROP L-1001 管道等级 C3C")["ok"],
+        true
+    );
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    assert_eq!(grade_of_run(&a), grade("C3C", false));
+    assert_eq!(grade_of_run(&b), grade("C3C", false));
+    assert_same(&a, &b, "after the line's grade moved on");
+}
+
+/// A tag typed by hand is one somebody typed in the peer's drawing too; and
+/// when the retag is taken back, the peer's symbol has the tag the rule had
+/// given it as the rule's own again. It used to stay "typed by hand" there
+/// (review N4).
+#[test]
+fn collab_tag_source_a_peers_symbol_keeps_where_its_tag_came_from() {
+    let (mut a, mut b) = (editor("s-a"), editor("s-b"));
+    let (mut room, mut seen) = (Room::default(), 0);
+    assert_eq!(command(&mut a, "PIDINSERT VALVE 100,200")["ok"], true);
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    // The valve's tag, and where it came from.
+    let valve = |app: &OpenCADStudio| {
+        let handles = handles_where(app, |author| author.type_code == "VALVE");
+        assert_eq!(handles.len(), 1, "one valve");
+        let document = &app.tabs[app.active_tab].scene.document;
+        let author = PidAuthor::load(document, handles[0]).expect("author");
+        (author.tag, author.tag_source)
+    };
+    let is = |tag: &str, source: &str| (tag.to_owned(), source.to_owned());
+    let (tag, source) = valve(&a);
+    assert_eq!(source, "auto", "a tag the rule gave");
+    assert_eq!(valve(&b), is(&tag, "auto"));
+
+    let retag = format!("PIDTAG {tag} V-9001");
+    assert_eq!(command(&mut a, &retag)["ok"], true);
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    assert_eq!(valve(&a), is("V-9001", "manual"));
+    assert_eq!(valve(&b), is("V-9001", "manual"));
+
+    undo(&mut a);
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    assert_eq!(valve(&a), is(&tag, "auto"));
+    assert_eq!(
+        valve(&b),
+        is(&tag, "auto"),
+        "the peer's valve still reads as typed by hand"
+    );
+    assert_same(&a, &b, "after the retag was taken back");
 }
