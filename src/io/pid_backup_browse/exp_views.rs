@@ -114,8 +114,9 @@ impl BackupIndex {
 
 /// What was read of a dump.
 enum Tables {
-    /// Every table the reader knows.
-    Whole(ExpTables),
+    /// Every table the reader knows. Boxed: the tables are many times the
+    /// size of the other variant.
+    Whole(Box<ExpTables>),
     /// The reader refused one of them, and with it the read of them all.
     /// The views that do not need that table are read from the dump's
     /// bytes, each on its own; the others say why they are not there.
@@ -308,7 +309,7 @@ impl Dump {
             .map_err(|error| crate::tf!("cannot read {}: {}", path.display(), error))?;
         let bytes = dump.len() as u64;
         let tables = match ExpTables::read(&dump) {
-            Ok(tables) => Tables::Whole(tables),
+            Ok(tables) => Tables::Whole(Box::new(tables)),
             Err(error) => Tables::Partial {
                 dump,
                 why: error.to_string(),
