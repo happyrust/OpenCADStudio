@@ -59,7 +59,7 @@ cargo run --offline --locked -p ocs_collab_server -- --port 3240 --db <库文件
 | 桌面端单元测试 | 6918 条：6865 通过，49 忽略，4 失败 | 4 条失败是比对设计文件的测试，因为工作区里那份 `pid-platform.pen` 有未提交的改动；只要失败的还是这 4 条就算通过 |
 | `clippy` 告警数 | 630；带测试 965 | 不许增加 |
 | 协同 crate 测试 | `ocs_collab` 95；`ocs_collab_server` 159 + 12 | 全过 |
-| 格式 | 改动的文件不新增 `rustfmt` 不一致 | 仓库有存量不一致，所以比的是「新增」；本机脚本 `D:\scratch\ocs-main-20261116\fmt-newhunks.ps1 <改前> <改后>` |
+| 格式 | 改动的文件不新增 `rustfmt` 不一致 | 仓库有存量不一致，所以比的是「新增」；仓库里的脚本 `scripts\fmt-newhunks.ps1 <改前> <改后>`（原来在仓库外，`CC-5` 收进来的） |
 | 平台规格包 | `pytest scripts/pid-platform` 558 条 | 只在动了 `docs/pid-platform/` 时跑；本方案不动那个目录 |
 
 端到端场景脚本不在仓库里，在本机 `D:\scratch\m6-validation\` 及其复验目录（一个场景一个 `.py`，`run_all.ps1` 顺序跑）。它们起真实的桌面端与服务器进程，走 `--http`。
