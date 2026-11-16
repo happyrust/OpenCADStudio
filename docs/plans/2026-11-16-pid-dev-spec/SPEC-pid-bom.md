@@ -1,0 +1,241 @@
+# SPEC：材料清单（`pid-bom`）
+
+> 状态：**待建；规格已确认**（2026-11-16，§9 的待决问题都按「建议」定）。基线 `main @ 9b5327f96`。
+> 依据：已批准计划 T3.3 第 1 项；需求 `REQ-DELV-001`–`005`（`docs/pid-platform/requirements/60-deliverables-and-publish.md`）。
+> 共用约定见 `01-shared-conventions.md`；输入数据见 `SPEC-pid-project-index.md`（图纸摘要）。
+
+## 1. 目标
+
+从图纸算出一份材料清单：每台设备、每个阀门、每台仪表一行，每条管路上的管件合成一行，每条管线一行管长。可以按一张图、一个 PBS 节点、整个项目来算，导出 CSV、XLSX、JSON。硬性保证：**同一个（类型编码，位号）在一份清单里至多一行**。
+
+## 2. 现状
+
+- 没有材料清单功能。P&ID 外壳里的「材料清单」屏是空的占位（`src/app/pid_shell/bom.rs`）。
+- 写表格文件有现成的 `write_extraction_file(path, rows)`（`src/app/annotation_data.rs`），按扩展名写 `.xlsx` / `.csv` / `.txt`。它写的 CSV 没有 BOM 头。
+- 不单独编号的管件，记录里的位号就是所在管路的位号（`PIDFITTING`），与需求「管件继承所属管路的位号」一致。
+- 管长只有图面上的几何长度，没有「实际长度」属性。图纸长度单位在图纸头变量 `INSUNITS` 里。
+
+## 3. 数据格式
+
+### 3.1 哪些对象出行、怎么算数量
+
+输入是范围内各图的摘要。按对象种类：
+
+| 种类 | 行键（类型编码，位号） | 数量 | 单位 | 说明 |
+|---|---|---|---|---|
+| 设备 | 自己的类型编码与位号 | 1 | 台 | 每个位号一行，不合并 |
+| 仪表 | 同上 | 1 | 台 | 同上 |
+| 阀门 | 同上 | 1 | 个 | 同上 |
+| 其他（有自己编号的） | 同上 | 1 | 个 | 同上 |
+| 管件（不单独编号） | `FITTING` 与所在管路的位号 | 这条管路上的管件个数 | 个 | 同一条管路上的合成一行 |
+| 管线 | `PIPE_LINE` 与管线位号 | 名下所有线段的长度之和 | m | 管路的管段和管线自己的线都算 |
+| 管路、管段、打断符、页间连接符、信号线 | — | — | — | 不出行。管路的位号只用来归拢管件 |
+
+细则：
+
+- **管长**：每根线段的图面长度按图纸单位换算成米（`mm` ×0.001，`cm` ×0.01，`m` ×1，`in` ×0.0254，`ft` ×0.3048），先累加再四舍五入到 2 位小数。舍入前加 `1e-9`，避免 24.505 因为浮点误差被舍成 24.50（需求的例子：10.005 + 8.5 + 6 显示 24.51）。
+- **图纸没设单位**（`unitless`）：按毫米算，清单的 `length_unit_assumed` 置真，并给一条提示。范围里各图单位不同时各自换算后再累加。
+- **位号为空的设备、阀门、仪表**：不出行，列在 `skipped` 里（原因 `empty_tag`）。清单照常产出。
+- **重复位号**：设备、阀门、仪表、其他这四类里，同一个（类型编码，位号）有两个以上实例——不论在同一张图还是范围内的不同图——整份清单不产出，返回 `BOM_DUPLICATE_TAG` 并列出这些键和各自的位置。不合并、不相加、也不各占一行。类型编码不同而位号相同的（泵 `P-1001` 与阀门 `P-1001`）各占一行，不算重复。
+- **同一条管线画在几张图上**（经页间连接符延续）：合成一行，长度相加，`drawings` 列出各图。不同图上管路位号相同的管件行同样合并。
+- **名称**：对象的 `名称` 属性；没填就用类型的显示名。管件行写各种符号及个数，如 `弯头×2、三通×1`（符号库里的显示名，没有就用符号 id）。
+- **规格**：`型号`、`规格` 两个属性里非空的，用空格连起来。管线行写 `<管道等级> DN<公称直径>`，缺的部分省略。
+- **行序**：先按种类（管线、设备、阀门、仪表、管件、其他），再按位号。`序号` 从 1 连续编。同样的图两次算出的清单相同。
+
+### 3.2 清单 JSON
+
+```json
+{
+  "ok": true,
+  "version": 1,
+  "generated_at": 1794800000,
+  "scope": { "kind": "drawing", "drawing_id": "PID-1101", "pbs": null },
+  "source": "live",
+  "snapshot_seq": null,
+  "length_unit_assumed": false,
+  "rows": [
+    { "seq": 1, "kind": "管线", "type_code": "PIPE_LINE", "tag": "L-1001", "name": "工艺水进料管线",
+      "spec": "A1A DN50", "quantity": 24.51, "unit": "m", "instances": 3, "drawings": ["PID-1101"] },
+    { "seq": 2, "kind": "设备", "type_code": "PUMP", "tag": "P-1001", "name": "离心泵",
+      "spec": "", "quantity": 1, "unit": "台", "instances": 1, "drawings": ["PID-1101"] },
+    { "seq": 3, "kind": "阀门", "type_code": "VALVE", "tag": "V-1001", "name": "闸阀",
+      "spec": "", "quantity": 1, "unit": "个", "instances": 1, "drawings": ["PID-1101"] },
+    { "seq": 4, "kind": "仪表", "type_code": "INSTRUMENT", "tag": "TI-1001", "name": "温度变送器",
+      "spec": "", "quantity": 1, "unit": "台", "instances": 1, "drawings": ["PID-1101"] },
+    { "seq": 5, "kind": "管件", "type_code": "FITTING", "tag": "L-1001-01", "name": "弯头×3",
+      "spec": "", "quantity": 3, "unit": "个", "instances": 3, "drawings": ["PID-1101"] }
+  ],
+  "pipe_summary": [
+    { "pipe_class": "A1A", "nominal_diameter": "50", "insulation_class": "", "length": 24.51, "unit": "m", "lines": ["L-1001"] }
+  ],
+  "skipped": [
+    { "reason": "empty_tag", "kind": "仪表", "type_code": "INSTRUMENT", "drawing_id": "PID-1101", "at": [300.0, 40.0], "handle": "2E0" }
+  ],
+  "totals": { "rows": 5, "by_kind": { "管线": 1, "设备": 1, "阀门": 1, "仪表": 1, "管件": 1 } },
+  "notices": []
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `scope` | 范围：`kind` 取 `drawing` / `pbs` / `project` |
+| `source`、`snapshot_seq` | `live`：从当前图纸算的，`snapshot_seq` 为 `null`。`snapshot`：从这张图已存的某份快照算的，`snapshot_seq` 是快照序号（只支持单图范围，见 `SPEC-pid-snapshot.md`） |
+| `rows[].instances` | 这一行由几个实例算出：管线行是线段条数，其余是对象个数 |
+| `rows[].quantity` | 管线行保留 2 位小数，其余是整数 |
+| `pipe_summary[]` | 副表「管道汇总」，见 §3.3 |
+| `skipped[]` | 没出行的对象及原因；目前只有 `empty_tag` |
+| `notices[]` | `{code, message}`；取值 `LENGTH_UNIT_ASSUMED`、`LENGTH_FROM_DRAWING`（管长是图面长度，见待决问题 B1） |
+
+### 3.3 副表：管道汇总
+
+计划里要求「按（管道等级，公称直径，绝热等级）累加管长」。它与需求的「每条管线一行」不是同一张表，做成副表：
+
+- 每根线段按它的主人取三个值：管段取所属管路的当前值（管路可以覆盖管线的直径），管线自己的线取管线的值。
+- 三个值都相同的归成一行，长度相加（米，2 位小数），`lines` 列出涉及的管线。没填的值记空串，单独成组。
+- 各行长度之和等于主表管线行长度之和（允许每行 0.005 米以内的舍入差）。
+
+### 3.4 导出文件
+
+**列**。默认九列，前六列就是需求定的标准表头，顺序不变：
+
+| 序号 | 类型 | 位号 | 名称 | 数量 | 单位 | 规格 | 类型编码 | 图纸 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 管线 | L-1001 | 工艺水进料管线 | 24.51 | m | A1A DN50 | PIPE_LINE | PID-1101 |
+| 2 | 设备 | P-1001 | 离心泵 | 1 | 台 | | PUMP | PID-1101 |
+
+可以用 `columns` 参数选列、排列（写列名）；写了不认识的列名报 `BOM_COLUMN_UNKNOWN`。「图纸」一格里有多张图时用分号隔开。
+
+| 格式 | 怎么写 |
+|---|---|
+| CSV | UTF-8，文件头带 BOM（否则 Excel 打开中文乱码）；第一行是列名；逗号分隔；含逗号、引号、换行的格子加双引号，引号成双。由本模块写，转义复用 `rows_to_csv` |
+| XLSX | 一个工作表，第一行列名，用 `write_extraction_file`。没有样式 |
+| JSON | §3.2 的对象，缩进 2 格 |
+
+副表另导一个文件（列：管道等级、公称直径、绝热等级、长度、单位、管线），JSON 里则随主表一起。格式由文件扩展名决定，其它扩展名报 `BOM_FORMAT_UNSUPPORTED`。
+
+### 3.5 错误码
+
+| 码 | 何时 | HTTP |
+|---|---|---|
+| `BOM_DUPLICATE_TAG` | 范围内有重复的（类型编码，位号）；应答带 `duplicates`（键和各处位置）；清单不产出，文件不写 | 409 |
+| `BOM_SCOPE_INCOMPLETE` | 范围内有图读不出来；应答列出这些图。少算的清单比没有清单更糟，所以不产出 | 409 |
+| `SCOPE_NOT_SELECTED` | 范围是 PBS 节点而没给节点号 | 400 |
+| `PBS_NODE_UNKNOWN` | 节点号不在主数据里 | 404 |
+| `INDEX_NO_PROJECT_DIR` | 要项目或节点范围而当前图没保存过 | 409 |
+| `BOM_COLUMN_UNKNOWN`、`BOM_FORMAT_UNSUPPORTED` | 列名不认识；导出文件扩展名不支持 | 400 |
+| `SNAPSHOT_NOT_FOUND` | 指定序号的快照不存在（沿用快照模块的码） | 404 |
+
+## 4. 数据怎么传
+
+```mermaid
+flowchart TD
+    A["范围：当前图 / PBS 节点 / 项目"] --> B["取范围内各图的摘要<br/>（当前图现做，其余图经项目索引的缓存）"]
+    S["或：这张图已存的一份快照"] --> C
+    B --> C["bom::build<br/>归行、计数、累加管长、查重复键"]
+    C -- "有重复键" --> E["BOM_DUPLICATE_TAG<br/>不产出"]
+    C --> D["清单（主表 + 副表）"]
+    D --> O1["命令行与面板"]
+    D --> O2["REST / MCP 应答"]
+    D --> O3["导出 CSV / XLSX / JSON"]
+    D --> O4["发布包里的 bom.csv、bom.json、pipe-summary.csv"]
+```
+
+- 清单是算出来的，不存进图，没有「改写一份清单」这回事：图改了就重新算。
+- `bom::build` 只吃摘要，不碰图纸和文件；写文件在命令层。
+- 发布时的清单从发布那一刻的快照算，所以发布包里的清单与快照是对得上的。
+
+## 5. 对外接口
+
+### 5.1 模块接口（`src/pid/bom.rs`）
+
+```rust
+pub struct BomOptions { pub scope: BomScope, pub source: BomSource /* Live | Snapshot(seq) */ }
+
+/// 算清单。纯函数。有重复键返回 BomError::DuplicateTag(…)。
+pub fn build(drawings: &[DrawingSummary], options: &BomOptions) -> Result<Bom, BomError>;
+/// 主表转成「第一行列名，其后每行一条」的文本表，给 CSV / XLSX 用。
+pub fn rows(bom: &Bom, columns: Option<&[String]>) -> Result<Vec<Vec<String>>, BomError>;
+/// 副表同理。
+pub fn pipe_summary_rows(bom: &Bom) -> Vec<Vec<String>>;
+/// CSV 字节（带 BOM 头）。
+pub fn csv_bytes(rows: &[Vec<String>]) -> Vec<u8>;
+```
+
+### 5.2 命令（`src/app/commands/pidbom.rs`）
+
+| 命令 | 做什么 |
+|---|---|
+| `PIDBOM` | 算当前图的清单，输出：各类几行、管长合计、跳过了几个对象 |
+| `PIDBOM PROJECT` / `PIDBOM PBS <节点号>` | 按项目 / 按节点算 |
+| `PIDBOM EXPORT <文件> [PROJECT \| PBS <节点号>]` | 导出主表；扩展名定格式。另在同目录写副表 `<文件名>-pipe-summary.<扩展名>`（JSON 除外） |
+| `PIDBOM SNAPSHOT <序号> [EXPORT <文件>]` | 从这张图已存的一份快照算 |
+
+都不改图，`PIDBOM` 整个加进只读会话的允许名单（导出写的是本机文件，不是图纸）。目标文件已存在时覆盖。
+
+### 5.3 自动化操作与 REST
+
+| 操作 | REST | 读写 | 请求 | 应答 |
+|---|---|---|---|---|
+| `pid_bom` | `GET /api/v1/pid/bom` | 读 | `scope`（默认 `drawing`）、`pbs`、`snapshot`（快照序号） | §3.2 的清单；项目扫描没做完时 `{"ok":true,"status":"scanning","done":12,"total":40}` |
+| `pid_bom_export` | `POST /api/v1/pid/bom/export` | 写（本机文件） | `path`，及上面的范围参数，可选 `columns` | `{"ok":true,"path":"…","format":"csv","rows":5,"bytes":412,"pipe_summary_path":"…"}` |
+
+MCP：`pid_bom` 进 `READ_OPS`，`pid_bom_export` 进 `EXECUTE_OPS`。
+
+### 5.4 权限
+
+没连协同不设限；只读会话可以算、可以导出。协同权限表里的「导出图纸」这一项，客户端目前无从得知自己有没有，本期不按它鉴权。
+
+## 6. 成功标准
+
+1. 阀门 `V-1001`、`V-1002` 各一行、数量各为 1；管路 `L-1001-01` 上三个管件合成一行、数量 3；泵 `P-1001` 与阀门 `P-1001` 各占一行。
+2. 同一类型下两个实例同位号 → `BOM_DUPLICATE_TAG`，没有清单，没有写文件。
+3. 三根线段 10.005、8.5、6 米 → 管线行数量 24.51。一条管线跨多段、跨两条管路、连同它自己的线，合成一行。
+4. 图纸单位是毫米时 24510 个图纸单位显示 24.51 m；没设单位时按毫米算并有提示。
+5. 任意一份产出的清单里，（类型编码，位号）没有重复——在 `build` 的出口做断言，测试里用随机输入验证。
+6. 副表各行长度之和与主表管线行长度之和一致（舍入差以内）。
+7. 范围三选一：项目范围的行数等于各图对象归并后的行数；节点范围不给节点报 `SCOPE_NOT_SELECTED`。
+8. 导出的 CSV 以 BOM 头开始、用 Excel 打开中文正常；XLSX 能被 `calamine` 读回且内容相同；JSON 能解析回同一份清单。
+9. 性能：2,000 个对象的图算一份清单（含做摘要）不超过 300 ms。
+
+## 7. 测试
+
+| 层 | 测什么 |
+|---|---|
+| 单元（`src/pid/bom.rs`） | §3.1 表的每一行；舍入边界（24.505、24.504999、0.005）；五种单位换算与未设单位；空位号跳过；重复键报错；跨图合并；行序稳定；副表分组与合计；选列与未知列 |
+| 不变量 | 随机生成摘要（含重复位号、空位号、多图），断言：要么报 `BOM_DUPLICATE_TAG`，要么产出的清单键不重复 |
+| 命令与操作 | 用命令建图（泵、容器、带阀门的管路、仪表），`PIDBOM` 与 `pid_bom` 的结果；三种格式导出后读回比对；只读会话里能导出 |
+| REST | 两个路由、状态码（`BOM_DUPLICATE_TAG` → 409）、`rest_openapi.json` 一致、MCP 名单与摘要值 |
+
+要动的文件：新建 `src/pid/bom.rs`、`src/app/commands/pidbom.rs`；改 `src/pid/mod.rs`、`src/app/annotation_data.rs`（把 `rows_to_csv` 放宽到模块外可用）、`src/app/commands/mod.rs`、`src/app/command_driver/utilities.rs`（整行名单）、`src/app/collab/apply.rs`、`src/app/control/mod.rs`、`src/rest.rs`、`src/rest_openapi.json`、`src/mcp.rs`。
+
+## 8. 不在范围与已知限制
+
+- 报表模板（`REQ-DELV-004`、`005`：模板 JSON、字段映射、模板选择、`TEMPLATE_NOT_SELECTED`）不做。本期是固定的列加选列参数。
+- 清单不导出 PDF。
+- 信号线不进清单。
+- 没有人工改清单数量的入口：数量只从图上来。
+- 两条线画重叠了，管长会重复计算；规则 `DR-110` 会提示重叠。
+
+## 9. 待决问题
+
+> **2026-11-16 已定**：本节各条都按「建议」一栏执行。汇总见 `plan.md` §3，对应的任务见 `todo.md`。
+
+| # | 问题 | 建议 |
+|---|---|---|
+| B1 | **管长用的是图面长度。** P&ID 通常是示意图，不按比例画，图上一根线的长度不等于实际管长。计划和需求都要求「累加管段长度」，而图里只有几何长度这一个来源 | 照计划做，按图面几何长度算；清单里带一条说明「管长为图面长度」。要真实管长得另有数据来源（人工填写或来自配管模型），不在本期 |
+| B2 | **管线按什么归行。** 需求：每条管线一行。计划：按（管道等级，公称直径，绝热等级）累加 | 主表照需求（它保证了「每个键至多一行」），计划的口径做成副表「管道汇总」，两张表都导出 |
+| B3 | **报表模板不做**（§8）。计划里的「报表列模板筛选」 | 用选列参数满足；模板留给平台服务端 |
+| B4 | **范围内有图读不出来时不出清单。** 也可以出一份并标明「不完整」 | 不出。材料清单是拿去采购和核算的，少算了不容易被发现 |
+
+## 10. 需求对照
+
+| 需求 | 本期 | 说明 |
+|---|---|---|
+| `REQ-DELV-001` 聚合键与唯一性不变量 | 覆盖 | 行键、管件合并、`BOM_DUPLICATE_TAG`。「已删除实例不计入」在桌面端自然成立：删掉的对象不在图里 |
+| `REQ-DELV-002` 数量公式与计量单位 | 覆盖 | 管长累加与舍入、按类型的默认单位 |
+| `REQ-DELV-003` 聚合范围与快照绑定 | 部分 | 三种范围、`SCOPE_NOT_SELECTED` 已做。清单不是可改写的存储对象，所以没有 `SNAPSHOT_IMMUTABLE` 的场景；从快照算的清单带快照序号，发布包里的清单绑定发布时的快照 |
+| `REQ-DELV-004`、`005` 报表模板 | 不做 | 见 B3 |
+| 计划 T3.3「按（类型编码，位号）去重聚合，任意键最多 1 行」 | 覆盖 | §3.1、成功标准 5 |
+| 计划 T3.3「汇总型号规格与所在图号」 | 覆盖 | `规格`、`图纸` 两列 |
+| 计划 T3.3「按（管道等级，公称直径，绝热等级）累加管长」 | 覆盖 | 副表，见 B2 |
+| 计划 T3.3「列模板筛选，导出 UTF-8 CSV 与 JSON」 | 覆盖 | 选列参数；CSV、JSON，另加 XLSX |

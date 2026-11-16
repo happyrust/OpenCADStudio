@@ -1,0 +1,290 @@
+# SPEC：协同服务器（`collab-server`）
+
+> 状态：**已建成，按现状记录**。基线 `main @ 9b5327f96`。以代码为准，每项标了出处。
+> 线上消息的形状见 `SPEC-collab-protocol.md`，这里只写服务器自己的：怎么跑、存什么、HTTP 接口、一个 `op` 在服务器里怎么走。
+
+## 1. 目标
+
+一个独立进程，替一组桌面客户端做四件事：管会话和在场名单；裁决每一步编辑并按顺序广播；判权限；记审计。它**不存图纸**，只存它应用过的编辑（操作日志），并从日志推出每张图的语义状态。
+
+代码：`crates/ocs_collab_server/src/`（`main.rs` 启动、`ws.rs` WebSocket、`ops.rs` 裁决与提交、`http.rs` HTTP 接口、`store.rs` SQLite、`perm.rs` / `access.rs` 权限、`bus.rs` 房间广播）。纯逻辑在 `crates/ocs_collab/src/`（`conflict.rs`、`permission.rs`、`session.rs`、`occupancy.rs`、`link.rs`）。
+
+验收状态：
+
+- `VAL-SRV` 30/30、`VAL-INFRA` 14/14、`VAL-PERM` 32/32 已验过（状态文档 `docs/plans/2026-11-10-mission-p1-collab-status.md` §3）。
+- 冲突（`VAL-CONF`，18 条）与跨区流程（`VAL-CROSS`，12 条）里服务器这一侧的行为都已实现并有单元测试；冲突的三个端到端场景（61 项）在 `ea7f4357b` 上全过。
+- 状态文档停在 `ea7f4357b`，之后的提交（离线对账、管线广播、跨图连接符、上报位号）还没有写进去。全量端到端复验、把状态文档更新到 228/228，是阶段 2 剩下的任务（T2.4 ④，见 `SPEC-collab-client.md`）。
+- 单元测试：`ocs_collab` 95，`ocs_collab_server` 159 + 12，全绿。
+
+## 2. 怎么跑
+
+```powershell
+cargo run --offline --locked -p ocs_collab_server -- --port 3240 --db <库文件> --seed <种子 JSON>
+```
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--port` | `3240` | 监听端口。端口被占用时以非零码退出并报错，绝不悄悄换端口 |
+| `--db` | `%APPDATA%\OpenCADStudio\collab.db` | SQLite 库文件。打不开时进程仍然监听，`GET /health` 报 503 |
+| `--heartbeat-timeout` | `90`（秒） | 这么久没心跳，会话失效。必须大于 0 |
+| `--claim-ttl` | `300`（秒） | 一次占用的有效期。必须大于 0 |
+| `--seed` | 无 | 启动时导入的种子文件（§3.2），重复导入不出错 |
+| `--tie-window-ms` | `0` | 并列窗口（§5）。**`0` 表示不等**：每个 `op` 到了就判，两人改同一字段时先到的生效、后到的让路，不会产生冲突条目 |
+
+参数写错（含不认识的参数）打印用法并以退出码 2 结束。
+
+**只监听本机回环地址 `127.0.0.1`**（`main.rs`，地址写死在代码里）。别的机器连不上，见 §8 的 S1。
+
+启动顺序是「先占端口，再开库」：开库时会清掉上一次运行留下的会话和占用，顺序反了的话，一个注定因端口被占而失败的启动会把正在服务的那个实例的会话清掉。
+
+## 3. 数据格式
+
+### 3.1 SQLite 库：十张表
+
+出处：`store.rs` 的建表语句。时间列都是 Unix 秒。
+
+| 表 | 列 | 说明 |
+|---|---|---|
+| `users` | `user_id`（主键）、`display_name`、`role`、`company` | `role` 取五个角色名之一（§3.3） |
+| `pbs_nodes` | `node_id`（主键）、`name`、`node_type`、`parent_id` | PBS 树 |
+| `pbs_acl` | `node_id`、`subject`、`permission`、`allowed`；主键是前三列 | `subject` 是用户号或角色名；`permission` 取 `查看` / `编辑` / `导出` / `删除`；`allowed` 取 1 / 0 |
+| `drawings` | `drawing_id`（主键）、`file_name`（唯一）、`pbs_node_id`、`state`、`lifecycle`（默认 `设计中`）、`revision`（默认 0） | `state` 取 `单人编辑` / `协同编辑` / `只读`；`revision` 每应用一个 `op` 加 1 |
+| `sessions` | `session_id`（主键）、`drawing_id`、`user_id`、`mode`、`status`、`base_revision`、`last_heartbeat`、`created_at`、`workspace` | 重启时清空 |
+| `claims` | `tag`（主键）、`drawing_id`、`session_id`、`user_id`、`expires_at` | 重启时清空 |
+| `conflicts` | `conflict_id`（主键）、`drawing_id`、`object_ref`、`field`、`value_a`、`value_b`、`base_revision`、`status`、`resolution`、`resolved_value`、`resolved_by` | `status` 取 `待裁决` / `已裁决`；`resolution` 取 `采用甲方` / `采用乙方` / `人工改值` |
+| `audit_log` | `seq`（自增主键）、`module`、`action`、`at`、`object_ref`、`user_id`、`company`、`ip`、`workspace`、`change_text` | 只追加：库里有触发器拒绝改和删 |
+| `ops` | `drawing_id`、`revision`（两列主键）、`op_id`、`session_id`、`user_id`、`base_revision`、`at`、`changes` | 操作日志。`changes` 是当时广播出去的 `op_applied.changes` 的 JSON 文本 |
+| `reported_tags` | `drawing_id`、`tag`（两列主键）、`revision` | 客户端在 `hello.existing_tags` 里报上来的位号，以及服务器听到它时图所在的修订 |
+
+`ops` 加 `reported_tags` 就是服务器对一张图的全部认识。重启后按修订顺序重放这两张表，就恢复出内存里的图纸模型（§3.5）。
+
+### 3.2 种子文件
+
+出处：`store.rs` 的 `SeedDoc`。四段都可省。下面的例子按字段定义手写。
+
+```json
+{
+  "users": [
+    { "user_id": "u1", "display_name": "张工", "role": "工艺设计人员", "company": "设计院" }
+  ],
+  "pbs_nodes": [
+    { "node_id": "plant", "name": "全厂", "node_type": "项目", "parent_id": null },
+    { "node_id": "unit-11", "name": "11 单元", "node_type": "装置", "parent_id": "plant" }
+  ],
+  "pbs_acl": [
+    { "node_id": "plant", "subject": "工艺设计人员", "permission": "编辑", "allowed": true }
+  ],
+  "drawings": [
+    { "drawing_id": "PID-1101", "file_name": "PID-1101.dwg", "pbs_node_id": "unit-11",
+      "state": "协同编辑", "lifecycle": "设计中" }
+  ]
+}
+```
+
+### 3.3 权限：三层链
+
+出处：`crates/ocs_collab/src/permission.rs` 的 `decide`，`crates/ocs_collab_server/src/perm.rs` 的 `evaluate`。三层依次判，第一个拒绝的层说了算，返回它的层名和错误码。
+
+**第一层，角色 × 操作**（`role_allows`）：
+
+| 操作 | 系统管理员 | 项目管理员 | 工艺设计人员 | 校对人员 | 只读查看者 |
+|---|---|---|---|---|---|
+| 查看图纸 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 编辑图纸 | ✓ | ✓ | ✓ | | |
+| 导出图纸 | ✓ | ✓ | ✓ | ✓ | |
+| 删除图纸 | ✓ | ✓ | | | |
+| 发布签核 | ✓ | ✓ | | | |
+| 授权配置 | ✓ | ✓ | | | |
+| 规则检查 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 主数据维护 | ✓ | | | | |
+
+**第二层，PBS 节点授权**（`lookup_acl`）：八个操作折成四种授权（查看图纸、规则检查 → `查看`；编辑图纸、发布签核、授权配置、主数据维护 → `编辑`；导出图纸 → `导出`；删除图纸 → `删除`）。从图纸所在节点沿父链往上找，最近的一条配置说了算；同一节点上用户行优先于角色行；一路都没有配置就是拒绝。
+
+**第三层，图纸状态**：`只读` 拒绝所有写操作（编辑图纸、删除图纸、发布签核、授权配置、主数据维护）；`单人编辑` 在已有**别的用户**的编辑会话活着时拒绝写操作，并报出那位编辑者的会话号 `holder`；`协同编辑` 放行。三个状态可以任意互转。
+
+判定结果（`PermissionDecision`）：
+
+```json
+{ "allowed": true, "denied_level": null, "code": null,
+  "effective_node_id": "plant", "effective_node_path": ["plant", "unit-11"], "inherited": true }
+```
+
+`denied_level` 取 `role` / `pbs` / `state`，`code` 是对应的 `PERM_DENIED_ROLE` / `_PBS` / `_STATE`。`effective_node_path` 是从根到图纸所在节点的整条链，`inherited` 说明起作用的配置是不是来自上级节点。
+
+### 3.4 一个会话能不能写
+
+出处：`access.rs` 的 `write_access`。它在三层链之上补了会话才有的几条，每个 `op` 到达时都判一次：
+
+| 情形 | 结论 |
+|---|---|
+| 用户不在 `users` 表里，或图不在 `drawings` 表里，或图没有挂到任何 PBS 节点（`hello` 自动建出来的图就是这样） | **不受权限表约束，可以写。** 权限表是用来收紧的，一台没导入种子的服务器什么都不拦 |
+| 会话是以 `只读` 方式加入的 | 不能写（层名 `role`），不论权限表怎么说 |
+| 角色层或 PBS 层拒绝 | 不能写 |
+| 图处于 `单人编辑`，图上有不止一个用户的编辑会话 | 只有最先加入的那个编辑会话能写 |
+| 图处于 `只读` | 只有「编辑权持有者」能写：图被切成只读的那一刻，在图上时间最长、连着 WebSocket 的活跃编辑会话（按会话号认，同一用户的另一个会话不算）。当时没人在编辑，就谁也不能写。图离开只读时这条记录清除 |
+
+「编辑权持有者」这条规则是实现时的选择，契约没有规定，见 §8 的 S2。
+
+### 3.5 内存里的图纸模型
+
+出处：`crates/ocs_collab/src/conflict.rs` 的 `DrawingModel`。每张图一份，首次用到时从 `ops` 与 `reported_tags` 重放而来（`ops.rs` 的 `DrawingOps::load`）。
+
+| 内容 | 说明 |
+|---|---|
+| 当前修订号 | |
+| 对象表 | 位号 → 每个字段的当前值，以及是哪个会话、哪个用户在哪个修订写的 |
+| 改号记录 | `(旧位号, 新位号, 修订)`，让对着旧基线做的变更仍能找到对象 |
+| 已删除对象 | 位号 → 谁在哪个修订删的、删时带着什么值，用来回答还在路上的变更 |
+| 管线与管路 | 管线位号 → 它的管路；每条管路的点、两端所接对象、管件、管段 |
+| 连接符 | 建它的那条变更原样，配对后加上对端三项 |
+| 管线最近一次连接变更 | 管线位号 → 修订与会话，用来判「连接变更落后」 |
+| 上报的位号 | 客户端自己那份图里有、但没有任何 `op` 提到过的位号 |
+
+## 4. HTTP 接口
+
+出处：`http.rs` 的 `router`。一般的错误体是 `{"code": "<错误码>", "message": "<中文说明>"}`；库不可用时各接口返回 503。
+
+| 方法与路径 | 请求 | 应答 |
+|---|---|---|
+| `GET /health` | | 200 `{"ok":true,"db":"ok","version":"0.1.0"}`；库不可用时 503 `{"ok":false,"db":"error","version":"0.1.0"}` |
+| `GET /ws` | WebSocket 升级 | 协同数据通道 |
+| `POST /session` | `{user_id, drawing_id, mode?, workspace?}`，`mode` 默认 `协同编辑` | 201 `{session_id, base_revision}`；同一用户同一张图重复请求得到同一个会话号。图处于 `单人编辑` 且别人的编辑会话还活着：403 `{"code":"PERM_DENIED_STATE","message":"该图面已有活动的编辑会话","holder":"<会话号>"}` |
+| `POST /permission/check` | `{user_id, drawing_id, operation}` | 允许 200、拒绝 403，正文都是 §3.3 的判定结果六个字段，`单人编辑` 被占时另带 `holder`。入参不对：缺字段 400 `INVALID_MESSAGE`；操作名不认识 400 `PERM_UNKNOWN_OPERATION`；用户不存在 400 `PERM_UNKNOWN_SUBJECT`；图纸不存在 404 `PERM_UNKNOWN_SUBJECT`；库里的图纸状态非法 500 `PERM_INVALID_STATE` |
+| `POST /drawing/{id}/state` | `{user_id, state}`；调用者要有「授权配置」权限 | 200 `{drawing_id, state}`。无权限 403（判定结果）；状态值非法 400 `INVALID_STATE_TRANSITION`。切成 `只读` 时定出编辑权持有者，并向图上每个会话（含持有者本人）单独发 `readonly_downgrade` |
+| `GET /drawing/{id}/objects` | 可选 `?object_ref=<位号>` | 200 `{drawing_id, revision, items, total, reported_tags}`，见下 |
+| `GET /drawing/{id}/topology` | | 200 `{drawing_id, revision, pipe_lines, pipe_runs, connectors}`，见下 |
+| `GET /audit` | 可选 `object_ref` 或 `tag`、`user_id`、`from`、`to`、`limit`、`offset` | 200 `{"items":[…],"total":N}`，按时间倒序 |
+| `PUT` / `PATCH` / `DELETE /audit`，任意方法 `/audit/{seq}` | | 405 `{"code":"AUDIT_APPEND_ONLY","message":"审计日志只追加，不支持修改或删除"}` |
+| `GET /conflicts` | 可选 `drawing_id`、`status` | 200 `{items, total}`，每条是 `conflicts` 表的一行 |
+| `POST /conflicts/{id}/resolve` | `{resolution, resolved_by 或 user_id, value 或 resolved_value}`；裁决人要在那张图上有「授权配置」权限 | 200 `{conflict_id, status, resolution, resolved_by, resolved_value, object_ref, field, value, revision}`。无权限 403（判定结果，另带 `level`）；没有这个条目 404 `CONFLICT_UNKNOWN`；已裁决过 409 `{"ok":false,"code":"CONFLICT_ALREADY_RESOLVED","message":…,"conflict_id","status","resolution","resolved_by"}`；取值不合法 400 |
+
+**对象读回**（`GET /drawing/{id}/objects`）——服务器对这张图的认识，可以拿来和客户端的图对账：
+
+```json
+{ "drawing_id": "PID-1101", "revision": 7,
+  "items": [
+    { "object_ref": "P-1001",
+      "fields": { "公称直径": { "value": "DN80", "revision": 7, "user_id": "u1" } } }
+  ],
+  "total": 1,
+  "reported_tags": ["E-1001", "V-1003"] }
+```
+
+`items` 只含被某个 `op` 写过的对象；图里原有、从没被改过的对象不在里面，只在 `reported_tags` 里占着位号。`total` 不计 `reported_tags`。
+
+**拓扑读回**（`GET /drawing/{id}/topology`）：
+
+```json
+{ "drawing_id": "PID-1101", "revision": 12,
+  "pipe_lines": [ { "tag": "L-1001", "runs": ["L-1001-01"] } ],
+  "pipe_runs": [
+    { "tag": "L-1001-01", "line_tag": "L-1001", "points": [[0,0],[100,0]],
+      "from": "P-1001", "to": "E-1001", "fittings": [ … ], "segments": [ … ] }
+  ],
+  "connectors": [
+    { "kind": "create_connector", "line_tag": "L-1001", "connector": "pipe_out", "at": [100,0],
+      "peer_drawing": "PID-1102", "peer_line_tag": "L-2001", "peer_connector": "pipe_in" }
+  ] }
+```
+
+`fittings` 与 `segments` 的每一项就是管路账目（协议规格 §4.5）里的那一项；没有客户端报过账目时 `segments` 是 `null`。只含已生效的 `op` 建出来的东西。
+
+**审计的一条**：
+
+```json
+{ "seq": 128, "module": "协同编辑", "action": "set_property", "at": 1794830000,
+  "object_ref": "P-1001", "user_id": "u1", "company": "设计院", "ip": "127.0.0.1",
+  "workspace": "默认工作区", "change_text": "set_property P-1001.公称直径: DN50 -> DN80" }
+```
+
+| 字段 | 取值 |
+|---|---|
+| `module` | `协同编辑`（会话做的事）或 `冲突裁决`（裁决） |
+| `action` | 生效的变更记变更种类（如 `set_property`）；没生效的记事件名：`write_denied`（无写权限或位号被别人占用）、`change_rejected_deleted`（对象已被删）、`delete_refused`（还被引用）、`connector_refused`（第二个流入连接符）；裁决记 `conflict_resolved` |
+| `change_text` | 生效的写成 `<种类> <对象>.<字段>: <旧值> -> <新值>`（没有字段时只有 `<种类> <对象>`；删除另附「（删除前：字段=值；…）」）；没生效的写明想做什么、为什么没成 |
+| 其余 | 九个字段都不会是空的：查不到时分别填 `未知`（单位）、`默认工作区`、`127.0.0.1`、`未知对象`、`未知用户` |
+
+## 5. 数据怎么传：一个 `op` 在服务器里
+
+出处：`ws.rs` 的 `op`，`ops.rs` 的 `receive` / `judge_and_commit` / `commit`。
+
+```mermaid
+flowchart TD
+    A["收到 op（base_revision, op_id, payload）"] --> B{"会话还有效？"}
+    B -- 否 --> B1["error SESSION_*"]
+    B -- 是 --> C{"会话能写？（§3.4）"}
+    C -- 否 --> C1["error PERM_DENIED_*<br/>审计 write_denied"]
+    C -- 是 --> D{"碰到别人占用的位号？"}
+    D -- 是 --> D1["error CLAIM_HELD<br/>审计 write_denied"]
+    D -- 否 --> E["锁住这张图，拆出每条变更"]
+    E --> F{"开了并列窗口，基线是当前修订，<br/>且含会争同一字段或同一条线连接的变更？"}
+    F -- 是 --> F1["先扣住，窗口到期再判。<br/>期间来了同基线、争同一处、值不同的 op：<br/>两个都不生效，建冲突条目，广播 conflict"]
+    F -- 否 --> G["逐条裁决"]
+    F1 --> G
+    G --> H{"有变更被挡，且 op 带结构变更<br/>或一条都没生效？"}
+    H -- 是 --> H1["整步拒绝：每个 error 都带 rejected"]
+    H -- 否 --> I["一个事务：修订号 +1、写审计行、写操作日志"]
+    I --> J["更新内存模型；仍在锁里广播 op_applied"]
+    J --> K["图上所有会话的基线推到新修订"]
+    J --> L{"动到了连接符，或流出侧线上会传递的字段？"}
+    L -- 是 --> M["服务器自己追加 op：<br/>向两张图的房间发 pair_connector，<br/>在流入侧那张图上提交 set_property"]
+```
+
+B1、C1、D1 三种拒绝都带 `op_id` 与 `rejected: true`，发送者据此把那一步撤回。
+
+逐条裁决的规则（`conflict.rs` 的 `judge`，纯函数，不读时钟）：
+
+| 情形 | 结论 |
+|---|---|
+| 基线比当前修订还新 | `STALE_BASE_REVISION`，整步拒绝 |
+| 写字段：基线之后没有别的会话写过这个字段 | 合并，生效 |
+| 写字段：基线之后别的会话把它写成了别的值 | 让路：`OP_SUPERSEDED`，被挡的值记进审计。自己较早的写入不算「别人」，值相同也不算落后 |
+| 写字段：对象在基线之后被别的会话删了 | `OBJECT_DELETED`，审计 `change_rejected_deleted` |
+| 删对象：它还是某条管路的端点 | `OBJECT_REFERENCED`，审计 `delete_refused` |
+| 改一条线的连接（加管路、插管件、建或删连接符、更新管路）：基线之后别的会话动过同一条线的连接 | 连接不按字段合并：`STALE_BASE_REVISION`，由发送者看过现状再做 |
+| 建流入连接符：这条线在本图已有一个同类的流入连接符 | `DUPLICATE_INFLOW_CONNECTOR`，审计 `connector_refused` |
+| 新放符号：位号已被占（对象表里有，或有人上报过） | 服务器换成下一个空闲的号，广播里用 `reassigned_from` 注明原号 |
+| 服务器读不懂的 `op`（种类不认识） | 基线等于当前修订就原样记入并广播，否则 `STALE_BASE_REVISION` |
+
+整步还是逐条：`op` 里只要有一条不是「写字段」的变更（新建、删除、改连接），就整步生效或整步不生效；纯写字段的 `op` 逐条判，生效的照常广播，被挡的各答一个不带 `rejected` 的 `error`，只有一条都没生效时才全部带上 `rejected`。
+
+其余要点：
+
+- **判定、提交、广播在同一把锁里完成**，所以房间听到的 `op_applied` 严格按修订号递增，不会两条共用一个修订号，也不会新的先到。客户端靠这一点发现自己漏了变更。
+- **并列窗口只扣「可能并列」的 `op`**：删除和新放符号不争任何东西，到了就提交。扣住的 `op` 由一个定时任务到期提交（周期为窗口的四分之一，限在 5–50 毫秒）。
+- **裁决结果也是一个 `op`**：会话号 `adjudication:<冲突号>`，`op_id` 为 `resolve-<冲突号>`，走同一条「事务 → 模型 → 广播」的路。
+- **跨图联动的 `op`** 会话号以 `link:` 开头。会传递的字段：管道 `管道等级`、`公称直径`、`绝热等级`、`流体介质`、`管线类型`；信号线 `起点仪表`、`终点仪表`（`link.rs`）。配对关系不另存表，重启后从操作日志里那些 `link:` 会话的 `pair_connector` 恢复。
+
+加入时的补发（`ws.rs` 的 `hello`）：读当前修订、订阅房间、读缺失的那段日志、登记上报的位号，四件事在同一把锁里做——每个 `op` 要么在补发里，要么经订阅送到，不会两边都有，也不会两边都没有。
+
+定时清扫（每秒一次）：心跳超时的会话判失效、释放其占用并向房间发 `peer_left`；到期的占用回收并向房间发 `claim_released`。
+
+## 6. 成功标准（已满足，改动时不得破坏）
+
+- 两个 `op` 并发到达，广播出去的修订号各不相同且连续，`drawings.revision` 与之一致。
+- 重启后，从 `ops` 与 `reported_tags` 重放出的模型与重启前一致（`GET /drawing/{id}/objects` 与 `/topology` 前后相同）。
+- 审计表不能改、不能删（库触发器与 HTTP 两层都拒绝）。
+- 不能写的会话，无论客户端怎么做都写不进，且每次尝试都有审计记录。
+- `cargo test --offline --locked -p ocs_collab -p ocs_collab_server` 全绿。
+
+## 7. 不在范围与已知限制
+
+- 不存图纸文件，不做文件分发：每个人用自己手里的 DWG。新加入的人拿到的是「他的文件 + 补发的编辑」；两人的文件本来就不一样时，服务器只能靠上报的位号避开撞号，别的差异它不知道。
+- 没有登录验证：`user_id` 由客户端自报。HTTP 接口（含改图纸状态、裁决冲突）同样只认请求里写的 `user_id`。
+- 不加密，只监听本机。
+- 用户、PBS、授权、图纸只能靠种子文件导入，没有管理接口。
+- 操作日志只增不减，没有归档或截断。
+- 单进程、单库文件，不支持多实例。
+- 「被引用」只算管路的端点：删一个管路上的管件不会被拦。
+- 一个 `op` 里有两个同位号的新符号时，服务器不会给第二个改派（客户端的位号引擎不会在一步里产生这种 `op`）。
+
+**与已批准计划（`2026-11-16-pid-platform-next-steps-plan.md`）文字的差别**：计划里写的 `connector_links` 表、`SyncSince` / `SyncOps` 消息、`room.rs` 文件都没有建。实际做法是：配对关系从操作日志推出；补发走 `hello.since` → `welcome.replay_from` 加一串 `op_applied`（只加可选键，不加消息种类）；房间逻辑在 `ops.rs` 与 `bus.rs`。功能与计划一致，以本规格和代码为准。
+
+## 8. 待决问题
+
+> **2026-11-16 已定**：两条都按「建议」一栏执行。S1 加 `--bind`（任务 `CC-3`）；S2 的四处都保留现状，结项时（任务 `CC-8`）在状态文档里写成已确认。汇总见 `plan.md` §3。
+
+| # | 问题 | 建议 |
+|---|---|---|
+| S1 | 服务器只监听 `127.0.0.1`，两台机器上的人没法协同。迄今所有验证都是同一台机器上开两个客户端做的。要不要加一个 `--bind <地址>` 参数（默认仍是 `127.0.0.1`）？ | **加。** 改动很小（`main.rs` 一处），默认值不变，现有验证不受影响。代价：监听局域网地址就把「没有登录验证、不加密」暴露给同网段的人，只能用于可信内网，文档里要写明。列为阶段 2 收口里的一个独立小任务，做不做由你定 |
+| S2 | 状态文档里记着、还没有得到确认的几处实现选择：① 图切成只读时，编辑权归「当时在图上最久的活跃编辑会话」（§13.4 之 2）；② 并列窗口默认 0，默认不产生冲突条目（§14.6 之 1）；③ 让路与过期分用两个错误码 `OP_SUPERSEDED` / `STALE_BASE_REVISION`（§14.6 之 3）；④「被引用」只算管路端点（§14.6 之 4） | **都保留现状。** 它们已经实现并通过了各自的场景；在 T2.4 ④ 更新状态文档时一并写成「已确认」。如果你希望默认就能出现冲突裁决，② 可以改成给一个几百毫秒的默认值，代价是每一步写字段的广播都晚这么久 |
