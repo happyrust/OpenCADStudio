@@ -790,6 +790,7 @@ fn run_session(
             .as_ref()
             .filter(|seen| seen.server_url == config.server_url && seen.drawing_id == config.drawing_id)
             .map(|seen| seen.revision),
+        existing_tags: Vec::new(),
     };
     let wire = send_json(&mut ws, &hello)?;
     log_frame(false, &wire, None);

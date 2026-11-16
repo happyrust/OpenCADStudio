@@ -1590,6 +1590,7 @@ mod tests {
             client_version: "test".into(),
             workspace: workspace.into(),
             since: None,
+            existing_tags: Vec::new(),
         }
     }
 
@@ -2221,6 +2222,7 @@ mod tests {
                 client_version: "test".into(),
                 workspace: "plant-a".into(),
                 since: None,
+                existing_tags: Vec::new(),
             },
             T0 + 2,
         )

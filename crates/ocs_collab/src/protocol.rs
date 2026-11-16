@@ -27,6 +27,15 @@ pub enum ClientMessage {
         /// first join, where the drawing is taken to be what the room has.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<i64>,
+        /// The tags the objects of this client's own copy of the drawing
+        /// carry, as far as no op of its own is still on its way to say so.
+        /// Two people who each opened a file of their own need not have the
+        /// same objects in it, and the server knows a drawing only by the
+        /// ops it applied: this is how it learns which tags are in use in a
+        /// copy it never saw, so that it gives none of them to a symbol
+        /// somebody else places. Absent when there is none to list.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        existing_tags: Vec<String>,
     },
     /// Keep-alive, expected every 15 s.
     Heartbeat { session_id: String },
@@ -393,6 +402,29 @@ mod tests {
             op_ids: vec!["op-a".into(), "op-b".into()],
         };
         assert_eq!(serde_json::to_value(&tied).expect("serialize")["op_ids"], serde_json::json!(["op-a", "op-b"]));
+    }
+
+    /// `hello.existing_tags`: the tags the objects of the client's own copy
+    /// of the drawing carry. One more optional addition — a hello without
+    /// it reads as it always did, and one with nothing to report is written
+    /// without it.
+    #[test]
+    fn collab_existing_tags_a_hello_lists_the_tags_of_its_drawing_only_when_it_has_some() {
+        // A hello as the client wrote it, read and written back.
+        let read = |text: &str| -> Value {
+            let hello: ClientMessage = serde_json::from_str(text).expect("a hello");
+            serde_json::to_value(&hello).expect("serialize")
+        };
+        let plain =
+            read(r#"{"type":"hello","user_id":"u1","drawing_id":"PID-1101","mode":"协同编辑"}"#);
+        assert!(plain.get("existing_tags").is_none(), "not written");
+
+        let telling = read(
+            r#"{"type":"hello","user_id":"u1","drawing_id":"PID-1101","mode":"协同编辑",
+                "existing_tags":["P-1001","V-1001"]}"#,
+        );
+        let listed = serde_json::json!(["P-1001", "V-1001"]);
+        assert_eq!(telling["existing_tags"], listed);
     }
 
     #[test]

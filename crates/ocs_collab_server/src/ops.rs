@@ -1416,6 +1416,7 @@ mod tests {
             client_version: "test".into(),
             workspace: "plant-a".into(),
             since: None,
+            existing_tags: Vec::new(),
         };
         handle_message(state, &mut conn, hello, T0).await;
         assert!(conn.session.is_some(), "hello must open a session");
@@ -1565,6 +1566,7 @@ mod tests {
             client_version: "test".into(),
             workspace: "plant-a".into(),
             since: None,
+            existing_tags: Vec::new(),
         };
         let welcome = handle_message(&state, &mut late, hello, T0).await;
         let told = welcome
@@ -2143,6 +2145,7 @@ mod tests {
             client_version: "test".into(),
             workspace: "plant-a".into(),
             since,
+            existing_tags: Vec::new(),
         };
         handle_message(state, &mut conn, hello, T0 + 5).await
     }
@@ -2234,6 +2237,7 @@ mod tests {
             client_version: "test".into(),
             workspace: "plant-a".into(),
             since: Some(0),
+            existing_tags: Vec::new(),
         };
         let reactions = handle_message(&state, &mut late, hello, T0 + 5).await;
         let (_, _, replayed) = welcomed(&reactions);
@@ -2386,6 +2390,7 @@ mod tests {
             client_version: "test".into(),
             workspace: "plant-a".into(),
             since: None,
+            existing_tags: Vec::new(),
         };
         handle_message(state, &mut conn, hello, T0).await;
         assert!(conn.session.is_some(), "hello must open a session");

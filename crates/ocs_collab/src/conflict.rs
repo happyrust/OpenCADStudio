@@ -17,7 +17,7 @@
 //!
 //! Everything here is a pure function over that state: no clock, no I/O.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -255,7 +255,8 @@ pub struct Run {
 
 /// The semantic state of one drawing: its objects by tag, the retags that
 /// let a change made against an older baseline still find its object, what
-/// was deleted, and how the pipe lines are connected up.
+/// was deleted, how the pipe lines are connected up, and the tags in use in
+/// a client's own copy of it that no op told of.
 #[derive(Debug, Clone, Default)]
 pub struct DrawingModel {
     revision: i64,
@@ -271,6 +272,9 @@ pub struct DrawingModel {
     /// Pipe line tag → the revision and session that last changed its
     /// connections.
     line_touched: BTreeMap<String, (i64, String)>,
+    /// Tags the objects of a client's own copy of the drawing carry that no
+    /// op ever told of ([`Self::report_tags`]).
+    reported: BTreeSet<String>,
 }
 
 impl DrawingModel {
@@ -454,6 +458,9 @@ impl DrawingModel {
             if change.value == object_ref || change.value.is_empty() {
                 return;
             }
+            // Whoever has the object has it under the new tag from here on:
+            // the old one is in use in no copy.
+            self.reported.remove(object_ref);
             // The object keeps its fields under its new tag. Objects are
             // keyed by tag here, so one already carrying the new tag is the
             // same entry from now on; its fields stay where the retagged
@@ -543,6 +550,11 @@ impl DrawingModel {
     /// another (`VAL-CROSS-010`). The tag it came with rides along as
     /// `reassigned_from`, which is how the session that placed it knows to
     /// rename its own.
+    ///
+    /// A tag in use in a client's own copy of the drawing
+    /// ([`Self::report_tags`]) is taken the same way: a symbol placed under
+    /// it gets the next free one, and neither a symbol nor a run is given
+    /// it.
     pub fn completed(&self, change: &Change) -> Change {
         let mut change = change.clone();
         if change.kind == KIND_ADD_PIPE_RUN && change.text("tag").is_none() {
@@ -550,13 +562,13 @@ impl DrawingModel {
             let taken = self.lines.get(&line).map_or(0, Vec::len);
             let tag = (taken + 1..)
                 .map(|n| format!("{line}-{n:02}"))
-                .find(|tag| !self.runs.contains_key(tag))
+                .find(|tag| !self.runs.contains_key(tag) && !self.reported.contains(tag))
                 .unwrap_or_default();
             change.raw["tag"] = Value::String(tag);
         }
         if change.kind == KIND_INSERT_SYMBOL {
             let tag = change.subject();
-            if !tag.is_empty() && self.objects.contains_key(&tag) {
+            if !tag.is_empty() && self.is_taken(&tag) {
                 let free = self.free_tag_after(&tag);
                 change.raw["reassigned_from"] = Value::String(tag);
                 change.raw["tag"] = Value::String(free.clone());
@@ -567,8 +579,8 @@ impl DrawingModel {
         change
     }
 
-    /// The first tag after `taken` that no object of this drawing has:
-    /// the number `taken` ends in counted up, in as many digits (`V-1001` →
+    /// The first tag after `taken` that is free ([`Self::is_taken`]): the
+    /// number `taken` ends in counted up, in as many digits (`V-1001` →
     /// `V-1002`), or `-2`, `-3`, … appended to one that ends in no number.
     fn free_tag_after(&self, taken: &str) -> String {
         let digits = taken
@@ -577,7 +589,7 @@ impl DrawingModel {
             .take_while(char::is_ascii_digit)
             .count();
         let (stem, number) = taken.split_at(taken.len() - digits);
-        let free = |tag: &String| !self.objects.contains_key(tag);
+        let free = |tag: &String| !self.is_taken(tag);
         match number.parse::<u64>() {
             Ok(from) => (from + 1..)
                 .map(|n| format!("{stem}{n:0digits$}"))
@@ -590,6 +602,67 @@ impl DrawingModel {
     /// An object that was deleted, by the tag it had.
     pub fn deleted(&self, object_ref: &str) -> Option<&Deleted> {
         self.deleted.get(object_ref)
+    }
+
+    /// A client that joins lists the tags the objects of its own copy of
+    /// the drawing carry (`hello.existing_tags`), as that copy was at
+    /// `revision` of this room. Two people who each opened a file of their
+    /// own need not have the same objects in it, and all the server knows
+    /// of a drawing is the ops it applied: this is how it learns of a tag
+    /// that is in use in a copy it never saw. Such a tag is taken from here
+    /// on — [`Self::completed`] gives a symbol placed under it another, and
+    /// gives it to nothing — until an op deletes the object or gives it
+    /// another tag, which takes it away from everyone who has it.
+    ///
+    /// A tag an op has told of is known already. And one the room deleted
+    /// or renamed away after `revision` is about to leave that copy too —
+    /// the replay behind the `welcome` says so — and is not taken on its
+    /// account.
+    ///
+    /// Returns the tags that are news, in the order they were listed.
+    pub fn report_tags<I, S>(&mut self, tags: I, revision: i64) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut news = Vec::new();
+        for tag in tags {
+            let tag = tag.as_ref();
+            if tag.is_empty() || self.knows(tag) || self.let_go_after(tag, revision) {
+                continue;
+            }
+            if self.reported.insert(tag.to_owned()) {
+                news.push(tag.to_owned());
+            }
+        }
+        news
+    }
+
+    /// The tags only a client's listing tells of ([`Self::report_tags`]),
+    /// in order.
+    pub fn reported_tags(&self) -> impl Iterator<Item = &String> {
+        self.reported.iter().filter(|tag| !self.knows(tag))
+    }
+
+    /// Whether an op told of something that goes by `tag`.
+    fn knows(&self, tag: &str) -> bool {
+        self.objects.contains_key(tag)
+            || self.runs.contains_key(tag)
+            || self.lines.contains_key(tag)
+    }
+
+    /// Whether the room deleted what went by `tag`, or gave it another tag,
+    /// after `revision`.
+    fn let_go_after(&self, tag: &str, revision: i64) -> bool {
+        let deleted = self.deleted.get(tag);
+        let renamed = |(old, _, at): &(String, String, i64)| old == tag && *at > revision;
+        deleted.is_some_and(|gone| gone.revision > revision) || self.renames.iter().any(renamed)
+    }
+
+    /// Whether a symbol cannot go by `tag`: an object of the drawing has
+    /// it, or one in a client's own copy does.
+    fn is_taken(&self, tag: &str) -> bool {
+        self.objects.contains_key(tag) || self.reported.contains(tag)
     }
 
     /// The pipe topology, for the read-back endpoint.
@@ -673,6 +746,8 @@ impl DrawingModel {
         };
         match change.kind.as_str() {
             KIND_DELETE_OBJECT => {
+                // Gone from every copy that had it.
+                self.reported.remove(object_ref);
                 let fields = self
                     .objects
                     .remove(object_ref)
@@ -1266,6 +1341,99 @@ mod tests {
         let again = model.completed(&place("V-1001"));
         assert_eq!(again.subject(), "V-1001");
         assert!(again.raw.get("reassigned_from").is_none());
+    }
+
+    /// A symbol placed under `tag`.
+    fn place(tag: &str) -> Change {
+        one(json!({"kind": KIND_INSERT_SYMBOL, "type": "VALVE", "tag": tag, "position": [0, 0]}))
+    }
+
+    /// The tag a symbol placed under `tag` would be given.
+    fn placed(model: &DrawingModel, tag: &str) -> String {
+        model.completed(&place(tag)).subject()
+    }
+
+    /// The server knows a drawing by the ops it applied, and two people who
+    /// each opened a file of their own need not have the same objects in
+    /// it. A client that joins lists the tags its copy carries
+    /// (`hello.existing_tags`), and from then on they are taken like an
+    /// object's: a symbol somebody places under one is given the next free
+    /// tag, and no tag the server gives out is one of them. It used to give
+    /// a symbol a tag that one side's drawing had in use already.
+    #[test]
+    fn collab_existing_tags_a_tag_only_a_clients_copy_has_is_taken() {
+        let mut model = DrawingModel::default();
+        // Nobody has said anything: the tag is free, as it always was.
+        assert_eq!(placed(&model, "V-1002"), "V-1002");
+
+        // One client's file has V-1002 and V-1003 in it. No tag is nobody's.
+        let news = model.report_tags(["V-1002", "V-1003", ""], 0);
+        assert_eq!(news, ["V-1002", "V-1003"]);
+        let listed: Vec<&String> = model.reported_tags().collect();
+        assert_eq!(listed, ["V-1002", "V-1003"]);
+        assert!(model.object("V-1002").is_none(), "nothing else is known");
+
+        // Placed under one of them: the next tag that neither an object nor
+        // a copy has.
+        let moved = model.completed(&place("V-1002"));
+        assert_eq!(moved.subject(), "V-1004");
+        assert_eq!(moved.raw["reassigned_from"], "V-1002");
+        // One that runs into an object counts past them as well.
+        assert!(applies(&take(&mut model, &place("V-1001"), 0, 1, "s1")));
+        assert_eq!(placed(&model, "V-1001"), "V-1004");
+
+        // Listed again, and with it a tag an op has told of: nothing new.
+        assert!(model.report_tags(["V-1003", "V-1001"], 1).is_empty());
+        assert_eq!(model.reported_tags().count(), 2);
+
+        // A run the server names is not given one of them either.
+        let run = json!({"kind": KIND_ADD_PIPE_RUN, "line_tag": "L-1001", "points": []});
+        let named = |model: &DrawingModel| model.completed(&one(run.clone())).text("tag");
+        assert_eq!(named(&model).as_deref(), Some("L-1001-01"));
+        model.report_tags(["L-1001-01", "L-1001-02"], 1);
+        assert_eq!(named(&model).as_deref(), Some("L-1001-03"));
+    }
+
+    /// A listed tag is let go of the way an object's is: an op that deletes
+    /// the object, or gives it another tag, takes it away from everyone who
+    /// has it, and the tag is free again.
+    #[test]
+    fn collab_existing_tags_a_listed_tag_is_free_again_once_an_op_takes_it_away() {
+        let mut model = DrawingModel::default();
+        model.report_tags(["V-1001", "V-1002"], 0);
+        assert_eq!(placed(&model, "V-1001"), "V-1003", "both are taken");
+
+        assert!(applies(&take(&mut model, &delete("V-1001"), 0, 1, "s1")));
+        assert_eq!(placed(&model, "V-1001"), "V-1001", "deleted");
+        let renamed = retag("V-1002", "V-2002");
+        assert!(applies(&take(&mut model, &renamed, 1, 2, "s1")));
+        assert_eq!(placed(&model, "V-1002"), "V-1002", "renamed away");
+        assert_eq!(placed(&model, "V-2002"), "V-2003", "the object's now");
+        assert_eq!(model.reported_tags().count(), 0);
+    }
+
+    /// What a client lists is its copy as it was at the revision it says it
+    /// had reached (`hello.since`). A tag the room deleted or renamed away
+    /// after that is about to leave that copy too — the replay says so —
+    /// and is not taken on its account. One the room let go of by that
+    /// revision the client has all the same: its copy is another, and the
+    /// tag is taken.
+    #[test]
+    fn collab_existing_tags_what_the_room_took_away_since_is_not_taken_again() {
+        let mut model = DrawingModel::default();
+        assert!(applies(&take(&mut model, &place("V-1001"), 0, 1, "s1")));
+        assert!(applies(&take(&mut model, &place("V-1002"), 1, 2, "s1")));
+        assert!(applies(&take(&mut model, &delete("V-1001"), 2, 3, "s1")));
+        let renamed = retag("V-1002", "V-2002");
+        assert!(applies(&take(&mut model, &renamed, 3, 4, "s1")));
+
+        // Away since revision 2: it has both, and is about to lose both.
+        assert!(model.report_tags(["V-1001", "V-1002"], 2).is_empty());
+        // Having seen the deletion (3), and not the retag (4).
+        assert_eq!(model.report_tags(["V-1001", "V-1002"], 3), ["V-1001"]);
+        // Having seen both, and with the old tag in its copy still.
+        assert_eq!(model.report_tags(["V-1001", "V-1002"], 4), ["V-1002"]);
+        assert_eq!(placed(&model, "V-1001"), "V-1003");
     }
 
     /// The account of a run a desktop client sends with a change to it.

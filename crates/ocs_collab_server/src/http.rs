@@ -1399,6 +1399,7 @@ mod tests {
                 client_version: "test".into(),
                 workspace: "plant-a".into(),
                 since: None,
+                existing_tags: Vec::new(),
             },
             now,
         )
@@ -1492,6 +1493,7 @@ mod tests {
                 client_version: "test".into(),
                 workspace: "plant-a".into(),
                 since: None,
+                existing_tags: Vec::new(),
             },
             now,
         )
@@ -2105,6 +2107,7 @@ mod tests {
                 client_version: "test".into(),
                 workspace: "plant-a".into(),
                 since: None,
+                existing_tags: Vec::new(),
             };
             ws::handle_message(&state, &mut conn, hello, 1_700_000_000).await;
             sessions.push(conn);
