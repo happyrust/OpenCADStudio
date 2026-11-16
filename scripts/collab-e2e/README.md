@@ -2,7 +2,7 @@
 
 这份文件回答一个问题：228 条验收契约（`VAL-…`）里，每一条现在由哪条测试、或哪个端到端脚本的哪些检查项盯着；哪些没有，要补什么。
 
-- 对照的基准：提交 `278439b5d`（2026-11-17）。
+- 对照的基准：提交 `278439b5d`（2026-11-17）。此后为补缺口加的测试，表里照常引用；补到哪一类了，见第 5.1 节。
 - 契约原文：mission 目录里的 `validation-contract.md`，路径见 `docs/plans/2026-11-10-mission-p1-collab-status.md` 开头。各区条数与那份文档的第 4 节一致。
 - 脚本就在本目录里（2026-11-17 收进仓库，`docs/plans/2026-11-16-pid-dev-spec/todo.md` 的 CC-5）。证据（日志、截图、数据库、图纸副本）不进仓库，写到运行时指定的目录，见第 3.2 节。
 
@@ -20,7 +20,7 @@
 
 1. **表里说的是「有没有能重跑的检查」，不是「这一条验过没有」。** mission 的验证记录里，前六个区的 178 条和 `VAL-CONF-018` 当时都由验证器用一次性的命令和截图取过证；后三个区的其余 49 条功能做了、脚本也过了，但没有经过 mission 的验证器。两种状态列在第 2 节的合计表里。
 2. **「有」里只列了单元测试的，断言是在进程里做的。** 契约写的取证工具是黑盒的（curl、WebSocket 客户端、GUI 的 REST 接口、截图）。单元测试把判据逐条断言到了，但「经 REST 或 WebSocket 走一遍也是这个结果」这一层，只有 mission 当时的一次性取证。前六个区基本都是这种情况，合计表里单列了一栏。凡是判据落在截图、耗时、真实进程上、单元测试够不着的，标成了「部分」或「缺」。
-3. **「有」不等于「现在是绿的」。** 单元测试的名字取自基准提交上的全量测试日志，当时都通过。端到端脚本的项数取自 2026-11-12 那次全量执行，当时都通过；脚本收进仓库后（2026-11-17）又跑过一遍，有一项因为后来的改动不再通过（第 3.3 节）。后来的那些改动，脚本里还没有对应的断言（第 5.2 节）。
+3. **「有」不等于「现在是绿的」。** 单元测试的名字取自全量测试日志（基准提交上的一份，加上补缺口时重跑的），当时都通过。端到端脚本的项数取自 2026-11-12 那次全量执行，当时都通过；脚本收进仓库后（2026-11-17）又跑过一遍，有一项因为后来的改动不再通过（第 3.3 节）。后来的那些改动，脚本里还没有对应的断言（第 5.2 节）。
 
 **测试名怎么读**
 
@@ -53,18 +53,18 @@
 | 区 | 条数 | 有 | 其中只靠单元测试 | 部分 | 缺 | mission 记录：已取证 | mission 记录：未取证 |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | 协同服务器（`VAL-SRV`） | 30 | 24 | 24 | 4 | 2 | 30 | 0 |
-| 验证基础设施（`VAL-INFRA`） | 14 | 5 | 5 | 5 | 4 | 14 | 0 |
-| 权限与审计（`VAL-PERM`） | 32 | 26 | 26 | 4 | 2 | 32 | 0 |
+| 验证基础设施（`VAL-INFRA`） | 14 | 6 | 6 | 4 | 4 | 14 | 0 |
+| 权限与审计（`VAL-PERM`） | 32 | 32 | 32 | 0 | 0 | 32 | 0 |
 | 语义层（`VAL-SEM`） | 39 | 38 | 38 | 1 | 0 | 39 | 0 |
 | 绘图工具（`VAL-DRAW`） | 31 | 16 | 16 | 14 | 1 | 31 | 0 |
 | 管线与拓扑（`VAL-PIPE`） | 32 | 31 | 31 | 0 | 1 | 32 | 0 |
 | 桌面端协同客户端（`VAL-CLI`） | 20 | 19 | 0 | 1 | 0 | 0 | 20 |
 | 冲突与裁决（`VAL-CONF`） | 18 | 18 | 1 | 0 | 0 | 1 | 17 |
 | 跨区流程（`VAL-CROSS`） | 12 | 12 | 0 | 0 | 0 | 0 | 12 |
-| **合计** | **228** | **189** | **141** | **29** | **10** | **179** | **49** |
+| **合计** | **228** | **196** | **148** | **24** | **8** | **179** | **49** |
 
-- 「有」189 条，「部分」29 条，「缺」10 条。后两种共 39 条，按要做的事分成五类，逐条列在第 5.1 节。
-- 「有」的 189 条里，48 条有端到端脚本，141 条只靠单元测试（第 1 节的第 2 件事）。
+- 「有」196 条，「部分」24 条，「缺」8 条。后两种共 32 条，按要做的事分类，逐条列在第 5.1 节。对照表刚做出来时是 39 条、分五类，其中补单元测试的一类（7 条）已经补完。
+- 「有」的 196 条里，48 条有端到端脚本，148 条只靠单元测试（第 1 节的第 2 件事）。
 - `VAL-DRAW-029` 是契约里预留的空号，所以绘图区是 31 条。
 - 「mission 记录」两栏照抄 mission 的状态文件：已取证是它的 `passed`，未取证是它的 `pending`。
 
@@ -77,7 +77,7 @@ cargo test --offline --locked --lib
 cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 ```
 
-基准提交上的读数：主程序库 6944 条（6891 通过、49 默认不跑、4 失败，失败的 4 条是设计稿比对测试，与协同无关，表里没有引用）；`ocs_collab` 95 条、`ocs_collab_server` 的库 159 条、`main.rs` 18 条，全部通过。
+读数（2026-11-17，补完 7 条单元测试之后）：主程序库 6945 条（6892 通过、49 默认不跑、4 失败，失败的 4 条是设计稿比对测试，与协同无关，表里没有引用）；`ocs_collab` 95 条、`ocs_collab_server` 的库 165 条、`main.rs` 18 条，全部通过。基准提交上主程序库是 6944 条（6891 通过），`ocs_collab_server` 的库是 159 条，其余相同。
 
 ### 3.2 端到端脚本
 
@@ -204,7 +204,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-INFRA-002` | REST 控制面拒绝无 token 请求 | `rest::tests::listener_answers_while_one_connection_stalls` | — | 有 | 这个测试起真实监听端口，其中断言了不带令牌、令牌不对都回 401 |
 | `VAL-INFRA-003` | documents 端点返回当前文档清单 | `rest::tests::documents_carries_document_id_alongside_id`<br>`rest::tests::rest_p1_document_surface_routes_end_to_end` | — | 有 |  |
 | `VAL-INFRA-004` | 用 run 加显式 document_id 能执行命令并使实体数增加 | `rest::tests::headless_session_runs_commands_after_start_tab_conversion`<br>`rest::tests::rest_surface_round_trips_real_entities`<br>`rest::tests::run_route_keeps_the_op_the_body_names` | — | 有 |  |
-| `VAL-INFRA-005` | `POST /api/v1/commands` 带 document_id 时命令真正执行 | `rest::tests::commands_forward_document_id`<br>`rest::tests::commands_run_forwards_document_id` | — | 部分 | 单测断言的是 `/commands` 把 `document_id` 转进执行请求（与 `/run` 同一种请求）；「经这条路由执行后实体数加一」没有单独断言 |
+| `VAL-INFRA-005` | `POST /api/v1/commands` 带 document_id 时命令真正执行 | `app::control::http_bridge::tests::bridge_commands_with_a_document_id_draw_on_that_document`<br>`rest::tests::commands_forward_document_id`<br>`rest::tests::commands_run_forwards_document_id` | — | 有 | 第一条经界面托管的 REST 接口发一条画圆命令，断言响应 `ok`、实体数加一；后两条断言 `document_id` 被转进执行请求 |
 | `VAL-INFRA-006` | 无头实例也能执行 run（缺陷 2 已修） | `rest::tests::headless_session_runs_commands_after_start_tab_conversion`<br>`app::automation::tests::envelope_mutations_work_headless_without_a_session_id` | — | 有 |  |
 | `VAL-INFRA-007` | 实例意外消失时重试一次仍能完成测试 | — | — | 缺 | 验收规程（实例意外消失时重试一次），不是产品行为；脚手架和总入口里没有这条重试 |
 | `VAL-INFRA-008` | GUI 端口限定在 3210 至 3239 区间 | — | — | 缺 | 验收规程（GUI 端口限在 3210–3239、启动前查端口空闲）。仓库里的脚本用的就是契约的端口段（GUI 3210–3239、服务器 3240）；2026-11-12 那次执行用的是把端口整体加了 100 的副本，现在要和别的实例错开时用 `-PortShift`。没有检查端口范围和启动前端口空闲的断言 |
@@ -238,21 +238,21 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-PERM-015` | 响应返回生效节点路径与继承标记 | `ocs_collab::permission::tests::acl_path_is_complete_when_the_target_node_decides`<br>`ocs_collab::permission::tests::acl_inherits_nearest_ancestor_not_root`<br>`ocs_collab_server::perm::tests::an_inherited_acl_reports_the_ancestor_and_a_root_first_path` | — | 有 |  |
 | `VAL-PERM-016` | 只读状态下全部写操作被状态级拒绝 | `ocs_collab_server::perm::tests::a_readonly_drawing_denies_the_five_write_operations_at_state`<br>`ocs_collab::permission::tests::readonly_state_denies_all_five_write_operations` | — | 有 |  |
 | `VAL-PERM-017` | 单人编辑状态对第二个编辑会话拒绝或降级 | `ocs_collab_server::http::tests::a_session_created_over_http_blocks_a_second_editor`<br>`ocs_collab_server::http::tests::permission_check_denies_a_second_editor_on_a_solo_drawing`<br>`ocs_collab_server::perm::tests::single_editor_denies_a_second_editors_write_with_the_holder` | — | 有 |  |
-| `VAL-PERM-018` | 协同编辑状态允许多会话共享基线并放行写操作 | `ocs_collab::session::tests::collaborative_mode_allows_two_live_sessions_on_one_drawing`<br>`ocs_collab_server::ws::tests::an_applied_op_moves_every_live_session_on_the_drawing_to_its_revision`<br>`ocs_collab_server::perm::tests::the_role_matrix_is_evaluated_for_all_40_cells` | — | 部分 | 两个会话并存、基线一起走、协同图上编辑放行各有单测；「有别的会话在场时权限检查仍放行」没有放在一个测试里断言 |
+| `VAL-PERM-018` | 协同编辑状态允许多会话共享基线并放行写操作 | `ocs_collab_server::http::tests::a_coediting_drawing_takes_a_second_editing_session_and_both_may_edit`<br>`ocs_collab::session::tests::collaborative_mode_allows_two_live_sessions_on_one_drawing`<br>`ocs_collab_server::ws::tests::an_applied_op_moves_every_live_session_on_the_drawing_to_its_revision`<br>`ocs_collab_server::perm::tests::the_role_matrix_is_evaluated_for_all_40_cells` | — | 有 | 第一条在一个测试里走完：图到第 3 版后两人各建一个会话，基线都是 3，各做一次「编辑图纸」的权限检查都放行 |
 | `VAL-PERM-019` | 状态迁移到只读后，原放行的编辑操作转为状态级拒绝 | `ocs_collab_server::perm::tests::flipping_a_drawing_to_readonly_flips_the_same_request_to_a_state_denial`<br>`ocs_collab_server::http::tests::state_change_persists_a_legal_value` | — | 有 |  |
 | `VAL-PERM-020` | 非法状态值与非法迁移被拒并返回稳定错误码 | `ocs_collab_server::http::tests::state_change_requires_configure_authorization_permission`<br>`ocs_collab_server::http::tests::state_change_with_an_illegal_value_is_rejected_without_persisting` | — | 有 |  |
 | `VAL-PERM-021` | 三级全拒绝时返回第一级（role）的拒绝原因 | `ocs_collab_server::perm::tests::a_role_denial_short_circuits_even_when_state_would_deny_too`<br>`ocs_collab::permission::tests::role_denial_short_circuits_before_the_acl_tier` | — | 有 |  |
 | `VAL-PERM-022` | role 允许但 pbs 拒绝时返回 pbs 级原因 | `ocs_collab_server::perm::tests::a_path_without_any_acl_row_denies_at_pbs`<br>`ocs_collab::permission::tests::acl_denial_short_circuits_before_the_state_tier` | — | 有 |  |
 | `VAL-PERM-023` | role 与 pbs 均允许但 state 拒绝时返回 state 级原因 | `ocs_collab_server::perm::tests::role_and_acl_allow_then_the_state_tier_denies` | — | 有 |  |
 | `VAL-PERM-024` | 三级均允许时放行且不带拒绝级别 | `ocs_collab_server::http::tests::permission_check_allows_a_permitted_write`<br>`ocs_collab_server::perm::tests::the_role_matrix_is_evaluated_for_all_40_cells` | — | 有 |  |
-| `VAL-PERM-025` | 审计记录 9 个字段全部非空且语义正确 | `ocs_collab_server::ws::tests::an_op_writes_a_complete_audit_row`<br>`ocs_collab_server::store::tests::audit_rows_round_trip_with_all_nine_fields` | — | 部分 | 九个字段逐个有断言；但测试没有播种用户表，`company` 得到的是「未知」，「公司取自用户表」没有断言 |
+| `VAL-PERM-025` | 审计记录 9 个字段全部非空且语义正确 | `ocs_collab_server::http::tests::an_edit_leaves_an_audit_row_with_all_nine_fields_stated`<br>`ocs_collab_server::ws::tests::an_op_writes_a_complete_audit_row`<br>`ocs_collab_server::store::tests::audit_rows_round_trip_with_all_nine_fields` | — | 有 | 第一条在用户表里播种了公司，经 `GET /audit` 读回后逐字段断言，`company` 等于用户表里的值 |
 | `VAL-PERM-026` | 对 /audit 的 PUT / PATCH / DELETE 均返回 405 | `ocs_collab_server::http::tests::audit_mutation_returns_405`<br>`ocs_collab_server::store::tests::audit_log_rejects_update_and_delete_at_the_database_level` | — | 有 |  |
 | `VAL-PERM-027` | 按位号检索返回该位号最近一次修改（at DESC 排序） | `ocs_collab_server::store::tests::audit_by_tag_returns_the_newest_first`<br>`ocs_collab_server::http::tests::audit_tag_filters_the_same_as_object_ref` | — | 有 |  |
-| `VAL-PERM-028` | 按用户检索只返回该用户的记录 | — | — | 缺 | 按用户检索只在别的测试的辅助函数里用到，没有「两个用户各写几条、只返回本人的」这样的断言 |
+| `VAL-PERM-028` | 按用户检索只返回该用户的记录 | `ocs_collab_server::http::tests::audit_user_id_answers_with_that_users_rows_and_no_others` | — | 有 | `u-check` 是校对人员，不能编辑：他的两条是「写入被拒」的记录（`write_denied`），不是成功的修改。按用户检索各返回本人的两条，没有对方的 |
 | `VAL-PERM-029` | 按时间区间检索使用闭区间边界 | `ocs_collab_server::store::tests::audit_from_and_to_are_inclusive` | — | 有 |  |
-| `VAL-PERM-030` | change_text 含变更前后值 | `ocs_collab_server::ws::tests::an_op_writes_a_complete_audit_row` | — | 部分 | 文本格式「字段: 旧值 -> 新值」有断言，但测试里的旧值是「(未知)」；「旧值 DN50、新值 DN80 同时出现」这种有旧值的情形没有断言 |
-| `VAL-PERM-031` | 检索无匹配返回 200 与空数组，不是 404 或 500 | — | — | 缺 | 检索无匹配时返回 200 与空数组，没有单测也没有脚本 |
-| `VAL-PERM-032` | 审计的 ip / workspace / company 取自服务端会话上下文，不可由客户端自报覆盖 | `ocs_collab_server::ws::tests::an_op_writes_a_complete_audit_row` | — | 部分 | 单测断言了 `ip` 取连接地址、`company` 查用户表；「载荷里塞伪造的 ip / workspace / company 也不被采纳」没有测试 |
+| `VAL-PERM-030` | change_text 含变更前后值 | `ocs_collab_server::http::tests::a_change_is_recorded_with_the_old_value_the_new_value_and_the_field`<br>`ocs_collab_server::ws::tests::an_op_writes_a_complete_audit_row` | — | 有 | 第一条测的是有旧值的情形：先写 DN50 再改 DN80，记录里旧值、新值、字段名都在 |
+| `VAL-PERM-031` | 检索无匹配返回 200 与空数组，不是 404 或 500 | `ocs_collab_server::http::tests::an_audit_query_nothing_matches_answers_200_with_an_empty_list` | — | 有 |  |
+| `VAL-PERM-032` | 审计的 ip / workspace / company 取自服务端会话上下文，不可由客户端自报覆盖 | `ocs_collab_server::http::tests::an_audit_row_takes_nothing_from_keys_the_client_slipped_in`<br>`ocs_collab_server::ws::tests::an_op_writes_a_complete_audit_row` | — | 有 | 帧里多出来的 `ip`、`workspace`、`company` 键都不读，第一条有断言。`workspace` 另是建会话时的正式字段，写在那里的值会被采纳，与契约字面有出入，见 5.3 |
 
 ### 4.4 语义层 `VAL-SEM`（39 条）
 
@@ -450,9 +450,9 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 ## 5. 缺口
 
-### 5.1 没有覆盖或只覆盖一部分的（39 条）
+### 5.1 没有覆盖或只覆盖一部分的（32 条）
 
-按要做的事分五类。「现状」一列是对照表里的取值；各条缺什么，见对照表的「说明」。
+按要做的事分五类。「现状」一列是对照表里的取值；各条缺什么，见对照表的「说明」。补完的类只留一段话，不再列表。
 
 **（一）判据在截图上，要起 GUI 的场景（15 条）**
 
@@ -498,17 +498,9 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-SRV-028` | 端口被占用导致的启动失败不得破坏既有会话与占用数据 | 缺 | 同一个端口场景：实例甲有会话和占用时，用同一端口、同一个库起实例乙，断言乙退出后 `sessions`、`claims` 的行数与会话状态和启动前一致 |
 | `VAL-SRV-030` | 并发提交的 revision 分配唯一且不丢帧 | 部分 | 补一个并发场景：8 个以上会话经 WebSocket 各提交 30 个以上 op，断言被接受的 `revision` 无重复、每个 `op_id` 至多一条 `op_applied`、`drawings.revision` 等于最大修订、审计行数与 `op_applied` 条数一致 |
 
-**（四）补或改一条单元测试就够（7 条）**
+**（四）补或改一条单元测试就够（原 7 条，2026-11-17 补完）**
 
-| 编号 | 契约标题 | 现状 | 要补什么 |
-|---|---|---|---|
-| `VAL-INFRA-005` | `POST /api/v1/commands` 带 document_id 时命令真正执行 | 部分 | 补一条断言：经 `/commands` 带 `document_id` 执行一条画图命令后，该文档的实体数加一（放在单测或冒烟场景里都行） |
-| `VAL-PERM-018` | 协同编辑状态允许多会话共享基线并放行写操作 | 部分 | 补一个单测：协同编辑的图上两个用户各建一个会话、基线相同，两人各做一次「编辑图纸」的权限检查都放行 |
-| `VAL-PERM-025` | 审计记录 9 个字段全部非空且语义正确 | 部分 | 测试里先播种用户表，再断言审计行的 `company` 等于用户表里的公司名（现在断言到的是「未知」） |
-| `VAL-PERM-028` | 按用户检索只返回该用户的记录 | 缺 | 补一个单测：两个用户各写两条审计，按用户检索各自只返回本人的两条，两个集合没有交集 |
-| `VAL-PERM-030` | change_text 含变更前后值 | 部分 | 补一条断言：字段已有旧值时再改一次，`change_text` 里旧值和新值同时出现（现在测的是没有旧值的情形） |
-| `VAL-PERM-031` | 检索无匹配返回 200 与空数组，不是 404 或 500 | 缺 | 补一个单测：按不存在的位号、不存在的用户检索，都返回 200 和长度为 0 的数组 |
-| `VAL-PERM-032` | 审计的 ip / workspace / company 取自服务端会话上下文，不可由客户端自报覆盖 | 部分 | 补一个单测：建会话时在载荷里塞伪造的 `ip`、`workspace`、`company`，提交一次修改后断言审计行里这三项都不是伪造值、`company` 等于用户表里的值 |
+`VAL-INFRA-005`、`VAL-PERM-018`、`025`、`028`、`030`、`031`、`032` 各补了一条单元测试，对照表里已改成「有」，测试名见第 4.2、4.3 节。每一条都试过会不会红：把它盯着的那处代码临时改坏，测试在对应的断言上失败，改回去才通过。`VAL-PERM-032` 与契约字面有一处出入，列在第 5.3 节。
 
 **（五）验收规程与脚手架，其中四条要先裁决（7 条）**
 
@@ -536,7 +528,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 ### 5.3 契约字面与实现有出入的（不算覆盖缺口，结项前要裁决）
 
-脚本过了，但契约原文里有一句按字面不成立，或者脚本的做法与原文不完全一样。前七条来自状态文档 §13.3（当时记作「13 条成立，7 条部分成立」），其余来自 §18.2 和这次对照。
+脚本过了，但契约原文里有一句按字面不成立，或者脚本的做法与原文不完全一样。前七条来自状态文档 §13.3（当时记作「13 条成立，7 条部分成立」），其余来自 §18.2 和这次对照；最后一条是补单元测试时发现的。
 
 | 编号 | 出入 |
 |---|---|
@@ -555,11 +547,12 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-CLI-004`、`007`、`016` | 契约允许「点面板或用等价命令」，脚本用的都是命令；面板上的占用、释放按钮和窗口的关闭按钮没有端到端点过 |
 | `VAL-INFRA-001`、`014` | 各场景等就绪的上限多数给的是 180 秒，契约写 60 秒，见 5.1（五） |
 | `VAL-INFRA-008`、`012` | 2026-11-12 那次执行用的副本端口整体加了 100（3310–3359）。收进仓库时已改回契约的端口段（见 3.2 末），不用裁决；还缺的检查见 5.1（五） |
+| `VAL-PERM-032` | 原文要求建会话时塞进载荷的伪造 `workspace` 不被采纳。实现里 `workspace` 是 `hello` 和 `POST /session` 的正式字段，会话就是在那里声明自己的工作区的（`VAL-PERM-025` 的 `ws-alpha` 也是这样来的），写在那里的值原样记进审计，服务器分不出「声明」和「伪造」。成立的部分：帧里多出来的 `ip`、`company` 键，以及提交修改的帧里的 `workspace` 键，服务器都不读；`ip` 取连接的对端地址，`company` 取用户表。单元测试断言的是成立的这部分。要裁决：把原文改成「`workspace` 由会话声明，另两项不可自报」，还是让服务器按一张工作区名单校验 |
 
 ### 5.4 这张表是怎么核对的
 
 - 228 个编号各出现一次，各区条数与状态文档第 4 节相同；mission 记录的两栏合计 179 与 49，也与那一节相同。
-- 表里引用了 280 个单元测试，每个名字都在基准提交的全量测试日志里唯一地找到，并且是通过的（标「默认不跑」的一条除外）。
+- 表里引用了 287 个单元测试，每个名字都在全量测试日志里唯一地找到，并且是通过的（标「默认不跑」的一条除外）。日志是基准提交上的一份；补缺口加的 7 条取自 2026-11-17 补完它们之后重跑的那一次。
 - 表里引用了 23 个脚本（22 个场景加冒烟场景），都存在；项数取自 2026-11-12 那次执行的结果文件，没有失败项。冒烟场景不在那次执行里，它的项数是按脚本源码数的（2026-11-17 单独跑过，2 项都通过）。
 - 2026-11-17 那一遍的结果文件与 2026-11-12 的逐个场景、逐个标签比过项数，全部相同；不同的只有 `t20_session` 的那一项从通过变成失败。
 - 「有」「部分」「缺」是逐条对着契约正文和测试、脚本的代码判断的，判断时没有重新执行端到端脚本。前六个区逐条读了契约正文和测试代码；后三个区以状态文档当时的逐条结论为准，对带计时、截图判据的和后补的几条另读了脚本的检查项。

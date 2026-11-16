@@ -2423,4 +2423,347 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(entry(&state, &id).status, "待裁决");
     }
+
+    // ── Co-editing sessions and the audit log (`VAL-PERM-018`, `-025`,
+    // `-028`, `-030`, `-031`, `-032`) ───────────────────────────────────
+
+    /// The company the users table holds for `u-proc`.
+    const COMPANY: &str = "甲方工程公司";
+
+    /// [`seeded_state`] with what the audit rows are checked against added
+    /// to the users table: a company for `u-proc`, and `u-check`, who
+    /// proofreads and so may look at `d-a1-coop` and not change it.
+    fn audited_state() -> Arc<AppState> {
+        let state = seeded_state();
+        let doc: crate::store::SeedDoc = serde_json::from_str(
+            r#"{
+              "users":[
+                {"user_id":"u-proc","display_name":"工艺甲","role":"工艺设计人员","company":"甲方工程公司"},
+                {"user_id":"u-check","display_name":"校对乙","role":"校对人员","company":"甲方工程公司"}
+              ],
+              "pbs_acl":[
+                {"node_id":"n-plant","subject":"u-check","permission":"查看","allowed":true}
+              ]
+            }"#,
+        )
+        .expect("seed json");
+        let store = state.store.as_ref().expect("store");
+        store.seed(&doc).expect("seed applies");
+        state
+    }
+
+    /// Serves `state` on a loopback port of the system's choosing and says
+    /// which.
+    async fn serve(state: &Arc<AppState>) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("local addr").port();
+        let state = state.clone();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router(state)).await;
+        });
+        port
+    }
+
+    /// The rows `GET /audit?<query>` answers with over the wire, newest
+    /// first. Any status but 200, or a body without a list of rows, fails
+    /// the test.
+    async fn audit_rows(port: u16, query: &str) -> Vec<serde_json::Value> {
+        let path = format!("/audit?{query}");
+        let (status, body) = http_exchange(port, "GET", &path).await;
+        assert_eq!(status, 200, "GET {path}: {body}");
+        match body["items"].as_array() {
+            Some(rows) => rows.clone(),
+            None => panic!("GET {path} answers with rows: {body}"),
+        }
+    }
+
+    /// `frame` read the way the socket loop reads a text frame.
+    fn off_the_wire(frame: serde_json::Value) -> ocs_collab::ClientMessage {
+        serde_json::from_str(&frame.to_string()).expect("a client message")
+    }
+
+    /// Opens `user_id`'s session on `d-a1-coop` the way a socket's `hello`
+    /// does, from `peer` and with `workspace` declared.
+    async fn session_from(
+        state: &AppState,
+        user_id: &str,
+        peer: &str,
+        workspace: &str,
+        now: i64,
+    ) -> crate::ws::Connection {
+        let mut conn = crate::ws::Connection::new(peer);
+        let hello = ocs_collab::ClientMessage::Hello {
+            user_id: user_id.into(),
+            drawing_id: "d-a1-coop".into(),
+            mode: "协同编辑".into(),
+            client_version: "test".into(),
+            workspace: workspace.into(),
+            since: None,
+            existing_tags: Vec::new(),
+        };
+        crate::ws::handle_message(state, &mut conn, hello, now).await;
+        assert!(conn.session.is_some(), "{user_id} is let in");
+        conn
+    }
+
+    /// One `set_property` from `conn` on `d-a1-coop`, made against the
+    /// revision the drawing is at, as the socket would hand it in. The
+    /// payload says what the field becomes and not what it was.
+    async fn set_field(
+        state: &AppState,
+        conn: &mut crate::ws::Connection,
+        (object_ref, field, value): (&str, &str, &str),
+        now: i64,
+    ) -> Vec<crate::ws::Reaction> {
+        let session_id = conn.session.as_ref().expect("session").session_id.clone();
+        let op = ocs_collab::ClientMessage::Op {
+            session_id,
+            base_revision: crate::ws::current_revision(state, "d-a1-coop"),
+            op_id: format!("{object_ref}.{field}={value}"),
+            payload: json!({
+                "kind": "set_property", "object_ref": object_ref,
+                "field": field, "value": value,
+            }),
+        };
+        crate::ws::handle_message(state, conn, op, now).await
+    }
+
+    /// `VAL-PERM-018`: a 协同编辑 drawing does not stop at one editing
+    /// session. With the drawing at revision 3, two users open a session on
+    /// it — both on that baseline — and each of them may still edit with
+    /// the other one there: allowed, no tier named, nobody holding it.
+    #[tokio::test]
+    async fn a_coediting_drawing_takes_a_second_editing_session_and_both_may_edit() {
+        let state = seeded_state();
+        let now = ocs_collab::now_unix();
+        let mut writer = session_from(&state, "u-proc", "10.0.0.7", "ws-alpha", now).await;
+        for value in ["1.0MPa", "1.6MPa", "2.0MPa"] {
+            let change = ("V-1001", "设计压力", value);
+            let reactions = set_field(&state, &mut writer, change, now).await;
+            assert!(applied_in(&reactions), "{reactions:?}");
+        }
+
+        let mut sessions = Vec::new();
+        for user in ["u-proc", "u-admin"] {
+            let created = create_session(
+                State(state.clone()),
+                Json(CreateSessionBody {
+                    user_id: user.into(),
+                    drawing_id: "d-a1-coop".into(),
+                    mode: "协同编辑".into(),
+                    workspace: String::new(),
+                }),
+            )
+            .await;
+            assert_eq!(
+                created.status(),
+                StatusCode::CREATED,
+                "{user} opens a session"
+            );
+            let body = axum::body::to_bytes(created.into_body(), 64 * 1024)
+                .await
+                .expect("body readable");
+            let session: serde_json::Value =
+                serde_json::from_slice(&body).expect("session response is json");
+            assert_eq!(session["base_revision"], 3, "{user}: {session}");
+            sessions.push(session["session_id"].clone());
+        }
+        assert_ne!(sessions[0], sessions[1], "two sessions, not one");
+
+        for user in ["u-proc", "u-admin"] {
+            let response = permission_check(
+                State(state.clone()),
+                Json(PermissionCheckBody {
+                    user_id: Some(user.into()),
+                    drawing_id: Some("d-a1-coop".into()),
+                    operation: Some("编辑图纸".into()),
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{user} may edit");
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .expect("body readable");
+            let decision: serde_json::Value =
+                serde_json::from_slice(&body).expect("decision is json");
+            assert_eq!(decision["allowed"], true, "{user}: {decision}");
+            assert!(decision["denied_level"].is_null(), "{user}: {decision}");
+            assert!(decision.get("holder").is_none(), "{user}: {decision}");
+        }
+    }
+
+    /// `VAL-PERM-025`: the row an edit leaves states all nine things, none
+    /// of them empty, and each as the server has it: the company from the
+    /// users table, the address the connection came from, the workspace the
+    /// session declared, the time the op arrived.
+    #[tokio::test]
+    async fn an_edit_leaves_an_audit_row_with_all_nine_fields_stated() {
+        let state = audited_state();
+        let port = serve(&state).await;
+        let now = ocs_collab::now_unix();
+        let mut conn = session_from(&state, "u-proc", "10.0.0.7", "ws-alpha", now).await;
+        for value in ["1.6MPa", "2.0MPa"] {
+            let change = ("V-1001", "设计压力", value);
+            let reactions = set_field(&state, &mut conn, change, now).await;
+            assert!(applied_in(&reactions), "{reactions:?}");
+        }
+
+        let rows = audit_rows(port, "tag=V-1001").await;
+        let row = rows.first().expect("the edits are on record");
+        for field in [
+            "module",
+            "action",
+            "object_ref",
+            "user_id",
+            "company",
+            "ip",
+            "workspace",
+            "change_text",
+        ] {
+            let stated = row[field].as_str().is_some_and(|text| !text.is_empty());
+            assert!(stated, "{field} is stated: {row}");
+        }
+        assert_eq!(row["at"], now, "{row}");
+        assert_eq!(row["object_ref"], "V-1001", "{row}");
+        assert_eq!(row["user_id"], "u-proc", "{row}");
+        assert_eq!(row["company"], COMPANY, "{row}");
+        assert_eq!(row["ip"], "10.0.0.7", "{row}");
+        assert_eq!(row["workspace"], "ws-alpha", "{row}");
+        let text = row["change_text"].as_str().unwrap_or_default();
+        assert!(
+            text.contains("2.0MPa"),
+            "the newest row is the last edit: {row}"
+        );
+    }
+
+    /// `VAL-PERM-028`: `GET /audit?user_id=` answers with that user's rows
+    /// and nobody else's. `u-proc` changes two objects; `u-check`, whose
+    /// role does not edit, tries two others and is turned away, which goes
+    /// on record under each of them. Each one's query names exactly their
+    /// own two objects, so the two answers share nothing.
+    #[tokio::test]
+    async fn audit_user_id_answers_with_that_users_rows_and_no_others() {
+        let state = audited_state();
+        let port = serve(&state).await;
+        let now = ocs_collab::now_unix();
+        let mut editor = session_from(&state, "u-proc", "10.0.0.7", "ws-alpha", now).await;
+        let mut checker = session_from(&state, "u-check", "10.0.0.8", "ws-alpha", now).await;
+        for tag in ["V-3001", "V-3002"] {
+            let change = (tag, "设计压力", "1.6MPa");
+            let reactions = set_field(&state, &mut editor, change, now).await;
+            assert!(applied_in(&reactions), "{tag}: {reactions:?}");
+        }
+        for tag in ["V-3003", "V-3004"] {
+            let change = (tag, "设计压力", "1.6MPa");
+            let reactions = set_field(&state, &mut checker, change, now).await;
+            assert!(refusal_in(&reactions).is_some(), "{tag}: {reactions:?}");
+            assert!(!applied_in(&reactions), "{tag}: {reactions:?}");
+        }
+
+        for (user, theirs) in [
+            ("u-proc", ["V-3001", "V-3002"]),
+            ("u-check", ["V-3003", "V-3004"]),
+        ] {
+            let rows = audit_rows(port, &format!("user_id={user}")).await;
+            assert!(
+                rows.iter().all(|row| row["user_id"] == user),
+                "{user}: {rows:?}"
+            );
+            let mut objects: Vec<&str> = rows
+                .iter()
+                .filter_map(|row| row["object_ref"].as_str())
+                .collect();
+            objects.sort_unstable();
+            assert_eq!(objects, theirs, "{user}: {rows:?}");
+        }
+    }
+
+    /// `VAL-PERM-030`: the row a change leaves says what the field was and
+    /// what it became, by name — the old value from what the server held,
+    /// since the op itself only says the new one.
+    #[tokio::test]
+    async fn a_change_is_recorded_with_the_old_value_the_new_value_and_the_field() {
+        let state = audited_state();
+        let port = serve(&state).await;
+        let now = ocs_collab::now_unix();
+        let mut conn = session_from(&state, "u-proc", "10.0.0.7", "ws-alpha", now).await;
+        for value in ["DN50", "DN80"] {
+            let change = ("V-5001", "公称直径", value);
+            let reactions = set_field(&state, &mut conn, change, now).await;
+            assert!(applied_in(&reactions), "{reactions:?}");
+        }
+
+        let rows = audit_rows(port, "tag=V-5001").await;
+        let newest = rows.first().expect("the changes are on record");
+        let text = newest["change_text"].as_str().unwrap_or_default();
+        for part in ["DN50", "DN80", "公称直径"] {
+            assert!(text.contains(part), "{part} is in the record: {text}");
+        }
+    }
+
+    /// `VAL-PERM-031`: a query nothing matches is answered 200 with an
+    /// empty list — not 404, not an error, not `null` — for a tag no row
+    /// names and for a user who is not in the users table alike. The log
+    /// itself is not empty when they are asked.
+    #[tokio::test]
+    async fn an_audit_query_nothing_matches_answers_200_with_an_empty_list() {
+        let state = audited_state();
+        let port = serve(&state).await;
+        let now = ocs_collab::now_unix();
+        let mut conn = session_from(&state, "u-proc", "10.0.0.7", "ws-alpha", now).await;
+        let change = ("V-7001", "材质", "Q345R");
+        let reactions = set_field(&state, &mut conn, change, now).await;
+        assert!(applied_in(&reactions), "{reactions:?}");
+        assert_eq!(audit_rows(port, "tag=V-7001").await.len(), 1);
+
+        for query in ["tag=NOT-EXIST-9999", "user_id=u-ghost"] {
+            let path = format!("/audit?{query}");
+            let (status, body) = http_exchange(port, "GET", &path).await;
+            assert_eq!(status, 200, "{path}: {body}");
+            assert_eq!(body["items"], json!([]), "{path}: {body}");
+            assert_eq!(body["total"], 0, "{path}: {body}");
+        }
+    }
+
+    /// `VAL-PERM-032`: what a client says of itself beyond the protocol's
+    /// own fields is not read. A `hello` that also names an address and a
+    /// company, and an op that names an address, a workspace and a company
+    /// — beside its payload and inside it — leave a row with the address
+    /// the connection came from, the company the users table has, and the
+    /// workspace of a session that declared none. The forged workspace
+    /// rides on the op and not on the `hello`: `workspace` is one of
+    /// `hello`'s own fields, where a session declares the one it works in
+    /// (`VAL-PERM-025`).
+    #[tokio::test]
+    async fn an_audit_row_takes_nothing_from_keys_the_client_slipped_in() {
+        let state = audited_state();
+        let port = serve(&state).await;
+        let now = ocs_collab::now_unix();
+        let mut conn = crate::ws::Connection::new("10.0.0.7");
+        let hello = off_the_wire(json!({
+            "type": "hello", "user_id": "u-proc", "drawing_id": "d-a1-coop",
+            "mode": "协同编辑", "ip": "10.9.9.9", "company": "伪造公司",
+        }));
+        crate::ws::handle_message(&state, &mut conn, hello, now).await;
+        let session_id = conn.session.as_ref().expect("session").session_id.clone();
+        let op = off_the_wire(json!({
+            "type": "op", "session_id": session_id, "base_revision": 0, "op_id": "op-forged",
+            "ip": "10.9.9.9", "workspace": "ws-forged", "company": "伪造公司",
+            "payload": {
+                "kind": "set_property", "object_ref": "V-6001",
+                "field": "设计压力", "value": "1.6MPa",
+                "ip": "10.9.9.9", "workspace": "ws-forged", "company": "伪造公司",
+            },
+        }));
+        let reactions = crate::ws::handle_message(&state, &mut conn, op, now).await;
+        assert!(applied_in(&reactions), "{reactions:?}");
+
+        let rows = audit_rows(port, "tag=V-6001").await;
+        let row = rows.first().expect("the edit is on record");
+        assert_eq!(row["ip"], "10.0.0.7", "{row}");
+        assert_eq!(row["company"], COMPANY, "{row}");
+        assert_eq!(row["workspace"], "默认工作区", "{row}");
+    }
 }

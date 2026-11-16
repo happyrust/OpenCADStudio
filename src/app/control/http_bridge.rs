@@ -903,4 +903,63 @@ mod tests {
         let (status, body) = read_response(&mut select_conn);
         assert_eq!(status, 200, "{body}");
     }
+
+    /// Answer envelopes the way the live GUI would, running the work each
+    /// one starts — the editor's update loop does that there — until one
+    /// settles. A `run` answers `accepted` first, and the bridge then polls
+    /// `operation` for it.
+    fn drain_until_settled(app: &mut OpenCADStudio, receiver: &mut mpsc::Receiver<Envelope>) {
+        for _ in 0..50 {
+            let envelope = iced::futures::executor::block_on(receiver.next()).unwrap();
+            let (reply, task) = app.control_request(envelope.request.clone());
+            app.drive_headless_task(task).unwrap();
+            let settled = !matches!(reply["status"].as_str(), Some("accepted" | "running"));
+            envelope.reply.send(reply);
+            if settled {
+                return;
+            }
+        }
+        panic!("the request never settled");
+    }
+
+    /// `VAL-INFRA-005`: `POST /api/v1/commands` carrying the `document_id`
+    /// the caller read from the state really runs the command: the answer
+    /// says `ok` and the drawing has one entity more. The GUI refuses a
+    /// `run` that names no document, so a route that dropped the id — as
+    /// this one once did — drew nothing, whatever it answered.
+    #[test]
+    fn bridge_commands_with_a_document_id_draw_on_that_document() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.main_window = Some(iced::window::Id::unique());
+        let _ = app.control_request(json!({"protocol":1,"op":"new","request_id":"n1"}));
+
+        let (sender, mut receiver) = mpsc::channel::<Envelope>(8);
+        let bound = Arc::new(AtomicU16::new(0));
+        let listen_bound = bound.clone();
+        std::thread::spawn(move || listen(sender, 0, listen_bound).unwrap());
+        let port = wait_for_bridge(&bound);
+
+        let mut state_conn = get(port, "/api/v1/state");
+        drain(&mut app, &mut receiver, 1);
+        let (status, state) = read_response(&mut state_conn);
+        assert_eq!(status, 200, "{state}");
+        let document = state["document_id"].as_u64().expect("the open document");
+        let count = |app: &mut OpenCADStudio| {
+            app.automation_op(r#"{"op":"query"}"#)["count"]
+                .as_u64()
+                .expect("query counts the entities")
+        };
+        let before = count(&mut app);
+
+        let mut run_conn = post(
+            port,
+            "/api/v1/commands",
+            &format!(r#"{{"cmd":"CIRCLE 10,10 5","document_id":{document}}}"#),
+        );
+        drain_until_settled(&mut app, &mut receiver);
+        let (status, body) = read_response(&mut run_conn);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["ok"], true, "{body}");
+        assert_eq!(count(&mut app), before + 1, "{body}");
+    }
 }
