@@ -294,8 +294,7 @@ mod tests {
             };
             raw = entries
                 .iter()
-                .filter(applies)
-                .next_back()
+                .rfind(applies)
                 .unwrap_or_else(|| panic!("{name}: no value applies in {context:?}"))["value"]
                 .clone();
         }

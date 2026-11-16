@@ -578,6 +578,10 @@ fn gone(tag: &str) -> Change {
     }
 }
 
+/// A stretch a step drew of a line: its entity, where it runs and what it
+/// carries.
+type Stretch = (Handle, [f64; 4], PidAuthor);
+
 /// What one step did to the drawing's pipe lines and runs, for the room.
 ///
 /// `images` say which lines and runs the step touched — an entity of
@@ -591,7 +595,7 @@ fn gone(tag: &str) -> Change {
 /// others, and anything that only moved a line's stretch — the geometry of
 /// an object that is there is not in the protocol.
 pub fn statements(doc: &Document, images: &[Image<'_>]) -> Vec<Change> {
-    let mut made: BTreeMap<(String, String), Vec<(Handle, [f64; 4], PidAuthor)>> = BTreeMap::new();
+    let mut made: BTreeMap<(String, String), Vec<Stretch>> = BTreeMap::new();
     let mut lost: BTreeSet<(String, String)> = BTreeSet::new();
     let mut valves_gone: Vec<String> = Vec::new();
     let mut runs: BTreeMap<String, Touched> = BTreeMap::new();
@@ -773,9 +777,13 @@ struct Part {
     block: String,
 }
 
+/// A fitting of a run in the drawing: the part, what it carries, its scale
+/// and its turn.
+type FittingPart = (Part, PidAuthor, f64, f64);
+
 /// The segments and the fittings of the run whose body is `body`, as they
 /// are in the drawing.
-fn run_parts(doc: &Document, body: Handle) -> (Vec<Part>, Vec<(Part, PidAuthor, f64, f64)>) {
+fn run_parts(doc: &Document, body: Handle) -> (Vec<Part>, Vec<FittingPart>) {
     let owner = handle_text(body);
     let (mut segments, mut fittings) = (Vec::new(), Vec::new());
     for entity in doc.entities() {

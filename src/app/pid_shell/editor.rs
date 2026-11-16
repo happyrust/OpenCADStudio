@@ -146,7 +146,7 @@ impl Tool {
 
 /// The symbol categories the toolbar has a tool for, `(id, label)`: the
 /// library's, the three the design draws first and in its order.
-pub fn place_tools(app: &OpenCADStudio) -> Vec<(String, String)> {
+pub(crate) fn place_tools(app: &OpenCADStudio) -> Vec<(String, String)> {
     const DESIGN_ORDER: [&str; 3] = ["equipment", "valve", "instrument"];
     let mut categories: Vec<(String, String)> = app
         .pid_symbols

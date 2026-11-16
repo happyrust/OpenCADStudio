@@ -189,7 +189,8 @@ pub(crate) fn status_parts(app: &OpenCADStudio, screen: PidScreen) -> Vec<Status
     ]
 }
 
-/// The status bar's text in one line.
+/// The status bar's text in one line, as the tests read it.
+#[cfg(test)]
 pub(crate) fn status_text(app: &OpenCADStudio, screen: PidScreen) -> String {
     status_parts(app, screen)
         .into_iter()

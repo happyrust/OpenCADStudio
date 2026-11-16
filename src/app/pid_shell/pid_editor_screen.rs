@@ -900,7 +900,7 @@ fn the_tool_that_is_lit_is_the_command_that_is_running() {
     for tool in tools(&app) {
         let line = tool.line().expect("a command");
         run(&mut app, &line);
-        assert_eq!(lit(&app), [tool.clone()], "{line}, typed");
+        assert_eq!(lit(&app), [tool], "{line}, typed");
         let _ = app.update(AppMessage::CommandEscape);
         assert_eq!(lit(&app), [Tool::Select], "{line}, ended");
     }
@@ -926,11 +926,11 @@ fn the_tool_that_is_lit_is_the_command_that_is_running() {
     let pump = "PID_SYM_equipment_pump".to_owned();
     let vessel = "PID_SYM_equipment_vessel".to_owned();
     run(&mut app, "PIDINSERT pump");
-    assert_eq!(lit_squares(&app), [pump.clone()]);
+    assert_eq!(lit_squares(&app), [pump.as_str()]);
     assert_eq!(lit(&app), [Tool::Place("equipment".to_owned())]);
     let _ = app.update(AppMessage::CommandEscape);
     press(&mut app, editor::Message::Symbol(pump.clone()));
-    assert_eq!(lit_squares(&app), [pump.clone()]);
+    assert_eq!(lit_squares(&app), [pump.as_str()]);
     let _ = app.update(AppMessage::CommandEscape);
     run(&mut app, &format!("PIDINSERT {vessel}"));
     assert_eq!(

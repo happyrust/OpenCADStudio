@@ -135,7 +135,7 @@ impl<'a> Widget<Message, Theme, Renderer> for Rebase<'a> {
         // The caret an input method is asked to stay clear of is where the
         // window has it.
         if let InputMethod::Enabled { cursor, .. } = shell.input_method_mut() {
-            *cursor = *cursor + origin;
+            *cursor += origin;
         }
     }
 

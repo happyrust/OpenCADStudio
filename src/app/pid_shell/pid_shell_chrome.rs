@@ -645,7 +645,8 @@ fn differing(a: &[u8], b: &[u8], width: usize) -> (usize, Option<(usize, usize, 
     assert_eq!(a.len(), b.len(), "pictures of one size");
     let mut count = 0;
     let mut within: Option<(usize, usize, usize, usize)> = None;
-    for (index, (one, other)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
+    let (ours, theirs) = (a.as_chunks::<4>().0, b.as_chunks::<4>().0);
+    for (index, (one, other)) in ours.iter().zip(theirs).enumerate() {
         let (x, y) = (index % width, index / width);
         // An anti-aliased edge rasterized 208 pixels further right can come
         // out one level off in a channel (a rounded corner did), and one
@@ -695,8 +696,10 @@ fn coverage_step(a: &[u8], b: &[u8], width: usize, at: (usize, usize), channel: 
 fn beside(picture: &[u8], before: &[u8], width: usize, area: Rectangle) -> usize {
     assert_eq!(picture.len(), before.len(), "pictures of one size");
     picture
-        .chunks_exact(4)
-        .zip(before.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(before.as_chunks::<4>().0)
         .enumerate()
         .filter(|(index, (one, other))| {
             let at = Point::new((index % width) as f32 + 0.5, (index / width) as f32 + 0.5);

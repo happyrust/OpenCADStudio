@@ -272,7 +272,7 @@ fn pair(
         } else {
             (drawing_id, mine.line_tag.as_str(), theirs.line_tag.as_str())
         };
-        let carried: Vec<(String, String, String)> = {
+        let carried: Vec<Written> = {
             let model = rooms.model(source);
             mine.carried_fields()
                 .iter()
@@ -354,6 +354,9 @@ fn unpair(
     }
 }
 
+/// A field written on a line: `(line, field, value)`.
+type Written = (String, String, String);
+
 /// Fields written on lines of `drawing_id` — `(line, field, value)` — go
 /// to the line at the other end of every paired outflow connector on those
 /// lines, one op per drawing they arrive on, and on from there. `seen` is
@@ -363,7 +366,7 @@ fn carry(
     rooms: &mut dyn Rooms,
     drawing_id: &str,
     stem: &str,
-    written: &[(String, String, String)],
+    written: &[Written],
     seen: &mut BTreeSet<String>,
     moved: &mut Vec<(String, i64)>,
 ) {
@@ -377,7 +380,7 @@ fn carry(
         .filter(|known| !known.is_inflow() && known.peer.is_some())
         .collect();
     // drawing → what arrives on it.
-    let mut arriving: Vec<(String, Vec<(String, String, String)>)> = Vec::new();
+    let mut arriving: Vec<(String, Vec<Written>)> = Vec::new();
     for (line, field, value) in written {
         for outflow in outflows.iter().filter(|outflow| &outflow.line_tag == line) {
             if !outflow.carried_fields().contains(&field.as_str()) {

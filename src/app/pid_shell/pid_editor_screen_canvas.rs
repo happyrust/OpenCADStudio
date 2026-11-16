@@ -128,7 +128,7 @@ fn the_grid_is_drawn_the_way_the_design_draws_it() {
     let step = lines[1].0 - lines[0].0;
     for (index, (x, fill)) in lines.iter().enumerate() {
         assert_eq!(*x, step * index as f64, "evenly spaced");
-        let major = index as u32 % canvas::GRID_MAJOR_EVERY == 0;
+        let major = (index as u32).is_multiple_of(canvas::GRID_MAJOR_EVERY);
         let (minor_alpha, major_alpha) = canvas::GRID_LINE_ALPHA;
         assert_eq!(
             alpha(fill),

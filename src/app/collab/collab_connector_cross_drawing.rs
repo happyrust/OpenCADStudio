@@ -220,16 +220,13 @@ fn listen(desk: &Desk, seats: &mut [&mut Seat]) {
 /// first refusal, when there is one.
 fn send(desk: &mut Desk, seats: &mut [&mut Seat], from: usize) -> Option<String> {
     loop {
-        let wire = seats[from]
+        let (op_id, base, payload) = seats[from]
             .app
             .collab
             .outbox
             .iter()
             .find(|entry| entry.sent)
-            .map(|entry| (entry.op_id.clone(), entry.base_revision, entry.payload.clone()));
-        let Some((op_id, base, payload)) = wire else {
-            return None;
-        };
+            .map(|entry| (entry.op_id.clone(), entry.base_revision, entry.payload.clone()))?;
         let session = seats[from].app.collab.session_id.clone().expect("a session");
         let drawing = seats[from].drawing;
         match desk.take(drawing, &session, &op_id, base, &payload) {
