@@ -31,6 +31,14 @@
 // because they are written inside F, which scales them along with the
 // geometry, exactly as the PDF CTM does.
 //
+// `non_scaling_stroke` is the one exception. A stroke marked
+// `vector-effect="non-scaling-stroke"` is drawn with every transform above it
+// set aside — F and M as much as whatever a web map wraps the page in later —
+// so its pen cannot be left to them: it is written as it lands on the sheet,
+// points × the scale of the open transforms × 1/k, which is the millimetre
+// number of the paragraph above. Only stroked leaves carry the mark (it does
+// not inherit); the geometry, the fills and the PDF are untouched.
+//
 // Not supported here: the plot stamp. It is device text in Helvetica
 // (`PlotOp::BuiltinText`), not glyph geometry, and an SVG that names a font it
 // does not carry renders differently on every machine — so `stamp: true` is
@@ -64,6 +72,10 @@ const DEFAULT_CAP: LineCap = LineCap::Round;
 const DEFAULT_JOIN: LineJoin = LineJoin::Round;
 /// PDF's default miter limit is 10 and SVG's is 4; say 10 out loud.
 const MITER_LIMIT: &str = "10";
+
+/// Decimals of a pen stated in sheet mm (`non_scaling_stroke`): what the
+/// sheet's own size is written with.
+const SHEET_PEN_DECIMALS: usize = 4;
 
 #[derive(Debug)]
 pub enum SvgError {
@@ -555,6 +567,10 @@ struct State {
     blend: PlotBlend,
     /// Groups opened since the enclosing `Save`, to close on `Restore`.
     open_groups: usize,
+    /// How much the transform groups open here enlarge a length. Only a
+    /// non-scaling stroke asks: its pen is stated as it lands on the sheet,
+    /// where every other pen leaves that to the groups.
+    scale: f64,
 }
 
 /// Turns the emitter's operation stream into SVG elements.
@@ -571,6 +587,8 @@ struct SvgSink {
     paper_w: f32,
     paper_h: f32,
     decimals: usize,
+    /// `PdfPlotOptions::non_scaling_stroke`.
+    non_scaling_stroke: bool,
     state: State,
     stack: Vec<State>,
     /// The paint a run of elements shares, written once on a wrapping group
@@ -603,6 +621,7 @@ impl SvgSink {
             decimals: options
                 .decimals
                 .unwrap_or_else(|| auto_decimals(page.scale as f64)),
+            non_scaling_stroke: page.options.non_scaling_stroke,
             state: State {
                 stroke: [0.0; 3],
                 fill: [0.0; 3],
@@ -613,6 +632,7 @@ impl SvgSink {
                 dash_phase: 0,
                 blend: PlotBlend::Normal,
                 open_groups: 0,
+                scale: 1.0,
             },
             stack: Vec::new(),
             style_run: None,
@@ -688,13 +708,25 @@ impl SvgSink {
     /// usually long.
     fn paint_attributes(&self) -> Result<String, SvgError> {
         finite(self.state.width_pt, "stroke width")?;
+        // Points → sheet mm for the pen of a non-scaling stroke, which no
+        // transform will scale (module comment); `None` = points, as ever.
+        let sheet_mm = self
+            .non_scaling_stroke
+            .then_some(self.state.scale * PT_TO_MM);
         let mut out = String::with_capacity(64);
         out.push_str(" stroke=\"");
         color(&mut out, self.state.stroke);
         out.push_str("\" fill=\"");
         color(&mut out, self.state.fill);
         out.push_str("\" stroke-width=\"");
-        num(&mut out, self.state.width_pt as f64, self.decimals);
+        match sheet_mm {
+            Some(mm) => num(
+                &mut out,
+                self.state.width_pt as f64 * mm,
+                SHEET_PEN_DECIMALS,
+            ),
+            None => num(&mut out, self.state.width_pt as f64, self.decimals),
+        }
         out.push('"');
         if self.state.cap != DEFAULT_CAP {
             out.push_str(" stroke-linecap=\"");
@@ -720,11 +752,27 @@ impl SvgSink {
                 if i > 0 {
                     out.push(' ');
                 }
-                let _ = write!(out, "{length}");
+                match sheet_mm {
+                    Some(mm) => num(&mut out, *length as f64 * mm, SHEET_PEN_DECIMALS),
+                    None => {
+                        let _ = write!(out, "{length}");
+                    }
+                }
             }
             out.push('"');
             if self.state.dash_phase != 0 {
-                let _ = write!(out, " stroke-dashoffset=\"{}\"", self.state.dash_phase);
+                out.push_str(" stroke-dashoffset=\"");
+                match sheet_mm {
+                    Some(mm) => num(
+                        &mut out,
+                        self.state.dash_phase as f64 * mm,
+                        SHEET_PEN_DECIMALS,
+                    ),
+                    None => {
+                        let _ = write!(out, "{}", self.state.dash_phase);
+                    }
+                }
+                out.push('"');
             }
         } else {
             // The run this replaces may have left a dash pattern behind.
@@ -862,6 +910,10 @@ impl PlotSink for SvgSink {
                 for v in m {
                     finite(v, "transform")?;
                 }
+                // Exact for the rotation and uniform scale a plot transform
+                // is made of; the mean of the two axes for anything else.
+                let [a, b, c, d] = [m[0], m[1], m[2], m[3]].map(f64::from);
+                self.state.scale *= (a * d - b * c).abs().sqrt();
                 self.body.push_str("<g transform=\"matrix(");
                 for (i, v) in m.iter().enumerate() {
                     if i > 0 {
@@ -932,6 +984,11 @@ impl PlotSink for SvgSink {
             PlotOp::Stroke { points, closed } => {
                 self.begin_style_run()?;
                 self.body.push_str("<path fill=\"none\"");
+                if self.non_scaling_stroke {
+                    // Not inherited, so it cannot ride the run's group with
+                    // the pen it qualifies.
+                    self.body.push_str(" vector-effect=\"non-scaling-stroke\"");
+                }
                 self.blend_attribute();
                 self.path_data(&[points.as_slice()], closed)?;
                 self.body.push_str("/>\n");
@@ -1271,5 +1328,7 @@ fn channels([r, g, b]: [f32; 3]) -> [u8; 3] {
     [channel(r), channel(g), channel(b)]
 }
 
+#[cfg(test)]
+pub(crate) mod read_back;
 #[cfg(test)]
 mod tests;

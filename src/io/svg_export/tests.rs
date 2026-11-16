@@ -1002,6 +1002,157 @@ fn a_page_without_blending_stays_plain() {
     assert!(!svg.contains("isolation"));
 }
 
+// ── Non-scaling strokes ───────────────────────────────────────────────────
+
+/// One wire with a 2 px pen on a page plotted at `scale`.
+fn pen_page(scale: f32, non_scaling_stroke: bool) -> Case {
+    let mut case = Case::new("pen");
+    case.scale = scale;
+    case.options.non_scaling_stroke = non_scaling_stroke;
+    let mut pen = wire(
+        "pen",
+        vec![[5.0, 5.0, 0.0], [25.0, 15.0, 0.0]],
+        WireModel::WHITE,
+        0.1,
+    );
+    pen.wire.line_weight_px = 2.0;
+    case.wires.push(pen);
+    case
+}
+
+/// The option is asked for, never assumed. And `vector-effect` is not
+/// inherited, so it cannot ride the paint group the way the pen does: it is
+/// on every stroked leaf, and on nothing else — a fill has no stroke to keep.
+#[test]
+fn a_non_scaling_stroke_is_opt_in_and_marks_only_the_stroked_leaves() {
+    let page = |non_scaling_stroke| {
+        let mut case = pen_page(1.0, non_scaling_stroke);
+        case.hatches.push(hatch(
+            "fill",
+            square(30.0, 5.0, 10.0),
+            HatchPattern::Solid,
+            [0.8, 0.1, 0.1, 1.0],
+        ));
+        write(&case).0
+    };
+    let plain = page(false);
+    assert!(!plain.contains("vector-effect"), "{plain}");
+
+    let svg = page(true);
+    let document = roxmltree::Document::parse(&svg).expect("well-formed SVG");
+    let (mut strokes, mut fills) = (0, 0);
+    for element in document.descendants().filter(|node| node.is_element()) {
+        let stroked =
+            element.tag_name().name() == "path" && element.attribute("fill") == Some("none");
+        assert_eq!(
+            element.attribute("vector-effect"),
+            stroked.then_some("non-scaling-stroke"),
+            "<{}> in {svg}",
+            element.tag_name().name()
+        );
+        strokes += usize::from(stroked);
+        fills += usize::from(element.attribute("stroke") == Some("none"));
+    }
+    assert!(strokes >= 1, "the wire is stroked: {svg}");
+    assert!(
+        fills >= 2,
+        "the page background and the hatch are filled: {svg}"
+    );
+}
+
+/// A non-scaling stroke is laid out in the consumer's own outermost
+/// coordinates, so no transform in this document reaches its pen — not the
+/// plot CTM and not the page group's points → mm. The width is therefore
+/// written as it lands on the sheet, in millimetres, whatever the plot scale;
+/// left as the emitter's number, a 1:20 plot would come out twenty times as
+/// heavy as a 1:1 plot of the same pen.
+#[test]
+fn a_non_scaling_pen_is_written_as_it_lands_on_the_sheet() {
+    let written = |case: &Case| -> f64 {
+        let (svg, _) = write(case);
+        let document = roxmltree::Document::parse(&svg).expect("well-formed SVG");
+        let wire = read_back::first_stroked_path(&document).expect("the wire");
+        read_back::inherited(wire, "stroke-width")
+            .expect("a pen width")
+            .parse()
+            .expect("a number")
+    };
+    // Two screen pixels of pen, on paper.
+    let pen_mm = 2.0 * 25.4 / 96.0;
+    for scale in [1.0_f32, 10.0, 0.05] {
+        for scale_lineweights in [false, true] {
+            let on_sheet = if scale_lineweights {
+                pen_mm * scale as f64
+            } else {
+                pen_mm
+            };
+            let mut case = pen_page(scale, true);
+            case.options.scale_lineweights = scale_lineweights;
+            let non_scaling = written(&case);
+            assert!(
+                (non_scaling / on_sheet - 1.0).abs() < 0.01,
+                "at {scale}:1, scale_lineweights {scale_lineweights}: \
+                 wrote {non_scaling} for a pen {on_sheet} mm wide on the sheet"
+            );
+            // Without the option the same pen is the emitter's points, to be
+            // carried to the sheet by the transforms it sits in.
+            case.options.non_scaling_stroke = false;
+            let scaled = written(&case) * scale as f64 * PT_TO_MM;
+            assert!(
+                (scaled / on_sheet - 1.0).abs() < 0.01,
+                "at {scale}:1, scale_lineweights {scale_lineweights}: \
+                 {scaled} mm through the transforms, {on_sheet} mm expected"
+            );
+        }
+    }
+}
+
+/// Dash lengths are stroke geometry as well and take the same road. The
+/// factor is that of the CTM that is open: it goes when the CTM is restored.
+#[test]
+fn a_non_scaling_dash_is_written_in_sheet_millimetres_under_the_open_ctm() {
+    let mut case = Case::new("dashes");
+    case.options.non_scaling_stroke = true;
+    let mut sink = SvgSink::new(&case.page(), &SvgOptions::default()).unwrap();
+    let stroke = || PlotOp::Stroke {
+        points: vec![pt(0.0, 0.0), pt(10.0, 0.0)],
+        closed: false,
+    };
+    sink.emit(PlotOp::Save).unwrap();
+    // A quarter turn at 2:1.
+    sink.emit(PlotOp::Concat([0.0, 2.0, -2.0, 0.0, 0.0, 0.0]))
+        .unwrap();
+    sink.emit(PlotOp::StrokeWidthPt(1.0)).unwrap();
+    sink.emit(PlotOp::Dash {
+        lengths: vec![6, 3],
+        phase: 3,
+    })
+    .unwrap();
+    sink.emit(stroke()).unwrap();
+    sink.emit(PlotOp::Restore).unwrap();
+    sink.emit(stroke()).unwrap();
+
+    // Inside the CTM a point is 2 · PT_TO_MM = 0.70556 mm of sheet; outside
+    // it, PT_TO_MM.
+    assert!(
+        sink.body.contains(
+            " stroke-width=\"0.7056\" stroke-dasharray=\"4.2333 2.1167\" \
+             stroke-dashoffset=\"2.1167\">\n\
+             <path fill=\"none\" vector-effect=\"non-scaling-stroke\" d=\"M0,0L10,0\"/>"
+        ),
+        "{}",
+        sink.body
+    );
+    assert!(
+        sink.body.contains(
+            " stroke-width=\"0.3528\" stroke-dasharray=\"none\">\n\
+             <path fill=\"none\" vector-effect=\"non-scaling-stroke\" d=\"M0,0L10,0\"/>"
+        ),
+        "{}",
+        sink.body
+    );
+}
+
 // ── Tagged groups ─────────────────────────────────────────────────────────
 
 /// The `<g tagName="…">` element for `tag`, open tag to its own close. The

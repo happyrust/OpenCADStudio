@@ -6167,6 +6167,9 @@ mod tests {
 
     #[test]
     fn plot_op_applies_svg_stroke_and_explicit_plot_overrides() {
+        // The fork's SVG writer does not lay a page out the way the writer
+        // this test was written against does; `read_back` reads its files.
+        use crate::io::svg_export::read_back;
         let mut app = OpenCADStudio::new_for_test();
         request(&mut app, json!({"op":"new"}));
         request(&mut app, json!({"op":"run","cmd":"LINE 0,0 100,100"}));
@@ -6194,15 +6197,10 @@ mod tests {
             assert_eq!(response["status"], "completed", "{response}");
             let svg_text = std::fs::read_to_string(&svg).expect("SVG written");
             let document = roxmltree::Document::parse(&svg_text).expect("well-formed SVG");
-            let path = document
-                .descendants()
-                .find(|node| {
-                    node.tag_name().name() == "path" && node.attribute("stroke") != Some("none")
-                })
-                .expect("stroked line");
+            let path = read_back::first_stroked_path(&document).expect("stroked line");
             assert_eq!(path.attribute("vector-effect"), Some("non-scaling-stroke"));
             widths.push(
-                path.attribute("stroke-width")
+                read_back::inherited(path, "stroke-width")
                     .expect("stroke width")
                     .parse::<f64>()
                     .expect("numeric stroke width"),
@@ -6224,6 +6222,9 @@ mod tests {
 
     #[test]
     fn plot_op_explicitly_disabled_plot_style_wins_over_requested_table() {
+        // The fork's SVG writer does not lay a page out the way the writer
+        // this test was written against does; `read_back` reads its files.
+        use crate::io::svg_export::read_back;
         let mut app = OpenCADStudio::new_for_test();
         request(&mut app, json!({"op":"new"}));
         let mut line = document::entities::Line::from_points(
@@ -6253,12 +6254,8 @@ mod tests {
             assert_eq!(response["status"], "completed", "{response}");
             let svg_text = std::fs::read_to_string(&svg).expect("SVG written");
             let document = roxmltree::Document::parse(&svg_text).expect("well-formed SVG");
-            let stroke = document
-                .descendants()
-                .find(|node| {
-                    node.tag_name().name() == "path" && node.attribute("stroke") != Some("none")
-                })
-                .and_then(|node| node.attribute("stroke"))
+            let stroke = read_back::first_stroked_path(&document)
+                .and_then(|path| read_back::inherited(path, "stroke"))
                 .expect("stroked line");
             assert_eq!(stroke, expected, "apply_plot_styles={enabled}");
             let _ = std::fs::remove_file(&svg);
@@ -6302,12 +6299,8 @@ mod tests {
             assert_eq!(response["status"], "completed", "{response}");
             let svg_text = std::fs::read_to_string(&svg).expect("SVG written");
             let document = roxmltree::Document::parse(&svg_text).expect("well-formed SVG");
-            let stroke = document
-                .descendants()
-                .find(|node| {
-                    node.tag_name().name() == "path" && node.attribute("stroke") != Some("none")
-                })
-                .and_then(|node| node.attribute("stroke"))
+            let stroke = read_back::first_stroked_path(&document)
+                .and_then(|path| read_back::inherited(path, "stroke"))
                 .expect("stroked paper line");
             assert_eq!(
                 stroke, "#ff0000",
@@ -6680,6 +6673,9 @@ mod tests {
 
     #[test]
     fn plot_op_model_defaults_to_fit_when_scale_and_fit_are_omitted() {
+        // The fork's SVG writer does not lay a page out the way the writer
+        // this test was written against does; `read_back` reads its files.
+        use crate::io::svg_export::read_back;
         let mut app = OpenCADStudio::new_for_test();
         request(&mut app, json!({"op":"new"}));
         request(&mut app, json!({"op":"run","cmd":"LINE 0,0 100,100"}));
@@ -6701,17 +6697,8 @@ mod tests {
             .collect::<Vec<_>>();
         let (width, height) = (view_box[2], view_box[3]);
         let mut checked = 0;
-        for path in root
-            .descendants()
-            .filter(|node| node.tag_name().name() == "path")
-        {
-            let d = path.attribute("d").expect("path data");
-            let normalized = d.replace(['M', 'L', 'Z'], " ");
-            let coordinates = normalized
-                .split_whitespace()
-                .map(|v| v.parse::<f64>().expect("numeric path coordinate"))
-                .collect::<Vec<_>>();
-            for pair in coordinates.chunks_exact(2) {
+        for path in read_back::drawn_paths(&document) {
+            for pair in read_back::sheet_points(path) {
                 assert!(
                     pair[0] >= -0.01 && pair[0] <= width + 0.01,
                     "x={} width={width}",
@@ -6757,6 +6744,9 @@ mod tests {
     /// window may not swallow a field request.
     #[test]
     fn a_window_plot_reaches_a_named_layout() {
+        // The fork's SVG writer does not lay a page out the way the writer
+        // this test was written against does; `read_back` reads its files.
+        use crate::io::svg_export::read_back;
         let mut app = OpenCADStudio::new_for_test();
         assert_eq!(request(&mut app, json!({"op":"new"}))["ok"], true);
         assert_eq!(
@@ -6783,14 +6773,14 @@ mod tests {
         assert_eq!(response["status"], "completed", "{response}");
         assert_eq!(response["result"]["page_sizes"], json!([[297.0, 210.0]]));
         let svg_text = std::fs::read_to_string(&svg).expect("window SVG");
-        roxmltree::Document::parse(&svg_text).expect("well-formed SVG");
-        let clip = svg_text
-            .lines()
-            .find(|line| line.contains("clipPath") || line.contains("clip-path"))
-            .map(|line| line.trim().to_string())
-            .unwrap_or_else(|| panic!("clip from the requested window: {svg_text}"));
-        assert!(clip.contains("width=\"285\""), "{clip}");
-        assert!(clip.contains("height=\"195\""), "{clip}");
+        let document = roxmltree::Document::parse(&svg_text).expect("well-formed SVG");
+        let clips = read_back::clip_boxes(&document);
+        assert!(
+            clips.iter().any(|[x0, y0, x1, y1]| {
+                (x1 - x0 - 285.0).abs() < 0.01 && (y1 - y0 - 195.0).abs() < 0.01
+            }),
+            "clip from the requested window: {clips:?} in {svg_text}"
+        );
         roxmltree::Document::parse(&svg_text).expect("well-formed SVG");
         assert!(
             svg_text.lines().any(|line| line.starts_with("<path")),
