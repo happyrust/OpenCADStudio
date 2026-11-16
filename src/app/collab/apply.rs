@@ -81,6 +81,123 @@ impl OpenCADStudio {
         self.collab_tab() == Some(i)
     }
 
+    /// What the tabs are — which they are, and the file each shows — as one
+    /// number: how `answer_collab_tags` tells whether they have changed
+    /// since it last looked for the tab showing the session's file.
+    fn collab_tabs_print(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut print = std::collections::hash_map::DefaultHasher::new();
+        for tab in &self.tabs {
+            tab.id.hash(&mut print);
+            tab.current_path.hash(&mut print);
+        }
+        print.finish()
+    }
+
+    /// Answer the transport's question about the tags the session's drawing
+    /// carries (`CollabEvent::TagsWanted`), if it can be answered now. It is
+    /// gone back to after every message until it has been (`update`).
+    ///
+    /// The answer is of the session's drawing, whichever drawing is in
+    /// front:
+    ///
+    /// * it is there — its tags, as the room last heard of them
+    ///   (`broadcast::existing_tags`). The answer is of the drawing the
+    ///   `hello` speaks for: changes of the room's that were waiting for
+    ///   the drawing are written to it first, and a step of this person's
+    ///   that is still open on it is waited for;
+    /// * it was closed — none. A session whose drawing is gone speaks for no
+    ///   drawing, and does not come by another;
+    /// * the editor was started on a file that has no tab yet — nothing, as
+    ///   long as the launch is still opening what it was started on: the
+    ///   dial waits for the drawing (as long as `transport::TAGS_WAIT`).
+    ///   Once the launch is through and the file has not come, the transport
+    ///   is told not to wait;
+    /// * started on no file, the session has no drawing until it is first
+    ///   used, and being asked is not a use: the transport is told not to
+    ///   wait.
+    ///
+    /// Told not to wait, the transport says `hello` without the tags. They
+    /// are said under the same number once the session has come by its
+    /// drawing, and the transport joins again to tell the server.
+    pub(in crate::app) fn answer_collab_tags(&mut self) {
+        enum Drawing {
+            Here(usize),
+            Closed,
+            NotYet,
+        }
+        let Some(mut asked) = self.collab.tags_wanted else {
+            return;
+        };
+        let drawing = if self.collab.document.is_some() {
+            self.collab_tab().map_or(Drawing::Closed, Drawing::Here)
+        } else if self.collab.document_path.is_some() {
+            // Finding the tab that shows a file asks the file system: only
+            // when the tabs are not what they were at the last look.
+            let print = self.collab_tabs_print();
+            let found = if asked.looked == Some(print) {
+                None
+            } else {
+                asked.looked = Some(print);
+                self.collab_tab()
+            };
+            let launching = self.opening.is_some()
+                || !self.pending_opens.is_empty()
+                || !self.collab.opens_settled;
+            match found {
+                Some(i) => Drawing::Here(i),
+                None if launching => {
+                    self.collab.tags_wanted = Some(asked);
+                    return;
+                }
+                None => Drawing::NotYet,
+            }
+        } else {
+            Drawing::NotYet
+        };
+        match drawing {
+            Drawing::Here(i) => {
+                self.collab.tags_wanted = Some(asked);
+                if !self.collab.pending_remote.is_empty() {
+                    // What the room did while this drawing was not there to
+                    // take it is written now, as on any frame — not left to
+                    // the next one, which may be long in coming while a
+                    // `hello` is held for this answer. A question that had
+                    // been put off is answered on the way, before the
+                    // writing (`apply_remote_changes`).
+                    self.apply_remote_changes();
+                    self.sync_claim_colors();
+                    self.refresh_collab_view();
+                    if self.collab.tags_wanted.is_none() {
+                        return;
+                    }
+                }
+                let step_open = self.tabs[i].history.pending.is_some();
+                if step_open || !self.collab.pending_remote.is_empty() {
+                    return;
+                }
+                let tags = broadcast::existing_tags(
+                    &self.tabs[i].scene.document,
+                    self.collab.outbox.iter().map(|entry| &entry.payload),
+                );
+                self.collab.tags_wanted = None;
+                self.collab.say_tags(asked.ask, super::TagsSaid::Tags(tags));
+            }
+            Drawing::Closed => {
+                self.collab.tags_wanted = None;
+                self.collab
+                    .say_tags(asked.ask, super::TagsSaid::Tags(Vec::new()));
+            }
+            Drawing::NotYet => {
+                if !asked.put_off {
+                    asked.put_off = true;
+                    self.collab.say_tags(asked.ask, super::TagsSaid::NotYet);
+                }
+                self.collab.tags_wanted = Some(asked);
+            }
+        }
+    }
+
     /// Queue one `op` carrying the `changes` made on tab `i`, or stay quiet.
     /// Five things silence it:
     ///
@@ -367,6 +484,15 @@ impl OpenCADStudio {
         // theirs — before the flag below is raised, which would keep it in.
         // Left open it would record the peer's writes as part of itself.
         self.finish_pending_history(i);
+        // A question about the drawing's tags that was put off — the session
+        // had no drawing when it was asked — is answered before the peers'
+        // changes are written: what the room itself told is no news to it.
+        // (One that was not put off is answered when they have been
+        // written: the `hello` it is for names the revision they bring the
+        // drawing to.)
+        if self.collab.tags_wanted.is_some_and(|asked| asked.put_off) {
+            self.answer_collab_tags();
+        }
         // Raised while the peers' changes are written: nothing done here is
         // this client's to send.
         self.applying_remote = true;

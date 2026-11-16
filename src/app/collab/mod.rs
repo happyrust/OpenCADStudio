@@ -32,6 +32,8 @@ mod transport;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_connector_cross_drawing;
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_existing_tags;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_offline_queue;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_pipe_ops;
@@ -65,7 +67,8 @@ pub struct PeerInfo {
 ///
 /// One variant per server message that changes visible state, plus the three
 /// connection-lifecycle variants the UI needs to draw "connecting", "offline"
-/// and "connected" honestly.
+/// and "connected" honestly, and the one question the transport puts to the
+/// UI ([`CollabEvent::TagsWanted`]).
 #[derive(Clone, Debug, PartialEq)]
 pub enum CollabEvent {
     /// A connection attempt is about to start; `attempt` counts from zero for
@@ -134,6 +137,13 @@ pub enum CollabEvent {
     },
     /// The ops a `conflict` says tied: neither is answered any other way.
     OpsInConflict { op_ids: Vec<String> },
+    /// Not from the server: the transport is about to say `hello`, and asks
+    /// which tags the session's drawing carries, to say them with it
+    /// (`hello.existing_tags`). Asked through here, behind every change
+    /// already handed over, so that the answer is of the drawing as those
+    /// changes left it. `ask` numbers the question, and the answer names it
+    /// (`State::say_tags`).
+    TagsWanted { ask: u64 },
 }
 
 /// One op this session has made that the room has not answered yet.
@@ -321,6 +331,35 @@ pub(super) struct ClientConfig {
     pub client_version: String,
 }
 
+/// What the UI answers when the transport asks which tags the session's
+/// drawing carries ([`CollabEvent::TagsWanted`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum TagsSaid {
+    /// The drawing is there, and these are its tags — none, for a drawing
+    /// that carries none or one that has been closed.
+    Tags(Vec<String>),
+    /// The session has no drawing yet and none is on its way: the `hello`
+    /// need not wait. The tags follow under the same number once the
+    /// session has come by its drawing.
+    NotYet,
+}
+
+/// A question of the transport's about the drawing's tags that the UI has
+/// not answered with the tags yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct TagsAsked {
+    /// The number the answer goes back under.
+    pub ask: u64,
+    /// The transport has been told not to wait ([`TagsSaid::NotYet`]).
+    pub put_off: bool,
+    /// What the tabs were — which they are, and the file each shows — when
+    /// the one showing the session's file was last looked for and not found
+    /// (`OpenCADStudio::collab_tabs_print`), so that it is looked for again
+    /// only once they have changed: finding a file's tab asks the file
+    /// system, and the question is gone back to after every message.
+    pub looked: Option<u64>,
+}
+
 /// The GUI's view of the collaboration session.
 #[derive(Clone, Debug, Default)]
 pub(super) struct State {
@@ -475,6 +514,13 @@ pub(super) struct State {
     /// one this session asked for and was refused. A claim this session was
     /// granted is not in here — `claim_granted` does not say.
     pub claim_expiry: BTreeMap<String, i64>,
+    /// The transport's question about the drawing's tags, while the UI has
+    /// yet to answer it with them (`OpenCADStudio::answer_collab_tags`).
+    pub tags_wanted: Option<TagsAsked>,
+    /// The launch is through with the drawings it was started on: each has
+    /// been opened or given up on. A session started on a file that still
+    /// has no drawing then will not get it from the launch.
+    pub opens_settled: bool,
     /// The payload of every op this state queued, for tests to read: the
     /// outbound queue itself is the process's, and other tests write to it.
     #[cfg(test)]
@@ -483,6 +529,10 @@ pub(super) struct State {
     /// tests, for the same reason as `sent`.
     #[cfg(test)]
     pub attempts: Vec<(String, String)>,
+    /// Every answer this state gave about the drawing's tags, `(ask, said)`:
+    /// for tests, for the same reason as `sent`.
+    #[cfg(test)]
+    pub tags_said: Vec<(u64, TagsSaid)>,
 }
 
 /// One change of a peer's as this drawing took it.
@@ -600,12 +650,31 @@ impl State {
         transport::set_client_config(self.client_config());
     }
 
+    /// Answer question `ask` of the transport's about the drawing's tags.
+    pub(super) fn say_tags(&mut self, ask: u64, said: TagsSaid) {
+        #[cfg(test)]
+        self.tags_said.push((ask, said.clone()));
+        #[cfg(not(target_arch = "wasm32"))]
+        transport::answer_tags(ask, said);
+        // (Unused on the web build, which has no socket to say them on.)
+        #[cfg(target_arch = "wasm32")]
+        let _ = (ask, said);
+    }
+
     /// Fold one transport event into the visible state.
     pub(super) fn apply(&mut self, event: CollabEvent) {
         match event {
             CollabEvent::Connecting { attempt } => {
                 self.connected = false;
                 self.reconnect_attempts = attempt;
+            }
+            CollabEvent::TagsWanted { ask } => {
+                // The latest question is the one that stands: whatever was
+                // said to an earlier one went with the dial that asked it.
+                self.tags_wanted = Some(TagsAsked {
+                    ask,
+                    ..TagsAsked::default()
+                });
             }
             CollabEvent::Connected {
                 session_id,

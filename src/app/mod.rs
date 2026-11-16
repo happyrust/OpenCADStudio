@@ -7576,9 +7576,11 @@ impl OpenCADStudio {
                 }
             }
         }
-        // The session is for the drawing this launch opens. It connects
-        // before that file has loaded, so what peers do meanwhile waits for
-        // the tab showing it (`collab_tab`).
+        // The session is for the drawing this launch opens. Its `hello`
+        // lists the tags that drawing carries, so the dial waits for the
+        // file to load (`answer_collab_tags`) — for so long, and no longer.
+        // A session that came up before the file was there keeps what peers
+        // do meanwhile for the tab showing it (`collab_tab`).
         if s.collab.wanted() {
             s.collab.document_path = cfg.files.first().cloned();
         }

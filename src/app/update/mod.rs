@@ -673,6 +673,12 @@ impl OpenCADStudio {
             )
         });
         let mut task = self.update_message(msg);
+        // The transport may be waiting to hear which tags the session's
+        // drawing carries, to say them with its `hello`: the message just
+        // taken may have been the question, or what brought the drawing.
+        if self.collab.tags_wanted.is_some() {
+            self.answer_collab_tags();
+        }
         if let Some((resized, key)) = outline_switch_before {
             if resized || self.outline_switch_key() != key {
                 self.outline_switch_hover = false;

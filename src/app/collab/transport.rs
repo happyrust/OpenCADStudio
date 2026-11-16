@@ -18,12 +18,12 @@
 //!    `tungstenite::connect`, which has no timeout (21 s against a black hole).
 
 use super::messages::{read, Frame};
-use super::{ClientConfig, CollabEvent};
+use super::{ClientConfig, CollabEvent, TagsSaid};
 use iced::futures::channel::mpsc;
 use ocs_collab::ClientMessage;
 use std::io::{ErrorKind, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tungstenite::{Message, WebSocket};
@@ -52,8 +52,42 @@ const BACKOFF_SLICE: Duration = Duration::from_millis(50);
 /// channel was full.
 const EMIT_RETRY: Duration = Duration::from_millis(2);
 
+/// How long a dial waits for the UI to say which tags the session's drawing
+/// carries before its `hello` goes without them. The UI answers within a
+/// frame once the drawing is there; the wait is for a drawing the launch is
+/// still loading, and a large one takes seconds.
+const TAGS_WAIT: Duration = Duration::from_secs(20);
+
+/// How often that wait looks for the answer.
+const TAGS_POLL: Duration = Duration::from_millis(5);
+
 /// The outbound queue: requests the UI wants on the wire, oldest first.
 type Outbox = Mutex<std::collections::VecDeque<Outbound>>;
+
+/// Where the UI leaves its answer to the transport's question about the
+/// drawing's tags ([`CollabEvent::TagsWanted`]): the last thing it said,
+/// with the number of the question that answers.
+type TagsSlot = Mutex<Option<(u64, TagsSaid)>>;
+
+/// How a client asks the UI which tags the session's drawing carries: where
+/// the answer is left, and how long a dial waits for it.
+#[derive(Clone)]
+struct TagsLine {
+    said: Arc<TagsSlot>,
+    wait: Duration,
+}
+
+impl TagsLine {
+    /// What the UI has said to question `ask`, once it has said anything to
+    /// it. An answer to another question is not one to this.
+    fn answer(&self, ask: u64) -> Option<TagsSaid> {
+        let slot = self.said.lock().ok()?;
+        match &*slot {
+            Some((answered, said)) if *answered == ask => Some(said.clone()),
+            _ => None,
+        }
+    }
+}
 
 /// What one transport thread works with: where its session parameters come
 /// from, the requests waiting to go out, the signal that tells it to quit, and
@@ -77,6 +111,10 @@ pub(super) struct Link {
     /// after the first quit.
     stop: Arc<AtomicBool>,
     heartbeat: Duration,
+    /// The way to ask the UI which tags the session's drawing carries, for
+    /// a client that has a UI to ask. One that has none says `hello` without
+    /// them and waits for nobody.
+    tags: Option<TagsLine>,
 }
 
 impl Link {
@@ -88,6 +126,10 @@ impl Link {
             outbox: Arc::clone(app_outbox()),
             stop: Arc::new(AtomicBool::new(false)),
             heartbeat: HEARTBEAT_INTERVAL,
+            tags: Some(TagsLine {
+                said: Arc::clone(app_tags()),
+                wait: TAGS_WAIT,
+            }),
         }
     }
 
@@ -99,6 +141,7 @@ impl Link {
             outbox: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             stop: Arc::new(AtomicBool::new(false)),
             heartbeat: HEARTBEAT_INTERVAL,
+            tags: None,
         }
     }
 
@@ -199,6 +242,38 @@ fn publish_config(slot: &Mutex<ClientConfig>, config: ClientConfig) {
     if let Ok(mut slot) = slot.lock() {
         *slot = config;
     }
+}
+
+/// The UI's answers to the app client's question about the drawing's tags.
+/// A slot for the same reason as [`app_config`]: the worker is started with
+/// no arguments, and the UI has no handle on its thread.
+fn app_tags() -> &'static Arc<TagsSlot> {
+    static SLOT: OnceLock<Arc<TagsSlot>> = OnceLock::new();
+    SLOT.get_or_init(|| Arc::new(Mutex::new(None)))
+}
+
+/// The UI's answer to question `ask` of the app client's about the tags the
+/// session's drawing carries ([`CollabEvent::TagsWanted`]).
+pub(super) fn answer_tags(ask: u64, said: TagsSaid) {
+    leave_answer(app_tags(), ask, said);
+}
+
+/// Leave `said` in `slot` as the answer to question `ask`. Only the last
+/// answer is kept: the client reads the one to the question it has out, and
+/// an answer to an earlier question is of no use to it.
+fn leave_answer(slot: &TagsSlot, ask: u64, said: TagsSaid) {
+    if let Ok(mut slot) = slot.lock() {
+        *slot = Some((ask, said));
+    }
+}
+
+/// The number of the next question about the drawing's tags. One sequence
+/// for the whole process, so that an answer left for an earlier client's
+/// question — iced may start the subscription over — is never read as the
+/// answer to a later one.
+fn next_ask() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// One outbound request the UI wants on the wire. The transport thread owns the
@@ -574,9 +649,9 @@ fn describe_event(event: &CollabEvent) -> String {
             entry.conflict_id, entry.object_ref, entry.field, entry.value_a, entry.value_b
         ),
         // Not frames: the transport makes these up itself.
-        CollabEvent::Connecting { .. } | CollabEvent::Disconnected { .. } => {
-            "(not a server frame)".to_owned()
-        }
+        CollabEvent::Connecting { .. }
+        | CollabEvent::Disconnected { .. }
+        | CollabEvent::TagsWanted { .. } => "(not a server frame)".to_owned(),
     }
 }
 
@@ -641,6 +716,61 @@ fn wait_before_retry(
     Ok(())
 }
 
+/// What the UI said to the question a dial put to it ([`ask_for_tags`]).
+struct Told {
+    /// The number of the question.
+    ask: u64,
+    /// The tags to list in the `hello`.
+    tags: Vec<String>,
+    /// The UI has not said the tags: it has no drawing to speak for yet, or
+    /// it did not answer in time. They are owed, and come under the same
+    /// number.
+    owed: bool,
+}
+
+/// Ask the UI which tags the session's drawing carries, and wait for what
+/// it says: the tags, or that the `hello` need not wait for them. A client
+/// with no UI to ask ([`Link::tags`]) asks nobody: `None`.
+///
+/// The wait is bounded ([`TagsLine::wait`]). A UI that has not answered by
+/// then is taken to have said "not yet": the session comes up without the
+/// tags rather than not at all. `Err` when there is nobody left to dial for
+/// — the app is quitting, or the subscription is gone.
+fn ask_for_tags(sender: &mut mpsc::Sender<CollabEvent>, link: &Link) -> Result<Option<Told>, ()> {
+    let Some(line) = &link.tags else {
+        return Ok(None);
+    };
+    let ask = next_ask();
+    emit(sender, link, CollabEvent::TagsWanted { ask })?;
+    let deadline = Instant::now() + line.wait;
+    loop {
+        match line.answer(ask) {
+            Some(TagsSaid::Tags(tags)) => {
+                return Ok(Some(Told {
+                    ask,
+                    tags,
+                    owed: false,
+                }));
+            }
+            Some(TagsSaid::NotYet) => break,
+            None => {}
+        }
+        if sender.is_closed() || link.stop_requested() {
+            return Err(());
+        }
+        if Instant::now() >= deadline {
+            log("界面还没有说出本图已有的位号：先不带位号加入，等它说了再重新加入");
+            break;
+        }
+        std::thread::sleep(TAGS_POLL);
+    }
+    Ok(Some(Told {
+        ask,
+        tags: Vec::new(),
+        owed: true,
+    }))
+}
+
 /// The transport thread body: connect, hold the session, reconnect on failure.
 ///
 /// Returns `Ok(())` once the subscription is cancelled (or the client was never
@@ -651,6 +781,10 @@ fn wait_before_retry(
 /// parameters, its outbound queue, and its quit signal ([`shutdown`] raises the
 /// one of the link it was registered with). Once that is set the session says
 /// goodbye on the wire and the client does not reconnect.
+///
+/// Before each dial the UI is asked which tags the session's drawing carries
+/// ([`ask_for_tags`]), for the `hello` to list them: asked anew every time,
+/// since the drawing may be another, or have changed, since the last.
 pub(super) fn run_client(
     sender: &mut mpsc::Sender<CollabEvent>,
     link: &Link,
@@ -684,8 +818,19 @@ pub(super) fn run_client(
             super::shown_address(&config.server_url),
             attempt.saturating_add(1)
         ));
+        let Ok(told) = ask_for_tags(sender, link) else {
+            return Ok(());
+        };
         let mut came_up = false;
-        let reason = match run_session(sender, &config, link, &mut came_up, &mut seen) {
+        let session = run_session(
+            sender,
+            &config,
+            link,
+            &mut came_up,
+            &mut seen,
+            told.as_ref(),
+        );
+        let reason = match session {
             Ok(Ended::SubscriptionGone) => return Ok(()),
             Ok(Ended::Quit) => return Ok(()),
             Ok(Ended::Closed(reason)) => reason,
@@ -765,12 +910,21 @@ impl Seen {
 /// One connection: handshake, `hello`, then the read loop until it ends.
 /// `came_up` is set once the server has answered with `welcome`; `seen`
 /// follows the revision handed to the UI, across sessions.
+///
+/// `told` is what the UI said of the tags the session's drawing carries,
+/// and the `hello` lists them (`existing_tags`). Tags it still owes are
+/// looked for while the session is up. `hello` is the only frame that
+/// carries them, so when they come the session is left — on purpose, with a
+/// close frame — and the retry ladder joins again, asking the UI anew. A
+/// drawing that turns out to carry none has nothing to tell, and the
+/// session stays.
 fn run_session(
     sender: &mut mpsc::Sender<CollabEvent>,
     config: &ClientConfig,
     link: &Link,
     came_up: &mut bool,
     seen: &mut Option<Seen>,
+    told: Option<&Told>,
 ) -> Result<Ended, String> {
     // A request queued against a session that has since ended must not be
     // replayed into this one: the tag may belong to somebody else by now.
@@ -790,13 +944,18 @@ fn run_session(
             .as_ref()
             .filter(|seen| seen.server_url == config.server_url && seen.drawing_id == config.drawing_id)
             .map(|seen| seen.revision),
-        existing_tags: Vec::new(),
+        existing_tags: told.map(|told| told.tags.clone()).unwrap_or_default(),
     };
     let wire = send_json(&mut ws, &hello)?;
     log_frame(false, &wire, None);
 
     let mut last_heartbeat = Instant::now();
     let mut session_id: Option<String> = None;
+    // The question the UI still owes the tags to, with where it answers.
+    let mut owed = match (told, &link.tags) {
+        (Some(told), Some(line)) if told.owed => Some((told.ask, line)),
+        _ => None,
+    };
 
     loop {
         if link.stop_requested() {
@@ -809,6 +968,19 @@ fn run_session(
         if sender.is_closed() {
             close(&mut ws);
             return Ok(Ended::SubscriptionGone);
+        }
+        if let Some(TagsSaid::Tags(tags)) = owed.and_then(|(ask, line)| line.answer(ask)) {
+            owed = None;
+            if !tags.is_empty() {
+                close(&mut ws);
+                log(&format!(
+                    "界面说出了本图已有的 {} 个位号：断开后重新加入，随 hello 上报",
+                    tags.len()
+                ));
+                return Ok(Ended::Closed(
+                    "要向服务器上报本图已有的位号，正在重新加入会话".to_owned(),
+                ));
+            }
         }
         match ws.read() {
             Ok(Message::Text(text)) => {
@@ -2121,5 +2293,321 @@ mod tests {
 
         assert_eq!(sent.len(), 1, "{sent:?}");
         assert!(sent[0].contains("op-live"), "{sent:?}");
+    }
+
+    // ── The drawing's own tags (`hello.existing_tags`) ───────────────────
+
+    /// A link whose client asks which tags the drawing carries, as the
+    /// app's does, with a slot of its own for the answers and `wait` for how
+    /// long a dial holds for one.
+    fn link_with_tags(url: String, wait: Duration) -> (Link, Arc<TagsSlot>) {
+        let said: Arc<TagsSlot> = Arc::new(Mutex::new(None));
+        let mut link = Link::detached(config_for(url));
+        link.tags = Some(TagsLine {
+            said: Arc::clone(&said),
+            wait,
+        });
+        (link, said)
+    }
+
+    /// The client's next question about the drawing's tags: its number, and
+    /// everything the client reported up to it.
+    fn question(receiver: &mut mpsc::Receiver<CollabEvent>) -> (u64, Vec<CollabEvent>) {
+        let events = events_until(receiver, |event| {
+            matches!(event, CollabEvent::TagsWanted { .. })
+        });
+        match events.last() {
+            Some(CollabEvent::TagsWanted { ask }) => (*ask, events),
+            _ => panic!("the client did not ask which tags the drawing carries: {events:?}"),
+        }
+    }
+
+    /// Everything the client reports in `time`.
+    fn events_for(receiver: &mut mpsc::Receiver<CollabEvent>, time: Duration) -> Vec<CollabEvent> {
+        let deadline = Instant::now() + time;
+        let mut events = Vec::new();
+        while Instant::now() < deadline {
+            match receiver.try_recv() {
+                Ok(event) => events.push(event),
+                Err(mpsc::TryRecvError::Closed) => break,
+                Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        events
+    }
+
+    fn tags(list: &[&str]) -> TagsSaid {
+        TagsSaid::Tags(list.iter().map(|tag| (*tag).to_owned()).collect())
+    }
+
+    /// The `hello` lists the tags the UI said the session's drawing carries
+    /// (`hello.existing_tags`) — and the dial holds until the UI has said
+    /// them: a `hello` that went out first would have nothing to list. It
+    /// used to list nothing at all, and the server took the room to be
+    /// empty: a symbol a peer put in could be given a tag this drawing
+    /// already had.
+    #[test]
+    fn collab_existing_tags_the_hello_lists_what_the_ui_said_the_drawing_carries() {
+        let scene = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":0,"peers":[],"claims":[]}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![scene]);
+        let (link, said) = link_with_tags(url, Duration::from_secs(30));
+        let (mut receiver, worker) = start_client(&link);
+        let (ask, before) = question(&mut receiver);
+        // The question is out: nothing is dialled until it is answered.
+        std::thread::sleep(Duration::from_millis(300));
+        let dialled = heard.lock().expect("log").len();
+        leave_answer(&said, ask, tags(&["P-1001", "V-1001"]));
+        let up = session_came_up(&mut receiver);
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+
+        assert!(
+            before
+                .iter()
+                .any(|event| matches!(event, CollabEvent::Connecting { .. })),
+            "the UI is told a connection is being made before it is asked: {before:?}"
+        );
+        assert_eq!(dialled, 0, "the hello went out before the UI had answered");
+        assert!(up, "the client never reported a session");
+        assert_eq!(
+            hello_of(&heard, 0)["existing_tags"],
+            serde_json::json!(["P-1001", "V-1001"])
+        );
+    }
+
+    /// A session that came up before there was a drawing to speak for — an
+    /// editor started on no file — said `hello` with nothing to list. When
+    /// the UI then says which tags the drawing carries, the client leaves
+    /// the session and joins again: `hello` is the only frame that carries
+    /// them. It says where the drawing is, as on any other way back, and it
+    /// asks again first — the answer may have changed.
+    #[test]
+    fn collab_existing_tags_tags_said_after_the_hello_are_told_by_joining_again() {
+        let first = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":4,"peers":[],"claims":[]}"#
+                    .to_owned(),
+                r#"{"type":"op_applied","op_id":"op-peer-5","revision":5,"changes":[]}"#.to_owned(),
+            ],
+            // Held: it is the client that hangs up.
+            then_drop: false,
+        };
+        let second = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-2","base_revision":5,"peers":[],"claims":[],"replay_from":5}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![first, second]);
+        let (link, said) = link_with_tags(url, Duration::from_secs(30));
+        let (mut receiver, worker) = start_client(&link);
+        let (ask, _) = question(&mut receiver);
+        leave_answer(&said, ask, TagsSaid::NotYet);
+        let mut events = events_until(&mut receiver, |event| {
+            matches!(event, CollabEvent::OpApplied { revision: 5, .. })
+        });
+        // The drawing is there now.
+        leave_answer(&said, ask, tags(&["P-1001"]));
+        let (again, more) = question(&mut receiver);
+        events.extend(more);
+        leave_answer(&said, again, tags(&["P-1001", "P-1002"]));
+        events.extend(events_until(
+            &mut receiver,
+            |event| matches!(event, CollabEvent::Connected { session_id, .. } if session_id == "s-2"),
+        ));
+        // It stays: what it was told this time went with the `hello`.
+        let after = events_for(&mut receiver, Duration::from_millis(500));
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+
+        assert!(
+            hello_of(&heard, 0).get("existing_tags").is_none(),
+            "the first hello had nothing to list"
+        );
+        assert_ne!(again, ask, "each question has a number of its own");
+        let rejoined = hello_of(&heard, 1);
+        assert_eq!(
+            rejoined["existing_tags"],
+            serde_json::json!(["P-1001", "P-1002"]),
+            "{events:?}"
+        );
+        assert_eq!(rejoined["since"], 5, "{events:?}");
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                CollabEvent::Disconnected { reason, will_retry: true } if reason.contains("位号")
+            )),
+            "the UI is told why the session was left: {events:?}"
+        );
+        assert!(
+            !after
+                .iter()
+                .any(|event| matches!(event, CollabEvent::Disconnected { .. })),
+            "it left the session a second time: {after:?}"
+        );
+        assert_eq!(heard.lock().expect("log").len(), 2);
+    }
+
+    /// A drawing with no tags has nothing to tell the server: the session
+    /// that came up before the drawing was there stays as it is.
+    #[test]
+    fn collab_existing_tags_a_drawing_with_no_tags_does_not_join_again() {
+        let scene = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":0,"peers":[],"claims":[]}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![scene]);
+        let (link, said) = link_with_tags(url, Duration::from_secs(30));
+        let (mut receiver, worker) = start_client(&link);
+        let (ask, _) = question(&mut receiver);
+        leave_answer(&said, ask, TagsSaid::NotYet);
+        let up = session_came_up(&mut receiver);
+        leave_answer(&said, ask, TagsSaid::Tags(Vec::new()));
+        let after = events_for(&mut receiver, Duration::from_millis(600));
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+
+        assert!(up, "the client never reported a session");
+        assert!(
+            !after.iter().any(|event| matches!(
+                event,
+                CollabEvent::Disconnected { .. } | CollabEvent::Connecting { .. }
+            )),
+            "{after:?}"
+        );
+        assert_eq!(
+            heard.lock().expect("log").len(),
+            1,
+            "one session, one hello"
+        );
+    }
+
+    /// A UI that does not answer — a drawing that takes long to load — holds
+    /// the dial only so long: the session comes up without the tags, as it
+    /// did before there was a question to ask, and they are told by joining
+    /// again when the answer does come.
+    #[test]
+    fn collab_existing_tags_a_question_nobody_answers_holds_the_dial_only_so_long() {
+        let first = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":0,"peers":[],"claims":[]}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let second = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-2","base_revision":0,"peers":[],"claims":[]}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![first, second]);
+        let (link, said) = link_with_tags(url, Duration::from_millis(200));
+        let (mut receiver, worker) = start_client(&link);
+        let (ask, _) = question(&mut receiver);
+        let up = session_came_up(&mut receiver);
+        leave_answer(&said, ask, tags(&["P-1001"]));
+        let (again, _) = question(&mut receiver);
+        leave_answer(&said, again, tags(&["P-1001"]));
+        let events = events_until(
+            &mut receiver,
+            |event| matches!(event, CollabEvent::Connected { session_id, .. } if session_id == "s-2"),
+        );
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+
+        assert!(up, "the session did not come up without the answer");
+        assert!(
+            hello_of(&heard, 0).get("existing_tags").is_none(),
+            "nothing had been said when the first hello went out"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(CollabEvent::Connected { session_id, .. }) if session_id == "s-2"
+            ),
+            "the client did not join again: {events:?}"
+        );
+        assert_eq!(
+            hello_of(&heard, 1)["existing_tags"],
+            serde_json::json!(["P-1001"])
+        );
+    }
+
+    /// The wait for the UI's answer ends when the app quits: the UI thread
+    /// is then waiting on this one, and will say nothing more.
+    #[test]
+    fn collab_existing_tags_a_quit_ends_the_wait_for_the_answer() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
+        listener
+            .set_nonblocking(true)
+            .expect("a listener that can be polled");
+        let url = format!("ws://{}/ws", listener.local_addr().expect("local addr"));
+        let (link, _said) = link_with_tags(url, Duration::from_secs(60));
+        let (mut receiver, worker) = start_client(&link);
+        let _ = question(&mut receiver);
+        link.stop.store(true, Ordering::Relaxed);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !worker.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            worker.is_finished(),
+            "the client went on waiting for the UI"
+        );
+        let _ = worker.join();
+        assert!(listener.accept().is_err(), "it dialled without the answer");
+    }
+
+    /// The app's client asks the UI; one that shares nothing with the app —
+    /// it has no UI — does not, and waits for nobody. What the UI says
+    /// reaches the slot the app's client reads.
+    #[test]
+    fn collab_existing_tags_the_apps_client_asks_the_ui_and_hears_what_it_says() {
+        let app = Link::app();
+        let line = app.tags.as_ref().expect("the app's client asks the UI");
+        assert_eq!(line.wait, TAGS_WAIT);
+        assert!(Link::detached(config_for(String::new())).tags.is_none());
+
+        // Other tests of this process answer through the same slot, and one
+        // of theirs may land in between: said again until it is read back.
+        let ask = u64::MAX - 0x7A65;
+        let said = tags(&["P-1001"]);
+        let heard = (0..200).any(|_| {
+            answer_tags(ask, said.clone());
+            line.answer(ask).as_ref() == Some(&said)
+        });
+        assert!(heard, "what the UI said did not reach the app's client");
+    }
+
+    /// An answer is to one question: what the UI said to an earlier one —
+    /// of the dial before, or of a client iced has since started over — is
+    /// not an answer to this. Of what it said to this one, the last stands.
+    #[test]
+    fn collab_existing_tags_an_answer_to_another_question_is_not_one_to_this() {
+        let (link, said) = link_with_tags(String::new(), Duration::from_secs(1));
+        let line = link.tags.as_ref().expect("a link that asks");
+        assert_eq!(line.answer(7), None, "nothing said yet");
+        leave_answer(&said, 6, tags(&["P-1001"]));
+        assert_eq!(line.answer(7), None);
+        leave_answer(&said, 7, TagsSaid::NotYet);
+        assert_eq!(line.answer(7), Some(TagsSaid::NotYet));
+        leave_answer(&said, 7, tags(&["V-1001"]));
+        assert_eq!(line.answer(7), Some(tags(&["V-1001"])));
     }
 }

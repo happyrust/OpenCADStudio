@@ -564,6 +564,63 @@ pub fn changes_from_payload(changes: &[Value]) -> Read {
     read
 }
 
+/// The tags a `hello` lists (`existing_tags`): every tag an object of
+/// `document` carried when the room last heard from this drawing, each once
+/// and in order. `unanswered` are the payloads of the steps the room has not
+/// answered yet, oldest first.
+///
+/// The server takes the listing to be of the drawing as it was at the
+/// revision the `hello` names, which is the drawing without those steps —
+/// they go out after the `welcome`, and say for themselves what they did.
+/// So, for each entity such a step names, what the first of them says of it
+/// stands in for what it carries now:
+///
+/// * placed by it (`insert_symbol`) — not listed. The room hears of the
+///   symbol from the step; listed here, its tag would be taken by the time
+///   the step arrives, and the server would give this client's own symbol
+///   another;
+/// * retagged or erased by it (`set_tag`, `delete_object`) — listed under
+///   the tag the step names it by, the one the room knows. To the room the
+///   object is there under that tag until the step arrives; were the tag
+///   free meanwhile, a symbol a peer placed under it would be what the step
+///   then renamed or erased.
+///
+/// A change that names no entity is not guessed at. What a step said of a
+/// pipe line or a run changes nothing here either: their tags are listed as
+/// the drawing carries them. The server gives a line, a run or a fitting no
+/// other tag than the one it is sent under, so one listed ahead of its step
+/// costs that step nothing, and is kept from a peer's symbol meanwhile.
+pub fn existing_tags<'a>(
+    document: &Document,
+    unanswered: impl IntoIterator<Item = &'a Value>,
+) -> Vec<String> {
+    // Each entity an unanswered step names, with the tag the room knows it
+    // by: none, for one the room has not heard of.
+    let mut known_as: std::collections::HashMap<Handle, Option<String>> =
+        std::collections::HashMap::new();
+    for payload in unanswered {
+        for change in changes_from_payload(std::slice::from_ref(payload)).changes {
+            let tag = match change.kind.as_str() {
+                KIND_INSERT_SYMBOL => None,
+                KIND_SET_TAG | KIND_DELETE_OBJECT => Some(change.object_ref),
+                _ => continue,
+            };
+            for handle in change.handles {
+                known_as.entry(handle).or_insert_with(|| tag.clone());
+            }
+        }
+    }
+    let mut tags: std::collections::BTreeSet<String> = document
+        .entities()
+        .filter(|entity| !known_as.contains_key(&entity.common().handle))
+        .filter_map(PidAuthor::from_entity)
+        .map(|author| author.tag)
+        .collect();
+    tags.extend(known_as.into_values().flatten());
+    tags.remove("");
+    tags.into_iter().collect()
+}
+
 /// What a change list did to the document.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Applied {
@@ -1575,5 +1632,177 @@ mod tests {
         assert_eq!(tag_of(&doc, first), "P-1001");
         assert_eq!(tag_of(&doc, second), "P-1001");
         assert_eq!(tag_of(&doc, other), "P-1009");
+    }
+
+    // ── The drawing's own tags (`hello.existing_tags`) ───────────────────
+
+    /// The payload of one unanswered step that made `changes`.
+    fn step(changes: &[Change]) -> Value {
+        payload_for(changes).expect("a step that says something")
+    }
+
+    /// What `doc` lists with every step answered.
+    fn carried(doc: &Document) -> Vec<String> {
+        existing_tags(doc, std::iter::empty())
+    }
+
+    fn retag(doc: &mut Document, handle: Handle, tag: &str) {
+        let mut author = PidAuthor::load(doc, handle).expect("author");
+        author.tag = tag.to_owned();
+        author.store(doc, handle);
+    }
+
+    /// What a `hello` lists: the tag of every object of the drawing that has
+    /// one — a symbol, a pipe line (one tag, however many pieces it is drawn
+    /// as), a valve fitted on a run — each once, in order. An object with no
+    /// tag has nothing to list, and neither has plain geometry.
+    #[test]
+    fn collab_existing_tags_every_tag_the_drawing_carries_is_listed_once() {
+        let mut doc = Document::new();
+        add_author(&mut doc, "V-1001", "{}");
+        add_author(&mut doc, "P-1001", "{}");
+        add_author(&mut doc, "", "{}");
+        for _ in 0..3 {
+            add_line_piece(&mut doc, "L-1001", ROLE_PIPE_LINE, "PIPE_LINE");
+        }
+        add_line_piece(&mut doc, "", "", "PIPE_SEGMENT");
+        let fitting = add_author(&mut doc, "V-2001", "{}");
+        let mut record = PidAuthor::load(&doc, fitting).expect("author");
+        record.owner = "1F".to_owned();
+        record.topology = ROLE_FITTING.to_owned();
+        record.store(&mut doc, fitting);
+        doc.add_entity(EntityType::Line(document::entities::Line::from_points(
+            Vector3::ZERO,
+            Vector3::new(1.0, 0.0, 0.0),
+        )))
+        .expect("entity");
+
+        assert_eq!(carried(&doc), ["L-1001", "P-1001", "V-1001", "V-2001"]);
+        assert!(carried(&Document::new()).is_empty());
+    }
+
+    /// A symbol placed in a step the room has not answered yet is not
+    /// listed, whatever it has been called since: the room hears of it from
+    /// that step. Listed with the `hello`, its tag would be taken when the
+    /// step arrives, and the server would give this client's own symbol
+    /// another.
+    #[test]
+    fn collab_existing_tags_a_symbol_the_room_has_not_heard_of_yet_is_left_out() {
+        let mut doc = Document::new();
+        add_author(&mut doc, "P-1001", "{}");
+        let new = add_author(&mut doc, "P-1002", "{}");
+        let entity = doc.get_entity(new).cloned().expect("entity");
+        let placing = step(&changes_of(new, None, Some(&entity)));
+        assert_eq!(placing["kind"], KIND_INSERT_SYMBOL);
+
+        assert_eq!(existing_tags(&doc, [&placing]), ["P-1001"]);
+
+        // Retagged in a later step: neither tag is one the room knows.
+        retag(&mut doc, new, "P-1003");
+        let retagging = step(&[change(KIND_SET_TAG, "P-1002", Some(new), "tag", "P-1003")]);
+        assert_eq!(existing_tags(&doc, [&placing, &retagging]), ["P-1001"]);
+
+        // Erased again in a third: there is nothing to list, and nothing
+        // the room is owed.
+        let entity = doc.get_entity(new).cloned().expect("entity");
+        let erasing = step(&changes_of(new, Some(&entity), None));
+        doc.remove_entity(new);
+        assert_eq!(
+            existing_tags(&doc, [&placing, &retagging, &erasing]),
+            ["P-1001"]
+        );
+    }
+
+    /// Once the room has answered the step, the symbol is an object of the
+    /// drawing like any other.
+    #[test]
+    fn collab_existing_tags_a_symbol_whose_step_was_answered_is_listed() {
+        let mut doc = Document::new();
+        add_author(&mut doc, "P-1001", "{}");
+        add_author(&mut doc, "P-1002", "{}");
+        assert_eq!(carried(&doc), ["P-1001", "P-1002"]);
+    }
+
+    /// An object retagged in a step the room has not answered yet is listed
+    /// by the tag the room knows it by — the one it had before the first
+    /// such step — and one erased in such a step is listed still. To the
+    /// room it is there, under that tag, until the step arrives; were the
+    /// tag free meanwhile, a symbol a peer placed under it would be what the
+    /// step then renamed or erased.
+    #[test]
+    fn collab_existing_tags_what_an_unanswered_step_renamed_or_erased_is_listed_by_its_old_tag() {
+        let mut doc = Document::new();
+        let pump = add_author(&mut doc, "P-1001", "{}");
+        let vessel = add_author(&mut doc, "V-1001", "{}");
+        add_author(&mut doc, "E-1001", "{}");
+        // P-1001 → P-1005 → P-1009 in two steps, a property with the second.
+        retag(&mut doc, pump, "P-1009");
+        let first = step(&[change(KIND_SET_TAG, "P-1001", Some(pump), "tag", "P-1005")]);
+        let second = step(&[
+            change(KIND_SET_PROPERTY, "P-1005", Some(pump), "公称直径", "DN50"),
+            change(KIND_SET_TAG, "P-1005", Some(pump), "tag", "P-1009"),
+        ]);
+        // V-1001 erased.
+        let entity = doc.get_entity(vessel).cloned().expect("entity");
+        let erasing = step(&changes_of(vessel, Some(&entity), None));
+        doc.remove_entity(vessel);
+
+        assert_eq!(carried(&doc), ["E-1001", "P-1009"]);
+        assert_eq!(
+            existing_tags(&doc, [&first, &second, &erasing]),
+            ["E-1001", "P-1001", "V-1001"]
+        );
+    }
+
+    /// Erased in one unanswered step and put back in the next — an erase
+    /// taken back — the object is what the room has known all along: listed,
+    /// once. A step that only wrote a property changes nothing of the
+    /// listing.
+    #[test]
+    fn collab_existing_tags_an_erase_taken_back_leaves_the_object_listed() {
+        let mut doc = Document::new();
+        let pump = add_author(&mut doc, "P-1001", "{}");
+        let entity = doc.get_entity(pump).cloned().expect("entity");
+        let erasing = step(&changes_of(pump, Some(&entity), None));
+        let placing = step(&changes_of(pump, None, Some(&entity)));
+        let write = change(KIND_SET_PROPERTY, "P-1001", Some(pump), "公称直径", "DN50");
+        let writing = step(&[write]);
+
+        assert_eq!(existing_tags(&doc, [&erasing, &placing]), ["P-1001"]);
+        assert_eq!(existing_tags(&doc, [&writing]), ["P-1001"]);
+    }
+
+    /// A pipe line renamed in an unanswered step is every one of its pieces
+    /// retagged, said once with all of them: the line is listed by the tag
+    /// the room knows, once.
+    #[test]
+    fn collab_existing_tags_a_line_renamed_in_an_unanswered_step_is_listed_by_its_old_tag() {
+        let mut doc = Document::new();
+        let pieces: Vec<Handle> = (0..3)
+            .map(|_| add_line_piece(&mut doc, "L-1002", ROLE_PIPE_LINE, "PIPE_LINE"))
+            .collect();
+        add_author(&mut doc, "P-1001", "{}");
+        let mut renaming = change(KIND_SET_TAG, "L-1001", None, "tag", "L-1002");
+        renaming.handles = pieces;
+
+        assert_eq!(
+            existing_tags(&doc, [&step(&[renaming])]),
+            ["L-1001", "P-1001"]
+        );
+    }
+
+    /// A change that names no entity — written by hand, or read off another
+    /// drawing — does not say which object here it is about, and the listing
+    /// does not guess: the drawing is listed as it is.
+    #[test]
+    fn collab_existing_tags_a_change_naming_no_entity_is_not_guessed_at() {
+        let mut doc = Document::new();
+        add_author(&mut doc, "P-1009", "{}");
+        let waiting = [
+            step(&[change(KIND_SET_TAG, "P-1001", None, "tag", "P-1009")]),
+            step(&[change(KIND_DELETE_OBJECT, "V-1001", None, "", "")]),
+        ];
+
+        assert_eq!(existing_tags(&doc, &waiting), ["P-1009"]);
     }
 }

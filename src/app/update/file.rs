@@ -2142,7 +2142,12 @@ impl OpenCADStudio {
     pub(in crate::app) fn drain_pending_open(&mut self) -> Task<Message> {
         match self.pending_opens.pop_front() {
             Some(p) => Task::done(Message::OpenExternal(p)),
-            None => self.flush_startup_script(),
+            None => {
+                // A session started on a file that has no drawing by now
+                // will not get it from the launch (`answer_collab_tags`).
+                self.collab.opens_settled = true;
+                self.flush_startup_script()
+            }
         }
     }
 
