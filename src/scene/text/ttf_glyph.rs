@@ -468,7 +468,22 @@ fn contour_point_count(contours: &[Vec<[f32; 2]>]) -> usize {
         .sum()
 }
 
-fn triangulate_contours_cached(key: GlyphTopologyKey, contours: &[Vec<[f32; 2]>]) -> Vec<[f32; 2]> {
+/// Triangulates the `contours` of a placed glyph with the glyph's own
+/// topology — the one `key` names, which only one placement pays for.
+///
+/// That topology is the one of the glyph at the origin (`at_origin`), never
+/// of the placement that happens to ask first: the rounding a pen position
+/// brings can turn a diagonal, and a topology taken from a placement would
+/// make every later run's triangles depend on what was shaped before it.
+/// Taken at the origin, a run's fill is a function of the run alone, with
+/// the cache empty or full. A placement the topology does not fit — the
+/// tessellator added a vertex of its own, or the rings close on another
+/// count of points — is triangulated for itself and leaves the entry alone.
+fn triangulate_contours_cached(
+    key: GlyphTopologyKey,
+    contours: &[Vec<[f32; 2]>],
+    at_origin: impl FnOnce() -> Vec<Vec<[f32; 2]>>,
+) -> Vec<[f32; 2]> {
     if contours.is_empty() {
         return Vec::new();
     }
@@ -477,33 +492,49 @@ fn triangulate_contours_cached(key: GlyphTopologyKey, contours: &[Vec<[f32; 2]>]
         return Vec::new();
     }
 
-    if let Some(cached) = glyph_topology_cache().lock().unwrap().get(&key).cloned() {
-        match cached.indices {
-            None => return triangulate_contours(contours),
-            Some(indices) if cached.pt_count == pt_count => {
-                thread_local! {
-                    static FLAT_PTS: std::cell::RefCell<Vec<[f32; 2]>> =
-                        const { std::cell::RefCell::new(Vec::new()) };
-                }
-                return FLAT_PTS.with(|cell| {
-                    let mut flat = cell.borrow_mut();
-                    flat.clear();
-                    flat.reserve(pt_count);
-                    for c in contours {
-                        if c.len() >= 3 {
-                            flat.extend_from_slice(c);
-                        }
-                    }
-                    let mut tris = Vec::with_capacity(indices.len());
-                    for &idx in indices.iter() {
-                        tris.push(flat[idx as usize]);
-                    }
-                    tris
-                });
+    // Locked for the lookup and for the insert only, like the positioned-glyph
+    // cache: no outline work waits behind another worker's.
+    let cached = glyph_topology_cache().lock().unwrap().get(&key).cloned();
+    let topology = cached.unwrap_or_else(|| {
+        let topology = contour_topology(&at_origin());
+        glyph_topology_cache()
+            .lock()
+            .unwrap()
+            .put(key, topology.clone());
+        topology
+    });
+    match topology.indices {
+        Some(indices) if topology.pt_count == pt_count => {
+            thread_local! {
+                static FLAT_PTS: std::cell::RefCell<Vec<[f32; 2]>> =
+                    const { std::cell::RefCell::new(Vec::new()) };
             }
-            Some(_) => {}
+            FLAT_PTS.with(|cell| {
+                let mut flat = cell.borrow_mut();
+                flat.clear();
+                flat.reserve(pt_count);
+                for c in contours {
+                    if c.len() >= 3 {
+                        flat.extend_from_slice(c);
+                    }
+                }
+                let mut tris = Vec::with_capacity(indices.len());
+                for &idx in indices.iter() {
+                    tris.push(flat[idx as usize]);
+                }
+                tris
+            })
         }
+        _ => triangulate_contours(contours),
     }
+}
+
+/// How `contours` triangulate, as indices into their points (the rings of
+/// fewer than three left out, as the tessellator leaves them out). There are
+/// none where the tessellator failed or added a vertex of its own, which no
+/// point of another placement stands for.
+fn contour_topology(contours: &[Vec<[f32; 2]>]) -> CachedTopology {
+    let pt_count = contour_point_count(contours);
 
     let mut builder = Path::builder();
     for contour in contours {
@@ -532,7 +563,7 @@ fn triangulate_contours_cached(key: GlyphTopologyKey, contours: &[Vec<[f32; 2]>]
         ));
     }
 
-    let (tris, topo) = TESS_SCRATCH.with(|cell| {
+    let indices = TESS_SCRATCH.with(|cell| {
         let mut scratch = cell.borrow_mut();
         let (tessellator, geometry, flat_bits, vert_to_flat) = &mut *scratch;
         geometry.clear();
@@ -546,14 +577,7 @@ fn triangulate_contours_cached(key: GlyphTopologyKey, contours: &[Vec<[f32; 2]>]
             )
             .is_err()
         {
-            return (Vec::new(), None);
-        }
-
-        let mut tris = Vec::with_capacity(geometry.indices.len());
-        for &idx in &geometry.indices {
-            if let Some(&p) = geometry.vertices.get(idx as usize) {
-                tris.push(p);
-            }
+            return None;
         }
 
         let mut topo_indices: Option<Arc<[u32]>> = None;
@@ -588,20 +612,10 @@ fn triangulate_contours_cached(key: GlyphTopologyKey, contours: &[Vec<[f32; 2]>]
                 topo_indices = Some(Arc::from(mapped));
             }
         }
-
-        (
-            tris,
-            Some(CachedTopology {
-                pt_count,
-                indices: topo_indices,
-            }),
-        )
+        topo_indices
     });
 
-    if let Some(cached) = topo {
-        glyph_topology_cache().lock().unwrap().put(key, cached);
-    }
-    tris
+    CachedTopology { pt_count, indices }
 }
 
 fn triangulate_contours(contours: &[Vec<[f32; 2]>]) -> Vec<[f32; 2]> {
@@ -1796,7 +1810,19 @@ fn build_shaped_with(family: &str, text: &str, share_glyphs: bool) -> Option<Sha
                 glyph: g.glyph_id,
                 scale: scale_g.to_bits(),
             };
-            let fill_tris = triangulate_contours_cached(topo_key, &fl.contours);
+            let fill_tris = triangulate_contours_cached(topo_key, &fl.contours, || {
+                // The glyph where no pen has moved it.
+                let mut at_origin = OutlineFlattener::new(scale_g);
+                outline_glyph_into(
+                    font.data(),
+                    g.face_index,
+                    &face,
+                    ttf_parser::GlyphId(g.glyph_id),
+                    &mut at_origin,
+                );
+                at_origin.flush();
+                at_origin.contours
+            });
             let glyph = Arc::new(PlacedGlyph {
                 strokes: fl.contours,
                 fill_tris,
@@ -2187,6 +2213,36 @@ mod tests {
         )
     }
 
+    /// The first few installed families with a capital A: what the cache
+    /// tests below shape in.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn families_to_shape() -> Vec<String> {
+        sysfont::families()
+            .into_iter()
+            .filter(|family| glyph(family, 'A').is_some())
+            .take(3)
+            .collect()
+    }
+
+    /// What the cache tests below shape. Shared prefixes put one glyph at one
+    /// pen position in several runs, repeats put one glyph at several
+    /// positions in one run, and the last two pull in whatever fallback face
+    /// covers them.
+    #[cfg(not(target_arch = "wasm32"))]
+    const TEXTS_TO_SHAPE: [&str; 11] = [
+        "A",
+        "AV",
+        "AVA",
+        "AVAT",
+        "AAAA",
+        "A A",
+        "Hi",
+        "P-1001",
+        "V-1001A/B",
+        "120℃",
+        "管线 P-1001",
+    ];
+
     /// The positioned-glyph cache must never change what a run looks like.
     ///
     /// `build_shaped` does its outline work outside the `font_system` lock
@@ -2202,31 +2258,12 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_positioned_glyph_cache_never_changes_a_runs_geometry() {
-        let families: Vec<String> = sysfont::families()
-            .into_iter()
-            .filter(|family| glyph(family, 'A').is_some())
-            .take(3)
-            .collect();
+        let families = families_to_shape();
         if families.is_empty() {
             eprintln!("no system fonts; skipping");
             return;
         }
-        // Shared prefixes put one glyph at one pen position in several runs,
-        // repeats put one glyph at several positions in one run, and the last
-        // two pull in whatever fallback face covers them.
-        let texts = [
-            "A",
-            "AV",
-            "AVA",
-            "AVAT",
-            "AAAA",
-            "A A",
-            "Hi",
-            "P-1001",
-            "V-1001A/B",
-            "120℃",
-            "管线 P-1001",
-        ];
+        let texts = TEXTS_TO_SHAPE;
         let matrix: Vec<(&str, &str)> = families
             .iter()
             .flat_map(|family| texts.iter().map(move |text| (family.as_str(), *text)))
@@ -2280,6 +2317,53 @@ mod tests {
         assert!(
             served,
             "no glyph of the second pass came out of the cache, so the cache was never compared"
+        );
+    }
+
+    /// What was shaped before a run must not change the run either.
+    ///
+    /// A glyph's triangulation is kept per glyph and reused wherever the
+    /// glyph lands, so only one placement pays for it. Whichever placement
+    /// that is, the triangles must come out the same: were the topology
+    /// taken from the first placement to ask, the rounding of that pen
+    /// position would decide a diagonal for every later run — the same
+    /// picture, but not the same export twice, and the test above would fail
+    /// whenever another test emptied the caches between its passes. Each run
+    /// of the matrix is shaped with no topology kept, and again right after
+    /// each run of its family; the two must agree bit for bit.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_runs_geometry_does_not_depend_on_what_was_shaped_before_it() {
+        let families = families_to_shape();
+        if families.is_empty() {
+            eprintln!("no system fonts; skipping");
+            return;
+        }
+        let forget = || glyph_topology_cache().lock().unwrap().clear();
+        let mut changed = Vec::new();
+        for family in &families {
+            for then in TEXTS_TO_SHAPE {
+                forget();
+                let alone = build_shaped_with(family, then, false);
+                for first in TEXTS_TO_SHAPE {
+                    forget();
+                    let _ = build_shaped_with(family, first, false);
+                    let after = build_shaped_with(family, then, false);
+                    let same = match (&alone, &after) {
+                        (None, None) => true,
+                        (Some(alone), Some(after)) => run_bits(alone) == run_bits(after),
+                        _ => false,
+                    };
+                    if !same {
+                        changed.push(format!("{family:?}: {then:?} after {first:?}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            changed.is_empty(),
+            "{} run(s) changed with what was shaped before them: {changed:#?}",
+            changed.len()
         );
     }
 }
