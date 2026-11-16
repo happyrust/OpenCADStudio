@@ -69,9 +69,9 @@
 
 - **做什么**：属性文本超过 2048 字节的对象，属性不存在实体上，而在扩展字典的溢出记录里（`SPEC-pid-author-store.md` §2.3）。发送端读的是实体的前后影像，读不到这部分，所以现在新建这样的符号时 `insert_symbol.props` 发出去是空对象（`src/app/collab/broadcast.rs` 的 `placed_symbol`）。`collect_step_changes` 手里有这一步做完后的图：属性溢出的新符号改成用 `PidAuthor::load` 从图里读全。撤销一次删除等于把符号放回来，走的是 `collect_undone_step_changes`，同样处理。协议不改。背景见 `SPEC-collab-client.md` §8.1。
 - **验收**：
-  - [ ] 一步里新建属性超过 2 KB 的符号，读出的 `insert_symbol.props` 含全部字段。
-  - [ ] 接收端收到这样的 `insert_symbol`，写进本图后属性逐项相等，并且同样存在扩展字典里。
-  - [ ] 两端往返：A 新建 → B 落地，两张图读出的记录相等；服务器的对象读回里这些字段都在。
+  - [x] 一步里新建属性超过 2 KB 的符号，读出的 `insert_symbol.props` 含全部字段。
+  - [x] 接收端收到这样的 `insert_symbol`，写进本图后属性逐项相等，并且同样存在扩展字典里。
+  - [x] 两端往返：A 新建 → B 落地，两张图读出的记录相等；服务器的对象读回里这些字段都在。
 - **验证**：`cargo test --offline --locked --lib collab_large_props`
 - **依赖**：无
 - **文件**：`src/app/collab/broadcast.rs`；新建测试文件 `src/app/collab/collab_large_props.rs`，在 `src/app/collab/mod.rs` 登记

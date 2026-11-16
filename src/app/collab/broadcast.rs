@@ -374,8 +374,9 @@ fn placed_symbol(handle: Handle, entity: &EntityType) -> Option<Change> {
             scale: insert.x_scale(),
             ports: author.ports,
             // Properties that overflowed into an XRecord are not in the
-            // image; the symbol is said to start with none rather than
-            // not said at all.
+            // image: read off it alone, the symbol is said to start with
+            // none rather than not said at all. A step's collector has the
+            // drawing and puts them in (`fill_overflowed_props`).
             props: if PidAuthor::props_are_inline(entity) {
                 author.props
             } else {
@@ -533,9 +534,12 @@ pub fn collect_undone_changes(entities: &EntityImages) -> Vec<Change> {
 /// Everything one step says to the room: what [`collect_changes`] reads
 /// off its images, then what it did to pipe lines and runs — which the
 /// images only point at, and `doc`, the drawing as the step left it, says
-/// (`super::pipes::statements`).
+/// (`super::pipes::statements`). The same drawing gives a symbol the step
+/// placed the properties its image only points at
+/// (`fill_overflowed_props`).
 pub fn collect_step_changes(doc: &Document, entities: &EntityImages) -> Vec<Change> {
     let mut changes = collect_changes(entities);
+    fill_overflowed_props(doc, &mut changes);
     let images: Vec<super::pipes::Image<'_>> = entities
         .iter()
         .map(|(handle, before, after)| (*handle, before.as_deref(), after.as_deref()))
@@ -549,6 +553,7 @@ pub fn collect_step_changes(doc: &Document, entities: &EntityImages) -> Vec<Chan
 /// its images read the other way, and `doc` the drawing without the step.
 pub fn collect_undone_step_changes(doc: &Document, entities: &EntityImages) -> Vec<Change> {
     let mut changes = collect_undone_changes(entities);
+    fill_overflowed_props(doc, &mut changes);
     let images: Vec<super::pipes::Image<'_>> = entities
         .iter()
         .map(|(handle, before, after)| (*handle, after.as_deref(), before.as_deref()))
@@ -556,6 +561,39 @@ pub fn collect_undone_step_changes(doc: &Document, entities: &EntityImages) -> V
     changes.extend(super::pipes::statements(doc, &images));
     changes.extend(super::connectors::statements(doc, &images));
     changes
+}
+
+/// Gives each symbol `changes` places the properties `doc` holds for it,
+/// where the image the placement was read off only points at them:
+/// properties too long for an entity's own record are kept in an XRecord of
+/// the drawing (`PidAuthor::store`), which no image carries. `doc` is the
+/// drawing with the symbol in it — as the step left it, or as taking the
+/// step back did.
+///
+/// A symbol the drawing holds no such properties for stays as its image said
+/// it: placed, with none.
+fn fill_overflowed_props(doc: &Document, changes: &mut [Change]) {
+    for change in changes {
+        if change.kind != KIND_INSERT_SYMBOL {
+            continue;
+        }
+        let Some(&handle) = change.handles.first() else {
+            continue;
+        };
+        let Some(placed) = change.placed.as_mut() else {
+            continue;
+        };
+        let overflowed = doc
+            .get_entity(handle)
+            .is_some_and(|entity| !PidAuthor::props_are_inline(entity));
+        if !overflowed {
+            continue;
+        }
+        let props = PidAuthor::load(doc, handle).map(|author| author.props);
+        if let Some(props) = props.filter(|props| !props.is_empty()) {
+            placed.props = props;
+        }
+    }
 }
 
 /// One object, one statement. A pipe line renamed is every one of its

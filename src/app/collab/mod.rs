@@ -34,6 +34,8 @@ mod collab_connector_cross_drawing;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_existing_tags;
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_large_props;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_offline_queue;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_pipe_ops;
