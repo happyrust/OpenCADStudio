@@ -1321,6 +1321,24 @@ pub(super) struct DeltaSnapshot {
     pub(super) label: HistoryLabel,
 }
 
+impl DeltaSnapshot {
+    /// The drawing's records — its objects, and the dictionaries that name
+    /// them — as they are on the other side of this step: before it while
+    /// the step is in the drawing, with it once the step has been taken
+    /// back. They are `document`'s own, the drawing as it is, where the step
+    /// keeps no whole structure: it left them as they were.
+    ///
+    /// The step's images only point at what an entity keeps there (the
+    /// properties of a P&ID object too long for its own record); this is
+    /// where the collaboration broadcast reads what they were.
+    pub(super) fn records_across<'a>(&'a self, document: &'a Document) -> &'a Document {
+        self.structure
+            .as_ref()
+            .and_then(StructureSnapshot::whole)
+            .unwrap_or(document)
+    }
+}
+
 #[derive(Clone)]
 pub(super) enum StructureSnapshot {
     /// A broad save-time synchronization followed by a command's bounded edits.
@@ -1365,6 +1383,19 @@ impl StructureSnapshot {
     pub(super) fn is_full(&self) -> bool {
         matches!(self, Self::Full(_))
             || matches!(self,Self::Combined(parts) if parts.iter().any(Self::is_full))
+    }
+
+    /// The whole structure of the step's other side, where this holds one:
+    /// `apply_structure_state` swaps it with the drawing's each time the
+    /// step is applied, so it is always the side the drawing is not on. In a
+    /// combined step it is that as far as the bounded parts beside it did
+    /// not change the same things.
+    pub(super) fn whole(&self) -> Option<&Document> {
+        match self {
+            Self::Full(document) => Some(document),
+            Self::Combined(parts) => parts.iter().find_map(Self::whole),
+            _ => None,
+        }
     }
 }
 

@@ -420,12 +420,60 @@ fn erased_symbol(handle: Handle, entity: &EntityType) -> Option<Change> {
 /// `erased_symbol`). Any other created or erased entity yields nothing
 /// rather than a half-truth: the geometry of a pipe is not in this payload.
 /// An image whose `props` overflowed into an XRecord is "not known here",
-/// not "no properties": the properties of such a step are left out rather
-/// than broadcast as removals.
+/// not "no properties": read off the images alone, the properties of such a
+/// change are left out rather than broadcast as removals. A step's collector
+/// knows where they are kept and reads them there ([`collect_step_changes`]).
 pub fn changes_of(
     handle: Handle,
     before: Option<&EntityType>,
     after: Option<&EntityType>,
+) -> Vec<Change> {
+    changes_between(handle, before, after, None)
+}
+
+/// Where the properties are that an image of the side a step left only
+/// points at. Properties too long for an entity's own record are kept in a
+/// record of the drawing (`PidAuthor::store`); no image carries them, and the
+/// drawing has gone on from that side.
+pub enum Left<'a> {
+    /// In the drawing's records as they were on that side: what the step
+    /// keeps beside its images (`DeltaSnapshot::records_across`).
+    Records(&'a Document),
+    /// Read off the drawing while it was on that side, for each entity whose
+    /// record only pointed at them.
+    Read(&'a [(Handle, String)]),
+}
+
+impl Left<'_> {
+    /// The properties `image` only points at, `image` being the entity
+    /// `handle` on the side left. `None` where they are not known.
+    fn props(&self, handle: Handle, image: &EntityType) -> Option<String> {
+        match self {
+            Self::Records(records) => PidAuthor::overflowed_props(records, image),
+            Self::Read(read) => read
+                .iter()
+                .find(|(of, _)| *of == handle)
+                .map(|(_, props)| props.clone()),
+        }
+    }
+}
+
+/// Where the properties of a step's two sides are kept, for the images that
+/// only point at them: the drawing as it is for the side it is on, and
+/// [`Left`] for the other.
+struct Kept<'a> {
+    now: &'a Document,
+    left: &'a Left<'a>,
+}
+
+/// [`changes_of`], with the properties an image only points at read where
+/// `kept` says they are. A side whose properties are known in neither place
+/// is not a side without any: nothing is said of the properties then.
+fn changes_between(
+    handle: Handle,
+    before: Option<&EntityType>,
+    after: Option<&EntityType>,
+    kept: Option<&Kept<'_>>,
 ) -> Vec<Change> {
     let (before, after) = match (before, after) {
         (Some(before), Some(after)) => (before, after),
@@ -466,11 +514,22 @@ pub fn changes_of(
     if after_author.tag.is_empty() {
         return changes;
     }
-    if !PidAuthor::props_are_inline(before) || !PidAuthor::props_are_inline(after) {
+    // The properties of each side: in its image, or where the image points.
+    let before_text = if PidAuthor::props_are_inline(before) {
+        Some(before_author.props)
+    } else {
+        kept.and_then(|kept| kept.left.props(handle, before))
+    };
+    let after_text = if PidAuthor::props_are_inline(after) {
+        Some(after_author.props)
+    } else {
+        kept.and_then(|kept| PidAuthor::overflowed_props(kept.now, after))
+    };
+    let (Some(before_text), Some(after_text)) = (before_text, after_text) else {
         return changes;
-    }
-    let (before_props, before_marks) = split_props(&before_author.props);
-    let (after_props, after_marks) = split_props(&after_author.props);
+    };
+    let (before_props, before_marks) = split_props(&before_text);
+    let (after_props, after_marks) = split_props(&after_text);
     // The marks as the step left them go with every property change of an
     // object that carries one, before the step or after it; a field whose
     // mark came or went is a change of that field, whatever its value.
@@ -524,42 +583,55 @@ pub fn collect_changes(entities: &EntityImages) -> Vec<Change> {
     }))
 }
 
-/// What undoing that step amounts to: the same images read the other way.
-pub fn collect_undone_changes(entities: &EntityImages) -> Vec<Change> {
-    stated_once(entities.iter().flat_map(|(handle, before, after)| {
-        changes_of(*handle, after.as_deref(), before.as_deref())
-    }))
-}
-
 /// Everything one step says to the room: what [`collect_changes`] reads
 /// off its images, then what it did to pipe lines and runs — which the
 /// images only point at, and `doc`, the drawing as the step left it, says
 /// (`super::pipes::statements`). The same drawing gives a symbol the step
 /// placed the properties its image only points at
-/// (`fill_overflowed_props`).
-pub fn collect_step_changes(doc: &Document, entities: &EntityImages) -> Vec<Change> {
-    let mut changes = collect_changes(entities);
-    fill_overflowed_props(doc, &mut changes);
+/// (`fill_overflowed_props`), and an object the step changed the ones it has
+/// now; the ones it had are where `left` says.
+pub fn collect_step_changes(
+    doc: &Document,
+    entities: &EntityImages,
+    left: &Left<'_>,
+) -> Vec<Change> {
     let images: Vec<super::pipes::Image<'_>> = entities
         .iter()
         .map(|(handle, before, after)| (*handle, before.as_deref(), after.as_deref()))
         .collect();
-    changes.extend(super::pipes::statements(doc, &images));
-    changes.extend(super::connectors::statements(doc, &images));
-    changes
+    step_changes(doc, &images, left)
 }
 
 /// [`collect_step_changes`] for a step that has just been taken back:
-/// its images read the other way, and `doc` the drawing without the step.
-pub fn collect_undone_step_changes(doc: &Document, entities: &EntityImages) -> Vec<Change> {
-    let mut changes = collect_undone_changes(entities);
-    fill_overflowed_props(doc, &mut changes);
+/// its images read the other way, `doc` the drawing without the step, and
+/// `left` the side with it.
+pub fn collect_undone_step_changes(
+    doc: &Document,
+    entities: &EntityImages,
+    left: &Left<'_>,
+) -> Vec<Change> {
     let images: Vec<super::pipes::Image<'_>> = entities
         .iter()
         .map(|(handle, before, after)| (*handle, after.as_deref(), before.as_deref()))
         .collect();
-    changes.extend(super::pipes::statements(doc, &images));
-    changes.extend(super::connectors::statements(doc, &images));
+    step_changes(doc, &images, left)
+}
+
+/// What a step says, its images read from the side it left to the side
+/// `doc` is on.
+fn step_changes(
+    doc: &Document,
+    images: &[super::pipes::Image<'_>],
+    left: &Left<'_>,
+) -> Vec<Change> {
+    let kept = Kept { now: doc, left };
+    let mut changes =
+        stated_once(images.iter().flat_map(|&(handle, before, after)| {
+            changes_between(handle, before, after, Some(&kept))
+        }));
+    fill_overflowed_props(doc, &mut changes);
+    changes.extend(super::pipes::statements(doc, images));
+    changes.extend(super::connectors::statements(doc, images));
     changes
 }
 
@@ -1215,8 +1287,15 @@ mod tests {
         author.tag = "P-1009".to_owned();
         author.store(&mut doc, handle);
         let after = doc.get_entity_arc(handle).expect("after");
+        // Taken back, the drawing is as it was before the step.
+        author.tag = "P-1001".to_owned();
+        author.store(&mut doc, handle);
 
-        let undone = collect_undone_changes(&[(handle, Some(before), Some(after))]);
+        let undone = collect_undone_step_changes(
+            &doc,
+            &[(handle, Some(before), Some(after))],
+            &Left::Read(&[]),
+        );
         assert_eq!(undone.len(), 1, "{undone:?}");
         assert_eq!(undone[0].object_ref, "P-1009");
         assert_eq!(undone[0].value, "P-1001");

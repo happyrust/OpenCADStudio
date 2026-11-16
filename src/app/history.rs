@@ -1842,11 +1842,19 @@ impl OpenCADStudio {
                         true,
                         &mut touched_visibility_blocks,
                     ));
+                    // Past a peer's change, the records the step put back
+                    // are not to take other entities' properties with them.
+                    if let Some(guard) = &guard {
+                        self.keep_props_ahead_of_peers(i, guard, &d);
+                    }
                     // Said once the step is back out: what a run it touched
-                    // is like now is read off the drawing without it.
+                    // is like now is read off the drawing without it. The
+                    // step has the drawing's records with it now.
+                    let document = &self.tabs[i].scene.document;
                     undone.extend(super::collab::broadcast::collect_undone_step_changes(
-                        &self.tabs[i].scene.document,
+                        document,
                         &d.entities,
+                        &super::collab::broadcast::Left::Records(d.records_across(document)),
                     ));
                     step_view = d
                         .view
@@ -1976,9 +1984,14 @@ impl OpenCADStudio {
                         false,
                         &mut touched_visibility_blocks,
                     ));
+                    if let Some(guard) = &guard {
+                        self.keep_props_ahead_of_peers(i, guard, &d);
+                    }
+                    let document = &self.tabs[i].scene.document;
                     redone.extend(super::collab::broadcast::collect_step_changes(
-                        &self.tabs[i].scene.document,
+                        document,
                         &d.entities,
+                        &super::collab::broadcast::Left::Records(d.records_across(document)),
                     ));
                     step_view = d
                         .view

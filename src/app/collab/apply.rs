@@ -21,6 +21,11 @@ pub(in crate::app) struct HistoryGuard {
         document::Handle,
         Option<std::sync::Arc<document::EntityType>>,
     )>,
+    /// The properties of those of `before` whose record only points at them
+    /// (`PidAuthor::store`), read while the drawing still kept them as they
+    /// were: a step puts the drawing's records back whole, and the peers'
+    /// later changes are then written over that.
+    kept: Vec<(document::Handle, String)>,
     /// Where the drawing gave handles out from before the steps are
     /// applied, with its blocks and the applications its entities carry
     /// data for. A step that changed the drawing's structure puts all three
@@ -43,10 +48,21 @@ impl OpenCADStudio {
         delta: &crate::app::tab_document::DeltaSnapshot,
     ) {
         // The step has been made: the drawing is as it left it, which is
-        // what says what a run it touched is like now.
-        let changes =
-            broadcast::collect_step_changes(&self.tabs[i].scene.document, &delta.entities);
-        self.broadcast_changes(i, changes, vec![delta.collab_step], true, delta.label.as_str());
+        // what says what a run it touched is like now. What the drawing's
+        // records held before it, the step keeps.
+        let document = &self.tabs[i].scene.document;
+        let changes = broadcast::collect_step_changes(
+            document,
+            &delta.entities,
+            &broadcast::Left::Records(delta.records_across(document)),
+        );
+        self.broadcast_changes(
+            i,
+            changes,
+            vec![delta.collab_step],
+            true,
+            delta.label.as_str(),
+        );
     }
 
     /// The tab holding the drawing the session speaks for, if it is open.
@@ -763,12 +779,22 @@ impl OpenCADStudio {
         handles.sort();
         handles.dedup();
         let document = &tab.scene.document;
+        let before: Vec<_> = handles
+            .into_iter()
+            .map(|handle| (handle, document.get_entity_arc(handle)))
+            .collect();
+        let kept = before
+            .iter()
+            .filter_map(|(handle, image)| {
+                let image = image.as_deref()?;
+                let props = crate::pid::persist::PidAuthor::overflowed_props(document, image)?;
+                Some((*handle, props))
+            })
+            .collect();
         Some(HistoryGuard {
             mark,
-            before: handles
-                .into_iter()
-                .map(|handle| (handle, document.get_entity_arc(handle)))
-                .collect(),
+            before,
+            kept,
             next_handle: document.next_handle(),
             blocks: document.block_records.clone(),
             app_ids: document.app_ids.clone(),
@@ -831,6 +857,63 @@ impl OpenCADStudio {
             }
         }
         restored
+    }
+
+    /// Right after one of the steps a [`HistoryGuard`] was taken for has
+    /// been applied on tab `i`: the entities that are not the step's keep
+    /// the properties they had.
+    ///
+    /// Properties too long for an entity's record are kept in a record of
+    /// the drawing's structure (`PidAuthor::store`), and a step that changed
+    /// the structure puts all of that back as it was when the step was made
+    /// — every entity's properties, not those of its own entities alone.
+    /// What a peer's change has since written there, of an entity the step
+    /// never touched, goes with the rest: a peer's change is no step, and in
+    /// no step's image. The entity still points at its properties, and they
+    /// are not there, or are an older set — and the peer's change written
+    /// again over that (`replay_remote_after`) would leave the entity the
+    /// one field, and tell the room that the others are gone.
+    ///
+    /// The step now holds the structure it replaced, so the properties are
+    /// read there and written back. The step's own entities have what the
+    /// step gives them.
+    pub(in crate::app) fn keep_props_ahead_of_peers(
+        &mut self,
+        i: usize,
+        guard: &HistoryGuard,
+        step: &crate::app::tab_document::DeltaSnapshot,
+    ) {
+        use crate::app::tab_document::StructureSnapshot;
+        use crate::pid::persist::PidAuthor;
+        let Some(replaced) = step.structure.as_ref().and_then(StructureSnapshot::whole) else {
+            return;
+        };
+        let own: std::collections::HashSet<document::Handle> =
+            step.entities.iter().map(|(handle, _, _)| *handle).collect();
+        let document = &self.tabs[i].scene.document;
+        let taken: Vec<(document::Handle, String)> = document
+            .entities()
+            .filter_map(|entity| {
+                let handle = entity.common().handle;
+                if own.contains(&handle) {
+                    return None;
+                }
+                let had = PidAuthor::overflowed_props(replaced, entity)?;
+                let has = PidAuthor::overflowed_props(document, entity);
+                (has.as_ref() != Some(&had)).then_some((handle, had))
+            })
+            .collect();
+        if taken.is_empty() {
+            return;
+        }
+        let document = &mut self.tabs[i].scene.document;
+        // A record made anew takes a handle: not one the drawing has given
+        // out since the structure now in place was its own
+        // (`keep_structure_ahead_of_peers`).
+        document.header.handle_seed = document.header.handle_seed.max(guard.next_handle);
+        for (handle, props) in &taken {
+            PidAuthor::write_overflowed_props(document, *handle, props);
+        }
     }
 
     /// After local steps were taken back or put on again on tab `i`: write
@@ -957,7 +1040,7 @@ impl OpenCADStudio {
             .into_iter()
             .map(|(handle, before)| (handle, before, document.get_entity_arc(handle)))
             .collect();
-        broadcast::collect_step_changes(document, &images)
+        broadcast::collect_step_changes(document, &images, &broadcast::Left::Read(&guard.kept))
     }
 
     /// Drop the part of `remote_log` no step can ask for any more: changes

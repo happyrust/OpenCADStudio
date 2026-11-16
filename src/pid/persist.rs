@@ -152,6 +152,42 @@ impl PidAuthor {
             .get_record(PID_AUTHOR_APP)
             .is_none_or(|record| props_ref_of(&record.values).is_none())
     }
+
+    /// 这条实体快照的 `props` 溢出到 XRecord 时，`doc` 里那条 XRecord 的内容。
+    ///
+    /// 给手里只有快照、另有一份文档的调用方用（协同广播读一步改前改后的
+    /// 属性）。`doc` 不必带着这个实体：XRecord 挂在模型空间的扩展字典上，
+    /// 不带实体的结构副本（`Document::snapshot_structure`，撤销步骤存的就是
+    /// 它）里也读得到，读到的是副本那一刻的内容。
+    ///
+    /// 记录没有溢出、或 `doc` 里没有那条 XRecord 时返回 `None`：两种情况都
+    /// 是「这里读不到」，不是「没有属性」。
+    pub fn overflowed_props(doc: &Document, entity: &document::EntityType) -> Option<String> {
+        let record = entity.common().extended_data.get_record(PID_AUTHOR_APP)?;
+        load_props_record(doc, &props_ref_of(&record.values)?)
+    }
+
+    /// 把 `props` 写进 `handle` 的记录所指的溢出 XRecord，整条重写；实体
+    /// 自己的记录不动。[`Self::overflowed_props`] 的写入一侧。
+    ///
+    /// 给「实体的记录还指着溢出 XRecord，文档里那条 XRecord 却不在、或内容
+    /// 不是这个实体现在该有的」这种情况用：协同里撤销一步会把文档的记录
+    /// 整份换回这一步之前的样子，别人在那之后写进来的溢出属性跟着被换掉
+    /// （`OpenCADStudio::keep_props_ahead_of_peers`）。
+    ///
+    /// 实体不在、没有 `PID_AUTHOR` 记录、或记录没有溢出时什么也不写，返回
+    /// `false`：属性写在记录里的实体没有 XRecord 可写。
+    pub fn write_overflowed_props(doc: &mut Document, handle: Handle, props: &str) -> bool {
+        let Some(key) = doc
+            .get_entity(handle)
+            .and_then(|entity| entity.common().extended_data.get_record(PID_AUTHOR_APP))
+            .and_then(|record| props_ref_of(&record.values))
+        else {
+            return false;
+        };
+        store_props_record(doc, &key, handle, props);
+        true
+    }
 }
 
 /// 九键 → XDATA 值序列。纯函数：不碰文档，不判溢出。
@@ -537,6 +573,114 @@ mod tests {
             props_json.len()
         );
         assert!(chunks > 1, "props_json must be split: {chunks} chunk(s)");
+    }
+
+    #[test]
+    fn pid_author_overflowed_props_read_from_a_structure_snapshot() {
+        let mut doc = Document::new();
+        let handle = doc.add_entity(line(0.0)).unwrap();
+        let mut author = full_author();
+
+        // 没溢出：属性就在快照里，没有 XRecord 可读。
+        author.store(&mut doc, handle);
+        let inline = doc.get_entity(handle).unwrap().clone();
+        assert!(PidAuthor::props_are_inline(&inline));
+        assert_eq!(PidAuthor::overflowed_props(&doc, &inline), None);
+
+        // 溢出：带实体的图和不带实体的结构副本里读到的都是完整属性。
+        let mut props: BTreeMap<String, String> = (0..60)
+            .map(|index| (format!("K{index:019}"), format!("V{index:019}")))
+            .collect();
+        author.props = serde_json::to_string(&props).unwrap();
+        author.store(&mut doc, handle);
+        let image = doc.get_entity(handle).unwrap().clone();
+        assert!(
+            !PidAuthor::props_are_inline(&image),
+            "the fixture must overflow"
+        );
+        let structure = doc.snapshot_structure();
+        assert!(
+            structure.get_entity(handle).is_none(),
+            "a structure snapshot carries no entity"
+        );
+        assert_eq!(
+            PidAuthor::load(&structure, handle),
+            None,
+            "which is why `load` cannot read one"
+        );
+        for (name, from) in [("drawing", &doc), ("structure snapshot", &structure)] {
+            assert_eq!(
+                PidAuthor::overflowed_props(from, &image).as_deref(),
+                Some(author.props.as_str()),
+                "read from the {name}"
+            );
+        }
+
+        // 副本停在取它的那一刻：图后来改了，副本里还是改前的内容。
+        props.insert(format!("K{:019}", 0), "changed".into());
+        let mut later = author.clone();
+        later.props = serde_json::to_string(&props).unwrap();
+        later.store(&mut doc, handle);
+        assert_eq!(
+            PidAuthor::overflowed_props(&doc, &image).as_deref(),
+            Some(later.props.as_str())
+        );
+        assert_eq!(
+            PidAuthor::overflowed_props(&structure, &image).as_deref(),
+            Some(author.props.as_str())
+        );
+
+        // 图里没有那条 XRecord：读不到，而不是读成空属性。
+        assert_eq!(PidAuthor::overflowed_props(&Document::new(), &image), None);
+    }
+
+    #[test]
+    fn pid_author_overflowed_props_written_back_where_the_record_points() {
+        let mut doc = Document::new();
+        let handle = doc.add_entity(line(0.0)).unwrap();
+        let mut author = full_author();
+
+        // 属性写在记录里：没有 XRecord 可写，什么也不动。
+        author.store(&mut doc, handle);
+        assert!(!PidAuthor::write_overflowed_props(&mut doc, handle, "{}"));
+        assert_eq!(PidAuthor::load(&doc, handle), Some(author.clone()));
+
+        // 溢出之后把图的结构换回溢出之前的：实体还指着 XRecord，XRecord 不在了。
+        let before = doc.snapshot_structure();
+        let mut props: BTreeMap<String, String> = (0..60)
+            .map(|index| (format!("K{index:019}"), format!("V{index:019}")))
+            .collect();
+        author.props = serde_json::to_string(&props).unwrap();
+        author.store(&mut doc, handle);
+        let record = pairs(&record_of(&doc, handle).values);
+        let _with_them = doc.swap_structure(before);
+        assert_eq!(
+            PidAuthor::load(&doc, handle).map(|author| author.props),
+            Some(String::new()),
+            "the fixture: the properties went with the structure"
+        );
+
+        // 写回：读到的又是完整属性，实体自己的记录没有变。
+        assert!(PidAuthor::write_overflowed_props(
+            &mut doc,
+            handle,
+            &author.props
+        ));
+        assert_eq!(PidAuthor::load(&doc, handle), Some(author.clone()));
+        assert_eq!(pairs(&record_of(&doc, handle).values), record);
+
+        // 已有的那条是整条重写，不是追加。
+        props.remove(&format!("K{:019}", 0));
+        let fewer = serde_json::to_string(&props).unwrap();
+        assert!(PidAuthor::write_overflowed_props(&mut doc, handle, &fewer));
+        assert_eq!(
+            PidAuthor::load(&doc, handle).map(|author| author.props),
+            Some(fewer)
+        );
+
+        // 图里没有的实体。
+        let absent = Handle::new(handle.value() + 100);
+        assert!(!PidAuthor::write_overflowed_props(&mut doc, absent, "{}"));
     }
 
     #[test]
