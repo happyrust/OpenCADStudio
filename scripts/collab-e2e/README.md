@@ -2,7 +2,7 @@
 
 这份文件回答一个问题：228 条验收契约（`VAL-…`）里，每一条现在由哪条测试、或哪个端到端脚本的哪些检查项盯着；哪些没有，要补什么。
 
-- 对照的基准：提交 `278439b5d`（2026-11-17）。此后为补缺口加的测试，表里照常引用；补到哪一类了，见第 5.1 节。
+- 对照的基准：提交 `278439b5d`（2026-11-17）。此后为补缺口加的测试和场景，表里照常引用；补到哪一类了，见第 5.1 节。
 - 契约原文：mission 目录里的 `validation-contract.md`，路径见 `docs/plans/2026-11-10-mission-p1-collab-status.md` 开头。各区条数与那份文档的第 4 节一致。
 - 脚本就在本目录里（2026-11-17 收进仓库，`docs/plans/2026-11-16-pid-dev-spec/todo.md` 的 CC-5）。证据（日志、截图、数据库、图纸副本）不进仓库，写到运行时指定的目录，见第 3.2 节。
 
@@ -19,8 +19,8 @@
 **读这张表要记住的三件事**
 
 1. **表里说的是「有没有能重跑的检查」，不是「这一条验过没有」。** mission 的验证记录里，前六个区的 178 条和 `VAL-CONF-018` 当时都由验证器用一次性的命令和截图取过证；后三个区的其余 49 条功能做了、脚本也过了，但没有经过 mission 的验证器。两种状态列在第 2 节的合计表里。
-2. **「有」里只列了单元测试的，断言是在进程里做的。** 契约写的取证工具是黑盒的（curl、WebSocket 客户端、GUI 的 REST 接口、截图）。单元测试把判据逐条断言到了，但「经 REST 或 WebSocket 走一遍也是这个结果」这一层，只有 mission 当时的一次性取证。前六个区基本都是这种情况，合计表里单列了一栏。凡是判据落在截图、耗时、真实进程上、单元测试够不着的，标成了「部分」或「缺」。
-3. **「有」不等于「现在是绿的」。** 单元测试的名字取自全量测试日志（基准提交上的一份，加上补缺口时重跑的），当时都通过。端到端脚本的项数取自 2026-11-12 那次全量执行，当时都通过；脚本收进仓库后（2026-11-17）又跑过一遍，有一项因为后来的改动不再通过（第 3.3 节）。后来的那些改动，脚本里还没有对应的断言（第 5.2 节）。
+2. **「有」里只列了单元测试的，断言是在进程里做的。** 契约写的取证工具是黑盒的（curl、WebSocket 客户端、GUI 的 REST 接口、截图）。单元测试把判据逐条断言到了，但「经 REST 或 WebSocket 走一遍也是这个结果」这一层，只有 mission 当时的一次性取证。前六个区基本都是这种情况，合计表里单列了一栏。凡是判据落在截图、耗时上、单元测试够不着的，标成了「部分」或「缺」；落在真实进程上的六条原来也是，2026-11-17 补了四个场景（第 5.1 节（三））。
+3. **「有」不等于「现在是绿的」。** 单元测试的名字取自全量测试日志（基准提交上的一份，加上补缺口时重跑的），当时都通过。端到端脚本的项数取自 2026-11-12 那次全量执行，当时都通过；脚本收进仓库后（2026-11-17）又跑过一遍，有一项因为后来的改动不再通过（第 3.3 节）。服务器进程的四个场景是 2026-11-17 新写的，项数取自当天它们经总入口跑的那一次。后来的那些改动，脚本里还没有对应的断言（第 5.2 节）。
 
 **测试名怎么读**
 
@@ -35,7 +35,7 @@
 **脚本的检查项怎么读**
 
 - 脚本里的检查项不编号。每一项带一个标签，标签就是契约编号；另有 `setup`、`seed` 这样不对应契约的标签。
-- 表里写「脚本名 N 项」：N 是最近一次全量执行的结果文件里，带该契约编号的检查项数。
+- 表里写「脚本名 N 项」：N 是结果文件里带该契约编号的检查项数（取的是哪一次执行，见上面的第 3 件事）。
 - 结果文件是 `logs/<场景名>.result.txt`，每行依次是 `PASS` 或 `FAIL`、标签、这一项的说明。
 
 **脚本里的截图是怎么查的**
@@ -52,7 +52,7 @@
 
 | 区 | 条数 | 有 | 其中只靠单元测试 | 部分 | 缺 | mission 记录：已取证 | mission 记录：未取证 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 协同服务器（`VAL-SRV`） | 30 | 24 | 24 | 4 | 2 | 30 | 0 |
+| 协同服务器（`VAL-SRV`） | 30 | 30 | 24 | 0 | 0 | 30 | 0 |
 | 验证基础设施（`VAL-INFRA`） | 14 | 6 | 6 | 4 | 4 | 14 | 0 |
 | 权限与审计（`VAL-PERM`） | 32 | 32 | 32 | 0 | 0 | 32 | 0 |
 | 语义层（`VAL-SEM`） | 39 | 38 | 38 | 1 | 0 | 39 | 0 |
@@ -61,10 +61,10 @@
 | 桌面端协同客户端（`VAL-CLI`） | 20 | 19 | 0 | 1 | 0 | 0 | 20 |
 | 冲突与裁决（`VAL-CONF`） | 18 | 18 | 1 | 0 | 0 | 1 | 17 |
 | 跨区流程（`VAL-CROSS`） | 12 | 12 | 0 | 0 | 0 | 0 | 12 |
-| **合计** | **228** | **196** | **148** | **24** | **8** | **179** | **49** |
+| **合计** | **228** | **202** | **148** | **20** | **6** | **179** | **49** |
 
-- 「有」196 条，「部分」24 条，「缺」8 条。后两种共 32 条，按要做的事分类，逐条列在第 5.1 节。对照表刚做出来时是 39 条、分五类，其中补单元测试的一类（7 条）已经补完。
-- 「有」的 196 条里，48 条有端到端脚本，148 条只靠单元测试（第 1 节的第 2 件事）。
+- 「有」202 条，「部分」20 条，「缺」6 条。后两种共 26 条，按要做的事分类，逐条列在第 5.1 节。对照表刚做出来时是 39 条、分五类，其中补单元测试的一类（7 条）和要真实服务器进程的一类（6 条）已经补完。
+- 「有」的 202 条里，54 条有端到端脚本，148 条只靠单元测试（第 1 节的第 2 件事）。
 - `VAL-DRAW-029` 是契约里预留的空号，所以绘图区是 31 条。
 - 「mission 记录」两栏照抄 mission 的状态文件：已取证是它的 `passed`，未取证是它的 `pending`。
 
@@ -94,7 +94,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 | 参数 | 环境变量 | 是什么 | 不给时 |
 |---|---|---|---|
-| `-EvidenceDir` | `OCS_E2E_EVIDENCE_DIR` | 证据目录。日志、截图、数据库、图纸副本写在它下面的 `m6\`（桌面端客户端那一组和冒烟场景）和 `m7\`（其余两组） | 报错退出；给的目录在仓库里面也报错退出 |
+| `-EvidenceDir` | `OCS_E2E_EVIDENCE_DIR` | 证据目录。日志、截图、数据库、图纸副本写在它下面的 `m6\`（桌面端客户端那一组和冒烟场景）和 `m7\`（其余三组） | 报错退出；给的目录在仓库里面也报错退出 |
 | `-BinDir` | `OCS_E2E_BIN_DIR` | 两个可执行文件所在的目录 | 仓库的 `target\debug` |
 | `-PortShift` | `OCS_E2E_PORT_SHIFT` | 加在每个端口上的平移量 | 0，即契约的端口段：GUI 3210–3239、服务器 3240 |
 
@@ -102,20 +102,22 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 - 契约的端口段被占用时（比如同一台机器上另一个工作区也在跑），给 `-PortShift 100`，整段挪到 3310–3359。检查项的说明文字里写的仍是契约的端口号，实际用的端口看控制台输出里的 `port=`。
 - 例：`powershell -File scripts\collab-e2e\run19.ps1 -EvidenceDir <仓库外的目录> -Label <这一轮的名字>`。
 
-**22 个场景，分三组**
+**26 个场景，分四组**
 
 | 组 | 场景 | 入口 |
 |---|---|---|
 | 冲突与跨区流程（11 个） | `c01_field_merge`、`c02_object_topology`、`c03_resolution`、`x01_journey`、`x02_claim_exclusive`、`x04_readonly_role`、`x05_m3_persistence`、`x06_first_visit`、`x07_conflict_closure`、`x10_concurrent_insert`、`x12_after_session` | `run_cross.ps1` |
 | 桌面端客户端（8 个） | `t20_session`、`t21_claims`、`t23_stale`、`t24_reconnect`、`t25_offline`、`t10_broadcast`、`t11_same_user`、`t22_ttl` | `run_all.ps1` |
 | 后补的跨区流程（3 个） | `y03_pipe_topology`、`y08_offline_reconcile`、`y09_connector_cross_drawing` | `run_cross.ps1 -Only <场景名> -New` |
+| 服务器进程（4 个） | `s01_restart`、`s02_port_in_use`、`s03_disconnect`、`s04_concurrent_ops` | `run_cross.ps1 -Only <场景名> -New` |
 
-- **总入口 `run19.ps1`**：三组依次跑。除上面三个参数外还有 `-Label`（这一轮的名字）、`-Only19`（只跑前两组）、`-OnlyNew`（只跑第三组）。
-- **种子图和基线图**：证据目录里没有时，总入口先生成。两张种子图用 `x00_seed.py`、`t01_seed.py`；`x05_m3_persistence`、`x12_after_session` 用的基线图 `PID-1101-m3.dwg` 由一条默认不跑的测试写出（`write_the_m3_baseline_drawing`），总入口用 `cargo test` 跑它，第一次要等测试程序编出来（几分钟）。分组入口不生成这三张图：换了新的证据目录时，先跑一次总入口。
-- **单独跑几个场景**：`run_all.ps1 -Only <场景名>`、`run_cross.ps1 -Only <场景名>`，多个场景名用逗号隔开；后补的三个场景要再加 `-New`。
+- **总入口 `run19.ps1`**：四组依次跑。除上面三个参数外还有 `-Label`（这一轮的名字）、`-Only19`（只跑前两组）、`-OnlyNew`（只跑第三组）、`-OnlyServer`（只跑第四组）；后三个一起给时，跑的是各自那几组合起来。
+- **服务器进程那一组**不起 GUI、不用图纸，只起 `ocs_collab_server.exe` 和几条 WebSocket 连接；入口照样要求两个可执行文件都在。
+- **种子图和基线图**：证据目录里没有时，总入口先生成。两张种子图用 `x00_seed.py`、`t01_seed.py`；`x05_m3_persistence`、`x12_after_session` 用的基线图 `PID-1101-m3.dwg` 由一条默认不跑的测试写出（`write_the_m3_baseline_drawing`），总入口用 `cargo test` 跑它，第一次要等测试程序编出来（几分钟）。分组入口不生成这三张图：换了新的证据目录时，先跑一次总入口。只跑第四组（`-OnlyServer`）时总入口也不生成，那一组用不着。
+- **单独跑几个场景**：`run_all.ps1 -Only <场景名>`、`run_cross.ps1 -Only <场景名>`，多个场景名用逗号隔开；后补的三个场景和服务器进程的四个场景要再加 `-New`。
 - **结果落在哪里**：都在证据目录里。每个场景一份控制台输出（`logs/<场景名>.console.txt`）和一份 `logs/<场景名>.result.txt`，场景结束时打印一行 `=== <场景名>: N PASS / M FAIL ===`；总入口收尾在证据目录的根上写 `summary-<Label>-<时间>.txt`，每个场景一行 `pass=`、`fail=`。
 - **入口还记什么**：每个场景结束后记下退出码、耗时、残留进程数（场景结束后还在跑、可执行文件在 `-BinDir` 或证据目录下的进程；`run_cross.ps1` 另记留下的自动化通道描述文件数），以及场景自己报的桌面记录——场景前后各看一次指针位置与前台窗口，写「没变」或「变了」。这几样只写进汇总，入口不拿它们判失败，要人看一眼。桌面记录分不出是场景动的还是当时用机器的人动的。总入口另在开头和结尾各记一次机器上不属于这一轮的同名进程数，出了失败好对照。
-- **要多久**：全量一遍约 13 分钟。最慢的是 `t22_ttl`（真等 300 秒的占用到期），其次是 `t23_stale`、`t25_offline`、`t20_session`（各一分多钟）。
+- **要多久**：前三组一遍约 13 分钟，服务器进程那一组不到半分钟。最慢的是 `t22_ttl`（真等 300 秒的占用到期），其次是 `t23_stale`、`t25_offline`、`t20_session`（各一分多钟）。
 - **冒烟场景 `t00_smoke.py`** 不在总入口里，要单独跑：先设环境变量 `OCS_E2E_EVIDENCE_DIR`，再执行 `python scripts\collab-e2e\t00_smoke.py`。这样直接用 `python` 跑会在本目录留下 `__pycache__`（已被 `.gitignore` 忽略）；经入口跑不会。
 - **贴日志之前先看一眼**：入口记「桌面有没有被动过」时，会把前台窗口的标题写进控制台输出和汇总文件——也就是当时正在用的窗口。
 
@@ -131,10 +133,17 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 - 逐个文件查过内容：没有口令，没有 `127.0.0.1` 之外的地址。脚手架给每个 GUI 实例的本机 REST 通道用的访问令牌是每次运行随机生成的，经环境变量传给实例，不写进任何文件。
 - 没有收的：日志、截图、数据库、可执行文件，以及当初制作副本用的一次性工具。
 - 没有做的：场景的断言一处没动；对照表里记的缺口（第 5 节）都还在。
+- 收进来之后新写的：服务器进程的四个场景（`s01`–`s04`），是为补第 5.1 节（三）的缺口写的，没有原件。为它们给脚手架 `m7h.py` 加了一个「不发 close 帧、直接销毁套接字」的做法，给总入口加了第四组。
 
-### 3.3 最近两次全量执行
+### 3.3 最近的执行
 
-**2026-11-17，用本目录里的脚本**（提交 `6b1be96ac` 的 debug 构建，端口不平移，经总入口 `run19.ps1`）
+**2026-11-17，只跑服务器进程那一组**（服务器是提交 `412f10a2c` 的 debug 构建，端口不平移，经总入口 `run19.ps1 -OnlyServer`）
+
+- 4 个场景 56 项全部通过：`s01` 19、`s02` 12、`s03` 9、`s04` 16。退出码都是 0，没有残留进程，桌面记录四个都是「没变」。整组 13 秒。
+- 此前各自重复跑过（`s04` 12 遍，其余各 4 遍），每一遍都全部通过。
+- 前三组这一次没有跑。
+
+**2026-11-17，前三组，用本目录里的脚本**（提交 `6b1be96ac` 的 debug 构建，端口不平移，经总入口 `run19.ps1`）
 
 - 22 个场景里 21 个全部通过，`t20_session` 有 1 项失败：共 398 项通过、1 项失败。
 - 每个场景的检查项、各标签下的项数，都与 2026-11-12 那次相同。
@@ -145,7 +154,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 **2026-11-12，用仓库外的副本**（可执行文件构建自提交 `9bf874a34`）
 
-22 个场景 399 项全部通过，退出码都是 0，没有残留进程，没有留下描述文件。桌面记录 6 个场景是「没变」、16 个是「变了」（分不出是谁动的，见 3.2）。对照表里的项数取自这一次。
+22 个场景 399 项全部通过，退出码都是 0，没有残留进程，没有留下描述文件。桌面记录 6 个场景是「没变」、16 个是「变了」（分不出是谁动的，见 3.2）。对照表里前 22 个场景的项数取自这一次。
 
 | 组 | 各场景的项数 | 小计 |
 |---|---|---:|
@@ -159,7 +168,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 ### 4.1 协同服务器 `VAL-SRV`（30 条）
 
-契约的取证工具是 curl 和 WebSocket 客户端，对着真实的服务器进程。现在由服务器自己的测试覆盖（进程内起路由和存储）；要真的重启进程、抢端口、断套接字的几条够不着。其中三条在桌面端的场景里另有真实进程上的检查，写在「说明」里。
+契约的取证工具是 curl 和 WebSocket 客户端，对着真实的服务器进程。多数条目由服务器自己的测试覆盖（进程内起路由和存储）；要真的重启进程、抢端口、断套接字、并发提交的六条（`024`–`028`、`030`）另有四个对着真实进程的场景 `s01`–`s04`，只起服务器和 WebSocket 连接，不起 GUI。另有三条（`008`、`013`、`016`）在桌面端的场景里有真实进程上的检查，写在「说明」里。
 
 | 编号 | 契约标题 | 单元测试 | 端到端脚本 | 覆盖 | 说明 |
 |---|---|---|---|---|---|
@@ -186,13 +195,13 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-SRV-021` | 审计日志不可修改与不可删除 | `ocs_collab_server::store::tests::audit_log_rejects_update_and_delete_at_the_database_level`<br>`ocs_collab_server::http::tests::audit_mutation_returns_405` | — | 有 |  |
 | `VAL-SRV-022` | 审计按位号检索返回最近一次修改 | `ocs_collab_server::store::tests::audit_by_tag_returns_the_newest_first`<br>`ocs_collab_server::http::tests::audit_tag_filters_the_same_as_object_ref` | — | 有 |  |
 | `VAL-SRV-023` | SQLite 落盘且启用 WAL 模式 | `ocs_collab_server::store::tests::opening_a_file_database_enables_wal`<br>`ocs_collab_server::store::tests::a_write_produces_the_wal_and_shm_sidecars`<br>`ocs_collab_server[main.rs]::tests::a_writable_path_yields_a_wal_backed_store` | — | 有 |  |
-| `VAL-SRV-024` | 服务器重启后审计与图纸登记恢复 | `ocs_collab_server::store::tests::clearing_ephemeral_drops_sessions_and_claims_but_keeps_drawings`<br>`ocs_collab_server::ops::tests::the_drawing_is_rebuilt_from_the_op_log` | — | 部分 | 单测只到「清会话与占用时图纸登记留着」「图纸内容能从操作日志重建」；「停进程、用同一个库重启、再查审计，条数与 `seq` 不变」没有能重跑的检查 |
-| `VAL-SRV-025` | 服务器重启后旧会话不可继续使用 | `ocs_collab_server::store::tests::clearing_ephemeral_drops_sessions_and_claims_but_keeps_drawings`<br>`ocs_collab::session::tests::heartbeat_on_an_unknown_session_reports_unknown`<br>`ocs_collab_server::ws::tests::a_message_before_hello_is_refused`<br>`ocs_collab_server::ws::tests::a_foreign_session_id_is_rejected` | — | 部分 | 单测分别保证「启动时清掉旧会话」「不认识的会话号回带 `code` 的错误」；「真的重启进程后拿旧会话号发心跳」没有能重跑的检查 |
-| `VAL-SRV-026` | 端口由参数决定且默认不与其他服务冲突 | `ocs_collab_server[main.rs]::tests::port_and_db_are_taken_from_the_command_line`<br>`ocs_collab_server[main.rs]::tests::defaults_match_the_architecture_numbers`<br>`ocs_collab_server[main.rs]::tests::the_address_reported_at_startup_is_the_one_bound` | — | 部分 | 端口取自参数有单测；「同一端口第二次启动以非零码退出并报端口占用」没有能重跑的检查 |
-| `VAL-SRV-027` | 断连不立即销毁会话 | — | — | 缺 | 行为在 `handle_socket` 的收尾里（断线只广播离开，不清占用），要真的套接字才触得到，没有单测也没有脚本 |
-| `VAL-SRV-028` | 端口被占用导致的启动失败不得破坏既有会话与占用数据 | — | — | 缺 | 「先监听端口、再碰数据库」只有 `main.rs` 里的顺序和注释保证，没有单测也没有脚本 |
+| `VAL-SRV-024` | 服务器重启后审计与图纸登记恢复 | `ocs_collab_server::store::tests::clearing_ephemeral_drops_sessions_and_claims_but_keeps_drawings`<br>`ocs_collab_server::ops::tests::the_drawing_is_rebuilt_from_the_op_log` | `s01_restart.py` 7 项 | 有 | 场景强行结束服务器进程，用同一条命令行、同一个库再起，逐项比对重启前后的 `/audit` 响应（含 `seq`、`change_text`）、图纸修订、操作日志和服务器重建出的图面 |
+| `VAL-SRV-025` | 服务器重启后旧会话不可继续使用 | `ocs_collab_server::store::tests::clearing_ephemeral_drops_sessions_and_claims_but_keeps_drawings`<br>`ocs_collab::session::tests::heartbeat_on_an_unknown_session_reports_unknown`<br>`ocs_collab_server::ws::tests::a_message_before_hello_is_refused`<br>`ocs_collab_server::ws::tests::a_foreign_session_id_is_rejected` | `s01_restart.py` 6 项 | 有 | 场景在重启后拿旧会话号发心跳，两种情形回的都是带 `code` 的 `error`：连接还没握手时是 `HELLO_REQUIRED`，握手之后是 `SESSION_UNKNOWN`。另查了库里旧的会话行和占用行已清、旧占用的位号可以重新占用 |
+| `VAL-SRV-026` | 端口由参数决定且默认不与其他服务冲突 | `ocs_collab_server[main.rs]::tests::port_and_db_are_taken_from_the_command_line`<br>`ocs_collab_server[main.rs]::tests::defaults_match_the_architecture_numbers`<br>`ocs_collab_server[main.rs]::tests::the_address_reported_at_startup_is_the_one_bound` | `s02_port_in_use.py` 5 项 | 有 | 场景在已被占用的端口上再起一个实例：进程以非零码退出，stderr 报「无法监听」和地址，没有改到别的端口上监听 |
+| `VAL-SRV-027` | 断连不立即销毁会话 | — | `s03_disconnect.py` 7 项 | 有 | 场景直接销毁套接字（不发 close 帧），等过三轮清扫后同一用户重新握手：`welcome.claims` 里原占用还在、持有者是原来的会话，新会话去占被拒；另有发 close 帧退出的对照。原会话要到心跳超时才失效，场景不等那一段 |
+| `VAL-SRV-028` | 端口被占用导致的启动失败不得破坏既有会话与占用数据 | — | `s02_port_in_use.py` 6 项 | 有 | 场景里第二个实例用同一端口、同一个库启动失败后，`sessions`、`claims` 两张表逐行不变，第二个实例没有打开过数据库，随后的 `POST /session` 不把原会话当成失效的 |
 | `VAL-SRV-029` | 会话接管通知只送达被接管的会话 | `ocs_collab_server::ws::tests::takeover_error_does_not_reach_a_third_peer` | — | 有 |  |
-| `VAL-SRV-030` | 并发提交的 revision 分配唯一且不丢帧 | `ocs_collab_server::store::tests::commit_op_serializes_concurrent_callers`<br>`ocs_collab_server::ops::tests::an_applied_op_is_announced_before_the_drawing_is_unlocked` | — | 部分 | 单测是 8 个线程各提交 1 次、直接调存储层；契约要 8 个以上会话各 30 次以上、经 WebSocket，并核对审计行数 |
+| `VAL-SRV-030` | 并发提交的 revision 分配唯一且不丢帧 | `ocs_collab_server::store::tests::commit_op_serializes_concurrent_callers`<br>`ocs_collab_server::ops::tests::an_applied_op_is_announced_before_the_drawing_is_unlocked` | `s04_concurrent_ops.py` 12 项 | 有 | 场景按契约的下限跑：8 个会话，两段各 30 条（一段抢同一修订，一段各写各的）。规模再大服务器会丢广播，见第 5.3 节 |
 
 ### 4.2 验证基础设施 `VAL-INFRA`（14 条）
 
@@ -450,7 +459,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 ## 5. 缺口
 
-### 5.1 没有覆盖或只覆盖一部分的（32 条）
+### 5.1 没有覆盖或只覆盖一部分的（26 条）
 
 按要做的事分五类。「现状」一列是对照表里的取值；各条缺什么，见对照表的「说明」。补完的类只留一段话，不再列表。
 
@@ -485,18 +494,9 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-DRAW-031` | 2000 实例位号生成 ≤ 3 秒 | 部分 | 给现有的 2000 个批量测试加上耗时断言（不超过 3000 毫秒），做成默认不跑的性能测试，与 `VAL-SEM-014` 一起接进固定入口 |
 | `VAL-DRAW-032` | 插入性能不受既有 P&ID 实体数量线性拖垮 | 部分 | 接在 `VAL-DRAW-030` 的场景里：先放 200 个设备符号再测一组 20 次，断言中位数不超过 100 毫秒、比前一组增长不超过 100% |
 
-**（三）要真实的服务器进程或套接字（6 条）**
+**（三）要真实的服务器进程或套接字（原 6 条，2026-11-17 补完）**
 
-大致是四个不起 GUI 的新场景：重启、端口、断线、并发。
-
-| 编号 | 契约标题 | 现状 | 要补什么 |
-|---|---|---|---|
-| `VAL-SRV-024` | 服务器重启后审计与图纸登记恢复 | 部分 | 补一个服务器重启场景：写入若干条审计后停掉进程，用同一个库重启，断言审计的条数与 `seq` 不变、图纸登记还在 |
-| `VAL-SRV-025` | 服务器重启后旧会话不可继续使用 | 部分 | 同一个重启场景：重启后拿旧会话号发心跳，断言回的是带 `code` 的错误 |
-| `VAL-SRV-026` | 端口由参数决定且默认不与其他服务冲突 | 部分 | 补一个端口场景：同一端口起第二个实例，断言它以非零码退出并报端口占用 |
-| `VAL-SRV-027` | 断连不立即销毁会话 | 缺 | 补一个断线场景：会话握手并占用后不发关闭帧直接销毁套接字，30 秒内用同一用户和图纸重新握手，断言新会话的 `welcome.claims` 里还有那个位号，或收到明确的占用冲突错误 |
-| `VAL-SRV-028` | 端口被占用导致的启动失败不得破坏既有会话与占用数据 | 缺 | 同一个端口场景：实例甲有会话和占用时，用同一端口、同一个库起实例乙，断言乙退出后 `sessions`、`claims` 的行数与会话状态和启动前一致 |
-| `VAL-SRV-030` | 并发提交的 revision 分配唯一且不丢帧 | 部分 | 补一个并发场景：8 个以上会话经 WebSocket 各提交 30 个以上 op，断言被接受的 `revision` 无重复、每个 `op_id` 至多一条 `op_applied`、`drawings.revision` 等于最大修订、审计行数与 `op_applied` 条数一致 |
+`VAL-SRV-024`–`028`、`030` 补了四个不起 GUI 的场景：`s01_restart`（重启）、`s02_port_in_use`（端口被占）、`s03_disconnect`（断线）、`s04_concurrent_ops`（并发提交），挂在总入口的第四组，对照表里已改成「有」。各项检查试过会不会红，做法和结果见第 5.4 节。做并发场景时发现服务器在更大的规模下会丢广播，列在第 5.3 节。
 
 **（四）补或改一条单元测试就够（原 7 条，2026-11-17 补完）**
 
@@ -528,7 +528,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 ### 5.3 契约字面与实现有出入的（不算覆盖缺口，结项前要裁决）
 
-脚本过了，但契约原文里有一句按字面不成立，或者脚本的做法与原文不完全一样。前七条来自状态文档 §13.3（当时记作「13 条成立，7 条部分成立」），其余来自 §18.2 和这次对照；最后一条是补单元测试时发现的。
+脚本过了，但契约原文里有一句按字面不成立，或者脚本的做法与原文不完全一样。前七条来自状态文档 §13.3（当时记作「13 条成立，7 条部分成立」），其余来自 §18.2 和这次对照；最后两条是补缺口时发现的（`VAL-PERM-032` 在补单元测试时，`VAL-SRV-030` 在补并发场景时）。
 
 | 编号 | 出入 |
 |---|---|
@@ -548,11 +548,13 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-INFRA-001`、`014` | 各场景等就绪的上限多数给的是 180 秒，契约写 60 秒，见 5.1（五） |
 | `VAL-INFRA-008`、`012` | 2026-11-12 那次执行用的副本端口整体加了 100（3310–3359）。收进仓库时已改回契约的端口段（见 3.2 末），不用裁决；还缺的检查见 5.1（五） |
 | `VAL-PERM-032` | 原文要求建会话时塞进载荷的伪造 `workspace` 不被采纳。实现里 `workspace` 是 `hello` 和 `POST /session` 的正式字段，会话就是在那里声明自己的工作区的（`VAL-PERM-025` 的 `ws-alpha` 也是这样来的），写在那里的值原样记进审计，服务器分不出「声明」和「伪造」。成立的部分：帧里多出来的 `ip`、`company` 键，以及提交修改的帧里的 `workspace` 键，服务器都不读；`ip` 取连接的对端地址，`company` 取用户表。单元测试断言的是成立的这部分。要裁决：把原文改成「`workspace` 由会话声明，另两项不可自报」，还是让服务器按一张工作区名单校验 |
+| `VAL-SRV-030` | 契约写「不少于 8 个会话、各不少于 30 个 op」。按下限（8 个会话、每批各 30 条）成立，场景就是这样跑的。规模再大就不一定：服务器给每张图的广播队列只留最近 256 条，某条连接积压超过这个数，最早的那些广播就被丢掉（服务器在 stderr 记一行 `subscriber lagged`；代码注释写明这是有意的，丢了的靠客户端重新对齐）。连着发 op 的会话转发广播慢，积压会接近整整一批。10 个会话各连发 30 条（一批 300 条）时，这台机器上 9 次里有 4 次丢了广播，其中一次有 19 条已经生效的 op、发送方自己没有收到 `op_applied`。丢的只是通知：那一次库里的图纸修订、操作日志、审计行都是全的。要裁决：维持现状、把规模上限写进契约，还是改服务器（发送方的回执单独发、不走广播队列；或转发时先把积压的发完；或加大队列）。复现：把 `s04_concurrent_ops.py` 里的 `N` 改成 10，多跑几次 |
 
 ### 5.4 这张表是怎么核对的
 
 - 228 个编号各出现一次，各区条数与状态文档第 4 节相同；mission 记录的两栏合计 179 与 49，也与那一节相同。
 - 表里引用了 287 个单元测试，每个名字都在全量测试日志里唯一地找到，并且是通过的（标「默认不跑」的一条除外）。日志是基准提交上的一份；补缺口加的 7 条取自 2026-11-17 补完它们之后重跑的那一次。
-- 表里引用了 23 个脚本（22 个场景加冒烟场景），都存在；项数取自 2026-11-12 那次执行的结果文件，没有失败项。冒烟场景不在那次执行里，它的项数是按脚本源码数的（2026-11-17 单独跑过，2 项都通过）。
+- 表里引用了 27 个脚本（26 个场景加冒烟场景），都存在。前 22 个场景的项数取自 2026-11-12 那次执行的结果文件，服务器进程的四个场景取自 2026-11-17 它们经总入口跑的那一次，都没有失败项。冒烟场景不在这两次执行里，它的项数是按脚本源码数的（2026-11-17 单独跑过，2 项都通过）。
+- 服务器进程的四个场景，逐项试过会不会红：把服务器在某一处临时改坏、重新编出来（共 19 处，一次只改一处；改坏的可执行文件只放在仓库外，源码改完即还原），让场景对着它跑，共 21 次；另有一次不重启服务器的对照。22 次运行每一次都有检查失败。带契约编号的 43 项检查里，41 项至少在一次这样的运行里失败过；剩下 2 项没有做出让它失败的改法：`s02` 的「原来的实例照常服务、原来的连接没有收到 `error`」和 `s03` 的「重新握手成功，且落在销毁之后 3 到 30 秒之间」。
 - 2026-11-17 那一遍的结果文件与 2026-11-12 的逐个场景、逐个标签比过项数，全部相同；不同的只有 `t20_session` 的那一项从通过变成失败。
 - 「有」「部分」「缺」是逐条对着契约正文和测试、脚本的代码判断的，判断时没有重新执行端到端脚本。前六个区逐条读了契约正文和测试代码；后三个区以状态文档当时的逐条结论为准，对带计时、截图判据的和后补的几条另读了脚本的检查项。

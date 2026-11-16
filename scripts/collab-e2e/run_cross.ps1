@@ -6,7 +6,8 @@
 #                                  [-EvidenceDir <dir>] [-BinDir <dir>] [-PortShift <n>]
 #
 # -Only picks from the eleven scenarios listed below; with -New it names the
-# scenarios to run itself (the later ones, y03 / y08 / y09).
+# scenarios to run itself (the later ones: y03 / y08 / y09, and the
+# server-process ones, s01 ... s04, which start no GUI).
 # -EvidenceDir, -BinDir and -PortShift are explained in e2e_env.ps1; each can
 # be given by its environment variable instead. Logs go to <EvidenceDir>\m7.
 param([string[]]$Only = @(), [switch]$New, [string]$EvidenceDir = '', [string]$BinDir = '', [string]$PortShift = '')

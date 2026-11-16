@@ -705,6 +705,19 @@ class Ws:
         except Exception:  # noqa: BLE001
             pass
 
+    def abort(self):
+        """Destroy the socket with no close frame, the way a client that died does:
+        with linger 0 the close is a reset, not an orderly shutdown."""
+        self.closed = True
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("HH", 1, 0))
+        except OSError:
+            pass
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
 
 # ── reading logs ─────────────────────────────────────────────────────────
 def this_run(text):
