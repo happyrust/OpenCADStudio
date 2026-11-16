@@ -915,9 +915,10 @@ impl Seen {
 /// and the `hello` lists them (`existing_tags`). Tags it still owes are
 /// looked for while the session is up. `hello` is the only frame that
 /// carries them, so when they come the session is left — on purpose, with a
-/// close frame — and the retry ladder joins again, asking the UI anew. A
-/// drawing that turns out to carry none has nothing to tell, and the
-/// session stays.
+/// close frame — and the retry ladder joins again, asking the UI anew. (At
+/// the server the claims the session held go with it; the UI asks for them
+/// again once the next session is up — `State::say_tags`.) A drawing that
+/// turns out to carry none has nothing to tell, and the session stays.
 fn run_session(
     sender: &mut mpsc::Sender<CollabEvent>,
     config: &ClientConfig,

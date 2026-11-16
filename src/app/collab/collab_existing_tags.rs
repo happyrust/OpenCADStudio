@@ -723,3 +723,194 @@ fn a_pipe_line_drawn_while_away_is_listed_and_taken_as_it_was_sent() {
         "what the steps told of is the room's own"
     );
 }
+
+// ── What the session left to tell the tags held by claim ─────────────────────
+
+/// This person asks for `tag`, the way the panel does.
+fn claim(app: &mut OpenCADStudio, tag: &str) {
+    let _ = app.update(Message::CollabClaim {
+        tag: tag.to_owned(),
+        claim: true,
+    });
+}
+
+/// This person gives `tag` back.
+fn release(app: &mut OpenCADStudio, tag: &str) {
+    let _ = app.update(Message::CollabClaim {
+        tag: tag.to_owned(),
+        claim: false,
+    });
+}
+
+fn granted(tag: &str) -> CollabEvent {
+    CollabEvent::ClaimGranted {
+        tag: tag.to_owned(),
+    }
+}
+
+/// The session ends the way the transport ends it to say the drawing's tags
+/// in a `hello`, and the next dial begins: question `next` is put.
+fn left_to_tell_the_tags(app: &mut OpenCADStudio, next: u64) {
+    hear(
+        app,
+        CollabEvent::Disconnected {
+            reason: "要向服务器上报本图已有的位号，正在重新加入会话".to_owned(),
+            will_retry: true,
+        },
+    );
+    hear(app, CollabEvent::Connecting { attempt: 0 });
+    ask(app, next);
+}
+
+/// The claims asked of the transport so far, `(session, tag)`.
+fn asked(app: &OpenCADStudio) -> Vec<(&str, &str)> {
+    app.collab
+        .claims_asked
+        .iter()
+        .map(|(session, tag)| (session.as_str(), tag.as_str()))
+        .collect()
+}
+
+/// A session that came up with no drawing is left when its drawing's tags
+/// are said: `hello` is the only frame that carries them. Here the session
+/// comes by its drawing through a claim, so the claim goes with the session
+/// that is left — the server lets go of what a session held when it ends —
+/// and none of that was this person's doing. The claim is asked for again
+/// in the session that follows. Once: a drop after that is a drop like any
+/// other.
+#[test]
+fn a_claim_is_asked_for_again_in_the_session_that_follows_the_one_left_to_tell_the_tags() {
+    let mut app = editor(&["P-1001", "E-1001"]);
+    ask(&mut app, 21);
+    hear(&mut app, connected("s-1", 0));
+    assert_eq!(app.collab.tags_said, [(21, TagsSaid::NotYet)]);
+
+    claim(&mut app, "P-1001");
+    assert_eq!(asked(&app), [("s-1", "P-1001")]);
+    assert_eq!(
+        listed(&app, 21),
+        ["E-1001", "P-1001"],
+        "a claim is a use of the session: the drawing in front is its drawing"
+    );
+    hear(&mut app, granted("P-1001"));
+
+    left_to_tell_the_tags(&mut app, 22);
+    assert_eq!(listed(&app, 22), ["E-1001", "P-1001"]);
+    assert!(
+        app.collab.claims.is_empty(),
+        "the claims of the session that ended are still shown"
+    );
+    hear(&mut app, connected("s-2", 0));
+    assert_eq!(
+        asked(&app),
+        [("s-1", "P-1001"), ("s-2", "P-1001")],
+        "the claim went with the session that was left"
+    );
+    hear(&mut app, granted("P-1001"));
+    assert_eq!(
+        app.collab.claims.get("P-1001").map(String::as_str),
+        Some("u1")
+    );
+
+    hear(&mut app, dropped());
+    hear(&mut app, CollabEvent::Connecting { attempt: 0 });
+    ask(&mut app, 23);
+    hear(&mut app, connected("s-3", 0));
+    assert_eq!(
+        asked(&app).len(),
+        2,
+        "a claim was asked for again after an ordinary drop"
+    );
+}
+
+/// A session that drops takes its claims with it, as before: the server
+/// lets go of them, and whose the tag is when a session is back is for the
+/// room to say. Here the drawing is blank — it has no tags to tell, so the
+/// session is not left for them — and the socket drops by itself.
+#[test]
+fn a_claim_that_went_with_a_session_that_dropped_is_not_asked_for_again() {
+    let mut app = editor(&[]);
+    ask(&mut app, 24);
+    hear(&mut app, connected("s-1", 0));
+    claim(&mut app, "P-1001");
+    assert!(listed(&app, 24).is_empty(), "a blank drawing told of tags");
+    hear(&mut app, granted("P-1001"));
+
+    hear(&mut app, dropped());
+    hear(&mut app, CollabEvent::Connecting { attempt: 0 });
+    ask(&mut app, 25);
+    hear(&mut app, connected("s-2", 0));
+    assert_eq!(asked(&app), [("s-1", "P-1001")]);
+}
+
+/// The session that follows is the one the very next dial brings up. When
+/// that dial fails the leave has become a drop like any other: by the time
+/// a session is up again the tag may be somebody else's, and nothing is
+/// asked for.
+#[test]
+fn a_claim_is_not_asked_for_again_when_the_dial_after_the_leave_fails() {
+    let mut app = editor(&["P-1001", "E-1001"]);
+    ask(&mut app, 26);
+    hear(&mut app, connected("s-1", 0));
+    claim(&mut app, "P-1001");
+    assert_eq!(listed(&app, 26), ["E-1001", "P-1001"]);
+
+    left_to_tell_the_tags(&mut app, 27);
+    hear(
+        &mut app,
+        CollabEvent::Disconnected {
+            reason: "connect failed".to_owned(),
+            will_retry: true,
+        },
+    );
+    hear(&mut app, CollabEvent::Connecting { attempt: 1 });
+    ask(&mut app, 28);
+    hear(&mut app, connected("s-2", 0));
+    assert_eq!(asked(&app), [("s-1", "P-1001")]);
+}
+
+/// What is asked for again is what the session held, or was still waiting
+/// to hear of, when it was left: not a claim the server refused, nor one
+/// this person gave back, nor one the server had let go of.
+#[test]
+fn what_the_session_no_longer_held_when_it_was_left_is_not_asked_for_again() {
+    let all = ["P-1001", "E-1001", "E-1002", "E-1003", "E-1004"];
+    let mut app = editor(&all);
+    ask(&mut app, 29);
+    hear(&mut app, connected("s-1", 0));
+    for tag in all {
+        claim(&mut app, tag);
+    }
+    assert_eq!(listed(&app, 29).len(), 5, "the first claim told the tags");
+    // Granted.
+    hear(&mut app, granted("P-1001"));
+    // Refused: somebody else has it.
+    hear(
+        &mut app,
+        CollabEvent::ClaimDenied {
+            tag: "E-1001".to_owned(),
+            holder: "s-9".to_owned(),
+            expires_at: 99,
+        },
+    );
+    // Granted, and given back.
+    hear(&mut app, granted("E-1002"));
+    release(&mut app, "E-1002");
+    // Granted, and let go of by the server.
+    hear(&mut app, granted("E-1003"));
+    hear(
+        &mut app,
+        CollabEvent::ClaimReleased {
+            tag: "E-1003".to_owned(),
+            reason: "expired".to_owned(),
+        },
+    );
+    // (`E-1004`: not answered yet.)
+
+    left_to_tell_the_tags(&mut app, 30);
+    hear(&mut app, connected("s-2", 0));
+    assert_eq!(
+        asked(&app)[all.len()..],
+        [("s-2", "E-1004"), ("s-2", "P-1001")]
+    );
+}

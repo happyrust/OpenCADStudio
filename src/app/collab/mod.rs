@@ -514,6 +514,20 @@ pub(super) struct State {
     /// one this session asked for and was refused. A claim this session was
     /// granted is not in here — `claim_granted` does not say.
     pub claim_expiry: BTreeMap<String, i64>,
+    /// The tags this session has asked to claim, less those it gave back,
+    /// was refused, or saw let go of: what it holds, or waits to hear of.
+    /// They go with the session — the server lets go of a session's claims
+    /// when it ends — unless the session is left to tell the drawing's tags
+    /// (`rejoining`).
+    own_claims: std::collections::BTreeSet<String>,
+    /// Raised when the drawing's tags are said to a session that is up: the
+    /// transport leaves it to say them in a `hello`, and dials again at once
+    /// (`transport::run_session`). That leave is none of the person's
+    /// doing, so what the session held by claim is asked for again in the
+    /// one that dial brings up. Lowered there — or when that dial fails:
+    /// from then on it is a drop like any other, and whose the tags are
+    /// when a session is back is for the room to say.
+    rejoining: bool,
     /// The transport's question about the drawing's tags, while the UI has
     /// yet to answer it with them (`OpenCADStudio::answer_collab_tags`).
     pub tags_wanted: Option<TagsAsked>,
@@ -533,6 +547,10 @@ pub(super) struct State {
     /// for tests, for the same reason as `sent`.
     #[cfg(test)]
     pub tags_said: Vec<(u64, TagsSaid)>,
+    /// Every claim this state asked the transport for, `(session, tag)`: for
+    /// tests, for the same reason as `sent`.
+    #[cfg(test)]
+    pub claims_asked: Vec<(String, String)>,
 }
 
 /// One change of a peer's as this drawing took it.
@@ -652,6 +670,11 @@ impl State {
 
     /// Answer question `ask` of the transport's about the drawing's tags.
     pub(super) fn say_tags(&mut self, ask: u64, said: TagsSaid) {
+        // Tags said to a session that is up are told by leaving it.
+        let tags_to_tell = matches!(&said, TagsSaid::Tags(tags) if !tags.is_empty());
+        if tags_to_tell && self.session_id.is_some() {
+            self.rejoining = true;
+        }
         #[cfg(test)]
         self.tags_said.push((ask, said.clone()));
         #[cfg(not(target_arch = "wasm32"))]
@@ -742,6 +765,14 @@ impl State {
                     entry.sent = false;
                 }
                 self.pump();
+                // The session before this one was left to tell the drawing's
+                // tags: what it held by claim is asked for again.
+                if std::mem::take(&mut self.rejoining) {
+                    for tag in std::mem::take(&mut self.own_claims) {
+                        // (Refused for an empty tag alone, and none is.)
+                        let _ = self.request_claim(&tag);
+                    }
+                }
             }
             CollabEvent::Resuming { from } => {
                 self.resume_from = Some(from);
@@ -750,6 +781,14 @@ impl State {
                 self.claim_expiry = claims.into_iter().collect();
             }
             CollabEvent::Disconnected { reason, will_retry } => {
+                // The claims this session asked for went with it — unless
+                // it was left to tell the drawing's tags, and is being
+                // dialled for again (`rejoining`).
+                let left_to_tell = self.rejoining && self.session_id.is_some() && will_retry;
+                if !left_to_tell {
+                    self.rejoining = false;
+                    self.own_claims.clear();
+                }
                 self.connected = false;
                 self.session_id = None;
                 self.peers.clear();
@@ -788,6 +827,7 @@ impl State {
                 self.last_claim_message = Some(format!("已占用位号 {tag}"));
                 // Whatever was known of an earlier claim on it is over.
                 self.claim_expiry.remove(&tag);
+                self.own_claims.insert(tag.clone());
                 self.claims.insert(tag, holder);
             }
             CollabEvent::ClaimDenied {
@@ -795,6 +835,8 @@ impl State {
                 holder,
                 expires_at,
             } => {
+                // Refused: not a claim of this session's any more.
+                self.own_claims.remove(&tag);
                 // The claim stays with its holder; record who it is so the
                 // panel can grey the row out and say until when.
                 let holder = self.resolve_holder(&holder);
@@ -806,6 +848,7 @@ impl State {
             }
             CollabEvent::ClaimReleased { tag, reason } => {
                 self.last_claim_message = Some(format!("位号 {tag} 占用已释放（{reason}）"));
+                self.own_claims.remove(&tag);
                 self.claims.remove(&tag);
                 self.claim_expiry.remove(&tag);
             }
@@ -1195,19 +1238,25 @@ impl State {
     /// request travels through the transport's outbound queue; the server's
     /// answer arrives later as a `CollabEvent`.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn request_claim(&self, tag: &str) -> Result<(), String> {
+    pub(super) fn request_claim(&mut self, tag: &str) -> Result<(), String> {
         let Some(session_id) = self.session_id.clone() else {
             return Err("未连接协同服务器".to_owned());
         };
-        transport::request_claim(&session_id, tag)
+        transport::request_claim(&session_id, tag)?;
+        #[cfg(test)]
+        self.claims_asked.push((session_id, tag.trim().to_owned()));
+        self.own_claims.insert(tag.trim().to_owned());
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn request_release(&self, tag: &str) -> Result<(), String> {
+    pub(super) fn request_release(&mut self, tag: &str) -> Result<(), String> {
         let Some(session_id) = self.session_id.clone() else {
             return Err("未连接协同服务器".to_owned());
         };
-        transport::request_release(&session_id, tag)
+        transport::request_release(&session_id, tag)?;
+        self.own_claims.remove(tag.trim());
+        Ok(())
     }
 
     /// Tell the server of a write this session turned away itself, so that
@@ -1678,7 +1727,7 @@ mod tests {
     /// dropped: the panel reports why the click did nothing.
     #[test]
     fn a_claim_without_a_session_is_refused_with_a_reason() {
-        let state = State::new();
+        let mut state = State::new();
         assert!(state.request_claim("P-1001").is_err());
         assert!(state.request_release("P-1001").is_err());
     }
