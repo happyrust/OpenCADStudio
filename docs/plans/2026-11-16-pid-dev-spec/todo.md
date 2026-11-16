@@ -76,6 +76,7 @@
 - **依赖**：无
 - **文件**：`src/app/collab/broadcast.rs`；新建测试文件 `src/app/collab/collab_large_props.rs`，在 `src/app/collab/mod.rs` 登记
 - **规模**：S
+- **补（2026-11-16）**：管线、管路、管件有同样的缺口（`src/app/collab/pipes.rs` 三处），上面的任务文字没写到，实现时发现，紧接着单独补了一个提交，测试在同一个文件里（过滤名不变，共 11 个）。记录见 `SPEC-collab-client.md` §10.1。
 
 ### CC-2 【协同】大属性对象：之后改属性也广播（`SPEC-collab-client.md` 待决 C3）
 

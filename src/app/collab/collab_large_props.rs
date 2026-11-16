@@ -1,27 +1,33 @@
-//! Symbols whose properties are too long for the entity's own record: what
+//! Objects whose properties are too long for the entity's own record: what
 //! a step that brings one into the drawing says of it, and what a peer has
 //! once it has followed (plan T2.4 ③; task `CC-1` of
 //! `docs/plans/2026-11-16-pid-dev-spec/todo.md`).
 //!
 //! `PidAuthor::store` keeps a `props` text that would take the record past
 //! `XDATA_SOFT_LIMIT` in an XRecord of the drawing, and leaves the record a
-//! key to it. A step's images are of entities, so the image of such a
-//! symbol only points at its properties; the drawing the step was made in
+//! key to it. A step's images are of entities, so the image of such an
+//! object only points at its properties; the drawing the step was made in
 //! holds them.
 //!
-//! The first three tests are of the reading alone, the fourth of a peer's
-//! writing. The last two are two editors in one process with the server's
-//! own judgment between them (`ocs_collab::conflict::DrawingModel`, the
-//! code the server runs), as in `collab_pipe_ops`: what one places, erases,
-//! takes back and makes again goes through the room to the other, and the
-//! two drawings — and the room — are then asked for the symbol.
+//! Symbols first. Three tests are of the reading alone, the fourth of a
+//! peer's writing; the next two are two editors in one process with the
+//! server's own judgment between them (`ocs_collab::conflict::DrawingModel`,
+//! the code the server runs), as in `collab_pipe_ops`: what one places,
+//! erases, takes back and makes again goes through the room to the other,
+//! and the two drawings — and the room — are then asked for the symbol.
+//!
+//! Then pipe lines, runs and what is fitted on them, which
+//! `super::pipes::statements` says off the drawing: the reading of a line
+//! alone, and each of the three erased and put back between two editors.
 
 use crate::app::collab::{broadcast, CollabEvent};
 use crate::app::OpenCADStudio;
 use crate::pid::persist::PidAuthor;
 use crate::pid::propagate::{join_props, split_props};
-use crate::pid::topology::handle_text;
-use document::entities::Insert;
+use crate::pid::topology::{
+    handle_text, ROLE_PIPE_LINE, ROLE_PIPE_RUN, ROLE_PIPE_SEGMENT, TYPE_PIPE_LINE, TYPE_VALVE,
+};
+use document::entities::{Insert, Line};
 use document::types::Vector3;
 use document::{Document, EntityType, Handle};
 use ocs_collab::conflict::{Change as Judged, DrawingModel, Verdict};
@@ -201,17 +207,20 @@ fn place(app: &mut OpenCADStudio, props: &BTreeMap<String, String>) -> Handle {
     handle
 }
 
-fn erase(app: &mut OpenCADStudio, handle: Handle) {
-    let selected = request(app, json!({"op":"select","handles":[handle_text(handle)]}));
+fn erase(app: &mut OpenCADStudio, handles: &[Handle]) {
+    let list: Vec<String> = handles.iter().map(|handle| handle_text(*handle)).collect();
+    let selected = request(app, json!({"op":"select","handles":list}));
     assert_eq!(selected["ok"], true, "{selected}");
     let erased = request(app, json!({"op":"run","cmd":"ERASE"}));
     assert_eq!(erased["ok"], true, "{erased}");
     app.finish_all_pending_history();
     let document = &app.tabs[app.active_tab].scene.document;
-    assert!(
-        document.get_entity(handle).is_none(),
-        "{handle:?} was not erased"
-    );
+    for handle in handles {
+        assert!(
+            document.get_entity(*handle).is_none(),
+            "{handle:?} was not erased"
+        );
+    }
 }
 
 fn undo(app: &mut OpenCADStudio) {
@@ -439,7 +448,7 @@ fn collab_large_props_taken_out_and_put_back_the_symbol_is_whole_at_the_peer_eac
     let handle = place(&mut a, &props);
     relay(&mut room, &mut a, &mut b, &mut seen);
 
-    erase(&mut a, handle);
+    erase(&mut a, &[handle]);
     relay(&mut room, &mut a, &mut b, &mut seen);
     assert!(held(&b).is_empty(), "the peer still has it: {:?}", held(&b));
     undo(&mut a);
@@ -453,4 +462,284 @@ fn collab_large_props_taken_out_and_put_back_the_symbol_is_whole_at_the_peer_eac
     redo(&mut a);
     relay(&mut room, &mut a, &mut b, &mut seen);
     assert_whole(&a, &b, &props, "after the placement was made again");
+}
+
+// ── pipe lines, runs and what is fitted on them ─────────────────────────
+
+const LINE_TAG: &str = "L-9001";
+/// Where the line the editors draw runs, and where the valve stands on it.
+const LINE: &[[f64; 2]] = &[[0.0, 0.0], [200.0, 0.0]];
+const VALVE_AT: &[[f64; 2]] = &[[100.0, 0.0]];
+
+/// A drawing holding one stretch of a pipe line with `props`, the stretch's
+/// handle, and the image a step has of it.
+fn drawing_with_a_line(props: &BTreeMap<String, String>) -> (Document, Handle, Arc<EntityType>) {
+    let mut doc = Document::new();
+    let handle = doc
+        .add_entity(EntityType::Line(Line::from_points(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(200.0, 0.0, 0.0),
+        )))
+        .expect("entity");
+    PidAuthor {
+        type_code: TYPE_PIPE_LINE.to_owned(),
+        tag: LINE_TAG.to_owned(),
+        tag_source: "manual".to_owned(),
+        tag_status: "ok".to_owned(),
+        topology: ROLE_PIPE_LINE.to_owned(),
+        props: join_props(props, &BTreeSet::new()),
+        ..PidAuthor::default()
+    }
+    .store(&mut doc, handle);
+    let image = doc.get_entity_arc(handle).expect("entity");
+    assert!(
+        !PidAuthor::props_are_inline(&image),
+        "the fixture's properties must be too long for the entity's record"
+    );
+    (doc, handle, image)
+}
+
+/// `said` is the line under [`LINE_TAG`] coming into being with `props`.
+#[track_caller]
+fn assert_line_said_with(said: &[broadcast::Change], props: &BTreeMap<String, String>) {
+    assert_eq!(said.len(), 1, "{said:?}");
+    let wire = said[0].to_json();
+    assert_eq!(
+        (&wire["kind"], &wire["tag"]),
+        (&json!("create_pipe_line"), &json!(LINE_TAG)),
+        "{wire}"
+    );
+    assert_eq!(&texts(&wire["props"]), props, "the properties on the wire");
+}
+
+/// A step that drew a stretch of such a line says the line with every
+/// property it has.
+#[test]
+fn collab_large_props_a_line_drawn_with_them_is_said_with_every_one() {
+    let props = many_props();
+    let (doc, handle, image) = drawing_with_a_line(&props);
+    let said = broadcast::collect_step_changes(&doc, &[(handle, None, Some(image))]);
+    assert_line_said_with(&said, &props);
+}
+
+/// Where the drawing does not hold what the image points at, the line is
+/// still said, as starting with no properties.
+#[test]
+fn collab_large_props_a_line_whose_properties_the_drawing_lacks_is_still_said() {
+    let (_, handle, image) = drawing_with_a_line(&many_props());
+    // A drawing that holds the stretch, record and all, but not the XRecord
+    // the record points at.
+    let mut bare = Document::new();
+    let copied = bare.add_entity((*image).clone()).expect("entity");
+    let copy = bare.get_entity_arc(copied).expect("entity");
+    assert!(!PidAuthor::props_are_inline(&copy));
+    // And one that does not hold the stretch at all.
+    let empty = Document::new();
+    for said in [
+        broadcast::collect_step_changes(&bare, &[(copied, None, Some(copy))]),
+        broadcast::collect_step_changes(&empty, &[(handle, None, Some(image))]),
+    ] {
+        assert_line_said_with(&said, &BTreeMap::new());
+    }
+}
+
+fn is_line(author: &PidAuthor) -> bool {
+    author.topology == ROLE_PIPE_LINE
+}
+
+fn is_run(author: &PidAuthor) -> bool {
+    author.topology == ROLE_PIPE_RUN
+}
+
+fn is_valve(author: &PidAuthor) -> bool {
+    author.type_code == TYPE_VALVE
+}
+
+/// Start `cmd`, give it `points`, press Enter; the step is closed.
+fn draw(app: &mut OpenCADStudio, cmd: &str, points: &[[f64; 2]]) {
+    let started = request(app, json!({"op":"run","cmd":cmd}));
+    assert_eq!(started["ok"], true, "{cmd}: {started}");
+    for point in points {
+        let fed = request(
+            app,
+            json!({"op":"input","kind":"point","point":[point[0], point[1], 0.0],"space":"wcs"}),
+        );
+        assert_eq!(fed["ok"], true, "{cmd}: {fed}");
+    }
+    let done = request(app, json!({"op":"input","kind":"enter"}));
+    app.finish_all_pending_history();
+    assert_eq!(done["ok"], true, "{cmd}: {done}");
+}
+
+/// The entities of the drawing in front whose record `keep`s.
+fn handles_where(app: &OpenCADStudio, keep: fn(&PidAuthor) -> bool) -> Vec<Handle> {
+    let document = &app.tabs[app.active_tab].scene.document;
+    document
+        .entities()
+        .map(|entity| entity.common().handle)
+        .filter(|handle| PidAuthor::load(document, *handle).is_some_and(|author| keep(&author)))
+        .collect()
+}
+
+/// The properties of the one entity of the drawing in front whose record
+/// `keep`s, and whether they are in the entity's own record.
+#[track_caller]
+fn props_where(
+    app: &OpenCADStudio,
+    keep: fn(&PidAuthor) -> bool,
+) -> (BTreeMap<String, String>, bool) {
+    let handles = handles_where(app, keep);
+    assert_eq!(handles.len(), 1, "one such entity: {handles:?}");
+    let document = &app.tabs[app.active_tab].scene.document;
+    let record = PidAuthor::load(document, handles[0]).expect("a record");
+    let entity = document.get_entity(handles[0]).expect("entity");
+    (
+        split_props(&record.props).0,
+        PidAuthor::props_are_inline(entity),
+    )
+}
+
+/// Every change `app` has said since the first `seen` of its ops, one by
+/// one.
+fn said_since(app: &OpenCADStudio, seen: usize) -> Vec<Value> {
+    app.collab.sent[seen..]
+        .iter()
+        .flat_map(Judged::list)
+        .map(|change| change.raw)
+        .collect()
+}
+
+/// The one change of `kind` among `said`.
+#[track_caller]
+fn the_one<'a>(said: &'a [Value], kind: &str) -> &'a Value {
+    let of_kind: Vec<&Value> = said
+        .iter()
+        .filter(|change| change["kind"] == kind)
+        .collect();
+    assert_eq!(of_kind.len(), 1, "one {kind} among {said:?}");
+    of_kind[0]
+}
+
+/// What [`erased_and_put_back`] leaves.
+struct PutBack {
+    /// The peer.
+    b: OpenCADStudio,
+    room: Room,
+    /// What taking the erase back said, change by change.
+    said: Vec<Value>,
+    /// The properties the thing has in the first drawing.
+    props: BTreeMap<String, String>,
+}
+
+/// One draws what `cmds` draw and the peer follows. The thing whose record
+/// `is` it then has [`many_props`] on top of its own in the first drawing —
+/// by no step: the drawing has them, as one read from a file does — and is
+/// erased there with whatever `goes` with it, which the peer follows; then
+/// the erase is taken back, and the peer follows that.
+fn erased_and_put_back(
+    cmds: &[(&str, &[[f64; 2]])],
+    is: fn(&PidAuthor) -> bool,
+    goes: fn(&PidAuthor) -> bool,
+) -> PutBack {
+    let (mut a, mut b) = (editor("s-a"), editor("s-b"));
+    let (mut room, mut seen) = (Room::default(), 0);
+    for (cmd, points) in cmds {
+        draw(&mut a, cmd, points);
+    }
+    relay(&mut room, &mut a, &mut b, &mut seen);
+
+    let grown = handles_where(&a, is);
+    assert_eq!(grown.len(), 1, "one such thing: {grown:?}");
+    let props = {
+        let document = &mut a.tabs[a.active_tab].scene.document;
+        let mut record = PidAuthor::load(document, grown[0]).expect("a record");
+        let (mut values, marks) = split_props(&record.props);
+        values.extend(many_props());
+        record.props = join_props(&values, &marks);
+        record.store(document, grown[0]);
+        values
+    };
+    assert_eq!(props_where(&a, is), (props.clone(), false), "the fixture");
+
+    let gone = handles_where(&a, goes);
+    erase(&mut a, &gone);
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    assert!(handles_where(&b, is).is_empty(), "the peer still has it");
+
+    undo(&mut a);
+    assert_eq!(
+        props_where(&a, is),
+        (props.clone(), false),
+        "the first drawing has it back as it was"
+    );
+    let said = said_since(&a, seen);
+    relay(&mut room, &mut a, &mut b, &mut seen);
+    PutBack {
+        b,
+        room,
+        said,
+        props,
+    }
+}
+
+/// A line erased and the erase taken back: the line is said with every
+/// property, the peer's line has them — outside the entity's record, as
+/// here — and the room knows each field.
+#[test]
+fn collab_large_props_a_line_put_back_is_whole_at_the_peer_and_in_the_room() {
+    let back = erased_and_put_back(&[("PIDPIPE", LINE)], is_line, is_line);
+    let line = the_one(&back.said, "create_pipe_line");
+    assert_eq!(texts(&line["props"]), back.props, "what was said of them");
+    assert_eq!(props_where(&back.b, is_line), (back.props.clone(), false));
+    let tag = line["tag"].as_str().expect("the line's tag");
+    let known = back.room.model.object(tag).expect("the room knows it");
+    for (field, value) in &back.props {
+        assert_eq!(
+            known.fields.get(field).map(|state| state.value.as_str()),
+            Some(value.as_str()),
+            "the room's {field}"
+        );
+    }
+}
+
+/// A run erased with its segments and the erase taken back: the account of
+/// the run is said with every property, and the peer's run has them.
+#[test]
+fn collab_large_props_a_run_put_back_is_whole_at_the_peer() {
+    let back = erased_and_put_back(
+        &[("PIDPIPE", LINE), ("PIDPIPE run", LINE)],
+        is_run,
+        |author| author.topology == ROLE_PIPE_RUN || author.topology == ROLE_PIPE_SEGMENT,
+    );
+    let run = the_one(&back.said, "add_pipe_run");
+    assert_eq!(
+        texts(&run["run"]["props"]),
+        back.props,
+        "what was said of them"
+    );
+    assert_eq!(props_where(&back.b, is_run), (back.props.clone(), false));
+}
+
+/// A valve erased from its run and the erase taken back: the run's account
+/// says the valve with every property, and the peer's valve has them.
+#[test]
+fn collab_large_props_a_valve_put_back_on_its_run_is_whole_at_the_peer() {
+    let back = erased_and_put_back(
+        &[
+            ("PIDPIPE", LINE),
+            ("PIDPIPE run", LINE),
+            ("PIDFITTING gate_valve", VALVE_AT),
+        ],
+        is_valve,
+        is_valve,
+    );
+    let fitted = the_one(&back.said, "insert_fitting");
+    let valves = fitted["run"]["fittings"].as_array().expect("the fittings");
+    assert_eq!(valves.len(), 1, "{fitted}");
+    assert_eq!(
+        texts(&valves[0]["props"]),
+        back.props,
+        "what was said of them"
+    );
+    assert_eq!(props_where(&back.b, is_valve), (back.props.clone(), false));
 }

@@ -24,7 +24,7 @@ use serde_json::{json, Map, Value};
 use super::broadcast::{Applied, Change, KIND_DELETE_OBJECT};
 use crate::app::OpenCADStudio;
 use crate::pid::persist::PidAuthor;
-use crate::pid::propagate::{join_props, split_props};
+use crate::pid::propagate::{join_props, overrides_of, props_of, split_props};
 use crate::pid::topology::{
     handle_text, parse_handle, FittingRecord, PipeSegmentRecord, SegmentEnd, TopologyTable,
     FITTING_BREAK, ROLE_FITTING, ROLE_PIPE_LINE, ROLE_PIPE_RUN, ROLE_PIPE_SEGMENT,
@@ -670,10 +670,7 @@ pub fn statements(doc: &Document, images: &[Image<'_>]) -> Vec<Change> {
     let mut out = Vec::new();
     for ((tag, _role), mut pieces) in made.clone() {
         pieces.sort_by_key(|(handle, ..)| handle.value());
-        let (_, _, author) = &pieces[0];
-        let inline = doc
-            .get_entity(pieces[0].0)
-            .is_some_and(PidAuthor::props_are_inline);
+        let (first, _, author) = &pieces[0];
         out.push(Change {
             kind: KIND_CREATE_PIPE_LINE.to_owned(),
             object_ref: tag,
@@ -685,11 +682,9 @@ pub fn statements(doc: &Document, images: &[Image<'_>]) -> Vec<Change> {
             pipe: Some(Pipe::Line(LineStretches {
                 type_code: author.type_code.clone(),
                 pieces: pieces.iter().map(|(_, at, _)| *at).collect(),
-                props: if inline {
-                    split_props(&author.props).0
-                } else {
-                    BTreeMap::new()
-                },
+                // Off the drawing, not off the image: properties too long
+                // for an entity's own record are kept beside it there.
+                props: props_of(doc, *first),
                 tag_source: author.tag_source.clone(),
             })),
             tag_source: None,
@@ -886,17 +881,12 @@ fn run_state(
             .position(|(part, ..)| handle_text(part.handle) == handle)?;
         Some((index, port.to_owned()))
     };
-    let (props, overrides) = match doc
-        .get_entity(body)
-        .is_some_and(PidAuthor::props_are_inline)
-    {
-        true => split_props(&author.props),
-        false => (BTreeMap::new(), BTreeSet::new()),
-    };
     let run = RunState {
         start,
-        props,
-        overrides,
+        // Wherever the drawing keeps them: properties too long for an
+        // entity's own record are in an XRecord beside it.
+        props: props_of(doc, body),
+        overrides: overrides_of(doc, body),
         segments: segments
             .iter()
             .map(|part| {
@@ -917,9 +907,6 @@ fn run_state(
                 let known = table.fittings.iter().find(|fitting| fitting.handle == text);
                 let is_break = part.ends.is_some();
                 let own_tag = author.type_code == TYPE_VALVE && !author.tag.is_empty();
-                let inline = doc
-                    .get_entity(part.handle)
-                    .is_some_and(PidAuthor::props_are_inline);
                 FittingState {
                     fitting_type: match known {
                         Some(fitting) => fitting.fitting_type.clone(),
@@ -938,10 +925,10 @@ fn run_state(
                     block: part.block.clone(),
                     scale: *scale,
                     rotation: *rotation,
-                    props: if inline && !is_break {
-                        split_props(&author.props).0
-                    } else {
+                    props: if is_break {
                         BTreeMap::new()
+                    } else {
+                        props_of(doc, part.handle)
                     },
                     tag_source: author.tag_source.clone(),
                     mark: part.ends.map(|(from, to)| [from, to]),
