@@ -773,10 +773,18 @@ impl OpenCADStudio {
         element
     }
 
-    /// The primary window: viewport, ribbon, tab bar, status bar. Split out of
-    /// `view` so the single-window web build can render it directly, bypassing
-    /// the multi-window id dispatch above (the web build has no extra windows).
+    /// The primary window: the P&ID module's root view while the module is
+    /// on, the general CAD interface otherwise. Split out of `view` so the
+    /// single-window web build can render it directly, bypassing the
+    /// multi-window id dispatch above (the web build has no extra windows).
     pub fn view_main(&self) -> Element<'_, Message> {
+        super::pid_shell::view(self).unwrap_or_else(|| self.view_classic())
+    }
+
+    /// The general CAD interface: viewport, ribbon, tab bar, status bar. It
+    /// is the whole window while the P&ID module is off, and what the
+    /// module's editor screen draws while it is on.
+    pub(in crate::app) fn view_classic(&self) -> Element<'_, Message> {
         // Section marks for `view-detail`. A closure over a RefCell rather
         // than one binding per section: two of these sections sit inside a
         // nested block and would otherwise be out of scope at the report.
@@ -793,6 +801,12 @@ impl OpenCADStudio {
 
         let i = self.active_tab;
         let tab = &self.tabs[i];
+        // Inside the P&ID module this is the drawing of its editor screen
+        // (`pid_shell::editor`): the drawing area with its own overlays, the
+        // command line and the dialogs. The bars around it — ribbon, quick
+        // access, drawing tabs, status bar — the viewport's corner controls
+        // and the Start page are the module's to draw, or to leave out.
+        let bare = self.pid_shell.current().is_some();
         // Dynamic input is built before the status bar and properties panel,
         // so seed its shared formatter here rather than relying on either of
         // those later views to have done it for this drawing/thread.
@@ -845,6 +859,7 @@ impl OpenCADStudio {
             tab.scene.active_model_tile_bounds(vw, vh).width
         };
         let viewcube_visible = self.show_viewcube
+            && !bare
             && !thumbnail_capture_clean
             && !tab.is_start
             // The bar sits `VP_INSET` in from the viewport's left edge.
@@ -881,6 +896,10 @@ impl OpenCADStudio {
                 ..container::Style::default()
             })
             .into()
+        } else if tab.is_start && bare {
+            // The P&ID editor shows no Start page: it says that no drawing
+            // is open, and offers to make or to open one.
+            super::pid_shell::editor::no_drawing(self)
         } else if tab.is_start {
             start_page_view(
                 &self.patrons,
@@ -1052,7 +1071,11 @@ impl OpenCADStudio {
                         bounds,
                         step_x,
                         step_y,
-                        major_every: self.grid_major_every,
+                        major_every: if bare {
+                            super::pid_shell::canvas::GRID_MAJOR_EVERY
+                        } else {
+                            self.grid_major_every
+                        },
                         origin,
                         axes,
                         limits,
@@ -1084,6 +1107,14 @@ bg={bg_ms:.1}ms n={view_count}"
                     [0.80, 0.80, 0.80]
                 },
                 axes: self.grid_axes,
+                line_alpha: None,
+            };
+            // The P&ID editor draws the grid of its design (the block editor
+            // keeps its own).
+            let grid_style = if bare && !in_block_editor {
+                super::pid_shell::canvas::grid_style(self.pid_shell.theme, bg_lum)
+            } else {
+                grid_style
             };
             // Wipeouts hide the model-space grid (the grid is an
             // overlay above the GPU scene, so it is cut around them instead).
@@ -2473,7 +2504,15 @@ bg={bg_ms:.1}ms n={view_count}"
             // further. Outside the chip the Fill container is transparent so
             // viewport drawing / selection is unaffected. In a paper layout
             // the active viewport gets its own picker (below) instead.
-            if !is_paper && !tab.is_start && self.show_viewport_controls {
+            if bare && !tab.is_start {
+                // The P&ID editor's own control, where its design has it.
+                viewport_stack = viewport_stack.push(
+                    iced::widget::pin(iced::widget::opaque(
+                        super::pid_shell::editor::zoom_control(self),
+                    ))
+                    .position(iced::Point::new(16.0, 16.0)),
+                );
+            } else if !is_paper && !tab.is_start && self.show_viewport_controls {
                 let (vw, vh) = tab.scene.selection.borrow().view.vp_size;
                 let rect = tab.scene.active_model_tile_bounds(vw, vh);
                 // Unified control chip: split buttons + render-mode picker +
@@ -2575,7 +2614,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 let border_layer = iced::widget::pin(border_frame).position(iced::Point::new(x, y));
                 viewport_stack = viewport_stack.push(border_layer);
 
-                if self.show_viewport_controls {
+                if self.show_viewport_controls && !bare {
                     let vp_mode = tab
                         .scene
                         .active_viewport_render_mode()
@@ -3427,7 +3466,9 @@ bg={bg_ms:.1}ms n={view_count}"
             // menu bar and status bar stay so commands remain reachable and
             // the mode can be toggled back off.
             let mut col = column![];
-            if self.clean_screen {
+            if bare {
+                // The P&ID editor has a toolbar of its own above the drawing.
+            } else if self.clean_screen {
                 // Clean screen keeps the menu row, led by the compact logo.
                 if self.show_menu_bar {
                     col = col.push(
@@ -3459,7 +3500,7 @@ bg={bg_ms:.1}ms n={view_count}"
             // PERF; zero cost otherwise).
             mark("ribbon");
             // The ribbon's own 1 px bottom line runs across the docks too.
-            if self.show_file_tabs && self.file_tabs_above_docks {
+            if self.show_file_tabs && self.file_tabs_above_docks && !bare {
                 col = col.push(doc_tab_bar(
                     &self.tabs,
                     self.active_tab,
@@ -3469,7 +3510,7 @@ bg={bg_ms:.1}ms n={view_count}"
                 ));
             }
             col.push(center_stack)
-                .push({
+                .push((!bare).then(|| {
                     let is_model = tab.scene.current_layout == "Model";
                     let scale_pill_enabled = is_model
                         || tab.scene.active_viewport.is_some()
@@ -3609,7 +3650,7 @@ bg={bg_ms:.1}ms n={view_count}"
                                 )
                             }),
                     )
-                })
+                }))
                 .width(Fill)
                 .height(Fill)
         })
@@ -3637,7 +3678,10 @@ bg={bg_ms:.1}ms n={view_count}"
         } else {
             Vec::new()
         };
-        let dropdown_layer: Element<'_, Message> = if self.block_gallery_open() {
+        let dropdown_layer: Element<'_, Message> = if bare {
+            // No ribbon: nothing of it drops down.
+            iced::widget::Space::new().width(0).height(0).into()
+        } else if self.block_gallery_open() {
             self.ribbon.place_dropdown(
                 crate::modules::insert::insert_block::GALLERY_ID,
                 crate::ui::window::block_palette::gallery(&self.block_palette),
@@ -3709,24 +3753,25 @@ bg={bg_ms:.1}ms n={view_count}"
         };
 
         // A minimized ribbon's popup lies over the drawing, under dropdowns.
-        let ribbon_popup_layer: Element<'_, Message> = if self.clean_screen || self.ribbon_closed {
-            None
-        } else {
-            self.ribbon.minimized_popup(
-                is_paper,
-                self.tabs[self.active_tab].is_start,
-                self.show_block_palette,
-                self.block_visibility_context(),
-                self.win_size,
-            )
-        }
-        .unwrap_or_else(|| iced::widget::Space::new().width(0).height(0).into());
+        let ribbon_popup_layer: Element<'_, Message> =
+            if bare || self.clean_screen || self.ribbon_closed {
+                None
+            } else {
+                self.ribbon.minimized_popup(
+                    is_paper,
+                    self.tabs[self.active_tab].is_start,
+                    self.show_block_palette,
+                    self.block_visibility_context(),
+                    self.win_size,
+                )
+            }
+            .unwrap_or_else(|| iced::widget::Space::new().width(0).height(0).into());
 
         // Floating ribbon panels lie over the drawing and the palettes, under
         // the ribbon's popups and menus. With the ribbon closed they stay:
         // they are the classic toolbars then.
         let floating_layer: Element<'_, Message> =
-            if self.clean_screen || self.tabs[self.active_tab].is_start {
+            if bare || self.clean_screen || self.tabs[self.active_tab].is_start {
                 None
             } else {
                 self.ribbon.floating_layer(self.show_block_palette)
@@ -3734,7 +3779,8 @@ bg={bg_ms:.1}ms n={view_count}"
             .unwrap_or_else(|| iced::widget::Space::new().width(0).height(0).into());
 
         // Pinned slide-outs hang under their panels, over the drawing.
-        let pinned_layer: Element<'_, Message> = if self.clean_screen || self.ribbon_closed {
+        let pinned_layer: Element<'_, Message> = if bare || self.clean_screen || self.ribbon_closed
+        {
             None
         } else {
             self.ribbon
@@ -3745,16 +3791,21 @@ bg={bg_ms:.1}ms n={view_count}"
         let search_layer: Element<'_, Message> = self
             .ribbon
             .search_layer()
+            .filter(|_| !bare)
             .unwrap_or_else(|| iced::widget::Space::new().width(0).height(0).into());
 
         let ribbon_menu_layer: Element<'_, Message> = self
             .ribbon
             .menu_overlay(self.win_size, self.show_menu_bar, self.ribbon_closed)
+            .filter(|_| !bare)
             .unwrap_or_else(|| iced::widget::Space::new().width(0).height(0).into());
 
         // Key tips: the hint bar under the dropdowns, the codes above all.
-        let (keytip_bar, keytip_layer): (Element<'_, Message>, Element<'_, Message>) =
-            self.ribbon.keytip_layers().unwrap_or_else(|| {
+        let (keytip_bar, keytip_layer): (Element<'_, Message>, Element<'_, Message>) = self
+            .ribbon
+            .keytip_layers()
+            .filter(|_| !bare)
+            .unwrap_or_else(|| {
                 (
                     iced::widget::Space::new().width(0).height(0).into(),
                     iced::widget::Space::new().width(0).height(0).into(),
@@ -3887,6 +3938,22 @@ bg={bg_ms:.1}ms n={view_count}"
         } else {
             base
         }
+    }
+
+    /// Whether the general interface is drawing a dialog over itself: a
+    /// modal dialog that is not in a window of its own, the colour picker,
+    /// or one of the dialogs that are layers of the drawing (quick select,
+    /// the layer filter, the layer import).
+    pub(in crate::app) fn dialog_is_up(&self) -> bool {
+        let in_own_window = self.active_modal.is_some_and(|kind| {
+            self.tool_windows
+                .iter()
+                .any(|tool| tool.kind == kind && !tool.in_canvas())
+        });
+        (!in_own_window && (self.active_modal.is_some() || self.color_picker.is_some()))
+            || self.qselect.is_some()
+            || self.filter_dialog.is_some()
+            || self.layer_import.is_some()
     }
 
     /// Measured outer pixel bounds for whichever shared modal is visible, used

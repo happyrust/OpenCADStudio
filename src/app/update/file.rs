@@ -1951,7 +1951,13 @@ impl OpenCADStudio {
                 tab.scene.populate_meshes_from_document();
             }
         }
-        let model_bg = self.model_space.resolve_model_bg(&self.active_theme);
+        // Inside the P&ID module a drawing is cleared to the canvas colour
+        // of the module's design. The user's model space background stays
+        // as it is set, for the general interface.
+        let model_bg = match self.pid_shell.current() {
+            Some(_) => crate::app::pid_shell::canvas::colour(self.pid_shell.theme),
+            None => self.model_space.resolve_model_bg(&self.active_theme),
+        };
         let paper_bg = self.model_space.resolve_paper_bg();
         let desk_bg = self.model_space.resolve_desk_bg();
         let sel_color = self.model_space.resolve_selection_color();
@@ -4223,7 +4229,7 @@ impl OpenCADStudio {
         let thumbnail = (purpose != crate::app::SavePurpose::Autosave && i == self.active_tab)
             .then_some(version >= document::DxfVersion::AC1027);
         let capture_bounds = thumbnail.and_then(|_| {
-            crate::ui::wrap_bar::dropdown_bounds(crate::app::view::VIEWPORT_CAPTURE_BOUNDS_ID)
+            crate::ui::wrap_bar::window_bounds(crate::app::view::VIEWPORT_CAPTURE_BOUNDS_ID)
         });
         let clone_started = iced::time::Instant::now();
         let mut snapshot = self.tabs[i].scene.document_for_save();
@@ -5203,7 +5209,7 @@ impl OpenCADStudio {
         // against the retained handle before writing.
         crate::io::fs_access::begin_web_save(tab_id, &ext);
         let bounds =
-            crate::ui::wrap_bar::dropdown_bounds(crate::app::view::VIEWPORT_CAPTURE_BOUNDS_ID);
+            crate::ui::wrap_bar::window_bounds(crate::app::view::VIEWPORT_CAPTURE_BOUNDS_ID);
         let Some(bounds) = bounds else {
             return Task::done(Message::WebSaveScreenshot {
                 tab_id,

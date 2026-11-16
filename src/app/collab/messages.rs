@@ -18,31 +18,76 @@ pub(super) enum Frame {
     Event(CollabEvent),
     /// The server asked for a graceful close, or the session is over.
     Close,
+    /// The server no longer knows this session (`SESSION_EXPIRED`,
+    /// `SESSION_UNKNOWN`): nothing more can be done on this socket — a
+    /// second `hello` on it is refused — so it is closed and the client
+    /// joins again, as after any drop. Carries the code.
+    Rejoin(String),
     /// The frame could not be understood at all.
     Unreadable(String),
 }
 
-/// Classify one inbound text frame.
+/// Everything one inbound frame says: what [`classify`] makes of it, and
+/// the events that go with it — `before` it and `after` it, in that order
+/// on the channel.
+///
+/// A frame was one event until a `welcome` came to say two things more
+/// (where a replay starts, when each claim runs out) and a `conflict` one
+/// (which ops tied). Those are events of their own, so that the event each
+/// frame has always been stays as it was.
+pub(super) struct Reading {
+    pub before: Vec<CollabEvent>,
+    pub frame: Frame,
+    pub after: Vec<CollabEvent>,
+}
+
+/// Classify one inbound text frame: its one event, as it has always been.
+#[cfg(test)]
 pub(super) fn classify(text: &str) -> Frame {
+    read(text).frame
+}
+
+/// Read one inbound text frame.
+pub(super) fn read(text: &str) -> Reading {
     let message: ServerMessage = match serde_json::from_str(text) {
         Ok(message) => message,
-        Err(error) => return Frame::Unreadable(error.to_string()),
+        Err(error) => {
+            return Reading {
+                before: Vec::new(),
+                frame: Frame::Unreadable(error.to_string()),
+                after: Vec::new(),
+            }
+        }
     };
-    match message {
+    let (mut before, mut after) = (Vec::new(), Vec::new());
+    let frame = match message {
         ServerMessage::Welcome {
             session_id,
             base_revision,
             peers,
             claims,
-        } => Frame::Event(CollabEvent::Connected {
-            session_id,
-            base_revision,
-            peers: peers.iter().map(peer_info).collect(),
-            claims: claims
-                .into_iter()
-                .map(|claim| (claim.tag, claim.user_id))
-                .collect(),
-        }),
+            replay_from,
+        } => {
+            // Said first: the session is then taken at the revision its
+            // drawing has, with what it missed still to come.
+            before.extend(replay_from.map(|from| CollabEvent::Resuming { from }));
+            // When each claim runs out. It used to be dropped here.
+            after.push(CollabEvent::ClaimsExpire(
+                claims
+                    .iter()
+                    .map(|claim| (claim.tag.clone(), claim.expires_at))
+                    .collect(),
+            ));
+            Frame::Event(CollabEvent::Connected {
+                session_id,
+                base_revision,
+                peers: peers.iter().map(peer_info).collect(),
+                claims: claims
+                    .into_iter()
+                    .map(|claim| (claim.tag, claim.user_id))
+                    .collect(),
+            })
+        }
         ServerMessage::PeerJoined(peer) => Frame::Event(CollabEvent::PeerJoined(peer_info(&peer))),
         ServerMessage::PeerLeft(peer) => Frame::Event(CollabEvent::PeerLeft {
             session_id: peer.session_id,
@@ -84,27 +129,53 @@ pub(super) fn classify(text: &str) -> Frame {
             code,
             message,
             holder,
+            op_id,
+            rejected,
             ..
         } => {
-            // A taken-over session is disconnected, not merely reported: the
-            // server stops answering heartbeats for it, so the read loop would
-            // otherwise spin until the socket dies on its own.
-            if code == ocs_collab::protocol::codes::SESSION_TAKEN_OVER {
-                return Frame::Close;
-            }
-            if let Some(holder) = holder {
-                // `PERM_DENIED_STATE` names the session holding the drawing;
-                // that is a read-only downgrade in everything but the name.
-                if code == ocs_collab::protocol::codes::PERM_DENIED_STATE {
-                    return Frame::Event(CollabEvent::ReadonlyDowngrade {
-                        reason: message,
-                        holder: Some(holder),
+            use ocs_collab::protocol::codes;
+            if code == codes::SESSION_TAKEN_OVER {
+                // A taken-over session is disconnected, not merely
+                // reported: the server stops answering heartbeats for it,
+                // so the read loop would otherwise spin until the socket
+                // dies on its own.
+                Frame::Close
+            } else if code == codes::SESSION_EXPIRED || code == codes::SESSION_UNKNOWN {
+                // The server has let go of this session. It was an error
+                // on the command line and nothing more, with the socket
+                // left open and useless.
+                Frame::Rejoin(code)
+            } else if let Some(op_id) = op_id {
+                // The answer to an op of this session's, by name. Refused
+                // because somebody else holds the drawing, it is also what
+                // it has always been: the word that this session may not
+                // write.
+                if let (Some(holder), true) = (&holder, code == codes::PERM_DENIED_STATE) {
+                    before.push(CollabEvent::ReadonlyDowngrade {
+                        reason: message.clone(),
+                        holder: Some(holder.clone()),
                         level: Some("state".to_owned()),
-                        code: Some(code),
+                        code: Some(code.clone()),
                     });
                 }
+                Frame::Event(CollabEvent::OpRefused {
+                    op_id,
+                    code,
+                    message,
+                    rejected: rejected == Some(true),
+                })
+            } else if let (Some(holder), true) = (holder, code == codes::PERM_DENIED_STATE) {
+                // `PERM_DENIED_STATE` names the session holding the drawing;
+                // that is a read-only downgrade in everything but the name.
+                Frame::Event(CollabEvent::ReadonlyDowngrade {
+                    reason: message,
+                    holder: Some(holder),
+                    level: Some("state".to_owned()),
+                    code: Some(code),
+                })
+            } else {
+                Frame::Event(CollabEvent::ServerError { code, message })
             }
-            Frame::Event(CollabEvent::ServerError { code, message })
         }
         // Used to be dropped here: the room was told and this client was not
         // listening, so the panel never showed an entry and the person whose
@@ -115,13 +186,25 @@ pub(super) fn classify(text: &str) -> Frame {
             field,
             value_a,
             value_b,
-        } => Frame::Event(CollabEvent::Conflict(PendingConflict {
-            conflict_id,
-            object_ref,
-            field,
-            value_a,
-            value_b,
-        })),
+            op_ids,
+        } => {
+            // The ops that tied get no other answer.
+            if !op_ids.is_empty() {
+                after.push(CollabEvent::OpsInConflict { op_ids });
+            }
+            Frame::Event(CollabEvent::Conflict(PendingConflict {
+                conflict_id,
+                object_ref,
+                field,
+                value_a,
+                value_b,
+            }))
+        }
+    };
+    Reading {
+        before,
+        frame,
+        after,
     }
 }
 

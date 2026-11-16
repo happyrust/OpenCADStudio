@@ -7066,12 +7066,21 @@ const SCENE_DRAWS_BEFORE_NO_RENDERER: u32 = 3;
 static GPU_STATUS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Called by the viewport's `shader::Program::draw`, whichever renderer runs it.
+#[cfg(not(test))]
 pub(crate) fn note_scene_draw() {
     use std::sync::atomic::Ordering;
     if SCENE_DRAWS.fetch_add(1, Ordering::Relaxed) + 1 == SCENE_DRAWS_BEFORE_NO_RENDERER {
         GPU_STATUS_GENERATION.fetch_add(1, Ordering::Relaxed);
     }
 }
+
+/// A test program counts none. It has no device and draws the scene all the
+/// same — a test that draws the whole window headlessly does — and the count
+/// is the process's: three such draws anywhere would turn every application
+/// in every other test to "no renderer" and put the warning dialog up in it,
+/// which swallows the keys that test goes on to send.
+#[cfg(test)]
+pub(crate) fn note_scene_draw() {}
 
 /// One line for whoever reads logs: stderr natively, the browser console on
 /// the web, where wasm has no stderr to write to.

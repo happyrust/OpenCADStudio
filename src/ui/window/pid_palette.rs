@@ -199,6 +199,8 @@ pub fn cell_bounds_id(block: &str) -> String {
 fn cell<'a>(symbol: &'a SymbolDefinition, block: String) -> Element<'a, Message> {
     let icon = canvas(SymbolIcon {
         geometry: &symbol.geometry,
+        ink: None,
+        pad: CELL_PAD,
     })
     .width(Length::Fixed(CELL))
     .height(Length::Fixed(CELL));
@@ -252,9 +254,31 @@ fn muted(theme: &Theme) -> iced::widget::text::Style {
 ///
 /// Split out so the fit is testable without a renderer.
 pub fn fit_rect(size: Size) -> (f32, f32, f32, f32) {
-    let inner_w = (size.width - 2.0 * CELL_PAD).max(1.0);
-    let inner_h = (size.height - 2.0 * CELL_PAD).max(1.0);
-    (CELL_PAD, CELL_PAD, inner_w, inner_h)
+    fit_rect_padded(size, CELL_PAD)
+}
+
+/// [`fit_rect`] with `pad` pixels left free on every side.
+pub fn fit_rect_padded(size: Size, pad: f32) -> (f32, f32, f32, f32) {
+    let inner_w = (size.width - 2.0 * pad).max(1.0);
+    let inner_h = (size.height - 2.0 * pad).max(1.0);
+    (pad, pad, inner_w, inner_h)
+}
+
+/// A symbol's own drawing as an icon `side` pixels square, stroked in
+/// `ink`: what a palette cell draws, for whoever else shows the symbol.
+pub fn symbol_icon<'a>(
+    geometry: &'a [Geometry],
+    side: f32,
+    ink: iced::Color,
+) -> Element<'a, Message> {
+    canvas(SymbolIcon {
+        geometry,
+        ink: Some(ink),
+        pad: 2.0,
+    })
+    .width(Length::Fixed(side))
+    .height(Length::Fixed(side))
+    .into()
 }
 
 /// Bounding box of `geometry` in symbol coordinates, `None` when it has no
@@ -309,6 +333,10 @@ pub fn geometry_bounds(geometry: &[Geometry]) -> Option<(f64, f64, f64, f64)> {
 /// Canvas program drawing one symbol's geometry fit-to-box.
 struct SymbolIcon<'a> {
     geometry: &'a [Geometry],
+    /// The stroke colour; the theme's text colour when `None`.
+    ink: Option<iced::Color>,
+    /// Pixels left free on every side.
+    pad: f32,
 }
 
 impl<'a> Program<Message> for SymbolIcon<'a> {
@@ -323,16 +351,19 @@ impl<'a> Program<Message> for SymbolIcon<'a> {
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        draw_symbol(&mut frame, self.geometry, bounds.size(), theme);
+        let ink = self
+            .ink
+            .unwrap_or_else(|| theme.palette().background.base.text);
+        draw_symbol(&mut frame, self.geometry, bounds.size(), ink, self.pad);
         vec![frame.into_geometry()]
     }
 }
 
-/// Draw `geometry` fit into `size`, centred, in the theme's text colour.
-fn draw_symbol(frame: &mut Frame, geometry: &[Geometry], size: Size, theme: &Theme) {
-    let ink = theme.palette().background.base.text;
+/// Draw `geometry` fit into `size` less `pad` on every side, centred, in
+/// `ink`.
+fn draw_symbol(frame: &mut Frame, geometry: &[Geometry], size: Size, ink: iced::Color, pad: f32) {
     let stroke = Stroke::default().with_color(ink).with_width(1.4);
-    let (pad_x, pad_y, inner_w, inner_h) = fit_rect(size);
+    let (pad_x, pad_y, inner_w, inner_h) = fit_rect_padded(size, pad);
 
     let Some((min_x, min_y, max_x, max_y)) = geometry_bounds(geometry) else {
         // Nothing drawable: a mark so the cell is still visibly occupied.

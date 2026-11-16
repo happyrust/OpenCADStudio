@@ -885,6 +885,11 @@ impl OpenCADStudio {
         if self.tabs[self.active_tab].is_start {
             return false;
         }
+        // The P&ID editor has an inspector of its own: the pallet it stands
+        // for is not drawn beside it.
+        if self.pid_shell.current().is_some() && id == PanelId::Properties {
+            return false;
+        }
         if self.clean_screen {
             let reopened = match id {
                 PanelId::Properties => self.clean_screen_properties,
@@ -984,9 +989,10 @@ impl OpenCADStudio {
     }
 
     /// Whether the drawing-tab bar sits over the drawing, between the
-    /// docks, rather than across the window above them.
+    /// docks, rather than across the window above them. Never in the P&ID
+    /// editor, which has drawing tabs of its own.
     pub(crate) fn doc_tabs_in_center(&self) -> bool {
-        self.show_file_tabs && !self.file_tabs_above_docks
+        self.show_file_tabs && !self.file_tabs_above_docks && self.pid_shell.current().is_none()
     }
 
     /// The open pallets of group `gi` on `side`, top → bottom. Closed

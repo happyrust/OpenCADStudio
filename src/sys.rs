@@ -34,6 +34,108 @@ fn drawing_hyperlinks_only_open_web_pages() {
     }
 }
 
+/// Hand `target` — a web address, a file, a folder — to the system, to be
+/// opened by whatever opens such things there: the browser, the file manager,
+/// the program a file type belongs to.
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
+pub(crate) fn system_open(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    open::that_detached(target)
+}
+
+/// A test build hands nothing to the system. The test program runs on the
+/// desktop of whoever started it, where a browser tab or a folder window
+/// opens in front of them — once for every run of the suite, as `HELP` did.
+/// What would have been opened is kept instead, for a test to read back with
+/// [`launches::taken`].
+#[cfg(all(not(target_arch = "wasm32"), test))]
+pub(crate) fn system_open(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    launches::record("open", target.as_ref());
+    Ok(())
+}
+
+/// What a test build was asked to hand to the system, and kept instead.
+#[cfg(all(not(target_arch = "wasm32"), test))]
+pub(crate) mod launches {
+    use std::cell::RefCell;
+    use std::ffi::OsStr;
+
+    thread_local! {
+        static KEPT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Keep `target` under `how` (`open`, `reveal`) instead of acting on it.
+    ///
+    /// With `OCS_TEST_LAUNCH_LOG` naming a file, the request is also written
+    /// there with the name of the thread it came from — libtest names a
+    /// test's thread after the test — which is how to list, after a run of
+    /// the whole suite, what the suite would have started and from where.
+    pub(crate) fn record(how: &str, target: &OsStr) {
+        let request = format!("{how} {}", target.to_string_lossy());
+        if let Some(path) = std::env::var_os("OCS_TEST_LAUNCH_LOG") {
+            use std::io::Write;
+            static ONE_WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _one = ONE_WRITER
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Ok(mut log) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let thread = std::thread::current();
+                let from = thread.name().unwrap_or("(a thread with no name)");
+                let _ = writeln!(log, "{from}\t{request}");
+            }
+        }
+        KEPT.with(|kept| kept.borrow_mut().push(request));
+    }
+
+    /// What this thread — this test — asked for since it last looked, oldest
+    /// first.
+    pub(crate) fn taken() -> Vec<String> {
+        KEPT.with(|kept| std::mem::take(&mut *kept.borrow_mut()))
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), test))]
+mod no_external_program {
+    use super::{launches, open_url, reveal_in_file_manager, system_open};
+
+    /// A web address, a file to open and a file to show in its folder: each
+    /// is kept, in the order it was asked for.
+    #[test]
+    fn what_would_be_opened_is_kept_in_the_order_it_was_asked_for() {
+        let _ = launches::taken();
+        let _: iced::Task<()> = open_url("https://example.com/a", None);
+        system_open("D:/drawings/pump.pdf").expect("keeping does not fail");
+        reveal_in_file_manager(std::path::Path::new("D:/drawings/pump.dwg"))
+            .expect("keeping does not fail");
+        assert_eq!(
+            launches::taken(),
+            [
+                "open https://example.com/a",
+                "open D:/drawings/pump.pdf",
+                "reveal D:/drawings/pump.dwg"
+            ]
+        );
+        assert!(launches::taken().is_empty(), "taking empties the list");
+    }
+
+    /// The list is the thread's, so one test does not read what another
+    /// asked for.
+    #[test]
+    fn what_another_thread_asked_for_is_not_in_this_ones_list() {
+        let _ = launches::taken();
+        std::thread::spawn(|| {
+            let _ = system_open("https://example.com/elsewhere");
+            assert_eq!(launches::taken().len(), 1);
+        })
+        .join()
+        .expect("the other thread ran");
+        assert!(launches::taken().is_empty());
+    }
+}
+
 /// Open a URL in the user's browser.
 ///
 /// Wayland requires an xdg-activation token from the source window before it
@@ -51,7 +153,7 @@ pub fn open_url<Message: Send + 'static>(
         })
         .discard(),
         None => {
-            let _ = open::that_detached(url);
+            let _ = system_open(url);
             iced::Task::none()
         }
     }
@@ -84,7 +186,7 @@ fn linux_activation_token(window: &dyn iced::window::Window) -> Option<String> {
 #[cfg(target_os = "linux")]
 fn open_url_linux(url: &str, activation_token: Option<String>) {
     let Some(token) = activation_token else {
-        let _ = open::that_detached(url);
+        let _ = system_open(url);
         return;
     };
 
@@ -99,13 +201,13 @@ fn open_url_linux(url: &str, activation_token: Option<String>) {
             let _ = child.wait();
         });
     } else {
-        let _ = open::that_detached(url);
+        let _ = system_open(url);
     }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "linux")))]
 pub fn open_url<Message>(url: &str, _parent: Option<iced::window::Id>) -> iced::Task<Message> {
-    let _ = open::that_detached(url);
+    let _ = system_open(url);
     iced::Task::none()
 }
 
@@ -163,8 +265,16 @@ pub fn set_unsaved_changes_warning(active: bool) {
     });
 }
 
+/// A test build starts no file manager (see [`system_open`]): the path it
+/// would have shown is kept.
+#[cfg(all(not(target_arch = "wasm32"), test))]
+pub fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    launches::record("reveal", path.as_os_str());
+    Ok(())
+}
+
 /// Reveal a saved drawing in the native platform's file manager.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
 pub fn reveal_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let status = std::process::Command::new("explorer.exe")

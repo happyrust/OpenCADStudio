@@ -182,6 +182,8 @@ impl OpenCADStudio {
             }
             // What the peers had done to this drawing by now; see the field.
             delta.remote_mark = self.collab_remote_mark(i);
+            // The step's number, for the op that tells the room of it.
+            delta.collab_step = self.collab.next_step();
         }
         // The single convergence point of every new undo step (about 60 call
         // sites route here), which is why the collaboration broadcast hooks in
@@ -320,6 +322,7 @@ impl OpenCADStudio {
             graph: None,
             named_parameters: None,
             remote_mark: 0,
+            collab_step: 0,
             label: label.into(),
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -521,6 +524,7 @@ impl OpenCADStudio {
             graph,
             named_parameters: None,
             remote_mark: 0,
+            collab_step: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -814,6 +818,7 @@ impl OpenCADStudio {
             graph: None,
             named_parameters: None,
             remote_mark: 0,
+            collab_step: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -878,6 +883,7 @@ impl OpenCADStudio {
             graph: None,
             named_parameters: None,
             remote_mark: 0,
+            collab_step: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -942,6 +948,7 @@ impl OpenCADStudio {
             graph: None,
             named_parameters: None,
             remote_mark: 0,
+            collab_step: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -1026,6 +1033,7 @@ impl OpenCADStudio {
             graph: None,
             named_parameters: None,
             remote_mark: 0,
+            collab_step: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -1105,6 +1113,7 @@ impl OpenCADStudio {
             graph: None,
             named_parameters: None,
             remote_mark: 0,
+            collab_step: 0,
             label: "STYLE".into(),
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -1324,6 +1333,7 @@ impl OpenCADStudio {
             graph: None,
             named_parameters,
             remote_mark: 0,
+            collab_step: 0,
             label: pending.label,
         };
         self.push_undo_entry(i, HistorySnapshot::Delta(Box::new(delta)));
@@ -1793,6 +1803,9 @@ impl OpenCADStudio {
         // did: a retag taken back here has to be taken back in the room. The
         // steps of one UNDO go out together, in the order they are taken back.
         let mut undone = Vec::new();
+        // The steps taken back, by their numbers in the collaboration
+        // session: what the op that says so speaks for.
+        let mut undone_steps = Vec::new();
         // In a collaboration session the steps' images may predate changes
         // the peers have made since; see `replay_remote_after`.
         let guard = self.history_guard(i, true, steps);
@@ -1804,9 +1817,7 @@ impl OpenCADStudio {
             let step_label = snapshot.label().to_owned();
             match snapshot {
                 HistorySnapshot::Delta(mut d) => {
-                    undone.extend(super::collab::broadcast::collect_undone_changes(
-                        &d.entities,
-                    ));
+                    undone_steps.push(d.collab_step);
                     native_graph_changed |=
                         !d.parametric_constraints.is_empty() || d.named_parameters.is_some();
                     reference_session_changed |= d.reference_session.is_some();
@@ -1830,6 +1841,12 @@ impl OpenCADStudio {
                         &mut d,
                         true,
                         &mut touched_visibility_blocks,
+                    ));
+                    // Said once the step is back out: what a run it touched
+                    // is like now is read off the drawing without it.
+                    undone.extend(super::collab::broadcast::collect_undone_step_changes(
+                        &self.tabs[i].scene.document,
+                        &d.entities,
                     ));
                     step_view = d
                         .view
@@ -1864,7 +1881,7 @@ impl OpenCADStudio {
             Some(guard) => self.replay_remote_after(i, guard),
             None => undone,
         };
-        self.broadcast_changes(i, undone);
+        self.broadcast_changes(i, undone, undone_steps, false, &last_label);
         if report {
             self.command_line
                 .push_output(crate::tf!("Undo: {last_label}").as_ref());
@@ -1927,6 +1944,7 @@ impl OpenCADStudio {
         let mut step_view = None;
         // Broadcast for the same reason an undo is (`undo_steps_reported`).
         let mut redone = Vec::new();
+        let mut redone_steps = Vec::new();
         let guard = self.history_guard(i, false, steps);
         for _ in 0..steps {
             let Some(snapshot) = self.tabs[i].history.redo_stack.pop() else {
@@ -1936,7 +1954,7 @@ impl OpenCADStudio {
             let step_label = snapshot.label().to_owned();
             match snapshot {
                 HistorySnapshot::Delta(mut d) => {
-                    redone.extend(super::collab::broadcast::collect_changes(&d.entities));
+                    redone_steps.push(d.collab_step);
                     native_graph_changed |=
                         !d.parametric_constraints.is_empty() || d.named_parameters.is_some();
                     reference_session_changed |= d.reference_session.is_some();
@@ -1957,6 +1975,10 @@ impl OpenCADStudio {
                         &mut d,
                         false,
                         &mut touched_visibility_blocks,
+                    ));
+                    redone.extend(super::collab::broadcast::collect_step_changes(
+                        &self.tabs[i].scene.document,
+                        &d.entities,
                     ));
                     step_view = d
                         .view
@@ -1991,9 +2013,13 @@ impl OpenCADStudio {
             Some(guard) => self.replay_remote_after(i, guard),
             None => redone,
         };
-        self.broadcast_changes(i, redone);
-        self.command_line
-            .push_output(crate::tf!("Redo: {last_label}").as_ref());
+        self.broadcast_changes(i, redone, redone_steps, true, &last_label);
+        // (Not when a step the server refused is being put back: that is
+        // said by whoever put it back.)
+        if !self.collab.rolling_back {
+            self.command_line
+                .push_output(crate::tf!("Redo: {last_label}").as_ref());
+        }
     }
 }
 

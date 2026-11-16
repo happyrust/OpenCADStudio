@@ -2106,9 +2106,11 @@ impl OpenCADStudio {
             };
 
             if requested_scope == "viewport" {
-                if let Some(bounds) = crate::ui::wrap_bar::dropdown_bounds(
-                    crate::app::view::VIEWPORT_CAPTURE_BOUNDS_ID,
-                ) {
+                // Where the drawing area is in the window, which is not where
+                // it is in its own frame while the P&ID shell is around it.
+                if let Some(bounds) =
+                    crate::ui::wrap_bar::window_bounds(crate::app::view::VIEWPORT_CAPTURE_BOUNDS_ID)
+                {
                     let scale = s.scale_factor;
                     let left = (bounds.x * scale).floor().clamp(0.0, image.width() as f32) as u32;
                     let top = (bounds.y * scale).floor().clamp(0.0, image.height() as f32) as u32;

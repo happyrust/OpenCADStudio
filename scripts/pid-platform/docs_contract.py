@@ -1170,20 +1170,33 @@ GAP_REQUIRED_TOKENS = [
     "pid-legend.json",
 ]
 
-# The ten capabilities VAL-DOC-005 requires the 已确认不存在的能力 section
-# to enumerate, verbatim.
+# The capabilities the 已确认不存在的能力 section enumerates, verbatim.
+# VAL-DOC-005 listed ten when the specification was written. Three of them —
+# 多用户权限与审计, 协同设计, 审计日志 — have been built since (the
+# collaboration server, its permission chain and its audit log), so on
+# 2026-11-12 they moved to GAP_IMPLEMENTED_SINCE and this list is the seven
+# that are still absent. A capability is in exactly one of the two lists.
 GAP_CONFIRMED_ABSENT = [
     "位号主数据与带类型属性模型",
     "跨图纸拓扑持久化",
     "可配置校验引擎",
     "P&ID 语义材料清单",
     "服务端项目库",
-    "多用户权限与审计",
     "图例库可视化编辑器",
-    "协同设计",
-    "审计日志",
     "数据交换标准（DEXPI/ISO 15926/CFIHOS）",
 ]
+
+# Capabilities that were confirmed absent when the specification was written
+# and have an implementation now. Each has its own subsection under
+# GAP_IMPLEMENTED_SECTION saying what exists and what is still missing, and
+# its capability-matrix row is no longer 新增: it names the code.
+GAP_IMPLEMENTED_SECTION = "已有实现、仍需改造的能力"
+GAP_IMPLEMENTED_SINCE = [
+    "多用户权限与审计",
+    "协同设计",
+    "审计日志",
+]
+GAP_IMPLEMENTED_DISPOSITION = "改造"
 
 
 def gap_matrix_rows(text: str):
@@ -1366,4 +1379,62 @@ def validate_gap_analysis(text: str, repo_root=None) -> list:
                     "%s entry '%s' does not state that the capability is 新增"
                     % (GAP_ABSENT_SECTION, item)
                 )
+        for item in GAP_IMPLEMENTED_SINCE:
+            if any(item in name for name in subsections):
+                errors.append(
+                    "%s still lists '%s', which has an implementation; it "
+                    "belongs under %s"
+                    % (GAP_ABSENT_SECTION, item, GAP_IMPLEMENTED_SECTION)
+                )
+
+    errors.extend(_gap_implemented_errors(text, rows))
+    return errors
+
+
+def _gap_implemented_errors(text: str, rows: list) -> list:
+    """The capabilities built since the first survey are stated as built.
+
+    Each one has a subsection under GAP_IMPLEMENTED_SECTION that says the
+    disposition is 改造, and its capability-matrix row agrees: a row that
+    still reads 新增 with no evidence path would say the code does not exist.
+    """
+    errors = []
+    implemented = section_body(text, 2, GAP_IMPLEMENTED_SECTION)
+    if implemented is None:
+        return ["missing H2 section " + GAP_IMPLEMENTED_SECTION]
+    subsections = dict(sections_at(implemented, 3))
+    extra = [name for name in subsections if name not in GAP_IMPLEMENTED_SINCE]
+    if extra:
+        errors.append(
+            "%s lists subsections outside the contract set: %s"
+            % (GAP_IMPLEMENTED_SECTION, "、".join(extra))
+        )
+    by_capability = {row["能力"].strip(): row for row in rows}
+    for item in GAP_IMPLEMENTED_SINCE:
+        body = subsections.get(item)
+        if body is None:
+            errors.append(GAP_IMPLEMENTED_SECTION + " does not address: " + item)
+        else:
+            if len(body.strip()) < 60:
+                errors.append(
+                    "%s entry '%s' is too thin (%d characters) to say what "
+                    "exists and what is missing"
+                    % (GAP_IMPLEMENTED_SECTION, item, len(body.strip()))
+                )
+            if GAP_IMPLEMENTED_DISPOSITION not in body:
+                errors.append(
+                    "%s entry '%s' does not state that the capability is %s"
+                    % (GAP_IMPLEMENTED_SECTION, item, GAP_IMPLEMENTED_DISPOSITION)
+                )
+        row = by_capability.get(item)
+        if row is None:
+            errors.append(
+                "capability matrix has no row for the implemented capability "
+                + item
+            )
+        elif row["处置"].strip() == "新增":
+            errors.append(
+                "capability matrix row '%s' is still 新增 although %s says it "
+                "has an implementation" % (item, GAP_IMPLEMENTED_SECTION)
+            )
     return errors

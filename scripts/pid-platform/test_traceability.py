@@ -13,7 +13,7 @@ import pytest
 
 import conftest
 import rule_dsl
-from conftest import CATALOG, DOCS, PROTO, SCREEN_IDS
+from conftest import CATALOG, DOCS, PROTO, REPO_ROOT, SCREEN_IDS
 from docs_contract import find_table
 from manifest_contract import normalize_heading
 from requirements_contract import (
@@ -24,17 +24,25 @@ from requirements_contract import (
     DATA_SECTIONS,
     DELIVERABLE_SECTIONS,
     DRAWING_SECTIONS,
+    ERROR_TABLE_COLUMNS,
+    ERROR_TABLE_SECTION,
     IMPORT_EXPORT_SECTIONS,
     MATRIX_COLUMNS,
     MIGRATION_SECTIONS,
     OBSERVABLE_WORDS,
+    OPEN_COLUMNS,
+    OPEN_SECTION,
     OVERVIEW_PATH,
+    PROTOCOL_SOURCE,
     REQ_AREA_FILES,
     REQ_ID_RE,
     REQ_ID_TEXT,
     REUSE_MAPPING_SECTIONS,
     RULE_TABLE_COLUMNS,
     SHIPPED_DESIGN_RULES,
+    STATUS_COLUMNS,
+    STATUS_SECTION,
+    STATUS_VALUES,
     SYMBOL_SECTIONS,
     TAG_RULE_FIELDS,
     TYPE_SECTIONS,
@@ -43,10 +51,13 @@ from requirements_contract import (
     bom_rows,
     definitions,
     ebnf_productions,
+    error_table_codes,
     find_bom_header,
     load_all_documents,
     load_documents,
     matrix_rows,
+    protocol_error_codes,
+    referenced_error_codes,
     section_requirement_counts,
     section_text,
     split_entries,
@@ -57,6 +68,9 @@ from requirements_contract import (
     validate_bom_row_identity,
     validate_bom_rows,
     validate_collaboration_coverage,
+    validate_collaboration_error_table,
+    validate_collaboration_open_questions,
+    validate_collaboration_status,
     validate_connection_point_table,
     validate_data_rule_engine_coverage,
     validate_deliverable_coverage,
@@ -1824,12 +1838,23 @@ def test_traceability_collaboration_document_satisfies_the_contract():
     assert errors == [], "collaboration document breaches the contract: %s" % errors
 
 
-def test_traceability_collaboration_document_defines_twelve_entries():
-    """The document states 12 entries and actually defines 12."""
+def test_traceability_collaboration_document_defines_sixteen_entries():
+    """The document states 16 entries and actually defines 16.
+
+    Twelve until 2026-11-12; REQ-COLL-013 to 016 were added with the first
+    revision against the code that exists (submission and broadcast, queueing
+    and replay, drawing alignment at join, identity and deployment).
+    """
     text = load_documents(DOCS)[COLLABORATION_PATH]
     entries = [entry for entry in split_entries(text) if entry["area"] == "COLL"]
-    assert len(entries) == 12, "expected 12 REQ-COLL entries, got %d" % len(entries)
-    assert "共 12 条" in text, "the introduction does not state the entry count"
+    assert len(entries) == 16, "expected 16 REQ-COLL entries, got %d" % len(entries)
+    numbers = sorted(int(entry["number"]) for entry in entries)
+    assert numbers == list(range(1, 17)), "REQ-COLL numbers skip or repeat: %s" % numbers
+    assert "共 16 条" in text, "the introduction does not state the entry count"
+    overview = load_documents(DOCS)[OVERVIEW_PATH]
+    assert "协同与权限需求，共 16 条" in overview, (
+        "00-overview.md states another count for the collaboration document"
+    )
 
 
 def test_traceability_collaboration_document_cross_references_the_permission_entry():
@@ -1896,6 +1921,210 @@ def test_traceability_collaboration_validator_rejects_a_missing_document():
     assert errors == [
         "%s: collaboration requirement document is missing" % COLLABORATION_PATH
     ]
+
+
+# ---------------------------------------------------------------------------
+# Collaboration: error-code table, implementation status, open questions
+# ---------------------------------------------------------------------------
+
+
+def _collaboration_addenda(
+    codes=("PERM_DENIED_ROLE", "CLAIM_HELD"),
+    statuses=(("REQ-COLL-001", "已实现"), ("REQ-COLL-002", "部分")),
+    questions=(("位号已被占用时后来的申请怎么办", "REQ-COLL-002"),),
+) -> str:
+    """A small document with two entries and the three bookkeeping sections."""
+    error_rows = "".join(
+        "| `%s` | 写入被拒绝的应答 | 示例含义：这次写入没有生效 | 不要重试 | 403 |\n" % code
+        for code in codes
+    )
+    status_rows = "".join(
+        "| %s | %s | 判定与把关 | 没有界面 |\n" % row for row in statuses
+    )
+    open_rows = "".join(
+        "| %d | %s | 现在被拒绝并返回占用者 | %s |\n" % (index, question, entries)
+        for index, (question, entries) in enumerate(questions, start=1)
+    )
+    return (
+        "# 协同与权限需求\n\n"
+        "写入被拒绝时返回 `PERM_DENIED_ROLE` 或 `CLAIM_HELD`。\n\n"
+        "## 三级授权链\n\n"
+        + _entry("REQ-COLL-001", source="新增设计", title="三级授权链判定顺序")
+        + "\n## 并发编辑策略\n\n后来的申请见「未决事项」第 1 条。\n\n"
+        + _entry("REQ-COLL-002", source="新增设计", title="位号占用")
+        + "\n## " + ERROR_TABLE_SECTION + "\n\n"
+        + "| " + " | ".join(ERROR_TABLE_COLUMNS) + " |\n"
+        + "| " + " | ".join(["---"] * len(ERROR_TABLE_COLUMNS)) + " |\n"
+        + error_rows
+        + "\n## " + STATUS_SECTION + "\n\n"
+        + "| " + " | ".join(STATUS_COLUMNS) + " |\n"
+        + "| " + " | ".join(["---"] * len(STATUS_COLUMNS)) + " |\n"
+        + status_rows
+        + "\n## " + OPEN_SECTION + "\n\n"
+        + "| " + " | ".join(OPEN_COLUMNS) + " |\n"
+        + "| " + " | ".join(["---"] * len(OPEN_COLUMNS)) + " |\n"
+        + open_rows
+    )
+
+
+def test_traceability_collaboration_error_table_registers_every_code_named():
+    """Every reason code the real document names has a row in 错误码表."""
+    text = load_documents(DOCS)[COLLABORATION_PATH]
+    codes, errors = error_table_codes(text)
+    assert errors == [], "error-code table errors: %s" % errors
+    named = referenced_error_codes(text)
+    assert named, "the document names no reason code at all"
+    missing = sorted(set(named) - set(codes))
+    assert missing == [], "codes named but not registered: %s" % missing
+    assert validate_collaboration_error_table(text) == []
+
+
+def test_traceability_collaboration_error_table_registers_every_protocol_code():
+    """Every code the protocol library defines is registered, and none twice."""
+    defined = protocol_error_codes(REPO_ROOT)
+    assert len(defined) >= 20, (
+        "%s yielded only %d codes; the parser lost the module" % (PROTOCOL_SOURCE, len(defined))
+    )
+    for expected in ("PERM_DENIED_STATE", "CLAIM_HELD", "OP_SUPERSEDED", "DUPLICATE_INFLOW_CONNECTOR"):
+        assert expected in defined, "%s is not read from %s" % (expected, PROTOCOL_SOURCE)
+    assert len(set(defined)) == len(defined), "the protocol library repeats a code"
+    text = load_documents(DOCS)[COLLABORATION_PATH]
+    errors = validate_collaboration_error_table(text, protocol_codes=defined)
+    assert errors == [], "protocol codes missing from the table: %s" % errors
+
+
+def test_traceability_collaboration_body_states_no_http_failure_status_as_a_value():
+    """Refusals are named by code; `403` / `409` as values are gone from the body."""
+    text = load_documents(DOCS)[COLLABORATION_PATH]
+    strays = [
+        error
+        for error in validate_collaboration_error_table(text)
+        if "states the HTTP status" in error
+    ]
+    assert strays == [], strays
+
+
+def test_traceability_collaboration_error_validator_accepts_the_synthetic_document():
+    document = _collaboration_addenda()
+    assert validate_collaboration_error_table(document, protocol_codes=["CLAIM_HELD"]) == []
+
+
+def test_traceability_collaboration_error_validator_rejects_an_unregistered_code():
+    """Negative control: a code named in the body with no row in the table."""
+    document = _collaboration_addenda(codes=("PERM_DENIED_ROLE",))
+    errors = validate_collaboration_error_table(document)
+    assert any("code CLAIM_HELD is named but not registered" in error for error in errors), errors
+
+
+def test_traceability_collaboration_error_validator_rejects_a_code_registered_twice():
+    document = _collaboration_addenda(codes=("PERM_DENIED_ROLE", "CLAIM_HELD", "CLAIM_HELD"))
+    errors = validate_collaboration_error_table(document)
+    assert any("code CLAIM_HELD is registered twice" in error for error in errors), errors
+
+
+def test_traceability_collaboration_error_validator_rejects_a_missing_protocol_code():
+    """Negative control: the implementation defines a code the table omits."""
+    document = _collaboration_addenda()
+    errors = validate_collaboration_error_table(document, protocol_codes=["OP_SUPERSEDED"])
+    assert any("defines OP_SUPERSEDED" in error for error in errors), errors
+
+
+def test_traceability_collaboration_error_validator_rejects_an_http_status_value():
+    """Negative control: the body may not go back to `409`."""
+    document = _collaboration_addenda().replace(
+        "写入被拒绝时返回 `PERM_DENIED_ROLE` 或 `CLAIM_HELD`。",
+        "写入被拒绝时返回 `409`，码是 `PERM_DENIED_ROLE` 或 `CLAIM_HELD`。",
+    )
+    errors = validate_collaboration_error_table(document)
+    assert any("states the HTTP status 409" in error for error in errors), errors
+
+
+def test_traceability_collaboration_error_validator_rejects_a_missing_table():
+    document = _collaboration_addenda().replace("## " + ERROR_TABLE_SECTION, "## 码表")
+    errors = validate_collaboration_error_table(document)
+    assert any("missing section '%s'" % ERROR_TABLE_SECTION in error for error in errors), errors
+
+
+def test_traceability_collaboration_status_covers_every_entry_once():
+    """实现现状 has one row for each of the 16 entries, with a known status."""
+    text = load_documents(DOCS)[COLLABORATION_PATH]
+    errors = validate_collaboration_status(text)
+    assert errors == [], "implementation-status errors: %s" % errors
+    table = find_table(section_text(text, STATUS_SECTION), STATUS_COLUMNS)
+    assert table is not None and len(table["rows"]) == 16, (
+        "expected 16 status rows, got %s" % (table and len(table["rows"]))
+    )
+    observed = {_plain_cell(row[1]) for row in table["rows"]}
+    assert observed <= set(STATUS_VALUES), observed
+
+
+def test_traceability_collaboration_status_validator_rejects_a_missing_entry():
+    document = _collaboration_addenda(statuses=(("REQ-COLL-001", "已实现"),))
+    errors = validate_collaboration_status(document)
+    assert any("REQ-COLL-002 has no row" in error for error in errors), errors
+
+
+def test_traceability_collaboration_status_validator_rejects_an_unknown_status():
+    document = _collaboration_addenda(
+        statuses=(("REQ-COLL-001", "已实现"), ("REQ-COLL-002", "基本完成"))
+    )
+    errors = validate_collaboration_status(document)
+    assert any("has status '基本完成'" in error for error in errors), errors
+
+
+def test_traceability_collaboration_status_validator_rejects_a_repeated_entry():
+    document = _collaboration_addenda(
+        statuses=(
+            ("REQ-COLL-001", "已实现"),
+            ("REQ-COLL-002", "部分"),
+            ("REQ-COLL-002", "未实现"),
+        )
+    )
+    errors = validate_collaboration_status(document)
+    assert any("REQ-COLL-002 has two status rows" in error for error in errors), errors
+
+
+def test_traceability_collaboration_open_questions_point_at_real_entries():
+    """未决事项 is numbered 1..N and every row names defined requirements."""
+    documents = load_documents(DOCS)
+    text = documents[COLLABORATION_PATH]
+    errors = validate_collaboration_open_questions(text, documents)
+    assert errors == [], "open-question errors: %s" % errors
+    table = find_table(section_text(text, OPEN_SECTION), OPEN_COLUMNS)
+    assert table is not None and table["rows"], "未决事项 has no rows"
+
+
+def test_traceability_collaboration_open_validator_accepts_the_synthetic_document():
+    document = _collaboration_addenda()
+    assert validate_collaboration_open_questions(
+        document, {COLLABORATION_PATH: document}
+    ) == []
+    assert validate_collaboration_status(document) == []
+
+
+def test_traceability_collaboration_open_validator_rejects_a_citation_past_the_end():
+    """Negative control: the body cites a row the table does not have."""
+    document = _collaboration_addenda().replace("「未决事项」第 1 条", "「未决事项」第 3 条")
+    errors = validate_collaboration_open_questions(document)
+    assert any("cites open question 3" in error for error in errors), errors
+
+
+def test_traceability_collaboration_open_validator_rejects_an_undefined_entry():
+    document = _collaboration_addenda(
+        questions=(("位号已被占用时后来的申请怎么办", "REQ-COLL-099"),)
+    )
+    errors = validate_collaboration_open_questions(
+        document, {COLLABORATION_PATH: document}
+    )
+    assert any("names REQ-COLL-099, which is not defined" in error for error in errors), errors
+
+
+def test_traceability_collaboration_open_validator_rejects_a_misnumbered_row():
+    document = _collaboration_addenda().replace(
+        "| 1 | 位号已被占用时后来的申请怎么办 |", "| 2 | 位号已被占用时后来的申请怎么办 |"
+    )
+    errors = validate_collaboration_open_questions(document)
+    assert any("is numbered '2'; expected 1" in error for error in errors), errors
 
 
 def test_traceability_import_export_document_satisfies_the_contract():

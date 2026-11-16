@@ -24,9 +24,13 @@
 //! Ops of any other kind are opaque here and keep the old rule: current
 //! revision or `STALE_BASE_REVISION`.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
-use ocs_collab::conflict::{Change, DrawingModel, Verdict, KIND_DELETE_OBJECT, KIND_SET_TAG};
+use ocs_collab::conflict::{
+    Change, DrawingModel, Verdict, KIND_DELETE_OBJECT, KIND_PAIR_CONNECTOR, KIND_SET_TAG,
+};
+use ocs_collab::link::{Rooms, LINK_SESSION_PREFIX};
 use ocs_collab::protocol::codes;
 use ocs_collab::{new_conflict_id, ServerMessage, Session};
 use serde_json::Value;
@@ -78,8 +82,14 @@ impl DrawingOps {
             match store.load_ops(drawing_id, 0) {
                 Ok(ops) => {
                     for op in ops {
+                        // A pairing is the server's to say: one a client
+                        // sent was passed on as it came and is not one.
+                        let servers = op.session_id.starts_with(LINK_SESSION_PREFIX);
                         for entry in &op.changes {
                             for change in Change::list(entry) {
+                                if change.kind == KIND_PAIR_CONNECTOR && !servers {
+                                    continue;
+                                }
                                 let name = change.object_ref.clone();
                                 model.commit(&change, &name, op.revision, &op.session_id, &op.user_id);
                             }
@@ -209,7 +219,179 @@ pub fn receive(
             return Outcome::default();
         }
     }
-    judge_and_commit(state, drawing, &incoming, changes)
+    let mut outcome = judge_and_commit(state, drawing, &incoming, changes);
+    follow_connectors(state, &mut drawings, session, peer_addr, now, &mut outcome);
+    outcome
+}
+
+/// The drawings as [`ocs_collab::link::follow`] reaches them: the models
+/// the server holds (loading one from its op log when it is first asked
+/// for), and commits of the server's own made the way a session's are —
+/// one revision, the audit rows, the op-log row, the room told, all under
+/// the lock the caller holds.
+struct LinkedRooms<'a> {
+    state: &'a AppState,
+    drawings: &'a mut HashMap<String, DrawingOps>,
+    /// The session whose op all this follows from: the ops made here are on
+    /// its user's account.
+    by: &'a Session,
+    peer_addr: &'a str,
+    now: i64,
+    /// Every `op_applied` told to a room on the way.
+    told: Vec<Reaction>,
+}
+
+impl Rooms for LinkedRooms<'_> {
+    fn drawings(&mut self) -> Vec<String> {
+        let mut ids: Vec<String> = self.drawings.keys().cloned().collect();
+        if let Some(store) = &self.state.store {
+            match store.drawing_ids() {
+                Ok(known) => ids.extend(known),
+                Err(err) => eprintln!("[ocs_collab_server] 读取图纸清单失败：{err}"),
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    fn model(&mut self, drawing_id: &str) -> &DrawingModel {
+        let state = self.state;
+        &self
+            .drawings
+            .entry(drawing_id.to_owned())
+            .or_insert_with(|| DrawingOps::load(state, drawing_id))
+            .model
+    }
+
+    fn commit(
+        &mut self,
+        drawing_id: &str,
+        op_id: &str,
+        cause: &str,
+        changes: Vec<Value>,
+    ) -> Option<i64> {
+        let state = self.state;
+        let drawing = self
+            .drawings
+            .entry(drawing_id.to_owned())
+            .or_insert_with(|| DrawingOps::load(state, drawing_id));
+        // Nobody's session: the consequence, on this drawing, of an op the
+        // drawing `cause` took. It is on that op's user's account.
+        let session = Session {
+            session_id: format!("{LINK_SESSION_PREFIX}{cause}"),
+            drawing_id: drawing_id.to_owned(),
+            ..self.by.clone()
+        };
+        let incoming = Incoming {
+            session: &session,
+            peer_addr: self.peer_addr,
+            op_id,
+            base_revision: drawing.model.revision(),
+            now: self.now,
+        };
+        let listed: Vec<Change> = changes
+            .iter()
+            .filter_map(|raw| Change::list(raw).into_iter().next())
+            .collect();
+        let rows = match &state.store {
+            Some(store) => listed
+                .iter()
+                .map(|change| {
+                    let name = if change.object_ref.is_empty() {
+                        change.text("line_tag").unwrap_or_default()
+                    } else {
+                        change.object_ref.clone()
+                    };
+                    let text = format!(
+                        "{}（沿连接符，起因在 {cause}）",
+                        ws::describe_change(&change.kind, &name, &change.raw)
+                    );
+                    ws::audit_row(
+                        Some(store),
+                        &session,
+                        &change.kind,
+                        &name,
+                        text,
+                        self.peer_addr,
+                        self.now,
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        match commit(state, drawing, &incoming, rows, changes) {
+            Ok((revision, message)) => {
+                for change in &listed {
+                    let name = change.object_ref.clone();
+                    drawing
+                        .model
+                        .commit(change, &name, revision, &session.session_id, &session.user_id);
+                }
+                println!(
+                    "[ocs_collab_server] 沿连接符：{op_id} 在 {drawing_id} 提交为修订 {revision}（起因在 {cause}，{} 条变更）",
+                    listed.len()
+                );
+                self.told.push(Reaction::Published {
+                    drawing_id: drawing_id.to_owned(),
+                    message,
+                });
+                Some(revision)
+            }
+            Err(_) => {
+                eprintln!("[ocs_collab_server] 沿连接符：{op_id} 在 {drawing_id} 没有提交成");
+                None
+            }
+        }
+    }
+}
+
+/// After an op of `by`'s took effect (`outcome` says at which revision and
+/// what the room was told): pair the connectors it made with their other
+/// ends, and carry what it wrote on a line that flows out to the line it
+/// flows in on (`VAL-CROSS-009`). What that committed on other drawings —
+/// and on this one — is added to `outcome.reactions` as told to their
+/// rooms, which is also what moves those drawings' sessions on.
+fn follow_connectors(
+    state: &AppState,
+    drawings: &mut HashMap<String, DrawingOps>,
+    by: &Session,
+    peer_addr: &str,
+    now: i64,
+    outcome: &mut Outcome,
+) {
+    let Some(revision) = outcome.revision else {
+        return;
+    };
+    let told: Vec<Value> = outcome
+        .reactions
+        .iter()
+        .find_map(|reaction| match reaction {
+            Reaction::Published {
+                message:
+                    ServerMessage::OpApplied {
+                        revision: at,
+                        changes,
+                        ..
+                    },
+                ..
+            } if *at == revision => Some(changes.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    if told.is_empty() {
+        return;
+    }
+    let mut rooms = LinkedRooms {
+        state,
+        drawings,
+        by,
+        peer_addr,
+        now,
+        told: Vec::new(),
+    };
+    ocs_collab::link::follow(&mut rooms, &by.drawing_id, revision, &told);
+    outcome.reactions.append(&mut rooms.told);
 }
 
 /// Commit every held op whose window has passed. Returns, per drawing that
@@ -217,6 +399,9 @@ pub fn receive(
 pub fn flush_due(state: &AppState, now: Instant) -> Vec<(String, Outcome)> {
     let mut drawings = state.drawings.lock().expect("drawings mutex poisoned");
     let mut outcomes = Vec::new();
+    // Whose op each outcome is of, for what follows from it on other
+    // drawings — looked at once every drawing's held ops are through.
+    let mut made_by: Vec<(Session, String, i64)> = Vec::new();
     for (drawing_id, drawing) in drawings.iter_mut() {
         while let Some(index) = drawing.held.iter().position(|held| held.due <= now) {
             let held = drawing.held.remove(index);
@@ -239,9 +424,29 @@ pub fn flush_due(state: &AppState, now: Instant) -> Vec<(String, Outcome)> {
                 }
             }
             outcomes.push((drawing_id.clone(), outcome));
+            made_by.push((held.session.clone(), held.peer_addr.clone(), held.received_at));
         }
     }
+    for ((_, outcome), (session, peer_addr, received_at)) in outcomes.iter_mut().zip(&made_by) {
+        follow_connectors(state, &mut drawings, session, peer_addr, *received_at, outcome);
+    }
     outcomes
+}
+
+/// The revision each drawing was taken to by the `op_applied`s among
+/// `reactions`: the op's own drawing, and the drawings a connector carried
+/// it on to. The sessions of each are at that revision from then on.
+pub fn revisions_reached(reactions: &[Reaction]) -> Vec<(String, i64)> {
+    reactions
+        .iter()
+        .filter_map(|reaction| match reaction {
+            Reaction::Published {
+                drawing_id,
+                message: ServerMessage::OpApplied { revision, .. },
+            } => Some((drawing_id.clone(), *revision)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// [`flush_due`], with its results delivered: publishes go to the room,
@@ -249,6 +454,14 @@ pub fn flush_due(state: &AppState, now: Instant) -> Vec<(String, Outcome)> {
 pub async fn flush_and_deliver(state: &AppState) {
     for (drawing_id, outcome) in flush_due(state, Instant::now()) {
         if let Some(revision) = outcome.revision {
+            state
+                .sessions
+                .lock()
+                .await
+                .advance_base_revision(&drawing_id, revision);
+        }
+        // And the drawings a connector carried it on to.
+        for (drawing_id, revision) in revisions_reached(&outcome.reactions) {
             state
                 .sessions
                 .lock()
@@ -557,23 +770,47 @@ fn stale(incoming: &Incoming<'_>, current: i64) -> Outcome {
         incoming.now
     );
     Outcome {
-        reactions: vec![Reaction::Send(error(
+        reactions: vec![Reaction::Send(answer(
+            incoming,
             codes::STALE_BASE_REVISION,
             format!(
                 "图面当前修订为 {current}，操作基于 {}",
                 incoming.base_revision
             ),
+            true,
         ))],
         revision: None,
     }
 }
 
-fn error(code: &str, message: String) -> ServerMessage {
+/// The `error` that answers an op: which op it is about, and — `rejected`
+/// — whether nothing of that op took effect, so that its sender can take
+/// the step back (`VAL-CROSS-008`). An error about one change of an op
+/// whose other changes may still take effect is not `rejected`; the caller
+/// that finds nothing took effect after all says so with [`reject_whole`].
+fn answer(incoming: &Incoming<'_>, code: &str, message: String, rejected: bool) -> ServerMessage {
     ServerMessage::Error {
         code: code.to_owned(),
         message,
         level: None,
         holder: None,
+        op_id: Some(incoming.op_id.to_owned()),
+        rejected: rejected.then_some(true),
+    }
+}
+
+/// Every error among `reactions` now says that nothing of its op took
+/// effect.
+fn reject_whole(reactions: &mut [Reaction]) {
+    for reaction in reactions {
+        if let Reaction::Send(ServerMessage::Error { rejected, .. })
+        | Reaction::SendTo {
+            message: ServerMessage::Error { rejected, .. },
+            ..
+        } = reaction
+        {
+            *rejected = Some(true);
+        }
     }
 }
 
@@ -624,6 +861,12 @@ fn judge_and_commit(
     let mut reactions = Vec::new();
     let mut applied: Vec<(Change, String, Option<String>)> = Vec::new();
     let mut behind_topology = None;
+    // An op that makes, erases or reconnects something is one step of
+    // somebody's drawing and is taken whole or not at all: half of it — the
+    // field written, the fitting refused — is a drawing nobody made, and
+    // nothing its sender could take back. Field writes alone keep being
+    // judged one by one (`architecture.md` §3.3, step 1).
+    let structural = changes.iter().any(|change| !change.writes_a_field());
     for change in changes {
         let change = drawing.model.completed(&change);
         // A held op was made against a newer revision than this one: what
@@ -700,6 +943,17 @@ fn judge_and_commit(
             Verdict::BehindTopology {
                 touched_revision, ..
             } => behind_topology = Some(touched_revision),
+            Verdict::DuplicateInflow { line_tag } => reactions.push(refused(
+                state,
+                incoming,
+                codes::DUPLICATE_INFLOW_CONNECTOR,
+                "connector_refused",
+                &line_tag,
+                format!(
+                    "{} {line_tag}: 这条线在本图上已有流入连接符，同一线号同图至多一个",
+                    change.kind
+                ),
+            )),
         }
     }
     if let Some(revision) = behind_topology {
@@ -707,6 +961,24 @@ fn judge_and_commit(
         // now and asks again, like any op the server cannot merge.
         let mut outcome = stale(incoming, revision.max(drawing.model.revision()));
         reactions.append(&mut outcome.reactions);
+    }
+    // Everything in `reactions` so far is a change that was turned away.
+    if !reactions.is_empty() && (structural || applied.is_empty()) {
+        reject_whole(&mut reactions);
+        println!(
+            "[ocs_collab_server] 入站 op session={} user={} op_id={} base_revision={} -> 整个 op 未生效（{} 条变更被拒{}） at={}",
+            session.session_id,
+            session.user_id,
+            incoming.op_id,
+            incoming.base_revision,
+            reactions.len(),
+            if applied.is_empty() { "" } else { "，带结构的 op 不拆开生效" },
+            incoming.now
+        );
+        return Outcome {
+            reactions,
+            revision: None,
+        };
     }
     if applied.is_empty() {
         return Outcome {
@@ -782,7 +1054,10 @@ fn judge_and_commit(
             }
         }
         Err(mut outcome) => {
+            // The commit did not happen: nothing of the op took effect,
+            // whatever was said of single changes before.
             reactions.append(&mut outcome.reactions);
+            reject_whole(&mut reactions);
             Outcome {
                 reactions,
                 revision: None,
@@ -823,9 +1098,11 @@ fn commit(
                 Err(err) => {
                     eprintln!("[ocs_collab_server] 提交操作失败：{err}");
                     return Err(Outcome {
-                        reactions: vec![Reaction::Send(error(
+                        reactions: vec![Reaction::Send(answer(
+                            incoming,
                             codes::INVALID_MESSAGE,
                             "提交操作失败".to_owned(),
+                            true,
                         ))],
                         revision: None,
                     });
@@ -907,7 +1184,12 @@ fn refused(
         "[ocs_collab_server] 入站 op session={} user={} op_id={} base_revision={} object_ref={object_ref} -> error {code} at={}",
         session.session_id, session.user_id, incoming.op_id, incoming.base_revision, incoming.now
     );
-    Reaction::Send(error(code, format!("操作 {}：{text}", incoming.op_id)))
+    Reaction::Send(answer(
+        incoming,
+        code,
+        format!("操作 {}：{text}", incoming.op_id),
+        false,
+    ))
 }
 
 /// Step 2's bookkeeping: the audit row saying what was not overwritten, and
@@ -955,12 +1237,14 @@ fn yielded(
         codes::OP_SUPERSEDED,
         incoming.now
     );
-    Reaction::Send(error(
+    Reaction::Send(answer(
+        incoming,
         codes::OP_SUPERSEDED,
         format!(
             "操作 {} 的基线 {} 落后：{what} 已在修订 {winner_revision} 被 {winner_user} 改为 {winner}，本次提交的 {} 未生效",
             incoming.op_id, incoming.base_revision, change.value
         ),
+        false,
     ))
 }
 
@@ -1064,6 +1348,8 @@ fn tie(
                 field,
                 value_a,
                 value_b,
+                // Neither op gets any other answer for this change.
+                op_ids: vec![first.op_id.clone(), second.op_id.to_owned()],
             },
         });
     }
@@ -1129,6 +1415,7 @@ mod tests {
             mode: "协同编辑".into(),
             client_version: "test".into(),
             workspace: "plant-a".into(),
+            since: None,
         };
         handle_message(state, &mut conn, hello, T0).await;
         assert!(conn.session.is_some(), "hello must open a session");
@@ -1277,6 +1564,7 @@ mod tests {
             mode: "协同编辑".into(),
             client_version: "test".into(),
             workspace: "plant-a".into(),
+            since: None,
         };
         let welcome = handle_message(&state, &mut late, hello, T0).await;
         let told = welcome
@@ -1434,6 +1722,7 @@ mod tests {
                 field,
                 value_a,
                 value_b,
+                ..
             } => {
                 assert_eq!(conflict_id, &row.conflict_id);
                 assert_eq!(
@@ -1840,5 +2129,527 @@ mod tests {
         assert_eq!(flush_interval(Duration::from_millis(8)), Duration::from_millis(5));
         assert_eq!(flush_interval(Duration::from_millis(100)), Duration::from_millis(25));
         assert_eq!(flush_interval(Duration::from_secs(3)), Duration::from_millis(50));
+    }
+
+    // ── `VAL-CROSS-008`: coming back, and being refused ──────────────────
+
+    /// A `hello` from a session that says where its drawing was.
+    async fn come_back(state: &AppState, user_id: &str, since: Option<i64>) -> Vec<Reaction> {
+        let mut conn = Connection::new("10.0.0.9");
+        let hello = ClientMessage::Hello {
+            user_id: user_id.into(),
+            drawing_id: DRAWING.into(),
+            mode: "协同编辑".into(),
+            client_version: "test".into(),
+            workspace: "plant-a".into(),
+            since,
+        };
+        handle_message(state, &mut conn, hello, T0 + 5).await
+    }
+
+    /// What a `hello` was answered with on its own socket: the revision the
+    /// room is at, where the replay starts, and the ops replayed, in order.
+    fn welcomed(reactions: &[Reaction]) -> (i64, Option<i64>, Vec<(String, i64, Vec<Value>)>) {
+        let mut told = None;
+        let mut replayed = Vec::new();
+        for reaction in reactions {
+            match reaction {
+                Reaction::Send(ServerMessage::Welcome { base_revision, replay_from, .. }) => {
+                    assert!(replayed.is_empty(), "the replay comes behind the welcome");
+                    told = Some((*base_revision, *replay_from));
+                }
+                Reaction::Send(ServerMessage::OpApplied { op_id, revision, changes }) => {
+                    replayed.push((op_id.clone(), *revision, changes.clone()));
+                }
+                _ => {}
+            }
+        }
+        let (base_revision, replay_from) = told.expect("welcome");
+        (base_revision, replay_from, replayed)
+    }
+
+    /// A session that was away says the revision its drawing had reached,
+    /// and is sent every op the room applied after it — each as the room
+    /// first heard it, behind the `welcome` and ahead of anything else. It
+    /// used to be welcomed at the room's revision with nothing in between,
+    /// and could only mark itself as no longer matching the room.
+    ///
+    /// Nothing is replayed to a session that does not ask, to one that names
+    /// a revision this drawing has not reached, or when there is no log to
+    /// replay from; such a session finds out for itself that it is behind.
+    #[tokio::test]
+    async fn collab_offline_queue_a_session_that_comes_back_is_sent_what_it_missed() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let mut said = Vec::new();
+        for (revision, (field, value)) in
+            [("设计压力", "1.6MPa"), ("公称直径", "DN50"), ("绝热等级", "H")].into_iter().enumerate()
+        {
+            let op_id = format!("op-{}", revision + 1);
+            let reactions = submit(&state, &mut s1, revision as i64, &op_id, set(field, value)).await;
+            said.push(applied(&reactions).expect("applied"));
+        }
+
+        let (base, from, replayed) = welcomed(&come_back(&state, "u2", Some(1)).await);
+        assert_eq!((base, from), (3, Some(1)));
+        assert_eq!(replayed, said[1..], "revisions 2 and 3, as the room heard them");
+
+        let (base, from, replayed) = welcomed(&come_back(&state, "u3", Some(3)).await);
+        assert_eq!((base, from), (3, Some(3)), "nothing missed is still an answer");
+        assert!(replayed.is_empty());
+        let (base, from, replayed) = welcomed(&come_back(&state, "u4", Some(0)).await);
+        assert_eq!((base, from, replayed.len()), (3, Some(0), 3));
+
+        // Not asked; and a revision this drawing never reached.
+        for since in [None, Some(7), Some(-1)] {
+            let (base, from, replayed) = welcomed(&come_back(&state, "u5", since).await);
+            assert_eq!((base, from), (3, None), "{since:?}");
+            assert!(replayed.is_empty(), "{since:?}");
+        }
+
+        // With no database there is no log: nothing can be replayed, except
+        // to a session that missed nothing.
+        let bare = AppState::new(None, Some("no database".into()), "missing.db", SessionConfig::default());
+        let mut only = join(&bare, "u1").await;
+        submit(&bare, &mut only, 0, "op-1", set("设计压力", "1.6MPa")).await;
+        assert_eq!(welcomed(&come_back(&bare, "u2", Some(0)).await).1, None);
+        assert_eq!(welcomed(&come_back(&bare, "u2", Some(1)).await).1, Some(1));
+    }
+
+    /// The replay and the subscription are one step: an op that commits
+    /// right behind the `hello` reaches the room's channel and is not in
+    /// the replay, and one that committed right before it is in the replay
+    /// and not on the channel a second time.
+    #[tokio::test]
+    async fn collab_offline_queue_the_replay_and_the_room_overlap_nowhere() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        submit(&state, &mut s1, 0, "op-1", set("设计压力", "1.6MPa")).await;
+
+        let mut late = Connection::new("10.0.0.9");
+        let hello = ClientMessage::Hello {
+            user_id: "u2".into(),
+            drawing_id: DRAWING.into(),
+            mode: "协同编辑".into(),
+            client_version: "test".into(),
+            workspace: "plant-a".into(),
+            since: Some(0),
+        };
+        let reactions = handle_message(&state, &mut late, hello, T0 + 5).await;
+        let (_, _, replayed) = welcomed(&reactions);
+        assert_eq!(replayed.iter().map(|(op_id, ..)| op_id.as_str()).collect::<Vec<_>>(), ["op-1"]);
+        submit(&state, &mut s1, 1, "op-2", set("公称直径", "DN50")).await;
+
+        let mut joined = late.joined.take().expect("the subscription hello took out");
+        let heard: Vec<String> = std::iter::from_fn(|| joined.try_recv())
+            .filter_map(|message| match message {
+                ServerMessage::OpApplied { op_id, .. } => Some(op_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(heard, ["op-2"], "only what came after the replay");
+    }
+
+    /// `(code, op_id, rejected)` of every `error` sent back.
+    fn answers(reactions: &[Reaction]) -> Vec<(String, Option<String>, Option<bool>)> {
+        reactions
+            .iter()
+            .filter_map(|reaction| match reaction {
+                Reaction::Send(ServerMessage::Error { code, op_id, rejected, .. })
+                | Reaction::SendTo {
+                    message: ServerMessage::Error { code, op_id, rejected, .. },
+                    ..
+                } => Some((code.clone(), op_id.clone(), *rejected)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// An `error` that answers an op names the op, and says whether nothing
+    /// of it took effect — which is what lets its sender take that step,
+    /// and no other, back. It used to carry a code and a sentence.
+    #[tokio::test]
+    async fn collab_offline_queue_an_error_names_its_op_and_says_whether_nothing_took_effect() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        submit(&state, &mut s1, 0, "op-1", set("设计压力", "1.6MPa")).await;
+
+        // Behind another session's write to the same field: the one change
+        // the op carries yields, so nothing of it took effect.
+        let behind = submit(&state, &mut s2, 0, "op-2", set("设计压力", "2.5MPa")).await;
+        assert_eq!(
+            answers(&behind),
+            [(codes::OP_SUPERSEDED.to_owned(), Some("op-2".to_owned()), Some(true))]
+        );
+        assert!(applied(&behind).is_none());
+
+        // Two field writes, one behind: that one is answered without
+        // `rejected`, and the other takes effect under the same op id.
+        let mut both = set("设计压力", "4.0MPa");
+        both["changes"] = json!([set("公称直径", "DN80")]);
+        let partly = submit(&state, &mut s2, 0, "op-3", both).await;
+        assert_eq!(answers(&partly), [(codes::OP_SUPERSEDED.to_owned(), Some("op-3".to_owned()), None)]);
+        let (op_id, revision, changes) = applied(&partly).expect("the other field merged");
+        assert_eq!((op_id.as_str(), revision, changes.len()), ("op-3", 2, 1));
+        assert_eq!(value_of(&state, "公称直径").as_deref(), Some("DN80"));
+
+        // A baseline the drawing has not reached, and an op the judgment
+        // does not read made against an old one: refused whole.
+        let ahead = submit(&state, &mut s2, 9, "op-4", set("设计压力", "4.0MPa")).await;
+        assert_eq!(
+            answers(&ahead),
+            [(codes::STALE_BASE_REVISION.to_owned(), Some("op-4".to_owned()), Some(true))]
+        );
+        let opaque = submit(&state, &mut s2, 0, "op-5", json!({"kind": "something_else", "tag": "X"})).await;
+        assert_eq!(
+            answers(&opaque),
+            [(codes::STALE_BASE_REVISION.to_owned(), Some("op-5".to_owned()), Some(true))]
+        );
+    }
+
+    /// An op that makes, erases or reconnects something is taken whole or
+    /// not at all. One of its changes refused used to leave the rest in
+    /// effect — the symbol placed, say, and the field it was to carry not
+    /// written — which is a step nobody made and nobody could take back.
+    /// Field writes alone are still judged one by one (the test above).
+    #[tokio::test]
+    async fn collab_offline_queue_an_op_that_carries_structure_is_taken_whole_or_not_at_all() {
+        let state = state();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        submit(&state, &mut s1, 0, "op-1", set("设计压力", "1.6MPa")).await;
+
+        let mut step = json!({"kind": "insert_symbol", "type": "VALVE", "tag": "V-1001", "position": [5, 5]});
+        step["changes"] = json!([set("设计压力", "2.5MPa")]);
+        let refused = submit(&state, &mut s2, 0, "op-2", step.clone()).await;
+        assert_eq!(
+            answers(&refused),
+            [(codes::OP_SUPERSEDED.to_owned(), Some("op-2".to_owned()), Some(true))]
+        );
+        assert!(applied(&refused).is_none(), "the symbol went in though the op was refused");
+        let (revision, items) = objects(&state, DRAWING, Some("V-1001"));
+        assert_eq!((revision, items.len()), (1, 0), "{items:?}");
+
+        // Made against the drawing as it is, the same step goes in whole.
+        let taken = submit(&state, &mut s2, 1, "op-3", step).await;
+        assert!(answers(&taken).is_empty(), "{taken:?}");
+        assert_eq!(applied(&taken).map(|(_, revision, changes)| (revision, changes.len())), Some((2, 2)));
+        assert_eq!(objects(&state, DRAWING, Some("V-1001")).1.len(), 1);
+
+        // A change to a line's connections behind another session's, with
+        // a field write beside it: neither happens.
+        let run = json!({"kind": "add_pipe_run", "line_tag": "L-1001", "tag": "L-1001-01", "points": [[0, 0], [9, 0]]});
+        submit(&state, &mut s1, 2, "op-4", run).await;
+        let mut late = json!({"kind": "insert_fitting", "line_tag": "L-1001", "run_tag": "L-1001-01",
+            "fitting_type": "gate_valve", "at": [5, 0]});
+        late["changes"] = json!([set("绝热等级", "H")]);
+        let refused = submit(&state, &mut s2, 2, "op-5", late).await;
+        assert_eq!(
+            answers(&refused),
+            [(codes::STALE_BASE_REVISION.to_owned(), Some("op-5".to_owned()), Some(true))]
+        );
+        assert!(applied(&refused).is_none());
+        assert_eq!(value_of(&state, "绝热等级"), None);
+    }
+
+    /// A conflict entry names the two ops that tied: neither gets an
+    /// `op_applied` or an `error` for it, and a client that waits for its
+    /// op to be answered before it sends the next would wait for good.
+    #[tokio::test]
+    async fn collab_offline_queue_a_conflict_names_the_two_ops_that_tied() {
+        let state = windowed();
+        let mut s1 = join(&state, "u1").await;
+        let mut s2 = join(&state, "u2").await;
+        let held = submit(&state, &mut s1, 0, "op-a", set("设计压力", "1.6MPa")).await;
+        assert!(held.is_empty(), "held inside the window: {held:?}");
+        let tied = submit(&state, &mut s2, 0, "op-b", set("设计压力", "2.5MPa")).await;
+        let told = conflicts_published(&tied);
+        assert_eq!(told.len(), 1, "{tied:?}");
+        match &told[0] {
+            ServerMessage::Conflict { op_ids, .. } => assert_eq!(op_ids, &["op-a", "op-b"]),
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        assert!(answers(&tied).is_empty() && applied(&tied).is_none());
+    }
+
+    // ── Connectors between drawings (`VAL-CROSS-009`) ────────────────────
+
+    const OTHER: &str = "PID-1102";
+
+    async fn join_on(state: &AppState, user_id: &str, drawing_id: &str) -> Connection {
+        let mut conn = Connection::new("10.0.0.7");
+        let hello = ClientMessage::Hello {
+            user_id: user_id.into(),
+            drawing_id: drawing_id.into(),
+            mode: "协同编辑".into(),
+            client_version: "test".into(),
+            workspace: "plant-a".into(),
+            since: None,
+        };
+        handle_message(state, &mut conn, hello, T0).await;
+        assert!(conn.session.is_some(), "hello must open a session");
+        conn
+    }
+
+    fn outflow(line: &str, to: &str) -> Value {
+        json!({"kind": "create_connector", "line_tag": line, "connector": "pipe_out",
+               "at": [120.0, 0.0], "target_drawing": to})
+    }
+
+    fn inflow(line: &str, x: f64) -> Value {
+        json!({"kind": "create_connector", "line_tag": line, "connector": "pipe_in", "at": [x, 0.0]})
+    }
+
+    fn line_field(line: &str, field: &str, value: &str) -> Value {
+        json!({"kind": "set_property", "object_ref": line, "field": field, "value": value})
+    }
+
+    /// Every `op_applied` among `reactions` as `(drawing, op_id, revision,
+    /// kinds of its changes)`.
+    fn told(reactions: &[Reaction]) -> Vec<(String, String, i64, Vec<String>)> {
+        reactions
+            .iter()
+            .filter_map(|reaction| match reaction {
+                Reaction::Published {
+                    drawing_id,
+                    message:
+                        ServerMessage::OpApplied {
+                            op_id,
+                            revision,
+                            changes,
+                        },
+                } => Some((
+                    drawing_id.clone(),
+                    op_id.clone(),
+                    *revision,
+                    changes
+                        .iter()
+                        .map(|change| change["kind"].as_str().unwrap_or_default().to_owned())
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn line_value(state: &AppState, drawing: &str, line: &str, field: &str) -> Option<String> {
+        let (_, items) = objects(state, drawing, Some(line));
+        items
+            .first()
+            .and_then(|item| item["fields"][field]["value"].as_str().map(str::to_owned))
+    }
+
+    fn op_log(state: &AppState, drawing: &str) -> Vec<crate::store::StoredOp> {
+        state
+            .store
+            .as_ref()
+            .expect("store")
+            .load_ops(drawing, 0)
+            .expect("op log")
+    }
+
+    async fn base_of(state: &AppState, conn: &Connection) -> i64 {
+        let session_id = &conn.session.as_ref().expect("session").session_id;
+        state
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .expect("registered")
+            .base_revision
+    }
+
+    /// `VAL-CROSS-009`: u1 on PID-1101 makes an outflow connector on L-1001
+    /// that names PID-1102; u2 on PID-1102 makes the inflow on L-1001. The
+    /// server pairs them: each room is told of its own end by an op of the
+    /// server's, the op logs of both drawings have it, and the sessions of
+    /// both are at the revisions those ops took.
+    #[tokio::test]
+    async fn collab_connector_cross_drawing_the_server_pairs_an_outflow_with_the_inflow_on_the_drawing_it_names() {
+        let state = state();
+        let mut u1 = join_on(&state, "u1", DRAWING).await;
+        let mut u2 = join_on(&state, "u2", OTHER).await;
+
+        let first = submit(&state, &mut u1, 0, "op-out", outflow("L-1001", OTHER)).await;
+        assert_eq!(
+            told(&first),
+            [(DRAWING.to_owned(), "op-out".to_owned(), 1, vec!["create_connector".to_owned()])],
+            "nothing to pair with yet"
+        );
+
+        let second = submit(&state, &mut u2, 0, "op-in", inflow("L-1001", 20.0)).await;
+        let said = told(&second);
+        assert_eq!(said.len(), 3, "{said:?}");
+        assert_eq!(said[0], (OTHER.to_owned(), "op-in".to_owned(), 1, vec!["create_connector".to_owned()]));
+        let here = said.iter().find(|(drawing, op_id, ..)| drawing == OTHER && op_id.starts_with("pair-"));
+        let there = said.iter().find(|(drawing, op_id, ..)| drawing == DRAWING && op_id.starts_with("pair-"));
+        assert_eq!(here.map(|(_, _, revision, kinds)| (*revision, kinds.clone())), Some((2, vec!["pair_connector".to_owned()])));
+        assert_eq!(there.map(|(_, _, revision, kinds)| (*revision, kinds.clone())), Some((2, vec!["pair_connector".to_owned()])));
+
+        // What each room was told names the other end.
+        let pair_on = |drawing: &str| -> Value {
+            second
+                .iter()
+                .find_map(|reaction| match reaction {
+                    Reaction::Published {
+                        drawing_id,
+                        message: ServerMessage::OpApplied { op_id, changes, .. },
+                    } if drawing_id == drawing && op_id.starts_with("pair-") => Some(changes[0].clone()),
+                    _ => None,
+                })
+                .expect("a pairing op")
+        };
+        let on_first = pair_on(DRAWING);
+        assert_eq!(
+            (&on_first["connector"], &on_first["peer_drawing"], &on_first["peer_connector"], &on_first["peer_line_tag"]),
+            (&json!("pipe_out"), &json!(OTHER), &json!("pipe_in"), &json!("L-1001")),
+            "{on_first}"
+        );
+        let on_second = pair_on(OTHER);
+        assert_eq!(
+            (&on_second["connector"], &on_second["peer_drawing"], &on_second["peer_connector"]),
+            (&json!("pipe_in"), &json!(DRAWING), &json!("pipe_out")),
+            "{on_second}"
+        );
+
+        // In both op logs, under a session that is nobody's.
+        for drawing in [DRAWING, OTHER] {
+            let log = op_log(&state, drawing);
+            assert_eq!(log.len(), 2, "{drawing}: {log:?}");
+            assert_eq!(log[1].session_id, format!("link:{OTHER}"), "{drawing}");
+            assert_eq!(log[1].user_id, "u2", "on the account of whoever's op it follows from");
+        }
+        let (_, topology_here) = topology(&state, DRAWING);
+        assert_eq!(topology_here["connectors"][0]["peer_drawing"], OTHER, "{topology_here}");
+        assert_eq!((base_of(&state, &u1).await, base_of(&state, &u2).await), (2, 2));
+    }
+
+    /// What the line that flows out carries reaches the line that flows in:
+    /// with the pairing what it has by then, and afterwards every write of
+    /// one of the fields that go along a pipe connector — as an op of the
+    /// server's in the other drawing's room and op log. Nothing else of the
+    /// line goes, and nothing comes back.
+    #[tokio::test]
+    async fn collab_connector_cross_drawing_a_field_of_the_outflow_line_is_written_on_the_inflow_line() {
+        let state = state();
+        let mut u1 = join_on(&state, "u1", DRAWING).await;
+        let mut u2 = join_on(&state, "u2", OTHER).await;
+        submit(&state, &mut u1, 0, "op-dn", line_field("L-1001", "公称直径", "DN50")).await;
+        submit(&state, &mut u1, 1, "op-out", outflow("L-1001", OTHER)).await;
+        let paired = submit(&state, &mut u2, 0, "op-in", inflow("L-1001", 20.0)).await;
+        let with_pairing = told(&paired)
+            .into_iter()
+            .find(|(drawing, op_id, ..)| drawing == OTHER && op_id.starts_with("pair-"))
+            .expect("the pairing op on the inflow side");
+        assert_eq!(with_pairing.3, ["pair_connector", "set_property"], "carried with the pairing");
+        assert_eq!(line_value(&state, OTHER, "L-1001", "公称直径").as_deref(), Some("DN50"));
+
+        let written = submit(&state, &mut u1, 3, "op-grade", line_field("L-1001", "管道等级", "A1A")).await;
+        let said = told(&written);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert_eq!((said[0].0.as_str(), said[0].1.as_str()), (DRAWING, "op-grade"));
+        assert_eq!(said[1].0, OTHER);
+        assert!(said[1].1.starts_with("carry-PID-1101-"), "{said:?}");
+        assert_eq!(said[1].3, ["set_property"]);
+        assert_eq!(line_value(&state, OTHER, "L-1001", "管道等级").as_deref(), Some("A1A"));
+        let log = op_log(&state, OTHER);
+        let last = log.last().expect("an op");
+        assert_eq!((last.session_id.as_str(), last.user_id.as_str()), ("link:PID-1101", "u1"));
+        assert_eq!(last.changes, [line_field("L-1001", "管道等级", "A1A")]);
+        assert_eq!(base_of(&state, &u2).await, last.revision, "the other room's sessions moved on");
+        // On record on the drawing it arrived on.
+        let audit = state
+            .store
+            .as_ref()
+            .expect("store")
+            .audit_query(&AuditQuery {
+                object_ref: Some("L-1001".into()),
+                ..AuditQuery::default()
+            })
+            .expect("audit");
+        assert!(
+            audit.items.iter().any(|row| row.change_text.contains("沿连接符") && row.change_text.contains("A1A")),
+            "{:?}",
+            audit.items
+        );
+
+        // A field that does not go along a connector stays; so does a
+        // write on the inflow side.
+        let before = op_log(&state, OTHER).len();
+        submit(&state, &mut u1, 4, "op-note", line_field("L-1001", "备注", "x")).await;
+        assert_eq!(op_log(&state, OTHER).len(), before);
+        let base = base_of(&state, &u2).await;
+        let back = submit(&state, &mut u2, base, "op-back", line_field("L-1001", "管道等级", "C1")).await;
+        assert_eq!(told(&back).len(), 1, "nothing flows back: {back:?}");
+        assert_eq!(line_value(&state, DRAWING, "L-1001", "管道等级").as_deref(), Some("A1A"));
+    }
+
+    /// A second inflow connector on a line of a drawing that has one is
+    /// refused by the server too — two people making one each at the same
+    /// moment both pass their own editor's check — and refused whole, by
+    /// name, so that the step is taken back.
+    #[tokio::test]
+    async fn collab_connector_cross_drawing_the_second_inflow_on_a_line_is_refused_whole() {
+        let state = state();
+        let mut u1 = join_on(&state, "u1", OTHER).await;
+        let mut u2 = join_on(&state, "u2", OTHER).await;
+        submit(&state, &mut u1, 0, "op-in-1", inflow("L-1001", 20.0)).await;
+        let refused = submit(&state, &mut u2, 1, "op-in-2", inflow("L-1001", 60.0)).await;
+        assert!(applied(&refused).is_none(), "{refused:?}");
+        let said = answers(&refused);
+        assert_eq!(said.len(), 1, "{refused:?}");
+        assert_eq!(
+            said[0],
+            (codes::DUPLICATE_INFLOW_CONNECTOR.to_owned(), Some("op-in-2".to_owned()), Some(true))
+        );
+        // Another line, and an outflow on the same line, are nobody's
+        // duplicate.
+        assert!(applied(&submit(&state, &mut u2, 1, "op-in-3", inflow("L-1002", 20.0)).await).is_some());
+        assert!(applied(&submit(&state, &mut u2, 2, "op-out", outflow("L-1001", DRAWING)).await).is_some());
+    }
+
+    /// The pairing is in the op logs, so a server that starts again has it:
+    /// what is written on the outflow line afterwards still arrives. And a
+    /// connector taken away leaves its other end unpaired, after which
+    /// nothing is carried.
+    #[tokio::test]
+    async fn collab_connector_cross_drawing_a_pairing_outlives_a_restart_and_ends_with_its_connector() {
+        let state = state();
+        let mut u1 = join_on(&state, "u1", DRAWING).await;
+        let mut u2 = join_on(&state, "u2", OTHER).await;
+        submit(&state, &mut u2, 0, "op-in", inflow("L-1001", 20.0)).await;
+        submit(&state, &mut u1, 0, "op-out", outflow("L-1001", OTHER)).await;
+
+        // What a restart does to what the server knows of the drawings:
+        // it is read again from the op log.
+        state.drawings.lock().expect("drawings").clear();
+        let written = submit(&state, &mut u1, 2, "op-grade", line_field("L-1001", "管道等级", "A1A")).await;
+        assert_eq!(told(&written).len(), 2, "{written:?}");
+        assert_eq!(line_value(&state, OTHER, "L-1001", "管道等级").as_deref(), Some("A1A"));
+
+        // A pairing a client claims is not one.
+        let mut u3 = join_on(&state, "u3", "PID-1103").await;
+        submit(&state, &mut u3, 0, "op-in-3", inflow("L-1001", 20.0)).await;
+        let forged = json!({"kind": "pair_connector", "line_tag": "L-1001", "connector": "pipe_in",
+            "peer_drawing": DRAWING, "peer_line_tag": "L-1001", "peer_connector": "pipe_out"});
+        submit(&state, &mut u3, 1, "op-forged", forged).await;
+        state.drawings.lock().expect("drawings").clear();
+        let (_, third) = topology(&state, "PID-1103");
+        assert!(third["connectors"][0]["peer_drawing"].is_null(), "{third}");
+
+        let gone = json!({"kind": "delete_connector", "line_tag": "L-1001",
+                          "connector": "pipe_out", "at": [120.0, 0.0]});
+        let base = base_of(&state, &u1).await;
+        let removed = submit(&state, &mut u1, base, "op-gone", gone).await;
+        let said = told(&removed);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert_eq!((said[1].0.as_str(), said[1].3.as_slice()), (OTHER, &["pair_connector".to_owned()][..]));
+        let (_, other_side) = topology(&state, OTHER);
+        assert!(other_side["connectors"][0]["peer_drawing"].is_null(), "{other_side}");
+        let base = base_of(&state, &u1).await;
+        let later = submit(&state, &mut u1, base, "op-grade-2", line_field("L-1001", "管道等级", "B2")).await;
+        assert_eq!(told(&later).len(), 1, "{later:?}");
+        assert_eq!(line_value(&state, OTHER, "L-1001", "管道等级").as_deref(), Some("A1A"));
     }
 }

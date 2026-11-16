@@ -17,7 +17,7 @@
 //! 5. `TcpStream::connect_timeout` + `tungstenite::client` — never
 //!    `tungstenite::connect`, which has no timeout (21 s against a black hole).
 
-use super::messages::{classify, Frame};
+use super::messages::{read, Frame};
 use super::{ClientConfig, CollabEvent};
 use iced::futures::channel::mpsc;
 use ocs_collab::ClientMessage;
@@ -213,7 +213,16 @@ pub(super) enum Outbound {
     /// `op`: submit one P&ID semantic change. `base_revision` is captured when
     /// the request is queued, not when it is sent, so a request that waits
     /// behind a broadcast still states what the client believed.
+    ///
+    /// `session_id` is the session it was handed over for, when it is for
+    /// one and no other. The UI gives its ops to the session it knows to be
+    /// up, and gives them again to the next one if that one ended first
+    /// (`State::pump`). When this thread is already on a later session than
+    /// the UI has heard of, the op is not sent on it: the UI will hand it
+    /// over again when it gets there, and the room would have it twice.
+    /// `None` goes out on whatever session is up.
     Op {
+        session_id: Option<String>,
         base_revision: i64,
         op_id: String,
         payload: serde_json::Value,
@@ -236,6 +245,15 @@ impl Outbound {
                 ..
             } => format!("op {op_id} base_revision={base_revision}"),
         }
+    }
+
+    /// Whether the request was handed over for a session other than
+    /// `session_id`, the one that is up.
+    fn is_for_another_session(&self, session_id: &str) -> bool {
+        matches!(
+            self,
+            Outbound::Op { session_id: Some(meant), .. } if meant != session_id
+        )
     }
 }
 
@@ -396,8 +414,11 @@ pub(super) fn next_op_id(session_id: &str) -> String {
 /// Put an `op` carrying one semantic change on `outbox`. `base_revision` is
 /// the revision the change was made against (`VAL-CLI-010`). An op with no id
 /// never gets there: the id is how its echo is told from a peer's change.
+/// `session` is the one session it may go out on, if it is for one
+/// ([`Outbound::Op`]).
 fn queue_op(
     outbox: &Outbox,
+    session: Option<&str>,
     base_revision: i64,
     op_id: &str,
     payload: serde_json::Value,
@@ -408,6 +429,7 @@ fn queue_op(
     push_outbound(
         outbox,
         Outbound::Op {
+            session_id: session.map(str::to_owned),
             base_revision,
             op_id: op_id.to_owned(),
             payload,
@@ -416,15 +438,15 @@ fn queue_op(
     Ok(())
 }
 
-/// Queue an `op` for the app's client.
+/// Queue an `op` for the app's client, to go out on session `session_id`
+/// and on no later one.
 pub(super) fn request_op(
     session_id: &str,
     base_revision: i64,
     op_id: &str,
     payload: serde_json::Value,
 ) -> Result<(), String> {
-    let _ = session_id;
-    queue_op(app_outbox(), base_revision, op_id, payload)
+    queue_op(app_outbox(), Some(session_id), base_revision, op_id, payload)
 }
 
 /// Queue an `attempt` for the app's client: a write the session refused
@@ -460,6 +482,7 @@ fn outbound_message(request: &Outbound, session_id: &str) -> ClientMessage {
             base_revision,
             op_id,
             payload,
+            ..
         } => ClientMessage::Op {
             session_id: session_id.to_owned(),
             base_revision: *base_revision,
@@ -537,6 +560,15 @@ fn describe_event(event: &CollabEvent) -> String {
             changes.len()
         ),
         CollabEvent::ServerError { code, message } => format!("error code={code} {message}"),
+        CollabEvent::OpRefused {
+            op_id,
+            code,
+            message,
+            rejected,
+        } => format!("error code={code} op_id={op_id} rejected={rejected} {message}"),
+        CollabEvent::Resuming { from } => format!("welcome replay_from={from}"),
+        CollabEvent::ClaimsExpire(claims) => format!("welcome claims expire: {}", claims.len()),
+        CollabEvent::OpsInConflict { op_ids } => format!("conflict op_ids={}", op_ids.join(",")),
         CollabEvent::Conflict(entry) => format!(
             "conflict conflict_id={} object_ref={} field={} value_a={} value_b={}",
             entry.conflict_id, entry.object_ref, entry.field, entry.value_a, entry.value_b
@@ -624,6 +656,9 @@ pub(super) fn run_client(
     link: &Link,
 ) -> std::io::Result<()> {
     let mut attempt = 0u32;
+    // Where the drawing was when the last session ended, to say in the next
+    // `hello`.
+    let mut seen: Option<Seen> = None;
     loop {
         if link.stop_requested() || sender.is_closed() {
             return Ok(());
@@ -650,7 +685,7 @@ pub(super) fn run_client(
             attempt.saturating_add(1)
         ));
         let mut came_up = false;
-        let reason = match run_session(sender, &config, link, &mut came_up) {
+        let reason = match run_session(sender, &config, link, &mut came_up, &mut seen) {
             Ok(Ended::SubscriptionGone) => return Ok(()),
             Ok(Ended::Quit) => return Ok(()),
             Ok(Ended::Closed(reason)) => reason,
@@ -683,16 +718,64 @@ pub(super) fn run_client(
     }
 }
 
+/// The last revision this client handed to the UI, and of which room: what
+/// the next `hello` says (`since`), so that the server can send what was
+/// missed in between (`VAL-CROSS-008`).
+///
+/// Kept by the thread that owns the socket rather than read from the UI's
+/// state: every `op_applied` passes through here on its way to the UI, in
+/// order, and the UI has applied each by the time it sees the next
+/// `welcome` — whereas the UI may not have got round to the event that says
+/// the socket dropped when this thread is already dialling again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Seen {
+    server_url: String,
+    drawing_id: String,
+    revision: i64,
+}
+
+impl Seen {
+    /// What the UI's baseline is once it has taken `event`.
+    fn take(seen: &mut Option<Seen>, config: &ClientConfig, replay_from: Option<i64>, event: &CollabEvent) {
+        match event {
+            CollabEvent::Connected { base_revision, .. } => {
+                // With a replay the session is taken where its drawing is,
+                // and each replayed op moves it on; without one, at the
+                // room's revision, as before.
+                let revision = match (replay_from, seen.as_ref()) {
+                    (Some(from), Some(seen)) if seen.revision == from => from,
+                    _ => *base_revision,
+                };
+                *seen = Some(Seen {
+                    server_url: config.server_url.clone(),
+                    drawing_id: config.drawing_id.clone(),
+                    revision,
+                });
+            }
+            CollabEvent::OpApplied { revision, .. } => {
+                if let Some(seen) = seen.as_mut() {
+                    seen.revision = seen.revision.max(*revision);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// One connection: handshake, `hello`, then the read loop until it ends.
-/// `came_up` is set once the server has answered with `welcome`.
+/// `came_up` is set once the server has answered with `welcome`; `seen`
+/// follows the revision handed to the UI, across sessions.
 fn run_session(
     sender: &mut mpsc::Sender<CollabEvent>,
     config: &ClientConfig,
     link: &Link,
     came_up: &mut bool,
+    seen: &mut Option<Seen>,
 ) -> Result<Ended, String> {
     // A request queued against a session that has since ended must not be
     // replayed into this one: the tag may belong to somebody else by now.
+    // (An op is another matter, and is not kept here: the UI holds its ops
+    // until the room has answered each, and hands them over one at a time.)
     clear_outbound(&link.outbox);
     let mut ws = connect(&config.server_url)?;
     let hello = ClientMessage::Hello {
@@ -701,6 +784,12 @@ fn run_session(
         mode: config.mode.clone(),
         client_version: config.client_version.clone(),
         workspace: String::new(),
+        // Only of the room the last session was in: another drawing's
+        // revisions say nothing of this one.
+        since: seen
+            .as_ref()
+            .filter(|seen| seen.server_url == config.server_url && seen.drawing_id == config.drawing_id)
+            .map(|seen| seen.revision),
     };
     let wire = send_json(&mut ws, &hello)?;
     log_frame(false, &wire, None);
@@ -722,35 +811,56 @@ fn run_session(
         }
         match ws.read() {
             Ok(Message::Text(text)) => {
-                let frame = classify(text.as_str());
-                let reading = match &frame {
+                let said = read(text.as_str());
+                let reading = match &said.frame {
                     Frame::Event(event) => Some(format!("收到 {}", describe_event(event))),
                     _ => None,
                 };
                 log_frame(true, text.as_str(), reading.as_deref());
-                match frame {
-                    Frame::Event(event) => {
-                        // `welcome` carries the session id every later frame
-                        // references, so remember it before forwarding.
-                        if let CollabEvent::Connected {
-                            session_id: id, ..
-                        } = &event
-                        {
-                            session_id = Some(id.clone());
-                            *came_up = true;
-                        }
-                        if emit(sender, link, event).is_err() {
-                            close(&mut ws);
-                            return Ok(Ended::SubscriptionGone);
-                        }
-                    }
-                    Frame::Close => {
-                        close(&mut ws);
-                        return Ok(Ended::Closed("server closed the session".to_owned()));
+                // Where a replay starts, when the frame is a `welcome` that
+                // announces one.
+                let replay_from = said.before.iter().find_map(|event| match event {
+                    CollabEvent::Resuming { from } => Some(*from),
+                    _ => None,
+                });
+                // What goes with the frame's own event, ahead of it and
+                // behind it, in that order.
+                let mut events = said.before;
+                let mut ending = None;
+                match said.frame {
+                    Frame::Event(event) => events.push(event),
+                    Frame::Close => ending = Some("server closed the session".to_owned()),
+                    Frame::Rejoin(code) => {
+                        // The server has let go of the session and will take
+                        // no second `hello` on this socket: drop it and join
+                        // again, saying where the drawing is.
+                        log(&format!("服务器已不认这个会话（{code}），断开后重新加入"));
+                        ending = Some(format!("session ended by the server ({code}); joining again"));
                     }
                     Frame::Unreadable(error) => {
                         log(&format!("无法解析服务器帧：{error}"));
                     }
+                }
+                events.extend(said.after);
+                for event in events {
+                    // `welcome` carries the session id every later frame
+                    // references, so remember it before forwarding.
+                    if let CollabEvent::Connected {
+                        session_id: id, ..
+                    } = &event
+                    {
+                        session_id = Some(id.clone());
+                        *came_up = true;
+                    }
+                    Seen::take(seen, config, replay_from, &event);
+                    if emit(sender, link, event).is_err() {
+                        close(&mut ws);
+                        return Ok(Ended::SubscriptionGone);
+                    }
+                }
+                if let Some(reason) = ending {
+                    close(&mut ws);
+                    return Ok(Ended::Closed(reason));
                 }
             }
             Ok(Message::Binary(_)) => {}
@@ -785,6 +895,16 @@ fn run_session(
         // keeps every write to the socket on the thread that owns it.
         if let Some(session_id) = session_id.clone() {
             for request in drain_outbound(&link.outbox) {
+                if request.is_for_another_session(&session_id) {
+                    // Handed over by a UI that had not heard yet that the
+                    // session it names is over. It hands it over again once
+                    // it has heard of this one.
+                    log(&format!(
+                        "不发送 {}：它是交给上一个会话的，界面会在知道本会话之后重新交来",
+                        request.describe()
+                    ));
+                    continue;
+                }
                 let message = outbound_message(&request, &session_id);
                 match send_json(&mut ws, &message) {
                     Ok(wire) => {
@@ -1544,7 +1664,7 @@ mod tests {
             "field": "tag",
             "value": "P-1009",
         });
-        queue_op(&link.outbox, 7, "op-test-1", payload.clone()).expect("op queues");
+        queue_op(&link.outbox, None, 7, "op-test-1", payload.clone()).expect("op queues");
 
         let deadline = Instant::now() + Duration::from_secs(2);
         let frame = loop {
@@ -1576,7 +1696,7 @@ mod tests {
     #[test]
     fn an_op_needs_an_id_and_every_id_is_new() {
         let outbox = Outbox::default();
-        assert!(queue_op(&outbox, 0, "  ", serde_json::json!({})).is_err());
+        assert!(queue_op(&outbox, None, 0, "  ", serde_json::json!({})).is_err());
         assert!(drain_outbound(&outbox).is_empty());
         assert!(request_op("s-1", 0, "", serde_json::json!({})).is_err());
 
@@ -1727,10 +1847,278 @@ mod tests {
     #[test]
     fn an_op_describes_itself_by_id_and_baseline() {
         let op = Outbound::Op {
+            session_id: None,
             base_revision: 1,
             op_id: "op-9-3".to_owned(),
             payload: serde_json::json!({}),
         };
         assert_eq!(op.describe(), "op op-9-3 base_revision=1");
+    }
+
+    // ── Coming back (`VAL-CROSS-008`) ────────────────────────────────────
+
+    /// What one connection of a [`scripted_server`] does once it has read
+    /// the `hello`: the frames it says, and whether it then drops the socket
+    /// (a server that died) or holds it until the client hangs up.
+    struct Scene {
+        frames: Vec<String>,
+        then_drop: bool,
+    }
+
+    /// Every frame each client of a [`scripted_server`] sent, the `hello`
+    /// first: one list per connection, in the order they were taken.
+    type Heard = std::sync::Arc<Mutex<Vec<Vec<String>>>>;
+
+    /// A server that takes one connection per scene, one after the other,
+    /// and keeps what each client sent. It waits ten seconds for each
+    /// connection and then gives up, so that a client that never comes
+    /// back fails its test instead of holding it.
+    fn scripted_server(scenes: Vec<Scene>) -> (String, Heard, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
+        listener.set_nonblocking(true).expect("a listener that can be polled");
+        let addr = listener.local_addr().expect("local addr");
+        let url = format!("ws://{addr}/ws");
+        let heard: Heard = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let log = std::sync::Arc::clone(&heard);
+        let keep = move |at: usize, text: String| {
+            if let Ok(mut log) = log.lock() {
+                while log.len() <= at {
+                    log.push(Vec::new());
+                }
+                log[at].push(text);
+            }
+        };
+        let handle = std::thread::spawn(move || {
+            for (at, scene) in scenes.into_iter().enumerate() {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => return,
+                    }
+                };
+                // The connection itself is read the ordinary way.
+                if stream.set_nonblocking(false).is_err() {
+                    return;
+                }
+                let Ok(mut ws) = tungstenite::accept(stream) else {
+                    return;
+                };
+                if let Ok(Message::Text(hello)) = ws.read() {
+                    keep(at, hello.to_string());
+                }
+                for frame in &scene.frames {
+                    if ws.send(Message::text(frame.clone())).is_err() {
+                        break;
+                    }
+                }
+                if scene.then_drop {
+                    // Dropped here, with no close frame: a server that died.
+                    continue;
+                }
+                loop {
+                    match ws.read() {
+                        Ok(Message::Text(text)) => keep(at, text.to_string()),
+                        Ok(Message::Close(_)) => {
+                            let _ = ws.flush();
+                            break;
+                        }
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+            }
+        });
+        (url, heard, handle)
+    }
+
+    /// Everything the client reports until `last` says it has seen enough,
+    /// or twenty seconds have gone by.
+    fn events_until(
+        receiver: &mut mpsc::Receiver<CollabEvent>,
+        last: impl Fn(&CollabEvent) -> bool,
+    ) -> Vec<CollabEvent> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut events = Vec::new();
+        while Instant::now() < deadline {
+            match receiver.try_recv() {
+                Ok(event) => {
+                    let done = last(&event);
+                    events.push(event);
+                    if done {
+                        break;
+                    }
+                }
+                Err(mpsc::TryRecvError::Closed) => break,
+                Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        events
+    }
+
+    fn hello_of(heard: &Heard, connection: usize) -> serde_json::Value {
+        let log = heard.lock().expect("log");
+        let hello = log
+            .get(connection)
+            .and_then(|frames| frames.first())
+            .unwrap_or_else(|| panic!("connection {connection} sent no hello: {log:?}"));
+        serde_json::from_str(hello).expect("the hello is JSON")
+    }
+
+    /// A client that comes back says where its drawing is: the last
+    /// revision it handed to the UI, in the `hello` of the next session —
+    /// so that the server can send what was missed. The first `hello` of a
+    /// run says nothing of the kind. What the server answers — where the
+    /// replay starts — reaches the UI ahead of the session it belongs to.
+    #[test]
+    fn collab_offline_queue_the_next_hello_says_where_the_drawing_is() {
+        let first = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":4,"peers":[],"claims":[]}"#.to_owned(),
+                r#"{"type":"op_applied","op_id":"op-peer-5","revision":5,"changes":[]}"#.to_owned(),
+            ],
+            then_drop: true,
+        };
+        let second = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-2","base_revision":7,"peers":[],"claims":[],"replay_from":5}"#
+                    .to_owned(),
+                r#"{"type":"op_applied","op_id":"op-peer-6","revision":6,"changes":[]}"#.to_owned(),
+                r#"{"type":"op_applied","op_id":"op-peer-7","revision":7,"changes":[]}"#.to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![first, second]);
+        let link = Link::detached(config_for(url));
+        let (mut receiver, worker) = start_client(&link);
+        let events = events_until(
+            &mut receiver,
+            |event| matches!(event, CollabEvent::OpApplied { revision: 7, .. }),
+        );
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+
+        assert!(
+            hello_of(&heard, 0).get("since").is_none(),
+            "the first hello of a run has no revision to say"
+        );
+        assert_eq!(hello_of(&heard, 1)["since"], 5, "{events:?}");
+
+        let resumed = events
+            .iter()
+            .position(|event| matches!(event, CollabEvent::Resuming { from: 5 }))
+            .unwrap_or_else(|| panic!("the UI was not told where the replay starts: {events:?}"));
+        assert!(
+            matches!(
+                events.get(resumed + 1),
+                Some(CollabEvent::Connected { session_id, base_revision: 7, .. }) if session_id == "s-2"
+            ),
+            "{events:?}"
+        );
+        let revisions: Vec<i64> = events
+            .iter()
+            .filter_map(|event| match event {
+                CollabEvent::OpApplied { revision, .. } => Some(*revision),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(revisions, [5, 6, 7], "{events:?}");
+    }
+
+    /// `SESSION_EXPIRED`: the server has let go of the session, and takes
+    /// no second `hello` on the socket. The client gives the socket up and
+    /// joins again, as after any drop — it used to report an error and stay
+    /// on a socket nothing could be done on.
+    #[test]
+    fn collab_offline_queue_a_session_the_server_let_go_of_is_joined_again() {
+        let first = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":3,"peers":[],"claims":[]}"#.to_owned(),
+                r#"{"type":"error","code":"SESSION_EXPIRED","message":"会话已过期"}"#.to_owned(),
+            ],
+            // Held: it is the client that has to hang up.
+            then_drop: false,
+        };
+        let second = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-2","base_revision":3,"peers":[],"claims":[],"replay_from":3}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![first, second]);
+        let link = Link::detached(config_for(url));
+        let (mut receiver, worker) = start_client(&link);
+        let events = events_until(
+            &mut receiver,
+            |event| matches!(event, CollabEvent::Connected { session_id, .. } if session_id == "s-2"),
+        );
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+
+        assert!(
+            matches!(
+                events.last(),
+                Some(CollabEvent::Connected { session_id, .. }) if session_id == "s-2"
+            ),
+            "the client did not join again: {events:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                CollabEvent::Disconnected { reason, will_retry: true } if reason.contains("SESSION_EXPIRED")
+            )),
+            "{events:?}"
+        );
+        assert!(
+            !events.iter().any(|event| matches!(event, CollabEvent::ServerError { .. })),
+            "it is not an error to report and sit on: {events:?}"
+        );
+        assert_eq!(hello_of(&heard, 1)["since"], 3);
+    }
+
+    /// An op is handed over for one session. The UI learns of a drop after
+    /// this thread does, and may hand an op over for a session that is
+    /// already gone; it hands it over again once it has heard of the next
+    /// one. Sent on the session that is up, the room would have it twice.
+    #[test]
+    fn collab_offline_queue_an_op_handed_over_for_a_session_that_is_over_is_not_sent() {
+        let (url, seen, _closed, server) = recording_server();
+        let link = Link::detached(config_for(url));
+        let (mut receiver, worker) = start_client(&link);
+        assert!(session_came_up(&mut receiver), "the client never reported a session");
+
+        let payload = serde_json::json!({"kind": "set_property", "object_ref": "P-1001"});
+        queue_op(&link.outbox, Some("s-gone"), 3, "op-stale", payload.clone()).expect("op queues");
+        queue_op(&link.outbox, Some("s-test"), 3, "op-live", payload).expect("op queues");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let sent = loop {
+            let ops: Vec<String> = seen
+                .lock()
+                .expect("frame log")
+                .iter()
+                .filter(|frame| frame.contains("\"type\":\"op\""))
+                .cloned()
+                .collect();
+            if ops.iter().any(|frame| frame.contains("op-live")) || Instant::now() >= deadline {
+                break ops;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert!(sent[0].contains("op-live"), "{sent:?}");
     }
 }

@@ -50,6 +50,8 @@ impl Denied {
             message: format!("{what}被拒绝：{}", self.reason),
             level: Some(self.level.as_str().to_owned()),
             holder: self.holder.clone(),
+            op_id: None,
+            rejected: None,
         }
     }
 }

@@ -400,6 +400,20 @@ impl Store {
         .map_err(|err| format!("lookup drawing {drawing_id}: {err}"))
     }
 
+    /// The id of every drawing there is a row for.
+    pub fn drawing_ids(&self) -> Result<Vec<String>, String> {
+        let conn = self.lock()?;
+        let mut statement = conn
+            .prepare("SELECT drawing_id FROM drawings ORDER BY drawing_id")
+            .map_err(|err| format!("list drawings: {err}"))?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|err| format!("list drawings: {err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("list drawings: {err}"))?;
+        Ok(ids)
+    }
+
     /// Registers a drawing if it is not known yet, so a fresh database can
     /// accept `hello` for any drawing id. The default PBS root is created on
     /// demand because `drawings.pbs_node_id` is a foreign key.

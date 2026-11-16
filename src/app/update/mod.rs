@@ -1508,6 +1508,7 @@ impl OpenCADStudio {
             }
             Message::CollabClaim { tag, claim } => self.on_collab_claim(&tag, claim),
             Message::PidCollab(m) => self.on_pid_collab(m),
+            Message::PidShell(m) => self.on_pid_shell(m),
             #[cfg(target_arch = "wasm32")]
             Message::PollWebControl => {
                 let control = if let Some(request) = super::control::web_request() {
@@ -5249,7 +5250,7 @@ impl OpenCADStudio {
                                     ));
                                 } else {
                                     #[cfg(not(target_arch = "wasm32"))]
-                                    let _ = open::that_detached(&found);
+                                    let _ = crate::sys::system_open(&found);
                                 }
                             } else {
                                 self.command_line.push_error(
@@ -6815,6 +6816,10 @@ impl OpenCADStudio {
             }
             Message::WindowResized(w, h) => {
                 if is_layout_window_size(w, h) {
+                    // Inside the P&ID shell the general interface is laid out
+                    // in what the shell leaves of the window, and that area
+                    // is the "window" it measures by.
+                    let (w, h) = self.pid_shell.editor_frame((w, h));
                     self.vp_size = ((w - 440.0).max(200.0), h);
                     self.win_size = (w, h);
                     self.ribbon.set_window_size((w, h));

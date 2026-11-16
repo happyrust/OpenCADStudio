@@ -50,6 +50,37 @@ mod help_url_tests {
     }
 }
 
+/// A test build starts no program on the desktop of whoever runs the suite:
+/// what a command would have opened is kept instead (`sys::launches`).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod no_external_program {
+    use crate::app::OpenCADStudio;
+    use crate::sys::launches;
+
+    /// `HELP`, which the test of what a read-only session may run runs with
+    /// every run of the suite: the wiki's address is kept, and the browser
+    /// was not asked for it.
+    #[test]
+    fn help_keeps_the_wiki_address_instead_of_opening_it() {
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let _ = launches::taken();
+
+        let _ = app.dispatch_command("HELP");
+        assert_eq!(
+            launches::taken(),
+            ["open https://github.com/HakanSeven12/OpenCADStudio/wiki"]
+        );
+        // A command has a page of its own.
+        let _ = app.dispatch_command("HELP LINE");
+        assert_eq!(
+            launches::taken(),
+            ["open https://github.com/HakanSeven12/OpenCADStudio/wiki/LINE-Command"]
+        );
+        assert!(launches::taken().is_empty(), "taking empties the list");
+    }
+}
+
 // Sort tables belong to the block's extension dictionary. Reserve real handles
 // and reconnect older unattached tables without losing their existing entries.
 fn ensure_draw_order_table(

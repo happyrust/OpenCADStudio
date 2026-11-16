@@ -9,6 +9,8 @@ pub mod kit_metrics;
 pub mod linetype;
 pub mod mleaderstyle;
 pub mod mlstyle;
+pub mod pid_fonts;
+pub mod pid_tokens;
 pub mod plotstyle;
 pub mod point_style;
 pub mod readable;

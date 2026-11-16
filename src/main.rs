@@ -213,12 +213,13 @@ fn main() -> iced::Result {
         // the first time a mode is added; a position cannot.
         if !args.new_instance {
             if let io::single_instance::Claim::Existing(stream) = io::single_instance::claim() {
-                // Only bare files forward. `--read-only` / `--script` / `--new`
-                // configure the whole editor rather than a tab, so they always
-                // get a process of their own.
+                // Only bare files forward. `--read-only` / `--script` / `--new` /
+                // `--classic` configure the whole editor rather than a tab, so
+                // they always get a process of their own.
                 let plain_open = !args.read_only
                     && args.script.is_none()
                     && !args.new
+                    && !args.classic
                     && !args.files.is_empty()
                     // --http hosts its REST channel in this very process, so
                     // the drawing must open here too, never in the existing
@@ -264,6 +265,7 @@ fn main() -> iced::Result {
         let _ = cli::GUI_CONFIG.set(cli::GuiConfig {
             files: if args.new { Vec::new() } else { args.files },
             new: args.new,
+            classic: args.classic,
             read_only: args.read_only,
             compat_renderer,
             script_lines,

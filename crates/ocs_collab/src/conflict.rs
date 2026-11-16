@@ -30,6 +30,20 @@ pub const KIND_CREATE_PIPE_LINE: &str = "create_pipe_line";
 pub const KIND_ADD_PIPE_RUN: &str = "add_pipe_run";
 pub const KIND_INSERT_FITTING: &str = "insert_fitting";
 pub const KIND_CREATE_CONNECTOR: &str = "create_connector";
+/// A connector is gone from a line: erased, or its making taken back.
+pub const KIND_DELETE_CONNECTOR: &str = "delete_connector";
+/// A connector has an other end on another drawing — or has none any more.
+/// Said by the server, which pairs them ([`crate::link`]); from a client it
+/// is one more change the judgment has no rule for.
+pub const KIND_PAIR_CONNECTOR: &str = "pair_connector";
+/// A run's parts as they are after a step that changed them otherwise than
+/// by adding the run or putting a fitting on it: parts erased, an insertion
+/// taken back. It carries the same account of the run (`run`) the two
+/// creating kinds may carry.
+pub const KIND_UPDATE_PIPE_RUN: &str = "update_pipe_run";
+/// The author type of a signal line: created like a pipe line
+/// (`create_pipe_line`), and not one of the drawing's pipe lines.
+pub const TYPE_SIGNAL_LINE: &str = "SIGNAL_LINE";
 
 /// The field a retag writes.
 pub const FIELD_TAG: &str = "tag";
@@ -102,7 +116,11 @@ impl Change {
     pub fn changes_topology(&self) -> bool {
         matches!(
             self.kind.as_str(),
-            KIND_ADD_PIPE_RUN | KIND_INSERT_FITTING | KIND_CREATE_CONNECTOR
+            KIND_ADD_PIPE_RUN
+                | KIND_INSERT_FITTING
+                | KIND_CREATE_CONNECTOR
+                | KIND_DELETE_CONNECTOR
+                | KIND_UPDATE_PIPE_RUN
         )
     }
 
@@ -202,6 +220,9 @@ pub enum Verdict {
     /// change to the same line. Connections do not merge field by field: the
     /// sender has to look at the line as it now is and ask again.
     BehindTopology { line_tag: String, touched_revision: i64 },
+    /// An inflow connector on a line of the drawing that has one of that
+    /// family already: a line comes in from one place.
+    DuplicateInflow { line_tag: String },
 }
 
 /// An object that was deleted, kept so that a change still on its way to it
@@ -223,8 +244,13 @@ pub struct Run {
     /// The objects its two ends are connected to, by tag.
     pub from: Option<String>,
     pub to: Option<String>,
-    /// Each fitting as the op that inserted it described it.
+    /// Each fitting as the op that inserted it described it — or, once a
+    /// client has given an account of the run (`run`), as that account
+    /// lists them.
     pub fittings: Vec<Value>,
+    /// The run's segments as the last account of it listed them; `null`
+    /// while no client has given one.
+    pub segments: Value,
 }
 
 /// The semantic state of one drawing: its objects by tag, the retags that
@@ -266,6 +292,15 @@ impl DrawingModel {
         self.revision = revision;
     }
 
+    /// The drawing's connectors, as far as the ops that made them said
+    /// which line each is on and what kind it is.
+    pub fn connectors(&self) -> Vec<crate::link::Connector> {
+        self.connectors
+            .iter()
+            .filter_map(crate::link::Connector::read)
+            .collect()
+    }
+
     /// Every object the server has seen written, by current tag.
     pub fn objects(&self) -> impl Iterator<Item = (&String, &ObjectState)> {
         self.objects.iter()
@@ -305,6 +340,22 @@ impl DrawingModel {
         let object_ref = self.current_name(&change.subject(), base_revision);
         if change.changes_topology() {
             let line_tag = self.line_of(change);
+            if change.kind == KIND_CREATE_CONNECTOR {
+                // The same connector said again — a making put on again —
+                // is not a second one.
+                let second_inflow = crate::link::Connector::read(&change.raw).is_some_and(|said| {
+                    said.is_inflow()
+                        && self.connectors().iter().any(|known| {
+                            known.is_inflow()
+                                && known.family() == said.family()
+                                && known.line_tag == line_tag
+                                && !known.is(&said)
+                        })
+                });
+                if second_inflow {
+                    return Verdict::DuplicateInflow { line_tag };
+                }
+            }
             return match self.line_touched.get(&line_tag) {
                 Some((revision, by)) if *revision > base_revision && by != session_id => {
                     Verdict::BehindTopology {
@@ -559,6 +610,7 @@ impl DrawingModel {
                     "from": run.from,
                     "to": run.to,
                     "fittings": run.fittings,
+                    "segments": run.segments,
                 })
             })
             .collect();
@@ -567,6 +619,49 @@ impl DrawingModel {
             "pipe_runs": runs,
             "connectors": self.connectors,
         })
+    }
+
+    /// Take the account of a run a change carries (`run`: its segments and
+    /// what is fitted on it, as they are once the change has been made) as
+    /// what the run is now. Returns whether the change carried one.
+    ///
+    /// A fitting with a tag of its own — a valve — is an object of the
+    /// drawing from here on: a symbol placed under that tag later is given
+    /// another, and a deletion finds it.
+    fn take_run_account(&mut self, run_tag: &str, change: &Change, state: &FieldState) -> bool {
+        let Some(account) = change.raw.get("run").and_then(Value::as_object) else {
+            return false;
+        };
+        let fittings: Vec<Value> = account
+            .get("fittings")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for fitting in &fittings {
+            let tag = fitting.get("tag").and_then(Value::as_str).unwrap_or_default();
+            if !tag.is_empty() && tag != run_tag {
+                let type_code = fitting.get("type").and_then(Value::as_str);
+                self.know_fitting(tag, type_code, state);
+            }
+        }
+        if let Some(run) = self.runs.get_mut(run_tag) {
+            run.fittings = fittings;
+            run.segments = account.get("segments").cloned().unwrap_or(Value::Null);
+        }
+        true
+    }
+
+    /// A fitting that has a tag of its own is an object under that tag.
+    fn know_fitting(&mut self, tag: &str, type_code: Option<&str>, state: &FieldState) {
+        self.deleted.remove(tag);
+        let object = self.objects.entry(tag.to_owned()).or_default();
+        object
+            .fields
+            .entry("type".to_owned())
+            .or_insert_with(|| FieldState {
+                value: type_code.unwrap_or("VALVE").to_owned(),
+                ..state.clone()
+            });
     }
 
     /// Record a change that took effect and is not a field write: an object
@@ -603,6 +698,12 @@ impl DrawingModel {
                         runs.retain(|tag| tag != object_ref);
                     }
                 }
+                // A fitting that had a tag of its own leaves the run it was on.
+                for run in self.runs.values_mut() {
+                    run.fittings.retain(|fitting| {
+                        fitting.get("tag").and_then(Value::as_str) != Some(object_ref)
+                    });
+                }
             }
             KIND_INSERT_SYMBOL | KIND_CREATE_PIPE_LINE => {
                 self.deleted.remove(object_ref);
@@ -615,7 +716,11 @@ impl DrawingModel {
                         object.fields.insert(field.clone(), stamp(&value_text(value)));
                     }
                 }
-                if change.kind == KIND_CREATE_PIPE_LINE {
+                // A signal line comes into being the same way and is known by
+                // its tag like any object, but it is not a pipe line: it has
+                // no runs, and the topology does not list it as one.
+                let signal = change.text("type").as_deref() == Some(TYPE_SIGNAL_LINE);
+                if change.kind == KIND_CREATE_PIPE_LINE && !signal {
                     self.lines.entry(object_ref.to_owned()).or_default();
                 }
             }
@@ -628,29 +733,94 @@ impl DrawingModel {
                     runs.push(tag.clone());
                 }
                 self.runs.insert(
-                    tag,
+                    tag.clone(),
                     Run {
                         line_tag: object_ref.to_owned(),
                         points: change.raw.get("points").cloned().unwrap_or(Value::Null),
                         from: change.text("from"),
                         to: change.text("to"),
                         fittings: Vec::new(),
+                        segments: Value::Null,
                     },
                 );
+                self.take_run_account(&tag, change, state);
             }
-            KIND_INSERT_FITTING => {
+            KIND_INSERT_FITTING | KIND_UPDATE_PIPE_RUN => {
                 let run = change.text("run_tag").unwrap_or_default();
                 let runs = self.lines.entry(object_ref.to_owned()).or_default();
                 if !runs.contains(&run) {
                     runs.push(run.clone());
                 }
-                let entry = self.runs.entry(run).or_insert_with(|| Run {
+                self.runs.entry(run.clone()).or_insert_with(|| Run {
                     line_tag: object_ref.to_owned(),
                     ..Run::default()
                 });
-                entry.fittings.push(change.raw.clone());
+                // With an account of the run, the account is what the run is
+                // now. Without one — a client that sends the bare op of
+                // `architecture.md` §3.2 — a fitting is one more on the run.
+                if !self.take_run_account(&run, change, state)
+                    && change.kind == KIND_INSERT_FITTING
+                {
+                    if let Some(tag) = change.text("tag").filter(|tag| *tag != run) {
+                        self.know_fitting(&tag, change.text("type").as_deref(), state);
+                    }
+                    if let Some(entry) = self.runs.get_mut(&run) {
+                        entry.fittings.push(change.raw.clone());
+                    }
+                }
             }
-            KIND_CREATE_CONNECTOR => self.connectors.push(change.raw.clone()),
+            KIND_CREATE_CONNECTOR => {
+                let said = crate::link::Connector::read(&change.raw);
+                // What the drawing of whoever made it has for the fields
+                // that go along it: all the server knows of a line nobody
+                // has written a field of while it was listening. A value it
+                // has heard written stands.
+                if let (Some(said), Some(props)) = (
+                    &said,
+                    change.raw.get("line_props").and_then(Value::as_object),
+                ) {
+                    let object = self.objects.entry(object_ref.to_owned()).or_default();
+                    for (field, value) in props {
+                        if said.carried_fields().contains(&field.as_str()) {
+                            object
+                                .fields
+                                .entry(field.clone())
+                                .or_insert_with(|| stamp(&value_text(value)));
+                        }
+                    }
+                }
+                // Said again (its making put on again), it is the one
+                // connector it was.
+                if let Some(said) = &said {
+                    self.connectors.retain(|known| {
+                        crate::link::Connector::read(known).is_none_or(|known| !known.is(said))
+                    });
+                }
+                let mut entry = change.raw.clone();
+                if let Some(entry) = entry.as_object_mut() {
+                    entry.remove("line_props");
+                }
+                self.connectors.push(entry);
+            }
+            KIND_DELETE_CONNECTOR => {
+                if let Some(gone) = crate::link::Connector::read(&change.raw) {
+                    self.connectors.retain(|known| {
+                        crate::link::Connector::read(known).is_none_or(|known| !known.is(&gone))
+                    });
+                }
+            }
+            KIND_PAIR_CONNECTOR => {
+                if let Some(said) = crate::link::Connector::read(&change.raw) {
+                    for known in &mut self.connectors {
+                        if crate::link::Connector::read(known).is_some_and(|known| known.is(&said)) {
+                            for key in ["peer_drawing", "peer_line_tag", "peer_connector"] {
+                                known[key] = change.raw.get(key).cloned().unwrap_or(Value::Null);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
             _ => return,
         }
         if change.changes_topology() {
@@ -1096,5 +1266,85 @@ mod tests {
         let again = model.completed(&place("V-1001"));
         assert_eq!(again.subject(), "V-1001");
         assert!(again.raw.get("reassigned_from").is_none());
+    }
+
+    /// The account of a run a desktop client sends with a change to it.
+    fn account(fittings: Value) -> Value {
+        json!({"start": [0, 0], "segments": [{"start": [0, 0], "end": [84, 0]}, {"start": [116, 0], "end": [200, 0]}],
+            "fittings": fittings})
+    }
+
+    /// `VAL-CROSS-003`: a change that says what the run is like afterwards
+    /// (`run`) makes that the run — its fittings are the ones listed, not
+    /// one more on top of what was there — and a valve among them is an
+    /// object under its own tag: the next symbol placed under that tag is
+    /// given another, and deleting it takes it off the run.
+    #[test]
+    fn collab_pipe_ops_an_account_of_a_run_is_what_the_run_is_now() {
+        let mut model = DrawingModel::default();
+        let valve = json!({"fitting_type": "gate_valve", "type": "VALVE", "tag": "V-1001", "at": [100, 0]});
+        let run = one(json!({"kind": KIND_ADD_PIPE_RUN, "line_tag": "L-1001", "tag": "L-1001-01",
+            "points": [[0, 0], [200, 0]], "run": account(json!([]))}));
+        assert!(applies(&take(&mut model, &run, 0, 1, "s1")));
+        let fitting = one(json!({"kind": KIND_INSERT_FITTING, "line_tag": "L-1001", "run_tag": "L-1001-01",
+            "fitting_type": "gate_valve", "at": [100, 0], "tag": "V-1001", "run": account(json!([valve]))}));
+        assert!(applies(&take(&mut model, &fitting, 1, 2, "s1")));
+        // Said again (a step put on again): still one fitting.
+        assert!(applies(&take(&mut model, &fitting, 2, 3, "s1")));
+        let topology = model.topology();
+        assert_eq!(topology["pipe_runs"][0]["fittings"], json!([valve]));
+        assert_eq!(topology["pipe_runs"][0]["segments"].as_array().map(Vec::len), Some(2));
+        assert_eq!(model.field("V-1001", "type").map(|f| f.value.as_str()), Some("VALVE"));
+        let symbol = one(json!({"kind": KIND_INSERT_SYMBOL, "type": "VALVE", "tag": "V-1001", "position": [5, 5]}));
+        assert_eq!(model.completed(&symbol).subject(), "V-1002", "the fitting has that tag");
+
+        // The valve erased: its tag gone, and the run as it is now.
+        assert!(applies(&take(&mut model, &delete("V-1001"), 3, 4, "s1")));
+        assert_eq!(model.topology()["pipe_runs"][0]["fittings"], json!([]), "off the run with its tag");
+        assert!(model.object("V-1001").is_none() && model.deleted("V-1001").is_some());
+        let after = one(json!({"kind": KIND_UPDATE_PIPE_RUN, "line_tag": "L-1001", "run_tag": "L-1001-01",
+            "run": account(json!([]))}));
+        assert!(after.is_understood() && after.changes_topology());
+        assert_eq!(model.line_of(&after), "L-1001");
+        assert!(applies(&take(&mut model, &after, 4, 5, "s1")));
+        // And put back: the object is there again.
+        let back = one(json!({"kind": KIND_UPDATE_PIPE_RUN, "line_tag": "L-1001", "run_tag": "L-1001-01",
+            "run": account(json!([valve]))}));
+        assert!(applies(&take(&mut model, &back, 5, 6, "s1")));
+        assert!(model.object("V-1001").is_some() && model.deleted("V-1001").is_none());
+    }
+
+    /// A change to a run's parts is a change to its line's connections like
+    /// the two that create them: made before another session's change to
+    /// the same line, it is behind it.
+    #[test]
+    fn collab_pipe_ops_a_change_to_a_runs_parts_contends_for_the_line() {
+        let mut model = DrawingModel::default();
+        let run = one(json!({"kind": KIND_ADD_PIPE_RUN, "line_tag": "L-1001", "tag": "L-1001-01", "points": []}));
+        take(&mut model, &run, 0, 1, "s1");
+        let update = one(json!({"kind": KIND_UPDATE_PIPE_RUN, "line_tag": "L-1001", "run_tag": "L-1001-01",
+            "run": account(json!([]))}));
+        assert_eq!(
+            model.judge(&update, 0, "s2"),
+            Verdict::BehindTopology { line_tag: "L-1001".into(), touched_revision: 1 }
+        );
+        assert!(applies(&model.judge(&update, 1, "s2")));
+        let stake = model.stake(&update).expect("a stake");
+        assert_eq!((stake.0.as_str(), stake.1.as_str()), ("L-1001", FIELD_TOPOLOGY));
+    }
+
+    /// A signal line is created like a pipe line and known by its tag, but
+    /// the topology does not list it among the pipe lines.
+    #[test]
+    fn collab_pipe_ops_a_signal_line_is_not_a_pipe_line() {
+        let mut model = DrawingModel::default();
+        let signal = one(json!({"kind": KIND_CREATE_PIPE_LINE, "tag": "S-2001", "type": TYPE_SIGNAL_LINE,
+            "points": [[0, 50], [80, 50]]}));
+        assert!(applies(&take(&mut model, &signal, 0, 1, "s1")));
+        assert_eq!(model.field("S-2001", "type").map(|f| f.value.as_str()), Some("SIGNAL_LINE"));
+        assert_eq!(model.topology()["pipe_lines"], json!([]));
+        let pipe = one(json!({"kind": KIND_CREATE_PIPE_LINE, "tag": "L-1001", "type": "PIPE_LINE", "points": []}));
+        take(&mut model, &pipe, 1, 2, "s1");
+        assert_eq!(model.topology()["pipe_lines"], json!([{"tag": "L-1001", "runs": []}]));
     }
 }

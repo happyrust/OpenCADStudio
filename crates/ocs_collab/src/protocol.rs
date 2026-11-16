@@ -21,6 +21,12 @@ pub enum ClientMessage {
         /// Source workspace, copied into every audit row this session writes.
         #[serde(default)]
         workspace: String,
+        /// The revision this client's drawing has taken of this room, when
+        /// it was in a session on it before: the server answers with what
+        /// came after ([`ServerMessage::Welcome::replay_from`]). Absent on a
+        /// first join, where the drawing is taken to be what the room has.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<i64>,
     },
     /// Keep-alive, expected every 15 s.
     Heartbeat { session_id: String },
@@ -60,6 +66,13 @@ pub enum ServerMessage {
         base_revision: i64,
         peers: Vec<Peer>,
         claims: Vec<ClaimInfo>,
+        /// Present when the server replays what the session missed: right
+        /// behind this message, and before anything else on the socket, come
+        /// the `op_applied` of revisions `replay_from + 1 ..= base_revision`,
+        /// each as it was first told to the room. It is the `since` the
+        /// `hello` gave. Absent: nothing is replayed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replay_from: Option<i64>,
     },
     /// Structured failure. `level` names the first denying tier when the
     /// failure came out of the permission chain.
@@ -70,6 +83,15 @@ pub enum ServerMessage {
         level: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         holder: Option<String>,
+        /// The op this answers, when it answers one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        op_id: Option<String>,
+        /// `true` when nothing of that op took effect: its sender takes the
+        /// step back. Absent when the error is about one change of an op
+        /// whose other changes may have taken effect (they come as
+        /// `op_applied`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rejected: Option<bool>,
     },
     /// Tag ownership granted.
     ClaimGranted { tag: String, session_id: String },
@@ -118,6 +140,11 @@ pub enum ServerMessage {
         field: String,
         value_a: String,
         value_b: String,
+        /// The two ops that tied. Neither gets an `op_applied` or an
+        /// `error` for the change that tied; this is how each one's sender
+        /// knows its op went into the entry.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        op_ids: Vec<String>,
     },
 }
 
@@ -177,6 +204,10 @@ pub mod codes {
     /// that would give an object such a tag. The claim stands until its
     /// holder releases it or it runs out (`VAL-CROSS-002`).
     pub const CLAIM_HELD: &str = "CLAIM_HELD";
+    /// An inflow connector on a line of a drawing that has one already
+    /// (`VAL-PIPE-024`, `VAL-CROSS-009`). The editor refuses it before it is
+    /// made; the server refuses the second of two made at once.
+    pub const DUPLICATE_INFLOW_CONNECTOR: &str = "DUPLICATE_INFLOW_CONNECTOR";
 }
 
 /// Reasons carried by [`ServerMessage::ClaimReleased`].
@@ -268,6 +299,7 @@ mod tests {
                 user_id: "u1".into(),
                 expires_at: 1_700_000_000,
             }],
+            replay_from: None,
         };
         let value: Value = serde_json::to_value(&msg).expect("welcome must serialize");
         assert_eq!(value["type"], "welcome");
@@ -283,10 +315,84 @@ mod tests {
             message: "send hello first".into(),
             level: None,
             holder: None,
+            op_id: None,
+            rejected: None,
         };
         let text = serde_json::to_string(&msg).expect("error must serialize");
         assert!(!text.contains("level"));
         assert!(!text.contains("holder"));
+    }
+
+    /// `VAL-CROSS-008`: what a session coming back says and is told. Each of
+    /// the four additions is optional on the wire — a frame without it
+    /// reads as it always did, and a frame is written without it when there
+    /// is nothing to say.
+    #[test]
+    fn collab_offline_queue_the_frames_of_coming_back_are_optional_additions() {
+        // `hello.since`.
+        let first: ClientMessage = serde_json::from_str(
+            r#"{"type":"hello","user_id":"u1","drawing_id":"PID-1101","mode":"协同编辑"}"#,
+        )
+        .expect("a first hello");
+        assert!(matches!(first, ClientMessage::Hello { since: None, .. }));
+        assert!(!serde_json::to_string(&first).expect("serialize").contains("since"));
+        let back: ClientMessage = serde_json::from_str(
+            r#"{"type":"hello","user_id":"u1","drawing_id":"PID-1101","mode":"协同编辑","since":6}"#,
+        )
+        .expect("a hello that comes back");
+        assert!(matches!(back, ClientMessage::Hello { since: Some(6), .. }));
+        assert!(serde_json::to_string(&back).expect("serialize").contains(r#""since":6"#));
+
+        // `welcome.replay_from`.
+        let plain: ServerMessage = serde_json::from_str(
+            r#"{"type":"welcome","session_id":"s-1","base_revision":9,"peers":[],"claims":[]}"#,
+        )
+        .expect("a welcome as it has always been");
+        assert!(matches!(plain, ServerMessage::Welcome { replay_from: None, .. }));
+        assert!(!serde_json::to_string(&plain).expect("serialize").contains("replay_from"));
+        let replaying = ServerMessage::Welcome {
+            session_id: "s-2".into(),
+            base_revision: 9,
+            peers: Vec::new(),
+            claims: Vec::new(),
+            replay_from: Some(6),
+        };
+        let value: Value = serde_json::to_value(&replaying).expect("serialize");
+        assert_eq!(value["replay_from"], 6);
+
+        // `error.op_id` and `error.rejected`.
+        let refused = ServerMessage::Error {
+            code: codes::OP_SUPERSEDED.into(),
+            message: "…".into(),
+            level: None,
+            holder: None,
+            op_id: Some("op-s1-12".into()),
+            rejected: Some(true),
+        };
+        let value: Value = serde_json::to_value(&refused).expect("serialize");
+        assert_eq!((&value["op_id"], &value["rejected"]), (&Value::from("op-s1-12"), &Value::from(true)));
+        let old: ServerMessage =
+            serde_json::from_str(r#"{"type":"error","code":"STALE_BASE_REVISION","message":"…"}"#)
+                .expect("an error as it has always been");
+        assert!(matches!(old, ServerMessage::Error { op_id: None, rejected: None, .. }));
+
+        // `conflict.op_ids`.
+        let old: ServerMessage = serde_json::from_str(
+            r#"{"type":"conflict","conflict_id":"c-1","object_ref":"P-1001","field":"设计压力",
+                "value_a":"1.6MPa","value_b":"2.5MPa"}"#,
+        )
+        .expect("a conflict as it has always been");
+        assert!(matches!(&old, ServerMessage::Conflict { op_ids, .. } if op_ids.is_empty()));
+        assert!(!serde_json::to_string(&old).expect("serialize").contains("op_ids"));
+        let tied = ServerMessage::Conflict {
+            conflict_id: "c-1".into(),
+            object_ref: "P-1001".into(),
+            field: "设计压力".into(),
+            value_a: "1.6MPa".into(),
+            value_b: "2.5MPa".into(),
+            op_ids: vec!["op-a".into(), "op-b".into()],
+        };
+        assert_eq!(serde_json::to_value(&tied).expect("serialize")["op_ids"], serde_json::json!(["op-a", "op-b"]));
     }
 
     #[test]

@@ -88,6 +88,7 @@ mod object_isolation_tests;
 mod options_session;
 #[cfg(test)]
 mod paste_special_tests;
+pub mod pid_shell;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod plugin_host;
 mod presspull_ops;
@@ -803,6 +804,9 @@ pub(super) struct OpenCADStudio {
     /// last inbound frames said. Kept beside `control` because both are
     /// out-of-band channels into the live editor.
     collab: collab::State,
+    /// The P&ID module: which of its screens is showing, or none while the
+    /// window is the general CAD interface (`--classic`).
+    pid_shell: pid_shell::PidShell,
     tabs: Vec<DocumentTab>,
     active_tab: usize,
     hovered_doc_tab: Option<usize>,
@@ -3602,6 +3606,8 @@ pub enum Message {
     },
     /// An interaction inside the docked collaboration panel.
     PidCollab(crate::ui::window::pid_collab::PidCollabMsg),
+    /// The P&ID module: a switch of screens, or a screen's own message.
+    PidShell(pid_shell::Message),
     PollWebControl,
     ControlStep(String, Box<Message>),
     ControlTaskDone(String),
@@ -6354,6 +6360,8 @@ impl OpenCADStudio {
         let mut app = Self {
             control: control::State::new(),
             collab: collab::State::new(),
+            // Off: `boot` turns the P&ID module on from the command line.
+            pid_shell: pid_shell::PidShell::default(),
             start: Instant::now(),
             tabs: vec![start_tab],
             active_tab: 0,
@@ -7577,8 +7585,8 @@ impl OpenCADStudio {
         s.collab.sync_client_config();
         // GPU backend / renderer fallback: the resolver ran before iced
         // booted, so surface its verdict here where the user can see it.
-        if let Some(notice) = cfg.gpu_fallback_notice {
-            s.command_line.push_warning(&notice);
+        if let Some(notice) = &cfg.gpu_fallback_notice {
+            s.command_line.push_warning(notice);
             crate::scene::pipeline::report_gpu_line(&format!("[gpu] {notice}"));
         }
         if cfg.gpu_compat_auto {
@@ -7587,17 +7595,10 @@ impl OpenCADStudio {
             crate::scene::pipeline::report_gpu_line(&format!("[gpu] {notice}"));
         }
         let has_files = !cfg.files.is_empty();
-        let cli_open: Task<Message> = if has_files {
-            Task::batch(
-                cfg.files
-                    .into_iter()
-                    .map(|p| Task::done(Message::OpenExternal(p))),
-            )
-        } else if cfg.new || !cfg.script_lines.is_empty() {
-            Task::done(Message::TabNew)
-        } else {
-            Task::none()
-        };
+        // What the launch shows first: the P&ID module on its startup screen
+        // — with a blank drawing when no file is named — or, with
+        // `--classic`, the general interface on its Start page.
+        let cli_open: Task<Message> = s.open_first_screen(&cfg);
         // Startup command script: each line dispatched as if typed at the
         // command line, in order. With file arguments the lines must wait for
         // the drawings to actually load — the DXF parse is asynchronous and a

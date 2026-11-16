@@ -23,10 +23,18 @@ use std::collections::BTreeMap;
 pub(super) mod broadcast;
 mod apply;
 mod claims;
+pub(super) mod connectors;
+pub(super) mod pipes;
 #[cfg(not(target_arch = "wasm32"))]
 mod messages;
 #[cfg(not(target_arch = "wasm32"))]
 mod transport;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_connector_cross_drawing;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_offline_queue;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_pipe_ops;
 
 /// A server address as it may be shown — in the log, on the command line,
 /// in `/collab/status`: without whatever stands before an `@` in its
@@ -106,6 +114,155 @@ pub enum CollabEvent {
     /// everybody else alike.
     Conflict(PendingConflict),
     ServerError { code: String, message: String },
+    /// `welcome.replay_from`, said ahead of the [`CollabEvent::Connected`]
+    /// it belongs to: the server replays every op after revision `from`,
+    /// so the session is taken at the revision its drawing has, and what it
+    /// missed arrives as `op_applied` like any other (`VAL-CROSS-008`).
+    Resuming { from: i64 },
+    /// When each claim a `welcome` listed runs out, in Unix seconds — said
+    /// behind the `Connected` that lists who holds them.
+    ClaimsExpire(Vec<(String, i64)>),
+    /// An `error` that answers an op of this session's by its id.
+    /// `rejected`: nothing of the op took effect, and the step it spoke for
+    /// is taken back. Otherwise it is about one change of an op whose other
+    /// changes come as `op_applied`.
+    OpRefused {
+        op_id: String,
+        code: String,
+        message: String,
+        rejected: bool,
+    },
+    /// The ops a `conflict` says tied: neither is answered any other way.
+    OpsInConflict { op_ids: Vec<String> },
+}
+
+/// One op this session has made that the room has not answered yet.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Outgoing {
+    pub op_id: String,
+    pub payload: Value,
+    /// The revision the step was made against. It goes out with the op —
+    /// not the revision the room is at when it is finally sent — so that a
+    /// step made while the session was away is judged as what it is: made
+    /// without having seen what the room did meanwhile.
+    pub base_revision: i64,
+    /// The undo steps it speaks for (`DeltaSnapshot::collab_step`): how the
+    /// step is found again if the op is refused.
+    pub steps: Vec<u64>,
+    /// Whether it put those steps on the drawing (a step made, or put on
+    /// again) or took them off (a step taken back).
+    pub on: bool,
+    /// Whether it is on the wire of the session that is up now.
+    pub sent: bool,
+    /// What the step is called, for the message that says it was refused.
+    pub label: String,
+}
+
+/// An op of this session's the server refused whole, for the app to take
+/// the step back by.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rejection {
+    pub entry: Outgoing,
+    pub code: String,
+    pub message: String,
+}
+
+/// What the ops queued behind a refused op come to, for taking its step
+/// back (`OpenCADStudio::settle_rejected_ops`).
+///
+/// The room has the refused op's steps as they were before it. Of what
+/// this person did afterwards — none of it sent, one op being on the wire
+/// at a time — some was done to those steps or on top of them, and the
+/// room has nothing of that to change; the rest was done when they were
+/// out of the drawing again, and is this person's own business as before.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Refused {
+    /// The steps that have to move back, because in this drawing they are
+    /// still the way the room refused: the refused op's own, unless this
+    /// person has moved them back already, and those made on top of them.
+    pub in_effect: Vec<u64>,
+    /// The queued ops that are not to be sent, by id.
+    pub void: Vec<String>,
+    /// An op behind the refused one moved refused steps and steps the room
+    /// has in one go — an undo of several steps across the refused one. It
+    /// cannot be said in part, and saying it whole would tell the room to
+    /// take back what it never had.
+    pub mixed: bool,
+}
+
+impl Refused {
+    /// Go through `queue` — what waits behind `refused`, oldest first — and
+    /// say which of it falls with the refused op.
+    ///
+    /// The refused op moved its steps one way: on to the drawing, or off
+    /// it. While any of them is still that way, whatever else this person
+    /// moved the same way was done on top of them — a new step made on a
+    /// drawing that had the refused one, an older step taken back after the
+    /// refused undo — and falls with them. An op that only moves steps
+    /// already fallen (the refused step taken back by hand, put on again)
+    /// falls too, and leaves them the way it put them. Anything else stands.
+    pub fn account(refused: &Outgoing, queue: &std::collections::VecDeque<Outgoing>) -> Self {
+        use std::collections::BTreeSet;
+        let way = refused.on;
+        let mut fallen: BTreeSet<u64> = refused.steps.iter().copied().collect();
+        let mut in_effect = fallen.clone();
+        let mut out = Self::default();
+        for queued in queue {
+            if queued.sent || queued.steps.is_empty() {
+                continue;
+            }
+            let all = queued.steps.iter().all(|step| fallen.contains(step));
+            let any = queued.steps.iter().any(|step| fallen.contains(step));
+            if all {
+                for step in &queued.steps {
+                    if queued.on == way {
+                        in_effect.insert(*step);
+                    } else {
+                        in_effect.remove(step);
+                    }
+                }
+                out.void.push(queued.op_id.clone());
+            } else if queued.on == way && !in_effect.is_empty() {
+                fallen.extend(queued.steps.iter().copied());
+                in_effect.extend(queued.steps.iter().copied());
+                out.void.push(queued.op_id.clone());
+            } else if any {
+                out.mixed = true;
+                break;
+            }
+        }
+        out.in_effect = in_effect.into_iter().collect();
+        out
+    }
+}
+
+/// Where an op stands right after it was queued.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Queued {
+    /// On the wire.
+    Sent,
+    /// Behind this many ops the room has yet to answer.
+    Behind(usize),
+    /// No session is up; this many ops wait for the next one.
+    Offline(usize),
+}
+
+/// Whether `code`, on an `error` that names no op, can only be the refusal
+/// of an op. A server from before `error.op_id` answers a refused op this
+/// way; with one op on the wire at a time it can only mean that one.
+fn refuses_an_op(code: &str) -> bool {
+    use ocs_collab::protocol::codes;
+    [
+        codes::STALE_BASE_REVISION,
+        codes::OP_SUPERSEDED,
+        codes::OBJECT_DELETED,
+        codes::OBJECT_REFERENCED,
+        codes::CLAIM_HELD,
+        codes::PERM_DENIED_ROLE,
+        codes::PERM_DENIED_PBS,
+        codes::PERM_DENIED_STATE,
+    ]
+    .contains(&code)
 }
 
 /// A conflict entry awaiting a ruling, as the server announced it.
@@ -272,6 +429,52 @@ pub(super) struct State {
     pub remote_log: Vec<AppliedRemote>,
     /// How many changes `remote_log` has ever held: the `seq` of the newest.
     pub remote_seq: u64,
+    /// The ops this session has made and the room has not answered, oldest
+    /// first. One is on the wire at a time: the first goes out, and the
+    /// next when that one has been answered — applied, refused, or held in
+    /// a conflict entry. A step made with no session up waits here too, and
+    /// goes out when a session is up again and has caught up
+    /// (`VAL-CROSS-008`).
+    ///
+    /// One at a time because a refused step is taken back, and steps are
+    /// taken back from the top of the undo stack: with one op on the wire,
+    /// whatever this person did after the refused step has not been sent
+    /// yet, and is taken back with it without the room having to be told
+    /// anything.
+    pub outbox: std::collections::VecDeque<Outgoing>,
+    /// The revision a replay is to reach, while the server is sending what
+    /// this session missed. Nothing of the outbox goes out before then.
+    pub catching_up: Option<i64>,
+    /// `welcome.replay_from`, between the event that says it and the
+    /// `Connected` it belongs to.
+    resume_from: Option<i64>,
+    /// Ops the server refused whole, for the app to take their steps back
+    /// (`OpenCADStudio::settle_rejected_ops`).
+    pub rejections: Vec<Rejection>,
+    /// The last few refusals as they were dealt with, for the status.
+    pub rejection_log: Vec<Value>,
+    /// What the server said of an op that takes no step back — one change
+    /// of it gave way and the rest took effect — as `(code, message)`, for
+    /// the app to say on the command line.
+    pub refusals_to_say: Vec<(String, String)>,
+    /// Raised between a refusal and the app having taken the step back:
+    /// the ops behind it may speak for steps that go with it.
+    hold: bool,
+    /// Raised while steps are being taken back (or put on again) because
+    /// the server refused them: nothing is said to the room for it, and
+    /// neither the read-only gate nor a claim stands in the way — the
+    /// drawing is being put back to what the room has.
+    pub rolling_back: bool,
+    /// The last number given to an undo step (`next_step`).
+    step_seq: u64,
+    /// The id of the last session that was up: ops made with none up are
+    /// numbered under it (the id is the server's and nobody else's).
+    last_session: Option<String>,
+    /// tag → when the claim on it runs out, in Unix seconds, for the claims
+    /// the server has said it of: those standing at the last `welcome`, and
+    /// one this session asked for and was refused. A claim this session was
+    /// granted is not in here — `claim_granted` does not say.
+    pub claim_expiry: BTreeMap<String, i64>,
     /// The payload of every op this state queued, for tests to read: the
     /// outbound queue itself is the process's, and other tests write to it.
     #[cfg(test)]
@@ -410,20 +613,38 @@ impl State {
                 peers,
                 claims,
             } => {
-                // Coming back to a room that moved on while this session was
-                // away: what was applied in between is not in this drawing,
-                // and nothing resends it. (A room that is *behind* is one
-                // whose server started over; this drawing joins it as it
-                // joined the first time, taken to be what the room has.)
-                if self.had_session && base_revision > self.base_revision {
-                    self.mark_diverged(format!(
-                        "断线期间房间从修订 {} 走到了 {base_revision}，其间的变更本图没有收到",
-                        self.base_revision
-                    ));
+                // The server replays what this session missed, from the
+                // revision its drawing has: the baseline stays where it is
+                // and each replayed op moves it on, like any op. Nothing
+                // of this session's goes out until the replay is through.
+                let replay = self
+                    .resume_from
+                    .take()
+                    .filter(|from| self.had_session && *from == self.base_revision);
+                match replay {
+                    Some(from) => {
+                        self.catching_up = (base_revision > from).then_some(base_revision);
+                    }
+                    None => {
+                        // Coming back to a room that moved on while this
+                        // session was away, with no replay: what was
+                        // applied in between is not in this drawing. (A
+                        // room that is *behind* is one whose server started
+                        // over; this drawing joins it as it joined the
+                        // first time, taken to be what the room has.)
+                        if self.had_session && base_revision > self.base_revision {
+                            self.mark_diverged(format!(
+                                "断线期间房间从修订 {} 走到了 {base_revision}，其间的变更本图没有收到",
+                                self.base_revision
+                            ));
+                        }
+                        self.base_revision = base_revision;
+                        self.catching_up = None;
+                    }
                 }
                 self.had_session = true;
                 self.connected = true;
-                self.base_revision = base_revision;
+                self.last_session = Some(session_id.clone());
                 // The others on the drawing. `welcome.peers` does not list
                 // the session it welcomes; a server that still does (it
                 // used to) is read the same way.
@@ -442,14 +663,34 @@ impl State {
                 self.readonly_code = None;
                 self.reconnect_attempts = 0;
                 self.last_error = None;
-                // A queued op belonged to the old session and is gone with it.
-                self.own_ops.clear();
+                // The ops the old session left unanswered are still this
+                // person's steps: none is on this session's wire yet, and
+                // they go out again from the first — unless the replay
+                // shows the room took one before the socket dropped.
+                // (They used to be forgotten here, with their steps left in
+                // the drawing.)
+                for entry in &mut self.outbox {
+                    entry.sent = false;
+                }
+                self.pump();
+            }
+            CollabEvent::Resuming { from } => {
+                self.resume_from = Some(from);
+            }
+            CollabEvent::ClaimsExpire(claims) => {
+                self.claim_expiry = claims.into_iter().collect();
             }
             CollabEvent::Disconnected { reason, will_retry } => {
                 self.connected = false;
                 self.session_id = None;
                 self.peers.clear();
                 self.claims.clear();
+                self.claim_expiry.clear();
+                self.catching_up = None;
+                self.resume_from = None;
+                for entry in &mut self.outbox {
+                    entry.sent = false;
+                }
                 // `readonly` stays as it is. It used to be cleared here, so
                 // a session that had been told it may not write could write
                 // again the moment its network blinked.
@@ -476,6 +717,8 @@ impl State {
             CollabEvent::ClaimGranted { tag } => {
                 let holder = self.user_id.clone();
                 self.last_claim_message = Some(format!("已占用位号 {tag}"));
+                // Whatever was known of an earlier claim on it is over.
+                self.claim_expiry.remove(&tag);
                 self.claims.insert(tag, holder);
             }
             CollabEvent::ClaimDenied {
@@ -489,11 +732,13 @@ impl State {
                 self.last_claim_message =
                     Some(format!("位号 {tag} 已被 {holder} 占用，到期时间 {expires_at}"));
                 self.last_error = Some(format!("位号 {tag} 已被占用，到期时间 {expires_at}"));
+                self.claim_expiry.insert(tag.clone(), expires_at);
                 self.claims.insert(tag, holder);
             }
             CollabEvent::ClaimReleased { tag, reason } => {
                 self.last_claim_message = Some(format!("位号 {tag} 占用已释放（{reason}）"));
                 self.claims.remove(&tag);
+                self.claim_expiry.remove(&tag);
             }
             CollabEvent::ReadonlyDowngrade {
                 reason,
@@ -526,7 +771,8 @@ impl State {
                 // it twice is not harmless (a rename finds its old tag gone)
                 // and the baseline does not go backwards.
                 if revision <= self.base_revision {
-                    self.own_ops.retain(|own| own != &op_id);
+                    self.answered(&op_id);
+                    self.pump();
                     return;
                 }
                 // Every op the room applies comes here, one revision after the
@@ -547,9 +793,32 @@ impl State {
                 }
                 // The room broadcast reaches the originator too; its own op is
                 // already in the local document, so only the baseline moves.
-                let mine = self.own_ops.iter().any(|own| own == &op_id);
+                // (Its own, too, when it comes in a replay: sent before the
+                // socket dropped, taken by the room, and never heard of
+                // again until now. It is not sent a second time.)
+                let before = self.base_revision;
+                let under_an_earlier_session = self
+                    .outbox
+                    .iter()
+                    .any(|entry| entry.op_id == op_id && !entry.sent);
+                let mine = self.answered(&op_id);
+                if mine && under_an_earlier_session {
+                    // The room took it from a session of this client's that
+                    // is over, so the server reads it as somebody else's
+                    // when it judges what this session sends: a step made
+                    // on top of it would give way to it. Every step still
+                    // queued was made after it, in this drawing; one whose
+                    // baseline is the revision right before it has seen
+                    // everything up to it, and says so. (One made against
+                    // an older revision has not seen what others did in
+                    // between, and keeps its baseline.)
+                    for entry in &mut self.outbox {
+                        if entry.base_revision == before {
+                            entry.base_revision = revision;
+                        }
+                    }
+                }
                 if mine {
-                    self.own_ops.retain(|own| own != &op_id);
                     // Already in this drawing — except for a symbol the
                     // server took under another tag than it was sent with,
                     // because somebody else's had that one first. That one
@@ -569,6 +838,51 @@ impl State {
                     });
                 }
                 self.base_revision = revision;
+                if self.catching_up.is_some_and(|target| revision >= target) {
+                    self.catching_up = None;
+                }
+                self.pump();
+            }
+            CollabEvent::OpRefused {
+                op_id,
+                code,
+                message,
+                rejected,
+            } => {
+                self.last_error = Some(format!("{code}: {message}"));
+                // Nothing of it took effect: the step goes back
+                // (`OpenCADStudio::settle_rejected_ops`), and until it has,
+                // nothing behind it goes out — it may speak for a step that
+                // goes back with it. An error about one change of an op is
+                // word only: the rest of the op is on its way as
+                // `op_applied`, which is its answer.
+                let refused = if rejected {
+                    self.own_ops.retain(|own| own != &op_id);
+                    self.outbox
+                        .iter()
+                        .position(|entry| entry.op_id == op_id)
+                        .and_then(|at| self.outbox.remove(at))
+                } else {
+                    None
+                };
+                match refused {
+                    Some(entry) => {
+                        self.rejections.push(Rejection { entry, code, message });
+                        self.hold = true;
+                    }
+                    // Word only — or the refusal of an op this state no
+                    // longer has, which leaves it nothing to take back.
+                    None => self.refusals_to_say.push((code, message)),
+                }
+            }
+            CollabEvent::OpsInConflict { op_ids } => {
+                // Held in a conflict entry: answered, as far as the queue
+                // goes. What this drawing shows of it stays until the
+                // ruling comes, as before.
+                for op_id in &op_ids {
+                    self.answered(op_id);
+                }
+                self.pump();
             }
             CollabEvent::Conflict(entry) => {
                 // Told once per entry; a second telling is the same entry.
@@ -582,6 +896,73 @@ impl State {
             }
             CollabEvent::ServerError { code, message } => {
                 self.last_error = Some(format!("{code}: {message}"));
+                // A server that does not say which op it refuses (one from
+                // before `error.op_id`): with one op on the wire it can
+                // only mean that one. The step stays in this drawing, as
+                // it always did with such a server; the queue moves on.
+                if refuses_an_op(&code) {
+                    if let Some(at) = self.outbox.iter().position(|entry| entry.sent) {
+                        if let Some(entry) = self.outbox.remove(at) {
+                            self.own_ops.retain(|own| own != &entry.op_id);
+                        }
+                    }
+                    self.pump();
+                }
+            }
+        }
+    }
+
+    /// The next number for an undo step (`DeltaSnapshot::collab_step`), by
+    /// which the op that speaks for the step finds it again.
+    pub(super) fn next_step(&mut self) -> u64 {
+        self.step_seq += 1;
+        self.step_seq
+    }
+
+    /// The room has answered op `op_id` — applied it, or holds it in a
+    /// conflict entry: it leaves the queue. Returns whether it was an op of
+    /// this session's.
+    fn answered(&mut self, op_id: &str) -> bool {
+        let known = self.own_ops.iter().any(|own| own == op_id)
+            || self.outbox.iter().any(|entry| entry.op_id == op_id);
+        self.own_ops.retain(|own| own != op_id);
+        self.outbox.retain(|entry| entry.op_id != op_id);
+        known
+    }
+
+    /// The app has taken back the steps of every refused op: the queue
+    /// moves again.
+    pub(super) fn release_hold(&mut self) {
+        self.hold = false;
+        self.pump();
+    }
+
+    /// Put the first op of the queue on the wire, when there is a session
+    /// to send it on, the session has caught up with the room, and no other
+    /// op of this session's is waiting for its answer.
+    fn pump(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.hold || !self.connected || self.catching_up.is_some() || self.diverged.is_some() {
+                return;
+            }
+            let Some(session_id) = self.session_id.clone() else {
+                return;
+            };
+            if self.outbox.iter().any(|entry| entry.sent) {
+                return;
+            }
+            let room = self.base_revision;
+            let Some(entry) = self.outbox.front_mut() else {
+                return;
+            };
+            // The revision the step was made against — or the room's own,
+            // when that is lower: a server that started over counts from
+            // nought again, and refuses a baseline it has not reached.
+            let base = entry.base_revision.min(room);
+            if transport::request_op(&session_id, base, &entry.op_id, entry.payload.clone()).is_ok() {
+                entry.base_revision = base;
+                entry.sent = true;
             }
         }
     }
@@ -626,6 +1007,20 @@ impl State {
             "last_apply_error": self.last_apply_error,
             "document_id": self.document,
             "diverged": self.diverged,
+            // tag → when the claim on it runs out (Unix seconds), where the
+            // server has said.
+            "claim_expiry": self
+                .claim_expiry
+                .iter()
+                .map(|(tag, expires_at)| (tag.clone(), json!(expires_at)))
+                .collect::<serde_json::Map<String, Value>>(),
+            // Ops of this session's the room has not answered: the one on
+            // the wire and the ones waiting behind it, or for a session.
+            "queued_ops": self.outbox.len(),
+            // The revision a replay is to reach, while one is going on.
+            "catching_up": self.catching_up,
+            // The last few ops the server refused, and what was done.
+            "rejections": self.rejection_log,
             // The entries awaiting a ruling, as the room was told of them.
             "conflicts": self
                 .conflicts
@@ -651,10 +1046,27 @@ impl State {
     /// The op id is remembered so the room broadcast of our own change does not
     /// get applied to the local document twice.
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn request_op(&mut self, payload: Value) -> Result<(), String> {
-        let Some(session_id) = self.session_id.clone() else {
-            return Err("未连接协同服务器".to_owned());
-        };
+        self.queue_op(payload, Vec::new(), true, "").map(|_| ())
+    }
+
+    /// Queue one op that speaks for the undo steps `steps` — put on the
+    /// drawing (`on`) or taken off it — and send it if it is its turn.
+    ///
+    /// With a session up it goes out at once, or behind the op the room
+    /// has yet to answer. With none up — after there has been one — it
+    /// waits for the next (`VAL-CROSS-008`). A client that never had a
+    /// session queues nothing: when it first joins, its drawing is taken to
+    /// be what the room has.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn queue_op(
+        &mut self,
+        payload: Value,
+        steps: Vec<u64>,
+        on: bool,
+        label: &str,
+    ) -> Result<Queued, String> {
         if self.readonly {
             return Err("只读会话不能提交变更".to_owned());
         }
@@ -666,19 +1078,44 @@ impl State {
                 "本图与房间已不一致（{reason}），已停止提交变更，需要重新同步"
             ));
         }
-        let op_id = transport::next_op_id(&session_id);
+        let session = match (&self.session_id, &self.last_session) {
+            (Some(live), _) => live.clone(),
+            (None, Some(last)) if self.had_session => last.clone(),
+            _ => return Err("未连接协同服务器".to_owned()),
+        };
+        let op_id = transport::next_op_id(&session);
         #[cfg(test)]
         self.sent.push(payload.clone());
-        transport::request_op(&session_id, self.base_revision, &op_id, payload)?;
+        self.outbox.push_back(Outgoing {
+            op_id: op_id.clone(),
+            payload,
+            base_revision: self.base_revision,
+            steps,
+            on,
+            sent: false,
+            label: label.to_owned(),
+        });
         if self.own_ops.len() >= 64 {
             self.own_ops.pop_front();
         }
         self.own_ops.push_back(op_id);
-        Ok(())
+        self.pump();
+        let sent = self.outbox.back().is_some_and(|entry| entry.sent);
+        Ok(match (self.session_id.is_some() && self.connected, sent) {
+            (true, true) => Queued::Sent,
+            (true, false) => Queued::Behind(self.outbox.len().saturating_sub(1)),
+            (false, _) => Queued::Offline(self.outbox.len()),
+        })
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(super) fn request_op(&mut self, _payload: Value) -> Result<(), String> {
+    pub(super) fn queue_op(
+        &mut self,
+        _payload: Value,
+        _steps: Vec<u64>,
+        _on: bool,
+        _label: &str,
+    ) -> Result<Queued, String> {
         Err("网页版不支持协同变更".to_owned())
     }
 

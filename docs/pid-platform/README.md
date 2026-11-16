@@ -23,7 +23,7 @@
 | 图纸与绘图需求 | [docs/pid-platform/requirements/40-drawing-and-drafting.md](requirements/40-drawing-and-drafting.md) | PBS 层级、图纸生命周期与版本、绘图命令、管线管路管段拓扑、标注与断线的需求定义 |
 | 数据与规则引擎需求 | [docs/pid-platform/requirements/50-data-and-rule-engine.md](requirements/50-data-and-rule-engine.md) | 位号主数据、对象属性、检索、设计规则检查引擎与违规处置的需求定义 |
 | 交付物与发布需求 | [docs/pid-platform/requirements/60-deliverables-and-publish.md](requirements/60-deliverables-and-publish.md) | 材料清单、报表模板、图纸输出、数据发布与导出矩阵的需求定义 |
-| 协同与权限需求 | [docs/pid-platform/requirements/70-collaboration-and-permissions.md](requirements/70-collaboration-and-permissions.md) | 三级授权链、图纸状态、并发编辑、冲突处置与权限矩阵的需求定义 |
+| 协同与权限需求 | [docs/pid-platform/requirements/70-collaboration-and-permissions.md](requirements/70-collaboration-and-permissions.md) | 三级授权链、图纸状态、并发编辑、冲突处置、编辑会话与权限矩阵的需求定义，另含错误码表、实现现状与未决事项 |
 | 导入导出矩阵需求 | [docs/pid-platform/requirements/80-import-export-matrix.md](requirements/80-import-export-matrix.md) | 支持格式的导入导出能力矩阵，逐格式登记支持程度与限制条件 |
 | 迁移与互操作需求 | [docs/pid-platform/requirements/90-migration-and-interop.md](requirements/90-migration-and-interop.md) | 从既有图纸与既有平台迁移的路径、字段映射与互操作接口的需求定义 |
 | 复用映射 | [docs/pid-platform/requirements/95-reuse-mapping.md](requirements/95-reuse-mapping.md) | 每条需求与现有代码锚点的对应关系，标明复用、改造或新建 |

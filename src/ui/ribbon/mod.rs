@@ -2804,6 +2804,12 @@ mod tests {
         }
     }
 
+    /// The fingerprint of a one-tool panel for a UI font and a language
+    /// that do not change under the test. The two counters the fingerprint
+    /// covers are of the whole process, and a test running beside this one
+    /// may switch the language between two readings of them
+    /// (`panel_measure_fingerprint_changes_with_the_language` below does,
+    /// and so does `i18n::tests::switching_language_bumps_the_generation`).
     fn measurement_key(tool_id: &'static str, selected_command: &'static str) -> u64 {
         // Fixed generations: other tests switch the UI font and language
         // while this one runs.
@@ -2859,6 +2865,15 @@ mod tests {
         assert_ne!(
             measurement_key("TEST", "TEST"),
             measurement_key("TEST", "OTHER")
+        );
+        // A new UI font or a new language measures the panel again.
+        assert_ne!(
+            measurement_key_at((0, 0), "TEST", "TEST"),
+            measurement_key_at((1, 0), "TEST", "TEST")
+        );
+        assert_ne!(
+            measurement_key_at((0, 0), "TEST", "TEST"),
+            measurement_key_at((0, 1), "TEST", "TEST")
         );
     }
 

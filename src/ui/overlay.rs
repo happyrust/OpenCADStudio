@@ -395,6 +395,10 @@ pub struct GridStyle {
     pub color: [f32; 3],
     /// Draw the coloured X/Y axis lines through the grid origin.
     pub axes: bool,
+    /// The alpha of the lines and of the major lines, given outright: they
+    /// are then drawn a whole pixel wide and `opacity` is not read. The
+    /// P&ID editor draws its design's grid this way.
+    pub line_alpha: Option<(f32, f32)>,
 }
 
 impl Default for GridStyle {
@@ -404,6 +408,7 @@ impl Default for GridStyle {
             bg_luminance: 0.15,
             color: [0.80, 0.80, 0.80],
             axes: true,
+            line_alpha: None,
         }
     }
 }
@@ -3784,18 +3789,24 @@ fn draw_grid(
     style: GridStyle,
     masks: &[crate::scene::model::hatch_model::HatchModel],
 ) {
-    let alpha = (style.opacity as f32 / 100.0).clamp(0.02, 1.0);
-    // Major lines stay subtle: ~1.5x the minor alpha with a slightly heavier
-    // stroke, matching the reference hierarchy without glaring.
-    let major_alpha = (alpha * 1.5).clamp(0.03, 1.0);
+    let (alpha, major_alpha, minor_width, major_width) = match style.line_alpha {
+        Some((minor, major)) => (minor, major, 1.0, 1.0),
+        None => {
+            let alpha = (style.opacity as f32 / 100.0).clamp(0.02, 1.0);
+            // Major lines stay subtle: ~1.5x the minor alpha with a slightly
+            // heavier stroke, matching the reference hierarchy without
+            // glaring.
+            (alpha, (alpha * 1.5).clamp(0.03, 1.0), 0.5, 0.75)
+        }
+    };
     let [r, g, b] = style.color;
     let minor_stroke = canvas::Stroke {
-        width: 0.5,
+        width: minor_width,
         style: canvas::Style::Solid(Color { r, g, b, a: alpha }),
         ..Default::default()
     };
     let major_stroke = canvas::Stroke {
-        width: 0.75,
+        width: major_width,
         style: canvas::Style::Solid(Color {
             r,
             g,
