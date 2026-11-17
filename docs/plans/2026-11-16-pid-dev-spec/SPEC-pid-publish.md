@@ -3,7 +3,7 @@
 > 状态：**待建；规格已确认**（2026-11-16，§9 的待决问题都按「建议」定）。基线 `main @ 9b5327f96`。
 > 依据：已批准计划 T3.3 第 3 项；需求 `REQ-DELV-008`、`009`，参考 `006`、`010`、`011`（`docs/pid-platform/requirements/60-deliverables-and-publish.md`）。
 > 共用约定见 `01-shared-conventions.md`；用到 `SPEC-pid-project-index.md`、`SPEC-pid-drc.md`、`SPEC-pid-bom.md`、`SPEC-pid-snapshot.md`、`SPEC-pid-master-data.md`。
-> 2026-11-17：发布加三项协同前提（队列里有没提交的修改、标着不一致、没对过账），清单加一段 `collab`，写在 `SPEC-collab-offline-sync.md` §5.7，**待确认**（默认拒绝还是放行要定，见该规格 §10 第 3 条）。受影响的地方各加了一句指向它（都以「2026-11-17」开头）。
+> 2026-11-17：发布加三项协同前提（队列里有没提交的修改、标着不一致、没对过账），清单加一段 `collab`，写在 `SPEC-collab-offline-sync.md` §5.7，**已确认**（2026-11-17；定为默认拒绝，明确带上「允许未对账」才放行，见该规格 §10 第 3 条）。受影响的地方各加了一句指向它（都以「2026-11-17」开头）。
 
 ## 1. 目标
 
@@ -59,7 +59,7 @@
 
 ### 3.2 发布清单 `manifest.json`
 
-> 2026-11-17：清单另加一段 `collab`（图里没有同步记录时是 `null`），见 `SPEC-collab-offline-sync.md` §5.7，待确认。
+> 2026-11-17：清单另加一段 `collab`（图里没有同步记录时是 `null`），见 `SPEC-collab-offline-sync.md` §5.7，已确认。
 
 ```json
 {
@@ -136,7 +136,7 @@
 | 图纸保存过，且没有未保存的修改 | `PUBLISH_UNSAVED` |
 | 磁盘上的文件就是本程序上次读写的那一份（现取的文件指纹与标签页记的 `disk_fingerprint` 相同；标签页没记到指纹时按「无法确认」处理） | `PUBLISH_FILE_CHANGED` |
 | 不是协同的只读会话 | `COLLAB_READONLY` |
-| 2026-11-17 加，待确认：图里有同步记录时，队列是空的、没有标不一致、正连着服务器并且已经补齐（`SPEC-collab-offline-sync.md` §5.7） | `COLLAB_UNSYNCED` / `COLLAB_DIVERGED` / `COLLAB_OFFLINE` |
+| 2026-11-17 加，已确认：图里有同步记录时，队列是空的、没有标不一致、正连着服务器并且已经补齐（`SPEC-collab-offline-sync.md` §5.7） | `COLLAB_UNSYNCED` / `COLLAB_DIVERGED` / `COLLAB_OFFLINE` |
 | 目标目录能建、能写；包目录不存在；指定的修订号合法 | `PUBLISH_TARGET_INVALID` / `PUBLISH_TARGET_EXISTS` / `PUBLISH_REVISION_INVALID` |
 
 要求「先保存」是为了让包里的图纸文件、清单、报告说的是同一份东西：图纸文件从磁盘复制，其余从程序里的图算，两者一致的保证就是「没有未保存的修改，文件也没被别人动过」。
@@ -190,7 +190,7 @@
 | `PUBLISH_BLOCKED` | 门禁没过（§3.4） | 409 |
 | `PUBLISH_UNSAVED` | 图没保存过，或有未保存的修改 | 409 |
 | `PUBLISH_FILE_CHANGED` | 磁盘上的文件被别的程序改过 | 409 |
-| `COLLAB_UNSYNCED`、`COLLAB_DIVERGED`、`COLLAB_OFFLINE` | 2026-11-17 加，待确认：协同前提不满足（`SPEC-collab-offline-sync.md` §5.7） | 409 |
+| `COLLAB_UNSYNCED`、`COLLAB_DIVERGED`、`COLLAB_OFFLINE` | 2026-11-17 加，已确认：协同前提不满足（`SPEC-collab-offline-sync.md` §5.7） | 409 |
 | `PUBLISH_TARGET_EXISTS` | 包目录已存在 | 409 |
 | `PUBLISH_REVISION_INVALID` | 指定的修订号不是正整数，或不大于已有的最大修订号 | 400 |
 | `PUBLISH_TARGET_INVALID` | 目标目录建不出来或不可写 | 400 |
@@ -221,7 +221,7 @@ flowchart TD
 - **临时目录**建在目标目录里面（名字以 `.` 开头、带随机后缀），与最终位置在同一个盘上，改名是一步到位的。任何一步失败就删掉它。上次崩溃留下的临时目录，在下次往同一目标目录发布时清掉。
 - **快照**在门禁通过后才存，原因写「发布前自动快照（修订 3）」。之后出包失败的话快照留着，它如实记了那一刻的图。
 - **项目扫描**可能要几秒：命令会先扫、扫完自动接着做；操作在扫描期间返回 `{"ok":true,"status":"scanning","done":12,"total":40}`，调用方稍后用同样的请求再发一次（与 `pid_check` 相同）。
-- **不改图**：发布前后图纸的「已修改」状态、撤销栈、磁盘上的文件都不变。发布不经协同服务器。（2026-11-17：仍然不经服务器；协同前提只读本机的同步状态来判，见 `SPEC-collab-offline-sync.md` §5.7，待确认。）
+- **不改图**：发布前后图纸的「已修改」状态、撤销栈、磁盘上的文件都不变。发布不经协同服务器。（2026-11-17：仍然不经服务器；协同前提只读本机的同步状态来判，见 `SPEC-collab-offline-sync.md` §5.7，已确认。）
 
 **这张图发布到哪一版了**：不在图里记，由目标目录里的包推出。取这张图修订号最大的包，比它的 `source.sha256` 与当前图纸文件的校验和：
 
@@ -289,7 +289,7 @@ pub fn list_packages(target_dir: &Path, drawing_id: &str) -> Vec<PackageInfo>;
 
 ### 5.4 权限
 
-没连协同不设限。协同中：可写会话可以发布，只读会话不能（与服务器把「发布签核」算作写操作一致）。客户端只知道会话可写不可写，不知道自己有没有「发布签核」这一项，所以本期做不到按角色细分。（2026-11-17：图里有同步记录而没连着服务器时，默认不让发布，明确带上「允许未对账」才放行，见 `SPEC-collab-offline-sync.md` §5.7，待确认。）
+没连协同不设限。协同中：可写会话可以发布，只读会话不能（与服务器把「发布签核」算作写操作一致）。客户端只知道会话可写不可写，不知道自己有没有「发布签核」这一项，所以本期做不到按角色细分。（2026-11-17：图里有同步记录而没连着服务器时，默认不让发布，明确带上「允许未对账」才放行，见 `SPEC-collab-offline-sync.md` §5.7，已确认。）
 
 ## 6. 成功标准
 
