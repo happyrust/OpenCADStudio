@@ -29,6 +29,7 @@ import ctypes
 import ctypes.wintypes as wt
 import io
 import json
+import math
 import socket
 import sys
 import time
@@ -40,7 +41,7 @@ r = m6h.Results("t02_harness_rules")
 LOW, HIGH = m6h.gui_port_range()
 STARTS = m6h.LOGS / "gui-starts.jsonl"
 RETRIES = m6h.LOGS / "gui-retries.jsonl"
-BUDGET = 6      # seconds an instance gets here: the contract's 60 through the same code, only shorter
+LEAST = 6       # seconds an instance gets below at the least; how many it gets follows this machine (`budget`)
 
 m6h.k32.OpenProcess.restype = wt.HANDLE
 m6h.k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
@@ -148,6 +149,7 @@ try:
     busy = bound(asked, listen=True)
     g = m6h.Gui("t02-busy", 3220, dwg=dwg, collab=False).start()
     took = g.wait_ready(m6h.READY_BUDGET)
+    healthy = [took]
     serving = m6h.lines_with(g.err_text(), "REST listening", f":{g.port}/")
     r.check("VAL-INFRA-008", g.port != asked and LOW <= g.port <= HIGH and g.port_check[:1] == [[asked, "listening"]]
             and g.port_check[-1] == [g.port, "free"] and took is not None and g.ready()[0] == 200 and bool(serving),
@@ -166,6 +168,7 @@ try:
     a = m6h.Gui("t02-pair-a", 3221, dwg=m6h.fresh_copy("t02-pair-a.dwg"), collab=False).start()
     b = m6h.Gui("t02-pair-b", 3221, dwg=m6h.fresh_copy("t02-pair-b.dwg"), collab=False).start()
     ta, tb = a.wait_ready(m6h.READY_BUDGET), b.wait_ready(m6h.READY_BUDGET)
+    healthy += [ta, tb]
     r.check("VAL-INFRA-008", a.port == m6h.shifted(3221) and b.port != a.port and LOW <= b.port <= HIGH
             and b.port_check[:1] == [[a.port, "held by this run"]] and ta is not None and tb is not None
             and a.ready()[0] == 200 and b.ready()[0] == 200,
@@ -173,6 +176,16 @@ try:
             f"（查的结果 {b.port_check}），两个都就绪，各答各的 /api/v1/ready")
     a.kill()
     b.kill()
+
+    # ── the budget of the instances below ────────────────────────────────────────
+    # The contract's 60 seconds go through the same code; fewer keep this
+    # scenario short. But the budget has to leave a healthy instance of this
+    # machine time to start, and one that cannot serve time to say so: it
+    # follows what the three healthy starts above took.
+    slowest = max([t for t in healthy if t is not None], default=None)
+    budget = max(LEAST, math.ceil(2 * slowest) + 1) if slowest is not None else LEAST
+    how = (f"本场景前面三次正常启动最慢 {slowest:.1f} 秒，上限取它的两倍加一秒、不少于 {LEAST} 秒" if slowest is not None
+           else f"前面没有一次正常启动就绪，取下限 {LEAST} 秒")
 
     # ── VAL-INFRA-014: not ready in time, the second start is ───────────────────
     # The port is bound by somebody who does not listen on it: the check finds
@@ -183,20 +196,20 @@ try:
     g = m6h.Gui("t02-late", 3222, dwg=m6h.fresh_copy("t02-late.dwg"), collab=False).start()
     first_pid = g.pid
     began = time.time()
-    took = g.wait_ready(BUDGET)
+    took = g.wait_ready(budget)
     spent = time.time() - began
     rec = g.retried or {}
     r.check("VAL-INFRA-014", took is not None and g.starts == 2 and rec.get("port") == first_port and rec.get("pid") == first_pid
             and not alive(first_pid) and g.port != first_port and LOW <= g.port <= HIGH and rec.get("retry_port") == g.port
             and g.ready()[0] == 200,
-            f"实例在端口 {first_port} 上 {BUDGET} 秒没有就绪（{rec.get('state')}，轮询 {rec.get('polls')} 次）：进程 {first_pid} 被结束，"
+            f"实例在端口 {first_port} 上 {budget} 秒没有就绪（{rec.get('state')}，轮询 {rec.get('polls')} 次）：进程 {first_pid} 被结束，"
             f"换到端口 {g.port} 再起一次，{'%.1f 秒就绪' % took if took is not None else '仍没有就绪'}；一共启动 {g.starts} 次，前后 {spent:.0f} 秒"
-            f"（这里的上限是 {BUDGET} 秒，契约的 {m6h.READY_BUDGET} 秒走的是同一段代码）")
+            f"（这里的上限是 {budget} 秒：{how}；契约的 {m6h.READY_BUDGET} 秒走的是同一段代码）")
     tail = rec.get("log_tail") or []
     reason = [line for line in tail if "cannot serve" in line]
     new = records(RETRIES)[retries_before:]
     r.check("VAL-INFRA-014", bool(reason) and len(new) == 1 and new[0].get("pid") == first_pid and bool(new[0].get("at"))
-            and new[0].get("budget_seconds") == BUDGET and str(new[0].get("retry_result", "")).startswith("ready after"),
+            and new[0].get("budget_seconds") == budget and str(new[0].get("retry_result", "")).startswith("ready after"),
             f"这次重试记在 gui-retries.jsonl 里（新增 {len(new)} 行）：时刻 {new[0].get('at') if new else '—'}、启动日志尾部 {len(tail)} 行，"
             f"里面有没能就绪的原因（{reason[0][:160] if reason else '没有找到'}）、重试的结果（{new[0].get('retry_result') if new else '—'}）")
     g.kill()
@@ -208,7 +221,7 @@ try:
         missing.unlink()
     starts_before, retries_before = len(records(STARTS)), len(records(RETRIES))
     g = m6h.Gui("t02-never", 3223, dwg=missing, collab=False).start()
-    took = g.wait_ready(BUDGET)
+    took = g.wait_ready(budget)
     rec = g.retried or {}
     mine = [s for s in records(STARTS)[starts_before:] if s.get("gui") == "t02-never"]
     r.check("VAL-INFRA-014", took is None and g.starts == 2 and len(mine) == 2 and mine[0].get("port") != mine[1].get("port")
@@ -222,7 +235,7 @@ try:
     # ── VAL-INFRA-014: a process that ends before it is ready ───────────────────
     starts_before = len(records(STARTS))
     g = m6h.Gui("t02-exits", 3224, dwg=dwg, collab=False, extra=["--no-such-option"]).start()
-    took = g.wait_ready(BUDGET)
+    took = g.wait_ready(budget)
     rec = g.retried or {}
     mine = [s for s in records(STARTS)[starts_before:] if s.get("gui") == "t02-exits"]
     said = [line for line in rec.get("log_tail") or [] if "unexpected argument" in line]

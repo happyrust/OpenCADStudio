@@ -1,31 +1,35 @@
-# Runs the end-to-end scenarios in six groups, one after another, and writes
+# Runs the end-to-end scenarios in seven groups, one after another, and writes
 # one summary: the harness's own scenarios (t00_smoke, t02_harness_rules,
 # t03_vanish_retry, t04_entry_rerun), the eleven conflict and cross-area
 # scenarios (run_cross.ps1), the eight desktop-client scenarios (run_all.ps1), the later
 # cross-area scenarios (every y<digit>*.py in this directory), then the
 # server-process scenarios (every s<digit>*.py: the collaboration server and
 # WS sessions only, no GUI), then the picture scenarios (every g<digit>*.py:
-# one GUI each, judged by the screenshots it takes of itself). Whatever was
-# picked, r01_entry_rules.py runs last:
+# one GUI each, judged by the screenshots it takes of itself), then the timing
+# scenarios (every p<digit>*.py: the contract's time limits, measured).
+# Whatever was picked, r01_entry_rules.py runs last:
 # it checks the rules of the run as a whole (nothing of the run in the
 # repository, the port of every GUI start, the dependency tree).
 #
 #   powershell -File run19.ps1 [-Label <name>] [-OnlyHarness] [-Only19] [-OnlyNew] [-OnlyServer] [-OnlyPictures]
-#                              [-EvidenceDir <dir>] [-BinDir <dir>] [-PortShift <n>]
+#                              [-OnlyTiming] [-EvidenceDir <dir>] [-BinDir <dir>] [-PortShift <n>]
 #
 # -Label     names this run: the summary is summary-<Label>-<time>.txt in the
 #            evidence directory.
 # -OnlyHarness only the first group; -Only19 only the second and the third;
 #            -OnlyNew only the fourth; -OnlyServer only the fifth;
-#            -OnlyPictures only the sixth. Given together, they add up.
+#            -OnlyPictures only the sixth; -OnlyTiming only the seventh. Given
+#            together, they add up.
 # -EvidenceDir, -BinDir and -PortShift are explained in e2e_env.ps1; each can
 # be given by its environment variable instead.
 #
 # Drawings the scenarios read but do not make are made first when missing: the
 # M3 baseline drawing (by the ignored test write_the_m3_baseline_drawing, which
 # needs cargo) and the two seed drawings (x00_seed.py, t01_seed.py). The
-# harness's own, the server-process and the picture scenarios read none of
-# them, so -OnlyHarness, -OnlyServer and -OnlyPictures make none.
+# harness's own, the server-process, the picture and the timing scenarios read
+# none of them, so -OnlyHarness, -OnlyServer, -OnlyPictures and -OnlyTiming
+# make none. (Of the timing scenarios, p03_tag_rule_budget.py needs cargo as
+# well: it runs one ignored test of the library.)
 # A scenario that loses an application instance is run once more and both
 # results are kept (Invoke-E2eScenario in e2e_env.ps1); the summary shows the
 # first attempt on a line of its own and does not count it. A scenario is
@@ -34,13 +38,14 @@
 # many other instances of the two programs were running, to explain a failure by.
 # The only git command is the read-only `git status` of r01_entry_rules.py.
 param([string]$Label = 'run', [switch]$OnlyHarness, [switch]$Only19, [switch]$OnlyNew, [switch]$OnlyServer,
-      [switch]$OnlyPictures, [string]$EvidenceDir = '', [string]$BinDir = '', [string]$PortShift = '')
-$picked = $OnlyHarness -or $Only19 -or $OnlyNew -or $OnlyServer -or $OnlyPictures
+      [switch]$OnlyPictures, [switch]$OnlyTiming, [string]$EvidenceDir = '', [string]$BinDir = '', [string]$PortShift = '')
+$picked = $OnlyHarness -or $Only19 -or $OnlyNew -or $OnlyServer -or $OnlyPictures -or $OnlyTiming
 $runHarness = (-not $picked) -or $OnlyHarness
 $run19 = (-not $picked) -or $Only19
 $runNew = (-not $picked) -or $OnlyNew
 $runServer = (-not $picked) -or $OnlyServer
 $runPictures = (-not $picked) -or $OnlyPictures
+$runTiming = (-not $picked) -or $OnlyTiming
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 $env:PYTHONIOENCODING = 'utf-8'
@@ -154,6 +159,14 @@ if ($runPictures) {
         Collect 'm7' $pictures
     }
 }
+if ($runTiming) {
+    $timing = @(Get-ChildItem $e2e.Scripts -Filter 'p*.py' | Where-Object { $_.Name -match '^p\d' } |
+        Sort-Object Name | ForEach-Object { $_.BaseName })
+    if ($timing.Count -gt 0) {
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $cross -Only ($timing -join ',') -New | ForEach-Object { Say "  $_" }
+        Collect 'm7' $timing
+    }
+}
 # The rules of the run as a whole, last.
 & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $cross -Only 'r01_entry_rules' -New | ForEach-Object { Say "  $_" }
 Collect 'm7' @('r01_entry_rules')
@@ -166,10 +179,11 @@ foreach ($row in $rows) {
 }
 $counted = @($rows | Where-Object { -not $_.First })
 $harnessRows = @($counted | Where-Object { $_.Name -match '^t0\d' })
-$old = @($counted | Where-Object { $_.Name -notmatch '^([ysrg]\d|t0\d)' })
+$old = @($counted | Where-Object { $_.Name -notmatch '^([ysrgp]\d|t0\d)' })
 $newRows = @($counted | Where-Object { $_.Name -match '^y\d' })
 $serverRows = @($counted | Where-Object { $_.Name -match '^s\d' })
 $pictureRows = @($counted | Where-Object { $_.Name -match '^g\d' })
+$timingRows = @($counted | Where-Object { $_.Name -match '^p\d' })
 $ruleRows = @($counted | Where-Object { $_.Name -match '^r\d' })
 $sum = { param($set) (($set | Measure-Object -Property Pass -Sum).Sum, (($set | Where-Object { $_.Fail -ne 0 -or $_.Exit -ne 0 }) | Measure-Object).Count) }
 if ($harnessRows.Count) { $s = & $sum $harnessRows; Say ("harness scenarios: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $harnessRows.Count, $s[0], $s[1]) }
@@ -177,6 +191,7 @@ if ($old.Count) { $s = & $sum $old; Say ("old scenarios: {0} ({1} checks passed,
 if ($newRows.Count) { $s = & $sum $newRows; Say ("new scenarios: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $newRows.Count, $s[0], $s[1]) }
 if ($serverRows.Count) { $s = & $sum $serverRows; Say ("server scenarios: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $serverRows.Count, $s[0], $s[1]) }
 if ($pictureRows.Count) { $s = & $sum $pictureRows; Say ("picture scenarios: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $pictureRows.Count, $s[0], $s[1]) }
+if ($timingRows.Count) { $s = & $sum $timingRows; Say ("timing scenarios: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $timingRows.Count, $s[0], $s[1]) }
 if ($ruleRows.Count) { $s = & $sum $ruleRows; Say ("run rules: {0} ({1} checks passed, {2} scenario(s) not clean)" -f $ruleRows.Count, $s[0], $s[1]) }
 $twice = @($rows | Where-Object { $_.First } | ForEach-Object { $_.Name -replace '\.attempt1$', '' })
 if ($twice.Count) { Say "run twice (the first attempt lost an instance): $($twice -join ', ')" }
