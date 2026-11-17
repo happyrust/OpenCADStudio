@@ -61,6 +61,12 @@ const TAGS_WAIT: Duration = Duration::from_secs(20);
 /// How often that wait looks for the answer.
 const TAGS_POLL: Duration = Duration::from_millis(5);
 
+/// How long a session that is left on purpose, to join again, stays on the
+/// line for the server to take its goodbye ([`leave`]). The server takes it
+/// within milliseconds; the wait is for one that is busy, and one that
+/// never answers holds the client no longer than a few retries would.
+const LEAVE_WAIT: Duration = Duration::from_secs(2);
+
 /// The outbound queue: requests the UI wants on the wire, oldest first.
 type Outbox = Mutex<std::collections::VecDeque<Outbound>>;
 
@@ -111,6 +117,9 @@ pub(super) struct Link {
     /// after the first quit.
     stop: Arc<AtomicBool>,
     heartbeat: Duration,
+    /// How long a session that is left to join again stays on the line for
+    /// the server to take its goodbye ([`leave`]).
+    leave_wait: Duration,
     /// The way to ask the UI which tags the session's drawing carries, for
     /// a client that has a UI to ask. One that has none says `hello` without
     /// them and waits for nobody.
@@ -126,6 +135,7 @@ impl Link {
             outbox: Arc::clone(app_outbox()),
             stop: Arc::new(AtomicBool::new(false)),
             heartbeat: HEARTBEAT_INTERVAL,
+            leave_wait: LEAVE_WAIT,
             tags: Some(TagsLine {
                 said: Arc::clone(app_tags()),
                 wait: TAGS_WAIT,
@@ -141,6 +151,7 @@ impl Link {
             outbox: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             stop: Arc::new(AtomicBool::new(false)),
             heartbeat: HEARTBEAT_INTERVAL,
+            leave_wait: LEAVE_WAIT,
             tags: None,
         }
     }
@@ -915,10 +926,11 @@ impl Seen {
 /// and the `hello` lists them (`existing_tags`). Tags it still owes are
 /// looked for while the session is up. `hello` is the only frame that
 /// carries them, so when they come the session is left — on purpose, with a
-/// close frame — and the retry ladder joins again, asking the UI anew. (At
-/// the server the claims the session held go with it; the UI asks for them
-/// again once the next session is up — `State::say_tags`.) A drawing that
-/// turns out to carry none has nothing to tell, and the session stays.
+/// close frame the server is given the time to take ([`leave`]) — and the
+/// retry ladder joins again, asking the UI anew. (At the server the claims
+/// the session held go with it; the UI asks for them again once the next
+/// session is up — `State::say_tags`.) A drawing that turns out to carry
+/// none has nothing to tell, and the session stays.
 fn run_session(
     sender: &mut mpsc::Sender<CollabEvent>,
     config: &ClientConfig,
@@ -973,11 +985,13 @@ fn run_session(
         if let Some(TagsSaid::Tags(tags)) = owed.and_then(|(ask, line)| line.answer(ask)) {
             owed = None;
             if !tags.is_empty() {
-                close(&mut ws);
                 log(&format!(
                     "界面说出了本图已有的 {} 个位号：断开后重新加入，随 hello 上报",
                     tags.len()
                 ));
+                leave(&mut ws, link.leave_wait, || {
+                    link.stop_requested() || sender.is_closed()
+                });
                 return Ok(Ended::Closed(
                     "要向服务器上报本图已有的位号，正在重新加入会话".to_owned(),
                 ));
@@ -1183,6 +1197,54 @@ where
 {
     let _ = ws.close(None);
     let _ = ws.flush();
+}
+
+/// Leave a session on purpose, to join again: say goodbye, and stay on the
+/// line until the server has taken it — it answers the close frame, or
+/// hangs up — or `wait` is up, or `gone` says nobody waits for the next
+/// session any more.
+///
+/// Hanging up the moment the close frame is out loses the goodbye whenever
+/// the server has something on its way here — the answer to a claim made
+/// just before: what it writes meets a closed socket, the connection is
+/// reset, and the close frame behind it is never read. The session then
+/// lives on at the server, with its claims, until its heartbeat times out,
+/// and the session that replaces it is refused the claims it comes to take
+/// back.
+///
+/// What arrives meanwhile is logged and not handed on. The session is over
+/// as far as the UI goes: an answer to it is to nobody, and what the room
+/// did in the meantime the next `hello` asks for (`since`).
+fn leave<S>(ws: &mut WebSocket<S>, wait: Duration, gone: impl Fn() -> bool)
+where
+    S: std::io::Read + Write,
+{
+    close(ws);
+    let deadline = Instant::now() + wait;
+    while !gone() {
+        if Instant::now() >= deadline {
+            log("离开：服务器没有在时限内收下 close 帧，不再等");
+            return;
+        }
+        match ws.read() {
+            Ok(Message::Text(text)) => {
+                let reading = match read(text.as_str()).frame {
+                    Frame::Event(event) => {
+                        format!("离开途中收到 {}：不交给界面", describe_event(&event))
+                    }
+                    _ => "离开途中收到一帧：不交给界面".to_owned(),
+                };
+                log_frame(true, text.as_str(), Some(&reading));
+            }
+            // Constraint 3: the answer to the goodbye comes once.
+            Ok(Message::Close(_)) => return,
+            Ok(_) => {}
+            Err(error) if is_read_timeout(&error) => {}
+            // The server hung up — it does once it has taken the goodbye —
+            // or the connection is gone some other way.
+            Err(_) => return,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2043,6 +2105,25 @@ mod tests {
     /// first: one list per connection, in the order they were taken.
     type Heard = std::sync::Arc<Mutex<Vec<Vec<String>>>>;
 
+    /// The next connection to `listener` — one that can be polled — to be
+    /// read the ordinary way. `None` when none has come in ten seconds, so
+    /// that a client that never comes back fails its test instead of
+    /// holding it.
+    fn accepted(listener: &TcpListener) -> Option<TcpStream> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => return stream.set_nonblocking(false).ok().map(|()| stream),
+                Err(error)
+                    if error.kind() == ErrorKind::WouldBlock && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+
     /// A server that takes one connection per scene, one after the other,
     /// and keeps what each client sent. It waits ten seconds for each
     /// connection and then gives up, so that a client that never comes
@@ -2064,23 +2145,9 @@ mod tests {
         };
         let handle = std::thread::spawn(move || {
             for (at, scene) in scenes.into_iter().enumerate() {
-                let deadline = Instant::now() + Duration::from_secs(10);
-                let stream = loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => break stream,
-                        Err(error)
-                            if error.kind() == std::io::ErrorKind::WouldBlock
-                                && Instant::now() < deadline =>
-                        {
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        Err(_) => return,
-                    }
-                };
-                // The connection itself is read the ordinary way.
-                if stream.set_nonblocking(false).is_err() {
+                let Some(stream) = accepted(&listener) else {
                     return;
-                }
+                };
                 let Ok(mut ws) = tungstenite::accept(stream) else {
                     return;
                 };
@@ -2456,6 +2523,293 @@ mod tests {
             "it left the session a second time: {after:?}"
         );
         assert_eq!(heard.lock().expect("log").len(), 2);
+    }
+
+    /// How the first connection of a [`claim_answering_server`] ended.
+    #[derive(Clone, Debug, Default)]
+    struct Goodbye {
+        /// The client's close frame was read, not a dead socket in its place.
+        taken: bool,
+        /// The client was still on the line once it had been read.
+        waited: bool,
+        /// What ended the connection, when it was not a close frame.
+        instead: Option<String>,
+    }
+
+    /// A server whose answer to a `claim` crosses the client's goodbye, as
+    /// the real one's does when the claim is the first use of a drawing: it
+    /// reads the claim, answers once the close frame behind it is on its
+    /// way, and reads on only then. It takes two connections, one after the
+    /// other, keeps what each client sent, and says how the first one ended.
+    fn claim_answering_server() -> (
+        String,
+        Heard,
+        Arc<Mutex<Goodbye>>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
+        listener
+            .set_nonblocking(true)
+            .expect("a listener that can be polled");
+        let url = format!("ws://{}/ws", listener.local_addr().expect("local addr"));
+        let heard: Heard = Arc::new(Mutex::new(vec![Vec::new(), Vec::new()]));
+        let goodbye = Arc::new(Mutex::new(Goodbye::default()));
+        let (log, ending) = (Arc::clone(&heard), Arc::clone(&goodbye));
+        let handle = std::thread::spawn(move || {
+            for at in 0..2 {
+                let Some(stream) = accepted(&listener) else {
+                    return;
+                };
+                let Ok(mut ws) = tungstenite::accept(stream) else {
+                    return;
+                };
+                let keep = |text: String| {
+                    if let Ok(mut log) = log.lock() {
+                        log[at].push(text);
+                    }
+                };
+                if let Ok(Message::Text(hello)) = ws.read() {
+                    keep(hello.to_string());
+                }
+                let welcome = format!(
+                    r#"{{"type":"welcome","session_id":"s-{}","base_revision":0,"peers":[],"claims":[]}}"#,
+                    at + 1
+                );
+                if ws.send(Message::text(welcome)).is_err() {
+                    return;
+                }
+                loop {
+                    match ws.read() {
+                        Ok(Message::Text(text)) => {
+                            let claim = text.as_str().contains(r#""type":"claim""#);
+                            keep(text.to_string());
+                            if !claim {
+                                continue;
+                            }
+                            // The claim is being written down, and meanwhile
+                            // the client says goodbye: the answer goes out
+                            // once its close frame is here to be read, and
+                            // before it is read.
+                            let _ = ws.get_ref().set_read_timeout(Some(Duration::from_secs(5)));
+                            let _ = ws.get_ref().peek(&mut [0u8; 1]);
+                            let _ = ws.get_ref().set_read_timeout(None);
+                            std::thread::sleep(Duration::from_millis(50));
+                            let granted = format!(
+                                r#"{{"type":"claim_granted","tag":"P-1001","session_id":"s-{}"}}"#,
+                                at + 1
+                            );
+                            let _ = ws.send(Message::text(granted));
+                            // Time for the answer to get there — and, from a
+                            // client that has hung up, for the reset to come
+                            // back.
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                        Ok(Message::Close(_)) => {
+                            // A client that waits for the answer to its
+                            // goodbye has nothing more to say: a read that
+                            // times out finds it there, one that ends finds
+                            // it gone.
+                            let _ = ws
+                                .get_ref()
+                                .set_read_timeout(Some(Duration::from_millis(200)));
+                            let waited = matches!(
+                                ws.get_ref().peek(&mut [0u8; 1]),
+                                Err(error) if matches!(
+                                    error.kind(),
+                                    ErrorKind::WouldBlock | ErrorKind::TimedOut
+                                )
+                            );
+                            if at == 0 {
+                                if let Ok(mut ending) = ending.lock() {
+                                    ending.taken = true;
+                                    ending.waited = waited;
+                                }
+                            }
+                            let _ = ws.flush();
+                            break;
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            if at == 0 {
+                                if let Ok(mut ending) = ending.lock() {
+                                    ending.instead = Some(error.to_string());
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        (url, heard, goodbye, handle)
+    }
+
+    /// A session that is left to tell the drawing's tags is over at the
+    /// server before the next one starts — the server has read its close
+    /// frame — also when the server had an answer on its way: to a claim the
+    /// session made just before it left. (That is the first use of a drawing
+    /// opened into a session that had none: the claim is made and the tags
+    /// are said in one go.) The client used to hang up the moment its close
+    /// frame was out. The answer then met a closed socket, the connection
+    /// was reset, and the close frame behind it was never read: the session
+    /// lived on at the server, holding the claim, until its heartbeat timed
+    /// out — and the session that replaced it was refused the claim it came
+    /// to take back.
+    #[test]
+    fn collab_existing_tags_a_session_left_to_tell_them_is_over_before_the_next_starts() {
+        let (url, heard, goodbye, server) = claim_answering_server();
+        let (mut link, said) = link_with_tags(url, Duration::from_secs(30));
+        // Longer than the test waits for the next session: it is the
+        // server's answer that ends the leave here, not the time running out.
+        link.leave_wait = Duration::from_secs(60);
+        let (mut receiver, worker) = start_client(&link);
+        let (ask, _) = question(&mut receiver);
+        leave_answer(&said, ask, TagsSaid::NotYet);
+        let up = session_came_up(&mut receiver);
+        // The first use of the drawing: a claim, and the tags it carries.
+        queue_claim(&link.outbox, "P-1001").expect("a claim to make");
+        let claimed = (0..1000).any(|_| {
+            std::thread::sleep(Duration::from_millis(5));
+            heard.lock().expect("log")[0]
+                .iter()
+                .any(|frame| frame.contains(r#""type":"claim""#))
+        });
+        leave_answer(&said, ask, tags(&["P-1001"]));
+        let (again, mut events) = question(&mut receiver);
+        leave_answer(&said, again, tags(&["P-1001"]));
+        events.extend(events_until(
+            &mut receiver,
+            |event| matches!(event, CollabEvent::Connected { session_id, .. } if session_id == "s-2"),
+        ));
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+        let goodbye = goodbye.lock().expect("how it ended").clone();
+
+        assert!(up, "the client never reported a session");
+        assert!(claimed, "the claim never reached the session");
+        assert!(
+            goodbye.taken,
+            "the server never read the close frame of the session that was left: {:?}",
+            goodbye.instead
+        );
+        assert!(
+            goodbye.waited,
+            "the client had hung up before the server answered its goodbye"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(CollabEvent::Connected { session_id, .. }) if session_id == "s-2"
+            ),
+            "the client did not join again: {events:?}"
+        );
+        // The answer that crossed the goodbye is to a session that is over:
+        // the next one asks again, and the UI is not handed this one.
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, CollabEvent::ClaimGranted { .. })),
+            "{events:?}"
+        );
+        assert_eq!(
+            hello_of(&heard, 1)["existing_tags"],
+            serde_json::json!(["P-1001"])
+        );
+    }
+
+    /// A server that does not take the goodbye — one that is wedged — holds
+    /// the client only so long: when the wait is up it hangs up and joins
+    /// again, as it did before there was a wait.
+    #[test]
+    fn collab_existing_tags_a_server_that_does_not_take_the_goodbye_holds_the_leave_only_so_long() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback");
+        listener
+            .set_nonblocking(true)
+            .expect("a listener that can be polled");
+        let url = format!("ws://{}/ws", listener.local_addr().expect("local addr"));
+        let heard: Heard = Arc::new(Mutex::new(vec![Vec::new(), Vec::new()]));
+        let log = Arc::clone(&heard);
+        let server = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for at in 0..2 {
+                let Some(stream) = accepted(&listener) else {
+                    return;
+                };
+                let Ok(mut ws) = tungstenite::accept(stream) else {
+                    return;
+                };
+                if let Ok(Message::Text(hello)) = ws.read() {
+                    if let Ok(mut log) = log.lock() {
+                        log[at].push(hello.to_string());
+                    }
+                }
+                let welcome = format!(
+                    r#"{{"type":"welcome","session_id":"s-{}","base_revision":0,"peers":[],"claims":[]}}"#,
+                    at + 1
+                );
+                if ws.send(Message::text(welcome)).is_err() {
+                    return;
+                }
+                if at == 0 {
+                    // Wedged: nothing more is read on this connection, and
+                    // it is not closed either.
+                    held.push(ws);
+                } else {
+                    while ws.read().is_ok() {}
+                }
+            }
+        });
+        let wait = Duration::from_millis(600);
+        let (mut link, said) = link_with_tags(url, Duration::from_secs(30));
+        link.leave_wait = wait;
+        let (mut receiver, worker) = start_client(&link);
+        let (ask, _) = question(&mut receiver);
+        leave_answer(&said, ask, TagsSaid::NotYet);
+        let up = session_came_up(&mut receiver);
+        let told = Instant::now();
+        leave_answer(&said, ask, tags(&["P-1001"]));
+        let left = events_until(&mut receiver, |event| {
+            matches!(event, CollabEvent::Disconnected { .. })
+        });
+        let stayed = told.elapsed();
+        let (again, _) = question(&mut receiver);
+        leave_answer(&said, again, tags(&["P-1001"]));
+        let events = events_until(
+            &mut receiver,
+            |event| matches!(event, CollabEvent::Connected { session_id, .. } if session_id == "s-2"),
+        );
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+
+        assert!(up, "the client never reported a session");
+        assert!(
+            matches!(
+                left.last(),
+                Some(CollabEvent::Disconnected { reason, will_retry: true }) if reason.contains("位号")
+            ),
+            "the session was not left to tell the tags: {left:?}"
+        );
+        assert!(
+            stayed >= wait,
+            "the client hung up after {stayed:?}, without giving the server {wait:?} to take its goodbye"
+        );
+        assert!(
+            stayed < wait + Duration::from_secs(5),
+            "the client stayed {stayed:?} on a server that was given {wait:?} to take its goodbye"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(CollabEvent::Connected { session_id, .. }) if session_id == "s-2"
+            ),
+            "the client did not join again: {events:?}"
+        );
+        assert_eq!(
+            hello_of(&heard, 1)["existing_tags"],
+            serde_json::json!(["P-1001"])
+        );
     }
 
     /// A drawing with no tags has nothing to tell the server: the session
