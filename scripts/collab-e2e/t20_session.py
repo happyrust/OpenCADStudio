@@ -54,8 +54,27 @@ try:
     sid = st["session_id"]
     hello = m6h.lines_with(srv.log_text(), "入站 hello")
     r.note(f"服务器 stdout: {hello}")
-    r.check("VAL-CLI-001", len(hello) == 1 and "user=u1" in hello[0] and "drawing=PID-1101" in hello[0],
-            "服务器日志出现一条入站 hello，user_id=u1、drawing_id=PID-1101")
+    # A hello that reports tags its drawing already holds is logged twice: what
+    # became of the report, then the answer. The handshake is the line that
+    # ends in the welcome.
+    welcomed = [line for line in hello if "-> welcome" in line]
+    r.check("VAL-CLI-001", len(welcomed) == 1 and "user=u1" in welcomed[0] and "drawing=PID-1101" in welcomed[0],
+            f"服务器日志出现一条以 welcome 作答的入站 hello（{len(welcomed)} 条），user_id=u1、drawing_id=PID-1101")
+    # The seed drawing holds one tag (P-1001). The hello says so, and the
+    # server says what it did with it before it answers.
+    said = m6h.frames(g.err_text(), "->", "hello")
+    reported = [line for line in hello if "上报本机已有位号" in line]
+    st_objects, objects = srv.http("GET", "/drawing/PID-1101/objects")
+    r.dump("t20-001-hello-frame.json", said)
+    r.check("T2.4-existing-tags", len(said) == 1 and said[0].get("existing_tags") == ["P-1001"]
+            and len(reported) == 1 and "user=u1" in reported[0] and "drawing=PID-1101" in reported[0]
+            and "上报本机已有位号 1 个 -> 新登记 1 个（图面修订 0）" in reported[0]
+            and len(welcomed) == 1 and hello.index(reported[0]) < hello.index(welcomed[0])
+            and st_objects == 200 and (objects or {}).get("reported_tags") == ["P-1001"] and (objects or {}).get("total") == 0,
+            f"加入时上报图里已有的位号：客户端发出的 hello 帧 {len(said)} 条，existing_tags={[f.get('existing_tags') for f in said]}；"
+            f"服务器在 welcome 那一行之前记了一行上报结果（{len(reported)} 行）："
+            f"{[line.split(' drawing=PID-1101 ')[-1] for line in reported]}；GET /drawing/PID-1101/objects → {st_objects}，"
+            f"reported_tags={(objects or {}).get('reported_tags')}、total={(objects or {}).get('total')}（上报的位号不算对象）")
     welcome = m6h.lines_with(g.err_text(), "收到 welcome")
     r.note(f"u1 客户端日志: {welcome}")
     r.dump("t20-001-status.json", st)

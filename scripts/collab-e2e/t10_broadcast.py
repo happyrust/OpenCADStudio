@@ -5,12 +5,88 @@ u1 (3210) and u2 (3211) each open their own copy of the seed drawing (one
 vessel, P-1001, handle the same in both) against one server on 3240.
 No third observer joins the room: the `sessions` table and the roster must
 show exactly the two instances.
+
+After those, on the state they leave (u1 holds the edit right, u2 is
+read-only and still takes the room's changes): where a tag came from and
+which fields of a pipe run were set by hand read the same on the receiving
+end as on the sender's, through a change, its undo and its redo (labels
+T2.4-tag-source, T2.4-overrides).
 """
 import json
 import sys
 import time
 
 import m6h
+
+FIELD = "公称直径"
+
+
+def went(resp):
+    return resp[0] == 200 and (resp[1] or {}).get("ok") is True
+
+
+def draw(gui, cmd, points, doc):
+    """Start a drawing command, feed it its points, end it with Enter."""
+    started = gui.run(cmd, doc)
+    if not went(started):
+        return started
+    for x, y in points:
+        fed = gui.op("input", doc, kind="point", point=[x, y, 0.0], space="wcs")
+        if not went(fed):
+            return fed
+    return gui.op("input", doc, kind="enter")
+
+
+def authored(gui):
+    """[(handle, PID_AUTHOR record)] of every entity that carries one."""
+    st, listing = gui.api("GET", "/entities?xdata_app=PID_AUTHOR&limit=5000")
+    return [(e.get("handle"), gui.author(e.get("handle"))) for e in (listing or {}).get("entities") or []]
+
+
+def props_of(author):
+    try:
+        return json.loads(author.get("props") or "{}")
+    except ValueError:
+        return {}
+
+
+def valve_says(gui):
+    """(tag, tag_source) of the one valve in the drawing, as `gui` holds it."""
+    for _handle, author in authored(gui):
+        if author.get("type") == "VALVE":
+            return author.get("tag"), author.get("tag_source")
+    return None
+
+
+def pipe_says(gui, line, run):
+    """What `gui` holds of a pipe line and one run of it: FIELD on the line, on
+    the run and on the run's segments, and the fields the run marks as set by hand."""
+    records = authored(gui)
+    line_props = props_of(next((a for _h, a in records if a.get("tag") == line), {}))
+    run_handle, run_author = next(((h, a) for h, a in records if a.get("tag") == run), ("", {}))
+    run_props = props_of(run_author)
+    segments = [props_of(a).get(FIELD) for _h, a in records
+                if a.get("topology") == "pipe_segment" and run_handle
+                and (a.get("owner") or "").upper() == str(run_handle).upper()]
+    return {"line": line_props.get(FIELD), "run": run_props.get(FIELD),
+            "marks": run_props.get("__overrides") or [], "segments": sorted(segments, key=str)}
+
+
+def both(u1, u2, read, want, seconds=15):
+    """Wait until both ends read `want`; what each read last, u1's then u2's."""
+    m6h.wait_until(lambda: read(u1) == want and read(u2) == want, seconds)
+    return read(u1), read(u2)
+
+
+def last_sent(gui):
+    """The payload of the op `gui` sent last."""
+    sent = m6h.frames(gui.err_text(), "->", "op")
+    return (sent[-1].get("payload") or {}) if sent else {}
+
+
+def arrived(revision, *guis):
+    return all(g.wait_status(lambda s: s.get("base_revision") == revision, 15) is not None for g in guis)
+
 
 r = m6h.Results("t10_broadcast")
 srv = None
@@ -214,6 +290,111 @@ try:
     st, cap1, shot1 = u1.capture(m6h.SHOTS / "t10-012-u1-editable.png")
     r.check("VAL-CLI-012", "pid-collab-readonly" not in bounds1 and not any(k.startswith("pid-collab-holder-") for k in bounds1),
             f"可编辑的 u1 面板上没有这两样（对照）：{sorted(bounds1)}；截图 shots/t10-012-u1-editable.png")
+
+    # ── where a tag came from: the receiving end reads what the sender holds ──
+    # u1 holds the edit right; u2 is read-only and still takes the room's changes.
+    rev = u1.status().get("base_revision")
+    first_frame = len(m6h.frames(u1.err_text(), "->", "op"))
+    known = set(u1.tagged())
+    placed = u1.run("PIDINSERT VALVE 300,-200", doc1)
+    arrived(rev + 1, u1, u2)
+    fresh = sorted(set(u1.tagged()) - known)
+    valve = fresh[0] if fresh else ""
+    seen = both(u1, u2, valve_says, (valve, "auto"))
+    r.check("T2.4-tag-source", went(placed) and bool(valve) and seen == ((valve, "auto"), (valve, "auto")),
+            f"u1 放一个阀门（PIDINSERT VALVE 300,-200 -> {placed[0]}），位号 {valve!r} 是自动编的："
+            f"两端读回的（位号，tag_source）u1={seen[0]} u2={seen[1]}")
+    renamed = u1.run(f"PIDTAG {valve} V-1100", doc1)
+    arrived(rev + 2, u1, u2)
+    seen = both(u1, u2, valve_says, ("V-1100", "manual"))
+    sent = last_sent(u1)
+    r.check("T2.4-tag-source", went(renamed) and seen == (("V-1100", "manual"), ("V-1100", "manual"))
+            and sent.get("kind") == "set_tag" and sent.get("value") == "V-1100" and sent.get("tag_source") == "manual",
+            f"u1 手工改位号（PIDTAG {valve} V-1100 -> {renamed[0]}）：发出的 {sent.get('kind')} 带 tag_source={sent.get('tag_source')!r}；"
+            f"两端读回 u1={seen[0]} u2={seen[1]}")
+    undone = u1.op("undo", doc1)
+    arrived(rev + 3, u1, u2)
+    seen = both(u1, u2, valve_says, (valve, "auto"))
+    sent = last_sent(u1)
+    r.check("T2.4-tag-source", went(undone) and seen == ((valve, "auto"), (valve, "auto"))
+            and sent.get("kind") == "set_tag" and sent.get("value") == valve and sent.get("tag_source") == "auto",
+            f"u1 撤销改位号：发出的 {sent.get('kind')} 把来源带回 tag_source={sent.get('tag_source')!r}；"
+            f"两端读回 u1={seen[0]} u2={seen[1]}（接收方没有把改回来的位号记成手工的）")
+    redone = u1.op("redo", doc1)
+    arrived(rev + 4, u1, u2)
+    seen = both(u1, u2, valve_says, ("V-1100", "manual"))
+    sent = last_sent(u1)
+    r.check("T2.4-tag-source", went(redone) and seen == (("V-1100", "manual"), ("V-1100", "manual"))
+            and sent.get("kind") == "set_tag" and sent.get("value") == "V-1100" and sent.get("tag_source") == "manual",
+            f"u1 重做改位号：发出的 {sent.get('kind')} 带 tag_source={sent.get('tag_source')!r}；两端读回 u1={seen[0]} u2={seen[1]}")
+
+    # ── fields of a run set by hand: the mark travels with the change ─────────
+    known = {a.get("tag") for _h, a in authored(u1)}
+    lined = draw(u1, "PIDPIPE", [(0, -300), (200, -300)], doc1)
+    arrived(rev + 5, u1, u2)
+    ran = draw(u1, "PIDPIPE run", [(0, -300), (200, -300)], doc1)
+    arrived(rev + 6, u1, u2)
+    fresh = sorted({a.get("tag") for _h, a in authored(u1)} - known - {"", None})
+    line = next((t for t in fresh if t.count("-") == 1), "")
+    run = next((t for t in fresh if t.count("-") == 2), "")
+    want = {"line": None, "run": None, "marks": [], "segments": [None]}
+    seen = both(u1, u2, lambda g: pipe_says(g, line, run), want)
+    r.check("setup", went(lined) and went(ran) and bool(line) and bool(run) and seen == (want, want),
+            f"u1 画一条管线和它的一段管路（{line!r}、{run!r}），两端都有、都还没有{FIELD}："
+            f"u1={json.dumps(seen[0], ensure_ascii=False)} u2={json.dumps(seen[1], ensure_ascii=False)}")
+
+    def told(seen):
+        return f"u1={json.dumps(seen[0], ensure_ascii=False)} u2={json.dumps(seen[1], ensure_ascii=False)}"
+
+    sized = u1.run(f"PIDSETPROP {line} {FIELD} DN80", doc1)
+    arrived(rev + 7, u1, u2)
+    plain = {"line": "DN80", "run": "DN80", "marks": [], "segments": ["DN80"]}
+    seen = both(u1, u2, lambda g: pipe_says(g, line, run), plain)
+    sent = last_sent(u1)
+    nested = [(c.get("object_ref"), c.get("value")) for c in sent.get("changes") or []]
+    r.check("T2.4-overrides", went(sized) and seen == (plain, plain) and sent.get("object_ref") == line and nested == [(run, "DN80")],
+            f"u1 改管线的{FIELD}（PIDSETPROP {line} {FIELD} DN80）：没有手改标记的管路跟着变，发出的变更带着管路的那一条 {nested}；"
+            f"两端读回 {told(seen)}")
+    hand = u1.run(f"PIDSETPROP {run} {FIELD} DN50", doc1)
+    arrived(rev + 8, u1, u2)
+    marked = {"line": "DN80", "run": "DN50", "marks": [FIELD], "segments": ["DN50"]}
+    seen = both(u1, u2, lambda g: pipe_says(g, line, run), marked)
+    sent = last_sent(u1)
+    r.check("T2.4-overrides", went(hand) and seen == (marked, marked)
+            and sent.get("object_ref") == run and sent.get("value") == "DN50" and sent.get("overrides") == [FIELD],
+            f"u1 手改管路的{FIELD}（PIDSETPROP {run} {FIELD} DN50）：发出的变更带 overrides={sent.get('overrides')}；"
+            f"两端的管路都记着这个字段是手改的 {told(seen)}")
+    undone = u1.op("undo", doc1)
+    arrived(rev + 9, u1, u2)
+    seen = both(u1, u2, lambda g: pipe_says(g, line, run), plain)
+    sent = last_sent(u1)
+    r.check("T2.4-overrides", went(undone) and seen == (plain, plain)
+            and sent.get("object_ref") == run and sent.get("value") == "DN80" and sent.get("overrides") == [],
+            f"u1 撤销手改：发出的变更带 overrides={sent.get('overrides')}（标记去掉）；两端的管路回到跟随管线的值、都没有标记 {told(seen)}")
+    redone = u1.op("redo", doc1)
+    arrived(rev + 10, u1, u2)
+    seen = both(u1, u2, lambda g: pipe_says(g, line, run), marked)
+    sent = last_sent(u1)
+    r.check("T2.4-overrides", went(redone) and seen == (marked, marked)
+            and sent.get("object_ref") == run and sent.get("value") == "DN50" and sent.get("overrides") == [FIELD],
+            f"u1 重做手改：发出的变更带 overrides={sent.get('overrides')}；两端的管路又都带标记 {told(seen)}")
+    resized = u1.run(f"PIDSETPROP {line} {FIELD} DN100", doc1)
+    arrived(rev + 11, u1, u2)
+    kept = {"line": "DN100", "run": "DN50", "marks": [FIELD], "segments": ["DN50"]}
+    seen = both(u1, u2, lambda g: pipe_says(g, line, run), kept)
+    sent = last_sent(u1)
+    r.check("T2.4-overrides", went(resized) and seen == (kept, kept)
+            and sent.get("object_ref") == line and sent.get("value") == "DN100" and not sent.get("changes"),
+            f"u1 再改管线的{FIELD}（DN100）：带标记的管路不跟，发出的变更里没有管路那一条（changes={sent.get('changes')}）；"
+            f"两端的管路都还是手改的值 {told(seen)}")
+    # Eleven actions, one change each: nothing was sent twice and nothing was left unsaid.
+    said = m6h.frames(u1.err_text(), "->", "op")[first_frame:]
+    ends = [u1.status(), u2.status()]
+    r.dump("t10-tag-source-overrides-frames.json", said)
+    r.check("T2.4-overrides", len(said) == 11 and [s.get("base_revision") for s in ends] == [rev + 11, rev + 11]
+            and not any(s.get("diverged") or s.get("last_apply_error") for s in ends),
+            f"这一段 u1 做了 11 件事，发出 {len(said)} 条变更；两端的修订号 {rev} -> {[s.get('base_revision') for s in ends]}，"
+            f"diverged={[s.get('diverged') for s in ends]}，last_apply_error={[s.get('last_apply_error') for s in ends]}")
 
     # ── what the server and both clients said, for the record ─────────────
     r.dump("t10-server-log.txt", m6h.this_run(srv.log_text()))

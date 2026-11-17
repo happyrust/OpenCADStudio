@@ -20,7 +20,7 @@
 
 1. **表里说的是「有没有能重跑的检查」，不是「这一条验过没有」。** mission 的验证记录里，前六个区的 178 条和 `VAL-CONF-018` 当时都由验证器用一次性的命令和截图取过证；后三个区的其余 49 条功能做了、脚本也过了，但没有经过 mission 的验证器。两种状态列在第 2 节的合计表里。
 2. **「有」里只列了单元测试的，断言是在进程里做的。** 契约写的取证工具是黑盒的（curl、WebSocket 客户端、GUI 的 REST 接口、截图）。单元测试把判据逐条断言到了，但「经 REST 或 WebSocket 走一遍也是这个结果」这一层，只有 mission 当时的一次性取证。前六个区基本都是这种情况，合计表里单列了一栏。凡是判据落在截图、耗时上、单元测试够不着的，标成了「部分」或「缺」；落在真实进程上的六条原来也是，2026-11-17 补了四个场景（第 5.1 节（三））。
-3. **「有」不等于「现在是绿的」。** 单元测试的名字取自全量测试日志（基准提交上的一份，加上补缺口时重跑的），当时都通过。端到端脚本的项数取自 2026-11-12 那次全量执行，当时都通过；脚本收进仓库后（2026-11-17）又跑过两遍，两遍都有同一项因为后来的改动不再通过（第 3.3 节）。服务器进程的四个场景是 2026-11-17 新写的，项数取自当天它们经总入口跑的那一次。脚手架与入口规程的四个场景、收尾的整轮检查，和 `t20_session` 里标 `VAL-INFRA-012` 的一项，也是 2026-11-17 写的，项数取自当天总入口全量跑的那一遍（第 3.3 节）。后来的那些改动，脚本里还没有对应的断言（第 5.2 节）。
+3. **「有」不等于「现在是绿的」。** 单元测试的名字取自全量测试日志（基准提交上的一份，加上补缺口时重跑的），当时都通过。端到端脚本的项数取自 2026-11-12 那次全量执行，当时都通过；脚本收进仓库后（2026-11-17）又跑过三遍：前两遍都有同一项因为后来的改动不再通过；那一项当天改了，后来的改动缺的断言也在当天补了一批（补了哪些、还没有哪些，见第 5.2 节），第三遍全部通过（第 3.3 节）。补了断言的四个场景（`t10_broadcast`、`t20_session`、`x05_m3_persistence`、`x10_concurrent_insert`），项数取自第三遍。服务器进程的四个场景是 2026-11-17 新写的，项数取自当天它们经总入口跑的那一次。脚手架与入口规程的四个场景和收尾的整轮检查，也是 2026-11-17 写的，项数取自第二遍（第 3.3 节）。
 
 **测试名怎么读**
 
@@ -78,6 +78,8 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 ```
 
 读数（2026-11-17，补完 7 条单元测试之后）：主程序库 6945 条（6892 通过、49 默认不跑、4 失败，失败的 4 条是设计稿比对测试，与协同无关，表里没有引用）；`ocs_collab` 95 条、`ocs_collab_server` 的库 165 条、`main.rs` 18 条，全部通过。基准提交上主程序库是 6944 条（6891 通过），`ocs_collab_server` 的库是 159 条，其余相同。
+
+提交 `adb4aed54` 上的读数（2026-11-17，在仓库的另一份检出里跑的）：主程序库 6947 条，6898 通过、49 默认不跑、没有失败；`ocs_collab` 95 条、`ocs_collab_server` 的库 165 条、`main.rs` 18 条，全部通过。那 4 条设计稿比对测试在这里通过：它们比的是 `docs/pid-platform/design/pid-platform.pen`，前面的读数是在这份设计稿有未提交改动的工作区里取的。
 
 ### 3.2 端到端脚本
 
@@ -163,10 +165,21 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 - 收进来时没有做的：场景的断言一处没动，对照表里记的缺口原样留着（此后补了哪些，见第 5.1 节）。
 - 收进来之后新写的：服务器进程的四个场景（`s01`–`s04`），是为补第 5.1 节（三）的缺口写的，没有原件。为它们给脚手架 `m7h.py` 加了一个「不发 close 帧、直接销毁套接字」的做法，给总入口加了服务器进程这一组。
 - 为补第 5.1 节（五）的缺口改的和新写的（2026-11-17）：两个脚手架加了端口、等就绪的上限、实例消失三条规则；三个入口里「跑一个场景」的那一段收进了 `e2e_env.ps1`，加了「退出码 75 重跑一次」；总入口加了第一组和收尾的整轮检查，汇总里开始记退出码。新写了四个脚本（`t02_harness_rules`、`t03_vanish_retry`、`t04_entry_rerun`、`r01_entry_rules`），没有原件。冒烟场景 `t00_smoke` 从端口 3230 改到契约写的 3210，等就绪的上限从 180 秒改成 60 秒，加了 5 项检查，挂进了总入口；`t20_session` 加了 1 项（`VAL-INFRA-012`）。原有的检查项没有改。
+- 为补第 5.2 节前三行的断言改的（2026-11-17）：`t10_broadcast` 加了 11 项（位号来源 4 项、手工改写的标记 6 项、1 项前提），`x05_m3_persistence` 加了 12 项（大属性对象 11 项、1 项前提），`x10_concurrent_insert` 加了 14 项（加入时上报已有位号 7 项、重新加入前后的占用 3 项、4 项前提），`t20_session` 加了 1 项、改了 1 项（数「入站 hello」日志行的那一项，第 3.3 节）。四个脚本原有的其余 76 项，前后两遍全量的结果文件逐行比过：66 项一字不差，10 项只有文字里的数不同（引的日志行里的时间戳、进程号、用时的秒数，和一个实体句柄——新加的步骤把那个阀门删掉又放回，句柄换了），没有一项的写法变了。没有新写脚本，脚手架和入口没有动。
 
 ### 3.3 最近的执行
 
-**2026-11-17，五组全量加收尾的整轮检查**（可执行文件是提交 `b3b366072` 的源码的 debug 构建，脚本是补完验收规程之后的；端口不平移，经总入口 `run19.ps1`）
+**2026-11-17，五组全量加收尾的整轮检查，补了第 5.2 节的断言之后**（可执行文件是提交 `adb4aed54` 的源码的 debug 构建，在仓库的另一份检出里编的；脚本是补了断言之后的；端口不平移，经总入口 `run19.ps1`）
+
+- 30 个场景加收尾的整轮检查，共 529 项检查，全部通过。`t20_session` 里前两遍失败的那一项改过了（第 5.2 节），这一遍通过。
+- 各组：脚手架与入口规程 30 项；冲突与跨区流程 234 项；桌面端客户端 123 项；后补的跨区流程 81 项；服务器进程 56 项；收尾的整轮检查 5 项。
+- 比上一遍多 38 项，都在补了断言的四个场景里：`t10_broadcast` 32 → 43，`t20_session` 16 → 17，`x05_m3_persistence` 14 → 26，`x10_concurrent_insert` 15 → 29。其余 26 个场景和收尾的整轮检查，各标签的项数与上一遍逐个比过，全部相同。
+- `t03_vanish_retry` 照旧跑了两次：第一次按设计丢了实例、以退出码 75 结束（1 项通过，另存为 `attempt1`，不计入上面的数），入口重跑，第二次 5 项全过。别的场景都只跑了一次，退出码都是 0。
+- 收尾检查记下的：这一轮写了 1369 个文件，都在证据目录里；`git status` 前后都是 4 行（脚本也是从那份检出里跑的，那里改过的只有补了断言的四个脚本），没有多出一行；没有新的字节码缓存。GUI 启动 56 次（24 个脚本），端口都在 3210–3239 之内、启动前都查过；其中 5 次在段内换过端口，都是 `t02_harness_rules` 有意做的，别的场景没有一次换端口、没有一次就绪超时重试。依赖树 572 个包，没有 `tokio`、`async-std`，有 `tungstenite` 0.29.0。
+- 没有残留进程，没有留下描述文件，开始和结束时机器上都没有别的实例。桌面记录 34 条里 31 条是「没变」、3 条是「变了」（`t02_harness_rules`、`t03_vanish_retry` 的第一次、`t22_ttl`；三条记的都是其间有人用过这台机器，系统记到了输入）。从第一个场景到收尾约 17 分钟；此前生成基线图用了不到 5 分钟（要先把测试程序编出来）。
+- 这一遍各项的证据没有逐条核对。正式的全量复验是任务清单里的 CC-7。
+
+**2026-11-17，五组全量加收尾的整轮检查，补完验收规程之后**（可执行文件是提交 `b3b366072` 的源码的 debug 构建，脚本是补完验收规程之后的；端口不平移，经总入口 `run19.ps1`）
 
 - 30 个场景加收尾的整轮检查，共 491 项检查：490 项通过、1 项失败。失败的仍是 `t20_session` 里那一项（说明在下面 2026-11-17 原有 22 个场景那次执行的记录后面），其余 29 个场景和收尾检查全部通过。
 - 各组：脚手架与入口规程 30 项（`t00` 7、`t02` 13、`t03` 5、`t04` 5）；冲突与跨区流程 208 项；桌面端客户端 110 项通过、1 项失败（`t20` 现在是 16 项：原有 15 项加 `VAL-INFRA-012` 一项）；后补的跨区流程 81 项；服务器进程 56 项；收尾的整轮检查 5 项。
@@ -189,11 +202,11 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 - 没有残留进程，没有留下描述文件，开始和结束时机器上都没有别的实例；跑完之后仓库里没有多出文件。桌面记录 11 个场景是「没变」、11 个是「变了」。
 - 这一遍是为了确认收进来的入口能用，各项的证据没有逐条核对。正式的全量复验是任务清单里的 CC-7。
 
-失败的那一项在 `t20_session` 里，是标 `VAL-CLI-001` 的五项之一（「服务器日志出现一条入站 hello」）。它数服务器日志里含「入站 hello」的行，要求正好一行。加入时上报已有位号的改动（第 5.2 节表里的第一行）之后，服务器对同一次 hello 记两行：上报的结果一行，发出 `welcome` 一行，所以数出来是 2。同一标签下的另外四项（会话表正好新增一行、客户端收到的 `welcome`、状态接口、`welcome` 帧的形状）都通过。这是脚本的写法落后于改动，不是功能退了。收进仓库时只搬运、不改断言，所以没有动它；要改的写在第 5.2 节。
+这一遍和补完验收规程之后那一遍失败的那一项在 `t20_session` 里，是标 `VAL-CLI-001` 的五项之一（「服务器日志出现一条入站 hello」）。它数服务器日志里含「入站 hello」的行，要求正好一行。加入时上报已有位号的改动（第 5.2 节表里的第一行）之后，服务器对同一次 hello 记两行：上报的结果一行，发出 `welcome` 一行，所以数出来是 2。同一标签下的另外四项（会话表正好新增一行、客户端收到的 `welcome`、状态接口、`welcome` 帧的形状）都通过。这是脚本的写法落后于改动，不是功能退了。收进仓库时只搬运、不改断言，所以当时没有动它；2026-11-17 补第 5.2 节的断言时改成只数以 `welcome` 作答的那一行，此后的那一遍它通过。
 
 **2026-11-12，用仓库外的副本**（可执行文件构建自提交 `9bf874a34`）
 
-22 个场景 399 项全部通过，退出码都是 0，没有残留进程，没有留下描述文件。桌面记录 6 个场景是「没变」、16 个是「变了」（分不出是谁动的，见 3.2）。对照表里原有 22 个场景的项数取自这一次。
+22 个场景 399 项全部通过，退出码都是 0，没有残留进程，没有留下描述文件。桌面记录 6 个场景是「没变」、16 个是「变了」（分不出是谁动的，见 3.2）。对照表里原有 22 个场景中没有补断言的 18 个，项数取自这一次；补了断言的四个取自 2026-11-17 补了断言之后的那一遍。
 
 | 组 | 各场景的项数 | 小计 |
 |---|---|---:|
@@ -431,7 +444,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 | 编号 | 契约标题 | 单元测试 | 端到端脚本 | 覆盖 | 说明 |
 |---|---|---|---|---|---|
-| `VAL-CLI-001` | 客户端连服务器后收到 welcome 并拿到会话 | — | `t20_session.py` 5 项 | 有 | 2026-11-17 那一遍里，五项中数服务器日志行的那一项不通过：脚本的写法落后于后来的改动，见第 3.3 节 |
+| `VAL-CLI-001` | 客户端连服务器后收到 welcome 并拿到会话 | — | `t20_session.py` 5 项<br>`t20_session.py` 1 项（标签 `T2.4-existing-tags`） | 有 | 标本条编号的五项里，数服务器日志行的那一项在 2026-11-17 改了：只数以 `welcome` 作答的入站 `hello`，要求正好一条，用户和图号都对。原来数的是所有含「入站 hello」的行；加入时上报已有位号之后，服务器对同一次 `hello` 多记一行上报结果，那一项就不通过了（第 3.3 节）。上报的那一行另写了一项（标签 `T2.4-existing-tags`）：客户端的 `hello` 带着图里已有的位号，服务器在 `welcome` 之前记下上报了几个、新登记几个，回读到的登记正是这些位号 |
 | `VAL-CLI-002` | 客户端发送 heartbeat 的周期为 15 秒 | `app::collab::transport::tests::the_session_emits_heartbeats_carrying_its_session_id`<br>`app::collab::transport::tests::the_heartbeat_cadence_lands_inside_the_contract_window` | `t20_session.py` 3 项 | 有 |  |
 | `VAL-CLI-003` | 服务器在 90 秒无心跳后判会话失效并广播 peer_left | — | `t23_stale.py` 6 项 | 有 | 第二个观测端用的是普通 WebSocket 客户端（契约已登记的口径）。字面出入见第 5.3 节 |
 | `VAL-CLI-004` | 占用申请获批后返回 claim_granted 并落库 | `app::collab::tests::a_granted_claim_publishes_this_sessions_user_id`<br>`app::collab::transport::tests::queued_claims_and_releases_reach_the_wire_with_the_session_id` | `t21_claims.py` 2 项 | 有 | 占用用的是命令 `PIDCLAIM`，面板上的按钮没有端到端点过 |
@@ -439,7 +452,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-CLI-006` | 占用在 300 秒 TTL 到期后自动释放并广播 claim_released | `app::collab::tests::a_release_clears_the_tag_and_keeps_its_reason` | `t22_ttl.py` 4 项 | 有 | 真等默认的 300 秒到期，这个场景最慢 |
 | `VAL-CLI-007` | 主动释放占用返回 claim_released 且 reason 为主动 | — | `t21_claims.py` 2 项 | 有 | 释放用的是命令 `PIDRELEASE`，面板上的按钮没有端到端点过 |
 | `VAL-CLI-008` | 占用状态在 GUI 面板可见且可被 REST 读回 | `app::collab::claims::tests::a_claimed_tag_colours_the_entities_that_carry_it`<br>`app::collab::claims::tests::this_sessions_own_claim_is_coloured_as_occupied`<br>`app::collab::claims::tests::a_released_claim_row_stops_reporting_its_rectangle` | `t21_claims.py` 3 项 | 有 | 占用色像素在视口截图上量（契约已登记的口径） |
-| `VAL-CLI-009` | 实例 A 的位号变更在实例 B 本地文档生效 | `app::collab::apply::tests::a_remote_tag_change_reaches_the_local_document`<br>`app::collab::broadcast::tests::a_set_tag_change_rewrites_the_local_tag` | `t10_broadcast.py` 6 项 | 有 | 脚本早于「改位号带真实来源」，对端读回的 `tag_source` 没有断言（见第 5.2 节）。字面出入见第 5.3 节 |
+| `VAL-CLI-009` | 实例 A 的位号变更在实例 B 本地文档生效 | `app::collab::apply::tests::a_remote_tag_change_reaches_the_local_document`<br>`app::collab::broadcast::tests::a_set_tag_change_rewrites_the_local_tag` | `t10_broadcast.py` 6 项<br>`t10_broadcast.py` 4 项（标签 `T2.4-tag-source`）<br>`t10_broadcast.py` 6 项（标签 `T2.4-overrides`） | 有 | 标本条编号的几项是原有的。2026-11-17 另加了两组。位号来源（标签 `T2.4-tag-source`）：自动编的位号、手工改、撤销、重做，两端每次读回的位号和 `tag_source` 都相同，后三步发出的变更带着来源。属性的手改标记（标签 `T2.4-overrides`）：改管线的属性时没有标记的管路跟着变；手改管路的字段、撤销、重做，发出的变更带着标记（撤销时是把标记去掉），两端的取值和标记每次都相同；之后再改管线，带标记的管路不跟着变。字面出入见第 5.3 节 |
 | `VAL-CLI-010` | 远端变更后双方 base_revision 同步刷新 | `app::collab::apply::tests::a_remote_op_moves_the_baseline_to_the_server_revision`<br>`ocs_collab_server::ws::tests::an_applied_op_moves_every_live_session_on_the_drawing_to_its_revision` | `t10_broadcast.py` 4 项 | 有 |  |
 | `VAL-CLI-011` | readonly_downgrade 后 GUI 拒绝写操作 | `app::collab::apply::tests::a_readonly_session_refuses_writes_and_keeps_inspection`<br>`app::collab::apply::tests::commands_that_write_are_refused_and_the_forms_that_read_are_not`<br>`app::collab::apply::tests::every_command_a_readonly_session_may_run_leaves_the_drawing_as_it_was`<br>`app::collab::apply::tests::a_write_that_gets_past_the_command_gate_is_taken_back`<br>`ocs_collab_server::http::tests::switching_to_readonly_downgrades_everyone_but_the_holder` | `t10_broadcast.py` 5 项 | 有 | 脚本只查了契约给的那一条写命令（`PIDTAG`）；「写命令作为一类被拒」由单测盯着：两条盯放行名单，一条盯名单之外的总闸（漏过名单的写入会被收回）。字面出入见第 5.3 节 |
 | `VAL-CLI-012` | 只读降级在 GUI 上可见 | `app::collab::claims::tests::a_downgrade_marks_the_holding_session_in_the_panel`<br>`ui::window::pid_collab::tests::a_downgraded_session_draws_the_badge_and_marks_the_holders_row` | `t10_broadcast.py` 4 项 | 有 |  |
@@ -487,12 +500,12 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-CROSS-002` | 占用排他性贯穿 GUI 与服务器 | `app::collab::apply::tests::a_write_to_a_tag_somebody_else_holds_is_taken_back`<br>`ocs_collab_server::http::tests::an_op_on_a_tag_another_session_holds_is_refused_until_it_is_released` | `x02_claim_exclusive.py` 16 项 | 有 |  |
 | `VAL-CROSS-003` | 管线插阀门后双方拓扑一致 | `app::collab::collab_pipe_ops::a_peer_follows_a_line_a_run_and_a_valve`<br>`ocs_collab::conflict::tests::collab_pipe_ops_an_account_of_a_run_is_what_the_run_is_now`<br>`ocs_collab_server::http::tests::collab_pipe_ops_a_held_line_refuses_changes_to_its_connections` | `y03_pipe_topology.py` 17 项 | 有 | 契约写「两条 `op_applied`」，实现是三条（管线、管路、管件各一条）。同一个脚本还查了删除（标签 `CT-13-delete`，5 项） |
 | `VAL-CROSS-004` | 无编辑权限角色被降级、写被拒且审计留痕 | `ocs_collab_server::http::tests::a_role_that_does_not_edit_joins_as_a_viewer_and_is_told` | `x04_readonly_role.py` 9 项 | 有 |  |
-| `VAL-CROSS-005` | M3 持久化数据穿越 M6 协同会话后完整 | — | `x05_m3_persistence.py` 11 项 | 有 | 基线图由仓库里一条默认不跑的测试写出（`write_the_m3_baseline_drawing`）；「插入阀门」是独立放置的阀门，不是插在管路上的管件。脚本早于大属性对象（见第 5.2 节） |
+| `VAL-CROSS-005` | M3 持久化数据穿越 M6 协同会话后完整 | — | `x05_m3_persistence.py` 11 项<br>`x05_m3_persistence.py` 9 项（标签 `CC-2-large-props`）<br>`x05_m3_persistence.py` 2 项（标签 `CC-1-large-props`） | 有 | 基线图由仓库里一条默认不跑的测试写出（`write_the_m3_baseline_drawing`）；「插入阀门」是独立放置的阀门，不是插在管路上的管件。2026-11-17 加了大属性对象的两组（实体自己的记录过了 2 KB、属性另存进扩展字典里一条 XRecord 的符号；脚本的输出里叫「溢出记录」）。标签 `CC-2-large-props`：逐项写到溢出、一步写到溢出、改一项、撤销、重做、隔着对方的改动撤销，两端每次逐项相同，对方写的属性一项不少。标签 `CC-1-large-props`：撤销删除时放回去的对象带着全部属性；接收的一方保存的文件不连服务器重开，属性都在。删除和撤销删除用的是会话里新放的那个阀门：基线图里原有的阀 V-1001（M3 时期写的，拓扑角色是 `valve`，现在的命令不再写这种角色）在会话里被删时没有变更发给房间，另一方的图上还在，两端都不报分叉——试跑时看到的，没有改、没有断言 |
 | `VAL-CROSS-006` | 首次访问流程从空列表到两人 | `app::collab::claims::tests::naming_the_server_saves_it_and_starts_the_session`<br>`ui::window::pid_collab::tests::the_roster_shows_this_session_and_says_when_nobody_else_is_there` | `x06_first_visit.py` 17 项 | 有 | 「在设置中」配服务器地址是用命令做的 |
 | `VAL-CROSS-007` | 冲突生成到裁决的跨区域闭环 | `app::collab::apply::tests::a_ruling_reaches_the_drawing_and_takes_the_entry_off_the_panel`<br>`app::collab::tests::a_conflict_is_kept_until_its_ruling_arrives`<br>`ui::window::pid_collab::tests::a_conflict_awaiting_a_ruling_is_listed_with_what_is_contended` | `x07_conflict_closure.py` 14 项 | 有 |  |
 | `VAL-CROSS-008` | 断线期间离线编辑，重连后与服务器对账 | `app::collab::collab_offline_queue::steps_made_with_the_session_away_wait_and_go_out_in_order_one_at_a_time`<br>`app::collab::collab_offline_queue::what_the_room_did_meanwhile_arrives_before_anything_is_sent`<br>`app::collab::collab_offline_queue::a_step_the_server_refuses_is_taken_back` | `y08_offline_reconcile.py` 10 项 | 有 | 脚本里两边各离线改一个字段（设计压力、设计温度），契约写的是一边改公称直径。同一个脚本还查了被拒的修改撤回（标签 `CT-14-rejected`，18 项） |
 | `VAL-CROSS-009` | 页间连接符跨图协同与属性传递 | `app::collab::collab_connector_cross_drawing::two_drawings_are_paired_by_the_server_and_the_lines_field_arrives_on_the_other`<br>`ocs_collab::link::tests::collab_connector_cross_drawing_an_outflow_and_the_inflow_it_names_are_paired`<br>`ocs_collab_server::ops::tests::collab_connector_cross_drawing_the_server_pairs_an_outflow_with_the_inflow_on_the_drawing_it_names` | `y09_connector_cross_drawing.py` 18 项 | 有 |  |
-| `VAL-CROSS-010` | 双实例并发插入的位号唯一性由服务器保证 | `app::collab::apply::tests::a_symbol_the_server_renumbered_is_renamed_where_it_was_placed`<br>`app::collab::collab_existing_tags::a_peers_symbol_placed_under_a_listed_tag_is_given_another`<br>`ocs_collab::conflict::tests::a_symbol_placed_under_a_taken_tag_is_given_the_next_free_one`<br>`ocs_collab_server::http::tests::two_symbols_placed_under_one_tag_end_up_with_two_tags` | `x10_concurrent_insert.py` 11 项 | 有 | 脚本早于「加入时上报图里已有的位号」：两份图本来就不一样的情形只有单测，没有端到端断言（见第 5.2 节） |
+| `VAL-CROSS-010` | 双实例并发插入的位号唯一性由服务器保证 | `app::collab::apply::tests::a_symbol_the_server_renumbered_is_renamed_where_it_was_placed`<br>`app::collab::collab_existing_tags::a_peers_symbol_placed_under_a_listed_tag_is_given_another`<br>`ocs_collab::conflict::tests::a_symbol_placed_under_a_taken_tag_is_given_the_next_free_one`<br>`ocs_collab_server::http::tests::two_symbols_placed_under_one_tag_end_up_with_two_tags` | `x10_concurrent_insert.py` 11 项<br>`x10_concurrent_insert.py` 7 项（标签 `T2.4-existing-tags`）<br>`x10_concurrent_insert.py` 3 项（标签 `T2.4-claim-after-rejoin`） | 有 | 标本条编号的几项是原有的（两份相同的图上并发放置）。2026-11-17 加了两份图本来就不一样的情形。标签 `T2.4-existing-tags`：加入时的 `hello` 带着图里已有的位号，服务器登记，后到的不重复登记；启动时没有图的会话打开图之后重新加入去上报；别人新放的符号在本地算出的位号正好是第三份图里已有的那个，服务器不让它生效、改派下一个，三方读回没有重号。标签 `T2.4-claim-after-rejoin`：为上报而重新加入之前申请的占用，重新加入后还在、记在新会话名下、释放得掉（这一组盯的缺陷写在 `SPEC-collab-client.md` §10.3） |
 | `VAL-CROSS-011` | 只读会话的截图与审计交叉验证 | — | `x04_readonly_role.py` 11 项 | 有 | 只读标识和属性面板的行是从程序上报的界面状态读的，截图本身只查了写出来 |
 | `VAL-CROSS-012` | 协同会话结束后本地文件可独立打开且无协同残留 | `ui::window::pid_collab::tests::a_panel_with_no_server_says_so_and_how_to_set_one` | `x12_after_session.py` 15 项 | 有 |  |
 
@@ -549,15 +562,17 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 ### 5.2 脚本早于后来的改动
 
-2026-11-12 那次全量执行之后合进来的改动，单元测试都有，脚本里没有对应的断言（在脚本目录里检索过关键字）。这些不改变对照表里的取值，但相关的几条契约在端到端这一层只验到了改动之前的行为。其中第一行的改动还让一项已有的断言不再通过（第 3.3 节）。
+2026-11-12 那次全量执行之后合进来的改动，单元测试都有，脚本里原来没有对应的断言（在脚本目录里检索过关键字），相关的几条契约在端到端这一层只验到了改动之前的行为；其中第一行的改动还让一项已有的断言不再通过（第 3.3 节）。
 
-| 改动 | 提交 | 脚本的现状 | 要补什么 |
+前三行的断言 2026-11-17 补了，不再通过的那一项也改了；第三行只补了符号这一种，每一行还没有的写在最后一列。新加的检查项挂在相关契约的那几行上（`VAL-CLI-001`、`VAL-CLI-009`、`VAL-CROSS-005`、`VAL-CROSS-010`），对照表里的取值没有变；它们会不会红，逐项试过（第 5.4 节）。后两行不是改脚本能补的。
+
+| 改动 | 提交 | 脚本的现状 | 还没有的 |
 |---|---|---|---|
-| 加入时上报图里已有的位号，服务器据此避开 | `1682b84c3`、`93433f7d2`、`b34bccf7e`、`ecdd8dd91` | 没有断言。另外 `t20_session.py` 里数「入站 hello」日志行的那一项（`VAL-CLI-001`）现在不通过：同一次 hello 服务器记两行 | 扩 `x10_concurrent_insert.py`（`VAL-CROSS-010`）：一方的图里原本就有服务器没见过的位号时，新符号不会被改派到那个位号上；为上报而重新加入后，原先的占用还在。改 `t20_session.py` 的那一项：只数发出 `welcome` 的那一行，上报结果的那一行另写一项断言 |
-| 属性变更带覆盖标记，改位号带真实来源 | `9b5327f96` | 只在发起方读了 `tag_source`，接收方没有断言 | 扩 `t10_broadcast.py` 或 `x01_journey.py`（`VAL-CLI-009`、`VAL-CROSS-001`）：接收方读回的 `tag_source` 与覆盖标记和发起方一致 |
-| 大属性对象（属性多到存进扩展字典的符号、管线、管路、管件）新建、改属性、撤销、重做都带全属性 | `0744f67b2`、`e24b3f947`、`68f08721e` | 没有断言 | 扩 `x01_journey.py` 或 `x05_m3_persistence.py`（`VAL-CROSS-001`、`VAL-CROSS-005`）：建一个属性多到溢出的符号，改属性、撤销、重做，两端读回一致 |
+| 加入时上报图里已有的位号，服务器据此避开 | `1682b84c3`、`93433f7d2`、`b34bccf7e`、`ecdd8dd91` | 已补。`x10_concurrent_insert.py` 加了两组。标 `T2.4-existing-tags` 的 7 项：两个实例加入时都上报了图里已有的位号，服务器登记下来；第三个实例启动时不带图，加入之后才打开一张带位号的图，它重新加入、把位号报上去；此后另一方新放的阀门，本机算出的位号正好是那张图里已有的，服务器改派到下一个，三方读回没有重号。标 `T2.4-claim-after-rejoin` 的 3 项：第三个实例在重新加入的前一刻申请的占用，落在新会话名下，能释放。`t20_session.py` 里过时的那一项改成只数以 `welcome` 作答的那一行，另加一项（`T2.4-existing-tags`）查上报结果的那一行。写这几项时发现一处产品缺陷（重新加入之前刚发出的占用申请，之后要不回来），在提交 `adb4aed54` 里修了，`T2.4-claim-after-rejoin` 盯的就是它 | 退出程序时的离开与修掉的那一处是同样的写法，没有复现、没有改、没有断言。只读的会话先把启动时的空白图认作本会话的图，之后打开的图里的位号不上报（试跑时看到的，没有往下查，没有改、没有断言） |
+| 属性变更带覆盖标记，改位号带真实来源 | `9b5327f96` | 已补。`t10_broadcast.py` 加了两组。标 `T2.4-tag-source` 的 4 项：放一个阀门（位号是自动编的）、手工改位号、撤销、重做，每一步两端读回的位号和来源都相同；后三步发出的变更带着来源（手工、自动、手工）。标 `T2.4-overrides` 的 6 项：改管线的公称直径，没有手改标记的管路跟着变；手工改管路，发出的帧带覆盖标记，两端都记下标记；撤销去掉标记，重做又标上；再改管线，标了的管路不跟着变；最后数一遍，每个动作正好一条变更，两端没有分叉 | `x01_journey.py` 没有扩。覆盖标记只试了公称直径这一个属性 |
+| 大属性对象（属性多到存进扩展字典的符号、管线、管路、管件）新建、改属性、撤销、重做都带全属性 | `0744f67b2`、`e24b3f947`、`68f08721e` | 符号这一种已补。`x05_m3_persistence.py` 加了两组。标 `CC-2-large-props` 的 9 项：会话里新放的一个阀门逐项写 9 项属性（写到实体自己的记录过了 2 KB，属性另存进扩展字典），基线图里的设备 P-1001 一步写进一项 2 KB 以上的属性；改属性、撤销、重做，两方隔着对方的改动各自撤销，每一步两端读回一致，最后数一遍变更条数、两端没有分叉。标 `CC-1-large-props` 的 2 项：删掉那个阀门再撤销，重建它的帧带全 9 个属性；接收方存盘后不连服务器重新打开，9 个属性都在 | 管线、管路、管件的大属性没有端到端的断言，仍只有单元测试。`x01_journey.py` 没有扩 |
 | 服务器的 `--bind`（对外监听） | `278439b5d` | 不在契约里；脚本都在本机回环地址上跑 | 两台机器的流程没有跑过，记作已知未验证；脚本做不了，要人在两台机器上试 |
-| 协同分支合进 `main`、合并上游 | `af23cffef`、`2278e4fba`、`5b2c2a51f` | 合并之后跑过两遍（2026-11-17：脚本收进仓库时跑的原有 22 个场景，补完验收规程后跑的五组全量；第 3.3 节），证据都没有逐条核对 | 全量复验（CC-7） |
+| 协同分支合进 `main`、合并上游 | `af23cffef`、`2278e4fba`、`5b2c2a51f` | 合并之后跑过三遍（2026-11-17：脚本收进仓库时跑的原有 22 个场景，补完验收规程后、补了上面三行的断言后各跑的一遍五组全量；第 3.3 节），证据都没有逐条核对 | 全量复验（CC-7） |
 
 ### 5.3 契约字面与实现有出入的（不算覆盖缺口，结项前要裁决）
 
@@ -589,8 +604,10 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 - 228 个编号各出现一次，各区条数与状态文档第 4 节相同；mission 记录的两栏合计 179 与 49，也与那一节相同。
 - 表里引用了 287 个单元测试，每个名字都在全量测试日志里唯一地找到，并且是通过的（标「默认不跑」的一条除外）。日志是基准提交上的一份；补缺口加的 7 条取自 2026-11-17 补完它们之后重跑的那一次。
-- 表里引用了 31 个脚本（30 个场景加收尾的整轮检查），都存在。原有 22 个场景的项数取自 2026-11-12 那次执行的结果文件；服务器进程的四个场景取自 2026-11-17 它们经总入口跑的那一次；脚手架与入口规程的四个场景、收尾的整轮检查，以及 `t20_session` 里后加的 `VAL-INFRA-012` 那一项，取自 2026-11-17 的五组全量执行（第 3.3 节）。取数的这几次执行里，表里引用到的项都没有失败的；`t20_session` 现在有一项失败（第 3.3 节），表里它原有的几行仍是 2026-11-12 的项数。
+- 表里引用了 31 个脚本（30 个场景加收尾的整轮检查），都存在。原有 22 个场景里没有补断言的 18 个，项数取自 2026-11-12 那次执行的结果文件；补了断言的四个（`t10_broadcast`、`t20_session`、`x05_m3_persistence`、`x10_concurrent_insert`）取自 2026-11-17 补了断言之后的那一遍五组全量（第 3.3 节）；服务器进程的四个场景取自 2026-11-17 它们经总入口跑的那一次；脚手架与入口规程的四个场景和收尾的整轮检查，取自 2026-11-17 补完验收规程之后的那一遍五组全量。取数的这几次执行里，表里引用到的项都没有失败的。
 - 服务器进程的四个场景，逐项试过会不会红：把服务器在某一处临时改坏、重新编出来（共 19 处，一次只改一处；改坏的可执行文件只放在仓库外，源码改完即还原），让场景对着它跑，共 21 次；另有一次不重启服务器的对照。22 次运行每一次都有检查失败。带契约编号的 43 项检查里，41 项至少在一次这样的运行里失败过；剩下 2 项没有做出让它失败的改法：`s02` 的「原来的实例照常服务、原来的连接没有收到 `error`」和 `s03` 的「重新握手成功，且落在销毁之后 3 到 30 秒之间」。
 - 脚手架与入口规程的四个场景、收尾的整轮检查和 `t20_session` 里后加的那一项，也逐项试过会不会红（2026-11-17）。做了 62 次对照运行，一次只改一处，改的都是放在仓库外的副本：30 次改脚手架（把某一条规则拿掉或改错），10 次改入口的重跑规则，5 次改场景自己（重跑时换一个端口、换一张图，流程里的命令不建实体；检查之前先把服务器结束、把 GUI 冻结），1 次不改脚本、让真实例连丢两次，6 次针对收尾的整轮检查（一轮中间往仓库里放一个文件、放一份字节码缓存，跑完即删；不做开头的记录；换成另外两个包的依赖树；让两份脚手架差一行），10 次让冒烟场景对着一个改过的 GUI 跑（`/api/v1/ready` 的字段给错 7 种、在哪个端口上都要过 65 秒才就绪、只在 3210 上这样、什么都不改；改过的可执行文件只放在仓库外，源码改完即逐字节还原）。62 次的结果都与事先写下的预期一致：60 次有检查失败；另 2 次是应当全部通过的对照（改过的 GUI 什么都不改；只在 3210 上过 65 秒才就绪，第一次到上限被结束、换端口重试后 60 秒内就绪），确实全部通过。这几个脚本一遍跑下来是 36 项检查（`t00` 7、`t02` 13、`t03` 5、`t04` 5、`r01` 5，加 `t20` 的 1 项），其中 29 项带契约编号：这 29 项都至少在一次对照里失败过；没有失败过的 5 项都是不带契约编号的前提项（实例就绪三项、替身场景跑完、截图接口回 200）。另有一项只在失败时才会出现的检查（`t03` 的「实例已经被结束，脚手架却没有发现」），没有一次对照走到它：把脚手架的探测去掉之后，请求直接报连接错误，场景记的是「没有跑完」，红的是另一行。
-- 2026-11-17 的两遍（收进仓库时跑的原有 22 个场景、补完验收规程后跑的五组全量），原有 22 个场景的结果文件都与 2026-11-12 的逐个场景、逐个标签比过通过和失败的项数：除 `t20_session` 之外全部相同。`t20_session` 里过时的那一项两遍都是失败（2026-11-12 是通过），第二遍另多出后加的 `VAL-INFRA-012` 一项。
+- 补第 5.2 节前三行的断言时（2026-11-17）：这些检查盯的是已经交付的行为，写完就是绿的，所以也做了对照运行，共 26 次，事先写下每一次应当红在哪一组、或者应当全绿。产品这一侧，在 GUI 和服务器的源码里加了 11 个用环境变量挑选的故障开关（13 处改动），一起编成一份 GUI 和一份服务器，只放在仓库外，一次只开一个；改过的源文件已逐字节还原。8 次应当全绿的确实全绿：四个场景各对着按 `adb4aed54` 编出的程序跑一遍，再对着带开关、一个都不开的那一份跑一遍。13 次各开一个故障，都红在事先写下的那一组：`t10_broadcast` 4 次（发出的变更不带位号来源；接收方不认带来的来源；发出的变更不带手改标记；接收方不认带来的标记），`x05_m3_persistence` 4 次（发送方不读另存的属性；重建对象时不带另存的属性；隔着对方的改动撤销的那条路上两处：比较撤销前后时不读另存的属性，换回撤销步里留的记录时不保留对方写的属性），`x10_concurrent_insert` 3 次（加入时不上报已有位号；重新加入后不把占用要回来；服务器不登记上报的位号），`t20_session` 2 次（不上报；服务器不登记）。4 次换的是场景：`t20_session` 用补断言之前的那一版（过时的那一项红），再用一份换了用户启动的副本（改过的那一项、新加的那一项都红，还连带着红了原有的一项）；`t10_broadcast` 用两份副本，一份把改管线那一步改成别的属性（`T2.4-overrides` 红 4 项），一份在计数之前多发一条变更（只红数变更条数的那一项）。1 次是修 `adb4aed54` 那处缺陷之前的 GUI 留下的输出（`T2.4-claim-after-rejoin` 里 2 项红）。新加和改过的 39 项里 33 项至少红过一次；没有红过的 6 项都是前提（实例就绪、打开图、先画好或删掉要用的对象）。`T2.4-overrides` 的「没有标记的管路跟着管线变」和「11 件事正好 11 条变更」两项、`t20_session` 改过的那一项，产品这一侧的 11 个故障没有一个让它们红，只在换场景的对照里红过；`T2.4-claim-after-rejoin` 的「释放得掉」一项只在修缺陷之前的那份输出里红过。有两次连带着红了别的组：换回记录时不保留对方写的属性的那一次，同时红了原有的 `VAL-CROSS-005` 两项；不上报已有位号时没有重新加入这一步，`T2.4-claim-after-rejoin` 也红了两项。
+- 2026-11-17 的前两遍（收进仓库时跑的原有 22 个场景、补完验收规程后跑的五组全量），原有 22 个场景的结果文件都与 2026-11-12 的逐个场景、逐个标签比过通过和失败的项数：除 `t20_session` 之外全部相同。`t20_session` 里过时的那一项两遍都是失败（2026-11-12 是通过），第二遍另多出后加的 `VAL-INFRA-012` 一项。
+- 第三遍（补了第 5.2 节的断言后跑的五组全量）与第二遍逐个场景、逐个标签比过：除补了断言的四个场景之外，其余 26 个场景和收尾的整轮检查各标签通过和失败的项数全部相同；四个场景里多出来的正是新加的 38 项，另有 `t20_session` 的 `VAL-CLI-001` 从 4 项通过、1 项失败变成 5 项通过。
 - 「有」「部分」「缺」是逐条对着契约正文和测试、脚本的代码判断的，判断时没有重新执行端到端脚本。前六个区逐条读了契约正文和测试代码；后三个区以状态文档当时的逐条结论为准，对带计时、截图判据的和后补的几条另读了脚本的检查项。
