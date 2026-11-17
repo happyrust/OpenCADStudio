@@ -8,8 +8,8 @@
 #
 # -Only picks from the eleven scenarios listed below; with -New it names the
 # scenarios to run itself (the later ones: y03 / y08 / y09, the
-# server-process ones, s01 ... s04, which start no GUI, and r01_entry_rules,
-# which run19.ps1 runs last).
+# server-process ones, s01 ... s04, which start no GUI, the picture ones,
+# g01 ... g05, and r01_entry_rules, which run19.ps1 runs last).
 # -EvidenceDir, -BinDir and -PortShift are explained in e2e_env.ps1; each can
 # be given by its environment variable instead. Logs go to <EvidenceDir>\m7.
 #

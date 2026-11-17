@@ -9,6 +9,12 @@ VAL-INFRA-014  from the start of the process to the first 200: 60 seconds at
                longer is tried in t02_harness_rules.py.)
 VAL-INFRA-008  the port is inside the GUI range and nothing listened on it
                before the start.
+VAL-INFRA-009  `capture` writes a PNG file and says where, and how large the
+               picture is.
+VAL-INFRA-010  the same answer carries the matrix from the drawing to the
+               picture and a screen coordinate for every entity it marks;
+               for an entity whose coordinates are known the two agree, and
+               the picture shows it where the matrix says.
 
 Also the first look at the seed-drawing question: which tab is active once the
 file is open, what `query Insert` returns, and what `xdata` reads back.
@@ -19,7 +25,9 @@ import shutil
 import sys
 import time
 
+import gh
 import m6h
+import shot
 
 src = sys.argv[1] if len(sys.argv) > 1 else str(m6h.BASE_DWG)
 r = m6h.Results("t00_smoke")
@@ -106,6 +114,85 @@ try:
     status, resp, exists = g.capture(m6h.SHOTS / "t00-smoke.png")
     r.check("harness", status == 200 and exists, f"capture status={status} file={exists} keys={sorted((resp or {}).keys())[:12]}")
     r.dump("t00-capture.json", resp)
+
+    # ── VAL-INFRA-009 / 010: what `capture` answers ─────────────────────────────────────
+    # The entity whose coordinates are known is a line the scenario draws
+    # itself, between two points of the view as it is (through the matrix of a
+    # first picture), so that it is in the picture whatever drawing was given.
+    def lines():
+        listed = (g.op("query", doc, type="Line", detail="full")[1] or {}).get("entities") or []
+        return [e.get("handle") for e in listed]
+
+    def near(values, digits=2):
+        return [round(v, digits) for v in values]
+
+    view = gh.take(g, m6h.SHOTS / "t00-view.png", document_id=doc)
+    ends, mine = [], []
+    if view.good:
+        wide, high = view.picture.width, view.picture.height
+        ends = [view.world_of(0.35 * wide, 0.30 * high), view.world_of(0.65 * wide, 0.45 * high)]
+        known = set(lines())
+        g.run("LINE", doc)
+        for x, y in ends:
+            g.op("input", doc, kind="point", point=[x, y, 0.0], space="wcs")
+        g.op("input", doc, kind="enter")
+        mine = [h for h in lines() if h not in known]
+    literal = g.api("POST", "/capture", {"document_id": doc, "annotate": True})
+    refusal = literal[1].get("error") if isinstance(literal[1], dict) else str(literal[1])[:80]
+    target = m6h.SHOTS / "t00-annotated.png"
+    taken = gh.take(g, target, document_id=doc, annotate=True)
+    answer = taken.answer
+    r.dump("t00-annotated.json", taken.kept())
+
+    named = answer.get("path")
+    there = isinstance(named, str) and os.path.isfile(named)
+    asked = there and os.path.samefile(named, target)
+    head = shot.signature(named) if there else b""
+    sizes = [answer.get("width"), answer.get("height")]
+    r.check("VAL-INFRA-009",
+            taken.good and asked and head == shot.PNG_MAGIC and all(type(v) is int and v > 0 for v in sizes)
+            and sizes == [taken.picture.width, taken.picture.height],
+            f"按契约原样（请求体只有 document_id 和 annotate）发 capture：HTTP {literal[0]}"
+            f"{f'，{refusal!r}：程序要求请求里用 path 写明存到哪里' if literal[0] != 200 else ''}。带上 path 再发：{taken.told()}；"
+            f"响应 ok={answer.get('ok')!r}，path 字段指向的文件{'存在' if there else '不存在'}"
+            f"（{os.path.getsize(named) if there else '—'} 字节，{'就是' if asked else '不是'}请求里给的那个），"
+            f"前 8 字节 {head.hex(' ') or '—'}（PNG 魔数 {shot.PNG_MAGIC.hex(' ')}），width={sizes[0]!r}、height={sizes[1]!r}"
+            f"（要求是正整数；解码出的图 "
+            f"{f'{taken.picture.width}x{taken.picture.height}' if taken.data is not None else '—'}）")
+
+    matrix, notes = answer.get("world_to_pixel_matrix"), answer.get("annotations")
+    six = (isinstance(matrix, list) and len(matrix) == 6
+           and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in matrix))
+    placed = isinstance(notes, list) and bool(notes) and all(
+        isinstance(n.get("screen_pixel"), list) and len(n["screen_pixel"]) == 2 for n in notes)
+    entry = taken.entity(mine[0], "annotations") if len(mine) == 1 else None
+    middle = at = off = None
+    if six and placed and entry:
+        middle = [(ends[0][0] + ends[1][0]) / 2, (ends[0][1] + ends[1][1]) / 2]
+        at = taken.pixel_of(*middle)
+        off = [abs(at[0] - entry["screen_pixel"][0]), abs(at[1] - entry["screen_pixel"][1])]
+    r.check("VAL-INFRA-010", off is not None and max(off) <= 20,
+            f"同一个应答里 world_to_pixel_matrix={matrix}（{'是' if six else '不是'} 6 个数），annotations "
+            f"{len(notes) if isinstance(notes, list) else '—'} 条，{'每条都有' if placed else '不是每条都有'} screen_pixel。"
+            f"已知坐标的实体是本场景画的一条线 {[near(p, 4) for p in ends]}（句柄 {mine}，annotations 里{'有' if entry else '没有'}它）："
+            f"中点 {near(middle, 4) if middle else '—'} 经矩阵换算为像素 {near(at) if at else '—'}，"
+            f"annotations 给的 screen_pixel={entry.get('screen_pixel') if entry else '—'}，两个方向相差 {near(off) if off else '—'}（上限 20 像素）")
+
+    after = gh.take(g, m6h.SHOTS / "t00-line.png", document_id=doc)
+    drawn = want = None
+    fits = False
+    if (view.good and after.good and len(ends) == 2 and gh.same_camera(view, after)
+            and (view.picture.width, view.picture.height) == (after.picture.width, after.picture.height)):
+        a, b = after.pixel_of(*ends[0]), after.pixel_of(*ends[1])
+        want = (min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]))
+        drawn = shot.changed(view.picture, after.picture, view.clear())
+        if drawn.count:
+            sides = (drawn.left, drawn.top, drawn.right - 1, drawn.bottom - 1)
+            fits = all(abs(p - q) <= 3 for p, q in zip(sides, want))
+    r.check("VAL-INFRA-010", fits,
+            f"矩阵对得上图：画线前后各取一张不带标记的图（{view.told()}；{after.told()}），命令行面板以上两张图之差是 "
+            f"{drawn if drawn is not None else '—（两张图不能比：没有取到，或镜头、大小不同）'}；按矩阵算，线的两端所围的框是 "
+            f"{near(want, 1) if want else '—'}（左、上、右、下）；差的外接框与它各边相差不超过 3 像素：{'是' if fits else '否'}")
 finally:
     m6h.cleanup()
     ok = r.summary()

@@ -19,8 +19,8 @@
 **读这张表要记住的三件事**
 
 1. **表里说的是「有没有能重跑的检查」，不是「这一条验过没有」。** mission 的验证记录里，前六个区的 178 条和 `VAL-CONF-018` 当时都由验证器用一次性的命令和截图取过证；后三个区的其余 49 条功能做了、脚本也过了，但没有经过 mission 的验证器。两种状态列在第 2 节的合计表里。
-2. **「有」里只列了单元测试的，断言是在进程里做的。** 契约写的取证工具是黑盒的（curl、WebSocket 客户端、GUI 的 REST 接口、截图）。单元测试把判据逐条断言到了，但「经 REST 或 WebSocket 走一遍也是这个结果」这一层，只有 mission 当时的一次性取证。前六个区基本都是这种情况，合计表里单列了一栏。凡是判据落在截图、耗时上、单元测试够不着的，标成了「部分」或「缺」；落在真实进程上的六条原来也是，2026-11-17 补了四个场景（第 5.1 节（三））。
-3. **「有」不等于「现在是绿的」。** 单元测试的名字取自全量测试日志（基准提交上的一份，加上补缺口时重跑的），当时都通过。端到端脚本的项数取自 2026-11-12 那次全量执行，当时都通过；脚本收进仓库后（2026-11-17）又跑过三遍：前两遍都有同一项因为后来的改动不再通过；那一项当天改了，后来的改动缺的断言也在当天补了一批（补了哪些、还没有哪些，见第 5.2 节），第三遍全部通过（第 3.3 节）。补了断言的四个场景（`t10_broadcast`、`t20_session`、`x05_m3_persistence`、`x10_concurrent_insert`），项数取自第三遍。服务器进程的四个场景是 2026-11-17 新写的，项数取自当天它们经总入口跑的那一次。脚手架与入口规程的四个场景和收尾的整轮检查，也是 2026-11-17 写的，项数取自第二遍（第 3.3 节）。
+2. **「有」里只列了单元测试的，断言是在进程里做的。** 契约写的取证工具是黑盒的（curl、WebSocket 客户端、GUI 的 REST 接口、截图）。单元测试把判据逐条断言到了，但「经 REST 或 WebSocket 走一遍也是这个结果」这一层，只有 mission 当时的一次性取证。前六个区基本都是这种情况，合计表里单列了一栏。凡是判据落在耗时上、单元测试够不着的，标成了「部分」；落在截图上的十五条、落在真实进程上的六条原来也是「部分」或「缺」，2026-11-17 各补了场景（第 5.1 节（一）、（三））。
+3. **「有」不等于「现在是绿的」。** 单元测试的名字取自全量测试日志（基准提交上的一份，加上补缺口时重跑的），当时都通过。端到端脚本的项数取自 2026-11-12 那次全量执行，当时都通过；脚本收进仓库后（2026-11-17）又跑过四遍：前两遍都有同一项因为后来的改动不再通过；那一项当天改了，后来的改动缺的断言也在当天补了一批（补了哪些、还没有哪些，见第 5.2 节），第三遍全部通过。第四遍是补了看图的场景之后跑的，577 项里有 3 项没有通过：都在那一步没有动过的两个场景里，原因是那一阵这台机器上起一个实例比平时慢；新写的和改过的场景在这一遍里全部通过（第 3.3 节）。补了断言的四个场景（`t10_broadcast`、`t20_session`、`x05_m3_persistence`、`x10_concurrent_insert`），项数取自第三遍。服务器进程的四个场景是 2026-11-17 新写的，项数取自当天它们经总入口跑的那一次。脚手架与入口规程的四个场景和收尾的整轮检查，也是 2026-11-17 写的；其中 `t02_harness_rules`、`t03_vanish_retry`、`t04_entry_rerun` 和收尾的整轮检查，项数取自第二遍。看图的五个场景（`g01`–`g05`）同样是 2026-11-17 新写的；它们、加了 3 项的 `t00_smoke` 和换了读图办法的 `t21_claims`，项数取自第四遍（第 3.3 节）。
 
 **测试名怎么读**
 
@@ -42,29 +42,29 @@
 
 | 查法 | 用在哪里 |
 |---|---|
-| 只查截图请求成功、文件写出来了 | 大多数截图 |
+| 只查截图请求成功、文件写出来了 | 协同场景里的大多数截图（留作证据，不拿来判） |
 | 读程序上报的界面元素位置，判断元素画出来了 | 协同面板的只读标识、编辑权持有者、占用行、冲突条目、未配置提示 |
-| 在截图上量像素 | 只有 `VAL-CLI-008` 的占用色 |
+| 在截图上量像素 | `VAL-CLI-008` 的占用色；看图的五个场景（`g01`–`g05`）；冒烟场景里标 `VAL-INFRA-009`、`010` 的三项 |
 
-图上的文字没有任何脚本去认。
+量像素用的是本目录的 `shot.py`（只用标准库读 PNG）：数一个矩形里合乎条件的像素，找出与底色不同的像素和它们的外接框，比两张图哪里不一样。看图的场景量之前先确认图是新的一帧，量在哪里由图纸和应答里的矩阵算出来（第 3.2 节的「看图那一组」）。图上的文字没有任何脚本去认；契约的判据要靠认字的几条是怎么处理的，见第 5.3 节。
 
 ## 2. 合计
 
 | 区 | 条数 | 有 | 其中只靠单元测试 | 部分 | 缺 | mission 记录：已取证 | mission 记录：未取证 |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | 协同服务器（`VAL-SRV`） | 30 | 30 | 24 | 0 | 0 | 30 | 0 |
-| 验证基础设施（`VAL-INFRA`） | 14 | 12 | 6 | 2 | 0 | 14 | 0 |
+| 验证基础设施（`VAL-INFRA`） | 14 | 14 | 6 | 0 | 0 | 14 | 0 |
 | 权限与审计（`VAL-PERM`） | 32 | 32 | 32 | 0 | 0 | 32 | 0 |
 | 语义层（`VAL-SEM`） | 39 | 38 | 38 | 1 | 0 | 39 | 0 |
-| 绘图工具（`VAL-DRAW`） | 31 | 16 | 16 | 14 | 1 | 31 | 0 |
-| 管线与拓扑（`VAL-PIPE`） | 32 | 31 | 31 | 0 | 1 | 32 | 0 |
+| 绘图工具（`VAL-DRAW`） | 31 | 28 | 16 | 3 | 0 | 31 | 0 |
+| 管线与拓扑（`VAL-PIPE`） | 32 | 32 | 31 | 0 | 0 | 32 | 0 |
 | 桌面端协同客户端（`VAL-CLI`） | 20 | 20 | 0 | 0 | 0 | 0 | 20 |
 | 冲突与裁决（`VAL-CONF`） | 18 | 18 | 1 | 0 | 0 | 1 | 17 |
 | 跨区流程（`VAL-CROSS`） | 12 | 12 | 0 | 0 | 0 | 0 | 12 |
-| **合计** | **228** | **209** | **148** | **17** | **2** | **179** | **49** |
+| **合计** | **228** | **224** | **148** | **4** | **0** | **179** | **49** |
 
-- 「有」209 条，「部分」17 条，「缺」2 条。后两种共 19 条，按要做的事分类，逐条列在第 5.1 节。对照表刚做出来时是 39 条、分五类，其中补单元测试的一类（7 条）、要真实服务器进程的一类（6 条）、验收规程与脚手架的一类（7 条）已经补完。
-- 「有」的 209 条里，61 条有端到端脚本，148 条只靠单元测试（第 1 节的第 2 件事）。
+- 「有」224 条，「部分」4 条，「缺」0 条。后两种共 4 条，按要做的事分类，逐条列在第 5.1 节。对照表刚做出来时是 39 条、分五类，其中补单元测试的一类（7 条）、要真实服务器进程的一类（6 条）、验收规程与脚手架的一类（7 条）、判据在截图上的一类（15 条）已经补完，剩下的是判据为耗时的一类。
+- 「有」的 224 条里，76 条有端到端脚本，148 条只靠单元测试（第 1 节的第 2 件事）。
 - `VAL-DRAW-029` 是契约里预留的空号，所以绘图区是 31 条。
 - 「mission 记录」两栏照抄 mission 的状态文件：已取证是它的 `passed`，未取证是它的 `pending`。
 
@@ -97,7 +97,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 | 参数 | 环境变量 | 是什么 | 不给时 |
 |---|---|---|---|
-| `-EvidenceDir` | `OCS_E2E_EVIDENCE_DIR` | 证据目录。日志、截图、数据库、图纸副本写在它下面的 `m6\`（桌面端客户端那一组、脚手架与入口规程那一组）和 `m7\`（其余三组和收尾的整轮检查）；`t04_entry_rerun` 用的替身场景另写在 `t04\` 下 | 报错退出；给的目录在仓库里面也报错退出 |
+| `-EvidenceDir` | `OCS_E2E_EVIDENCE_DIR` | 证据目录。日志、截图、数据库、图纸副本写在它下面的 `m6\`（桌面端客户端那一组、脚手架与入口规程那一组）和 `m7\`（其余四组和收尾的整轮检查）；`t04_entry_rerun` 用的替身场景另写在 `t04\` 下 | 报错退出；给的目录在仓库里面也报错退出 |
 | `-BinDir` | `OCS_E2E_BIN_DIR` | 两个可执行文件所在的目录 | 仓库的 `target\debug` |
 | `-PortShift` | `OCS_E2E_PORT_SHIFT` | 加在每个端口上的平移量 | 0，即契约的端口段：GUI 3210–3239、服务器 3240 |
 
@@ -105,7 +105,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 - 契约的端口段被占用时（比如同一台机器上另一个工作区也在跑），给 `-PortShift 100`，整段挪到 3310–3359。检查项的说明文字里写的仍是契约的端口号，实际用的端口看控制台输出里的 `port=`。
 - 例：`powershell -File scripts\collab-e2e\run19.ps1 -EvidenceDir <仓库外的目录> -Label <这一轮的名字>`。
 
-**30 个场景，分五组，另有一项收尾的整轮检查**
+**35 个场景，分六组，另有一项收尾的整轮检查**
 
 | 组 | 场景 | 入口 |
 |---|---|---|
@@ -114,11 +114,12 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | 桌面端客户端（8 个） | `t20_session`、`t21_claims`、`t23_stale`、`t24_reconnect`、`t25_offline`、`t10_broadcast`、`t11_same_user`、`t22_ttl` | `run_all.ps1` |
 | 后补的跨区流程（3 个） | `y03_pipe_topology`、`y08_offline_reconcile`、`y09_connector_cross_drawing` | `run_cross.ps1 -Only <场景名> -New` |
 | 服务器进程（4 个） | `s01_restart`、`s02_port_in_use`、`s03_disconnect`、`s04_concurrent_ops` | `run_cross.ps1 -Only <场景名> -New` |
+| 看图（5 个） | `g01_palette`、`g02_insert`、`g03_preview`、`g04_tag_display`、`g05_pipe_break` | `run_cross.ps1 -Only <场景名> -New` |
 | 收尾的整轮检查（1 项） | `r01_entry_rules` | 总入口每一轮都在最后跑它 |
 
-- **总入口 `run19.ps1`**：五组按表里的顺序依次跑，最后跑 `r01_entry_rules`。除上面三个参数外还有 `-Label`（这一轮的名字）、`-OnlyHarness`（只跑第一组）、`-Only19`（只跑第二、三组）、`-OnlyNew`（只跑第四组）、`-OnlyServer`（只跑第五组）；几个一起给时，跑的是各自那几组合起来。不管挑了哪几组，收尾的 `r01_entry_rules` 都照跑。
+- **总入口 `run19.ps1`**：六组按表里的顺序依次跑，最后跑 `r01_entry_rules`。除上面三个参数外还有 `-Label`（这一轮的名字）、`-OnlyHarness`（只跑第一组）、`-Only19`（只跑第二、三组）、`-OnlyNew`（只跑第四组）、`-OnlyServer`（只跑第五组）、`-OnlyPictures`（只跑第六组）；几个一起给时，跑的是各自那几组合起来。不管挑了哪几组，收尾的 `r01_entry_rules` 都照跑。
 - **脚手架与入口规程那一组**判的不是产品功能，是「验收是不是照规程做的」（规程见下面的「脚手架和入口照着做的规程」）：
-  - `t00_smoke`：带一张真实图纸在端口 3210 起一个 GUI，查就绪（60 秒之内、响应的五个字段）和启动前查过端口，再截一张图。
+  - `t00_smoke`：带一张真实图纸在端口 3210 起一个 GUI，查就绪（60 秒之内、响应的五个字段）和启动前查过端口；再查截图接口答的东西：写出的文件是 PNG、宽高与应答里报的一致（`VAL-INFRA-009`），应答里的坐标矩阵、实体的屏幕坐标与截出来的图对得上（`VAL-INFRA-010`，用的是场景自己画的一条线）。
   - `t02_harness_rules`：把脚手架里的三条规则逐条试一遍。它有意去要段外的端口、占住端口、起不会就绪的实例、强行结束实例，控制台输出里的「没有就绪」「消失」是它要的。
   - `t03_vanish_retry`：建实体的流程做到一半，把实例从外面结束，看入口把整个场景重跑一遍。**它的第一次尝试一定以退出码 75 收场**，汇总里它占两行，这是正常的。要经入口跑：重跑是入口做的。
   - `t04_entry_rerun`：不起 GUI，用四个只会按设定的退出码退出的替身场景，试入口的重跑规则。
@@ -131,11 +132,17 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
   它跑的 `git status` 是只读的（带 `--no-optional-locks`，连索引也不刷新）。单独跑它（`run_cross.ps1 -Only r01_entry_rules -New`）之前，要先执行带 `--begin` 的那一步，否则第一项失败并说明原因。
 - **服务器进程那一组**不起 GUI、不用图纸，只起 `ocs_collab_server.exe` 和几条 WebSocket 连接；入口照样要求两个可执行文件都在。
-- **种子图和基线图**：证据目录里没有时，总入口先生成。两张种子图用 `x00_seed.py`、`t01_seed.py`；`x05_m3_persistence`、`x12_after_session` 用的基线图 `PID-1101-m3.dwg` 由一条默认不跑的测试写出（`write_the_m3_baseline_drawing`），总入口用 `cargo test` 跑它，第一次要等测试程序编出来（几分钟）。分组入口不生成这三张图：换了新的证据目录时，先跑一次总入口。只跑第一组、第五组（`-OnlyHarness`、`-OnlyServer`）时总入口也不生成，这两组用不着。
-- **单独跑几个场景**：`run_all.ps1 -Only <场景名>`、`run_cross.ps1 -Only <场景名>`，多个场景名用逗号隔开；第一、四、五组的场景和 `r01_entry_rules` 要再加 `-New`（表里「入口」一列写着）。
+- **看图那一组**各起一个不连协同的 GUI，开一份基础图的副本，不用种子图和基线图；判据落在程序自己截的图上。五个场景共同的做法写在 `gh.py` 里：
+  - 起实例之前先删掉它自己的设置目录（在证据目录里），窗口布局从程序的默认值开始。程序把面板停靠在哪一侧记在设置里；不删的话，同一个证据目录里上一轮留下的布局会带进这一轮。
+  - 要量的每一张图都先确认是新的一帧。截图接口先按请求改选择集和镜头，再等窗口重画，最多等 50 毫秒，等不到就把手头的那一帧存下来——这时应答里的矩阵和位置已经是新的，图还是旧的。应答里的 `waited_for_frame` 说的就是等到了没有；没等到的，同一个请求再发，直到等到。重发不改图纸。
+  - 量在哪里是算出来的：实体的坐标取自图纸和符号库，经应答里的矩阵换成像素；调色板的面板和格子在哪里，取自程序上报的矩形。命令行面板盖住的那一条不量。
+  - 调色板的页签经控制通道选（`action pid_palette tab=<分类名>`），不动鼠标。
+- **种子图和基线图**：证据目录里没有时，总入口先生成。两张种子图用 `x00_seed.py`、`t01_seed.py`；`x05_m3_persistence`、`x12_after_session` 用的基线图 `PID-1101-m3.dwg` 由一条默认不跑的测试写出（`write_the_m3_baseline_drawing`），总入口用 `cargo test` 跑它，第一次要等测试程序编出来（几分钟）。分组入口不生成这三张图：换了新的证据目录时，先跑一次总入口。只跑第一组、第五组、第六组（`-OnlyHarness`、`-OnlyServer`、`-OnlyPictures`）时总入口也不生成，这三组用不着。
+- **单独跑几个场景**：`run_all.ps1 -Only <场景名>`、`run_cross.ps1 -Only <场景名>`，多个场景名用逗号隔开；第一、四、五、六组的场景和 `r01_entry_rules` 要再加 `-New`（表里「入口」一列写着）。
 - **结果落在哪里**：都在证据目录里。每个场景一份控制台输出（`logs/<场景名>.console.txt`）和一份 `logs/<场景名>.result.txt`，场景结束时打印一行 `=== <场景名>: N PASS / M FAIL ===`；总入口收尾在证据目录的根上写 `summary-<Label>-<时间>.txt`，每个场景一行 `pass=`、`fail=`、`exit=`，每组一行小计。有检查项失败、或者进程的退出码不是 0 的场景，小计里都记成不干净（`not clean`）；重跑过的场景，第一次尝试单占一行，不计入小计。
 - **入口还记什么**：每个场景结束后记下耗时、残留进程数（场景结束后还在跑、可执行文件在 `-BinDir` 或证据目录下的进程；`run_cross.ps1` 另记留下的自动化通道描述文件数），以及场景自己报的桌面记录——场景前后各看一次指针位置与前台窗口，写「没变」或「变了」。这几样只写进汇总，入口不拿它们判失败，要人看一眼。桌面记录分不出是场景动的还是当时用机器的人动的。总入口另在开头和结尾各记一次机器上不属于这一轮的同名进程数，出了失败好对照。
-- **要多久**：五组加收尾检查一遍约 15 分钟（2026-11-17 那一轮：脚手架与入口规程一分半，冲突与跨区流程一分半，桌面端客户端十分半，后补的跨区流程不到一分钟，服务器进程和收尾检查合起来十来秒）。最慢的是 `t22_ttl`（真等 300 秒的占用到期），其次是 `t23_stale`、`t25_offline`、`t20_session`、`t02_harness_rules`（各一分多钟）。证据目录是新的时候，前面还要加上生成基线图的几分钟。
+- **要多久**：六组加收尾检查一遍约 20 分钟（2026-11-17 最近的那一轮：脚手架与入口规程不到三分钟，冲突与跨区流程三分多钟，桌面端客户端十一分半，后补的跨区流程不到一分钟，服务器进程 8 秒，看图一分二十秒，收尾检查 1 秒；这一轮起实例偏慢，上一轮同样的前五组加收尾是 17 分钟）。最慢的是 `t22_ttl`（真等 300 秒的占用到期），其次是 `t23_stale`、`t25_offline`、`t20_session`、`t02_harness_rules`（各一分多钟）。证据目录是新的时候，前面还要加上生成基线图的几分钟。
+- **起实例慢的时候会红的三项**：`t25_offline` 里标 `VAL-CLI-015` 的一项，按契约要求服务器连不上时 GUI 启动后 5 秒内就绪。`t02_harness_rules` 里标 `VAL-INFRA-014` 的两项：场景把等就绪的上限缩成 6 秒（契约的 60 秒走的是同一段代码），先在一个连不上的端口上起一次，到时换端口重试；一项要求重试的那一次在这个上限里就绪，另一项要求第一次的启动日志里已经写下连不上端口的原因。这台机器平时起一个实例两三秒，三项都过；起一个实例要六七秒以上的时候（机器正忙，或者机器本来就慢），重试的那一次来不及就绪，第一次也还没走到连端口那一步就到时了，这三项会红。2026-11-17 的第四遍就是这样，那一遍别的检查都过了（第 3.3 节）。5 秒是契约的数；6 秒是场景自己定的，还没有改成随机器的快慢调整。
 - **直接用 `python` 跑单个场景**：先设环境变量 `OCS_E2E_EVIDENCE_DIR`，再执行 `python scripts\collab-e2e\<场景名>.py`。这样跑没有入口的重跑和记账，还会在本目录留下 `__pycache__`（已被 `.gitignore` 忽略；先设 `PYTHONDONTWRITEBYTECODE=1` 就不会留）。经入口跑不会留，`r01_entry_rules` 会查这一点。
 - **贴日志之前先看一眼**：入口记「桌面有没有被动过」时，会把前台窗口的标题写进控制台输出和汇总文件——也就是当时正在用的窗口。
 
@@ -166,8 +173,23 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 - 收进来之后新写的：服务器进程的四个场景（`s01`–`s04`），是为补第 5.1 节（三）的缺口写的，没有原件。为它们给脚手架 `m7h.py` 加了一个「不发 close 帧、直接销毁套接字」的做法，给总入口加了服务器进程这一组。
 - 为补第 5.1 节（五）的缺口改的和新写的（2026-11-17）：两个脚手架加了端口、等就绪的上限、实例消失三条规则；三个入口里「跑一个场景」的那一段收进了 `e2e_env.ps1`，加了「退出码 75 重跑一次」；总入口加了第一组和收尾的整轮检查，汇总里开始记退出码。新写了四个脚本（`t02_harness_rules`、`t03_vanish_retry`、`t04_entry_rerun`、`r01_entry_rules`），没有原件。冒烟场景 `t00_smoke` 从端口 3230 改到契约写的 3210，等就绪的上限从 180 秒改成 60 秒，加了 5 项检查，挂进了总入口；`t20_session` 加了 1 项（`VAL-INFRA-012`）。原有的检查项没有改。
 - 为补第 5.2 节前三行的断言改的（2026-11-17）：`t10_broadcast` 加了 11 项（位号来源 4 项、手工改写的标记 6 项、1 项前提），`x05_m3_persistence` 加了 12 项（大属性对象 11 项、1 项前提），`x10_concurrent_insert` 加了 14 项（加入时上报已有位号 7 项、重新加入前后的占用 3 项、4 项前提），`t20_session` 加了 1 项、改了 1 项（数「入站 hello」日志行的那一项，第 3.3 节）。四个脚本原有的其余 76 项，前后两遍全量的结果文件逐行比过：66 项一字不差，10 项只有文字里的数不同（引的日志行里的时间戳、进程号、用时的秒数，和一个实体句柄——新加的步骤把那个阀门删掉又放回，句柄换了），没有一项的写法变了。没有新写脚本，脚手架和入口没有动。
+- 为补第 5.1 节（一）的缺口新写的和改的（2026-11-17）：新写了看图的五个场景（`g01`–`g05`）和它们共用的两个模块——`shot.py`（只用标准库读 PNG、量像素）、`gh.py`（等新的一帧、清设置目录、坐标与像素互换），都没有原件。冒烟场景 `t00_smoke` 加了 3 项（`VAL-INFRA-009` 1 项、`VAL-INFRA-010` 2 项），原有的 7 项没有动。`t21_claims` 里量占用色的那一项（`VAL-CLI-008`）原来用另装的图像库读图，改成用 `shot.py`，数哪种颜色、数哪个矩形都没有变；改的这一项前后两遍的结果一字不差，其余 14 项里 12 项一字不差、2 项只有会话号和到期时刻不同。总入口加了看图这一组和 `-OnlyPictures`；`run_cross.ps1` 只改了开头的说明。两个脚手架、`e2e_env.ps1`、`run_all.ps1` 没有动。
 
 ### 3.3 最近的执行
+
+**2026-11-17，六组全量加收尾的整轮检查，补了看图的场景之后**（可执行文件与上一遍是同一份：提交 `adb4aed54` 的源码的 debug 构建，此后产品的源码没有改过；脚本是补了看图场景之后的；端口不平移，经总入口 `run19.ps1`）
+
+- 35 个场景加收尾的整轮检查，共 577 项检查，574 项通过，3 项没有通过。新写的看图五个场景、加了检查的 `t00_smoke`、换了读图办法的 `t21_claims` 全部通过；没有通过的 3 项在这一步没有动过的两个场景里，都是因为这一遍里起一个实例比平时慢：
+  - `t02_harness_rules` 2 项（`VAL-INFRA-014`）。场景把等就绪的上限缩成 6 秒，先在一个连不上的端口上起一次，到时换端口重试。这一遍重试的那一次在上限里没有就绪（上一遍 3.1 秒就绪）；第一次也还没走到连端口那一步就到时了，启动日志里没有留下原因。
+  - `t25_offline` 1 项（`VAL-CLI-015`）。契约要求服务器连不上时 GUI 启动后 5 秒内就绪；这一遍用了 8.93 秒，上一遍 2.09 秒。
+  - 两遍用的可执行文件是同一份，这两个场景的脚本没有改过。从启动到就绪，这一遍 55 次的中位数是 5.9 秒，上一遍 51 次是 3.5 秒。这一遍跑的时候有人在用这台机器（见下面的桌面记录），另有程序占着显卡和处理器；启动具体慢在哪里没有查清。
+  - 跑完后把这两个场景单独各跑了一遍，机器还是那样（10 次启动的中位数 9.6 秒）：`t02_harness_rules` 12 项通过、1 项没过（重试的那一次 7.6 秒就绪，到时之前发出的最后一次询问等到了应答；第一次的日志里仍没有原因），`t25_offline` 12 项通过、1 项没过（8.41 秒）。这三项对起实例的快慢敏感，见第 3.2 节的「起实例慢的时候会红的三项」。
+- 各组：脚手架与入口规程 33 项（2 项没过）；冲突与跨区流程 234 项；桌面端客户端 123 项（1 项没过）；后补的跨区流程 81 项；服务器进程 56 项；看图 45 项（`g01` 17、`g02` 8、`g03` 6、`g04` 9、`g05` 5）；收尾的整轮检查 5 项。
+- 比上一遍多 48 项：看图的五个场景 45 项，`t00_smoke` 7 → 10。其余 29 个场景和收尾的整轮检查，各标签的项数与上一遍逐个比过，全部相同；通过的项数只有上面两个场景不同。
+- `t03_vanish_retry` 照旧跑了两次：第一次按设计丢了实例、以退出码 75 结束（1 项通过，另存为 `attempt1`，不计入上面的数），入口重跑，第二次 5 项全过。别的场景都只跑了一次；退出码除 `t02_harness_rules`、`t25_offline` 是 1 之外都是 0。
+- 收尾检查记下的：这一轮写了 1499 个文件，都在证据目录里；`git status` 前后都是 11 行（脚本是从仓库的另一份检出里跑的，那里改过的和新加的就是这一步的 11 个脚本文件），没有多出一行；没有新的字节码缓存。GUI 启动 61 次（29 个脚本），端口都在 3210–3239 之内、启动前都查过；其中 5 次在段内换过端口，都是 `t02_harness_rules` 有意做的，别的场景没有一次换端口、没有一次就绪超时重试。依赖树 572 个包，没有 `tokio`、`async-std`，有 `tungstenite` 0.29.0。
+- 没有残留进程，没有留下描述文件，开始和结束时机器上都没有别的实例。桌面记录 39 条里 22 条是「没变」、17 条是「变了」（`x00_seed`、`t25_offline`、`t10_broadcast`、`t22_ttl`，以及从 `y03_pipe_topology` 起直到收尾的 13 个；17 条记的都是其间有人在用这台机器，系统记到了输入）。从第一个场景到收尾约 20 分钟；此前生成基线图用了约 4 分钟（要先把测试程序编出来）。
+- 这一遍各项的证据没有逐条核对。正式的全量复验是任务清单里的 CC-7。
 
 **2026-11-17，五组全量加收尾的整轮检查，补了第 5.2 节的断言之后**（可执行文件是提交 `adb4aed54` 的源码的 debug 构建，在仓库的另一份检出里编的；脚本是补了断言之后的；端口不平移，经总入口 `run19.ps1`）
 
@@ -206,7 +228,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 **2026-11-12，用仓库外的副本**（可执行文件构建自提交 `9bf874a34`）
 
-22 个场景 399 项全部通过，退出码都是 0，没有残留进程，没有留下描述文件。桌面记录 6 个场景是「没变」、16 个是「变了」（分不出是谁动的，见 3.2）。对照表里原有 22 个场景中没有补断言的 18 个，项数取自这一次；补了断言的四个取自 2026-11-17 补了断言之后的那一遍。
+22 个场景 399 项全部通过，退出码都是 0，没有残留进程，没有留下描述文件。桌面记录 6 个场景是「没变」、16 个是「变了」（分不出是谁动的，见 3.2）。对照表里原有 22 个场景中此后没有动过的 17 个，项数取自这一次；补了断言的四个取自 2026-11-17 补了断言之后的那一遍，换了读图办法的 `t21_claims` 取自补了看图场景之后的那一遍。
 
 | 组 | 各场景的项数 | 小计 |
 |---|---|---:|
@@ -269,8 +291,8 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-INFRA-006` | 无头实例也能执行 run（缺陷 2 已修） | `rest::tests::headless_session_runs_commands_after_start_tab_conversion`<br>`app::automation::tests::envelope_mutations_work_headless_without_a_session_id` | — | 有 |  |
 | `VAL-INFRA-007` | 实例意外消失时重试一次仍能完成测试 | — | `t03_vanish_retry.py` 4 项<br>`t02_harness_rules.py` 3 项<br>`t04_entry_rerun.py` 4 项<br>`r01_entry_rules.py` 1 项 | 有 | 分三层。脚手架：就绪过的实例进程退出了、或者请求被拒绝后连探 3 次都被拒绝，就记下现象（退出码、日志尾部、时刻）并让场景以退出码 75 收场（`t02`，连同三种不算消失的情形）。入口：见到 75 就把整个场景重跑一次、只重跑一次，第一次的控制台和结果另存（`t04` 用替身场景试；`r01` 在一轮跑完后核对每个场景各跑了几次）。`t03` 是真实的一遍：建实体的流程做到一半，实例被从外面结束；入口重跑，第二次在同一个端口上、用同一张图把流程走完，实体数加一。与契约字面的出入见第 5.3 节 |
 | `VAL-INFRA-008` | GUI 端口限定在 3210 至 3239 区间 | — | `t00_smoke.py` 1 项<br>`t02_harness_rules.py` 4 项<br>`r01_entry_rules.py` 1 项 | 有 | 规则在脚手架里：端口段之外的端口直接拒绝；启动前先查要的端口有没有人在监听，有（别的进程在监听，或同一个场景里先起的实例占着）就在段内另挑一个；每次启动的命令行、要的端口、实际端口、查端口的结果记进 `gui-starts.jsonl`（`t02` 逐条试，`t00` 查自己那一次）。`r01` 在一轮跑完后核对这一轮的每一次启动：端口都在 3210–3239 之内（平移时按平移后的段算），启动前都查过。查端口的办法与契约写的不同，见第 5.3 节 |
-| `VAL-INFRA-009` | capture 返回可用的 PNG 文件 | `app::control::tests::capture_parks_for_the_next_frame_then_finishes_with_its_result`<br>`rest::tests::capture_hoists_its_envelope_fields_to_the_top_level` | `t00_smoke.py` 2 项（标签 `harness`） | 部分 | `t00_smoke.py` 在真实进程上断言截图请求成功、文件存在；PNG 文件头与宽高为正整数没有断言 |
-| `VAL-INFRA-010` | capture 返回世界到屏幕的坐标映射与实体屏幕坐标 | `app::control::vision::tests::the_capture_annotation_covers_where_a_reference_draws`<br>`app::control::vision::tests::test_compute_grounding_identifies_visible_entities` | — | 部分 | 标注框怎么算有单测；「用矩阵换算出的像素与标注坐标相差 ≤ 20 像素」要真实截图，没有自动化 |
+| `VAL-INFRA-009` | capture 返回可用的 PNG 文件 | `app::control::tests::capture_parks_for_the_next_frame_then_finishes_with_its_result`<br>`rest::tests::capture_hoists_its_envelope_fields_to_the_top_level` | `t00_smoke.py` 2 项（标签 `harness`）<br>`t00_smoke.py` 1 项 | 有 | 冒烟场景在真实进程上发截图请求（2026-11-17 补了文件头和宽高）：按契约原样不带 `path` 发，程序拒绝（HTTP 400，`Missing path`）；带上 `path` 再发，文件存在、开头 8 个字节是 PNG 文件头，响应里的 `width`、`height` 是正整数，并且就是解码出的图的宽高。字面出入见第 5.3 节 |
+| `VAL-INFRA-010` | capture 返回世界到屏幕的坐标映射与实体屏幕坐标 | `app::control::vision::tests::the_capture_annotation_covers_where_a_reference_draws`<br>`app::control::vision::tests::test_compute_grounding_identifies_visible_entities` | `t00_smoke.py` 2 项 | 有 | 标注框怎么算有单测。冒烟场景（2026-11-17 加）画一条坐标已知的线，带标记截图：应答里的矩阵是 6 个数，`annotations` 每条都有屏幕坐标，线的中点经 `world_to_pixel_matrix` 换算出的像素与 `annotations` 给的 `screen_pixel` 相差不超过 20 像素；另比画线前后两张不带标记的图，图上多出来的像素的外接框与按矩阵算出的框各边相差不超过 3 像素（矩阵和画出来的图对得上） |
 | `VAL-INFRA-011` | state 端点给出 revision 与当前 document_id | `app::control::tests::control_retry_is_idempotent_and_stale_state_rejected`<br>`app::control::tests::geometry_revision_moves_only_when_the_drawing_changes` | — | 有 | 单测是间接断言：改图之后拿旧的 `revision` 再请求会被拒（说明版本号动了） |
 | `VAL-INFRA-012` | GUI 与协同服务器可同时监听互不冲突 | — | `t20_session.py` 1 项 | 有 | `t20_session.py` 开头：GUI（3210）和服务器（3240）同时在跑，GUI 的 `/api/v1/ready` 和服务器的 `/health` 都回 200，并用 `Get-NetTCPConnection` 查到两个端口的监听方正是这两个进程。其余带服务器的场景开头也同时等两边就绪，不另带本条编号 |
 | `VAL-INFRA-013` | 测试产物一律写入 scratch 目录 | — | `r01_entry_rules.py` 1 项 | 有 | 总入口开跑前记一次 `git status --porcelain` 和脚本旁边的字节码缓存，收尾时再看：`git status` 没有多出一行，缓存文件没有多、也没有被重写（被忽略的文件 `git status` 看不见，所以另比）；这一轮写下的文件清单和 `git status` 的全文留在证据目录里。证据目录不给、或给在仓库里面，入口直接拒绝执行。契约写的固定路径前缀换成了「运行时指定的、仓库之外的目录」，见第 5.3 节 |
@@ -363,32 +385,32 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 ### 4.5 绘图工具 `VAL-DRAW`（31 条）
 
-契约的取证工具是 GUI 的 REST 接口加截图。逻辑由主程序的库测试覆盖；判据落在截图和耗时上的标「部分」或「缺」。
+契约的取证工具是 GUI 的 REST 接口加截图。逻辑由主程序的库测试覆盖；判据落在截图上的 12 条另有看图的场景 `g01`–`g04`，各起一个 GUI，在它自己截的图上量；判据是耗时的 3 条标「部分」。
 
 | 编号 | 契约标题 | 单元测试 | 端到端脚本 | 覆盖 | 说明 |
 |---|---|---|---|---|---|
-| `VAL-DRAW-001` | 调色板面板可打开，且分类页签与符号库一致 | `ui::window::pid_palette::tests::tabs_come_from_the_symbol_library_categories`<br>`app::commands::pidpalette::tests::pidpalette_toggles_one_panel` | — | 部分 | 页签集合与面板开关有单测；「截图里出现面板、页签文字可见」没有自动化 |
-| `VAL-DRAW-002` | 调色板面板可关闭，且重复打开不叠加 | `app::commands::pidpalette::tests::pidpalette_toggles_one_panel` | — | 部分 | 开关与不叠加有单测；截图判据没有自动化 |
-| `VAL-DRAW-003` | 分类页签可切换，网格内容随页签变化 | `ui::window::pid_palette::tests::a_categorys_grid_holds_exactly_its_symbols`<br>`ui::window::pid_palette::tests::the_active_tab_is_clamped_to_the_library` | — | 部分 | 格数等于该类符号数有单测；两张截图的对比没有自动化 |
-| `VAL-DRAW-004` | 网格每个符号都有可见图标，无空单元格 | `ui::window::pid_palette::tests::every_symbol_has_a_drawable_bounds`<br>`app::commands::pidpalette::tests::every_palette_symbol_resolves` | — | 部分 | 每个符号都有可画的外包框有单测；「格内有非背景色像素」没有自动化 |
+| `VAL-DRAW-001` | 调色板面板可打开，且分类页签与符号库一致 | `ui::window::pid_palette::tests::tabs_come_from_the_symbol_library_categories`<br>`app::commands::pidpalette::tests::pidpalette_toggles_one_panel` | `g01_palette.py` 4 项<br>`g01_palette.py` 4 项（标签 `VAL-DRAW-003`） | 有 | 页签集合与面板开关有单测。调色板场景（2026-11-17 加）在整窗截图上按程序上报的矩形量：面板停靠在视口右边让出来的那一条里，矩形里八成以上是同一种颜色、与打开前相比九成以上的像素变了；页签条里的色块个数等于符号库的分类数，每个色块上都写着东西、写的东西两两不同；打开、关闭前后实体数不变。按每一类的 `label` 选页签，点亮的是该类所在位置的色块、列出的是该类的符号（标签 `VAL-DRAW-003` 的几项）。色块上写的是哪几个字不从图上认，见第 5.3 节 |
+| `VAL-DRAW-002` | 调色板面板可关闭，且重复打开不叠加 | `app::commands::pidpalette::tests::pidpalette_toggles_one_panel` | `g01_palette.py` 3 项 | 有 | 开关与不叠加有单测。调色板场景：再执行一次 `PIDPALETTE`，程序不再上报面板和格子，整窗截图与打开之前那张（命令行条除外）一个像素不差；第三次执行，上报的面板恰好一个、位置与第一次打开时相同，截图与第一次打开的那张一个像素不差；实体数始终不变 |
+| `VAL-DRAW-003` | 分类页签可切换，网格内容随页签变化 | `ui::window::pid_palette::tests::a_categorys_grid_holds_exactly_its_symbols`<br>`ui::window::pid_palette::tests::the_active_tab_is_clamped_to_the_library` | `g01_palette.py` 4 项 | 有 | 格数等于该类符号数有单测。调色板场景：依次选每一类的页签，截图里点亮的色块换到该类的位置，程序上报的格子正是该类的符号，每个格子里画着图标，格子以外的网格区域什么也没画；「设备」「阀门」两张图第一个格位里画的东西不同。选页签走控制通道，不动鼠标，见第 5.3 节 |
+| `VAL-DRAW-004` | 网格每个符号都有可见图标，无空单元格 | `ui::window::pid_palette::tests::every_symbol_has_a_drawable_bounds`<br>`app::commands::pidpalette::tests::every_palette_symbol_resolves` | `g01_palette.py` 1 项 | 有 | 每个符号都有可画的外包框有单测。调色板场景：「设备」页签下程序上报的格子数等于该类的符号数，每个格子放图标的方块里都有不是面板底色的像素，各格画的不一样 |
 | `VAL-DRAW-005` | 点击符号进入插入模式，命令行为 `PIDINSERT <符号>` | `app::commands::pidpalette::tests::a_cell_click_starts_pidinsert_and_the_tab_survives_a_document_switch`<br>`app::commands::pidpalette::tests::the_command_names_itself_and_asks_for_a_point` | — | 有 | 单测里「点击」是直接发面板消息，不是真实鼠标 |
-| `VAL-DRAW-006` | 面板状态在文档切换时保持 | `app::commands::pidpalette::tests::a_cell_click_starts_pidinsert_and_the_tab_survives_a_document_switch` | — | 部分 | 页签跨文档保持有单测；截图判据没有自动化 |
+| `VAL-DRAW-006` | 面板状态在文档切换时保持 | `app::commands::pidpalette::tests::a_cell_click_starts_pidinsert_and_the_tab_survives_a_document_switch` | `g01_palette.py` 3 项 | 有 | 页签跨文档保持有单测。调色板场景：`POST /documents` 新建第二张图，切过去、再切回来，每次用 `state` 确认当前文档，截图里面板都开着、点亮的仍是「阀门」页签、格子仍是阀门类的符号。文档列表的字面出入见第 5.3 节 |
 | `VAL-DRAW-007` | `PIDINSERT` 插入设备符号后实体数 +1 | `app::commands::pidpalette::tests::pidinsert_commits_an_insert_carrying_its_author_record` | — | 有 |  |
 | `VAL-DRAW-008` | 新实体是 `Insert` 且指向 `PID_SYM_<category>_<id>` 块 | `app::commands::pidpalette::tests::pidinsert_commits_an_insert_carrying_its_author_record`<br>`app::commands::pidpalette::tests::the_command_carries_the_block_and_its_type` | — | 有 |  |
-| `VAL-DRAW-009` | 插入位置与喂入坐标一致（插入点读回 + 矩阵反算） | `app::commands::pidpalette::tests::pidinsert_commits_an_insert_carrying_its_author_record` | — | 部分 | 插入点读回（偏差 ≤ 0.5）有单测；截图矩阵反算那一半没有自动化 |
-| `VAL-DRAW-010` | 插入后符号在截图里可见且能被 `highlight_handles` 圈出 | — | — | 缺 | 判据全在截图上（可见、高亮色、`visible_entities`），没有单测也没有脚本 |
+| `VAL-DRAW-009` | 插入位置与喂入坐标一致（插入点读回 + 矩阵反算） | `app::commands::pidpalette::tests::pidinsert_commits_an_insert_carrying_its_author_record` | `g02_insert.py` 3 项 | 有 | 插入点读回（偏差 ≤ 0.5）有单测。插入场景（2026-11-17 加）：`PIDINSERT vessel` 给点后读回的 `position` 与给的点相差不超过 0.5；带 `focus_handles` 截图，该符号的 `screen_pixel` 经 `pixel_to_world_matrix` 反算，与 `world_center` 相距不超过 0.5 个单位；按插入点和符号库算出的外框四边中点换成像素，那些地方画着线，框内空白处是底色（符号画在该在的地方） |
+| `VAL-DRAW-010` | 插入后符号在截图里可见且能被 `highlight_handles` 圈出 | — | `g02_insert.py` 4 项 | 有 | 插入场景：同一个镜头不带、带 `highlight_handles` 各截一张，符号都在 `visible_entities` 里，`selected` 依次为假、真；不带高亮的那张里符号画在该在的地方；两张图的差别全在该符号的 `screen_bounds`（放宽 40 像素）以内，外框上的线换了颜色，框外一个像素不差；取消选择后再截一张，与第一张相同。高亮是哪一种颜色没有断言，只断言线的颜色变了 |
 | `VAL-DRAW-011` | 插入的实体带 XDATA `PID_AUTHOR` 的 `type` 与 `tag` | `app::commands::pidpalette::tests::pidinsert_commits_an_insert_carrying_its_author_record` | — | 有 |  |
 | `VAL-DRAW-012` | `PIDINSERT` 未知符号名被拒绝且不建实体 | `app::commands::pidpalette::tests::pidinsert_refuses_an_unknown_symbol_with_a_code_and_no_entity`<br>`app::commands::pidpalette::tests::pidinsert_resolves_the_bare_id_and_refuses_an_unknown_one` | — | 有 |  |
 | `VAL-DRAW-013` | 同一符号连续插入两次得到两个独立实体 | `app::commands::pidpalette::tests::two_consecutive_inserts_are_two_independent_entities` | — | 有 |  |
-| `VAL-DRAW-014` | 预览跟随鼠标移动 | `app::commands::pidpalette::tests::the_preview_follows_the_cursor` | — | 部分 | 预览图元随光标变化有单测；截图里的像素位移没有自动化 |
-| `VAL-DRAW-015` | `空格` 使预览旋转 90° | `app::commands::pidpalette::tests::space_rotates_the_preview_a_quarter_turn_about_its_centre`<br>`app::commands::pidpalette::tests::a_placement_commits_the_rotation_the_preview_showed` | — | 部分 | 预览旋转与落点角度有单测；截图对比没有自动化 |
-| `VAL-DRAW-016` | `Ctrl+空格` 切换插入点 | `app::commands::pidpalette::tests::ctrl_space_switches_the_insertion_point` | — | 部分 | 插入基准点切换有单测；截图对比没有自动化 |
+| `VAL-DRAW-014` | 预览跟随鼠标移动 | `app::commands::pidpalette::tests::the_preview_follows_the_cursor` | `g03_preview.py` 2 项 | 有 | 预览图元随光标变化有单测。预览场景（2026-11-17 加，视口截图）：`PIDINSERT` 等待给点时先后给两个点各截一张，图上比命令前多出来的那团像素（预览）跟着点走，位移与按矩阵算的相差不超过 8 像素，实体数不变；取消命令后两处都回到命令前的样子，实体数仍不变 |
+| `VAL-DRAW-015` | `空格` 使预览旋转 90° | `app::commands::pidpalette::tests::space_rotates_the_preview_a_quarter_turn_about_its_centre`<br>`app::commands::pidpalette::tests::a_placement_commits_the_rotation_the_preview_showed` | `g03_preview.py` 1 项 | 有 | 预览旋转与落点角度有单测。预览场景：输入 `SPACE` 后预览那团像素的宽高互换（各容 3 像素）、中心不动（每轴容 8 像素），实体数不变 |
+| `VAL-DRAW-016` | `Ctrl+空格` 切换插入点 | `app::commands::pidpalette::tests::ctrl_space_switches_the_insertion_point` | `g03_preview.py` 1 项 | 有 | 插入基准点切换有单测。预览场景：输入 `CTRL+SPACE` 后给的点没有变，预览相对它移动了不少于 3 像素，宽高不变，实体数不变 |
 | `VAL-DRAW-017` | `Esc` 取消插入模式，实体数不变 | `app::commands::pidpalette::tests::escape_cancels_without_a_placement_and_a_later_insert_still_commits`<br>`rest::tests::run_cancel_escapes_a_live_command` | — | 有 |  |
 | `VAL-DRAW-018` | 取消后再次插入仍能正常提交 | `app::commands::pidpalette::tests::escape_cancels_without_a_placement_and_a_later_insert_still_commits` | — | 有 |  |
 | `VAL-DRAW-019` | 首个设备位号符合「前缀 + 序号」规则 | `app::commands::pidpalette::tests::consecutive_placements_increment_and_each_category_starts_at_its_own_origin` | — | 有 |  |
 | `VAL-DRAW-020` | 连续插入同类型位号递增 | `app::commands::pidpalette::tests::consecutive_placements_increment_and_each_category_starts_at_its_own_origin` | — | 有 |  |
-| `VAL-DRAW-021` | 位号唯一冲突时显示 `？` | `app::commands::pidpalette::tests::a_manual_duplicate_shows_the_conflict_mark_and_undoes`<br>`app::commands::pidprops::tests::a_conflicting_tag_edit_shows_the_conflict_mark_in_the_group` | — | 部分 | 状态、保留原位号、显示属性变 `？` 有单测；截图里的文字没有自动化 |
-| `VAL-DRAW-022` | 位号在截图中可见（文字渲染） | `app::commands::pidpalette::tests::each_placement_shows_its_tag_above_the_symbol` | — | 部分 | 每个落点带一个显示位号的属性、位置在符号上方有单测；「截图里能辨认」没有自动化 |
+| `VAL-DRAW-021` | 位号唯一冲突时显示 `？` | `app::commands::pidpalette::tests::a_manual_duplicate_shows_the_conflict_mark_and_undoes`<br>`app::commands::pidprops::tests::a_conflicting_tag_edit_shows_the_conflict_mark_in_the_group` | `g04_tag_display.py` 4 项 | 有 | 状态、保留原位号、显示属性变 `？` 有单测。位号场景（2026-11-17 加）：把第二个符号的位号手工改成已被占用的那个，读回记录里位号保留、来源 `manual`、状态 `duplicated`，块属性的值是 `？`，属性面板「位号」行也是 `？`；截图上该符号上方位号所在的地方仍画着东西，宽度由四个多字高变成半个字高（一个字符宽），另两个符号的没有变。图上的字不认，见第 5.3 节 |
+| `VAL-DRAW-022` | 位号在截图中可见（文字渲染） | `app::commands::pidpalette::tests::each_placement_shows_its_tag_above_the_symbol` | `g04_tag_display.py` 3 项 | 有 | 每个落点带一个显示位号的属性、位置在符号上方有单测。位号场景：放三个符号，带作者记录的实体正好三个；带 `focus_handles` 的截图与同一镜头下关掉属性显示的一张相比，每个符号的 `screen_bounds`（放宽 40 像素）里多出一块像素，在本体上方、对着符号中线、高约一个字高、宽四个多字高，三块互不相交。图上的字不认，见第 5.3 节 |
 | `VAL-DRAW-023` | 不同类型各自独立编号 | `app::commands::pidpalette::tests::consecutive_placements_increment_and_each_category_starts_at_its_own_origin`<br>`app::commands::pidpalette::tests::a_valve_placement_records_the_valve_category_code` | — | 有 |  |
 | `VAL-DRAW-024` | 选中带 `PID_AUTHOR` 的实体后属性面板出现 `P&ID 属性` 分组 | `app::commands::pidprops::tests::the_group_shows_the_author_record_and_only_for_authored_entities` | — | 有 |  |
 | `VAL-DRAW-025` | `P&ID 属性` 分组显示 `type`/`tag`/`tag_source`/`tag_status` 与 `props` 键值对 | `app::commands::pidprops::tests::the_group_shows_the_author_record_and_only_for_authored_entities` | — | 有 |  |
@@ -401,7 +423,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 ### 4.6 管线与拓扑 `VAL-PIPE`（32 条）
 
-契约的取证工具是 GUI 的 REST 接口。判据几乎都是坐标、拓扑表和属性，库测试能逐条断言到；只有一条判据全在截图上。
+契约的取证工具是 GUI 的 REST 接口。判据几乎都是坐标、拓扑表和属性，库测试能逐条断言到；只有一条（`VAL-PIPE-017`）判据全在截图上，由看图的场景 `g05_pipe_break` 盯着。
 
 | 编号 | 契约标题 | 单元测试 | 端到端脚本 | 覆盖 | 说明 |
 |---|---|---|---|---|---|
@@ -421,7 +443,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-PIPE-014` | 阀门端口为「连接点1」「连接点2」 | `app::commands::pidpipe::tests::a_fitting_at_the_midpoint_splits_the_segment_in_two`<br>`app::commands::pidpipe::tests::a_valve_has_its_own_tag_and_an_owner_pointing_at_the_run` | — | 有 |  |
 | `VAL-PIPE-015` | 两个管段各连阀门一个端口（连接关系写进拓扑表） | `app::commands::pidpipe::tests::a_fitting_at_the_midpoint_splits_the_segment_in_two` | — | 有 |  |
 | `VAL-PIPE-016` | 断开后几何端点分列阀门两侧且外侧端点不动 | `app::commands::pidpipe::tests::a_fitting_at_the_midpoint_splits_the_segment_in_two` | — | 有 |  |
-| `VAL-PIPE-017` | 截图可见断开——管线不再贯穿阀门 | — | — | 缺 | 判据全在截图上（两段的 `screen_bounds` 不贯穿阀门），没有单测也没有脚本；几何上的不重叠由 016 的单测保证 |
+| `VAL-PIPE-017` | 截图可见断开——管线不再贯穿阀门 | — | `g05_pipe_break.py` 3 项 | 有 | 管段场景（2026-11-17 加）：管路上插闸阀后按契约的请求带标记截图，阀门在 `annotations` 里且是选中的；段 A、阀门、段 B 的 `screen_bounds` 从左到右依次排开、互不越过（各容 2 像素）；不带标记的图上沿管路那条线正好画着三段，中间两道缝是底色，缝的两头对着两个管段的端点（各容 3 像素）。几何上的不重叠另由 016 的单测保证。`annotations` 最多 64 条等出入见第 5.3 节 |
 | `VAL-PIPE-018` | 在管段端点插阀门不拆分，阀门绑定该端点 | `app::commands::pidpipe::tests::a_fitting_on_a_segment_endpoint_does_not_split` | — | 有 |  |
 | `VAL-PIPE-019` | 移动阀门后两侧管段端点跟随 | `app::commands::pidmove::tests::moving_the_valve_drags_the_inner_endpoints_onto_its_ports` | — | 有 |  |
 | `VAL-PIPE-020` | 补位后仍首尾相接，无重叠无缺口 | `app::commands::pidmove::tests::the_refilled_segments_stay_joined_without_overlap_or_gap` | — | 有 |  |
@@ -451,7 +473,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-CLI-005` | 占用被拒时返回 claim_denied 并携带 holder 与 expires_at | `app::collab::tests::a_denied_claim_records_the_holder_and_never_claims_it_for_us` | `t21_claims.py` 4 项 | 有 | 字面出入见第 5.3 节 |
 | `VAL-CLI-006` | 占用在 300 秒 TTL 到期后自动释放并广播 claim_released | `app::collab::tests::a_release_clears_the_tag_and_keeps_its_reason` | `t22_ttl.py` 4 项 | 有 | 真等默认的 300 秒到期，这个场景最慢 |
 | `VAL-CLI-007` | 主动释放占用返回 claim_released 且 reason 为主动 | — | `t21_claims.py` 2 项 | 有 | 释放用的是命令 `PIDRELEASE`，面板上的按钮没有端到端点过 |
-| `VAL-CLI-008` | 占用状态在 GUI 面板可见且可被 REST 读回 | `app::collab::claims::tests::a_claimed_tag_colours_the_entities_that_carry_it`<br>`app::collab::claims::tests::this_sessions_own_claim_is_coloured_as_occupied`<br>`app::collab::claims::tests::a_released_claim_row_stops_reporting_its_rectangle` | `t21_claims.py` 3 项 | 有 | 占用色像素在视口截图上量（契约已登记的口径） |
+| `VAL-CLI-008` | 占用状态在 GUI 面板可见且可被 REST 读回 | `app::collab::claims::tests::a_claimed_tag_colours_the_entities_that_carry_it`<br>`app::collab::claims::tests::this_sessions_own_claim_is_coloured_as_occupied`<br>`app::collab::claims::tests::a_released_claim_row_stops_reporting_its_rectangle` | `t21_claims.py` 3 项 | 有 | 占用色像素在视口截图上量（契约已登记的口径）。2026-11-17 起读图用脚本目录里的 `shot.py`，不再要另装图像库 |
 | `VAL-CLI-009` | 实例 A 的位号变更在实例 B 本地文档生效 | `app::collab::apply::tests::a_remote_tag_change_reaches_the_local_document`<br>`app::collab::broadcast::tests::a_set_tag_change_rewrites_the_local_tag` | `t10_broadcast.py` 6 项<br>`t10_broadcast.py` 4 项（标签 `T2.4-tag-source`）<br>`t10_broadcast.py` 6 项（标签 `T2.4-overrides`） | 有 | 标本条编号的几项是原有的。2026-11-17 另加了两组。位号来源（标签 `T2.4-tag-source`）：自动编的位号、手工改、撤销、重做，两端每次读回的位号和 `tag_source` 都相同，后三步发出的变更带着来源。属性的手改标记（标签 `T2.4-overrides`）：改管线的属性时没有标记的管路跟着变；手改管路的字段、撤销、重做，发出的变更带着标记（撤销时是把标记去掉），两端的取值和标记每次都相同；之后再改管线，带标记的管路不跟着变。字面出入见第 5.3 节 |
 | `VAL-CLI-010` | 远端变更后双方 base_revision 同步刷新 | `app::collab::apply::tests::a_remote_op_moves_the_baseline_to_the_server_revision`<br>`ocs_collab_server::ws::tests::an_applied_op_moves_every_live_session_on_the_drawing_to_its_revision` | `t10_broadcast.py` 4 项 | 有 |  |
 | `VAL-CLI-011` | readonly_downgrade 后 GUI 拒绝写操作 | `app::collab::apply::tests::a_readonly_session_refuses_writes_and_keeps_inspection`<br>`app::collab::apply::tests::commands_that_write_are_refused_and_the_forms_that_read_are_not`<br>`app::collab::apply::tests::every_command_a_readonly_session_may_run_leaves_the_drawing_as_it_was`<br>`app::collab::apply::tests::a_write_that_gets_past_the_command_gate_is_taken_back`<br>`ocs_collab_server::http::tests::switching_to_readonly_downgrades_everyone_but_the_holder` | `t10_broadcast.py` 5 项 | 有 | 脚本只查了契约给的那一条写命令（`PIDTAG`）；「写命令作为一类被拒」由单测盯着：两条盯放行名单，一条盯名单之外的总闸（漏过名单的写入会被收回）。字面出入见第 5.3 节 |
@@ -511,31 +533,15 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 ## 5. 缺口
 
-### 5.1 没有覆盖或只覆盖一部分的（19 条）
+### 5.1 没有覆盖或只覆盖一部分的（4 条）
 
 按要做的事分五类。「现状」一列是对照表里的取值；各条缺什么，见对照表的「说明」。补完的类只留一段话，不再列表。
 
-**（一）判据在截图上，要起 GUI 的场景（15 条）**
+**（一）判据在截图上，要起 GUI 的场景（原 15 条，2026-11-17 补完）**
 
-大致是五个新场景：调色板、插入、预览、位号显示、管线断开，再加冒烟场景里的两处补充。
+`VAL-DRAW-001`–`004`、`006`、`009`、`010`、`014`–`016`、`021`、`022`，`VAL-PIPE-017`，`VAL-INFRA-009`、`010`。新写了五个看图的场景：`g01_palette`（调色板的开合、页签、图标、跨文档）、`g02_insert`（插入的位置和高亮）、`g03_preview`（放置时的预览、转向、换基准点）、`g04_tag_display`（位号的显示和重号时的 `？`）、`g05_pipe_break`（阀门把管路断开）；冒烟场景加了 3 项。都挂在总入口里（看图的五个是第六组），对照表里已改成「有」。
 
-| 编号 | 契约标题 | 现状 | 要补什么 |
-|---|---|---|---|
-| `VAL-INFRA-009` | capture 返回可用的 PNG 文件 | 部分 | 在冒烟场景 `t00_smoke.py` 里补断言：写出的文件以 PNG 文件头开头、响应里的宽高是正整数 |
-| `VAL-INFRA-010` | capture 返回世界到屏幕的坐标映射与实体屏幕坐标 | 部分 | 在冒烟场景里补断言：截图后用响应里的矩阵把一个已知实体的世界坐标换算成像素，与响应给的该实体屏幕坐标比，相差不超过 20 像素 |
-| `VAL-DRAW-001` | 调色板面板可打开，且分类页签与符号库一致 | 部分 | 补一个调色板场景：`PIDPALETTE` 打开后读界面元素位置（面板 `pid-palette-panel` 已经上报），断言面板出现、开关前后实体数不变；页签文字要让页签也上报位置，或在截图上判断 |
-| `VAL-DRAW-002` | 调色板面板可关闭，且重复打开不叠加 | 部分 | 同一个调色板场景：关、再开，断言面板的上报位置消失、再出现且只有一份 |
-| `VAL-DRAW-003` | 分类页签可切换，网格内容随页签变化 | 部分 | 同一个调色板场景：切换页签，断言格子（`pid-palette-cell-*`，已经上报位置）的个数等于该类的符号数、两个页签的格子不同 |
-| `VAL-DRAW-004` | 网格每个符号都有可见图标，无空单元格 | 部分 | 同一个调色板场景：按每个格子的上报矩形在截图上数非背景色像素，断言都大于零 |
-| `VAL-DRAW-006` | 面板状态在文档切换时保持 | 部分 | 同一个调色板场景：新建第二个文档再切回，断言面板仍在、仍是原来的页签 |
-| `VAL-DRAW-009` | 插入位置与喂入坐标一致（插入点读回 + 矩阵反算） | 部分 | 补一个插入场景：带 `focus_handles` 截图，用返回的矩阵把实体的屏幕像素反算回世界坐标，与响应里的 `world_center` 相差不超过 0.5 |
-| `VAL-DRAW-010` | 插入后符号在截图里可见且能被 `highlight_handles` 圈出 | 缺 | 同一个插入场景：不带、带 `highlight_handles` 各截一张，断言实体在 `visible_entities` 里、它的 `screen_bounds` 内两张图的像素不同 |
-| `VAL-DRAW-014` | 预览跟随鼠标移动 | 部分 | 补一个预览场景（默认视口截图）：放置中喂两个点各截一张，断言预览的像素位移与矩阵换算的结果相差不超过 8 像素、实体数不变 |
-| `VAL-DRAW-015` | `空格` 使预览旋转 90° | 部分 | 同一个预览场景：`SPACE` 前后各截一张，断言预览包围盒的宽高比互换、中心不动（不超过 8 像素） |
-| `VAL-DRAW-016` | `Ctrl+空格` 切换插入点 | 部分 | 同一个预览场景：`CTRL+SPACE` 前后各截一张，断言预览相对光标点的位置变了（不少于 3 像素） |
-| `VAL-DRAW-021` | 位号唯一冲突时显示 `？` | 部分 | 补一个位号场景：做出位号冲突后带 `focus_handles` 截图，断言该实体旁有位号文字的像素；显示的是 `？` 由单测保证，截图上认字不做 |
-| `VAL-DRAW-022` | 位号在截图中可见（文字渲染） | 部分 | 同一个位号场景：三个符号各自的 `screen_bounds` 外扩 40 像素的区域内，非背景像素比只有符号几何时多，且三块文字区域互不重叠 |
-| `VAL-PIPE-017` | 截图可见断开——管线不再贯穿阀门 | 缺 | 补一个场景：管线上插阀门后截图，读两段管段的 `screen_bounds`，断言它们分在阀门两侧、都不穿过阀门的矩形 |
+判的是程序自己截的图上的像素，量在哪里由图纸和应答里的矩阵算出来（做法见第 3.2 节的「看图那一组」）。图上的字不认：契约的判据要靠认字的，换成了量位置、量大小，加上读记录里的值；这几处和别的字面出入列在第 5.3 节。各项检查试过会不会红，做法和结果见第 5.4 节。
 
 **（二）判据是耗时（4 条）**
 
@@ -576,7 +582,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 
 ### 5.3 契约字面与实现有出入的（不算覆盖缺口，结项前要裁决）
 
-脚本过了，但契约原文里有一句按字面不成立，或者脚本的做法与原文不完全一样。前七条来自状态文档 §13.3（当时记作「13 条成立，7 条部分成立」），其余来自 §18.2 和这次对照；`VAL-INFRA` 的四行是 2026-11-17 补验收规程的缺口时重写或新加的，写的是脚手架和入口的做法与契约字面不一样的地方（`VAL-CLI-019` 那一行也在那时改过）；最后两条是补缺口时发现的（`VAL-PERM-032` 在补单元测试时，`VAL-SRV-030` 在补并发场景时）。
+脚本过了，但契约原文里有一句按字面不成立，或者脚本的做法与原文不完全一样。前七条来自状态文档 §13.3（当时记作「13 条成立，7 条部分成立」），其余来自 §18.2 和这次对照；`VAL-INFRA` 的四行是 2026-11-17 补验收规程的缺口时重写或新加的，写的是脚手架和入口的做法与契约字面不一样的地方（`VAL-CLI-019` 那一行也在那时改过）；`VAL-PERM-032`、`VAL-SRV-030` 两条是补缺口时发现的（前一条在补单元测试时，后一条在补并发场景时）；最后七行是 2026-11-17 补看图的场景时加的，写的是场景的做法与契约字面不一样的地方。
 
 | 编号 | 出入 |
 |---|---|
@@ -599,15 +605,24 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-INFRA-013` | 契约写产物都放在一个固定的本机路径下。脚本里没有写死的路径，产物写在运行时指定的证据目录里，只要求它在仓库之外。`git status` 比的是「比开跑前多出来的行」，开跑前工作区里已有的改动不算；开跑前就已经列在改动里的文件再被改一次，这样比看不出来 |
 | `VAL-PERM-032` | 原文要求建会话时塞进载荷的伪造 `workspace` 不被采纳。实现里 `workspace` 是 `hello` 和 `POST /session` 的正式字段，会话就是在那里声明自己的工作区的（`VAL-PERM-025` 的 `ws-alpha` 也是这样来的），写在那里的值原样记进审计，服务器分不出「声明」和「伪造」。成立的部分：帧里多出来的 `ip`、`company` 键，以及提交修改的帧里的 `workspace` 键，服务器都不读；`ip` 取连接的对端地址，`company` 取用户表。单元测试断言的是成立的这部分。要裁决：把原文改成「`workspace` 由会话声明，另两项不可自报」，还是让服务器按一张工作区名单校验 |
 | `VAL-SRV-030` | 契约写「不少于 8 个会话、各不少于 30 个 op」。按下限（8 个会话、每批各 30 条）成立，场景就是这样跑的。规模再大就不一定：服务器给每张图的广播队列只留最近 256 条，某条连接积压超过这个数，最早的那些广播就被丢掉（服务器在 stderr 记一行 `subscriber lagged`；代码注释写明这是有意的，丢了的靠客户端重新对齐）。连着发 op 的会话转发广播慢，积压会接近整整一批。10 个会话各连发 30 条（一批 300 条）时，这台机器上 9 次里有 4 次丢了广播，其中一次有 19 条已经生效的 op、发送方自己没有收到 `op_applied`。丢的只是通知：那一次库里的图纸修订、操作日志、审计行都是全的。要裁决：维持现状、把规模上限写进契约，还是改服务器（发送方的回执单独发、不走广播队列；或转发时先把积压的发完；或加大队列）。复现：把 `s04_concurrent_ops.py` 里的 `N` 改成 10，多跑几次 |
+| `VAL-INFRA-009` | 契约给的请求体只有 `document_id` 和 `annotate`。程序对不带 `path` 的截图请求回 HTTP 400（`Missing path`）：存到哪里要请求方写明。冒烟场景先按契约原样发一次，把这个应答记在检查项的说明里，再带上 `path` 发，判的是后一次。要裁决：把 `path` 写进契约的请求体，还是让程序在不给时自己找地方存 |
+| `VAL-DRAW-001` | 契约写「页签文本集合」与符号库的分类名逐项相同。页签上写的是哪几个字，场景不从图上认；查的是页签的个数等于分类数，每个页签上都写着东西、写的东西两两不同，以及按每一类的名字选页签时，亮起来的是那一类位置上的页签、列出的是那一类的符号。页签的字取自分类的名字，这一点是读源码知道的（`src/ui/window/pid_palette.rs`）。另：契约只写「停靠面板」，没有写停在哪一侧；场景从程序的默认设置起，查的是面板在视口右边让出来的那一条里，换过停靠位置之后的样子不管 |
+| `VAL-DRAW-003` | 契约写「点击」页签。场景经控制通道选页签（`action pid_palette tab=<分类名>`），不移动指针；用鼠标点页签这一下没有端到端点过 |
+| `VAL-DRAW-006` | 契约写新建文档之后文档列表「返回 2 个文档」。列表里还有起始页那一条（`start=true`），实际是 3 条；场景数的是不算起始页的图纸，由 1 张变成 2 张 |
+| `VAL-DRAW-010` | 契约说带高亮与不带高亮的两张图，差别在该实体的 `screen_bounds` 之内。高亮时位号的字画得比上报的矩形略宽，场景把矩形向外放宽 40 像素再比（`VAL-DRAW-022` 的契约自己写的就是 40 像素）：差别全在放宽后的框里，框外一个像素不差。高亮用的是什么颜色不查，只查外框上的线换了颜色 |
+| `VAL-DRAW-021`、`022` | 两条的判据里都有要认字的：`021` 写画出来的位号文本是 `？`，`022` 写三个位号都能辨识。场景不认字。位号是哪几个字符，读自记录、块属性和属性面板；图上量的是位号那一块像素在哪里、多宽多高：正常的位号宽四个多字高，换成 `？` 之后只有半个字高宽，三个符号的三块互不相交。「画出来的就是那几个字」只有这样间接的证据 |
+| `VAL-PIPE-017` | 契约的那一个请求（`view:"extents"`、只高亮阀门、`annotate:true`）不一定列得全三样：应答里的实体表最多 64 条，选中的排在前面，其余按屏幕上的面积从大到小排；水平的管段面积是 0，基础图里的东西一多它就排不进表。场景照契约的请求只判阀门在表里并且是选中的；段 A、阀门、段 B 的先后次序读自同一个视图的第二张图，那一张把两段管路也一起高亮。另有一处摆法不同：管路所属的管线自己的那条线不会被阀门断开，画在管路的位置上会从两道缝里透出来，场景把它画在 60 个单位之外；画在同一处时图是什么样，场景结尾记了一笔，不算检查。要裁决：契约改成三样都高亮，还是让实体表不截断；管线自己的线要不要跟着断开 |
 
 ### 5.4 这张表是怎么核对的
 
 - 228 个编号各出现一次，各区条数与状态文档第 4 节相同；mission 记录的两栏合计 179 与 49，也与那一节相同。
 - 表里引用了 287 个单元测试，每个名字都在全量测试日志里唯一地找到，并且是通过的（标「默认不跑」的一条除外）。日志是基准提交上的一份；补缺口加的 7 条取自 2026-11-17 补完它们之后重跑的那一次。
-- 表里引用了 31 个脚本（30 个场景加收尾的整轮检查），都存在。原有 22 个场景里没有补断言的 18 个，项数取自 2026-11-12 那次执行的结果文件；补了断言的四个（`t10_broadcast`、`t20_session`、`x05_m3_persistence`、`x10_concurrent_insert`）取自 2026-11-17 补了断言之后的那一遍五组全量（第 3.3 节）；服务器进程的四个场景取自 2026-11-17 它们经总入口跑的那一次；脚手架与入口规程的四个场景和收尾的整轮检查，取自 2026-11-17 补完验收规程之后的那一遍五组全量。取数的这几次执行里，表里引用到的项都没有失败的。
+- 表里引用了 36 个脚本（35 个场景加收尾的整轮检查），都存在。原有 22 个场景里此后没有动过的 17 个，项数取自 2026-11-12 那次执行的结果文件；补了断言的四个（`t10_broadcast`、`t20_session`、`x05_m3_persistence`、`x10_concurrent_insert`）取自 2026-11-17 补了断言之后的那一遍五组全量（第 3.3 节）；服务器进程的四个场景取自 2026-11-17 它们经总入口跑的那一次；脚手架与入口规程里的 `t02_harness_rules`、`t03_vanish_retry`、`t04_entry_rerun` 和收尾的整轮检查，取自 2026-11-17 补完验收规程之后的那一遍五组全量；看图的五个场景、加了检查的 `t00_smoke` 和换了读图办法的 `t21_claims`，取自 2026-11-17 补了看图场景之后的那一遍六组全量。每个场景在它取数的那一次执行里，项都没有失败的；补了看图场景之后的那一遍里没过的 3 项在 `t02_harness_rules`、`t25_offline`，这两个场景的项数不取自那一遍。
 - 服务器进程的四个场景，逐项试过会不会红：把服务器在某一处临时改坏、重新编出来（共 19 处，一次只改一处；改坏的可执行文件只放在仓库外，源码改完即还原），让场景对着它跑，共 21 次；另有一次不重启服务器的对照。22 次运行每一次都有检查失败。带契约编号的 43 项检查里，41 项至少在一次这样的运行里失败过；剩下 2 项没有做出让它失败的改法：`s02` 的「原来的实例照常服务、原来的连接没有收到 `error`」和 `s03` 的「重新握手成功，且落在销毁之后 3 到 30 秒之间」。
 - 脚手架与入口规程的四个场景、收尾的整轮检查和 `t20_session` 里后加的那一项，也逐项试过会不会红（2026-11-17）。做了 62 次对照运行，一次只改一处，改的都是放在仓库外的副本：30 次改脚手架（把某一条规则拿掉或改错），10 次改入口的重跑规则，5 次改场景自己（重跑时换一个端口、换一张图，流程里的命令不建实体；检查之前先把服务器结束、把 GUI 冻结），1 次不改脚本、让真实例连丢两次，6 次针对收尾的整轮检查（一轮中间往仓库里放一个文件、放一份字节码缓存，跑完即删；不做开头的记录；换成另外两个包的依赖树；让两份脚手架差一行），10 次让冒烟场景对着一个改过的 GUI 跑（`/api/v1/ready` 的字段给错 7 种、在哪个端口上都要过 65 秒才就绪、只在 3210 上这样、什么都不改；改过的可执行文件只放在仓库外，源码改完即逐字节还原）。62 次的结果都与事先写下的预期一致：60 次有检查失败；另 2 次是应当全部通过的对照（改过的 GUI 什么都不改；只在 3210 上过 65 秒才就绪，第一次到上限被结束、换端口重试后 60 秒内就绪），确实全部通过。这几个脚本一遍跑下来是 36 项检查（`t00` 7、`t02` 13、`t03` 5、`t04` 5、`r01` 5，加 `t20` 的 1 项），其中 29 项带契约编号：这 29 项都至少在一次对照里失败过；没有失败过的 5 项都是不带契约编号的前提项（实例就绪三项、替身场景跑完、截图接口回 200）。另有一项只在失败时才会出现的检查（`t03` 的「实例已经被结束，脚手架却没有发现」），没有一次对照走到它：把脚手架的探测去掉之后，请求直接报连接错误，场景记的是「没有跑完」，红的是另一行。
 - 补第 5.2 节前三行的断言时（2026-11-17）：这些检查盯的是已经交付的行为，写完就是绿的，所以也做了对照运行，共 26 次，事先写下每一次应当红在哪一组、或者应当全绿。产品这一侧，在 GUI 和服务器的源码里加了 11 个用环境变量挑选的故障开关（13 处改动），一起编成一份 GUI 和一份服务器，只放在仓库外，一次只开一个；改过的源文件已逐字节还原。8 次应当全绿的确实全绿：四个场景各对着按 `adb4aed54` 编出的程序跑一遍，再对着带开关、一个都不开的那一份跑一遍。13 次各开一个故障，都红在事先写下的那一组：`t10_broadcast` 4 次（发出的变更不带位号来源；接收方不认带来的来源；发出的变更不带手改标记；接收方不认带来的标记），`x05_m3_persistence` 4 次（发送方不读另存的属性；重建对象时不带另存的属性；隔着对方的改动撤销的那条路上两处：比较撤销前后时不读另存的属性，换回撤销步里留的记录时不保留对方写的属性），`x10_concurrent_insert` 3 次（加入时不上报已有位号；重新加入后不把占用要回来；服务器不登记上报的位号），`t20_session` 2 次（不上报；服务器不登记）。4 次换的是场景：`t20_session` 用补断言之前的那一版（过时的那一项红），再用一份换了用户启动的副本（改过的那一项、新加的那一项都红，还连带着红了原有的一项）；`t10_broadcast` 用两份副本，一份把改管线那一步改成别的属性（`T2.4-overrides` 红 4 项），一份在计数之前多发一条变更（只红数变更条数的那一项）。1 次是修 `adb4aed54` 那处缺陷之前的 GUI 留下的输出（`T2.4-claim-after-rejoin` 里 2 项红）。新加和改过的 39 项里 33 项至少红过一次；没有红过的 6 项都是前提（实例就绪、打开图、先画好或删掉要用的对象）。`T2.4-overrides` 的「没有标记的管路跟着管线变」和「11 件事正好 11 条变更」两项、`t20_session` 改过的那一项，产品这一侧的 11 个故障没有一个让它们红，只在换场景的对照里红过；`T2.4-claim-after-rejoin` 的「释放得掉」一项只在修缺陷之前的那份输出里红过。有两次连带着红了别的组：换回记录时不保留对方写的属性的那一次，同时红了原有的 `VAL-CROSS-005` 两项；不上报已有位号时没有重新加入这一步，`T2.4-claim-after-rejoin` 也红了两项。
+- 补看图的场景时（2026-11-17）：这些检查盯的也是已经交付的行为，写完就是绿的，所以同样做了对照运行，共 62 次，事先写下每一次应当红在哪几项、或者应当全绿，结果都如所写。产品这一侧，在 GUI 的源码里加了 34 个用环境变量挑选的故障开关（29 处改动，分在 7 个文件里），编成一份 GUI，只放在仓库外，一次只开一个；改过的源文件已逐字节还原。15 次应当全绿的确实全绿：先对着正常的程序造一遍 `t00_smoke`、`t21_claims` 要打开的那张种子图（`t01_seed`），再让七个脚本（`g01`–`g05`、`t00_smoke`、`t21_claims`）各对着正常的程序跑一遍、各对着带开关而一个都不开的那一份跑一遍。43 次各开一个故障，都红在事先写下的那几项上：`g01_palette` 15 次（面板停到左边；第二次 `PIDPALETTE` 不关面板；从第二次打开起停到左边；打开面板时往图里加一条线；换页签不生效；点亮的是下一个页签；最后一个页签不画；页签上不写字；每个页签都写第一个分类的名字；每格都画同一个图标；不画图标；切换文档时把面板关掉；切换文档后回到第一个页签；新建文档的请求什么都不做；截图每次都交出第一次截的那一张），`g02_insert` 6 次（符号落点偏出 (30, 20)；截图应答里的矩阵横向偏出画面宽度的 5%；标注的 `screen_pixel` 横向偏 40 像素；不画高亮；清空选择不生效；截图交出旧图），`g03_preview` 5 次（预览停在第一个点不跟着走；空格不转；Ctrl+空格不换锚点；取消不生效；截图交出旧图），`g04_tag_display` 6 次（位号属性不可见；位号画在符号本体上；重号的符号仍显示原来的位号；属性面板的「位号」行在重号时仍显示原来的位号；每放一个符号多写一个带作者记录的实体；截图交出旧图），`g05_pipe_break` 5 次（不画高亮；不画编号标记；放管件时管路不截断；截断处又被一条线接上；截图交出旧图），`t00_smoke` 4 次（应答里的 `width` 多 1；矩阵偏；`screen_pixel` 偏；截图交出旧图），`t21_claims` 2 次（被占用的对象不上色；截图交出旧图）。4 次换的是场景（副本只放在仓库外，对着正常的程序跑），针对的是没有哪个故障够得着的四项前提：`g01_palette` 在该取「面板关着」的那一张之前先把面板打开，`g03_preview` 用符号库里没有的名字启动 `PIDINSERT`，`g04_tag_display` 只放两个符号，`g05_pipe_break` 不放阀门；四次都红在那一项前提上（后三份到这一项就停了；`g01_palette` 那一份接着往下跑，后面拿这张图当「关着的样子」来比的 4 项也跟着红了）。新写和改过的 49 项（五个看图场景的 45 项、`t00_smoke` 新加的 3 项、`t21_claims` 改过的 1 项）里 44 项至少红过一次；没有红过的 5 项是五个看图场景各自的第一项（实例就绪）。截图交出旧图的那个故障七个脚本都试了，每个脚本里都有靠图判的项因此失败。
 - 2026-11-17 的前两遍（收进仓库时跑的原有 22 个场景、补完验收规程后跑的五组全量），原有 22 个场景的结果文件都与 2026-11-12 的逐个场景、逐个标签比过通过和失败的项数：除 `t20_session` 之外全部相同。`t20_session` 里过时的那一项两遍都是失败（2026-11-12 是通过），第二遍另多出后加的 `VAL-INFRA-012` 一项。
 - 第三遍（补了第 5.2 节的断言后跑的五组全量）与第二遍逐个场景、逐个标签比过：除补了断言的四个场景之外，其余 26 个场景和收尾的整轮检查各标签通过和失败的项数全部相同；四个场景里多出来的正是新加的 38 项，另有 `t20_session` 的 `VAL-CLI-001` 从 4 项通过、1 项失败变成 5 项通过。
+- 第四遍（补了看图的场景后跑的六组全量）与第三遍逐个场景、逐个标签比过：两遍都有的 34 份结果（31 个场景、两张种子图、`t03_vanish_retry` 的第一次）里，31 份各标签的通过数和失败数完全相同。不同的 3 份：`t00_smoke` 多了 3 项（`VAL-INFRA-009` 1 项、`VAL-INFRA-010` 2 项），原有的 7 项不变；`t02_harness_rules` 的 `VAL-INFRA-014` 由 4 项通过变成 2 项通过、2 项失败；`t25_offline` 的 `VAL-CLI-015` 由 6 项通过变成 5 项通过、1 项失败。后两处的原因见第 3.3 节。看图的五个场景只在第四遍里有。
 - 「有」「部分」「缺」是逐条对着契约正文和测试、脚本的代码判断的，判断时没有重新执行端到端脚本。前六个区逐条读了契约正文和测试代码；后三个区以状态文档当时的逐条结论为准，对带计时、截图判据的和后补的几条另读了脚本的检查项。

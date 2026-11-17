@@ -9,28 +9,19 @@ import json
 import sys
 import time
 
-from PIL import Image
-
 import m6h
+import shot as reader   # under another name: further down `shot` is whether a capture wrote its file
 
 r = m6h.Results("t21_claims")
 
 
 def claim_pixels(png, bounds):
     """How many pixels inside `bounds` (physical px) carry the claim colour."""
-    im = Image.open(png).convert("RGB")
-    w, h = im.size
-    x0, y0, x1, y1 = [int(v) for v in bounds]
-    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
-    px = im.load()
-    n = 0
-    for y in range(y0, y1):
-        for x in range(x0, x1):
-            red, green, blue = px[x, y]
-            # CLAIM_COLOR is [1.0, 0.70, 0.10]: amber.
-            if red > 240 and 165 < green < 195 and blue < 45:
-                n += 1
-    return n, (w, h)
+    picture = reader.load(png)
+    # CLAIM_COLOR is [1.0, 0.70, 0.10]: amber.
+    n = reader.count(picture, [int(v) for v in bounds],
+                     lambda red, green, blue: red > 240 and 165 < green < 195 and blue < 45)
+    return n, (picture.width, picture.height)
 
 
 try:
