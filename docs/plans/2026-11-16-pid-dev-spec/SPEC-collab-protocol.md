@@ -2,6 +2,7 @@
 
 > 状态：**已建成，按现状记录**。基线 `main @ 9b5327f96`。以代码为准，每项标了出处。
 > 本文的 JSON 例子按字段定义手写，不是抓包记录。共用约定见 `01-shared-conventions.md`。
+> 2026-11-17：离线使用与上线后同步要加的可选键和错误码写在 `SPEC-collab-offline-sync.md` §4.2、§4.3，**待确认**。本文与它不一致的地方以它为准，受影响的地方各加了一句指向它（都以「2026-11-17：」开头）。
 
 ## 1. 目标
 
@@ -27,7 +28,7 @@
 | `heartbeat` | `session_id` | 保活，每 15 秒一次 |
 | `claim` | `session_id`、`tag` | 占用一个位号（独占） |
 | `release` | `session_id`、`tag` | 主动放弃占用 |
-| `op` | `session_id`、`base_revision`、`op_id`、`payload` | 提交一步编辑。`base_revision` 是做这一步时本图跟到的修订号；`op_id` 由客户端生成，形如 `op-<session_id>-<序号>`；`payload` 见 §4 |
+| `op` | `session_id`、`base_revision`、`op_id`、`payload` | 提交一步编辑。`base_revision` 是做这一步时本图跟到的修订号；`op_id` 由客户端生成，形如 `op-<session_id>-<序号>`；`payload` 见 §4。2026-11-17：编号改为 `op-<运行标识>-<序号>`，不再带会话号，见 `SPEC-collab-offline-sync.md` §4.2，待确认 |
 | `attempt` | `session_id`；可选 `object_ref`、`text` | 报告一次被客户端自己拦下的写操作（会话只读，或位号被别人占用）。图不变，只留审计记录；记录里的原因是服务器自己判的，不采信客户端的说法 |
 
 ```json
@@ -199,6 +200,8 @@
 
 ### 5.1 加入与追平
 
+> 2026-11-17：`hello`、`welcome` 另带库标识 `repo_id`；对不上时 `welcome` 带 `align_refused`，不补发，此后这个会话发来的 `op` 一律拒绝；同一个 `op_id` 第二次到达不再裁决。见 `SPEC-collab-offline-sync.md` §4.3、§5.2、§5.3，待确认。
+
 ```mermaid
 sequenceDiagram
     participant A as 客户端 A
@@ -296,6 +299,8 @@ sequenceDiagram
 - 客户端的拦截只是礼貌：服务器对每个 `op` 自己再判一次，没有写权限的照样拒绝并记审计。
 
 ## 6. 错误码
+
+> 2026-11-17：另加五个码。`REPO_MISMATCH`、`REVISION_AHEAD`、`REPLAY_GAP` 在那批没提交的离线改动里已经有；`NOT_ALIGNED`、`STORE_UNAVAILABLE` 是新加的。见 `SPEC-collab-offline-sync.md` §4.3，待确认。
 
 出处：`protocol::codes`。
 

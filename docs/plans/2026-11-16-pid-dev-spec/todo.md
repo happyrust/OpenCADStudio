@@ -1,17 +1,17 @@
 # P&ID 协同绘图开发方案 · 任务清单
 
 > 日期：2026-11-16
-> 状态：**已确认**（2026-11-16）。从 `CC-1` 开始串行做，做完一个勾一个。
+> 状态：**已确认**（2026-11-16）。从 `CC-1` 开始串行做，做完一个勾一个。2026-11-17 加了 `OFF-1` – `OFF-13`（离线使用与上线后同步）和发布任务里的协同前提，这一部分**待确认**：`SPEC-collab-offline-sync.md` §10 的几件事定下之前不开始。
 > 配套：`plan.md`（阶段、依赖、检查点、风险、哪些能同时做）。数据格式与数据怎么传写在各模块的 `SPEC-*.md`，共用约定在 `01-shared-conventions.md`。
 > 基线：`main @ 9b5327f96`。
 
 ## 0. 怎么读这份清单
 
-共 67 个任务，分五个阶段。阶段用字母 A–E，是为了不和已批准计划（`docs/plans/2026-11-16-pid-platform-next-steps-plan.md`）里的「阶段 1–4」混：A 是那份计划阶段 2 的收尾，B–E 合起来是它的阶段 3。
+共 80 个任务，分五个阶段。阶段用字母 A–E，是为了不和已批准计划（`docs/plans/2026-11-16-pid-platform-next-steps-plan.md`）里的「阶段 1–4」混：A 是那份计划阶段 2 的收尾，B–E 合起来是它的阶段 3。
 
 | 阶段 | 内容 | 任务 | 对应已批准计划 |
 |---|---|---|---|
-| A | 协同收口 | `CC-1` – `CC-8` | T2.4 ③④ |
+| A | 协同收口，离线使用与上线后同步 | `CC-1` – `CC-8`、`OFF-1` – `OFF-13` | T2.4 ③④；`OFF` 是 2026-11-17 加的，已批准计划里没有 |
 | B | 主数据与项目索引 | `MD-1` – `MD-4`、`IX-1` – `IX-8` | T3.1 |
 | C | 规则检查、材料清单、快照 | `DRC-1` – `DRC-14`、`BOM-1` – `BOM-6`、`SNAP-1` – `SNAP-6` | T3.2，T3.3 的前两块 |
 | D | 发布 | `PUB-1` – `PUB-7` | T3.3 的第三块 |
@@ -34,7 +34,7 @@
 - 【接线】要改七个共用文件中的任何一个：`src/app/commands/mod.rs`、`src/app/command_driver/utilities.rs`、`src/app/collab/apply.rs`、`src/app/control/mod.rs`、`src/rest.rs`、`src/rest_openapi.json`、`src/mcp.rs`。每个模块都要在这几个文件里各加几行，`src/mcp.rs` 里还有一个钉死的摘要值 `TOOL_SCHEMA_DIGEST`，两个会话同时改一定冲突。**同一时间只让一个会话做【接线】任务。**
 - 【界面】停靠面板与属性表。
 - 【协同】`src/app/collab/` 与两个协同 crate。
-- 【存盘】改保存路径（`src/io/mod.rs`、`src/app/automation.rs`、`src/app/update/file.rs`）。只有 `DRC-11` 一个，是整份清单里最容易伤到现有功能的任务，单独做。
+- 【存盘】改保存路径（`src/io/mod.rs`、`src/app/automation.rs`、`src/app/update/file.rs`）。有 `OFF-6` 和 `DRC-11` 两个，是整份清单里最容易伤到现有功能的任务，单独做。
 - 【验收】只加测试、不加功能（`PUB-7`）。
 - 【脚本】【文档】不动 Rust 代码。
 
@@ -63,7 +63,7 @@
 
 ## 阶段 A：协同收口
 
-目标：把协同这条链收干净——大属性对象两端一致，服务器能让别的机器连，228 条验收契约全部有证据，状态文档结项。
+目标：把协同这条链收干净——大属性对象两端一致，服务器能让别的机器连，228 条验收契约全部有证据，状态文档结项。2026-11-17 加一条：离线时照常画图和保存，重新连上后自动同步，提交不了的每一条都有交代（`OFF-1` – `OFF-13`，排在 `CC-6` 与 `CC-7` 之间）。
 
 ### CC-1 【协同】大属性符号：新建时带全属性（已批准计划 T2.4 ③）
 
@@ -160,21 +160,238 @@
 
 > **检查点 CP-A2**（CC-4 – CC-6 之后）：脚本都在仓库里，换一台机器按 `README.md` 能跑；对照表没有缺口。
 
+### 离线使用与上线后同步（`OFF-1` – `OFF-13`，2026-11-17 加）
+
+规格：`SPEC-collab-offline-sync.md`（下面简称「离线规格」）。这一组**待确认**：离线规格 §10 的几件事定下之前不开始，其中第 1 条（主目录里那批没提交的离线改动谁接着做）决定 `OFF-1` 由谁做。
+
+这一组串行做。好几个任务要改 `src/app/collab/apply.rs`，它是七个共用文件之一，所以做这一组的时候不能有别的会话在做【接线】任务。离线规格里标了「读代码」的结论都还没有用测试证实，对应任务的第一步就是写证实它的测试（固定门禁第 1 条的「先红」）；证实不了的，记进离线规格 §11 并停下来问。
+
+### OFF-1 【协同】现有的离线改动入库
+
+- **做什么**：主目录里有一批没提交的离线改动（离线规格 §3.2）：19 个代码文件，需求文档里的一行，一份设计说明。把它核一遍、编过、测过、入库，行为不改。能分就分三个提交，每个都要能编过：① 协议与服务器 7 个文件；② 图内记录 4 个文件；③ 客户端 8 个文件，需求文档那一行和设计说明随这一个。分不开（单独编不过）就合成一个，在提交说明里写明。核对时发现的问题记进离线规格 §11，由后面的任务修，这里不修。设计说明与代码不符的两处（记录的键名；保存时写的是队列的全部条目）在说明里改正。
+- **验收**：
+  - [ ] 这批改动全部入库，工作区里不再有它的未提交文件；`docs/pid-platform/design/pid-platform.pen` 没有进提交。
+  - [ ] 每个提交都能编过并通过固定门禁，读数写在提交说明里；测试条数的变化记下来，作为后面任务的新基线。
+  - [ ] 它自带的测试全部通过；现有的端到端场景 `y08_offline_reconcile`、`t25_offline` 照过。
+  - [ ] 设计说明里与代码不符的两处已改正。
+- **验证**：`cargo test --offline --locked --lib collab_offline_queue`；`cargo test --offline --locked --lib collab_state`；`cargo test --offline --locked -p ocs_collab -p ocs_collab_server`；总入口 `scripts\collab-e2e\run19.ps1`（看 `t25_offline`、`y08_offline_reconcile` 两个场景的结果）
+- **依赖**：CC-6；离线规格 §10 第 1 条已定
+- **文件**：那批改动的 19 个代码文件（`crates/ocs_collab/src/` 2 个，`crates/ocs_collab_server/src/` 5 个，`src/app/collab/` 8 个，`src/app/update/file.rs`，`src/pid/` 3 个）、`docs/pid-platform/requirements/70-collaboration-and-permissions.md`、`docs/plans/2026-11-17-collab-offline-mode.md`
+- **规模**：L（19 个文件。这是已经写好的一整批改动，这个任务只核对、入库，不重写；拆成更小的任务就得把它拆开重排，风险更大）
+
+### OFF-2 【协同】对不上时不发、不收、不改记录
+
+- **做什么**：离线规格 §4.3、§5.2（第三步和「对不上的连接」），堵 G1、G2。下面按离线规格 §10 第 2 条建议的形式写；那一条定成别的形式时，先改这个任务的文字再做。
+  - 协议：拒绝写进 `welcome` 的可选键 `align_refused: {code, message}`，去掉那批改动加的单独消息。加错误码 `NOT_ALIGNED`。
+  - 服务器：判为对不上的会话记一个标记；它发来的 `op` 回 `error NOT_ALIGNED`（带 `op_id`，不带 `rejected`），不裁决、不写日志、不广播；它上报的位号不登记。
+  - 客户端：处理 `welcome` 时先看 `align_refused`，再决定发不发队首。对不上时队列不发、房间的修改不写进本图、不申请占用，本地照常画图和排队。收到 `NOT_ALIGNED`：那一条留在队列里，不撤回。存盘用的库标识和修订仍是打开时读到的，不采纳拒绝它的服务器给的。重连后房间修订比本图高而没有补发，也按对不上处理。
+- **验收**：
+  - [ ] 三种对不上（`REPO_MISMATCH`、`REVISION_AHEAD`、`REPLAY_GAP`）各一条测试：客户端一条 `op` 都没有发出。
+  - [ ] 没对上的会话发 `op`：服务器回 `NOT_ALIGNED`，操作日志没有新行，别的会话没有收到广播。
+  - [ ] 对不上期间房间有新修改：本图内容不变。
+  - [ ] 对不上之后保存：图里的 `repo_id`、`revision` 与打开时相同，队列条目都在。
+  - [ ] 客户端收到 `NOT_ALIGNED`：条目还在队列里，本图没有被撤回。
+  - [ ] `hello` 不带 `repo_id` 的客户端，行为与改之前相同（现有测试全过）。
+- **验证**：`cargo test --offline --locked --lib collab_align_refused`；`cargo test --offline --locked -p ocs_collab -p ocs_collab_server align`
+- **依赖**：OFF-1
+- **文件**：`crates/ocs_collab/src/protocol.rs`、`crates/ocs_collab_server/src/ws.rs`、`src/app/collab/transport.rs`、`src/app/collab/mod.rs`、`src/app/collab/apply.rs`；新建测试文件 `src/app/collab/collab_align_refused.rs`。存盘用哪个库标识和修订在 `mod.rs` 里定，`src/app/update/file.rs` 预计不用动；要动就记进离线规格 §11
+- **规模**：M
+
+### OFF-3 【协同】修改编号全局唯一，队列记下是谁排的
+
+- **做什么**：离线规格 §4.2、§4.1（队列的 `user_id`、`queued_at`）、§5.2 第二步的后两行，堵 G3 和 G4 的后一半。编号改成 `op-<运行标识>-<序号>`，运行标识每次启动程序生成一个；连没连上都一样生成；从图里恢复的条目保留原来的编号。队列条目加 `user_id`、`queued_at`。加入之前客户端先看队列：有别人排的条目（或者没有 `user_id` 的）、有重复的编号、读不全，就不报 `repo_id` 和 `since`，按对不上处理并说明原因。`SPEC-collab-protocol.md` §3.1 里编号形状的那一句随之改。
+- **验收**：
+  - [ ] 两次启动各排几步（都没连上）：编号互不相同；全部恢复后队列里没有同号的，提交后一条不少。
+  - [ ] 两个用户各自离线排队：编号不撞。
+  - [ ] 恢复的条目带原编号提交；补发里出现它时照旧出队（现有行为不变）。
+  - [ ] 队列条目存盘再读回，`user_id`、`queued_at` 不变；没有这两项的旧条目读得进来。
+  - [ ] 当前用户不是排队的人：`hello` 不带 `since`，一条都不发，说明里有排队人的用户号。
+  - [ ] 队列里有重复编号：同样不发，并说明原因。
+- **验证**：`cargo test --offline --locked --lib collab_op_ids`；`cargo test --offline --locked -p ocs_collab ids`
+- **依赖**：OFF-1、OFF-2
+- **文件**：`crates/ocs_collab/src/ids.rs`、`src/app/collab/transport.rs`、`src/app/collab/mod.rs`、`src/app/collab/apply.rs`、`src/pid/collab_state.rs`；新建测试文件 `src/app/collab/collab_op_ids.rs`；`docs/plans/2026-11-16-pid-dev-spec/SPEC-collab-protocol.md` 改一句
+- **规模**：M
+
+### OFF-4 【协同】服务器对收下过的编号不重复生效
+
+- **做什么**：离线规格 §4.3 最后一行、§5.3，堵 G4 的前一半。第一步先查清并记进离线规格 §11：操作日志能不能按 `op_id` 查、有没有索引；冲突条目存不存编号。然后：服务器收到 `op` 先按 `op_id` 查操作日志，已经在日志里就不裁决、不写日志、不广播，只给发送者回当初那条 `op_applied`（修订号和变更取日志里那一行）；编号还挂在没裁决的冲突条目上就回那条 `conflict`；当初被拒的不在日志里，照常再裁决。客户端收到这样的 `op_applied`：照「自己的修改已经生效」处理，出队，本图的修订号不回退。要改库结构（比如加索引）时，旧库文件要能直接用。
+- **验收**：
+  - [ ] 同一个 `op_id` 发两次：对象状态和图纸修订号与只发一次相同；操作日志只有一行；别的会话只收到一次广播。
+  - [ ] 第二次的发送者收到 `op_applied`，修订号是当初那一行的。
+  - [ ] 两个会话带着同一份队列先后提交：每条只生效一次，两边的队列都清空。
+  - [ ] 客户端收到修订号低于本图的 `op_applied`（编号是自己队列里的）：出队，修订号不回退，不标不一致。
+  - [ ] 当初被拒的编号再发一次：照常裁决。
+  - [ ] 改之前建的库文件启动后能用，里面的修改同样认得出。
+- **验证**：`cargo test --offline --locked -p ocs_collab_server duplicate_op`；`cargo test --offline --locked --lib collab_duplicate_op`
+- **依赖**：OFF-3
+- **文件**：`crates/ocs_collab_server/src/ops.rs`、`crates/ocs_collab_server/src/store.rs`、`crates/ocs_collab_server/src/ws.rs`、`src/app/collab/mod.rs`；新建测试文件 `src/app/collab/collab_duplicate_op.rs`
+- **规模**：M
+
+### OFF-5 【协同】不一致标记与没排队的修改随图保存，图号来源加一级
+
+- **做什么**：离线规格 §4.1（`diverged`、第三条记录的 `unqueued`）、§5.1「排不排队」、§5.2 第一步和第二步的 `diverged` 一行，堵 G5、G6。
+  - 同步记录加可选的 `diverged {code, message, at}`，四个码。运行中标了不一致，保存时写进去；写上之后不自动清除。
+  - 新加第三条记录 `PID_AUTHOR_COLLAB_UNSYNCED`（读、写、存盘往返）。图里有同步记录而排不了队的语义修改（不是会话的图、本次运行没配协同、只读会话里漏进来的、入队失败）：记一条 `unqueued`，命令行警告一次，保存时写 `diverged`（`UNQUEUED_EDITS`）。只动位置的修改不算。
+  - 打开时记录里有 `diverged`：不报 `repo_id` 和 `since`，不上报位号，按对不上处理，原因取记录里的。
+  - 图号的来源加一级（图里记录的 `drawing_id`，排在明确给的之后、设置文件之前）。明确给的图号与记录不同：这张图不算会话的图，说明原因，记录里的图号、库标识、修订不改写。
+  - 收到的修订不连续：标 `REVISION_GAP`，基线不再往前推。
+- **验收**：
+  - [ ] 运行中标了不一致，保存、重开：记录里有 `diverged`，码和原因对得上。
+  - [ ] 带 `diverged` 的图加入：`hello` 不带 `repo_id`、`since` 和位号；队列一条都不发。
+  - [ ] 带记录的图在没配协同的运行里改属性并保存：未同步清单多一条 `unqueued`，记录里有 `UNQUEUED_EDITS`。只移动对象并保存：两样都没有。
+  - [ ] 改的不是会话那张图、只读会话里漏进来的修改：同上一条。
+  - [ ] 没明确给图号时，会话的图号取图里记录的；设置文件里存着另一个图号时也取记录的。
+  - [ ] 明确给的图号与记录不同：不在这张图上起会话；保存后记录里的图号、库标识、修订与打开时相同。
+  - [ ] 收到的修订不连续：标 `REVISION_GAP`，基线没有前移。
+  - [ ] 没有 `diverged`、没有第三条记录的图读得进来，按「没有这两项」处理。
+- **验证**：`cargo test --offline --locked --lib collab_diverged_persist`；`cargo test --offline --locked --lib collab_state`
+- **依赖**：OFF-1、OFF-2、OFF-3
+- **文件**：`src/pid/collab_state.rs`、`src/app/collab/apply.rs`、`src/app/collab/mod.rs`、`src/app/collab/transport.rs`、`src/app/update/file.rs`；新建测试文件 `src/app/collab/collab_diverged_persist.rs`
+- **规模**：M
+
+### OFF-6 【存盘】每个写图纸文件的出口处理一致
+
+- **做什么**：离线规格 §5.1（「保存写什么」「哪些出口」），堵 G7。第一步用全文搜索找出所有写整张图的出口，列进离线规格 §11。把「写三条记录」收成一个函数，所有出口在取到存盘用的那一份之后、写盘之前调它：保存、另存为、自动保存、全部保存、经接口保存（含 `save_verified_request`），DWG 与 DXF 一样。写什么按离线规格 §5.1 的状态表。块写出的文件不带这三条记录。只写存盘的那一份，不动正在编辑的图。
+- **验收**：
+  - [ ] 出口清单记在离线规格 §11，每个出口注明走不走这个函数。
+  - [ ] 每个写整张图的出口各一条测试：存出的文件里三条记录与当时的状态相符。
+  - [ ] 经接口保存（`save_verified_request`）之后，文件里的修订和队列是当前的，不是打开时的。
+  - [ ] DWG 和 DXF 各存一次再读回，三条记录逐项相等。
+  - [ ] 块写出的文件里没有这三条记录。
+  - [ ] 没有同步记录、也没对上过的图：存出的文件里没有这三条记录；现有的存盘测试全部照过。
+  - [ ] 保存之后，正在编辑的图没有变成「已修改」，撤销栈没有多出步骤。
+- **验证**：`cargo test --offline --locked --lib collab_save_exits`；`cargo test --offline --locked --lib dwg_roundtrip`；`cargo test --offline --locked --lib save_tests`
+- **依赖**：OFF-5
+- **文件**：`src/app/update/file.rs`、`src/app/automation.rs`、`src/app/control/actions.rs`、`src/app/fileops.rs`、`src/pid/dwg_roundtrip.rs`；新建测试文件 `src/app/collab/collab_save_exits.rs`。出口比预计的多、要动的文件超过 5 个时，停下来说明再做
+- **规模**：M
+
+> **检查点 CP-A3**（OFF-1 – OFF-6 之后）：离线规格 §3.3 的 G1 – G7 都堵上了：对不上的图不再往房间里发修改，也不再被房间改写；离线的修改不会因为编号重复被吞掉，也不会生效两次；不一致的图重开后仍然不一致。我汇报各门禁读数、新测试的条数和记进离线规格 §11 的出入，接着做。
+
+### OFF-7 【协同】排队的修改带上反向修改
+
+- **做什么**：离线规格 §4.1（队列的 `inverse`）、§5.4「反向修改从哪里来」，G8 的前一半。第一步用测试定前提，结果记进离线规格 §11：客户端会发的十种变更里，哪些能在排队当时算出反向修改；管线这一类的做法一（排队之后、界面空闲时，把这一步安静地退回再放上，读出这一步之前的账目）成不成立，对选择集、重做栈、正在进行的命令有没有影响。然后实现：入队时算出 `inverse` 存进队列条目；算不出的种类不带 `inverse`。同一次运行里的撤回仍用撤销栈，不受影响。前提不成立、有变更种类算不出时，记下来接着做能做的，在 CP-A4 汇报。
+- **验收**：
+  - [ ] 前提测试的结果记在离线规格 §11：十种变更每种「能 / 不能」，不能的写明原因。
+  - [ ] 能算出的每一种：做一步，按 `inverse` 撤回，本图的位号、属性、拓扑记录与做这一步之前相同（OS-16）。
+  - [ ] 属性超过 2 KB 的对象：改属性、删除各一例，`inverse` 里的内容是全的。
+  - [ ] 队列条目带着 `inverse` 存盘再读回不变；没有 `inverse` 的旧条目读得进来。
+  - [ ] 采用做法一时：退回再放上之后，撤销栈、重做栈、选择集与之前相同，没有多发变更；正在执行命令时不做。
+  - [ ] 在线时（连着并对上了）发出的变更与改之前逐字相同。
+- **验证**：`cargo test --offline --locked --lib collab_inverse`
+- **依赖**：OFF-1、OFF-3
+- **文件**：`src/app/collab/broadcast.rs`、`src/app/collab/pipes.rs`、`src/app/collab/connectors.rs`、`src/app/collab/mod.rs`、`src/pid/collab_state.rs`；新建测试文件 `src/app/collab/collab_inverse.rs`
+- **规模**：M
+
+### OFF-8 【协同】重开后被拒的修改按反向修改撤回
+
+- **做什么**：离线规格 §5.4，G8 的后一半。从图里恢复的条目被拒时，按 `inverse` 逐项撤回：本图里仍是这一步写下的样子才执行，否则跳过。按拒绝的码收场（离线规格 §5.4 的表）。连带的条目一并作废，从后往前撤。每条记一条拒绝记录和一条未同步清单（`refused`）。没有 `inverse` 或执行失败：标 `ROLLBACK_FAILED`，清单里记 `rolled_back: false`。撤回用接收别人修改的那条路写进本图，不广播。
+- **验收**：
+  - [ ] 四种原因各一例（`CLAIM_HELD`、`PERM_DENIED_ROLE`、`OBJECT_REFERENCED`、`STALE_BASE_REVISION`）：被拒的那一步从本图撤回，队列里后面无关的条目照常提交。
+  - [ ] 让位两例（`OP_SUPERSEDED`、`OBJECT_DELETED`）：反向修改全部跳过，本图是房间的样子，不标不一致。
+  - [ ] 别人改过同一个字段之后我的修改被拒：本图保持别人的值，不改回我离线前的值。
+  - [ ] 建在被拒条目上的后续条目一并撤回，各记一条；无关的照发。
+  - [ ] 进入冲突条目的恢复条目：不撤回，出队。
+  - [ ] 没有 `inverse` 的条目被拒：标 `ROLLBACK_FAILED`，清单里 `rolled_back: false`。
+  - [ ] 每条被拒的恢复条目：拒绝记录一条，未同步清单一条，保存后还在。
+- **验证**：`cargo test --offline --locked --lib collab_restored_rollback`
+- **依赖**：OFF-5、OFF-7
+- **文件**：`src/app/collab/apply.rs`、`src/app/collab/mod.rs`、`src/pid/collab_state.rs`；新建测试文件 `src/app/collab/collab_restored_rollback.rs`
+- **规模**：M
+
+### OFF-9 【接线】未同步清单、导出、去掉同步记录
+
+- **做什么**：离线规格 §4.4、§4.5、§5.5，给 G9 一条出路。`PIDCOLLAB` 加四个子命令（它的子命令在 `src/app/collab/claims.rs` 里解析）：`UNSYNCED`（列出队列和未同步清单）、`UNSYNCED CLEAR`（清掉清单，队列不动）、`EXPORT <路径>`（导出成文件）、`DETACH [FORCE]`（去掉本图的三条记录，下次保存时生效，之后按没同步过的图对待）。状态接口（`collab_status`）加 `align`、`align_code`、`align_message`、`unsynced_count`，原有字段不动；应答在 `src/rest_openapi.json` 里有逐字段的描述时随之更新。
+- **验收**：
+  - [ ] `PIDCOLLAB UNSYNCED` 列出队列里的、被拒的、没排上队的，条数与图里的记录相符。
+  - [ ] `PIDCOLLAB EXPORT` 写出的文件符合离线规格 §4.4，条数对得上，里面没有服务器地址；路径写不进去时报错，不动图。
+  - [ ] `PIDCOLLAB UNSYNCED CLEAR` 之后清单为空，队列不变。
+  - [ ] `PIDCOLLAB DETACH`：队列或清单不空时拒绝并说明；带 `FORCE`、或者两者都空时执行，保存后文件里三条记录都没有，重开加入时 `hello` 不带 `since`。
+  - [ ] 对着一个对上了的会话执行 `DETACH`：拒绝。
+  - [ ] 状态接口的四个字段在五种状态下（`none`、`offline`、`ok`、`refused`、`diverged`）取值正确；原有字段与改之前相同。
+  - [ ] `PIDCOLLAB` 写错子命令时的提示里列全了新加的四个。
+- **验证**：`cargo test --offline --locked --lib collab_unsynced`；`cargo test --offline --locked --lib collab_status`
+- **依赖**：OFF-5、OFF-8
+- **文件**：`src/app/collab/claims.rs`、`src/app/collab/mod.rs`、`src/app/collab/apply.rs`、`src/pid/collab_state.rs`、`src/rest_openapi.json`；新建测试文件 `src/app/collab/collab_unsynced.rs`
+- **规模**：M
+
+### OFF-10 【界面】面板显示待同步的步数，退出时提醒
+
+- **做什么**：离线规格 §5.6，堵 G10。协同面板加一行状态：「离线，n 步待同步」「已连接，n 步待同步」「不一致：<原因>；未同步 n 条」（面板的数据 `CollabView` 现在没有队列条数，要加）。退出程序、或关掉会话那张图时，队列不空就提示一次，按钮「退出」「取消」，排在现有的「块编辑未保存」「图纸未保存」两个提示之后。
+- **验收**：
+  - [ ] 离线、已连接且有排队、不一致三种情形下，状态行的文字正确，数字与状态接口一致。
+  - [ ] 队列发完之后，状态行不再显示待同步。
+  - [ ] 队列不空时退出程序：提示一次；按「取消」留在程序里，按「退出」退出。队列空时不提示。
+  - [ ] 关掉会话那张图时同样提示；关别的图不提示。
+  - [ ] 三个提示都该出现时，按「块编辑未保存」「图纸未保存」「还有修改没同步」的次序依次出现。
+  - [ ] 没配协同时，面板和退出流程与改之前相同。
+- **验证**：`cargo test --offline --locked --lib pid_collab`；`cargo test --offline --locked --lib collab_exit_prompt`
+- **依赖**：OFF-9
+- **文件**：`src/ui/window/pid_collab.rs`、`src/app/collab/claims.rs`、`src/app/update/mod.rs`、`src/app/block_editor.rs`
+- **规模**：M
+
+### OFF-11 【协同】服务器：库打不开时不接受会话，能换库标识
+
+- **做什么**：离线规格 §6，堵 G11。库打不开时：`hello` 得到 `error STORE_UNAVAILABLE` 后断开，`GET /health` 仍报 503；代码里直接建不带库的服务器（测试用）不受影响。加启动参数 `--new-repo-id`：写入一个新的库标识后照常启动。把离线规格 §6 的五条写进 `SPEC-collab-server.md`，成为运行说明一节。
+- **验收**：
+  - [ ] 库打不开时启动：`hello` 得到 `STORE_UNAVAILABLE`，连接被关闭；`/health` 是 503。
+  - [ ] 代码里直接建不带库的服务器：行为与改之前相同，现有测试全过。
+  - [ ] 带 `--new-repo-id` 启动一次：库标识变了，操作日志和对象都在；之后不带它启动，标识保持新的。
+  - [ ] 记着旧库标识的图加入：得到 `REPO_MISMATCH`。
+  - [ ] `SPEC-collab-server.md` 有运行说明一节，五条都在。
+- **验证**：`cargo test --offline --locked -p ocs_collab_server store_unavailable`；`cargo test --offline --locked -p ocs_collab_server new_repo_id`
+- **依赖**：OFF-1
+- **文件**：`crates/ocs_collab_server/src/main.rs`、`crates/ocs_collab_server/src/lib.rs`、`crates/ocs_collab_server/src/ws.rs`、`crates/ocs_collab_server/src/store.rs`、`crates/ocs_collab/src/protocol.rs`（加错误码常量）；`docs/plans/2026-11-16-pid-dev-spec/SPEC-collab-server.md`
+- **规模**：M
+
+### OFF-12 【脚本】端到端场景（一）：跨重启提交、编号、对不上、不一致
+
+- **做什么**：离线规格 §8 的 `o01` – `o04`。新写四个场景，起真实的服务器和桌面端，写法照 `y08_offline_reconcile.py`，两端的位号、属性、拓扑记录逐项比对。总入口 `run19.ps1` 加第八组和 `-OnlyOffline`。脚手架预计不用动（结束并重开桌面端、结束并重起服务器、用新库起服务器都有现成的动作）；要动就在离线规格 §11 说明。证据放仓库外，结果文件打码后再看。
+- **验收**：
+  - [ ] `o01_restart_resubmit`：OS-03、OS-04 各有带编号的检查项。
+  - [ ] `o02_ids_and_duplicates`：OS-05、OS-06、OS-07。
+  - [ ] `o03_align_refused`：OS-08、OS-09。
+  - [ ] `o04_diverged_sticks`：OS-10、OS-11、OS-12、OS-13。
+  - [ ] 四个场景经总入口全部通过，没有残留进程。
+  - [ ] 每个带 OS 编号的检查项至少有一次对照运行让它失败过（做法照 `CC-6`：临时改坏的程序只放在仓库外，改过的源文件逐字节还原）；没能让它失败的列出来。
+- **验证**：`scripts\collab-e2e\run19.ps1 -OnlyOffline`，查看汇总文件
+- **依赖**：OFF-2、OFF-3、OFF-4、OFF-5、OFF-6、OFF-9
+- **文件**：`scripts/collab-e2e/o01_restart_resubmit.py`、`scripts/collab-e2e/o02_ids_and_duplicates.py`、`scripts/collab-e2e/o03_align_refused.py`、`scripts/collab-e2e/o04_diverged_sticks.py`、`scripts/collab-e2e/run19.ps1`
+- **规模**：M
+
+### OFF-13 【脚本】端到端场景（二）：被拒撤回、未同步清单、没有服务器、服务器的库
+
+- **做什么**：离线规格 §8 的 `o05` – `o08`。再写四个场景，挂进总入口的第八组（第八组按文件名前缀找场景，这里不用再改入口；不是这样时就把入口算进文件清单）。`scripts/collab-e2e/README.md` 的对照表新增一节「离线使用与上线后同步」：OS-01 – OS-21 每条对到场景和检查项（OS-16 对到单元测试，OS-20 记「在 `PUB-4` 验」，OS-21 记「在 `CC-7` 验」）。`o05` 外加一例「我离线删了对象、别人这期间改过它」，只把现状记下来（离线规格 §9 的 L5），不判通过或失败。面板文字和退出提示取不到时，说明改用什么代替。
+- **验收**：
+  - [ ] `o05_refused_rollback`：OS-14、OS-15；L5 的现状有记录。
+  - [ ] `o06_unsynced_exit`：OS-17、OS-18。
+  - [ ] `o07_no_server_dxf`：OS-01、OS-02。
+  - [ ] `o08_server_store`：OS-19。
+  - [ ] 八个场景经 `run19.ps1 -OnlyOffline` 全部通过，没有残留进程。
+  - [ ] 每个带 OS 编号的检查项至少有一次对照运行让它失败过；没能让它失败的列出来。
+  - [ ] `README.md` 的对照表里 OS-01 – OS-21 每条都有去处。
+- **验证**：`scripts\collab-e2e\run19.ps1 -OnlyOffline`，查看汇总文件
+- **依赖**：OFF-8、OFF-9、OFF-10、OFF-11、OFF-12
+- **文件**：`scripts/collab-e2e/o05_refused_rollback.py`、`scripts/collab-e2e/o06_unsynced_exit.py`、`scripts/collab-e2e/o07_no_server_dxf.py`、`scripts/collab-e2e/o08_server_store.py`、`scripts/collab-e2e/README.md`
+- **规模**：M
+
+> **检查点 CP-A4（离线同步验收，请你确认）**（OFF-7 – OFF-13 之后）：离线规格 §7 的 OS-01 – OS-19 每条有证据（OS-20 在发布的任务里验，OS-21 在 `CC-7`）。我演示三件事：断线改图、保存退出、重开连上后自动提交；重开后被拒的一步撤回；不一致之后列出并导出没同步上的修改。同时汇报哪几种变更重开后撤不回（目标是没有），以及需求条文要不要补（离线规格 §10 第 6 条）。这个检查点要不要你确认，见离线规格 §10 第 4 条；定下之前按「要」写。
+
 ### CC-7 【脚本】全量复验（已批准计划 T2.4 ④）
 
-- **做什么**：在阶段 A 最后一个代码提交上从头跑一遍：全部单元测试与协同两个 crate 的测试；客户端八个场景（110 项）、冲突三个场景（61 项）、跨区流程 12 个场景。每条契约记下证据：跑的什么命令，输出在哪个文件。不通过的不许带过：能修的另开一个修复任务（先写复现它的测试），修不了的记为已知限制并请你同意。
+- **做什么**：在阶段 A 最后一个代码提交上从头跑一遍：全部单元测试与协同两个 crate 的测试；客户端八个场景（110 项）、冲突三个场景（61 项）、跨区流程 12 个场景。2026-11-17 加：离线同步的八个场景（`o01` – `o08`，总入口的第八组），离线规格 §7 的 OS-01 – OS-21 每条也记下证据。每条契约记下证据：跑的什么命令，输出在哪个文件。不通过的不许带过：能修的另开一个修复任务（先写复现它的测试），修不了的记为已知限制并请你同意。
 - **验收**：
   - [ ] 228 条契约每条有证据位置，没有「没跑却算过」的。
   - [ ] 端到端场景全部通过；不通过的每一个都有去向（修复它的提交号，或经你同意的已知限制）。
   - [ ] 记下复验所在的提交号。
-- **验证**：`cargo test --offline --locked --lib`；`cargo test --offline --locked -p ocs_collab -p ocs_collab_server`；`scripts\collab-e2e\run_all.ps1`、`scripts\collab-e2e\run_cross.ps1`，查看汇总文件
-- **依赖**：CC-1、CC-2、CC-3、CC-6
+  - [ ] 离线规格 §7 的 OS-01 – OS-21 每条有证据位置（OS-20 记「在 `PUB-4` 验」）。
+- **验证**：`cargo test --offline --locked --lib`；`cargo test --offline --locked -p ocs_collab -p ocs_collab_server`；`scripts\collab-e2e\run_all.ps1`、`scripts\collab-e2e\run_cross.ps1`，查看汇总文件；总入口 `scripts\collab-e2e\run19.ps1`（含第八组）
+- **依赖**：CC-1、CC-2、CC-3、CC-6、OFF-13
 - **文件**：不改代码；证据在仓库外；`scripts/collab-e2e/README.md` 的对照表补上证据位置
 - **规模**：M
 
 ### CC-8 【文档】状态文档结项
 
-- **做什么**：把 `docs/plans/2026-11-10-mission-p1-collab-status.md` 更新到 228/228：改 §0 一页结论、§3 里程碑表、§4 断言表；新增 §19，写 `ea7f4357b` 之后做了什么（离线排队、管线广播、跨图连接符、`existing_tags`、`overrides`、`tag_source`、大属性对象、`--bind`）和复验的证据。`SPEC-collab-server.md` 待决 S2 的四处实现选择写成已确认（保持现状）。`SPEC-collab-client.md` 待决 C1、C2、C4 写进已知限制。mission 目录是只读的，不改它里面的文件；这里记的断言状态是「有证据的建议状态」。同时把已批准计划里的 T2.4 标为完成。
+- **做什么**：把 `docs/plans/2026-11-10-mission-p1-collab-status.md` 更新到 228/228：改 §0 一页结论、§3 里程碑表、§4 断言表；新增 §19，写 `ea7f4357b` 之后做了什么（离线排队、管线广播、跨图连接符、`existing_tags`、`overrides`、`tag_source`、大属性对象、`--bind`、离线使用与上线后同步）和复验的证据。`SPEC-collab-server.md` 待决 S2 的四处实现选择写成已确认（保持现状）。`SPEC-collab-client.md` 待决 C1、C2、C4 写进已知限制；其中 C1 按离线规格 §5.5 和 §9 的 L6 改写（不一致之后能列出、导出没同步上的修改，自动重放和整图重建仍是限制），离线规格 §9 的 L1 – L12 一并记入。mission 目录是只读的，不改它里面的文件；这里记的断言状态是「有证据的建议状态」。同时把已批准计划里的 T2.4 标为完成。
 - **验收**：
   - [ ] 状态文档里的数字与 CC-7 的证据一致，写明复验的提交号。
   - [ ] 四处实现选择、三条已知限制都有记载。
@@ -183,7 +400,7 @@
 - **文件**：`docs/plans/2026-11-10-mission-p1-collab-status.md`、`docs/plans/2026-11-16-pid-platform-next-steps-plan.md`
 - **规模**：S
 
-> **检查点 CP-A（阶段 A 结束，请你确认）**：228 条契约全部有证据；固定门禁全过；状态文档结项。我汇报各门禁读数和复验结果，由你决定要不要把到这里为止的提交推送到 `fork/main`。
+> **检查点 CP-A（阶段 A 结束，请你确认）**：228 条契约全部有证据；离线规格 §7 的成功标准全部有证据（OS-20 除外，它在阶段 D）；固定门禁全过；状态文档结项。我汇报各门禁读数和复验结果，由你决定要不要把到这里为止的提交推送到 `fork/main`。
 
 ---
 
@@ -677,11 +894,12 @@
 
 ### PUB-1 【纯】发布：包名、修订号、重复位号、门禁
 
-- **做什么**：新建 `src/pid/publish_pkg.rs`（`SPEC-pid-publish.md` §5.1）：`package_name`、`next_revision`、`list_packages`；`duplicate_tags`（不经过规则，直接数：本图里同一个（类型编码，位号）出现两次以上，或本图的某个键在项目的另一张图上也有；只算有自己编号的设备、阀门、仪表、其他）；`gates`（§3.4 的四项门禁和各项计数）。
+- **做什么**：新建 `src/pid/publish_pkg.rs`（`SPEC-pid-publish.md` §5.1）：`package_name`、`next_revision`、`list_packages`；`duplicate_tags`（不经过规则，直接数：本图里同一个（类型编码，位号）出现两次以上，或本图的某个键在项目的另一张图上也有；只算有自己编号的设备、阀门、仪表、其他）；`gates`（§3.4 的四项门禁和各项计数）。2026-11-17 加（离线规格 §5.7；按离线规格 §10 第 3 条建议的做法写，定成别的做法时先改 `PUB-1` – `PUB-4`、`PUB-6` 里标了「2026-11-17 加」的文字）：`collab_preconditions`，输入是图里有没有同步记录、队列条数、有没有标不一致或这次连接对不上、是不是连着并且已经补齐、有没有带「允许未对账」，输出是放行或三个码之一，以及要写进清单的 `reconciled`。
 - **验收**：
   - [ ] `package_name("PID-1101", 3)` 是 `PID-1101-r003`，图号里不能做文件名的字符换成 `_`；`next_revision` 在目标目录里没有这张图的包时是 1，已有 r001、r003 时是 4；`list_packages` 只列这张图的包。
   - [ ] 重复位号的数法：本图内、跨图各一例算；不同类型同位号不算；没有自己编号的不算；管线、管路、信号线不算。
   - [ ] 门禁四项的组合：全过时 `result` 为 `放行`；有未豁免的错误、有重复位号、主数据 `unreadable`、索引不完整，任一项都拦；警告、提示、已豁免的不拦；主数据 `not_configured` 不单独拦。
+  - [ ] 协同前提（2026-11-17 加）：图里没有同步记录就不查；队列不空 → `COLLAB_UNSYNCED`；标了不一致或对不上 → `COLLAB_DIVERGED`；没连着或没补齐 → `COLLAB_OFFLINE`，带「允许未对账」时放行且 `reconciled` 为 `false`；连着并补齐 → 放行且 `reconciled` 为 `true`。前两个码不能用「允许未对账」放行。
 - **验证**：`cargo test --offline --locked --lib publish_pkg`
 - **依赖**：DRC-9（检查报告）；IX-3；MD-2
 - **文件**：新建 `src/pid/publish_pkg.rs`；`src/pid/mod.rs`
@@ -689,8 +907,9 @@
 
 ### PUB-2 【纯】发布：写包、落位、校验
 
-- **做什么**：`write_package(staging, input)` 往临时目录里写除两张出图以外的文件（出图由调用方先放进去）：图纸文件（源文件原样复制）、`bom.csv`、`bom.json`、`pipe-summary.csv`、`topology.json`（§3.3）、`snapshot.json`、`master-data.json`（没配置时写 `{"version":1,"configured":false}`）、`drc-report.json`，最后写发布清单 `manifest.json`（§3.2，`contents[]` 按规格的顺序，每项带字节数和 SHA-256）。`commit(staging, final_dir)`：先自检再改名到位，目标已存在则拒绝，落位后文件设为只读。`verify_package(dir)`（§3.5）。
+- **做什么**：`write_package(staging, input)` 往临时目录里写除两张出图以外的文件（出图由调用方先放进去）：图纸文件（源文件原样复制）、`bom.csv`、`bom.json`、`pipe-summary.csv`、`topology.json`（§3.3）、`snapshot.json`、`master-data.json`（没配置时写 `{"version":1,"configured":false}`）、`drc-report.json`，最后写发布清单 `manifest.json`（§3.2，`contents[]` 按规格的顺序，每项带字节数和 SHA-256）。`commit(staging, final_dir)`：先自检再改名到位，目标已存在则拒绝，落位后文件设为只读。`verify_package(dir)`（§3.5）。2026-11-17 加（离线规格 §5.7）：清单多一段 `collab`，图里没有同步记录时是 `null`，有时是 `{"drawing_id", "repo_id", "revision", "reconciled"}`。
 - **验收**：
+  - [ ] 清单的 `collab` 段（2026-11-17 加）：没有同步记录时是 `null`；有时四项与输入相同；`contents[]` 仍是十项。
   - [ ] 写出的包恰好十一个文件（测试里两张出图用占位文件）；清单 `contents[]` 十项，顺序、类别、字节数、校验和都对；图纸文件与源文件逐字节相同；`topology.json` 的边与 `snapshot.json` 里的 `graph.edges` 相同。
   - [ ] `verify_package`：完好的包通过；改动任一文件的一个字节 → `PACKAGE_CORRUPT` 并列出 `mismatched`；删掉任一文件 → `PACKAGE_INCOMPLETE` 并列出 `missing`；多出来的文件只列在 `extra`；目录不存在或没有清单 → `PACKAGE_NOT_FOUND`。
   - [ ] `commit`：目标已存在 → `PUBLISH_TARGET_EXISTS`，原包不变；自检不过就不改名；落位后的文件是只读的。
@@ -703,23 +922,25 @@
 
 ### PUB-3 【接线】`PIDPUBLISH CHECK`：前提与门禁
 
-- **做什么**：新建 `src/app/commands/pidpublish.rs`，先做流程的前半段（§4）。前提（§3.4）：图保存过且没有未保存的修改，否则 `PUBLISH_UNSAVED`；现取的文件指纹与标签页记的 `disk_fingerprint` 不同或标签页没记到指纹，`PUBLISH_FILE_CHANGED`；只读会话 `COLLAB_READONLY`；目标目录与修订号不合法是 `PUBLISH_TARGET_INVALID` / `PUBLISH_TARGET_EXISTS` / `PUBLISH_REVISION_INVALID`。前提满足后：当前图的摘要只做一次，扫描项目建索引，**现做一次**规则检查（`scope: drawing`、`cross_drawing: true`、触发时机 `发布前`，调 DRC-12 的入口函数），数重复位号，读主数据，算四项门禁。`PIDPUBLISH CHECK` 只做到这里，不写任何东西。`PIDPUBLISH` 带参数，登记成整行命令；只读会话里 `CHECK`、`LIST`、`VERIFY` 允许，发布本身拒绝（按子命令词判）。
+- **做什么**：新建 `src/app/commands/pidpublish.rs`，先做流程的前半段（§4）。前提（§3.4）：图保存过且没有未保存的修改，否则 `PUBLISH_UNSAVED`；现取的文件指纹与标签页记的 `disk_fingerprint` 不同或标签页没记到指纹，`PUBLISH_FILE_CHANGED`；只读会话 `COLLAB_READONLY`；目标目录与修订号不合法是 `PUBLISH_TARGET_INVALID` / `PUBLISH_TARGET_EXISTS` / `PUBLISH_REVISION_INVALID`。前提满足后：当前图的摘要只做一次，扫描项目建索引，**现做一次**规则检查（`scope: drawing`、`cross_drawing: true`、触发时机 `发布前`，调 DRC-12 的入口函数），数重复位号，读主数据，算四项门禁。`PIDPUBLISH CHECK` 只做到这里，不写任何东西。`PIDPUBLISH` 带参数，登记成整行命令；只读会话里 `CHECK`、`LIST`、`VERIFY` 允许，发布本身拒绝（按子命令词判）。2026-11-17 加（离线规格 §5.7）：前提里加三条协同前提，只对图里有同步记录的图生效：队列不空 `COLLAB_UNSYNCED`；标了不一致或这次连接对不上 `COLLAB_DIVERGED`；没连着或没补齐 `COLLAB_OFFLINE`。取数调 `PUB-1` 的 `collab_preconditions`。
 - **验收**：
   - [ ] 有未保存的修改 → `PUBLISH_UNSAVED`；文件被别的程序改过 → `PUBLISH_FILE_CHANGED`；只读会话里发布 → `COLLAB_READONLY`，而 `PIDPUBLISH CHECK` 仍可用；都不写任何东西。
   - [ ] 一张有错误的图：`PIDPUBLISH CHECK` 报出四项门禁的计数和前若干条错误，目标目录里没有新增任何文件或目录，也没有新快照；检查是现做的（先留下一份「没有错误」的旧结果，再改出错误并保存，仍然被拦）。
   - [ ] 2,000 个对象的图，门禁部分（不含项目扫描）不超过 1 秒。
+  - [ ] 协同前提（2026-11-17 加）：带同步记录的图，队列不空、不一致、离线三种情形下 `PIDPUBLISH CHECK` 各报出对应的码；没有同步记录的图不受影响。
 - **验证**：`cargo test --offline --locked --lib pidpublish`；`cargo test --offline --locked --lib -- --ignored publish_gates_2000`
-- **依赖**：PUB-1；DRC-12；IX-6；IX-4（合成图）
+- **依赖**：PUB-1；DRC-12；IX-6；IX-4（合成图）；OFF-9（协同前提要读的状态）
 - **文件**：新建 `src/app/commands/pidpublish.rs`；`src/app/commands/mod.rs`、`src/app/command_driver/utilities.rs`、`src/app/collab/apply.rs`
 - **规模**：M
 
 ### PUB-4 【接线】`PIDPUBLISH`：出包
 
-- **做什么**：流程的后半段，`PIDPUBLISH [<目标目录>] [REV <修订号>]`。门禁任一项不过：返回 `PUBLISH_BLOCKED`，应答带 `gates`、`duplicates` 和完整的检查报告，目标目录里一个文件都不写，也不存快照。全过：存一份快照（原因写「发布前自动快照（修订 N）」）→ 在目标目录里建临时目录（名字以 `.` 开头、带不重复的后缀；仓库没有随机数库，用时间加进程号；上次崩溃留下的临时目录顺手清掉）→ 用现有的出图操作（`control_plot`，`src/app/control/actions.rs`）出 PDF 和 SVG → 材料清单从刚存的快照算 → `write_package` → 自检 → `commit`。任何一步失败：删掉临时目录，返回 `PUBLISH_FAILED` 并带 `step`；快照留着。应答里带各步耗时。发布不改图。
+- **做什么**：流程的后半段，`PIDPUBLISH [<目标目录>] [REV <修订号>]`。门禁任一项不过：返回 `PUBLISH_BLOCKED`，应答带 `gates`、`duplicates` 和完整的检查报告，目标目录里一个文件都不写，也不存快照。全过：存一份快照（原因写「发布前自动快照（修订 N）」）→ 在目标目录里建临时目录（名字以 `.` 开头、带不重复的后缀；仓库没有随机数库，用时间加进程号；上次崩溃留下的临时目录顺手清掉）→ 用现有的出图操作（`control_plot`，`src/app/control/actions.rs`）出 PDF 和 SVG → 材料清单从刚存的快照算 → `write_package` → 自检 → `commit`。任何一步失败：删掉临时目录，返回 `PUBLISH_FAILED` 并带 `step`；快照留着。应答里带各步耗时。发布不改图。2026-11-17 加（离线规格 §5.7）：命令多一个可选的词 `ALLOW_OFFLINE`。协同前提不满足时返回对应的码，什么都不写；只有 `COLLAB_OFFLINE` 可以用 `ALLOW_OFFLINE` 放行，放行时清单的 `collab.reconciled` 是 `false`。
 - **验收**：
   - [ ] 一张干净的图发布成功：包里恰好十一个文件，`verify_package` 通过；图纸文件与源文件逐字节相同；`bom.json` 的 `snapshot_seq` 等于清单里的 `snapshot_seq`；警告和已豁免的结果都在 `drc-report.json` 里。
   - [ ] 有未豁免的错误 → `PUBLISH_BLOCKED`，目标目录里没有新增任何文件或目录，也没有新快照；改掉或豁免后再发布成功。连发两次得到修订 1、2，两个包都在；`REV` 给的修订号不大于已有的最大值 → `PUBLISH_REVISION_INVALID`。
   - [ ] 出包中途失败（测试里让某一步报错）→ `PUBLISH_FAILED` 并带 `step`，目标目录里既没有包也没有残留的临时目录；发布前后图纸的「已修改」状态、撤销栈、源文件的校验和不变；从命令行执行 `PIDPUBLISH <目录>` 只发布一次、只发到给定的目录。
+  - [ ] 协同前提（2026-11-17 加，离线规格的 OS-20）：带同步记录的图，队列不空、不一致、离线三种情形发布各被拦，码对得上，目标目录里没有新增内容，也没有新快照；离线时带 `ALLOW_OFFLINE` 发布成功，清单里 `reconciled` 是 `false`；连着并补齐时发布，`reconciled` 是 `true`；没有同步记录的图，清单的 `collab` 是 `null`。
 - **验证**：`cargo test --offline --locked --lib pidpublish`
 - **依赖**：PUB-2、PUB-3；SNAP-2；BOM-3
 - **文件**：`src/app/commands/pidpublish.rs`；需要时 `src/app/control/actions.rs`（让出图能从程序内部调用）
@@ -738,10 +959,11 @@
 
 ### PUB-6 【接线】发布的操作与接口
 
-- **做什么**：四个自动化操作（§5.3）：`pid_publish_check`（`GET /api/v1/pid/publish/check`）、`pid_publish`（`POST /api/v1/pid/publish`，状态 201；`dir`、`revision`、`plot`）、`pid_publications`（`GET /api/v1/pid/publications`）、`pid_publish_verify`（`POST /api/v1/pid/publish/verify`）。项目扫描没做完时应答 `scanning`，调用方稍后用同样的请求再发一次。按共用约定 §7.6 的第 3–5 处接线；§3.6 的错误码进 `map_status`。
+- **做什么**：四个自动化操作（§5.3）：`pid_publish_check`（`GET /api/v1/pid/publish/check`）、`pid_publish`（`POST /api/v1/pid/publish`，状态 201；`dir`、`revision`、`plot`）、`pid_publications`（`GET /api/v1/pid/publications`）、`pid_publish_verify`（`POST /api/v1/pid/publish/verify`）。项目扫描没做完时应答 `scanning`，调用方稍后用同样的请求再发一次。按共用约定 §7.6 的第 3–5 处接线；§3.6 的错误码进 `map_status`。2026-11-17 加（离线规格 §5.7）：`pid_publish` 多一个可选参数 `allow_offline`；`COLLAB_UNSYNCED`、`COLLAB_DIVERGED`、`COLLAB_OFFLINE` 进 `map_status`，都是 409。
 - **验收**：
   - [ ] `pid_publish_check` 的应答带 `can_publish`、`preconditions`、`gates`、`target_dir`、`next_revision`；`pid_publish` 成功是 201，带 `package_id`、`revision`、`snapshot_seq`、`files`、`gates`；`plot` 参数传到了出图；`pid_publications` 带 `state` 与各包。
   - [ ] 状态码符合 §3.6：`PUBLISH_BLOCKED`、`PUBLISH_UNSAVED`、`PUBLISH_FILE_CHANGED`、`PUBLISH_TARGET_EXISTS`、`PACKAGE_INCOMPLETE`、`PACKAGE_CORRUPT` 是 409，`PUBLISH_FAILED` 是 500，`PACKAGE_NOT_FOUND` 是 404，`PUBLISH_REVISION_INVALID`、`PUBLISH_TARGET_INVALID` 是 400。
+  - [ ] 协同前提（2026-11-17 加）：三个码都是 409；`pid_publish` 带 `allow_offline: true` 时离线也能发布；`pid_publish_check` 的 `preconditions` 里有这三条。
   - [ ] `rest_openapi.json` 里有这四条路径；`tool_schema_digest_is_pinned` 通过。
 - **验证**：`cargo test --offline --locked --lib pid_publish`；`cargo test --offline --locked --lib tool_schema_digest_is_pinned`；手工：`--http` 启动后请求 `GET /api/v1/pid/publish/check`
 - **依赖**：PUB-5
