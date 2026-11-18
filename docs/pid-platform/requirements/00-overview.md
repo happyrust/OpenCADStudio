@@ -40,7 +40,7 @@
 | DELV | `docs/pid-platform/requirements/60-deliverables-and-publish.md` | 交付与发布需求，共 11 条 |
 | COLL | `docs/pid-platform/requirements/70-collaboration-and-permissions.md` | 协同与权限需求，共 16 条 |
 | IO | `docs/pid-platform/requirements/80-import-export-matrix.md` | 导入导出矩阵需求，共 8 条 |
-| MIG | `docs/pid-platform/requirements/90-migration-and-interop.md` | 迁移与互操作需求，共 9 条 |
+| MIG | `docs/pid-platform/requirements/90-migration-and-interop.md` | 迁移与互操作需求，共 10 条 |
 
 `docs/pid-platform/requirements/95-reuse-mapping.md` 不属于九个区域，只引用需求 ID、不定义需求，故不列入本表。
 
@@ -188,6 +188,7 @@
 | REQ-MIG-007 | MIG | 无界面 | 数据交换标准的范围声明是口径文档，无界面 |
 | REQ-MIG-008 | MIG | 无界面 | 备份数据包第一版以命令方式打开，专用屏幕尚未进入 14 屏原型 |
 | REQ-MIG-009 | MIG | 无界面 | publish 文件第一版以命令方式导出，专用屏幕尚未进入 14 屏原型 |
+| REQ-MIG-010 | MIG | 无界面 | PDF 第一版以命令方式导出，专用屏幕尚未进入 14 屏原型 |
 
 ## 校验规则
 
