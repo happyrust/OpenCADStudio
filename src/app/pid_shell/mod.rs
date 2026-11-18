@@ -63,6 +63,10 @@
 //!                         its frame (pointer, snap, popups)
 //!   pid_editor_screen.rs  tests: the editor's tools, palette, tabs and
 //!                         inspector against the commands and the records
+//!   pid_backup_in_shell.rs
+//!                         tests: PIDBACKUPOPEN in the module: the backup
+//!                         panel beside the drawing, a drawing opened from
+//!                         it, a source that is no backup
 //! ```
 //!
 //! # What a screen module is
@@ -156,6 +160,8 @@ pub mod typelib;
 pub mod validation;
 pub mod workbench;
 
+#[cfg(test)]
+mod pid_backup_in_shell;
 #[cfg(test)]
 mod pid_editor_screen;
 #[cfg(test)]
