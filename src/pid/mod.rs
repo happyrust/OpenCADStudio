@@ -8,6 +8,7 @@
 //! 与序列化；只有 [`TypeLib::store`] / [`TypeLib::load`] 需要一张
 //! [`document::Document`]。
 
+pub mod collab_state;
 pub mod dwg_roundtrip;
 pub mod graph_data;
 pub mod perf_budget;
@@ -19,6 +20,7 @@ pub mod tag_rule;
 pub mod topology;
 pub mod type_lib;
 
+pub use collab_state::{FileCollabState, QueuedOp, PID_AUTHOR_COLLAB, PID_AUTHOR_COLLAB_QUEUE};
 pub use graph_data::{
     PID_AUTHOR_CONNECTORS, PID_AUTHOR_TAG_RULES, PID_AUTHOR_TOPOLOGY, PID_AUTHOR_TYPE_LIB,
 };

@@ -45,6 +45,7 @@
 use document::types::Vector3;
 use document::{Document, DxfVersion, EntityType, Handle};
 
+use crate::pid::collab_state::{PID_AUTHOR_COLLAB, PID_AUTHOR_COLLAB_QUEUE};
 use crate::pid::graph_data::{
     PID_AUTHOR_CONNECTORS, PID_AUTHOR_TAG_RULES, PID_AUTHOR_TOPOLOGY, PID_AUTHOR_TYPE_LIB,
 };
@@ -65,12 +66,14 @@ const TARGETS: [(DxfVersion, &str); 7] = [
     (DxfVersion::AC1014, "R14"),
 ];
 
-/// 四个图级 key，按契约顺序。
-const GRAPH_KEYS: [&str; 4] = [
+/// 六个图级 key，按契约顺序（`REQ-COLL-015` 的两条协同记录随图保存）。
+const GRAPH_KEYS: [&str; 6] = [
     PID_AUTHOR_TYPE_LIB,
     PID_AUTHOR_TAG_RULES,
     PID_AUTHOR_TOPOLOGY,
     PID_AUTHOR_CONNECTORS,
+    PID_AUTHOR_COLLAB,
+    PID_AUTHOR_COLLAB_QUEUE,
 ];
 
 /// 五种会随实体变换被改写、进而让调用方丢弃 verbatim `raw_record` 的变体。
@@ -498,10 +501,28 @@ fn fixture() -> (Document, Vec<Handle>) {
         ],
     );
 
-    (
-        doc,
-        vec![equipment, pipe_line, pipe_run, valve, instrument],
-    )
+    // `REQ-COLL-015`：这份图对齐过的协同位置，与它重开时要重发的队列。
+    crate::pid::collab_state::store_state(
+        &mut doc,
+        Some(&crate::pid::FileCollabState {
+            drawing_id: "PID-1101".into(),
+            repo_id: "r-fixture".into(),
+            revision: 42,
+        }),
+    );
+    crate::pid::collab_state::store_queue(
+        &mut doc,
+        &[crate::pid::QueuedOp {
+            op_id: "op-s-1-7".into(),
+            payload: serde_json::json!({"kind": "set_property", "object_ref": "V-1001",
+                "field": "设计压力", "value": "1.6MPa"}),
+            base_revision: 42,
+            on: true,
+            label: "改属性".into(),
+        }],
+    );
+
+    (doc, vec![equipment, pipe_line, pipe_run, valve, instrument])
 }
 
 /// `graph_data::store` 的薄包装：显式导入避免长路径散落。
@@ -611,6 +632,27 @@ mod tests {
         assert_eq!(line.tag, "L-1001");
         assert_eq!(line.connector_peer, "PID-1102:601");
         assert_eq!(persist::props_len(&line.props), 2);
+    }
+
+    /// `REQ-COLL-015` 第一条验收：三项协同状态随图保存，重新打开读回的
+    /// 值不变——连同排队未答的 op 一起。
+    #[test]
+    fn collab_state_survives_a_dwg_roundtrip() {
+        let (doc, ..) = fixture();
+        let bytes =
+            crate::io::save_to_bytes(&doc, "dwg", DxfVersion::AC1032).expect("save dwg 2018");
+        let back = crate::io::load_bytes("rt-collab.dwg", bytes).expect("load dwg 2018");
+
+        let state = crate::pid::collab_state::load_state(&back).expect("协同记录读回");
+        assert_eq!(state.drawing_id, "PID-1101");
+        assert_eq!(state.repo_id, "r-fixture");
+        assert_eq!(state.revision, 42);
+
+        let queue = crate::pid::collab_state::load_queue(&back);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].op_id, "op-s-1-7");
+        assert_eq!(queue[0].base_revision, 42);
+        assert_eq!(queue[0].payload["object_ref"], "V-1001");
     }
 
     /// 把 fixture 存成一份 DWG 2018 文件，路径由 `OCS_M3_BASELINE_OUT` 给出：
