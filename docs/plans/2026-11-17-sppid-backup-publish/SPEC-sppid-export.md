@@ -1,6 +1,7 @@
 # SPEC：导出 publish 文件（`sppid-export`）
 
-> 状态：**待确认**（2026-11-18）。基线 `main @ 5b4784058`；`pid-parse` 主线 `96ee00c`。
+> 状态：**已确认**（2026-11-18）：§9 的 X1–X6 都按建议定。基线 `main @ 5b4784058`；`pid-parse` 主线 `96ee00c`。
+> 2026-11-18 补：你定的验收是「能够导出PDF 和对应的publish文件」。publish 文件这一半是本规格；PDF 那一半在 `SPEC-sppid-pdf.md`（待确认）。那份规格的 P1 按建议定（两条命令）时本规格不变；定成「一条命令两样都出」时，本规格 §5 的命令跟着改。
 > 依据：`00-capability-map.md` §4、§5 检查点 B、§8 第 3 问（已定：整包导出，不选图，没有进度条和取消）；需求 `REQ-MIG-009`（这次新加的，`docs/pid-platform/requirements/90-migration-and-interop.md`）。
 > 共用约定见 `01-shared-conventions.md`。前提：`SPEC-sppid-deps.md`、`SPEC-sppid-read.md` 做完。
 
@@ -255,6 +256,8 @@ PIDBACKUPEXPORT：完成，用时 15.2 秒。写出 53 张图，共 160 个文�
 - **结果只留在内存里**：重启后「上次的结果」没有了，输出目录里的 `_Index.json` 一直在。
 
 ## 9. 待决问题
+
+X1–X6 都已定（2026-11-18），按「建议」一列执行。
 
 | # | 问题 | 建议 |
 |---|---|---|
