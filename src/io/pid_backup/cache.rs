@@ -68,13 +68,27 @@ pub struct CacheUsage {
 
 /// Whether `name` is the name a cache key gives a restore folder.
 fn is_key(name: &str) -> bool {
-    name.len() == 16 && name.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    name.len() == 16
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// The bytes and the number of the files under `folder`.
-fn measure(folder: &Path) -> (u64, usize) {
-    let mut bytes = 0;
-    let mut files = 0;
+/// What lies under a folder, at any depth.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Contents {
+    /// The bytes of the files, and how many they are.
+    pub(super) bytes: u64,
+    pub(super) files: usize,
+    /// How many folders, the folder itself not among them.
+    pub(super) folders: usize,
+}
+
+/// The files and the folders under `folder`. A restore is marked with these
+/// numbers when it is finished ([`super::restore`]), and is whole while it
+/// still measures as much.
+pub(super) fn measure(folder: &Path) -> Contents {
+    let mut found = Contents::default();
     let mut pending = vec![folder.to_path_buf()];
     while let Some(dir) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -85,14 +99,15 @@ fn measure(folder: &Path) -> (u64, usize) {
                 continue;
             };
             if kind.is_dir() {
+                found.folders += 1;
                 pending.push(entry.path());
             } else if let Ok(meta) = entry.metadata() {
-                bytes += meta.len();
-                files += 1;
+                found.bytes += meta.len();
+                found.files += 1;
             }
         }
     }
-    (bytes, files)
+    found
 }
 
 /// The folders of `root` that restores put there: the finished ones, and
@@ -137,7 +152,7 @@ pub fn usage(root: &Path, current: Option<&Path>) -> CacheUsage {
         ..CacheUsage::default()
     };
     for folder in restore_folders(root, SystemTime::now()) {
-        let (bytes, files) = measure(&folder);
+        let Contents { bytes, files, .. } = measure(&folder);
         if current == Some(folder.as_path()) {
             usage.current = Some(CachedRestore {
                 folder,
@@ -164,7 +179,7 @@ pub fn clear(root: &Path, current: Option<&Path>) -> Result<CacheUsage, String> 
         if current == Some(folder.as_path()) {
             continue;
         }
-        let (bytes, _) = measure(&folder);
+        let bytes = measure(&folder).bytes;
         match std::fs::remove_dir_all(&folder) {
             Ok(()) => {
                 freed.0 += 1;
@@ -240,6 +255,27 @@ mod tests {
                 ..CacheUsage::default()
             }
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_folder_is_measured_by_its_files_and_its_folders() {
+        let root = scratch("measure");
+        std::fs::create_dir_all(root.join("a").join("b")).unwrap();
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+        std::fs::write(root.join("top.txt"), b"12345").unwrap();
+        std::fs::write(root.join("a").join("b").join("deep.txt"), b"123").unwrap();
+        // Every folder below it counts, an empty one too; itself does not.
+        assert_eq!(
+            measure(&root),
+            Contents {
+                bytes: 8,
+                files: 2,
+                folders: 3,
+            }
+        );
+        // A folder that is not there holds nothing.
+        assert_eq!(measure(&root.join("absent")), Contents::default());
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -133,7 +133,7 @@ pub(super) fn restore_reference_data(backup_root: &Path, into: &Path) -> Result<
                     std::fs::create_dir_all(parent)
                         .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
                 }
-                std::fs::copy(stored, &target)
+                super::copy_file(stored, &target)
                     .map_err(|error| format!("cannot copy to {}: {error}", target.display()))?;
             }
             // A folder that is no archive: nothing this knows how to put

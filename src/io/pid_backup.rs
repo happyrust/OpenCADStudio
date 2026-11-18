@@ -12,6 +12,12 @@
 //! there -- the backup's own, copied in for a folder source -- so the
 //! importer's walk up from a drawing finds the symbol library.
 //!
+//! The temp folder is cleaned up behind the editor's back: files by their
+//! date, empty folders whatever their date. So nothing is copied into a
+//! restore with the date of its source, and a restore in the cache is reused
+//! only while it holds as many files and folders as its marker says were
+//! restored; one that has lost some is made again.
+//!
 //! Zip member names are written by Windows tools in the system code page
 //! (GBK on the plants this serves), not UTF-8; they are decoded as pid-parse
 //! decodes them, and a name that would leave the restore folder refuses the
@@ -31,7 +37,8 @@ use std::path::{Component, Path, PathBuf};
 /// `Ref`.
 const RESTORE_LAYOUT: u32 = 2;
 
-/// Written last into a finished restore folder; holds the source's cache key.
+/// Written last into a finished restore folder; holds the source's cache key
+/// and how many files and folders the restore holds (`Mark`).
 pub(crate) const DONE_MARKER: &str = ".ocs-restored";
 
 /// How deep under the restore folder `.pid` drawings are looked for. A backup
@@ -242,8 +249,11 @@ fn build(
         },
         Path::to_path_buf,
     );
-    let marker = target.join(DONE_MARKER);
-    if std::fs::read_to_string(&marker).is_ok_and(|stamp| stamp.trim() == key) {
+    let mark = std::fs::read_to_string(target.join(DONE_MARKER))
+        .ok()
+        .map(|text| Mark::read(&text))
+        .filter(|mark| mark.key == key);
+    if mark.is_some_and(|mark| reusable(&target, &mark, owned)) {
         return Ok(Restored {
             drawings: restored_drawings(&target),
             root: target,
@@ -258,7 +268,8 @@ fn build(
             .is_none();
         if owned || empty {
             // A cache folder is this module's own: a leftover is an earlier
-            // restore of another state of the source.
+            // restore of another state of the source, or one that has lost
+            // files since.
             std::fs::remove_dir_all(&target)
                 .map_err(|error| format!("cannot clear {}: {error}", target.display()))?;
         } else {
@@ -277,7 +288,12 @@ fn build(
     std::fs::create_dir_all(&staging)
         .map_err(|error| format!("cannot create {}: {error}", staging.display()))?;
     let filled = fill(&staging).and_then(|()| {
-        std::fs::write(staging.join(DONE_MARKER), &key)
+        // The marker is one of the files it counts: it is there, with the
+        // key alone, before they are counted.
+        let done = staging.join(DONE_MARKER);
+        std::fs::write(&done, &key)
+            .map(|()| cache::measure(&staging))
+            .and_then(|held| std::fs::write(&done, Mark::text(&key, held.files, held.folders)))
             .map_err(|error| format!("cannot finish {}: {error}", staging.display()))
     });
     if let Err(error) = filled {
@@ -297,6 +313,85 @@ fn build(
         extracted: true,
         reused: false,
     })
+}
+
+/// What the marker of a finished restore says: the cache key of its source
+/// on the first line, as it always was, then `files <n>` and `folders <n>`,
+/// how many of each the restore held when it was finished (the marker is one
+/// of the files). A marker of before these were written down is the key
+/// alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Mark {
+    key: String,
+    /// The files and the folders, in that order. Nothing when the marker
+    /// does not say both, each as a number.
+    held: Option<(usize, usize)>,
+}
+
+impl Mark {
+    fn text(key: &str, files: usize, folders: usize) -> String {
+        format!("{key}\nfiles {files}\nfolders {folders}\n")
+    }
+
+    fn read(text: &str) -> Self {
+        let mut lines = text.lines().map(str::trim);
+        let key = lines.next().unwrap_or_default().to_string();
+        let (mut files, mut folders) = (None, None);
+        for line in lines {
+            match line.split_once(' ') {
+                Some(("files", count)) => files = count.trim().parse().ok(),
+                Some(("folders", count)) => folders = count.trim().parse().ok(),
+                _ => {}
+            }
+        }
+        Self {
+            key,
+            held: files.zip(folders),
+        }
+    }
+}
+
+/// Whether the finished restore in `target`, marked for this source, is used
+/// as it is.
+///
+/// One in the cache (`owned`) is, while it holds as many files and folders
+/// as were restored. The temp folder is cleaned up behind the editor's back,
+/// files by their date and empty folders whatever their date, and the
+/// marker, written last, outlives what it vouches for. What was added since
+/// does not count against a restore: only what is gone. A restore of before
+/// the marker held the numbers is made again once.
+///
+/// A folder the user named for the restore is used whatever it has lost: it
+/// is theirs, and nothing in it is cleared to restore again.
+fn reusable(target: &Path, mark: &Mark, owned: bool) -> bool {
+    let Some((files, folders)) = mark.held else {
+        if owned {
+            log::info!(
+                "{}: restored before a restore wrote down how many files it holds, so nothing says it is still whole; restoring it again",
+                target.display()
+            );
+        }
+        return !owned;
+    };
+    let now = cache::measure(target);
+    let gone = (
+        files.saturating_sub(now.files),
+        folders.saturating_sub(now.folders),
+    );
+    if gone == (0, 0) {
+        return true;
+    }
+    let (gone_files, gone_folders) = gone;
+    let then = if owned {
+        "restoring it again"
+    } else {
+        "it was named for the restore, so nothing in it is cleared and it is used as it is"
+    };
+    log::warn!(
+        "{}: {gone_files} of the {files} file(s) and {gone_folders} of the {folders} folder(s) restored into it are gone; {then}",
+        target.display()
+    );
+    !owned
 }
 
 /// The drawings of a restore folder: every `.pid` under it but the ones in
@@ -437,10 +532,22 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
         if kind.is_dir() {
             copy_dir(&entry.path(), &target)?;
         } else if kind.is_file() {
-            std::fs::copy(entry.path(), &target)
+            copy_file(&entry.path(), &target)
                 .map_err(|error| format!("cannot copy to {}: {error}", target.display()))?;
         }
     }
+    Ok(())
+}
+
+/// Write the bytes of `from` into the new file `to`: a file of now, as one
+/// unpacked from an archive is. Not `std::fs::copy`, which on Windows gives
+/// the copy the modification time of its source (and its read-only mark): a
+/// restore lies under the temp folder unless it is put elsewhere, and the
+/// clean-up of the temp folder removes a file that looks that old.
+fn copy_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut source = std::fs::File::open(from)?;
+    let mut target = std::fs::File::create(to)?;
+    std::io::copy(&mut source, &mut target)?;
     Ok(())
 }
 
@@ -462,11 +569,36 @@ mod tests {
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated);
         for (name, bytes) in members {
+            // A name that ends in `/` is a folder of its own: a backup's
+            // volumes carry their empty folders.
+            if name.ends_with('/') {
+                writer.add_directory(*name, options).unwrap();
+                continue;
+            }
             writer.start_file(*name, options).unwrap();
             writer.write_all(bytes).unwrap();
         }
         writer.finish().unwrap();
     }
+
+    /// Date `path` forty days back: a file as a backup holds it, last
+    /// written long before anybody restores it.
+    fn age(path: &Path) {
+        let then = std::time::SystemTime::now() - std::time::Duration::from_secs(40 * 86_400);
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(then).unwrap();
+    }
+
+    /// How long before `moment` the file `path` was last written; nothing
+    /// when it was written after.
+    fn written_before(path: &Path, moment: std::time::SystemTime) -> std::time::Duration {
+        let written = std::fs::metadata(path).unwrap().modified().unwrap();
+        moment.duration_since(written).unwrap_or_default()
+    }
+
+    /// What a file system may round a file's time down by, and more: a file
+    /// written during a restore is this near to the restore's start.
+    const ROUNDING: std::time::Duration = std::time::Duration::from_secs(60);
 
     #[test]
     fn a_zip_is_unpacked_and_its_drawings_listed() {
@@ -677,6 +809,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The temp folder is cleaned up by date, and a restore lies under it:
+    /// a file copied in with the time of its source looks as old as the
+    /// source is, and is taken away. A volume that is a single file.
+    #[test]
+    fn a_single_file_volume_is_restored_as_a_file_of_now() {
+        let root = scratch("refdata-time");
+        let backup = root.join("backup");
+        backup_with_volumes(&backup);
+        age(&backup.join("RefData~4~680"));
+        let started = std::time::SystemTime::now();
+        let target = root.join("out");
+        restore(&backup, Some(&target)).unwrap();
+        let rules = target.join("Ref/rules.rul");
+        assert_eq!(std::fs::read(&rules).unwrap(), b"\"Begin Rules\",1");
+        let early = written_before(&rules, started);
+        assert!(early < ROUNDING, "dated {early:?} before the restore");
+        // The source keeps its own time: it is only read.
+        assert!(written_before(&backup.join("RefData~4~680"), started) > ROUNDING);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The same of a `Ref` folder that lies unpacked beside the backup.
+    #[test]
+    fn a_ref_folder_beside_the_backup_is_copied_as_files_of_now() {
+        let root = scratch("refdata-beside-time");
+        let backup = root.join("backup");
+        backup_with_volumes(&backup);
+        let valves = backup
+            .join("Ref")
+            .join("Symbols")
+            .join("Piping")
+            .join("Valves");
+        std::fs::create_dir_all(&valves).unwrap();
+        std::fs::write(valves.join("own.sym"), b"only beside").unwrap();
+        age(&valves.join("own.sym"));
+        let started = std::time::SystemTime::now();
+        let target = root.join("out");
+        restore(&backup, Some(&target)).unwrap();
+        let copied = target.join("Ref/Symbols/Piping/Valves/own.sym");
+        assert_eq!(std::fs::read(&copied).unwrap(), b"only beside");
+        let early = written_before(&copied, started);
+        assert!(early < ROUNDING, "dated {early:?} before the restore");
+        assert!(written_before(&valves.join("own.sym"), started) > ROUNDING);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_zipped_backup_gets_its_reference_data_back_beside_its_drawings() {
         let root = scratch("refdata-zip");
@@ -789,6 +967,166 @@ mod tests {
         let named = root.join("named");
         let restored = restore_in(&zip, Some(&named), Some(&cache)).unwrap();
         assert_eq!(restored.root, named);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The clean-up of the temp folder takes files out of a restore and
+    /// leaves its marker: a restore in the cache is used again only while
+    /// it holds what was restored.
+    #[test]
+    fn a_cache_that_lost_a_file_is_restored_again() {
+        let root = scratch("cache-lost-file");
+        let zip = root.join("backup.zip");
+        write_zip(&zip, &[("00/00/A.pid", b"a"), ("Ref/Symbols/v.sym", b"s")]);
+        let cache = root.join("cache");
+        let first = restore_in(&zip, None, Some(&cache)).unwrap();
+        assert!(!first.reused);
+        let drawing = first.root.join("00/00/A.pid");
+        let symbol = first.root.join("Ref/Symbols/v.sym");
+        // Nothing gone: it is used as it is, not made again. A drawing
+        // written over since stays written over.
+        std::fs::write(&drawing, b"written over").unwrap();
+        assert!(restore_in(&zip, None, Some(&cache)).unwrap().reused);
+        assert_eq!(std::fs::read(&drawing).unwrap(), b"written over");
+        // A file gone: made again from the backup, in the same folder.
+        std::fs::remove_file(&symbol).unwrap();
+        let again = restore_in(&zip, None, Some(&cache)).unwrap();
+        assert!(
+            !again.reused,
+            "a restore that lost a file was used as it was"
+        );
+        assert_eq!(again.root, first.root);
+        assert_eq!(std::fs::read(&symbol).unwrap(), b"s");
+        assert_eq!(std::fs::read(&drawing).unwrap(), b"a");
+        // Whole again, it is used again.
+        assert!(restore_in(&zip, None, Some(&cache)).unwrap().reused);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The clean-up takes empty folders whatever their date.
+    #[test]
+    fn a_cache_that_lost_an_empty_folder_is_restored_again() {
+        let root = scratch("cache-lost-folder");
+        let zip = root.join("backup.zip");
+        write_zip(
+            &zip,
+            &[
+                ("00/00/A.pid", b"a"),
+                ("Ref/Symbols/Assemblies/Piping/", b""),
+            ],
+        );
+        let cache = root.join("cache");
+        let first = restore_in(&zip, None, Some(&cache)).unwrap();
+        let empty = first.root.join("Ref/Symbols/Assemblies/Piping");
+        assert!(empty.is_dir());
+        std::fs::remove_dir(&empty).unwrap();
+        let again = restore_in(&zip, None, Some(&cache)).unwrap();
+        assert!(
+            !again.reused,
+            "a restore that lost a folder was used as it was"
+        );
+        assert!(empty.is_dir());
+        assert!(restore_in(&zip, None, Some(&cache)).unwrap().reused);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_marker_says_the_key_and_how_much_was_restored() {
+        let key = "00000000000000aa";
+        let text = Mark::text(key, 750, 109);
+        assert_eq!(text, "00000000000000aa\nfiles 750\nfolders 109\n");
+        let whole = Mark {
+            key: key.into(),
+            held: Some((750, 109)),
+        };
+        assert_eq!(Mark::read(&text), whole);
+        // As a Windows tool leaves a text file, in another order, and with
+        // a line this build does not know.
+        let other = "00000000000000aa\r\nfolders 109\r\nmade 2026\r\nfiles 750\r\n";
+        assert_eq!(Mark::read(other), whole);
+        // Of before the numbers were written down: the key alone.
+        for old in ["00000000000000aa", "00000000000000aa\n"] {
+            let read = Mark::read(old);
+            assert_eq!((read.key.as_str(), read.held), (key, None), "{old:?}");
+        }
+        // Half of the numbers, or one that is no number, vouch for nothing.
+        for broken in [
+            "00000000000000aa\nfiles 750\n",
+            "00000000000000aa\nfiles many\nfolders 109\n",
+            "00000000000000aa\nfiles -1\nfolders 109\n",
+        ] {
+            assert_eq!(Mark::read(broken).held, None, "{broken:?}");
+        }
+        assert_eq!(Mark::read("").key, "");
+    }
+
+    #[test]
+    fn a_finished_restore_is_marked_with_what_it_holds() {
+        let root = scratch("marked");
+        let zip = root.join("backup.zip");
+        // Two files in three folders, a folder that is empty, and a file
+        // with the marker's own name, which the marker takes the place of.
+        write_zip(
+            &zip,
+            &[
+                ("00/00/A.pid", b"a"),
+                ("Ref/v.sym", b"s"),
+                ("Ref/Empty/", b""),
+                (DONE_MARKER, b"not a marker"),
+            ],
+        );
+        let target = root.join("out");
+        restore(&zip, Some(&target)).unwrap();
+        let mark = Mark::read(&std::fs::read_to_string(target.join(DONE_MARKER)).unwrap());
+        assert_eq!(mark.key, cache_key(&zip));
+        // The marker is one of the three files.
+        assert_eq!(mark.held, Some((3, 4)));
+        // The same numbers the cache is measured by.
+        let held = cache::measure(&target);
+        assert_eq!((held.files, held.folders), (3, 4));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A restore of before the marker said how many files it holds: nothing
+    /// says whether the clean-up has been at it.
+    #[test]
+    fn a_cache_marked_with_its_key_alone_is_restored_again_once() {
+        let root = scratch("cache-old-marker");
+        let zip = root.join("backup.zip");
+        write_zip(&zip, &[("00/00/A.pid", b"a")]);
+        let cache = root.join("cache");
+        let first = restore_in(&zip, None, Some(&cache)).unwrap();
+        std::fs::write(first.root.join(DONE_MARKER), cache_key(&zip)).unwrap();
+        let again = restore_in(&zip, None, Some(&cache)).unwrap();
+        assert!(
+            !again.reused,
+            "a restore nothing vouches for was used as it was"
+        );
+        assert_eq!(again.root, first.root);
+        assert!(restore_in(&zip, None, Some(&cache)).unwrap().reused);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A folder the user named for the restore is theirs: nothing in it is
+    /// removed, so a restore there is not made again. What it still holds
+    /// is what is opened.
+    #[test]
+    fn a_folder_named_for_the_restore_is_used_as_it_is_when_it_lost_files() {
+        let root = scratch("named-lost-files");
+        let zip = root.join("backup.zip");
+        write_zip(&zip, &[("A.pid", b"a"), ("B.pid", b"b"), ("C.pid", b"c")]);
+        let target = root.join("out");
+        restore(&zip, Some(&target)).unwrap();
+        std::fs::remove_file(target.join("B.pid")).unwrap();
+        std::fs::remove_file(target.join("C.pid")).unwrap();
+        std::fs::write(target.join("mine.txt"), b"keep").unwrap();
+        let again = restore(&zip, Some(&target)).unwrap();
+        assert!(again.reused);
+        assert_eq!(again.drawings, vec![target.join("A.pid")]);
+        assert_eq!(std::fs::read(target.join("mine.txt")).unwrap(), b"keep");
+        // The same of one restored before the marker counted its files.
+        std::fs::write(target.join(DONE_MARKER), cache_key(&zip)).unwrap();
+        assert!(restore(&zip, Some(&target)).unwrap().reused);
         let _ = std::fs::remove_dir_all(&root);
     }
 
