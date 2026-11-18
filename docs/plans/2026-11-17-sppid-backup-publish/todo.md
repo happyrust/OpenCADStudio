@@ -109,17 +109,18 @@
 
 - **做什么**：`Cargo.toml` 六处 `rev`（第 163–166、180、183 行）一起改成主线提交 `96ee00c` 的完整哈希。联网一次：`cargo fetch`，取新提交并更新 `Cargo.lock`。拿 `git diff Cargo.lock` 对照规格 §2.4 的预期；出现预期之外的包变化就停下报告，不往下做。此后一律 `--offline --locked`。`cargo check --offline --locked --lib` 的报错逐个改，记下改了几个文件、几处、各是什么变化。**编译通过后发第一次汇报**：改了多少代码；锁文件实际变了哪些包；有多少条测试因升级失败、各属哪一类。汇报后按 D4 接着做。测试按规格 §3.3 处理：因解析库行为变化而失败的可以改期望值，每条写明原值、新值、原因；说不出原因的不改，按变差处理；不删测试，不加 `#[ignore]`。换版本之前先看 `pid-parse` 主线现在的提交号（算在同一次联网里）：那 3 个导出提交已经在主线上、主线上又没有别的新提交，就钉这个新的主线提交，`EXP-0` 取消；否则钉 `96ee00c`，主线上有什么写进汇报。
 - **验收**：
-  - [ ] 六处 `rev` 相同；`cargo metadata --offline --locked` 成功。
-  - [ ] `git diff Cargo.lock` 里变化的包都在预期之内；之外的逐个有原因，并经你同意。
-  - [ ] `cargo check --offline --locked --lib` 没有错误；改动的文件数和处数写进 `readings.md`。
-  - [ ] 库测试：失败的仍只有设计稿那 4 条，测试条数没有减少。改过期望值的测试逐条列在提交说明和 `readings.md` 里。
-  - [ ] clippy 不超过 630 和 965；格式新增 0；协同两个 crate 的条数不变，全过。
-  - [ ] 第一次汇报已发。
-  - [ ] 提交里只有 `Cargo.toml`、`Cargo.lock`、为编译和测试通过而改的源文件、`readings.md`、本清单。
+  - [x] 六处 `rev` 相同；`cargo metadata --offline --locked` 成功。
+  - [x] `git diff Cargo.lock` 里变化的包都在预期之内；之外的逐个有原因，并经你同意。（预期之外的只有 `hashlink` 0.11.1 → 0.12.2，它跟着 `rusqlite` 走；2026-11-18 停下问过，同意。）
+  - [x] `cargo check --offline --locked --lib` 没有错误；改动的文件数和处数写进 `readings.md`。（§2.2：5 个源文件。）
+  - [x] 库测试：失败的仍只有设计稿那 4 条，测试条数没有减少。改过期望值的测试逐条列在提交说明和 `readings.md` 里。（6954 条不变；没有一条因升级失败，没有改期望值。）
+  - [x] clippy 不超过 630 和 965；格式新增 0；协同两个 crate 的条数不变，全过。（630、965；96 + 168 + 18。）
+  - [x] 第一次汇报已发。
+  - [x] 提交里只有 `Cargo.toml`、`Cargo.lock`、为编译和测试通过而改的源文件、`readings.md`、本清单。（另有 `crates/ocs_collab_server/Cargo.toml` 和记实现记录的 `SPEC-sppid-deps.md`，原因见该规格 §11。）
 - **验证**：`cargo metadata --offline --locked --format-version 1 > $null`；`cargo check --offline --locked --lib`；§1 的门禁，含协同两个 crate
 - **依赖**：DEP-2
 - **文件**：`Cargo.toml`、`Cargo.lock`；编译报错指到的源文件（范围是规格 §2.3 的 21 个，名单以编译结果为准）；`readings.md`
 - **规模**：L。改的只是六处版本号，但连带要改多少源文件事先不知道；拆不开，因为不改完就编译不过
+- **做完**（2026-11-18）：钉到 `96ee00cf7555`，联网一次。主线上没有别的新提交，导出那 3 个提交还没推送，`EXP-0` 保留。改了 5 个源文件和协同服务清单里的一行；测试没有一条因升级失败；门禁各项和升级前相同。读数在 `readings.md` §2，和任务写法有出入的几处记在 `SPEC-sppid-deps.md` §11。
 
 ### DEP-4 【文档】升级后的读数、对比和判定
 

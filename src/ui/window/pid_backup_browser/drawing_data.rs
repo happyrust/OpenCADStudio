@@ -328,6 +328,10 @@ fn source_text(source: &ValueSource) -> String {
         ValueSource::NameRule(rule) => tf!("naming rule {}", rule).into_owned(),
         ValueSource::NativeRule(address) => tf!("native rule at {}", address).into_owned(),
         ValueSource::DatabaseColumn { table, column } => format!("{table}.{column}"),
+        // The reader's own word, untranslated: it states this source for a
+        // drawing's constant attributes, which no list here shows, and for
+        // no point.
+        ValueSource::ClassConstant => "ClassConstant".to_string(),
     }
 }
 

@@ -1,6 +1,6 @@
 # 读数记录（SmartPlant 备份包：升级解析库、读取、出 PDF、导出）
 
-> 状态：**进行中**。§1 是升级 `pid-parse` 之前的一组（`DEP-2`，2026-11-18）。升级之后的一组和逐张对比由 `DEP-4` 补在后面。
+> 状态：**进行中**。§1 是升级 `pid-parse` 之前的一组（`DEP-2`，2026-11-18）；§2 是换版本这一步的记录（`DEP-3`，2026-11-18）。升级之后的一组和逐张对比由 `DEP-4` 补在后面。
 > 用途：`SPEC-sppid-deps.md` §3.2 的「不变差」拿升级前后两组数判；后面各块的读数也接着记在这里。
 > 规矩：数都出自当次命令的输出。报告全文、日志、截图、PDF 在仓库外，这里只记数和位置。
 
@@ -91,8 +91,64 @@
 
 没有变的：三个包的图纸数（53、7、12）；读不出的名单（2、1、11 张）和打不开的名单（1、1、2 张），连图名都相同；画出的图元（149 310、1 697、920）；没画出的记录（9、0、49）；图内对象和属性（14 894 / 15 921、152 / 70、3 / 6）。
 
+## 2. 换版本（`DEP-3`，2026-11-18）
+
+| 项 | 值 |
+|---|---|
+| `pid-parse` 的新提交 | `96ee00cf7555`（`Cargo.toml` 六处 `rev`）。当天查过 GitHub 的 `main`，就是它；导出那 3 个提交（`d3fbe3e`、`3253301`、`6ecd1b4`）不在远端，`EXP-0` 保留 |
+| 联网 | 一次：看远端，`cargo fetch` 取新提交。之后都离线 |
+| 证据 | `D:\scratch\ocs-sppid\2026-11-18-dep3\`：旧锁文件 `Cargo.lock.before`，取新提交的日志 `cargo-fetch.log`、`cargo-fetch-offline.log`，编译检查 `check-1\`、`check-2\`、`check-3\`，门禁 `gates\`，格式 `fmt-before\`，分层检查 `arch\` |
+
+### 2.1 锁文件实际变了什么
+
+两份锁文件逐包比对：1019 个包变成 1017 个，10 个换了版本或来源，2 个去掉，没有新增。
+
+| 包 | 升级前 | 升级后 | 在规格 §2.4 的预期里 |
+|---|---|---|---|
+| `pid-parse` 0.11.7、`pid-plot` 0.1.0、`hayro` 0.7.1、`hayro-interpret` 0.7.0、`hayro-syntax` 0.7.2、`lopdf` 0.45.0、`oxidized-mdf` 0.3.1 | 来自 `d0a58c64c413` | 来自 `96ee00cf7555`，版本号都没变 | 在 |
+| `rusqlite` | 0.39.0 | 0.41.1 | 在 |
+| `libsqlite3-sys` | 0.37.0 | 0.39.1 | 在 |
+| `sqlite-wasm-rs`、`rsqlite-vfs` | 0.5.5、0.1.1 | 去掉 | 在 |
+| `hashlink` | 0.11.1 | 0.12.2 | **不在**。停下问过，同意（2026-11-18） |
+
+- `hashlink` 升级前后都只被 `rusqlite` 依赖（它的预编译语句缓存用）。`rusqlite` 0.39.0 的清单写的是 `hashlink` 0.11，0.41.1 写的是 0.12，所以它跟着 `rusqlite` 走。它依赖的 `hashbrown` 0.17.1 原来就在锁文件里。
+- 清单另改了一行，规格没有料到：`crates/ocs_collab_server/Cargo.toml` 的 `rusqlite` 从 0.39 改成 0.41（关默认特性，开 `bundled`、`cache`，和 `pid-parse` 的写法相同）。不改的话依赖解不出来，原因见 `SPEC-sppid-deps.md` §11。
+
+### 2.2 为编译改的地方
+
+`cargo check` 一共报了 13 处错：非测试代码 4 处，测试代码 9 处。改了 5 个源文件，都是跟着接口改写法。
+
+| 文件 | 处 | 库那边变了什么 | 本程序怎么跟 |
+|---|---:|---|---|
+| `src/io/pid_pdf.rs` | 2 | `pid_plot::model::lay_out_with_symbol_roots` 从 4 个参数变成 5 个，多的是排在符号目录之后去找的 `RefData~*.zip` 名单；`pid_plot::write::PlotFont` 多了字段 `subset` | 名单传空；`subset` 照 `prepare_fonts` 给每个字体的值传 |
+| `src/io/pid_backup_browse/exp_views.rs` | 1 | `PidPublishDrawing` 多了字段 `drawing_attributes` | 给空（这里造的图纸只用来合成管线名） |
+| `src/io/pid_backup_browse/drawing_data.rs` | 1 | `PidValueSource` 多了 `CodelistCell`、`ClassConstant`、`PlacedColumn` 三种 | 两种带表名列名的归到已有的 `DatabaseColumn`；`ClassConstant` 在本程序的 `ValueSource` 里加一种 |
+| `src/ui/window/pid_backup_browser/drawing_data.rs` | 1 | 无（跟着上一行改） | 显示来源的函数认 `ClassConstant`，显示库自己的词，不进翻译表 |
+| `src/io/pid/tests.rs`（测试） | 9 | `PrimitiveStyle` 多了字段 `paper`（3 处）；`LineSymbology` 多了 `paper`（4 处）；`SymbolLettering` 多了 `height_mode`、`width_permille`（2 处） | 测试里造的数据填 `false`、`None` |
+| `src/io/pid_backup_browse/drawing_data.rs`（测试） | 1 | `PidPublishDrawing` 多了字段 `drawing_attributes` | 填空。另在 `every_kind_of_source_is_kept` 里补 3 条断言，覆盖新增的三种来源 |
+
+`cargo check --offline --locked` 在 `--lib`、`--lib --profile test`、`--all-targets` 和协同两个 crate 的 `--all-targets` 上都没有错误。各处为什么这样跟，见 `SPEC-sppid-deps.md` §11。
+
+### 2.3 测试和门禁
+
+**因升级失败的测试：0 条。没有改任何期望值。**
+
+| 门禁 | 升级前（§1.1） | 换版本后 |
+|---|---|---|
+| `cargo test --offline --locked --lib` | 6954 条：6901 过，49 忽略，4 失败 | 相同；失败的还是设计稿那 4 条 |
+| `cargo clippy --offline --locked --lib` | 630 | 630 |
+| `cargo clippy --offline --locked --lib --profile test` | 965 | 965 |
+| `cargo test --offline --locked -p ocs_collab -p ocs_collab_server` | 96 + 168 + 18，全过 | 相同（在 `rusqlite` 0.41 上） |
+| `scripts\fmt-newhunks.ps1`，5 个改过的源文件 | — | 新增 0 |
+| `python scripts/arch_check.py report` | 33 对模块、183 个文件；`io` 开头的四行是 3、1、1、1 | 逐行相同 |
+| `cargo metadata --offline --locked` | — | 成功 |
+
+- 测试编译时的编译器警告数也没有变（52 条）。
+- 库测试跑完的时间从 37.4 秒变成 47.6 秒，各量了一次。是不是解析变慢了，这一步不判，以 `DEP-4` 走查里的导入用时为准。
+
 ## 修订记录
 
 | 日期 | 改了什么 |
 |---|---|
 | 2026-11-18 | 新建。记升级前的一组读数（`DEP-2`） |
+| 2026-11-18 | 加 §2：换版本这一步的记录（`DEP-3`），锁文件实际的变化、为编译改的地方、测试和门禁 |

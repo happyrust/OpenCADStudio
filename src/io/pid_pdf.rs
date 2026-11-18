@@ -362,6 +362,9 @@ pub fn plot_pdf(drawing: &Path, target: &Path) -> Result<PidPdfReceipt, String> 
                 drawing,
                 &sources.corpus,
                 roots.clone(),
+                // No `RefData~*` archives: the symbol library is the folders
+                // `symbol_roots` found.
+                Vec::new(),
                 &labels,
             )
         }
@@ -373,6 +376,7 @@ pub fn plot_pdf(drawing: &Path, target: &Path) -> Result<PidPdfReceipt, String> 
         .map(|face| ::pid_plot::write::PlotFont {
             key: &face.key,
             bytes: &face.bytes,
+            subset: face.subset,
         })
         .collect();
     let pdf = ::pid_plot::write::write_plot(&model, &fonts).map_err(|error| error.to_string())?;

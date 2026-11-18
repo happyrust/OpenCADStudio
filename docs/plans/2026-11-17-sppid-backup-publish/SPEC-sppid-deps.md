@@ -199,3 +199,18 @@ D1–D4 都已定（2026-11-18），按「建议」一列执行。
 - **另记了两项 §3.2 没要求的**：程序报的图元数和纸面大小；连出两次的 PDF 逐字节相同。前一项升级后一起比，后一项是 `SPEC-sppid-pdf.md` 拿字节相同作验收的前提。
 - **可执行程序编在仓库的 `target\debug\`**（不入库）。这台机器上 cargo 把中间产物放在另一个目录，最终的程序放在这里；用之前看它的编成时间，确认是当次编的。
 - 量读数用的几个 PowerShell 脚本在 `.agent-tmp\`（不入库），升级后原样再用一遍。走查的正式脚本由 `RD-3` 做，PDF 的由 `PDF-5` 做。
+
+### `DEP-3` 换版本（2026-11-18）
+
+- **§2.4 漏看了一个 crate。** 那一节说本程序自己的 `Cargo.toml` 不直接依赖 `rusqlite`。这句对，但工作区里的 `crates/ocs_collab_server` 直接依赖它，原来写的是 0.39。整个工作区解成一张依赖图，一张图里只能有一个包链接 `sqlite3`；新 `pid-parse` 要 `rusqlite` 0.41，两边对不上，`cargo fetch` 取到了新提交，在解依赖这一步失败。处理：把 `ocs_collab_server` 的这一行改成和 `pid-parse` 相同的写法（0.41，关默认特性，开 `bundled`、`cache`）。这两个特性就是它原来在 0.39 上得到的（0.39 的默认特性只有 `cache`）；0.41 多出来的那个默认特性是给 wasm32 用的。这是已有的依赖跟着升版，不是新加依赖。协同两个 crate 的测试条数不变，全过。
+- **锁文件比 §2.4 的预期多变一个包**：`hashlink` 0.11.1 → 0.12.2。原因和全部变化见 `readings.md` §2.1。按 §7 停下问过，同意后才接着做。
+- **联网只有约定的那一次**：看远端的 `main`，再 `cargo fetch --target x86_64-pc-windows-msvc`。改了协同服务那一行之后，重新解依赖是离线做的（`cargo fetch --offline`），要用的包本机缓存里都有。
+- **§5 第 9 条的文件名单多了三类**：`crates/ocs_collab_server/Cargo.toml`（第一条）；`src/ui/window/pid_backup_browser/drawing_data.rs`（编译器没有指到它，是「值的来源」加了一种之后跟着改的，见下）；本规格和 `todo.md`。改到的 5 个源文件里，只有这个面板文件不在 §2.3 说的那 21 个里。
+- **`lay_out_with_symbol_roots` 新增的参数传空。** 这个参数是排在符号目录之后去找的 `RefData~*.zip` 名单，属于 `refdata-archive`，§7 说这次不用。传空之后，程序自己点名符号目录的那条路，找符号的地方和升级前一样。另一条路（图纸所在的项目自带图框模板时，符号去哪找交给 `pid-plot` 自己定），库现在会把旁边的 `RefData~*.zip` 也算上；这是库的行为变了，结果由 `DEP-4` 的对比看。要不要把压缩卷点名给它，留给 `SPEC-sppid-pdf.md` 那一块定。
+- **「值的来源」多出的三种怎么归。** `CodelistCell`（数据库某表某列里的代码表序号）和 `PlacedColumn`（数据库某表某列）归到本程序已有的 `DatabaseColumn`，显示成「表.列」。`ClassConstant`（同一类对象都相同的固定值）没有对应的说法，在本程序的 `ValueSource` 里加了一种；面板上显示库自己的词 `ClassConstant`，没有进翻译表。不进翻译表的理由：经典面板的文字那一套按共用约定不动；读取库只给图纸的固定属性标这种来源（`attach_codelist_values`），工艺点和分支点只在读图纸文件时生成、来源都是「原生规则」，面板上显示来源的这两张表遇不到它。没有用 `_ =>` 兜底：库以后再加一种，编译器还会报出来。
+- **测试里造的数据**：新字段一律填「没有」（`paper: false`、`height_mode: None`、`width_permille: None`、`drawing_attributes` 为空），测试原来测的东西不变。
+- **测试没有一条因升级失败**，§3.3 的规则没有用上。
+- **新版多给、这次没有用的信息**（§7：不顺手用新特性），留给后面的块判断：
+  - `LineSymbology`、`PrimitiveStyle` 的 `paper`：这一笔用纸的颜色画，出图时不着墨。库的说明里写，验收数据 11 张图上有 261 笔，都是标注符号的原点标记，厂家出的图上画成白色。本程序导入时没有看这个标记，这些笔画会按基础样式的颜色画出来。关系到「正确显示」，在 `SPEC-sppid-read.md` 那一块评估。
+  - `SymbolLettering` 的 `height_mode`、`width_permille`：符号文字的字高取法和字宽。
+  - `PidPublishDrawing` 的 `drawing_attributes`、`PidValueSource` 新增的三种：都是导出时才填的，`SPEC-sppid-export.md` 那一块会用到。

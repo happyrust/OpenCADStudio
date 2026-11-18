@@ -443,6 +443,7 @@ fn a_body_is_an_anchor_cross_when_its_displayed_strokes_are_all_hairline_lines()
             rgb: [0, 0, 0],
             width_mm,
             dash_mm: Vec::new(),
+            paper: false,
         })
     };
     let cross = vec![
@@ -559,6 +560,7 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
         rgb: [0x00, 0xFE, 0xA0],
         width_mm: 0.5,
         dash_mm,
+        paper: false,
     };
     let body = PidSymbolDefinition {
         reference: PidSymbolDefinitionRef {
@@ -598,6 +600,7 @@ fn a_cached_strokes_dash_is_its_own_and_its_colour_its_placements() {
         symbology: LineSymbology {
             width_m: 0.000_35,
             colour: 0x0000_8080,
+            paper: false,
         },
         dash,
         marker: None,
@@ -710,6 +713,7 @@ fn a_symbols_lettering_takes_its_placements_colour_and_nothing_else() {
         symbology: LineSymbology {
             width_m: 0.000_18,
             colour: 0x0000_8000,
+            paper: false,
         },
         dash: None,
         marker: None,
@@ -904,6 +908,8 @@ fn symbol_text_letters_at_its_own_style_and_anchor() {
         rotation_rad: 0.0,
         letter_height_m: 0.0,
         height_m: Some(0.003_175),
+        height_mode: None,
+        width_permille: None,
         rgb: Some([0, 0, 0]),
         alignment: Some(TextAlignment::Left),
         line_spacing: Some(1.0),
@@ -991,6 +997,8 @@ fn mirrored_placement_lettering_stays_readable() {
         rotation_rad: 0.0,
         letter_height_m: 0.0,
         height_m: Some(0.003_175),
+        height_mode: None,
+        width_permille: None,
         rgb: Some([0, 0, 0]),
         alignment: Some(TextAlignment::Left),
         line_spacing: Some(1.0),
@@ -1148,6 +1156,7 @@ fn paper_style_scale_multiplies_declared_sizes_and_leaves_lettering() {
         symbology: LineSymbology {
             width_m: width_mm / 1000.0,
             colour: 0,
+            paper: false,
         },
         dash: None,
         marker: None,
@@ -1202,6 +1211,7 @@ fn paper_style_scale_multiplies_declared_sizes_and_leaves_lettering() {
         symbology: LineSymbology {
             width_m: 0.000_35,
             colour: 0,
+            paper: false,
         },
         dash: DashPattern::from_segments_m(segments_m),
         marker: None,
@@ -1244,6 +1254,7 @@ fn paper_style_scale_multiplies_declared_sizes_and_leaves_lettering() {
             rgb: [0, 0, 0],
             width_mm: 0.35,
             dash_mm: vec![3.5, 1.75],
+            paper: false,
         }),
         &pool,
         scale,

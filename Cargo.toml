@@ -160,10 +160,10 @@ iced_widget = { path = "../iced/widget" }
 # so the same four trees are named here, fetched from the same pid-parse
 # commit. hayro* are the versions the PDF import already uses; lopdf 0.45
 # is pdfcraft's alone (printpdf stays on 0.39).
-hayro = { git = "https://github.com/happyrust/pid-parse", rev = "d0a58c64c413fce57fd78a5816857648c7aacbbb" }
-hayro-interpret = { git = "https://github.com/happyrust/pid-parse", rev = "d0a58c64c413fce57fd78a5816857648c7aacbbb" }
-hayro-syntax = { git = "https://github.com/happyrust/pid-parse", rev = "d0a58c64c413fce57fd78a5816857648c7aacbbb" }
-lopdf = { git = "https://github.com/happyrust/pid-parse", rev = "d0a58c64c413fce57fd78a5816857648c7aacbbb" }
+hayro = { git = "https://github.com/happyrust/pid-parse", rev = "96ee00cf7555a046592f2b798b75cdd0a0e54d3b" }
+hayro-interpret = { git = "https://github.com/happyrust/pid-parse", rev = "96ee00cf7555a046592f2b798b75cdd0a0e54d3b" }
+hayro-syntax = { git = "https://github.com/happyrust/pid-parse", rev = "96ee00cf7555a046592f2b798b75cdd0a0e54d3b" }
+lopdf = { git = "https://github.com/happyrust/pid-parse", rev = "96ee00cf7555a046592f2b798b75cdd0a0e54d3b" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 getrandom = "0.3"
@@ -177,10 +177,10 @@ ureq = { version = "3", default-features = false, features = ["rustls", "platfor
 # SmartPlant / Smart P&ID `.pid` reader, pinned to the public GitHub repo.
 # Native-only: it reaches SQL Server backups through a bundled sqlite3 and
 # the vendored `oxidized-mdf`, neither of which builds for wasm.
-pid-parse = { git = "https://github.com/happyrust/pid-parse", rev = "d0a58c64c413fce57fd78a5816857648c7aacbbb" }
+pid-parse = { git = "https://github.com/happyrust/pid-parse", rev = "96ee00cf7555a046592f2b798b75cdd0a0e54d3b" }
 # PIDPLOT: pid-parse's own paper plot of a `.pid` (border template, library
 # symbol bodies, the sheet's typefaces subset in) written to PDF by pdfcraft.
-pid-plot = { git = "https://github.com/happyrust/pid-parse", rev = "d0a58c64c413fce57fd78a5816857648c7aacbbb" }
+pid-plot = { git = "https://github.com/happyrust/pid-parse", rev = "96ee00cf7555a046592f2b798b75cdd0a0e54d3b" }
 # AVEVA E3D / PDMS Dabacon reader and Core3D-compatible 3D model generator
 # (ADR-0001). Native-only: `e3d-model` links C++ `manifold-csg` and `e3d-io`
 # reads local multi-file Dabacon project directories. The web build consumes

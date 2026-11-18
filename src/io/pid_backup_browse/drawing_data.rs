@@ -49,13 +49,17 @@ pub enum ValueSource {
     /// Fixed by a rule of the program that published the drawing, at this
     /// address in it.
     NativeRule(String),
-    /// A column of a row in the backup's database.
+    /// A column of a row in the backup's database: the value itself, or the
+    /// codelist index it is spelled from.
     DatabaseColumn {
         /// The table, e.g. `T_PIPINGPOINT`.
         table: String,
         /// The column, e.g. `PIPINGPOINTNUMBER`.
         column: String,
     },
+    /// The same value on every object of the published class: what the
+    /// reader states for a drawing's constant attributes.
+    ClassConstant,
 }
 
 impl From<&PidValueSource> for ValueSource {
@@ -66,10 +70,16 @@ impl From<&PidValueSource> for ValueSource {
             PidValueSource::DerivedByNativeRule { address, .. } => {
                 ValueSource::NativeRule((*address).to_string())
             }
-            PidValueSource::BackupRow { table, column } => ValueSource::DatabaseColumn {
+            PidValueSource::BackupRow { table, column }
+            | PidValueSource::CodelistCell { table, column, .. } => ValueSource::DatabaseColumn {
                 table: (*table).to_string(),
                 column: (*column).to_string(),
             },
+            PidValueSource::PlacedColumn(placed) => ValueSource::DatabaseColumn {
+                table: placed.table.clone(),
+                column: placed.column.clone(),
+            },
+            PidValueSource::ClassConstant => ValueSource::ClassConstant,
         }
     }
 }
@@ -222,6 +232,7 @@ mod tests {
     use pid_parse::publish::pid_load::{
         PidPublishAttribute, PidPublishDrawing, PidPublishItem, PipelineSynthesis,
     };
+    use pid_parse::publish::placement::DumpColumn;
 
     fn item(uid: &str, item_type: &str, name: Option<&str>) -> PidPublishItem {
         PidPublishItem {
@@ -252,6 +263,7 @@ mod tests {
         PidPublishDrawing {
             drawing_uid: "DRAWING-1".to_string(),
             drawing_name: "D01".to_string(),
+            drawing_attributes: Vec::new(),
             items: vec![
                 item("RUN-1", "PipeRun", None),
                 item("INSTR-1", "Instrument", Some("PT-101")),
@@ -410,6 +422,33 @@ mod tests {
                 table: "T_PIPINGPOINT".to_string(),
                 column: "PIPINGPOINTNUMBER".to_string(),
             }
+        );
+        // A codelist index is a column of the database too; how the reader
+        // spells it into a value is not part of where it comes from.
+        assert_eq!(
+            ValueSource::from(&PidValueSource::CodelistCell {
+                table: "T_PLANTITEM",
+                column: "CONSTRUCTIONSTATUS",
+                spelling: "MapEnumToEnum",
+            }),
+            ValueSource::DatabaseColumn {
+                table: "T_PLANTITEM".to_string(),
+                column: "CONSTRUCTIONSTATUS".to_string(),
+            }
+        );
+        assert_eq!(
+            ValueSource::from(&PidValueSource::PlacedColumn(DumpColumn {
+                table: "T_PipeRun".to_string(),
+                column: "PipingMaterialsClass".to_string(),
+            })),
+            ValueSource::DatabaseColumn {
+                table: "T_PipeRun".to_string(),
+                column: "PipingMaterialsClass".to_string(),
+            }
+        );
+        assert_eq!(
+            ValueSource::from(&PidValueSource::ClassConstant),
+            ValueSource::ClassConstant
         );
     }
 }

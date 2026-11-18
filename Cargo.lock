@@ -3819,17 +3819,17 @@ dependencies = [
 
 [[package]]
 name = "hashlink"
-version = "0.11.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824e001ac4f3012dd16a264bec811403a67ca9deb6c102fc5049b32c4574b35f"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
 dependencies = [
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
 name = "hayro"
 version = "0.7.1"
-source = "git+https://github.com/happyrust/pid-parse?rev=d0a58c64c413fce57fd78a5816857648c7aacbbb#d0a58c64c413fce57fd78a5816857648c7aacbbb"
+source = "git+https://github.com/happyrust/pid-parse?rev=96ee00cf7555a046592f2b798b75cdd0a0e54d3b#96ee00cf7555a046592f2b798b75cdd0a0e54d3b"
 dependencies = [
  "bytemuck",
  "hayro-interpret",
@@ -3859,7 +3859,7 @@ dependencies = [
 [[package]]
 name = "hayro-interpret"
 version = "0.7.0"
-source = "git+https://github.com/happyrust/pid-parse?rev=d0a58c64c413fce57fd78a5816857648c7aacbbb#d0a58c64c413fce57fd78a5816857648c7aacbbb"
+source = "git+https://github.com/happyrust/pid-parse?rev=96ee00cf7555a046592f2b798b75cdd0a0e54d3b#96ee00cf7555a046592f2b798b75cdd0a0e54d3b"
 dependencies = [
  "bitflags 2.13.1",
  "hayro-cmap",
@@ -3902,7 +3902,7 @@ checksum = "885c5ef0654933139a9b9546fc2c69e18d37f38aa2520f079092b1be18f1fcaa"
 [[package]]
 name = "hayro-syntax"
 version = "0.7.2"
-source = "git+https://github.com/happyrust/pid-parse?rev=d0a58c64c413fce57fd78a5816857648c7aacbbb#d0a58c64c413fce57fd78a5816857648c7aacbbb"
+source = "git+https://github.com/happyrust/pid-parse?rev=96ee00cf7555a046592f2b798b75cdd0a0e54d3b#96ee00cf7555a046592f2b798b75cdd0a0e54d3b"
 dependencies = [
  "flate2",
  "hayro-ccitt",
@@ -5099,9 +5099,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.37.0"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f111c8c41e7c61a49cd34e44c7619462967221a6443b0ec299e0ac30cfb9b1"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -5235,7 +5235,7 @@ dependencies = [
 [[package]]
 name = "lopdf"
 version = "0.45.0"
-source = "git+https://github.com/happyrust/pid-parse?rev=d0a58c64c413fce57fd78a5816857648c7aacbbb#d0a58c64c413fce57fd78a5816857648c7aacbbb"
+source = "git+https://github.com/happyrust/pid-parse?rev=96ee00cf7555a046592f2b798b75cdd0a0e54d3b#96ee00cf7555a046592f2b798b75cdd0a0e54d3b"
 dependencies = [
  "aes 0.9.3",
  "bitflags 2.13.1",
@@ -6455,7 +6455,7 @@ dependencies = [
 [[package]]
 name = "oxidized-mdf"
 version = "0.3.1"
-source = "git+https://github.com/happyrust/pid-parse?rev=d0a58c64c413fce57fd78a5816857648c7aacbbb#d0a58c64c413fce57fd78a5816857648c7aacbbb"
+source = "git+https://github.com/happyrust/pid-parse?rev=96ee00cf7555a046592f2b798b75cdd0a0e54d3b#96ee00cf7555a046592f2b798b75cdd0a0e54d3b"
 dependencies = [
  "bitvec",
  "chrono",
@@ -6703,7 +6703,7 @@ checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
 [[package]]
 name = "pid-parse"
 version = "0.11.7"
-source = "git+https://github.com/happyrust/pid-parse?rev=d0a58c64c413fce57fd78a5816857648c7aacbbb#d0a58c64c413fce57fd78a5816857648c7aacbbb"
+source = "git+https://github.com/happyrust/pid-parse?rev=96ee00cf7555a046592f2b798b75cdd0a0e54d3b#96ee00cf7555a046592f2b798b75cdd0a0e54d3b"
 dependencies = [
  "base64",
  "cfb",
@@ -6726,7 +6726,7 @@ dependencies = [
 [[package]]
 name = "pid-plot"
 version = "0.1.0"
-source = "git+https://github.com/happyrust/pid-parse?rev=d0a58c64c413fce57fd78a5816857648c7aacbbb#d0a58c64c413fce57fd78a5816857648c7aacbbb"
+source = "git+https://github.com/happyrust/pid-parse?rev=96ee00cf7555a046592f2b798b75cdd0a0e54d3b#96ee00cf7555a046592f2b798b75cdd0a0e54d3b"
 dependencies = [
  "fontcull-klippa",
  "fontcull-read-fonts",
@@ -7707,20 +7707,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
-name = "rsqlite-vfs"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
-dependencies = [
- "hashbrown 0.16.1",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "rusqlite"
-version = "0.39.0"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0d2b0146dd9661bf67bb107c0bb2a55064d556eeb3fc314151b957f313bcd4e"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.1",
  "fallible-iterator",
@@ -7728,7 +7718,6 @@ dependencies = [
  "hashlink",
  "libsqlite3-sys",
  "smallvec",
- "sqlite-wasm-rs",
 ]
 
 [[package]]
@@ -8523,18 +8512,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
 dependencies = [
  "bitflags 2.13.1",
-]
-
-[[package]]
-name = "sqlite-wasm-rs"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc3efc0da82635d7e1ced0053bbbfa8c7ab9645d0bf36ceb4f7127bb85315d75"
-dependencies = [
- "cc",
- "js-sys",
- "rsqlite-vfs",
- "wasm-bindgen",
 ]
 
 [[package]]

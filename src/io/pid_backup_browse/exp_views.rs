@@ -586,6 +586,7 @@ impl Dump {
         let mut drawing = PidPublishDrawing {
             drawing_uid: items.drawing_uid.clone(),
             drawing_name: items.drawing_name.clone(),
+            drawing_attributes: Vec::new(),
             items: connectors
                 .iter()
                 .map(|uid| PidPublishItem {
