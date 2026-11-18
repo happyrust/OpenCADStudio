@@ -13,6 +13,15 @@
 //! -- a SmartPlant backup keeps them inside a `RefData~*` archive, not under
 //! `Ref/Template Files` -- takes them, and fonts it does not carry, from the
 //! reference folder ([`reference_root`]).
+//!
+//! A drawing whose project carries its own templates is plotted the way
+//! pid-parse's command-line plotter plots it against that project: the same
+//! layout call, the page titled with the drawing's file name, and
+//! `PID_PLOT_CJK_FONT` adding a face as it does there. With the same faces in
+//! reach the two files are the same bytes; three plant sheets are held to
+//! that by `pid_pdf_real_sheets_are_the_bytes_pid_plot_writes`. Faces are
+//! looked for in more folders here ([`font_folders`]) than `pid_plot` looks
+//! in, so a sheet it refuses for want of a face may still be written here.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -22,6 +31,11 @@ const CORPUS_SEARCH_DEPTH: usize = 5;
 
 /// Names the reference folder; see [`reference_root`].
 const REFERENCE_ENV: &str = "PID_PLOT_CORPUS";
+
+/// Names one more face file to embed, whole and under no name, as `pid_plot`
+/// reads it: it letters only a stretch that no single face pid-plot borrows
+/// from draws whole.
+const CJK_FONT_ENV: &str = "PID_PLOT_CJK_FONT";
 
 /// The reference folder when [`REFERENCE_ENV`] is not set: the plant test
 /// data on the machine this was set up for (symbols under `Ref/Symbols`,
@@ -54,6 +68,24 @@ pub struct PidPdfReceipt {
     pub corpus: PathBuf,
     /// Where reference data came from beyond the drawing's own project.
     pub notes: Vec<String>,
+    /// pid-plot's account of the page.
+    pub ledger: PageLedger,
+}
+
+/// pid-plot's account of one page, summed over the drawing and its border
+/// template: the line `pid_plot` prints as `ledger entities ... on_page ...`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PageLedger {
+    /// Entities the layout visited.
+    pub entities: u64,
+    /// Of those, the ones that reached the page.
+    pub on_page: u64,
+    /// What was left out on purpose, counted over every layer of the account.
+    pub intentional: u64,
+    /// What was left out in a way that may be a fault, counted the same way.
+    pub suspect: u64,
+    /// What nothing accounts for; a page that balances has none.
+    pub unattributed: u64,
 }
 
 pub fn is_pid(path: &Path) -> bool {
@@ -114,19 +146,49 @@ fn push_unique(dirs: &mut Vec<PathBuf>, dir: PathBuf) {
     }
 }
 
-fn sources_for(drawing: &Path) -> Sources {
-    let project = corpus_for(drawing);
-    let reference = reference_root();
-    let mut fonts = ::pid_plot::fonts::font_dirs(Some(&project));
-    if let Some(root) = &reference {
+/// The folders faces are looked for in, in order. `own` is pid-plot's list
+/// for the project -- `PID_PLOT_FONTS`, the project's `fonts`, the folder its
+/// build names -- and stays whole and first, so a face `pid_plot` finds is
+/// the file found here. Then the caller's folders, the reference folder's
+/// `fonts`, and last the folder Windows installs Arial, Arial Narrow and
+/// FangSong in. SimSun is not among those: Windows ships it as a collection
+/// (`simsun.ttc`), which pid-plot does not embed.
+fn font_folders(
+    own: Vec<PathBuf>,
+    extra: &[PathBuf],
+    reference: Option<&Path>,
+    windows: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut fonts = own;
+    for dir in extra {
+        push_unique(&mut fonts, dir.clone());
+    }
+    if let Some(root) = reference {
         push_unique(&mut fonts, root.join("fonts"));
     }
-    // Last resort: Arial, Arial Narrow and FangSong where Windows installs
-    // them. SimSun is not among them: Windows ships it as a collection
-    // (`simsun.ttc`), which pid-plot does not embed.
-    if let Some(windows) = std::env::var_os("WINDIR") {
-        push_unique(&mut fonts, PathBuf::from(windows).join("Fonts"));
+    if let Some(windows) = windows {
+        push_unique(&mut fonts, windows.join("Fonts"));
     }
+    fonts
+}
+
+/// The sources of a drawing plotted where it lies: its project is found from
+/// its folder ([`corpus_for`]).
+fn sources_for(drawing: &Path) -> Sources {
+    sources_in(drawing, corpus_for(drawing), &[])
+}
+
+/// The sources of a drawing whose project the caller states, with the font
+/// folders the caller adds ([`font_folders`]).
+fn sources_in(drawing: &Path, project: PathBuf, extra_fonts: &[PathBuf]) -> Sources {
+    let reference = reference_root();
+    let windows = std::env::var_os("WINDIR").map(PathBuf::from);
+    let fonts = font_folders(
+        ::pid_plot::fonts::font_dirs(Some(&project)),
+        extra_fonts,
+        reference.as_deref(),
+        windows.as_deref(),
+    );
     let reference = match reference {
         Some(root) if !has_templates(&project) => root,
         _ => {
@@ -352,9 +414,29 @@ fn template_cache(archive: &Path) -> PathBuf {
         .join(format!("{:016x}", hasher.finish()))
 }
 
-/// Lay out `drawing`, write its PDF to `target` and say what went in.
+/// Lay out `drawing`, write its PDF to `target` and say what went in. The
+/// drawing's project is found from where it lies ([`corpus_for`]).
 pub fn plot_pdf(drawing: &Path, target: &Path) -> Result<PidPdfReceipt, String> {
-    let sources = sources_for(drawing);
+    plot_from(drawing, target, sources_for(drawing))
+}
+
+/// [`plot_pdf`] for a caller that knows where the drawing belongs, as one
+/// plotting every sheet of a backup does: `project` is the folder holding
+/// its `Ref` -- the folder the backup was restored to -- and `fonts` are
+/// further folders to look for faces in ([`font_folders`]). A project
+/// without border templates takes them from the reference folder as it does
+/// for [`plot_pdf`], and the receipt's notes say so.
+pub fn plot_pdf_against(
+    drawing: &Path,
+    target: &Path,
+    project: &Path,
+    fonts: &[PathBuf],
+) -> Result<PidPdfReceipt, String> {
+    let sources = sources_in(drawing, project.to_path_buf(), fonts);
+    plot_from(drawing, target, sources)
+}
+
+fn plot_from(drawing: &Path, target: &Path, sources: Sources) -> Result<PidPdfReceipt, String> {
     let model = match &sources.symbol_roots {
         None => ::pid_plot::model::lay_out_drawing(drawing, &sources.corpus),
         Some(roots) => {
@@ -371,17 +453,16 @@ pub fn plot_pdf(drawing: &Path, target: &Path) -> Result<PidPdfReceipt, String> 
         }
     }
     .map_err(|error| error.to_string())?;
-    let prepared = ::pid_plot::fonts::prepare_fonts(&[&model], &sources.fonts)?;
-    let fonts: Vec<::pid_plot::write::PlotFont<'_>> = prepared
-        .iter()
-        .map(|face| ::pid_plot::write::PlotFont {
-            key: &face.key,
-            bytes: &face.bytes,
-            subset: face.subset,
-        })
-        .collect();
-    let pdf = ::pid_plot::write::write_plot(&model, &fonts).map_err(|error| error.to_string())?;
-    if let Some(parent) = target.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    // `pid_plot` reads the variable the same way: a value that is not
+    // Unicode names no file.
+    let extra_face = std::env::var(CJK_FONT_ENV).ok().map(PathBuf::from);
+    let written = write_page(&model, &sources.fonts, extra_face.as_deref(), drawing)?;
+    let ledger = ::pid_plot::ledger::ExportLedger::assemble(&model, &written.ledger).summary();
+    let pdf = written.pdf;
+    if let Some(parent) = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
     }
@@ -401,7 +482,46 @@ pub fn plot_pdf(drawing: &Path, target: &Path) -> Result<PidPdfReceipt, String> 
         missing_symbols: model.missing_symbols.clone(),
         corpus: sources.corpus,
         notes: sources.notes,
+        ledger: PageLedger {
+            entities: ledger.entities,
+            on_page: ledger.on_page,
+            intentional: ledger.intentional,
+            suspect: ledger.suspect,
+            unattributed: ledger.unattributed,
+        },
     })
+}
+
+/// The page of a laid-out drawing as `pid_plot` writes it: set in the faces
+/// its labels name, with `extra_face` embedded whole beside them when one is
+/// given, and titled with the drawing's file name.
+fn write_page(
+    model: &::pid_plot::model::PaperModel,
+    folders: &[PathBuf],
+    extra_face: Option<&Path>,
+    drawing: &Path,
+) -> Result<::pid_plot::write::WrittenPlot, String> {
+    let mut prepared = ::pid_plot::fonts::prepare_fonts(&[model], folders)?;
+    if let Some(path) = extra_face {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        prepared.push(::pid_plot::fonts::PreparedFont {
+            key: String::new(),
+            bytes,
+            subset: false,
+        });
+    }
+    let fonts: Vec<::pid_plot::write::PlotFont<'_>> = prepared
+        .iter()
+        .map(|face| ::pid_plot::write::PlotFont {
+            key: &face.key,
+            bytes: &face.bytes,
+            subset: face.subset,
+        })
+        .collect();
+    let title = drawing.file_stem().map(|stem| stem.to_string_lossy());
+    ::pid_plot::write::write_plot_titled(model, &fonts, title.as_deref())
+        .map_err(|error| error.to_string())
 }
 
 /// [`plot_pdf`] on a worker thread: parsing the sheet and its template and
@@ -584,5 +704,264 @@ mod tests {
             .join(format!("{:016x}", hasher.finish()));
         assert_ne!(template_cache(&archive), earlier);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn faces_are_looked_for_in_pid_plots_folders_then_the_callers_then_the_fallbacks() {
+        // pid-plot's own list is taken as it is, a repeat included.
+        let own = vec![
+            PathBuf::from("named"),
+            PathBuf::from("project/fonts"),
+            PathBuf::from("named"),
+        ];
+        // The caller's second folder is one pid-plot searches already.
+        let extra = [
+            PathBuf::from("package/fonts"),
+            PathBuf::from("project/fonts"),
+        ];
+        let folders = font_folders(
+            own,
+            &extra,
+            Some(Path::new("reference")),
+            Some(Path::new("windows")),
+        );
+        assert_eq!(
+            folders,
+            [
+                PathBuf::from("named"),
+                PathBuf::from("project/fonts"),
+                PathBuf::from("named"),
+                PathBuf::from("package/fonts"),
+                Path::new("reference").join("fonts"),
+                Path::new("windows").join("Fonts"),
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_reference_or_windows_only_the_stated_folders_are_searched() {
+        let own = vec![PathBuf::from("project/fonts")];
+        let extra = [PathBuf::from("package/fonts")];
+        assert_eq!(
+            font_folders(own, &extra, None, None),
+            [
+                PathBuf::from("project/fonts"),
+                PathBuf::from("package/fonts")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stated_project_is_the_corpus_wherever_the_drawing_lies() {
+        let root = scratch("stated");
+        let project = root.join("restored");
+        let files = project.join("Ref").join("Template Files");
+        std::fs::create_dir_all(&files).unwrap();
+        std::fs::write(files.join("CPE-SQ-A1.igr"), b"").unwrap();
+        let package_fonts = [root.join("package").join("fonts")];
+        // Not under the project: found from its own folder, the drawing's
+        // corpus would be that folder.
+        let drawing = root.join("elsewhere").join("sheet.pid");
+        let sources = sources_in(&drawing, project.clone(), &package_fonts);
+        assert_eq!(sources.corpus, project);
+        assert!(sources.symbol_roots.is_none());
+        assert!(sources.notes.is_empty());
+        // pid-plot's own folders, the project's among them, then the caller's.
+        let own = ::pid_plot::fonts::font_dirs(Some(&project));
+        assert!(own.contains(&project.join("fonts")));
+        assert_eq!(sources.fonts[..own.len()], own[..]);
+        assert_eq!(sources.fonts[own.len()], package_fonts[0]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A sheet with nothing on it: a page that is written without a drawing
+    /// and without a face.
+    fn blank_page() -> ::pid_plot::model::PaperModel {
+        ::pid_plot::model::PaperModel {
+            library: Vec::new(),
+            page_mm: Some([420.0, 297.0]),
+            frame_mm: None,
+            template: None,
+            primitives: Vec::new(),
+            off_sheet_primitives: 0,
+            skipped_endpoint_pairs: 0,
+            missing_symbols: Vec::new(),
+            missing_templates: Vec::new(),
+            missing_boxes: Vec::new(),
+            symbols_found: 0,
+            symbols_referenced: 0,
+            ledger: ::pid_plot::ledger::LayoutLedger::default(),
+        }
+    }
+
+    /// The document title `pdf` carries, as text.
+    fn title_of(pdf: Vec<u8>) -> Option<String> {
+        let pdf = hayro::hayro_syntax::Pdf::new(std::sync::Arc::new(pdf)).unwrap();
+        let title = pdf.metadata().title.clone()?;
+        Some(match title.strip_prefix(&[0xFE, 0xFF]) {
+            Some(utf16) => {
+                let (pairs, odd) = utf16.as_chunks::<2>();
+                assert!(odd.is_empty(), "half a UTF-16 unit in the title");
+                let units: Vec<u16> = pairs.iter().copied().map(u16::from_be_bytes).collect();
+                String::from_utf16(&units).unwrap()
+            }
+            None => String::from_utf8(title).unwrap(),
+        })
+    }
+
+    #[test]
+    fn the_page_is_titled_with_the_drawings_file_name() {
+        for name in ["D04", "EF井场 注采阀组工艺及自控流程图"] {
+            let drawing = Path::new("plant").join(format!("{name}.pid"));
+            let written = write_page(&blank_page(), &[], None, &drawing).unwrap();
+            assert_eq!(title_of(written.pdf).as_deref(), Some(name));
+        }
+    }
+
+    #[test]
+    fn an_extra_face_that_cannot_be_read_stops_the_page() {
+        let root = scratch("face");
+        let face = root.join("absent.ttf");
+        let error =
+            write_page(&blank_page(), &[], Some(&face), Path::new("sheet.pid")).unwrap_err();
+        assert!(error.starts_with("cannot read "), "{error}");
+        assert!(error.contains("absent.ttf"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What `variable` names, else `default`: where the real-sample
+    /// comparison finds its inputs on the machine it was set up on.
+    fn real_input(variable: &str, default: impl FnOnce() -> PathBuf) -> PathBuf {
+        std::env::var_os(variable).map_or_else(default, PathBuf::from)
+    }
+
+    /// `pid_plot` built from the commit `Cargo.toml` pins pid-plot to, where
+    /// `scripts/sppid/build-pid-tools.ps1` leaves it.
+    fn pinned_pid_plot() -> PathBuf {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let text = std::fs::read_to_string(manifest).unwrap();
+        let rev = text
+            .lines()
+            .find(|line| line.starts_with("pid-plot "))
+            .and_then(|line| line.split("rev = \"").nth(1))
+            .and_then(|rest| rest.split('"').next())
+            .expect("Cargo.toml pins pid-plot to a rev");
+        PathBuf::from(r"D:\scratch\ocs-sppid\tools")
+            .join(&rev[..7])
+            .join("pid_plot.exe")
+    }
+
+    /// `ledger` the way `pid_plot` prints a page's account.
+    fn account_line(ledger: PageLedger) -> String {
+        format!(
+            "ledger entities {} on_page {} intentional {} suspect {} unattributed {}",
+            ledger.entities,
+            ledger.on_page,
+            ledger.intentional,
+            ledger.suspect,
+            ledger.unattributed
+        )
+    }
+
+    /// Three sheets of the plant backup -- its second smallest, median and
+    /// largest `.pid` -- plotted here twice, where the sheet lies
+    /// ([`plot_pdf`]) and, from a copy lying outside it, against the restored
+    /// folder as a stated project ([`plot_pdf_against`]), and by `pid_plot`
+    /// of the pinned commit: the same restored drawing, against the corpus
+    /// this module chose, with the font folders this module searches handed
+    /// over as `PID_PLOT_FONTS`. The three pages must be one file, byte for
+    /// byte, and the account both receipts carry must be the line `pid_plot`
+    /// prints.
+    ///
+    /// `OCS_PID_PDF_REAL_BACKUP` names another backup,
+    /// `OCS_PID_PDF_REAL_PLOTTER` another `pid_plot`, `OCS_PID_PDF_REAL_OUT` a
+    /// folder to keep both sets of pages in. A backup or plotter that is not
+    /// there fails the test: a comparison that did not run must not read as
+    /// one that passed.
+    #[test]
+    #[ignore = "plots real sheets and runs pid_plot beside them; run alone with --ignored --nocapture"]
+    fn pid_pdf_real_sheets_are_the_bytes_pid_plot_writes() {
+        const SHEETS: [&str; 3] = [
+            "D04",
+            "集注站 低压气及轻烃处理单元 轻烃分离器二工艺及自控流程图",
+            "EF井场 注采阀组工艺及自控流程图",
+        ];
+        let backup = real_input("OCS_PID_PDF_REAL_BACKUP", || DEFAULT_REFERENCE_ROOT.into());
+        let plotter = real_input("OCS_PID_PDF_REAL_PLOTTER", pinned_pid_plot);
+        assert!(backup.is_dir(), "no backup at {}", backup.display());
+        assert!(
+            plotter.is_file(),
+            "no pid_plot at {}: scripts/sppid/build-pid-tools.ps1 builds it",
+            plotter.display()
+        );
+        let kept = std::env::var_os("OCS_PID_PDF_REAL_OUT").map(PathBuf::from);
+        let root = kept.clone().unwrap_or_else(|| scratch("real"));
+        let restored =
+            crate::io::pid_backup::restore(&backup, Some(&root.join("restored"))).unwrap();
+        let mut unlike = Vec::new();
+        for name in SHEETS {
+            let drawing = restored
+                .drawings
+                .iter()
+                .find(|path| path.file_stem().is_some_and(|stem| stem == name))
+                .unwrap_or_else(|| panic!("the backup holds no {name}.pid"));
+            let ours = root.join("ours").join(format!("{name}.pdf"));
+            let stated = root.join("stated").join(format!("{name}.pdf"));
+            let theirs = root.join("pid_plot").join(format!("{name}.pdf"));
+            let receipt = plot_pdf(drawing, &ours).unwrap();
+            // A copy under a folder that holds no `Ref`: found from where it
+            // lies, its corpus would not be the restored folder.
+            let apart = root.join("apart").join(format!("{name}.pid"));
+            std::fs::create_dir_all(root.join("apart")).unwrap();
+            std::fs::copy(drawing, &apart).unwrap();
+            let whole = plot_pdf_against(&apart, &stated, &restored.root, &[]).unwrap();
+            let fonts = std::env::join_paths(sources_for(drawing).fonts).unwrap();
+            let run = std::process::Command::new(&plotter)
+                .arg(drawing)
+                .arg(&theirs)
+                .arg(&receipt.corpus)
+                .env("PID_PLOT_FONTS", &fonts)
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&run.stderr);
+            assert!(run.status.success(), "pid_plot {name}: {said}");
+            let told = String::from_utf8_lossy(&run.stdout);
+            let account = account_line(receipt.ledger);
+            let accounted = told.lines().any(|line| line == account);
+            let agreed = whole.ledger == receipt.ledger
+                && whole.corpus == receipt.corpus
+                && whole.notes == receipt.notes;
+            let ours = std::fs::read(&ours).unwrap();
+            let stated = std::fs::read(&stated).unwrap();
+            let theirs = std::fs::read(&theirs).unwrap();
+            let verdict = match ours.iter().zip(&theirs).position(|(a, b)| a != b) {
+                Some(at) => format!("first differ at byte {at}"),
+                None if ours.len() == theirs.len() => "the same bytes".to_string(),
+                None => "one is the start of the other".to_string(),
+            };
+            eprintln!(
+                "{name}: here {} bytes, pid_plot {} bytes, {verdict}; corpus {}; notes {:?}",
+                ours.len(),
+                theirs.len(),
+                receipt.corpus.display(),
+                receipt.notes
+            );
+            eprintln!(
+                "{name}: as a stated project {} bytes, same file {}, same receipt {agreed}; \
+                 {account}, printed by pid_plot {accounted}",
+                stated.len(),
+                stated == theirs
+            );
+            if ours != theirs || stated != theirs || !agreed || !accounted {
+                unlike.push(name);
+            }
+        }
+        if kept.is_none() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        assert!(
+            unlike.is_empty(),
+            "not the bytes pid_plot writes: {unlike:?}"
+        );
     }
 }
