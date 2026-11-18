@@ -85,9 +85,11 @@ pub struct ImportSummary {
     /// block and margin strips. Separate from `drawn`, which counts the
     /// sheet's own entities.
     pub template_entities: usize,
-    /// Template records the parser saw but could not draw (the static
-    /// lettering, arcs and boundary rings the template decoders do not yet
-    /// cover). Kept beside `missing`, never folded into it.
+    /// Template records that were not drawn: the ones the parser saw but
+    /// could not decode (the static lettering, arcs and boundary rings the
+    /// template decoders do not yet cover), and the template's symbol
+    /// placements no body answered for, which the border leaves out rather
+    /// than mark with a dot. Kept beside `missing`, never folded into it.
     pub template_missing: usize,
     /// The symbol library roots the import found -- `PID_SYMBOL_LIBRARY` or
     /// the `.sym` tree above the drawing -- and drew its library bodies

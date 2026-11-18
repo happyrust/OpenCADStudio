@@ -72,9 +72,11 @@ pub(super) struct TemplateOverlay {
     pub(super) file: PathBuf,
     /// Entities handed to the document.
     pub(super) drawn: usize,
-    /// Template records the parser saw but could not draw: no decoder, or a
-    /// shape the decoder for that type refuses. Counted beside the
-    /// drawing's own `missing`, never folded into it.
+    /// Template records that were not drawn: the ones the parser saw but
+    /// has no decoder for, or in a shape the decoder for that type refuses,
+    /// and the symbol placements no body answered for (the border wears no
+    /// marker dot; see [`overlay_template`]). Counted beside the drawing's
+    /// own `missing`, never folded into it.
     pub(super) missing: usize,
     /// The template drew a frame covering the drawing's stated page, so the
     /// synthetic border rectangle would double it.
@@ -650,10 +652,33 @@ pub(super) fn read_template(igr: &Path, stated: bool) -> Option<ReadTemplate> {
 /// The whole styling apparatus of a sheet -- its own `StyleCluster` line
 /// widths and colours, its character-style lettering -- applies to the
 /// template unchanged. The entity loop below is the drawing's loop minus the
-/// parts a border template does not have: symbol placements (a template's
-/// `JSymbol` is the label the sheet letters into the block, not a body to
-/// draw), sheet-layer filing (the drawing's view filter belongs to the
-/// drawing), and framing bounds (the page already frames the view).
+/// parts a border template does not have: sheet-layer filing (the drawing's
+/// view filter belongs to the drawing), and framing bounds (the page already
+/// frames the view).
+///
+/// A template is a drawing, so a symbol it places draws like any other, the
+/// way `pid-plot` draws it: [`build_entities`] is handed the body the
+/// template itself caches for the placement and the symbol library found
+/// from the template's own folder, as it would be were the `.igr` opened as
+/// a sheet. The plant backup's templates keep drafting in placements -- the
+/// wave in the `比例` cell of the `CPE-SQ` title blocks, the sign-off column
+/// of `CPECCHB-SQ-A2.igr`, the whole frame and title block of
+/// `XIONGANA2.igr` -- and a loop that skipped them left it off the sheet.
+///
+/// Two things are still left out:
+///
+/// - A label placement whose cached body is only its anchor cross, which is
+///   [`build_entities`]' rule for every sheet ([`is_label_symbol`],
+///   [`is_anchor_cross_only`]). What such a label shows is lettering the
+///   sheet states in text records of its own, so drawing the body would add
+///   a cross and nothing else. This is also why the overlay cannot letter
+///   the block twice: the name and number a sheet fills in are that sheet's
+///   records, drawn by the sheet's loop, and none of them is the template's
+///   to draw.
+/// - What the importer adds beside a sheet's placement: the symbol's name
+///   ([`LAYER_SYMBOL_LABEL`]) and, where no body answers, the marker dot. A
+///   title block wears neither, so a placement no body answers for draws
+///   nothing and is counted in [`TemplateOverlay::missing`] instead.
 pub(super) fn overlay_template(
     template: &ReadTemplate,
     geometry: &NormalizedPidGeometry,
@@ -664,7 +689,19 @@ pub(super) fn overlay_template(
     let tpl_geometry = &template.geometry;
     let styles = resolve_styles(&template.parsed, tpl_geometry, igr, doc, paper_style_scale);
     let projection = Projection::for_geometry(tpl_geometry, &template.unit);
+    // The template's own tally and its own library, looked for from where
+    // the template lies: neither its placements nor its lookups belong in
+    // the drawing's report. A template that places no symbol looks for none.
     let mut symbol_bodies = SymbolBodies::default();
+    let places_symbols = tpl_geometry.entities.iter().any(|entity| {
+        entity.confidence == PidGeometryConfidence::Decoded
+            && matches!(entity.kind, PidGraphicKind::SymbolInstance { .. })
+    });
+    let mut library = if places_symbols {
+        discover_symbol_library(igr)
+    } else {
+        None
+    };
     let mut decoded = 0usize;
     let mut drawn = 0usize;
     let mut page_frame_covered = false;
@@ -677,12 +714,6 @@ pub(super) fn overlay_template(
         if entity.confidence != PidGeometryConfidence::Decoded {
             continue;
         }
-        // A placement in a template is the label the sheet letters into the
-        // block; there is no body for this importer to draw, so the record
-        // stays a record rather than becoming a stray marker dot.
-        if matches!(entity.kind, PidGraphicKind::SymbolInstance { .. }) {
-            continue;
-        }
         let fill = fill_for(&styles.fills, entity);
         if let Some(fill) = fill {
             if let Some(key) = fill_dedupe_key(&entity.kind, fill) {
@@ -693,6 +724,21 @@ pub(super) fn overlay_template(
         }
         let symbology = style_for(&styles.styles, entity);
         let style_name = style_name_for(&styles.style_names, entity, symbology);
+        // The body the template itself caches for a placement, read the way
+        // the drawing's loop reads the drawing's.
+        let cached_body = match &entity.kind {
+            PidGraphicKind::SymbolInstance {
+                definition: Some(definition),
+                ..
+            } => tpl_geometry.symbol_definition(*definition),
+            _ => None,
+        };
+        let is_placement = matches!(entity.kind, PidGraphicKind::SymbolInstance { .. });
+        let placed_from = match &entity.kind {
+            PidGraphicKind::SymbolInstance { symbol_path, .. } => symbol_path.as_deref(),
+            _ => None,
+        };
+        let tally_before = symbol_bodies;
         let built = match fill {
             Some(fill) => build_fill(&entity.kind, fill, projection),
             // `LAYER_GEOMETRY` is the working layer so `apply_symbology`
@@ -701,8 +747,8 @@ pub(super) fn overlay_template(
             None => build_entities(
                 &entity.kind,
                 BodySources {
-                    cached: None,
-                    library: None,
+                    cached: cached_body,
+                    library: library.as_mut(),
                 },
                 projection,
                 symbology,
@@ -713,10 +759,22 @@ pub(super) fn overlay_template(
                 &styles.font_styles,
             ),
         };
+        let built = if is_placement {
+            let outcome = placement_outcome(tally_before, symbol_bodies);
+            log::debug!(
+                "{}: template placement {:?}: {outcome}",
+                igr.display(),
+                placed_from.unwrap_or_default()
+            );
+            template_symbol_body(built, symbol_bodies.markers > tally_before.markers)
+        } else {
+            built
+        };
         if built.is_empty() {
             continue;
         }
         decoded += 1;
+        let template_symbol = placed_from.and_then(symbol_name);
         let text_style = height_for(&styles.text_heights, entity);
         let height_mm = text_style.map(|h| projection.mm(h.height_m));
         let text_rgb = text_style.and_then(pid_parse::style_link::ResolvedTextHeight::rgb);
@@ -778,6 +836,7 @@ pub(super) fn overlay_template(
                     .source_layer
                     .as_ref()
                     .and_then(|layer| layer.name.as_deref()),
+                template_symbol.as_deref(),
             );
             if let Some((width, height)) = geometry.page_dimensions_mm {
                 if let Some((min_x, min_y, max_x, max_y)) = drawn_extent(&one) {
@@ -793,6 +852,8 @@ pub(super) fn overlay_template(
             drawn += 1;
         }
     }
+    // A placement no body answered for is a template record that was not
+    // drawn, the same as one no decoder reads.
     let missing: usize = tpl_geometry
         .dropped_graphic_records
         .iter()
@@ -803,11 +864,31 @@ pub(super) fn overlay_template(
                 .iter()
                 .map(|refused| refused.count),
         )
-        .sum();
+        .sum::<usize>()
+        + symbol_bodies.markers;
     log::info!(
         "{}: border template drew {drawn} entities from {decoded} decoded records ({missing} template record(s) not drawn)",
         igr.display()
     );
+    if places_symbols {
+        let library_state = match library.as_ref() {
+            Some(library) => format!(
+                "{} of {} symbol(s) looked up are not in the library at {:?}",
+                library.missing().len(),
+                library.lookups(),
+                library.roots()
+            ),
+            None => "no symbol library found from the template's folder".to_string(),
+        };
+        log::info!(
+            "{}: template placements: {} drew the body the template caches, {} a library body, {} label anchor(s) left to the sheet's own lettering, {} with no body (not drawn); {library_state}",
+            igr.display(),
+            symbol_bodies.cache,
+            symbol_bodies.library,
+            symbol_bodies.label_anchors,
+            symbol_bodies.markers
+        );
+    }
     (drawn > 0).then_some(TemplateOverlay {
         file: igr.to_path_buf(),
         drawn,
@@ -816,20 +897,58 @@ pub(super) fn overlay_template(
     })
 }
 
+/// What [`build_entities`] did with one placement, read off the tally it
+/// keeps: each placement it is handed moves exactly one of the four counts.
+fn placement_outcome(before: SymbolBodies, after: SymbolBodies) -> &'static str {
+    if after.markers > before.markers {
+        "no body, not drawn"
+    } else if after.label_anchors > before.label_anchors {
+        "a label's anchor cross, left to the sheet's own lettering"
+    } else if after.cache > before.cache {
+        "drawn from the body the template caches"
+    } else if after.library > before.library {
+        "drawn from the symbol library"
+    } else {
+        "nothing built"
+    }
+}
+
+/// What a template's placement leaves on the sheet out of what
+/// [`build_entities`] built for it: the body alone. The symbol's name is
+/// lettering the importer adds beside a sheet's placement, and the marker
+/// dot stands for a body that is missing; a title block wears neither, so
+/// `no_body` -- the marker is what was built -- leaves nothing at all.
+fn template_symbol_body(built: Vec<EntityType>, no_body: bool) -> Vec<EntityType> {
+    if no_body {
+        return Vec::new();
+    }
+    built
+        .into_iter()
+        .filter(|entity| entity.common().layer != LAYER_SYMBOL_LABEL)
+        .collect()
+}
+
 /// Which `.igr` an entity came from and which layer the template filed it
 /// on, beside the `role=frame` it already carries:
 /// `template=CPE-SQ-A1.igr` under the same XDATA application, so a saved
-/// drawing still says whose drafting the title block is.
+/// drawing still says whose drafting the title block is. An entity one of
+/// the template's symbol placements drew also names the symbol,
+/// `template_symbol=hqz`, which is what tells the drafting a template keeps
+/// in a placement from the drafting it states in records of its own.
 fn attach_template_provenance(
     entity: &mut EntityType,
     template_name: &str,
     template_layer: Option<&str>,
+    template_symbol: Option<&str>,
 ) {
     use document::xdata::{ExtendedDataRecord, XDataValue};
     let mut record = ExtendedDataRecord::new(PID_SEMANTICS_XDATA_APP);
     record.add_value(XDataValue::String(format!("template={template_name}")));
     if let Some(layer) = template_layer {
         record.add_value(XDataValue::String(format!("template_layer={layer}")));
+    }
+    if let Some(symbol) = template_symbol {
+        record.add_value(XDataValue::String(format!("template_symbol={symbol}")));
     }
     entity.common_mut().extended_data.add_record(record);
 }
@@ -1368,6 +1487,331 @@ mod tests {
         assert_eq!(
             sheet_page_mm(&NormalizedPidGeometry::default(), &unit),
             None
+        );
+    }
+
+    /// Every `key=value` string an entity carries in its XDATA, whichever
+    /// record it rides.
+    fn xdata_strings(entity: &EntityType) -> Vec<String> {
+        entity
+            .common()
+            .extended_data
+            .records()
+            .iter()
+            .flat_map(|record| record.values.iter())
+            .filter_map(|value| match value {
+                document::xdata::XDataValue::String(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A template as [`read_template`] hands it over, built in memory: the
+    /// records and cached symbol bodies of `geometry`, read in metres.
+    fn template_of(file: &str, geometry: NormalizedPidGeometry) -> ReadTemplate {
+        ReadTemplate {
+            file: PathBuf::from(file),
+            stated: false,
+            parsed: pid_parse::PidDocument::default(),
+            geometry,
+            unit: ImportUnit::AssumedMetre,
+            stroked_mm: None,
+        }
+    }
+
+    /// Overlay `template` onto `doc` as the border of an A2 sheet.
+    fn overlay_on_a2(template: &ReadTemplate, doc: &mut Document) -> Option<TemplateOverlay> {
+        let sheet = NormalizedPidGeometry {
+            page_dimensions_mm: Some(A2),
+            ..Default::default()
+        };
+        overlay_template(template, &sheet, doc, 1.0)
+    }
+
+    /// A placement of the symbol filed at `path`, unrotated and unscaled.
+    fn placement(
+        at: (f64, f64),
+        path: &str,
+        definition: Option<pid_parse::PidSymbolDefinitionRef>,
+    ) -> PidGraphicKind {
+        PidGraphicKind::SymbolInstance {
+            insertion: point(at.0, at.1),
+            symbol_path: Some(path.to_string()),
+            rotation: 0.0,
+            scale: [1.0, 1.0],
+            definition,
+        }
+    }
+
+    /// A black, solid stroke style of the given width.
+    fn pen(width_mm: f64) -> Option<PrimitiveStyle> {
+        Some(PrimitiveStyle {
+            rgb: [0, 0, 0],
+            width_mm,
+            dash_mm: Vec::new(),
+            paper: false,
+        })
+    }
+
+    /// A cached symbol body whose `Default` layer (oid 8) the file displays
+    /// and whose `Label` layer (oid 9) it switches off, the way the caches
+    /// of the corpus do. Each stroke names the layer it sits on and the
+    /// style its own storage states for it.
+    fn cached_body(
+        reference: pid_parse::PidSymbolDefinitionRef,
+        strokes: Vec<(SymbolPrimitive, u32, Option<PrimitiveStyle>)>,
+    ) -> PidSymbolDefinition {
+        let layer = |oid: u32, name: &str, displayed: bool| pid_parse::PidSymbolSheetLayer {
+            oid,
+            name: Some(name.to_string()),
+            displayed: Some(displayed),
+        };
+        let mut primitives = Vec::new();
+        let mut primitive_layers = Vec::new();
+        let mut primitive_styles = Vec::new();
+        for (primitive, on, style) in strokes {
+            primitives.push(primitive);
+            primitive_layers.push(on);
+            primitive_styles.push(style);
+        }
+        PidSymbolDefinition {
+            reference,
+            layers: vec![8, 9],
+            sheet_layers: vec![layer(8, "Default", true), layer(9, "Label", false)],
+            primitives,
+            primitive_layers,
+            primitive_styles,
+            primitive_letterings: Vec::new(),
+            dimensions: Vec::new(),
+            variables: Vec::new(),
+            template: None,
+        }
+    }
+
+    /// A template is a drawing, so a symbol it places draws like any other:
+    /// the sign-off column of `CPECCHB-SQ-A2.igr` is three placements whose
+    /// bodies the template caches, and `XIONGANA2.igr` is one placement
+    /// around its whole frame and title block. The body lands where the
+    /// placement puts it, on `PID-FRAME`, naming the template and the
+    /// symbol it came from -- and a border carries neither the symbol's
+    /// name beside it nor a marker dot.
+    #[test]
+    fn pid_template_draws_the_symbols_the_template_places() {
+        let sign_off = pid_parse::PidSymbolDefinitionRef { site: 16, sheet: 3 };
+        let stroke = |end: (f64, f64)| {
+            let start = (0.0, 0.0);
+            (SymbolPrimitive::Line { start, end }, 8, pen(0.25))
+        };
+        let caption = |text: &str, at: (f64, f64), layer: u32| {
+            let text = text.to_string();
+            (SymbolPrimitive::Text { text, at }, layer, None)
+        };
+        let shown = Some(("Default", Some(true)));
+        let template = template_of(
+            "SIGN-A2.igr",
+            NormalizedPidGeometry {
+                entities: vec![
+                    entity(line((0.0, 0.0), (0.594, 0.0)), shown),
+                    entity(placement((0.010, 0.020), "hqz.sym", Some(sign_off)), shown),
+                ],
+                symbol_definitions: vec![cached_body(
+                    sign_off,
+                    vec![
+                        stroke((0.008, 0.0)),
+                        stroke((0.0, 0.030)),
+                        caption("会 签", (0.002, 0.010), 8),
+                        caption("Label", (0.002, 0.020), 9),
+                    ],
+                )],
+                ..Default::default()
+            },
+        );
+        let mut doc = Document::new();
+        let overlay = overlay_on_a2(&template, &mut doc).expect("the template draws");
+        assert_eq!(
+            overlay.drawn, 4,
+            "the template's own line, two strokes and one caption"
+        );
+        assert_eq!(overlay.missing, 0);
+
+        let drawn: Vec<&EntityType> = doc.entities().collect();
+        assert_eq!(drawn.len(), 4);
+        assert!(
+            drawn
+                .iter()
+                .all(|entity| entity.common().layer == LAYER_FRAME),
+            "everything the template draws files on PID-FRAME"
+        );
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        let has_line = |x0: f64, y0: f64, x1: f64, y1: f64| {
+            drawn.iter().any(|entity| {
+                matches!(entity, EntityType::Line(_))
+                    && drawn_extent(entity).is_some_and(|(min_x, min_y, max_x, max_y)| {
+                        near(min_x, x0) && near(min_y, y0) && near(max_x, x1) && near(max_y, y1)
+                    })
+            })
+        };
+        assert!(
+            has_line(10.0, 20.0, 18.0, 20.0),
+            "the body's horizontal stroke, at the placement"
+        );
+        assert!(
+            has_line(10.0, 20.0, 10.0, 50.0),
+            "the body's vertical stroke, at the placement"
+        );
+        let lettered: Vec<(&str, f64, f64)> = drawn
+            .iter()
+            .filter_map(|entity| match entity {
+                EntityType::Text(text) => Some((
+                    text.value.as_str(),
+                    text.insertion_point.x,
+                    text.insertion_point.y,
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lettered.len(),
+            1,
+            "the caption alone: not the lettering on the switched-off layer, not the symbol's name: {lettered:?}"
+        );
+        let (value, x, y) = lettered[0];
+        assert_eq!(value, "会 签");
+        assert!(
+            near(x, 12.0) && near(y, 30.0),
+            "lettered at the placement: {x}, {y}"
+        );
+        assert!(
+            !drawn
+                .iter()
+                .any(|entity| matches!(entity, EntityType::Circle(_))),
+            "no marker dot"
+        );
+        let says =
+            |entity: &EntityType, pair: &str| xdata_strings(entity).iter().any(|said| said == pair);
+        assert!(
+            drawn
+                .iter()
+                .all(|entity| says(entity, "template=SIGN-A2.igr") && says(entity, "role=frame")),
+            "every entity is the frame's and names the template"
+        );
+        assert_eq!(
+            drawn
+                .iter()
+                .filter(|entity| says(entity, "template_symbol=hqz"))
+                .count(),
+            3,
+            "what the placement drew names the symbol; the template's own line does not"
+        );
+    }
+
+    /// What a title block's label shows is the sheet's own text record; the
+    /// template only places the label, and the body it caches for it is the
+    /// hairline cross the label is anchored by, its lettering on a layer
+    /// the file switches off. Such a placement adds nothing to the border
+    /// -- no cross, no second copy of the lettering, no marker dot, no name
+    /// -- and is not a record the overlay failed to draw.
+    #[test]
+    fn pid_template_label_placement_of_only_its_anchor_cross_draws_nothing() {
+        let label = pid_parse::PidSymbolDefinitionRef {
+            site: 329,
+            sheet: 327,
+        };
+        let hairline = |start: (f64, f64), end: (f64, f64)| {
+            (SymbolPrimitive::Line { start, end }, 8, pen(0.01))
+        };
+        let number = SymbolPrimitive::Text {
+            text: "DWG-0201".to_string(),
+            at: (0.0, 0.0),
+        };
+        let shown = Some(("Default", Some(true)));
+        let template = template_of(
+            "TITLE-A2.igr",
+            NormalizedPidGeometry {
+                entities: vec![
+                    entity(lettering((0.500, 0.030)), shown),
+                    entity(
+                        placement(
+                            (0.540, 0.030),
+                            r"\\SERVER\Ref\Symbols\Design\Annotation\Labels\Item Note & Label.sym",
+                            Some(label),
+                        ),
+                        shown,
+                    ),
+                ],
+                symbol_definitions: vec![cached_body(
+                    label,
+                    vec![
+                        hairline((-0.00127, 0.0), (0.00127, 0.0)),
+                        hairline((0.0, -0.00127), (0.0, 0.00127)),
+                        (number, 9, None),
+                    ],
+                )],
+                ..Default::default()
+            },
+        );
+        let mut doc = Document::new();
+        // The drawing number as the sheet itself letters it, on the document
+        // before the border is overlaid.
+        let mut own = Text::new();
+        own.value = "DWG-0201".to_string();
+        own.insertion_point = Vector3::new(540.0, 30.0, 0.0);
+        own.common.layer = LAYER_TEXT.to_string();
+        let _ = doc.add_entity(EntityType::Text(own));
+
+        let overlay = overlay_on_a2(&template, &mut doc).expect("the caption draws");
+        assert_eq!(
+            overlay.drawn, 1,
+            "the template's own caption and nothing of the label"
+        );
+        assert_eq!(
+            overlay.missing, 0,
+            "a label left out is not a record that failed to draw"
+        );
+        let lettered: Vec<&str> = doc
+            .entities()
+            .filter_map(|entity| match entity {
+                EntityType::Text(text) => Some(text.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lettered, ["DWG-0201", "TITLE"], "each lettered once");
+        assert!(
+            !doc.entities()
+                .any(|entity| matches!(entity, EntityType::Line(_) | EntityType::Circle(_))),
+            "neither the anchor cross nor a marker dot"
+        );
+    }
+
+    /// A placement neither the template's cache nor a library has a body
+    /// for draws nothing on the border -- the marker dot is the drawing's
+    /// way of saying a symbol belongs here, and a title block does not wear
+    /// one -- but it is counted: it is a record of the template the overlay
+    /// did not draw.
+    #[test]
+    fn pid_template_placement_without_a_body_is_counted_and_draws_no_marker() {
+        let template = template_of(
+            "LOGO-A2.igr",
+            NormalizedPidGeometry {
+                entities: vec![
+                    entity(line((0.0, 0.0), (0.594, 0.0)), None),
+                    entity(placement((0.300, 0.200), "logo.sym", None), None),
+                ],
+                ..Default::default()
+            },
+        );
+        let mut doc = Document::new();
+        let overlay = overlay_on_a2(&template, &mut doc).expect("the frame line draws");
+        assert_eq!(overlay.drawn, 1, "the frame line alone");
+        assert_eq!(
+            overlay.missing, 1,
+            "the placement is a template record that was not drawn"
+        );
+        assert_eq!(doc.entities().count(), 1);
+        assert!(
+            !doc.entities()
+                .any(|entity| matches!(entity, EntityType::Circle(_) | EntityType::Text(_))),
+            "neither a marker dot nor the symbol's name"
         );
     }
 }
