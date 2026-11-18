@@ -659,23 +659,44 @@ mod tests {
     /// `VAL-CROSS-005` 起步用的「M3 基线文件」。程序里没有哪条命令会把类型库
     /// 或位号规则表写进图纸（它们只经持久化接口写入），所以这份图只能这样造。
     /// 这是生成器，不是检查：平时忽略，要用时带着环境变量、加 `--ignored` 跑。
+    ///
+    /// 基线图是一份还没有进过任何协同房间的图，所以写出去之前去掉 fixture 里
+    /// 那两条协同记录（`REQ-COLL-015`）：带着它们，这份图一连上服务器就会因
+    /// 库标识不符被拒（`REPO_MISMATCH`），用它起步的场景就不是从干净的图开始。
     #[test]
     #[ignore = "生成器：把 OCS_M3_BASELINE_OUT 设为要写出的文件路径"]
     fn write_the_m3_baseline_drawing() {
         let path = std::env::var_os("OCS_M3_BASELINE_OUT")
             .expect("把 OCS_M3_BASELINE_OUT 设为要写出的文件路径");
-        let (doc, handles) = fixture();
+        let (mut doc, handles) = fixture();
         assert_no_transform_sensitive_variants(&doc);
         assert_fixture_shape(&doc, &handles);
-        let bytes = crate::io::save_to_bytes(&doc, "dwg", DxfVersion::AC1032)
-            .expect("save dwg 2018");
+        crate::pid::collab_state::store_state(&mut doc, None);
+        crate::pid::collab_state::store_queue(&mut doc, &[]);
+        let bytes =
+            crate::io::save_to_bytes(&doc, "dwg", DxfVersion::AC1032).expect("save dwg 2018");
         std::fs::write(&path, &bytes).expect("写出基线文件");
 
-        // 写出去的这份读回来是完整的。
+        // 写出去的这份读回来是完整的：四个 P&ID 图级记录都在，两条协同记录都不在。
         let back = crate::io::load_bytes("baseline.dwg", bytes).expect("load dwg 2018");
-        let mut losses = diff(&snapshot(&doc, &handles), &snapshot(&back, &handles));
-        losses.extend(assert_graph_keys_present(&back));
-        assert!(losses.is_empty(), "基线文件读回有丢失：\n{}", loss_table(&losses));
+        let losses = diff(&snapshot(&doc, &handles), &snapshot(&back, &handles));
+        assert!(
+            losses.is_empty(),
+            "基线文件读回有丢失：\n{}",
+            loss_table(&losses)
+        );
+        let problems: Vec<String> = assert_graph_keys_present(&back)
+            .into_iter()
+            .map(|loss| loss.key)
+            .collect();
+        assert_eq!(
+            problems,
+            [
+                format!("{PID_AUTHOR_COLLAB}:key_missing"),
+                format!("{PID_AUTHOR_COLLAB_QUEUE}:key_missing"),
+            ],
+            "读回的基线文件：四个 P&ID 图级记录都该在，两条协同记录都不该在"
+        );
     }
 
     /// `VAL-SEM-035`：七个版本往返丢失数为 0。
