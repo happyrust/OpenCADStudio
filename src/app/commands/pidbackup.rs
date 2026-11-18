@@ -53,8 +53,9 @@ use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
+/// `arg` without the quotes around it, when it has a pair.
 #[cfg(not(target_arch = "wasm32"))]
-fn unquoted(arg: &str) -> &str {
+pub(super) fn unquoted(arg: &str) -> &str {
     let quoted = arg.len() >= 2
         && ((arg.starts_with('"') && arg.ends_with('"'))
             || (arg.starts_with('\'') && arg.ends_with('\'')));
@@ -465,6 +466,16 @@ impl OpenCADStudio {
     /// carry out the effect it asks for.
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::app) fn on_pid_backup(&mut self, msg: PidBackupMsg) -> Task<Message> {
+        // An export to PDF reads the restores while it runs: none is removed
+        // from under it, whoever asks -- `Cache=Clear`, `Press`, or the
+        // panel's own button.
+        if matches!(
+            &msg,
+            PidBackupMsg::Cache(pid_backup_browser::CacheMsg::Clear)
+        ) && self.pid_backup_pdf_keeps_the_cache()
+        {
+            return Task::none();
+        }
         // A finished load, and a source the user just picked, both mean the
         // browser has something to show: reveal it, so a load that finished
         // after the pallet was closed cannot land invisibly.

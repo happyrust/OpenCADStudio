@@ -1641,6 +1641,10 @@ pub(super) struct OpenCADStudio {
     /// switching documents leaves the tree where the user left it.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) pid_backup_browser: crate::ui::window::pid_backup_browser::PidBackupBrowser,
+    /// PIDBACKUPPDF's export of that backup: the one that runs, and what the
+    /// last one came to. App-level for the same reason.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::app) pid_backup_pdf: commands::pidbackuppdf::BackupPdf,
     pub(crate) pid_symbols: crate::pid::symbols::SymbolLibrary,
     /// Which group of symbols the P&ID legend list shows (its filter row).
     pub(crate) pid_legend_filter: crate::ui::window::pid_legend_list::PidLegendFilter,
@@ -4373,6 +4377,12 @@ pub enum Message {
     /// PIDPLOT's worker finished: the PDF it wrote, or why it could not.
     #[cfg(not(target_arch = "wasm32"))]
     PidPdfFinished(Result<crate::io::pid_pdf::PidPdfReceipt, String>),
+    /// PIDBACKUPPDF's export ended: what it came to, or why it did not get
+    /// there.
+    #[cfg(not(target_arch = "wasm32"))]
+    PidBackupPdfFinished(
+        Result<crate::io::pid_backup_pdf::PdfOutcome, crate::io::pid_backup_pdf::PdfError>,
+    ),
     /// PIDBACKUPOPEN's panel: a tree row clicked, a backup loaded, a drawing
     /// opened. The panel's own state machine decides what each one does; the
     /// command layer only carries out the effect it asks for.
@@ -6729,6 +6739,8 @@ impl OpenCADStudio {
             applying_remote: false,
             #[cfg(not(target_arch = "wasm32"))]
             pid_backup_browser: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pid_backup_pdf: Default::default(),
             pid_symbols: crate::pid::symbols::SymbolLibrary::load_from_env(),
             pid_legend_filter: Default::default(),
             pid_legend_exceptions_open: false,

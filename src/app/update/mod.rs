@@ -5008,6 +5008,11 @@ impl OpenCADStudio {
                 Task::none()
             }
             #[cfg(not(target_arch = "wasm32"))]
+            Message::PidBackupPdfFinished(result) => {
+                self.on_pid_backup_pdf_finished(result);
+                Task::none()
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             Message::PidBackup(m) => self.on_pid_backup(m),
 
             // Web SCRIPT: the picked .scr file arrived — run it through the

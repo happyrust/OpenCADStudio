@@ -211,12 +211,15 @@ impl PdfProgress {
         self.0.total.load(Ordering::Relaxed)
     }
 
-    fn begin(&self, total: usize) {
+    /// The export starts on `total` drawings. For whatever does the
+    /// exporting: [`export`], or what stands in for it.
+    pub fn begin(&self, total: usize) {
         self.0.done.store(0, Ordering::Relaxed);
         self.0.total.store(total, Ordering::Relaxed);
     }
 
-    fn step(&self) {
+    /// The export is through with one more drawing.
+    pub fn step(&self) {
         self.0.done.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -416,11 +419,19 @@ pub fn export(request: &PdfRequest, progress: &PdfProgress) -> Result<PdfOutcome
 }
 
 /// What the plot of a drawing of this package is given beside the drawing:
-/// the folder holding the package's `Ref` -- the one it is restored to --
-/// and the package's own `fonts` as one more folder to look for faces in
-/// (SPEC-sppid-pdf §5.4).
+/// the folder holding the package's `Ref`, and the package's own `fonts`
+/// as one more folder to look for faces in (SPEC-sppid-pdf §5.4). The `Ref`
+/// of the folder the package is restored to is the whole of it and comes
+/// first; a folder used where it lies keeps its `Ref` beside its own files,
+/// and the folder its drawings are unpacked to has none.
 fn plot_sources(request: &PdfRequest) -> (&Path, [PathBuf; 1]) {
-    (&request.restored, [request.package_dir.join("fonts")])
+    let holds_ref = |folder: &&PathBuf| folder.join(crate::io::pid_backup::REFERENCE_DIR).is_dir();
+    let folders = [&request.restored, &request.package_dir];
+    let project = folders
+        .into_iter()
+        .find(holds_ref)
+        .unwrap_or(&request.restored);
+    (project, [request.package_dir.join("fonts")])
 }
 
 /// [`export`] with the plot of one drawing given: `plot(drawing, target)`
@@ -1351,6 +1362,27 @@ mod tests {
         // What stops an export stops a background one the same way.
         let again = block_on(export_in_background(request, PdfProgress::default()));
         assert_eq!(again.unwrap_err().code(), "SPPID_PDF_TARGET_HAS_FILES");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_plot_takes_ref_from_beside_the_package_when_the_restore_has_none() {
+        let root = scratch("ref");
+        let request = package(&root, &["00/00/A.pid"], &[]);
+        let fonts = [request.package_dir.join("fonts")];
+        // A folder used where it lies keeps its `Ref` beside its own files,
+        // and the folder it counts as restored to has none. A file of that
+        // name is no `Ref`.
+        std::fs::create_dir_all(request.package_dir.join("Ref")).unwrap();
+        std::fs::write(request.restored.join("Ref"), b"").unwrap();
+        assert_eq!(
+            plot_sources(&request),
+            (request.package_dir.as_path(), fonts.clone())
+        );
+        // The restore's own `Ref` is the whole of it, and comes first.
+        std::fs::remove_file(request.restored.join("Ref")).unwrap();
+        std::fs::create_dir_all(request.restored.join("Ref")).unwrap();
+        assert_eq!(plot_sources(&request), (request.restored.as_path(), fonts));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

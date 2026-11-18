@@ -1398,6 +1398,10 @@ impl OpenCADStudio {
             // `PIDSCREEN <id>` names its screen on the same line; the bare
             // verb would first report the screen being left.
             || tokens[0].eq_ignore_ascii_case("PIDSCREEN")
+            // `PIDBACKUPPDF <folder>` takes its folder as the rest of the
+            // line, spaces and all; the bare verb would first say where the
+            // export stands.
+            || tokens[0].eq_ignore_ascii_case("PIDBACKUPPDF")
         {
             return self.dispatch_command(cmd);
         }
