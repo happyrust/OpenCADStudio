@@ -4,6 +4,15 @@
 // resolves the link to a local `.igr`, parses it through the same `pid-parse`
 // pipeline the drawing itself went through, and overlays its drafting on
 // `PID-FRAME`.
+//
+// Which file a link means is `pid-plot`'s rule (its `model.rs`:
+// `linked_template_prefix`, `load_border_template`), so the canvas and the
+// plotted PDF wear the same template. A link is an authoring-machine path,
+// usually in 8.3 short form (`...\TEMPLA~1\CPE-SQ~2.IGR`): its last component,
+// cut at the `~` and upper-cased, is a prefix of the file it names. Only
+// files whose name starts with a prefix the sheet spells are candidates, the
+// page chooses among them, and a sheet that names a template never wears one
+// it does not name -- when no file answers, no border is the honest answer.
 
 use super::*;
 
@@ -20,11 +29,40 @@ const TEMPLATE_LIBRARY_ENV: &str = "PID_TEMPLATE_LIBRARY";
 /// be a whole reference share.
 const TEMPLATE_SEARCH_DEPTH: usize = 6;
 
-/// How far the template's own page frame may differ from the drawing's
-/// before the overlay is refused: millimetres, generous enough for the
-/// float noise between two frame records of the same sheet size, tight
-/// enough that an A0 template never lands on an A1 drawing.
+/// How far a frame the template drew may differ from the drawing's stated
+/// page and still be that page's frame -- the one the synthetic border would
+/// double: millimetres, generous enough for the float noise between two
+/// frame records of the same sheet size.
 const PAGE_MATCH_TOLERANCE_MM: f64 = 2.0;
+
+/// How far the strokes of a template the sheet names may sit from the
+/// sheet's page, millimetres on the worse axis (`pid-plot`'s
+/// `TEMPLATE_NAMED_TOLERANCE_MM`). The name is the sheet's own statement of
+/// which template it wears, so a frame left a few millimetres larger than
+/// the template's drafting is slack, not another size: the plant backup's
+/// `N井场` states 843.46 x 596.71 against an 841 x 594 template. Two
+/// neighbouring A-series sheets differ by 123 mm or more on that axis.
+const NAMED_TEMPLATE_TOLERANCE_MM: f64 = 10.0;
+
+/// Extents closer than this rank as the same extent (`pid-plot`'s
+/// `TEMPLATE_EXTENT_QUANTUM_MM`): two templates authored for one sheet size
+/// differ in the last bits of their `f64` metres, and which is nearer the
+/// page's own noise is an accident the file name settles instead.
+const TEMPLATE_RANK_QUANTUM_MM: f64 = 1e-3;
+
+/// The five ISO A-series sheets, long side first, millimetres: what a sheet
+/// that states no page is measured against.
+const STANDARD_SHEETS_MM: [(f64, f64); 5] = [
+    (297.0, 210.0),
+    (420.0, 297.0),
+    (594.0, 420.0),
+    (841.0, 594.0),
+    (1189.0, 841.0),
+];
+
+/// How far past a standard sheet's edge strokes may reach and still be
+/// called that sheet, millimetres.
+const SHEET_FIT_SLACK_MM: f64 = 5.0;
 
 /// What the linked border template added to the drawing, for the summary
 /// and for [`draw_page_border`]'s don't-double-the-frame check.
@@ -43,68 +81,104 @@ pub(super) struct TemplateOverlay {
     pub(super) page_frame_covered: bool,
 }
 
-/// Overlay the sheet's linked border template onto `doc`, if its `.igr` can
-/// be found and parsed.
+/// Overlay the sheet's linked border template onto `doc`, if a file its
+/// links name can be found, fits the page and parses.
 ///
 /// `None` is a silent-sheet answer only when the file names no template at
-/// all; a link that resolves to nothing on disk is said in the log. The
-/// drawing imports identically with or without the overlay -- the template
-/// is the frame around the drawing, never a prerequisite.
+/// all; a name no file on disk answers, or answers only in another size, is
+/// said in the log. The drawing imports identically with or without the
+/// overlay -- the template is the frame around the drawing, never a
+/// prerequisite.
 pub(super) fn overlay_linked_template(
     parsed: &pid_parse::PidDocument,
     geometry: &NormalizedPidGeometry,
+    unit: &ImportUnit,
     drawing: &Path,
     doc: &mut Document,
     paper_style_scale: f64,
 ) -> Option<TemplateOverlay> {
     let links = linked_templates(parsed);
-    if links.is_empty() {
+    if linked_template_prefixes(&links).is_empty() {
         return None;
     }
-    let roots = template_roots(drawing);
-    // Candidates in trust order: the files the links name first, then every
-    // `.igr` under the template roots. The second list is what rescues an
-    // OLE link stored in 8.3 short-path form (`CPE-SQ~2.IGR` names no file
-    // on disk, and the long name is not recoverable from it); when the
-    // basename cannot be trusted the page frame does the choosing, since an
-    // A0 template never covers an A1 drawing.
-    let mut candidates: Vec<PathBuf> = Vec::new();
+    // One link arrives as two strings, with its path and bare; the log names
+    // it once.
+    let mut named: Vec<&str> = Vec::new();
     for link in &links {
-        if let Some(candidate) = resolve_template_path(link, &roots) {
-            if !candidates.contains(&candidate) {
-                candidates.push(candidate);
-            }
+        let name = template_basename(link);
+        if !named.contains(&name) {
+            named.push(name);
         }
     }
-    for root in &roots {
-        collect_igr(root, 0, &mut candidates);
-    }
-    for candidate in &candidates {
-        if let Some(overlay) = overlay_from(candidate, geometry, doc, paper_style_scale) {
-            return Some(overlay);
+    let named = named.join(", ");
+    let Some(page_mm) = sheet_page_mm(geometry, unit) else {
+        log::warn!(
+            "{}: names border template(s) {named}, but states no page and its strokes fit no standard sheet to choose one by; the sheet imports without its title block and margin strips",
+            drawing.display()
+        );
+        return None;
+    };
+    let page = format!(
+        "{:.2} x {:.2} mm page{}",
+        page_mm.0,
+        page_mm.1,
+        if geometry.page_dimensions_mm.is_some() {
+            ""
+        } else {
+            " (not stated: the standard sheet its strokes fit)"
         }
-    }
-    log::warn!(
-        "{}: linked border template(s) {} resolved to nothing drawable; the sheet imports without its title block and margin strips",
-        drawing.display(),
-        links
-            .iter()
-            .map(|link| template_basename(link))
-            .collect::<Vec<_>>()
-            .join(", ")
     );
-    None
+    // Only the files the links name are read, and none of them touches the
+    // document until one is picked: a candidate that loses leaves no
+    // linetype or text style behind.
+    let mut templates: Vec<ReadTemplate> = named_template_files(&links, &template_roots(drawing))
+        .into_iter()
+        .filter_map(|(file, stated)| read_template(&file, stated))
+        .collect();
+    let candidates: Vec<TemplateCandidate> =
+        templates.iter().map(ReadTemplate::candidate).collect();
+    let found = candidates
+        .iter()
+        .map(|candidate| match candidate.stroked_mm {
+            Some((width, height)) => {
+                format!("{} ({width:.2} x {height:.2} mm)", candidate.file_name)
+            }
+            None => format!("{} (no strokes)", candidate.file_name),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let Some(picked) = pick_linked_template(&candidates, &links, page_mm) else {
+        let why = if candidates.is_empty() {
+            "no file under the template folders has such a name".to_string()
+        } else {
+            format!("none of the files so named fits its {page}: {found}")
+        };
+        log::warn!(
+            "{}: names border template(s) {named}, but {why}; the sheet imports without its title block and margin strips",
+            drawing.display()
+        );
+        return None;
+    };
+    let template = templates.swap_remove(picked);
+    log::info!(
+        "{}: border template {} for the link(s) {named}, on its {page}; files so named: {found}",
+        drawing.display(),
+        template.file.display()
+    );
+    overlay_template(&template, geometry, doc, paper_style_scale)
 }
 
-/// The distinct `.igr` targets the drawing's `JSite` OLE streams name, as
+/// The distinct template targets the drawing's `JSite` OLE streams name, as
 /// the raw link strings (`C:\...\CPE-SQ-A1.igr` and a bare
-/// `CPE-SQ-A1.igr` arrive as separate strings of one link).
+/// `CPE-SQ-A1.igr` arrive as separate strings of one link). A sheet links
+/// its template's exported `.igr`, the template's own drawing (`.pid`), or
+/// both; either names the template ([`linked_template_prefix`]).
 pub(super) fn linked_templates(parsed: &pid_parse::PidDocument) -> Vec<String> {
     let mut links: Vec<String> = parsed
         .jsites
         .iter()
         .flat_map(|site| site.ole_links.iter())
-        .filter(|link| link.trim_end().to_lowercase().ends_with(".igr"))
+        .filter(|link| linked_template_prefix(link).is_some())
         .map(|link| link.trim().to_string())
         .collect();
     links.sort();
@@ -122,6 +196,143 @@ pub(super) fn template_basename(link: &str) -> &str {
         .next()
         .unwrap_or_default()
         .trim()
+}
+
+/// The stem a link spells, as one a template's file name can begin with:
+/// the last component of the path, cut at the `~`, upper-cased.
+///
+/// The link is an authoring-machine path, usually through Windows' 8.3 short
+/// name -- `C:\PID_SQ~1\SQPlant\Ref\TEMPLA~1\CPE-SQ~2.IGR` is the file this
+/// machine has as `CPE-SQ-A1.igr`, and the six characters before the `~` are
+/// all of the name that survived (`CPE-SQ`). A link authored where long names
+/// were kept spells the whole stem (`CPECCHB-SQ-A2`). Either way the stem is
+/// a prefix of the file it names, and `CPE-SQ` is no prefix of
+/// `CPECCHB-SQ-A1`: that tells two template families of one sheet size
+/// apart, which no measurement can.
+///
+/// The link may be to the template's drawing (`CPE-SQ~2.PID`) rather than
+/// its exported `.igr`; both spell the same stem. Any other target -- a
+/// symbol, a spreadsheet -- names no template.
+pub(super) fn linked_template_prefix(link: &str) -> Option<String> {
+    let (stem, extension) = template_basename(link).rsplit_once('.')?;
+    if !extension.eq_ignore_ascii_case("igr") && !extension.eq_ignore_ascii_case("pid") {
+        return None;
+    }
+    let prefix = stem.split('~').next().unwrap_or(stem);
+    (!prefix.is_empty()).then(|| prefix.to_ascii_uppercase())
+}
+
+/// Every template stem the sheet's links spell, each once, in the links'
+/// order. A sheet may wear any template it names.
+pub(super) fn linked_template_prefixes(links: &[String]) -> Vec<String> {
+    let mut prefixes: Vec<String> = Vec::new();
+    for prefix in links.iter().filter_map(|link| linked_template_prefix(link)) {
+        if !prefixes.contains(&prefix) {
+            prefixes.push(prefix);
+        }
+    }
+    prefixes
+}
+
+/// Every whole file stem the links spell, upper-cased: the `.igr` links
+/// whose name Windows did not cut. `CPE-SQ~2.IGR` is not a whole name;
+/// `XIONGANA2.igr` is.
+fn linked_template_stems(links: &[String]) -> Vec<String> {
+    let mut stems: Vec<String> = Vec::new();
+    for link in links {
+        let Some((stem, extension)) = template_basename(link).rsplit_once('.') else {
+            continue;
+        };
+        if !extension.eq_ignore_ascii_case("igr") || stem.is_empty() || stem.contains('~') {
+            continue;
+        }
+        let stem = stem.to_ascii_uppercase();
+        if !stems.contains(&stem) {
+            stems.push(stem);
+        }
+    }
+    stems
+}
+
+/// The stem of a template file's name, upper-cased the way the links' stems
+/// are.
+fn template_stem(file_name: &str) -> String {
+    file_name
+        .rsplit_once('.')
+        .map_or(file_name, |(stem, _)| stem)
+        .to_ascii_uppercase()
+}
+
+/// Whether a file of this name is one the prefixes name: its stem starts
+/// with one of them. This decides eligibility, not just order.
+fn template_named_by(file_name: &str, prefixes: &[String]) -> bool {
+    let stem = template_stem(file_name);
+    prefixes
+        .iter()
+        .any(|prefix| stem.starts_with(prefix.as_str()))
+}
+
+/// What the pick needs to know of one template file found on this machine.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct TemplateCandidate {
+    /// The file's name on disk, extension included.
+    pub(super) file_name: String,
+    /// The file is the very path a link states, opened on this machine.
+    pub(super) stated: bool,
+    /// Width and height its strokes span, millimetres; `None` for a file
+    /// that draws no stroke at all.
+    pub(super) stroked_mm: Option<(f64, f64)>,
+}
+
+/// Which of `candidates` a sheet that links `links` wears on a page of
+/// `page_mm`: the index of the pick, or `None` for no border.
+///
+/// Only a file the links name is eligible -- its stem starts with a prefix
+/// one of them spells ([`linked_template_prefix`]) -- so a sheet that names
+/// nothing, or whose names no candidate answers, wears nothing: another
+/// family's template of the right size would letter another company into
+/// the title block. Among the eligible:
+///
+/// - a file whose whole stem a link spells, or the file a link's own path
+///   opens, is the sheet's statement of the very file it wears. It is taken
+///   without measuring it and ahead of every other candidate;
+/// - any other must have strokes to measure, within
+///   [`NAMED_TEMPLATE_TOLERANCE_MM`] of the page on the worse axis;
+/// - the nearer extent wins, then the file name, then the earlier
+///   candidate, so the pick is the same one twice.
+pub(super) fn pick_linked_template(
+    candidates: &[TemplateCandidate],
+    links: &[String],
+    page_mm: (f64, f64),
+) -> Option<usize> {
+    let prefixes = linked_template_prefixes(links);
+    let stems = linked_template_stems(links);
+    let mut best: Option<((bool, f64, String), usize)> = None;
+    for (index, candidate) in candidates.iter().enumerate() {
+        let spelled = candidate.stated || stems.contains(&template_stem(&candidate.file_name));
+        if !spelled && !template_named_by(&candidate.file_name, &prefixes) {
+            continue;
+        }
+        let error = candidate.stroked_mm.map_or(0.0, |(width, height)| {
+            (width - page_mm.0).abs().max((height - page_mm.1).abs())
+        });
+        if !spelled && (candidate.stroked_mm.is_none() || error > NAMED_TEMPLATE_TOLERANCE_MM) {
+            continue;
+        }
+        let rank = (
+            !spelled,
+            (error / TEMPLATE_RANK_QUANTUM_MM).round(),
+            candidate.file_name.to_ascii_lowercase(),
+        );
+        if best
+            .as_ref()
+            .is_some_and(|(best_rank, _)| *best_rank <= rank)
+        {
+            continue;
+        }
+        best = Some((rank, index));
+    }
+    best.map(|(_, index)| index)
 }
 
 /// Where the template for `link` actually is: the path the link states when
@@ -252,24 +463,168 @@ fn collect_igr(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Parse `igr` and, when its page agrees with the drawing's, draw its
-/// decoded geometry onto `PID-FRAME`.
+/// The name `file` has on disk, extension included.
+fn file_name_of(file: &Path) -> String {
+    file.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The template files the links could mean, in search order, each with
+/// whether it is the very path a link states. Only files the links name are
+/// listed -- [`pick_linked_template`] takes no other, so no other is worth
+/// parsing:
+///
+/// 1. the path an `.igr` link states, when it opens on this machine, else
+///    the file of that name under the template roots;
+/// 2. every `.igr` under the roots whose name starts with a stem the links
+///    spell. This is what answers a link stored in 8.3 short form:
+///    `CPE-SQ~2.IGR` is no file on this disk, but `CPE-SQ-A0.igr`,
+///    `CPE-SQ-A1.igr` and `CPE-SQ-A2.igr` all start with what it kept.
+fn named_template_files(links: &[String], roots: &[PathBuf]) -> Vec<(PathBuf, bool)> {
+    let prefixes = linked_template_prefixes(links);
+    let mut files: Vec<(PathBuf, bool)> = Vec::new();
+    for link in links {
+        let is_igr = template_basename(link)
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("igr"));
+        if !is_igr {
+            continue;
+        }
+        if let Some(file) = resolve_template_path(link, roots) {
+            if !files.iter().any(|(seen, _)| *seen == file) {
+                files.push((file, Path::new(link.trim()).is_file()));
+            }
+        }
+    }
+    let mut listed: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        collect_igr(root, 0, &mut listed);
+    }
+    for file in listed {
+        if template_named_by(&file_name_of(&file), &prefixes)
+            && !files.iter().any(|(seen, _)| *seen == file)
+        {
+            files.push((file, false));
+        }
+    }
+    files
+}
+
+/// The smallest standard sheet strokes spanning `extent_mm` fit, either way
+/// up. A drawing is laid out from the sheet's own origin, so the box its
+/// strokes span is also the corner they are drawn up to.
+fn standard_sheet_for(extent_mm: (f64, f64)) -> Option<(f64, f64)> {
+    STANDARD_SHEETS_MM
+        .iter()
+        .flat_map(|&(long, short)| [(long, short), (short, long)])
+        .find(|page| {
+            extent_mm.0 <= page.0 + SHEET_FIT_SLACK_MM && extent_mm.1 <= page.1 + SHEET_FIT_SLACK_MM
+        })
+}
+
+/// Width and height the strokes of `geometry` span, millimetres, over the
+/// entities `keep` admits; `None` when it strokes nothing.
+///
+/// Only what a border is drawn with counts -- lines, polylines, arcs and
+/// circles (`pid-plot`'s `ink_extent_mm`). A template's frame is its own
+/// outermost stroke, and lettering that hangs a millimetre past it must not
+/// move the sheet it is matched against.
+fn stroked_extent_mm(
+    geometry: &NormalizedPidGeometry,
+    mm_per_unit: f64,
+    keep: impl Fn(&pid_parse::PidGraphicEntity) -> bool,
+) -> Option<(f64, f64)> {
+    let mut min = (f64::MAX, f64::MAX);
+    let mut max = (f64::MIN, f64::MIN);
+    let mut seen = false;
+    let mut take = |x: f64, y: f64| {
+        if x.is_finite() && y.is_finite() {
+            min = (min.0.min(x), min.1.min(y));
+            max = (max.0.max(x), max.1.max(y));
+            seen = true;
+        }
+    };
+    for entity in geometry.entities.iter().filter(|entity| keep(entity)) {
+        match &entity.kind {
+            PidGraphicKind::Line { start, end } => {
+                take(start.x, start.y);
+                take(end.x, end.y);
+            }
+            PidGraphicKind::Polyline { points, .. } => {
+                for point in points {
+                    take(point.x, point.y);
+                }
+            }
+            PidGraphicKind::Arc { center, radius, .. }
+            | PidGraphicKind::Circle { center, radius } => {
+                take(center.x - radius, center.y - radius);
+                take(center.x + radius, center.y + radius);
+            }
+            PidGraphicKind::Point { .. }
+            | PidGraphicKind::Text { .. }
+            | PidGraphicKind::SymbolInstance { .. }
+            | PidGraphicKind::Annotation { .. }
+            | PidGraphicKind::Unknown { .. } => {}
+        }
+    }
+    seen.then_some(((max.0 - min.0) * mm_per_unit, (max.1 - min.1) * mm_per_unit))
+}
+
+/// Whether SmartPlant prints `entity`: not from a sheet layer the drawing's
+/// view filter switches off, and not the `ConsistencyChecks` review overlay
+/// (`pid-plot`'s `suppressed_from_plot`, negated).
+fn printed(entity: &pid_parse::PidGraphicEntity) -> bool {
+    match &entity.source_layer {
+        Some(layer) => {
+            layer.displayed != Some(false) && layer.name.as_deref() != Some("ConsistencyChecks")
+        }
+        None => true,
+    }
+}
+
+/// The page a sheet that names a template is matched on: the one it states,
+/// else the standard sheet its printed strokes fit. `Q井场` is the second
+/// kind -- it states no page and its strokes span 841 x 594. Strokes on a
+/// switched-off layer reach no paper, so they may not push the sheet a size
+/// up and hand it a border of the wrong size.
+fn sheet_page_mm(geometry: &NormalizedPidGeometry, unit: &ImportUnit) -> Option<(f64, f64)> {
+    geometry.page_dimensions_mm.or_else(|| {
+        stroked_extent_mm(geometry, unit.mm_per_unit(), printed).and_then(standard_sheet_for)
+    })
+}
+
+/// A template file read far enough to be measured, and to be drawn if it is
+/// the one picked.
+pub(super) struct ReadTemplate {
+    file: PathBuf,
+    /// The file is the very path a link states, opened on this machine.
+    stated: bool,
+    parsed: pid_parse::PidDocument,
+    geometry: NormalizedPidGeometry,
+    unit: ImportUnit,
+    /// Width and height its strokes span, millimetres.
+    stroked_mm: Option<(f64, f64)>,
+}
+
+impl ReadTemplate {
+    /// What [`pick_linked_template`] judges this file on.
+    pub(super) fn candidate(&self) -> TemplateCandidate {
+        TemplateCandidate {
+            file_name: file_name_of(&self.file),
+            stated: self.stated,
+            stroked_mm: self.stroked_mm,
+        }
+    }
+}
+
+/// Parse `igr` and measure its strokes. Nothing is drawn and no document is
+/// touched: that is [`overlay_template`], for the one file picked.
 ///
 /// The template is a drawing of the same family: `PidParser` reads its CFB
 /// tree and `build_normalized_geometry` projects its records the same way,
-/// so the whole styling apparatus -- its own `StyleCluster` line widths and
-/// colours, its character-style lettering -- applies unchanged. The entity
-/// loop below is the drawing's loop minus the parts a border template does
-/// not have: symbol placements (a template's `JSymbol` is the label the
-/// sheet letters into the block, not a body to draw), sheet-layer filing
-/// (the drawing's view filter belongs to the drawing), and framing bounds
-/// (the page already frames the view).
-pub(super) fn overlay_from(
-    igr: &Path,
-    geometry: &NormalizedPidGeometry,
-    doc: &mut Document,
-    paper_style_scale: f64,
-) -> Option<TemplateOverlay> {
+/// so it is measured in its own unit like any sheet.
+pub(super) fn read_template(igr: &Path, stated: bool) -> Option<ReadTemplate> {
     let parsed = match PidParser::with_options(ParseOptions::geometry()).parse_file(igr) {
         Ok(parsed) => parsed,
         Err(error) => {
@@ -277,17 +632,42 @@ pub(super) fn overlay_from(
             return None;
         }
     };
-    let tpl_geometry = build_normalized_geometry(&parsed);
-    let styles = resolve_styles(&parsed, &tpl_geometry, igr, doc, paper_style_scale);
-    let unit = ImportUnit::read(&tpl_geometry, igr);
-    let projection = Projection::for_geometry(&tpl_geometry, &unit);
+    let geometry = build_normalized_geometry(&parsed);
+    let unit = ImportUnit::read(&geometry, igr);
+    let stroked_mm = stroked_extent_mm(&geometry, unit.mm_per_unit(), |_| true);
+    Some(ReadTemplate {
+        file: igr.to_path_buf(),
+        stated,
+        parsed,
+        geometry,
+        unit,
+        stroked_mm,
+    })
+}
+
+/// Draw `template`'s decoded geometry onto `PID-FRAME`.
+///
+/// The whole styling apparatus of a sheet -- its own `StyleCluster` line
+/// widths and colours, its character-style lettering -- applies to the
+/// template unchanged. The entity loop below is the drawing's loop minus the
+/// parts a border template does not have: symbol placements (a template's
+/// `JSymbol` is the label the sheet letters into the block, not a body to
+/// draw), sheet-layer filing (the drawing's view filter belongs to the
+/// drawing), and framing bounds (the page already frames the view).
+pub(super) fn overlay_template(
+    template: &ReadTemplate,
+    geometry: &NormalizedPidGeometry,
+    doc: &mut Document,
+    paper_style_scale: f64,
+) -> Option<TemplateOverlay> {
+    let igr = template.file.as_path();
+    let tpl_geometry = &template.geometry;
+    let styles = resolve_styles(&template.parsed, tpl_geometry, igr, doc, paper_style_scale);
+    let projection = Projection::for_geometry(tpl_geometry, &template.unit);
     let mut symbol_bodies = SymbolBodies::default();
     let mut decoded = 0usize;
+    let mut drawn = 0usize;
     let mut page_frame_covered = false;
-    // Built entities stage here until the page check passes -- a template
-    // that states no page of its own is judged on what it drew, and the
-    // drawing must not keep a wrong-size overlay while that is measured.
-    let mut staged: Vec<EntityType> = Vec::new();
     let template_name = igr
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -409,21 +789,9 @@ pub(super) fn overlay_from(
                 }
             }
             one.common_mut().layer = LAYER_FRAME.to_string();
-            staged.push(one);
+            let _ = doc.add_entity(one);
+            drawn += 1;
         }
-    }
-    if !same_page(&tpl_geometry, &staged, geometry) {
-        log::warn!(
-            "{}: linked template's page {:?} is not the drawing's {:?}; not overlaid",
-            igr.display(),
-            template_page_mm(&tpl_geometry, &staged),
-            geometry.page_dimensions_mm
-        );
-        return None;
-    }
-    let drawn = staged.len();
-    for one in staged {
-        let _ = doc.add_entity(one);
     }
     let missing: usize = tpl_geometry
         .dropped_graphic_records
@@ -448,39 +816,6 @@ pub(super) fn overlay_from(
     })
 }
 
-/// Whether the template's page is the drawing's stated page. Only a page
-/// both sides state can disagree; a side that says nothing cannot refuse
-/// the match. A border template carries no frame record of its own -- it
-/// *is* the frame -- so its page reads off what it drew: the union of the
-/// staged entities' extents is the outer border it would have framed.
-pub(super) fn same_page(
-    template: &NormalizedPidGeometry,
-    staged: &[EntityType],
-    drawing: &NormalizedPidGeometry,
-) -> bool {
-    match (
-        template_page_mm(template, staged),
-        drawing.page_dimensions_mm,
-    ) {
-        (Some((tw, th)), Some((dw, dh))) => {
-            (tw - dw).abs() <= PAGE_MATCH_TOLERANCE_MM && (th - dh).abs() <= PAGE_MATCH_TOLERANCE_MM
-        }
-        _ => true,
-    }
-}
-
-/// The page the template claims: stated when it can state one, else the
-/// extent of its own drafting.
-fn template_page_mm(template: &NormalizedPidGeometry, staged: &[EntityType]) -> Option<(f64, f64)> {
-    template.page_dimensions_mm.or_else(|| {
-        staged
-            .iter()
-            .filter_map(drawn_extent)
-            .reduce(union_extent)
-            .map(|(min_x, min_y, max_x, max_y)| (max_x - min_x, max_y - min_y))
-    })
-}
-
 /// Which `.igr` an entity came from and which layer the template filed it
 /// on, beside the `role=frame` it already carries:
 /// `template=CPE-SQ-A1.igr` under the same XDATA application, so a saved
@@ -497,4 +832,542 @@ fn attach_template_provenance(
         record.add_value(XDataValue::String(format!("template_layer={layer}")));
     }
     entity.common_mut().extended_data.add_record(record);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const A0: (f64, f64) = (1189.0, 841.0);
+    const A1: (f64, f64) = (841.0, 594.0);
+    const A2: (f64, f64) = (594.0, 420.0);
+
+    /// The link most of the plant backup's sheets store: the authoring
+    /// machine's 8.3 short path to `...\Template Files\CPE-SQ-A1.igr`.
+    const SHORT_CPE_SQ: &str = r"C:\PID_SQ~1\SQPlant\Ref\TEMPLA~1\CPE-SQ~2.IGR";
+
+    fn links(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    fn candidate(file_name: &str, stroked_mm: Option<(f64, f64)>) -> TemplateCandidate {
+        TemplateCandidate {
+            file_name: file_name.to_string(),
+            stated: false,
+            stroked_mm,
+        }
+    }
+
+    fn point(x: f64, y: f64) -> PidPoint {
+        PidPoint { x, y }
+    }
+
+    fn line(start: (f64, f64), end: (f64, f64)) -> PidGraphicKind {
+        PidGraphicKind::Line {
+            start: point(start.0, start.1),
+            end: point(end.0, end.1),
+        }
+    }
+
+    fn lettering(at: (f64, f64)) -> PidGraphicKind {
+        PidGraphicKind::Text {
+            insertion: point(at.0, at.1),
+            value: "TITLE".to_string(),
+            height: 0.0035,
+            rotation: 0.0,
+            anchor_code: 0,
+            text_box_width: None,
+        }
+    }
+
+    /// One sheet record of `kind`, filed on the sheet layer `layer` names
+    /// with the display bit it carries.
+    fn entity(
+        kind: PidGraphicKind,
+        layer: Option<(&str, Option<bool>)>,
+    ) -> pid_parse::PidGraphicEntity {
+        pid_parse::PidGraphicEntity {
+            id: "e".to_string(),
+            drawing_id: None,
+            graphic_oid: None,
+            source_layer: layer.map(|(name, displayed)| PidSourceLayer {
+                oid: 1,
+                name: Some(name.to_string()),
+                storage_path: String::new(),
+                displayed,
+            }),
+            kind,
+            coordinate_context: pid_parse::PidCoordinateContext::default(),
+            source: pid_parse::PidGraphicProvenance {
+                stream_path: None,
+                byte_range: None,
+                record_id: None,
+                record_kind: None,
+                field_x: None,
+                note: None,
+            },
+            confidence: PidGeometryConfidence::Decoded,
+        }
+    }
+
+    /// A short name: Windows kept the characters before the `~`, and those
+    /// are all the link says.
+    #[test]
+    fn pid_template_prefix_of_a_short_name_stops_at_the_tilde() {
+        assert_eq!(
+            linked_template_prefix("CPE-SQ~2.IGR").as_deref(),
+            Some("CPE-SQ")
+        );
+        assert_eq!(
+            linked_template_prefix("CPECCH~3.IGR").as_deref(),
+            Some("CPECCH")
+        );
+    }
+
+    /// A long name spells the whole stem.
+    #[test]
+    fn pid_template_prefix_of_a_long_name_is_the_whole_stem() {
+        assert_eq!(
+            linked_template_prefix("CPE-SQ-A1.igr").as_deref(),
+            Some("CPE-SQ-A1")
+        );
+        assert_eq!(
+            linked_template_prefix("A2-W - New.igr").as_deref(),
+            Some("A2-W - NEW")
+        );
+    }
+
+    /// Only the last component is the file name -- the directories of a
+    /// short path carry `~` of their own -- whichever separator the linking
+    /// machine wrote.
+    #[test]
+    fn pid_template_prefix_reads_only_the_last_component_of_a_path() {
+        assert_eq!(
+            linked_template_prefix(SHORT_CPE_SQ).as_deref(),
+            Some("CPE-SQ")
+        );
+        assert_eq!(
+            linked_template_prefix(r"\\WIN-SPID\share\Ref\Template Files\CPECCHB-SQ-A2.igr")
+                .as_deref(),
+            Some("CPECCHB-SQ-A2")
+        );
+        assert_eq!(
+            linked_template_prefix("D:/plant/Ref/Template Files/CPE-SQ-A0.igr").as_deref(),
+            Some("CPE-SQ-A0")
+        );
+    }
+
+    /// The prefix is upper-cased, so a link and a file that differ only in
+    /// case still meet.
+    #[test]
+    fn pid_template_prefix_is_upper_cased_whatever_the_link_spells() {
+        assert_eq!(
+            linked_template_prefix("cpe-sq-a1.IGR").as_deref(),
+            Some("CPE-SQ-A1")
+        );
+        assert_eq!(
+            linked_template_prefix("Cpe-Sq~2.Igr").as_deref(),
+            Some("CPE-SQ")
+        );
+    }
+
+    /// A link to the template's drawing (`.pid`) names the same template as
+    /// one to its exported `.igr`; any other target names no template.
+    #[test]
+    fn pid_template_prefix_needs_a_template_extension() {
+        assert_eq!(
+            linked_template_prefix(r"C:\PID_SQ~1\SQPlant\Ref\TEMPLA~1\CPE-SQ~2.PID").as_deref(),
+            Some("CPE-SQ")
+        );
+        assert_eq!(linked_template_prefix("Gate Valve.sym"), None);
+        assert_eq!(linked_template_prefix("Book1.xls"), None);
+        assert_eq!(linked_template_prefix("CPE-SQ~2"), None);
+        assert_eq!(linked_template_prefix("~1.igr"), None);
+        assert_eq!(linked_template_prefix(""), None);
+    }
+
+    /// Several links of one sheet name each template once, in the links'
+    /// order.
+    #[test]
+    fn pid_template_prefixes_are_distinct_and_keep_the_links_order() {
+        assert_eq!(
+            linked_template_prefixes(&links(&[
+                SHORT_CPE_SQ,
+                "CPE-SQ-A1.igr",
+                r"C:\PID_SQ~1\SQPlant\Ref\TEMPLA~1\CPE-SQ~2.PID",
+                "Gate Valve.sym",
+            ])),
+            links(&["CPE-SQ", "CPE-SQ-A1"])
+        );
+        assert!(linked_template_prefixes(&links(&["Gate Valve.sym"])).is_empty());
+    }
+
+    /// The links read off the drawing are the template targets of every
+    /// `JSite`: the exported `.igr` and the template's own `.pid`.
+    #[test]
+    fn pid_template_links_are_the_igr_and_pid_links_of_every_jsite() {
+        let site = |ole_links: &[&str]| pid_parse::JSite {
+            name: "JSite1".to_string(),
+            ole_links: links(ole_links),
+            ..Default::default()
+        };
+        let mut parsed = pid_parse::PidDocument::default();
+        parsed.jsites.push(site(&[
+            r"C:\PID_SQ~1\SQPlant\Ref\TEMPLA~1\CPE-SQ~3.PID",
+            "Sheet1",
+        ]));
+        parsed
+            .jsites
+            .push(site(&["CPE-SQ-A0.igr ", "Gate Valve.sym", "CPE-SQ-A0.igr"]));
+        assert_eq!(
+            linked_templates(&parsed),
+            links(&[
+                r"C:\PID_SQ~1\SQPlant\Ref\TEMPLA~1\CPE-SQ~3.PID",
+                "CPE-SQ-A0.igr"
+            ])
+        );
+    }
+
+    /// The template the link names is the one picked -- not a stranger of
+    /// the same size that happens to be listed first.
+    #[test]
+    fn pid_template_pick_takes_the_template_the_link_names() {
+        let candidates = [
+            candidate("A1-W - New.igr", Some(A1)),
+            candidate("CPECCHB-SQ-A1.igr", Some(A1)),
+            candidate("CPE-SQ-A1.igr", Some(A1)),
+        ];
+        assert_eq!(
+            pick_linked_template(&candidates, &links(&[SHORT_CPE_SQ]), A1),
+            Some(2)
+        );
+        // `CPECCH` is no prefix of `CPE-SQ-A1`, nor `CPE-SQ` of
+        // `CPECCHB-SQ-A1`: the two families never answer for each other.
+        let other = links(&[r"C:\PID_SQ~1\SQPlant\Ref\TEMPLA~1\CPECCH~3.IGR"]);
+        assert_eq!(pick_linked_template(&candidates, &other, A1), Some(1));
+    }
+
+    /// One prefix answers for a whole family (`CPE-SQ-A0`, `-A1`, `-A2`);
+    /// among them the page decides.
+    #[test]
+    fn pid_template_pick_chooses_among_one_prefix_by_the_page() {
+        let candidates = [
+            candidate("CPE-SQ-A0.igr", Some(A0)),
+            candidate("CPE-SQ-A1.igr", Some(A1)),
+            candidate("CPE-SQ-A2.igr", Some(A2)),
+        ];
+        let named = links(&[SHORT_CPE_SQ]);
+        assert_eq!(pick_linked_template(&candidates, &named, A0), Some(0));
+        assert_eq!(pick_linked_template(&candidates, &named, A1), Some(1));
+        assert_eq!(pick_linked_template(&candidates, &named, A2), Some(2));
+        assert_eq!(
+            pick_linked_template(&candidates, &named, (843.09, 596.09)),
+            Some(1),
+            "a page left a little larger than the template's drafting still wears it"
+        );
+    }
+
+    /// A sheet that names a template never wears one it does not name: with
+    /// no file answering the name, or none of its size, there is no border.
+    #[test]
+    fn pid_template_pick_never_substitutes_a_template_the_link_does_not_name() {
+        let named = links(&[SHORT_CPE_SQ]);
+        let strangers = [
+            candidate("A1-W - New.igr", Some(A1)),
+            candidate("CPECCHB-SQ-A1.igr", Some(A1)),
+        ];
+        assert_eq!(pick_linked_template(&strangers, &named, A1), None);
+        let other_sizes = [
+            candidate("A1-W - New.igr", Some(A1)),
+            candidate("CPE-SQ-A0.igr", Some(A0)),
+            candidate("CPE-SQ-A2.igr", Some(A2)),
+        ];
+        assert_eq!(pick_linked_template(&other_sizes, &named, A1), None);
+        assert_eq!(pick_linked_template(&[], &named, A1), None);
+    }
+
+    /// A sheet that names no template gets none, as before.
+    #[test]
+    fn pid_template_pick_is_nothing_for_a_sheet_that_names_no_template() {
+        let candidates = [
+            candidate("A1-W - New.igr", Some(A1)),
+            candidate("CPE-SQ-A1.igr", Some(A1)),
+        ];
+        assert_eq!(pick_linked_template(&candidates, &[], A1), None);
+        assert_eq!(
+            pick_linked_template(&candidates, &links(&["Gate Valve.sym", "Book1.xls"]), A1),
+            None
+        );
+    }
+
+    /// A link to the template's drawing is a name like any other: the four
+    /// plant sheets that link only `...~N.PID` wear the template it spells.
+    #[test]
+    fn pid_template_pick_reads_a_link_to_the_templates_drawing_as_a_name() {
+        let candidates = [
+            candidate("A0-W - New.igr", Some(A0)),
+            candidate("CPE-SQ-A0.igr", Some(A0)),
+        ];
+        let named = links(&[r"C:\PID_SQ~1\SQPlant\Ref\TEMPLA~1\CPE-SQ~3.PID"]);
+        assert_eq!(
+            pick_linked_template(&candidates, &named, (1189.31, 841.31)),
+            Some(1)
+        );
+    }
+
+    /// A link that spells a whole file name is the sheet's own statement of
+    /// the file it wears: taken without measuring it, ahead of any template
+    /// that only shares the prefix. `XIONGANA2.igr` is why -- a title-block
+    /// fragment with no stroke at all, which no size rule could accept.
+    #[test]
+    fn pid_template_pick_takes_a_wholly_spelled_name_without_measuring_it() {
+        let fragment = [
+            candidate("A2-W - New.igr", Some(A2)),
+            candidate("XIONGANA2.igr", None),
+        ];
+        let spelled = links(&[r"\\WIN-SPID\QSMCQTAZ13\PLANT\REF\Template Files\XIONGANA2.igr"]);
+        assert_eq!(pick_linked_template(&fragment, &spelled, A2), Some(1));
+        let family = [
+            candidate("CPECCHBA2-old.igr", Some(A2)),
+            candidate("cpecchba2.IGR", Some((617.0, 437.0))),
+        ];
+        assert_eq!(
+            pick_linked_template(&family, &links(&["CPECCHBA2.igr"]), A2),
+            Some(1),
+            "the whole name outranks a better-fitting file that only starts with it"
+        );
+        // A short name is not a whole name: the file it could mean is still
+        // measured, and one with nothing to measure is not taken on trust.
+        assert_eq!(
+            pick_linked_template(
+                &[candidate("CPE-SQ-A1.igr", None)],
+                &links(&[SHORT_CPE_SQ]),
+                A1
+            ),
+            None
+        );
+        // The file the link's own path opens on this machine is that file.
+        let stated = [TemplateCandidate {
+            stated: true,
+            ..candidate("CPE-SQ~2.IGR", Some(A0))
+        }];
+        assert_eq!(
+            pick_linked_template(&stated, &links(&[SHORT_CPE_SQ]), A1),
+            Some(0)
+        );
+    }
+
+    /// A named template is allowed ten millimetres on the worse axis: the
+    /// frame of `N井场` states 843.46 x 596.71 against an 841 x 594 template.
+    #[test]
+    fn pid_template_pick_allows_a_named_template_ten_millimetres() {
+        let candidates = [candidate("CPECCHB-SQ-A1.igr", Some(A1))];
+        let named = links(&[r"C:\PID_SQ~1\SQPlant\Ref\TEMPLA~1\CPECCH~3.PID"]);
+        assert_eq!(
+            pick_linked_template(&candidates, &named, (843.46, 596.71)),
+            Some(0)
+        );
+        assert_eq!(
+            pick_linked_template(&candidates, &named, (851.0, 594.0)),
+            Some(0)
+        );
+        assert_eq!(
+            pick_linked_template(&candidates, &named, (851.5, 594.0)),
+            None
+        );
+        assert_eq!(
+            pick_linked_template(&candidates, &named, (841.0, 583.5)),
+            None,
+            "the worse axis decides"
+        );
+    }
+
+    /// Two templates of one family and one size differ only in the last
+    /// bits of their extents; which is nearer the page's own noise is an
+    /// accident, so the name decides and the pick is the same one twice.
+    #[test]
+    fn pid_template_pick_is_the_same_one_twice_when_two_templates_measure_alike() {
+        let first = candidate("CPE-SQ-A1-b.igr", Some((841.0000000003785, 594.0)));
+        let second = candidate("CPE-SQ-A1-a.igr", Some((841.0000000000001, 594.0)));
+        let named = links(&[SHORT_CPE_SQ]);
+        let page = (841.0000500894253, 594.0);
+        assert_eq!(
+            pick_linked_template(&[first.clone(), second.clone()], &named, page),
+            Some(1)
+        );
+        assert_eq!(
+            pick_linked_template(&[second, first], &named, page),
+            Some(0)
+        );
+        let nearer = [
+            candidate("CPE-SQ-A1-a.igr", Some((842.5, 594.0))),
+            candidate("CPE-SQ-A1-z.igr", Some(A1)),
+        ];
+        assert_eq!(
+            pick_linked_template(&nearer, &named, A1),
+            Some(1),
+            "a difference that can be measured decides before the name"
+        );
+    }
+
+    /// Only the files a link names are read at all, wherever they sit under
+    /// the template roots; the one a link's own path opens says so.
+    #[test]
+    fn pid_template_files_are_only_the_ones_a_link_names() {
+        // No "template" in this name: a folder so named directly under the
+        // temp directory is a template root for every drawing a backup
+        // unpacks there.
+        let temp = std::env::temp_dir().join(format!(
+            "ocs-pid-named-files-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let dir = temp.join("Ref").join("Template Files");
+        std::fs::create_dir_all(&dir).expect("temp dirs");
+        for name in [
+            "A1-W - New.igr",
+            "CPE-SQ-A0.igr",
+            "cpe-sq-a1.IGR",
+            "CPECCHB-SQ-A1.igr",
+            "CPE-SQ-notes.txt",
+        ] {
+            std::fs::write(dir.join(name), b"stub").expect("write");
+        }
+        let roots = vec![temp.clone()];
+        let found = |links: &[String]| -> Vec<(String, bool)> {
+            let mut found: Vec<(String, bool)> = named_template_files(links, &roots)
+                .into_iter()
+                .map(|(file, stated)| {
+                    let name = file.file_name().unwrap_or_default();
+                    (name.to_string_lossy().into_owned(), stated)
+                })
+                .collect();
+            found.sort();
+            found
+        };
+        let short = found(&links(&[SHORT_CPE_SQ]));
+        let drawing = found(&links(&[r"C:\PID_SQ~1\SQPlant\Ref\TEMPLA~1\CPECCH~3.PID"]));
+        let own = dir.join("CPECCHB-SQ-A1.igr").to_string_lossy().into_owned();
+        let stated = found(&[own]);
+        let unanswered = found(&links(&["TransAcad.igr"]));
+        // Before anything is asserted, so that a failure leaves no file behind.
+        let _ = std::fs::remove_dir_all(&temp);
+        assert_eq!(
+            short,
+            vec![
+                ("CPE-SQ-A0.igr".to_string(), false),
+                ("cpe-sq-a1.IGR".to_string(), false)
+            ]
+        );
+        assert_eq!(drawing, vec![("CPECCHB-SQ-A1.igr".to_string(), false)]);
+        assert_eq!(stated, vec![("CPECCHB-SQ-A1.igr".to_string(), true)]);
+        assert!(
+            unanswered.is_empty(),
+            "a name no file answers has no candidates"
+        );
+    }
+
+    /// A sheet's size is read off the standard sheet its strokes fit, either
+    /// way up, with a few millimetres of slack past the edge.
+    #[test]
+    fn pid_template_standard_sheet_is_the_smallest_one_the_strokes_fit() {
+        assert_eq!(standard_sheet_for(A1), Some(A1));
+        assert_eq!(standard_sheet_for((838.2, 590.9)), Some(A1));
+        assert_eq!(standard_sheet_for((845.9, 598.9)), Some(A1));
+        assert_eq!(standard_sheet_for((846.1, 594.0)), Some(A0));
+        assert_eq!(standard_sheet_for((594.0, 841.0)), Some((594.0, 841.0)));
+        assert_eq!(standard_sheet_for((100.0, 80.0)), Some((297.0, 210.0)));
+        assert_eq!(standard_sheet_for((1300.0, 900.0)), None);
+    }
+
+    /// Strokes are what a border is drawn with: lines, polylines, arcs and
+    /// circles are measured, lettering and markers are not.
+    #[test]
+    fn pid_template_strokes_are_lines_polylines_arcs_and_circles() {
+        let geometry = NormalizedPidGeometry {
+            entities: vec![
+                entity(
+                    PidGraphicKind::Polyline {
+                        points: vec![
+                            point(0.010, 0.020),
+                            point(0.200, 0.020),
+                            point(0.200, 0.100),
+                        ],
+                        closed: false,
+                    },
+                    None,
+                ),
+                entity(
+                    PidGraphicKind::Circle {
+                        center: point(0.300, 0.050),
+                        radius: 0.010,
+                    },
+                    None,
+                ),
+                entity(
+                    PidGraphicKind::Arc {
+                        center: point(0.050, 0.200),
+                        radius: 0.020,
+                        start_angle: 0.0,
+                        end_angle: 1.0,
+                        clockwise: false,
+                    },
+                    None,
+                ),
+                entity(
+                    PidGraphicKind::Point {
+                        position: point(5.0, 5.0),
+                    },
+                    None,
+                ),
+                entity(lettering((9.0, 9.0)), None),
+            ],
+            ..Default::default()
+        };
+        let (width, height) =
+            stroked_extent_mm(&geometry, MM_PER_METRE, |_| true).expect("strokes to measure");
+        assert!((width - 300.0).abs() < 1e-9, "width {width}");
+        assert!((height - 200.0).abs() < 1e-9, "height {height}");
+        assert_eq!(stroked_extent_mm(&geometry, MM_PER_METRE, |_| false), None);
+    }
+
+    /// The page a named sheet is matched on: the one it states, else the
+    /// standard sheet the strokes SmartPlant prints fit -- strokes on a
+    /// switched-off layer or the review overlay do not push it a size up.
+    #[test]
+    fn pid_template_page_of_a_sheet_that_states_none_is_the_sheet_its_printed_strokes_fit() {
+        let geometry = NormalizedPidGeometry {
+            entities: vec![
+                entity(
+                    line((0.0, 0.0), (0.841, 0.0)),
+                    Some(("Default", Some(true))),
+                ),
+                entity(line((0.0, 0.0), (0.0, 0.594)), None),
+                entity(lettering((1.5, 0.9)), None),
+                entity(
+                    line((0.0, 0.0), (1.189, 0.841)),
+                    Some(("HiddenObjects", Some(false))),
+                ),
+                entity(
+                    line((0.0, 0.0), (1.189, 0.841)),
+                    Some(("ConsistencyChecks", Some(true))),
+                ),
+            ],
+            ..Default::default()
+        };
+        let unit = ImportUnit::AssumedMetre;
+        assert_eq!(sheet_page_mm(&geometry, &unit), Some(A1));
+        let stated = NormalizedPidGeometry {
+            page_dimensions_mm: Some((843.46, 596.71)),
+            ..geometry
+        };
+        assert_eq!(sheet_page_mm(&stated, &unit), Some((843.46, 596.71)));
+        assert_eq!(
+            sheet_page_mm(&NormalizedPidGeometry::default(), &unit),
+            None
+        );
+    }
 }

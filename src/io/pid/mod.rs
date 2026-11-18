@@ -522,7 +522,8 @@ pub fn load_pid_with(path: &Path, options: &PidImportOptions) -> Result<PidImpor
     // overlay what it decodes to -- title block, margin strips, the real
     // frame -- before `finish` decides whether the synthetic page border is
     // still needed.
-    let template = overlay_linked_template(&parsed, &geometry, path, &mut doc, paper_style_scale);
+    let template =
+        overlay_linked_template(&parsed, &geometry, &unit, path, &mut doc, paper_style_scale);
     let summary = finish(
         path,
         &geometry,

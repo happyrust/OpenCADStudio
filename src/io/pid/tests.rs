@@ -1436,61 +1436,6 @@ fn a_link_resolves_directly_or_by_basename_under_a_root() {
     let _ = std::fs::remove_dir_all(&temp);
 }
 
-/// The overlay takes the template only when its page is the drawing's: a
-/// stated pair must agree within the tolerance; a side that states nothing
-/// cannot refuse the match. A template stating no page of its own is
-/// measured on the frame it drew.
-#[test]
-fn a_template_is_overlaid_only_on_the_page_it_is_for() {
-    let geometry = |page: Option<(f64, f64)>| NormalizedPidGeometry {
-        page_dimensions_mm: page,
-        ..Default::default()
-    };
-    let a1_frame: Vec<EntityType> = vec![line((0.0, 0.0), (841.0, 594.0))];
-    let a0_frame: Vec<EntityType> = vec![line((0.0, 0.0), (1189.0, 841.0))];
-    assert!(same_page(
-        &geometry(Some((841.0, 594.0))),
-        &[],
-        &geometry(Some((841.0, 594.0)))
-    ));
-    assert!(
-        same_page(
-            &geometry(Some((841.2, 594.1))),
-            &[],
-            &geometry(Some((841.0, 594.0))),
-        ),
-        "float noise between the two frame records is the same page"
-    );
-    assert!(
-        !same_page(
-            &geometry(Some((1189.0, 841.0))),
-            &[],
-            &geometry(Some((841.0, 594.0))),
-        ),
-        "an A0 template never lands on an A1 drawing"
-    );
-    assert!(same_page(
-        &geometry(None),
-        &[],
-        &geometry(Some((841.0, 594.0)))
-    ));
-    assert!(same_page(
-        &geometry(Some((841.0, 594.0))),
-        &[],
-        &geometry(None)
-    ));
-    // The igr states no page of its own, so its drawn frame is the claim:
-    // an A1-sized overlay passes on A1, an A0-sized one is refused.
-    assert!(
-        same_page(&geometry(None), &a1_frame, &geometry(Some((841.0, 594.0)))),
-        "a page-less template is measured by the frame it drew"
-    );
-    assert!(
-        !same_page(&geometry(None), &a0_frame, &geometry(Some((841.0, 594.0)))),
-        "the page-less A0 template may not land on the A1 drawing"
-    );
-}
-
 /// The linked `.igr` parses through the same pipeline as the drawing and
 /// overlays onto `PID-FRAME`: the fixture template draws its closed page
 /// frame (so the synthetic border stands down), its title-block and
@@ -1513,12 +1458,23 @@ fn a_linked_igr_overlays_its_drafting_on_pid_frame() {
     };
     let mut doc = Document::new();
     // The drawing's own normalized geometry is only consulted for its page:
-    // the template's must agree with it.
+    // a frame of the template that covers it stands the synthetic border
+    // down. Which template a sheet wears is `pick_linked_template`'s call,
+    // made on the strokes measured here.
     let drawing = NormalizedPidGeometry {
         page_dimensions_mm: Some((841.0, 594.0)),
         ..Default::default()
     };
-    let overlay = overlay_from(&igr, &drawing, &mut doc, 1.0).expect("the fixture draws");
+    let template = read_template(&igr, false).expect("the fixture parses");
+    let (width, height) = template
+        .candidate()
+        .stroked_mm
+        .expect("the fixture has strokes to measure");
+    assert!(
+        (width - 841.0).abs() < 0.01 && (height - 594.0).abs() < 0.01,
+        "the A1 template's strokes span the A1 sheet, not {width} x {height}"
+    );
+    let overlay = overlay_template(&template, &drawing, &mut doc, 1.0).expect("the fixture draws");
     assert!(overlay.drawn > 50, "a title block is more than a few lines");
     assert!(
         overlay.page_frame_covered,
