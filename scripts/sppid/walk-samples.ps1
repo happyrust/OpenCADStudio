@@ -24,9 +24,9 @@
 # -Only walks some of the four sources; the summary then says it is only a part.
 #
 # cargo runs in the repository this script lies in, offline and with the lock
-# file, whatever the current folder is. All eight walks take a quarter of an
-# hour or more. The table is Chinese Markdown, ready for readings.md;
-# summary.md holds the same text as UTF-8.
+# file, whatever the current folder is. All eight walks take about nine
+# minutes once the test program is built. The table is Chinese Markdown, ready
+# for readings.md; summary.md holds the same text as UTF-8.
 #
 # Exit code: 0 when every walk passes and every comparison agrees; 1 when
 # something does not; 2 when the arguments cannot be used, the test program

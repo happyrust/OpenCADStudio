@@ -111,10 +111,20 @@ fn main() {
     // Release builds generate the icon before compiling.
     #[cfg(windows)]
     {
-        println!("cargo:rerun-if-changed=packaging/windows/AppIcon.ico");
-        if Path::new("packaging/windows/AppIcon.ico").exists() {
+        let icon = "packaging/windows/AppIcon.ico";
+        // A missing watched path makes Cargo rerun the script on every build.
+        // Until the icon exists, watch its nearest existing folder, which
+        // changes when the icon is generated; never the package root.
+        let watched = Path::new(icon)
+            .ancestors()
+            .take_while(|path| !path.as_os_str().is_empty())
+            .find(|path| path.exists());
+        if let Some(watched) = watched {
+            println!("cargo:rerun-if-changed={}", watched.display());
+        }
+        if Path::new(icon).exists() {
             let mut res = winresource::WindowsResource::new();
-            res.set_icon("packaging/windows/AppIcon.ico");
+            res.set_icon(icon);
             res.set("ProductVersion", &full_version);
             res.set("FileVersion", &app_version);
             if let Err(e) = res.compile() {
