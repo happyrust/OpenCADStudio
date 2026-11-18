@@ -565,7 +565,13 @@ impl OpenCADStudio {
                     Message::PidBackup(PidBackupMsg::ItemsLoaded(drawing, result.map(Arc::new)))
                 },
             ),
-            Effect::OpenDrawing(path) => Task::done(Message::OpenRecent(path)),
+            // A drawing a tab shows already is brought to the front, as OPEN
+            // and the sheet set's sheets do: the open itself takes no notice
+            // of the tabs on the desktop, and would load the file once more.
+            Effect::OpenDrawing(path) => match self.tab_showing(&path) {
+                Some(index) => Task::done(Message::TabSwitch(index)),
+                None => Task::done(Message::OpenRecent(path)),
+            },
             // A picked source, a refresh: both rebuild the index from a path.
             // The panel remembers the source it was given, so a refresh keeps
             // the backup it was showing.

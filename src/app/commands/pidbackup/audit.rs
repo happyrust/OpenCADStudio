@@ -24,8 +24,10 @@
 //!   interface a launch without `--classic` starts in, and there opens from
 //!   the panel every drawing the importer was given instead of one: a
 //!   drawing that imports is owed a tab that shows it, in front, with
-//!   entities in it and the editor still the screen; one that does not is
-//!   owed its reason and the tabs left alone. `0` or nothing walks the
+//!   entities in it and the editor still the screen, and, activated in the
+//!   panel again, that tab in front and no tab more; one that does not is
+//!   owed its reason and the tabs left alone, and the report of its failed
+//!   open is closed before the next drawing. `0` or nothing walks the
 //!   backup in a `--classic` window;
 //! - `OCS_PID_BACKUP_AUDIT_EXPECT`, three whole numbers as in `53,2,1` (the
 //!   drawings of the backup, how many of them at most may fail to read their
@@ -1689,6 +1691,43 @@ impl Refused {
     }
 }
 
+/// How the module was left by a drawing a tab showed already, activated in
+/// the panel again.
+#[derive(Debug, Clone, Copy)]
+struct Again {
+    /// Another drawing's tab was put in front first.
+    from_behind: bool,
+    tabs_before: usize,
+    tabs_after: usize,
+    /// The tab that showed the drawing is the one in front.
+    in_front: bool,
+}
+
+impl Again {
+    /// What of the two things such an activation owes is not so: the tabs as
+    /// many as they were, and the tab that showed the drawing in front.
+    fn wrong(&self) -> Vec<String> {
+        let from = if self.from_behind {
+            "from behind another drawing"
+        } else {
+            "with its tab in front"
+        };
+        let mut wrong = Vec::new();
+        if self.tabs_after != self.tabs_before {
+            wrong.push(format!(
+                "activated again {from}, {} tab(s) became {}",
+                self.tabs_before, self.tabs_after
+            ));
+        }
+        if !self.in_front {
+            wrong.push(format!(
+                "activated again {from}, its tab is not the one in front"
+            ));
+        }
+        wrong
+    }
+}
+
 /// The tabs the module's strip shows: every drawing, the Start page aside.
 fn drawing_tabs(app: &OpenCADStudio) -> usize {
     app.tabs.iter().filter(|tab| !tab.is_start).count()
@@ -1700,15 +1739,69 @@ struct ModuleOpen {
     row: String,
     /// Where it landed; `None` for a drawing that does not import.
     landing: Option<Landing>,
+    /// The activations made of it again, once a tab showed it.
+    again: usize,
+    /// The report of its failed open was up, and closed again.
+    report_closed: bool,
     /// What of the open is not as it owes.
     wrong: Vec<String>,
     took: Duration,
 }
 
+/// Activate again, in the panel, the drawing it just opened, and hold the
+/// module to [`Again`]: once with the drawing's tab in front and, where
+/// another drawing is open, once more with that one put in front first.
+/// Returns the activations made and what of them is not as it owes.
+fn activated_again(app: &mut OpenCADStudio, at: usize, path: &Path) -> (usize, Vec<String>) {
+    let shows = app.active_tab;
+    let other = (0..app.tabs.len()).find(|&tab| tab != shows && !app.tabs[tab].is_start);
+    let (mut made, mut wrong) = (0, Vec::new());
+    for behind in std::iter::once(None).chain(other.map(Some)) {
+        if let Some(other) = behind {
+            let task = app.update(crate::app::Message::TabSwitch(other));
+            let switched = app.drive_headless_task(task);
+            if switched.is_err() || app.active_tab != other {
+                // A dialog left up is the likely reason: the application
+                // switches to no tab under the report of a failed open.
+                let why = match (switched, app.active_modal) {
+                    (Err(error), _) => format!(" ({error})"),
+                    (Ok(()), Some(dialog)) => format!(" (the dialog {dialog:?} is up)"),
+                    (Ok(()), None) => String::new(),
+                };
+                wrong.push(format!(
+                    "another drawing's tab did not come to the front{why}"
+                ));
+                break;
+            }
+        }
+        let tabs_before = drawing_tabs(app);
+        if let Err(error) = send(app, PidBackupMsg::Activate(NodeId::Drawing(at))) {
+            wrong.push(format!(
+                "activated again, the panel stopped headless at: {error}"
+            ));
+        }
+        made += 1;
+        let again = Again {
+            from_behind: behind.is_some(),
+            tabs_before,
+            tabs_after: drawing_tabs(app),
+            in_front: app.active_tab == shows && app.tab_showing(path) == Some(shows),
+        };
+        wrong.extend(again.wrong());
+        if !wrong.is_empty() {
+            break;
+        }
+    }
+    (made, wrong)
+}
+
 /// Open drawing `at` from the panel, which is what a double click on its row
 /// starts, and hold the module to what that owes: [`Opened`] for a drawing
-/// that imports, [`Refused`] for one that does not. A tab the open added is
-/// closed again, so a plant's drawings are not all held at once.
+/// that imports, [`Refused`] for one that does not. A drawing that opened as
+/// it owes is then activated again ([`activated_again`]). A tab the open
+/// added is closed again, so a plant's drawings are not all held at once,
+/// and so is the report of a failed open, which a person closes before the
+/// next drawing: the application switches to no tab while it is up.
 fn open_in_module(
     app: &mut OpenCADStudio,
     index: &BackupIndex,
@@ -1722,7 +1815,9 @@ fn open_in_module(
         .expect("a drawing the importer was given has a file");
     let tabs_before = drawing_tabs(app);
     let front_before = app.tabs[app.active_tab].id;
-    // The application's own rule (`on_file_opened`), read before the open.
+    // Where the drawing is due, read before the open: the panel's own rule
+    // for a file a tab shows already (`run_pid_backup_effect`), then the
+    // application's for a file it opens (`on_file_opened`).
     let landing = if app.tab_showing(path).is_some() {
         Landing::TabShowingIt
     } else {
@@ -1765,6 +1860,17 @@ fn open_in_module(
         if reason.contains(&index.restored.display().to_string()) {
             wrong.push("the reason names the restore folder".to_string());
         }
+        // Closed as the report's own Close button closes it.
+        let report = crate::app::ModalKind::Recovery;
+        let mut report_closed = false;
+        if app.dialog_open(report) {
+            let task = app.update(crate::app::Message::RecoveryClose);
+            let closed = app.drive_headless_task(task);
+            report_closed = closed.is_ok() && !app.dialog_open(report);
+            if !report_closed {
+                wrong.push("the report of the failed open did not close".to_string());
+            }
+        }
         return ModuleOpen {
             row: format!(
                 "    {} | {tabs_before} -> {tabs_after}, not opened | {reason} | {}",
@@ -1772,6 +1878,8 @@ fn open_in_module(
                 millis(took)
             ),
             landing: None,
+            again: 0,
+            report_closed,
             wrong,
             took,
         };
@@ -1786,6 +1894,12 @@ fn open_in_module(
         editor,
     };
     wrong.extend(opened.wrong());
+    let mut again = 0;
+    if wrong.is_empty() {
+        let (made, faults) = activated_again(app, at, path);
+        again = made;
+        wrong.extend(faults);
+    }
     if wrong.is_empty() && landing == Landing::NewTab {
         let id = app.tabs[app.active_tab].id;
         let task = app.update(crate::app::Message::TabClose(id));
@@ -1809,6 +1923,8 @@ fn open_in_module(
             millis(took)
         ),
         landing: Some(landing),
+        again,
+        report_closed: false,
         wrong,
         took,
     }
@@ -2616,8 +2732,9 @@ fn a_real_backup_is_walked_node_by_node() {
     // ── Every drawing opened from the panel, in the module ───────────────
     // What a double click on a drawing's row starts, in the interface a
     // launch without `--classic` starts in: a drawing that imports is owed
-    // a tab that shows it, one that does not is owed its reason and the
-    // tabs left alone.
+    // a tab that shows it and, activated again, that tab in front and no
+    // tab more; one that does not is owed its reason and the tabs left
+    // alone, and the report of its failed open is closed again.
     let mut misopened: Vec<String> = Vec::new();
     if module && !import {
         audit.line(
@@ -2630,11 +2747,14 @@ fn a_real_backup_is_walked_node_by_node() {
              (name | tabs | entities in its tab | time) ==",
         );
         let (mut own, mut blank, mut shown, mut refused) = (0, 0, 0, 0);
+        let (mut again, mut reports) = (0, 0);
         let mut open_time = Duration::ZERO;
         for &(at, imports) in &opens {
             let opened = open_in_module(&mut app, &index, at, imports);
             audit.line(opened.row);
             open_time += opened.took;
+            again += opened.again;
+            reports += usize::from(opened.report_closed);
             match opened.landing {
                 Some(Landing::NewTab) => own += 1,
                 Some(Landing::BlankTabInFront) => blank += 1,
@@ -2648,7 +2768,9 @@ fn a_real_backup_is_walked_node_by_node() {
         audit.line(format!(
             "  {} opened: {own} in a tab of their own, {blank} in the blank tab in front, \
              {shown} in the tab that showed them already; {refused} not opened, their import \
-             fails; {} imported with no entity and left out; {} not as an open owes; all in {}",
+             fails, {reports} report(s) of that closed again; {} imported with no entity and \
+             left out; {again} more activation(s) of a drawing a tab showed already; {} not \
+             as an open owes; all in {}",
             own + blank + shown,
             not_imported.len() - import_errors,
             misopened.len(),
@@ -3099,6 +3221,40 @@ mod switches {
             .wrong()
             .len(),
             4
+        );
+    }
+
+    #[test]
+    fn a_drawing_activated_again_keeps_the_tabs_and_has_its_tab_in_front() {
+        let good = Again {
+            from_behind: false,
+            tabs_before: 2,
+            tabs_after: 2,
+            in_front: true,
+        };
+        assert_eq!(good.wrong(), Vec::<String>::new());
+        // The file opened once more: a tab more than there were.
+        assert_eq!(
+            Again {
+                tabs_after: 3,
+                ..good
+            }
+            .wrong(),
+            ["activated again with its tab in front, 2 tab(s) became 3"]
+        );
+        // Another drawing was in front, and stayed there.
+        let behind = Again {
+            from_behind: true,
+            ..good
+        };
+        assert_eq!(behind.wrong(), Vec::<String>::new());
+        assert_eq!(
+            Again {
+                in_front: false,
+                ..behind
+            }
+            .wrong(),
+            ["activated again from behind another drawing, its tab is not the one in front"]
         );
     }
 

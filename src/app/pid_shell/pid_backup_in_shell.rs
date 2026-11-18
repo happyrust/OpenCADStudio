@@ -6,7 +6,8 @@
 //! a frame of its own (`rebase`). What is checked here is that the panel
 //! comes up beside the drawing and inside that frame, that the module's own
 //! parts stay where they were, that a drawing opened from the panel asks for
-//! the file the restore made of it, and that a source that is no backup
+//! the file the restore made of it, that one a tab shows already is brought
+//! to the front and not opened again, and that a source that is no backup
 //! leaves the module in the state it leaves a `--classic` window in.
 //!
 //! The backups are made up here, the way the tests of
@@ -562,6 +563,121 @@ fn a_drawing_activated_in_the_panel_asks_for_the_file_the_restore_made_of_it() {
         Some(second_file)
     );
     assert_eq!(app.pid_shell.current(), Some(PidScreen::Editor));
+}
+
+// ── A drawing a tab shows already ────────────────────────────────────────
+
+/// A drawing a tab shows already is not opened a second time. Activated in
+/// the panel, by a double click on its row or by the button of its details,
+/// its tab comes to the front: no file is asked for, and the tabs are as
+/// many as they were. A drawing no tab shows is asked for as before.
+///
+/// The drawings made up here are none the importer reads, so the open that
+/// put the first of them in a tab is stood in for by the one thing of it
+/// the rule reads: the tab holds the file's path. The open itself, and the
+/// tab it adds, are walked in a window on the backup of a plant.
+fn opened_again_from_the_panel(classic: bool, scratch: &str) {
+    let scratch = Scratch::new(scratch);
+    let backup = backup_folder(scratch.path());
+    let mut app = launched(classic);
+    restores_into(&mut app, scratch.path());
+    say(&mut app, &open_line(&backup));
+    let index = app
+        .pid_backup_browser
+        .index()
+        .expect("the backup is loaded")
+        .clone();
+    let drawing = |name: &str| -> (usize, PathBuf) {
+        let at = index
+            .drawings
+            .iter()
+            .position(|drawing| drawing.name == name)
+            .unwrap_or_else(|| panic!("{name} is listed"));
+        let file = index.drawings[at]
+            .pid_path
+            .clone()
+            .unwrap_or_else(|| panic!("{name} has a file"));
+        (at, file)
+    };
+    let (first, first_file) = drawing("A-101");
+    let (second, second_file) = drawing("B-202");
+    // What a double click on a drawing's row asks to have opened.
+    let double_click = |app: &mut OpenCADStudio, at: usize| {
+        let task = app.update(AppMessage::PidBackup(PidBackupMsg::Activate(
+            NodeId::Drawing(at),
+        )));
+        opens_asked_for(app, task)
+    };
+    let screen = app.pid_shell.current();
+
+    // No tab shows the first drawing: its file is asked for.
+    assert_eq!(app.tab_showing(&first_file), None);
+    assert_eq!(double_click(&mut app, first), [first_file.as_path()]);
+
+    // The open, stood in for: the drawing in front holds the file. A new
+    // drawing is started after it, so its tab is no longer in front.
+    let front = app.active_tab;
+    assert!(!app.tabs[front].is_start);
+    app.tabs[front].current_path = Some(first_file.clone());
+    give(&mut app, AppMessage::TabNew);
+    let other = app.active_tab;
+    let shows = app
+        .tab_showing(&first_file)
+        .expect("a tab shows the first drawing");
+    assert_ne!(other, shows);
+    let tabs = app.tabs.len();
+    // What is owed whenever the first drawing is activated from here on:
+    // its tab in front, and nothing else moved.
+    let in_front = |app: &OpenCADStudio, asked: Vec<PathBuf>| {
+        assert!(asked.is_empty(), "{asked:?}");
+        assert!(app.opening.is_none());
+        assert_eq!(app.tabs.len(), tabs);
+        assert_eq!(app.active_tab, shows);
+        assert_eq!(app.tab_showing(&first_file), Some(shows));
+        assert_eq!(app.pid_shell.current(), screen);
+    };
+
+    // A double click on its row brings its tab to the front.
+    let asked = double_click(&mut app, first);
+    in_front(&app, asked);
+
+    // So does the button of its details, pressed with the other drawing in
+    // front again.
+    give(&mut app, AppMessage::TabSwitch(other));
+    assert_eq!(app.active_tab, other);
+    let groups = crate::t!("Plant groups");
+    say(
+        &mut app,
+        &format!("PIDBACKUPOPEN Select {groups} > 00 > 00 > A-101"),
+    );
+    assert_eq!(
+        app.pid_backup_browser.selected,
+        Some(NodeId::Drawing(first))
+    );
+    let button = crate::t!("Open drawing");
+    let task = app.run_command_line(&format!("PIDBACKUPOPEN Press {button}"));
+    let asked = opens_asked_for(&mut app, task);
+    in_front(&app, asked);
+
+    // In front already, it stays there.
+    let asked = double_click(&mut app, first);
+    in_front(&app, asked);
+
+    // A drawing no tab shows is asked for as before, and until that open
+    // ends the tabs are as they were.
+    assert_eq!(double_click(&mut app, second), [second_file.as_path()]);
+    assert_eq!(app.tabs.len(), tabs);
+    assert_eq!(app.active_tab, shows);
+}
+
+#[test]
+fn a_drawing_a_tab_shows_already_is_brought_to_the_front_in_the_module() {
+    opened_again_from_the_panel(false, "again-module");
+}
+
+#[test]
+fn a_drawing_a_tab_shows_already_is_brought_to_the_front_in_a_classic_window() {
+    opened_again_from_the_panel(true, "again-classic");
 }
 
 // ── A source that is no backup ───────────────────────────────────────────

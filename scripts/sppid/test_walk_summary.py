@@ -40,8 +40,10 @@ def walked(
         table += [f"    {row[0]} | 1 -> 2, a tab of its own | {row[1] + 70} | 250.0 ms" for row in rows]
         table.append(
             f"  {len(rows)} opened: {len(rows)} in a tab of their own, 0 in the blank tab in front, "
-            f"0 in the tab that showed them already; {len(unopened)} not opened, their import fails; "
-            f"0 imported with no entity and left out; {off} not as an open owes; all in 761.9 ms"
+            f"0 in the tab that showed them already; {len(unopened)} not opened, their import fails, "
+            f"{len(unopened)} report(s) of that closed again; 0 imported with no entity and left out; "
+            f"{2 * len(rows)} more activation(s) of a drawing a tab showed already; "
+            f"{off} not as an open owes; all in 761.9 ms"
         )
         table += [f"  not as an open owes: {rows[0][0]}: the tab in front has no entity"] * off
         at = next(at for at, line in enumerate(lines) if line.startswith("== check of the drawings"))
