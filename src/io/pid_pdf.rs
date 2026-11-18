@@ -31,6 +31,11 @@ const DEFAULT_REFERENCE_ROOT: &str = r"D:\work\plant-code\cad\pid-test-data";
 /// Largest template file read out of an archive; real ones are under 200 KB.
 const TEMPLATE_BYTES_MAX: u64 = 16 << 20;
 
+/// Counts the layouts of the template cache, so a folder an earlier build
+/// filled is not read again: up to layout 1 the templates were written under
+/// rank-prefixed names (`1 CPE-SQ-A1.igr`), which no sheet's link names.
+const TEMPLATE_CACHE_LAYOUT: u32 = 2;
+
 /// What one plot wrote.
 #[derive(Debug, Clone)]
 pub struct PidPdfReceipt {
@@ -304,9 +309,9 @@ fn templates_in(archive: &Path) -> Option<Vec<(String, Vec<u8>)>> {
 /// they came from. The first archive holding any `.igr` is used; the cache is
 /// keyed by its path, size and time, so a later plot reuses it.
 ///
-/// pid-plot picks a template by its extent and keeps the first of equal fits
-/// in name order, so the CPE-SQ family -- the frames the reference prints are
-/// drawn on -- is written under names that sort first.
+/// A template keeps the name the archive gives it. pid-plot lets a sheet whose
+/// frame links a template (`CPE-SQ~2.IGR`) wear only a file whose name begins
+/// with what the link spells (`CPE-SQ`), and picks among those by extent.
 fn archived_templates(root: &Path) -> Result<Option<(PathBuf, PathBuf)>, String> {
     for archive in refdata_archives(root) {
         let Some(templates) = templates_in(&archive) else {
@@ -320,12 +325,7 @@ fn archived_templates(root: &Path) -> Result<Option<(PathBuf, PathBuf)>, String>
         std::fs::create_dir_all(&dir)
             .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
         for (name, bytes) in &templates {
-            let rank = if name.to_ascii_uppercase().starts_with("CPE-SQ-") {
-                1
-            } else {
-                2
-            };
-            let path = dir.join(format!("{rank} {name}"));
+            let path = dir.join(name);
             if !path.is_file() {
                 std::fs::write(&path, bytes)
                     .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
@@ -339,6 +339,7 @@ fn archived_templates(root: &Path) -> Result<Option<(PathBuf, PathBuf)>, String>
 fn template_cache(archive: &Path) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
+    TEMPLATE_CACHE_LAYOUT.hash(&mut hasher);
     archive.hash(&mut hasher);
     if let Ok(meta) = std::fs::metadata(archive) {
         meta.len().hash(&mut hasher);
@@ -436,6 +437,18 @@ mod tests {
         root
     }
 
+    fn write_zip(path: &Path, members: &[(&str, &[u8])]) {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, bytes) in members {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
     #[test]
     fn the_default_target_leaves_the_reference_print_alone() {
         let drawing = Path::new("D:/plant/Drawings/DWG-0201.pid");
@@ -518,6 +531,58 @@ mod tests {
         assert_eq!(refdata_archives(&root), vec![root.join("RefData~4~680")]);
         assert!(templates_in(&root.join("RefData~4~680")).is_none());
         assert_eq!(archived_templates(&root), Ok(None));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_template_read_out_of_an_archive_keeps_its_own_name() {
+        let root = scratch("archived");
+        let archive = root.join("RefData~4~682.zip");
+        let members: &[(&str, &[u8])] = &[
+            ("Template Files/CPE-SQ-A1.igr", b"frame"),
+            ("Template Files/A1-W - New.igr", b"other"),
+            ("Template Files/Readme.txt", b"no template"),
+        ];
+        write_zip(&archive, members);
+        let _ = std::fs::remove_dir_all(template_cache(&archive));
+        let (cache, from) = archived_templates(&root).unwrap().unwrap();
+        assert_eq!(from, archive);
+        let dir = cache.join("Ref").join("Template Files");
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        // pid-plot gives a sheet whose frame links `CPE-SQ~2.IGR` only a file
+        // whose name begins with `CPE-SQ`: under any other name the template
+        // is one no sheet asks for.
+        assert_eq!(names, ["A1-W - New.igr", "CPE-SQ-A1.igr"]);
+        assert_eq!(std::fs::read(dir.join("CPE-SQ-A1.igr")).unwrap(), b"frame");
+        let _ = std::fs::remove_dir_all(&cache);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_cache_is_not_the_folder_an_earlier_layout_filled() {
+        use std::hash::{Hash, Hasher};
+        let root = scratch("layout");
+        let archive = root.join("RefData~4~682.zip");
+        let members: &[(&str, &[u8])] = &[("Template Files/CPE-SQ-A1.igr", b"frame")];
+        write_zip(&archive, members);
+        // The key as it was while templates were written under ranked names:
+        // the archive's path, size and time, and nothing else. A folder under
+        // that key may still hold `1 CPE-SQ-A1.igr`, and a sheet that names no
+        // template is given the file of its size whose name sorts first.
+        let mut hasher = std::hash::DefaultHasher::new();
+        archive.hash(&mut hasher);
+        let meta = std::fs::metadata(&archive).unwrap();
+        meta.len().hash(&mut hasher);
+        meta.modified().unwrap().hash(&mut hasher);
+        let earlier = std::env::temp_dir()
+            .join("ocs-pid-plot-templates")
+            .join(format!("{:016x}", hasher.finish()));
+        assert_ne!(template_cache(&archive), earlier);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
