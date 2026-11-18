@@ -1,6 +1,6 @@
 # 共用约定（打开备份包、导出 PDF 和 publish 文件）
 
-> 状态：**已确认**（2026-11-18）。同一天按你定的验收标准加了出 PDF 的内容（标着「2026-11-18 补」的几处），这些随 `SPEC-sppid-pdf.md` 一起**待确认**。基线：本仓库 `main @ 5b4784058`（本地，未推送）；`pid-parse` 主线 `96ee00c`，本程序钉的是 `d0a58c64c413`。
+> 状态：**已确认**（2026-11-18）。同一天按你定的验收标准加了出 PDF 的内容（标着「2026-11-18 补」的几处），这些随 `SPEC-sppid-pdf.md` 一起也已确认。基线：本仓库 `main @ 5b4784058`（本地，未推送）；`pid-parse` 主线 `96ee00c`，本程序钉的是 `d0a58c64c413`。
 > 这份文件只写这份计划自己的东西。技术栈、固定门禁、代码写法、测试写法、边界的通用部分沿用 `docs/plans/2026-11-16-pid-dev-spec/01-shared-conventions.md`（下文叫「通用约定」），这里不重复。
 > 用到它的文件：`SPEC-sppid-deps.md`、`SPEC-sppid-read.md`、`SPEC-sppid-pdf.md`、`SPEC-sppid-export.md`、`02-screen-content.md`、`plan.md`、`todo.md`。
 

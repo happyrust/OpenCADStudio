@@ -1,6 +1,6 @@
 # SPEC：导出 PDF（`sppid-pdf`）
 
-> 状态：**待确认**（2026-11-18）。基线 `main @ c399311e7`。
+> 状态：**已确认**（2026-11-18）：§9 的 P1–P4 都按建议定。基线 `main @ c399311e7`。
 > 依据：你 2026-11-18 定的验收标准里的「能够导出PDF 和对应的publish文件」；`00-capability-map.md` §4、§5 检查点 B；需求 `REQ-MIG-010`（这次新加的，`docs/pid-platform/requirements/90-migration-and-interop.md`）。
 > 共用约定见 `01-shared-conventions.md`。前提：`SPEC-sppid-deps.md`、`SPEC-sppid-read.md` 做完。不依赖 `SPEC-sppid-export.md`。
 
@@ -224,7 +224,9 @@ pub fn summary_lines(outcome: &PdfOutcome) -> Vec<String>;
 - 只读的协同会话里，协同的那张图在最前时，`PIDBACKUPPDF` 会被拒绝，和 `PIDBACKUPOPEN` 一样。维持现状。
 - SQL Server 包没有验收。网页版没有这个功能。
 
-## 9. 待决问题
+## 9. 待决问题（已定）
+
+P1–P4 已定（2026-11-18），都按建议：两条命令；平铺，和 publish 文件同名；「和命令行工具逐字节相同」是验收；能查进度，不做取消。
 
 | # | 问题 | 建议 |
 |---|---|---|
