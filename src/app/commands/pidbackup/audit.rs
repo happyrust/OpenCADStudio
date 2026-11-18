@@ -19,13 +19,26 @@
 //!   language is one process-wide loader, so only set it when this test runs
 //!   alone;
 //! - `OCS_PID_BACKUP_AUDIT_SKIP_IMPORT` (any value) leaves out the import of
-//!   every drawing, the slow half that a change to the panel does not touch.
+//!   every drawing, the slow half that a change to the panel does not touch;
+//! - `OCS_PID_BACKUP_AUDIT_SHELL=1` walks the backup in the P&ID module, the
+//!   interface a launch without `--classic` starts in, and there opens from
+//!   the panel every drawing the importer was given instead of one: a
+//!   drawing that imports is owed a tab that shows it, in front, with
+//!   entities in it and the editor still the screen; one that does not is
+//!   owed its reason and the tabs left alone. `0` or nothing walks the
+//!   backup in a `--classic` window;
+//! - `OCS_PID_BACKUP_AUDIT_EXPECT`, three whole numbers as in `53,2,1` (the
+//!   drawings of the backup, how many of them at most may fail to read their
+//!   items, how many at most may fail to import), fails the walk when the
+//!   backup lists another number of drawings or more of them fail than
+//!   that; the report and the failure name them with their reasons.
 //!
 //! A folder source is restored into the cache under the temp folder, which
 //! is where the 100 MB of a plant's drawings go: point `TEMP` at a drive
 //! with room for them.
 
 use super::*;
+use crate::app::pid_shell::PidScreen;
 use crate::io::pid_backup_browse::{BackupIndex, GroupNode, RefNode};
 use crate::ui::window::pid_backup_browser::{
     detail_buttons, detail_rows, visible_rows, ItemsState, NodeId, Row, SectionLoad,
@@ -1488,13 +1501,342 @@ fn walk_split(app: &mut OpenCADStudio, audit: &mut Audit, index: &BackupIndex) {
     send(app, PidBackupMsg::Select(NodeId::Root)).unwrap();
 }
 
+/// What `OCS_PID_BACKUP_AUDIT_EXPECT` holds a walk to: how many drawings the
+/// backup lists, and how many of them at most may fail to read their items
+/// or fail to import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Expectation {
+    drawings: usize,
+    unread_at_most: usize,
+    unopened_at_most: usize,
+}
+
+/// How an expectation is written, for the answer to one that is not.
+const EXPECTATION_USAGE: &str =
+    "OCS_PID_BACKUP_AUDIT_EXPECT=<drawings>,<items unread at most>,<not imported at most>: \
+     three whole numbers, as in 53,2,1";
+
+impl Expectation {
+    /// Read `<drawings>,<items unread at most>,<not imported at most>`.
+    fn parse(text: &str) -> Result<Self, String> {
+        let parts: Vec<&str> = text.split(',').map(str::trim).collect();
+        let &[drawings, unread, unopened] = parts.as_slice() else {
+            return Err(format!(
+                "\"{text}\" is {} value(s) where three are asked for; {EXPECTATION_USAGE}",
+                parts.len()
+            ));
+        };
+        let number = |part: &str| {
+            part.parse::<usize>().map_err(|_| {
+                format!("\"{part}\" in \"{text}\" is not a whole number; {EXPECTATION_USAGE}")
+            })
+        };
+        Ok(Self {
+            drawings: number(drawings)?,
+            unread_at_most: number(unread)?,
+            unopened_at_most: number(unopened)?,
+        })
+    }
+
+    /// What of a walk does not meet the expectation, the drawings it is
+    /// about under each line with their reasons; nothing when all of it
+    /// does. `unread` and `unopened` are the walk's two closing lists, a
+    /// `name: reason` each.
+    fn unmet(&self, drawings: usize, unread: &[String], unopened: &[String]) -> Vec<String> {
+        let mut lines = Vec::new();
+        if drawings != self.drawings {
+            lines.push(format!(
+                "{} drawing(s) expected, the backup lists {drawings}",
+                self.drawings
+            ));
+        }
+        for (limit, found, what) in [
+            (self.unread_at_most, unread, "fail to read their items"),
+            (self.unopened_at_most, unopened, "fail to import"),
+        ] {
+            if found.len() > limit {
+                lines.push(format!(
+                    "at most {limit} drawing(s) may {what}, {} did:",
+                    found.len()
+                ));
+                lines.extend(found.iter().map(|drawing| format!("  {drawing}")));
+            }
+        }
+        lines
+    }
+}
+
+/// Whether `OCS_PID_BACKUP_AUDIT_SHELL` asks for the walk in the P&ID module:
+/// `1` does, `0` or nothing leaves it in a `--classic` window.
+fn module_asked(value: Option<&str>) -> Result<bool, String> {
+    match value.map(str::trim) {
+        None | Some("" | "0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(other) => Err(format!(
+            "OCS_PID_BACKUP_AUDIT_SHELL is \"{other}\": 1 walks the backup in the P&ID module, \
+             0 or nothing in a --classic window"
+        )),
+    }
+}
+
+/// What a switch of the walk is set to, when it is set.
+fn switch(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => panic!("{name} is not text"),
+    }
+}
+
+/// Where a drawing opened from the panel lands. An open adds a tab unless
+/// there is one to take the drawing: the blank drawing in front, which is
+/// filled rather than left behind, or the tab that shows the file already.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Landing {
+    NewTab,
+    BlankTabInFront,
+    TabShowingIt,
+}
+
+impl Landing {
+    fn told(self) -> &'static str {
+        match self {
+            Self::NewTab => "a tab of its own",
+            Self::BlankTabInFront => "the blank tab in front",
+            Self::TabShowingIt => "the tab that showed it already",
+        }
+    }
+}
+
+/// How the module was left by a drawing opened from the panel. The tabs
+/// counted, here and in [`Refused`], are those the module's strip shows.
+#[derive(Debug, Clone, Copy)]
+struct Opened {
+    landing: Landing,
+    tabs_before: usize,
+    tabs_after: usize,
+    /// The tab in front shows the drawing's file.
+    in_front: bool,
+    /// The entities of the tab in front.
+    entities: usize,
+    /// The editor is still the screen.
+    editor: bool,
+}
+
+impl Opened {
+    /// What of the four things an opened drawing owes is not so: a tab more
+    /// than there were, or the tab that was there to take it; that tab in
+    /// front; entities in it; the editor still the screen.
+    fn wrong(&self) -> Vec<String> {
+        let mut wrong = Vec::new();
+        let due = self.tabs_before + usize::from(self.landing == Landing::NewTab);
+        if self.tabs_after != due {
+            wrong.push(format!(
+                "{} tab(s) became {} where {due} were due ({})",
+                self.tabs_before,
+                self.tabs_after,
+                self.landing.told()
+            ));
+        }
+        if !self.in_front {
+            wrong.push("the tab in front does not show it".to_string());
+        }
+        if self.entities == 0 {
+            wrong.push("the tab in front has no entity".to_string());
+        }
+        if !self.editor {
+            wrong.push("the editor is no longer the screen".to_string());
+        }
+        wrong
+    }
+}
+
+/// How the module was left by a drawing that does not import, opened from
+/// the panel all the same.
+#[derive(Debug, Clone, Copy)]
+struct Refused {
+    tabs_before: usize,
+    tabs_after: usize,
+    /// The tab that was in front still is.
+    front_kept: bool,
+    /// The command line said why.
+    reasoned: bool,
+    /// The editor is still the screen.
+    editor: bool,
+}
+
+impl Refused {
+    /// What of a refused open is not so: the tabs as they were, the reason
+    /// on the command line, the editor still the screen.
+    fn wrong(&self) -> Vec<String> {
+        let mut wrong = Vec::new();
+        if self.tabs_after != self.tabs_before {
+            wrong.push(format!(
+                "{} tab(s) became {}",
+                self.tabs_before, self.tabs_after
+            ));
+        }
+        if !self.front_kept {
+            wrong.push("another tab came to the front".to_string());
+        }
+        if !self.reasoned {
+            wrong.push("the command line gives no reason".to_string());
+        }
+        if !self.editor {
+            wrong.push("the editor is no longer the screen".to_string());
+        }
+        wrong
+    }
+}
+
+/// The tabs the module's strip shows: every drawing, the Start page aside.
+fn drawing_tabs(app: &OpenCADStudio) -> usize {
+    app.tabs.iter().filter(|tab| !tab.is_start).count()
+}
+
+/// One drawing opened from the panel in the module.
+struct ModuleOpen {
+    /// Its row of the report.
+    row: String,
+    /// Where it landed; `None` for a drawing that does not import.
+    landing: Option<Landing>,
+    /// What of the open is not as it owes.
+    wrong: Vec<String>,
+    took: Duration,
+}
+
+/// Open drawing `at` from the panel, which is what a double click on its row
+/// starts, and hold the module to what that owes: [`Opened`] for a drawing
+/// that imports, [`Refused`] for one that does not. A tab the open added is
+/// closed again, so a plant's drawings are not all held at once.
+fn open_in_module(
+    app: &mut OpenCADStudio,
+    index: &BackupIndex,
+    at: usize,
+    imports: bool,
+) -> ModuleOpen {
+    let drawing = &index.drawings[at];
+    let path = drawing
+        .pid_path
+        .as_deref()
+        .expect("a drawing the importer was given has a file");
+    let tabs_before = drawing_tabs(app);
+    let front_before = app.tabs[app.active_tab].id;
+    // The application's own rule (`on_file_opened`), read before the open.
+    let landing = if app.tab_showing(path).is_some() {
+        Landing::TabShowingIt
+    } else {
+        let front = &app.tabs[app.active_tab];
+        let blank = !front.is_start
+            && front.current_path.is_none()
+            && !front.dirty
+            && front.scene.document.entities().count() == 0;
+        if blank {
+            Landing::BlankTabInFront
+        } else {
+            Landing::NewTab
+        }
+    };
+    let errors_before = app.command_line.error_revision;
+    let started = Instant::now();
+    let ran = send(app, PidBackupMsg::Activate(NodeId::Drawing(at)));
+    let took = started.elapsed();
+    let tabs_after = drawing_tabs(app);
+    let editor = app.pid_shell.current() == Some(PidScreen::Editor);
+    let mut wrong = Vec::new();
+    if let Err(error) = &ran {
+        wrong.push(format!("the open stopped headless at: {error}"));
+    }
+    if !imports {
+        let refused = Refused {
+            tabs_before,
+            tabs_after,
+            front_kept: app.tabs[app.active_tab].id == front_before,
+            reasoned: app.command_line.error_revision != errors_before,
+            editor,
+        };
+        wrong.extend(refused.wrong());
+        let reason = app
+            .command_line
+            .last_error
+            .clone()
+            .filter(|_| refused.reasoned)
+            .unwrap_or_else(|| "no reason given".to_string());
+        if reason.contains(&index.restored.display().to_string()) {
+            wrong.push("the reason names the restore folder".to_string());
+        }
+        return ModuleOpen {
+            row: format!(
+                "    {} | {tabs_before} -> {tabs_after}, not opened | {reason} | {}",
+                drawing.name,
+                millis(took)
+            ),
+            landing: None,
+            wrong,
+            took,
+        };
+    }
+    let entities = app.tabs[app.active_tab].scene.document.entities().count();
+    let opened = Opened {
+        landing,
+        tabs_before,
+        tabs_after,
+        in_front: app.tab_showing(path) == Some(app.active_tab),
+        entities,
+        editor,
+    };
+    wrong.extend(opened.wrong());
+    if wrong.is_empty() && landing == Landing::NewTab {
+        let id = app.tabs[app.active_tab].id;
+        let task = app.update(crate::app::Message::TabClose(id));
+        let closed = app.drive_headless_task(task);
+        let left = drawing_tabs(app);
+        if left != tabs_before {
+            wrong.push(format!(
+                "its tab did not close again: {left} tab(s) where {tabs_before} were{}",
+                closed
+                    .err()
+                    .map(|error| format!(" ({error})"))
+                    .unwrap_or_default()
+            ));
+        }
+    }
+    ModuleOpen {
+        row: format!(
+            "    {} | {tabs_before} -> {tabs_after}, {} | {entities} | {}",
+            drawing.name,
+            landing.told(),
+            millis(took)
+        ),
+        landing: Some(landing),
+        wrong,
+        took,
+    }
+}
+
 #[test]
 #[ignore = "reads a real SmartPlant backup; run alone with --ignored --nocapture"]
 fn a_real_backup_is_walked_node_by_node() {
     let source = std::env::var_os("OCS_PID_BACKUP_AUDIT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(DEFAULT_BACKUP));
+    let module = module_asked(switch("OCS_PID_BACKUP_AUDIT_SHELL").as_deref())
+        .unwrap_or_else(|error| panic!("{error}"));
+    let expectation = switch("OCS_PID_BACKUP_AUDIT_EXPECT")
+        .map(|text| Expectation::parse(&text).unwrap_or_else(|error| panic!("{error}")));
+    // An expectation counts the drawings that do not import: a walk that
+    // leaves the imports out, or has no backup to read, cannot meet one.
+    assert!(
+        expectation.is_none() || std::env::var_os("OCS_PID_BACKUP_AUDIT_SKIP_IMPORT").is_none(),
+        "OCS_PID_BACKUP_AUDIT_EXPECT counts the drawings that do not import: it cannot be set \
+         together with OCS_PID_BACKUP_AUDIT_SKIP_IMPORT"
+    );
     if !source.exists() {
+        assert!(
+            expectation.is_none(),
+            "OCS_PID_BACKUP_AUDIT_EXPECT is set and there is no backup at {}",
+            source.display()
+        );
         eprintln!("skipped: no backup at {}", source.display());
         return;
     }
@@ -1510,7 +1852,26 @@ fn a_real_backup_is_walked_node_by_node() {
     let mut empty: Vec<String> = Vec::new();
 
     let mut app = OpenCADStudio::new_for_test();
-    let _ = app.automation_op(r#"{"op":"new"}"#);
+    if module {
+        // A launch without `--classic`, its startup prompts answered: the
+        // module on its first screen, in a window of the design's size.
+        app.default_assoc_prompted = true;
+        app.donation_prompt_version = env!("OCS_APP_VERSION").to_owned();
+        let first = app.open_first_screen(&crate::cli::GuiConfig {
+            classic: false,
+            ..crate::cli::GuiConfig::default()
+        });
+        app.drive_headless_task(first)
+            .expect("the first screen opens without a window");
+        let _ = app.update(crate::app::Message::WindowResized(1600.0, 1000.0));
+        assert_eq!(
+            app.pid_shell.current(),
+            Some(PidScreen::Editor),
+            "a launch without --classic lands on the editor of the module"
+        );
+    } else {
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+    }
     // After the application is up: starting it sets the configured language.
     if std::env::var("OCS_PID_BACKUP_AUDIT_LANG").is_ok_and(|lang| lang == "zh-CN") {
         crate::i18n::set_language(crate::i18n::Language::ZhCn)
@@ -1519,6 +1880,12 @@ fn a_real_backup_is_walked_node_by_node() {
 
     // ── The load, as the command starts it ───────────────────────────────
     audit.line(format!("source: {}", source.display()));
+    if module {
+        audit.line(
+            "interface: the P&ID module, as a launch without --classic starts it \
+             (OCS_PID_BACKUP_AUDIT_SHELL=1)",
+        );
+    }
     let started = Instant::now();
     let task = app.dispatch_command(&format!("PIDBACKUPOPEN {}", source.display()));
     assert!(
@@ -1551,6 +1918,10 @@ fn a_real_backup_is_walked_node_by_node() {
     for entry in app.command_line.history.iter().rev().take(4).rev() {
         audit.line(format!("  command line [{:?}]: {}", entry.kind, entry.text));
     }
+    assert!(
+        !module || app.pid_shell.current() == Some(PidScreen::Editor),
+        "the backup opens beside the drawing, on the editor of the module"
+    );
     audit.shot(&app, "ready");
 
     walk_index(&mut app, &mut audit, &index, &mut empty);
@@ -2107,11 +2478,14 @@ fn a_real_backup_is_walked_node_by_node() {
     }
 
     // ── A drawing opened from the panel ──────────────────────────────────
+    // In the module every drawing is opened further down, once the imports
+    // have said which of them an open is owed for, and each is held to it.
     if let Some((at, drawing)) = index
         .drawings
         .iter()
         .enumerate()
         .find(|(_, drawing)| !drawing.is_missing())
+        .filter(|_| !module)
     {
         let tabs = app.tabs.len();
         let started = Instant::now();
@@ -2159,7 +2533,11 @@ fn a_real_backup_is_walked_node_by_node() {
     } else {
         "== import of every drawing: skipped (OCS_PID_BACKUP_AUDIT_SKIP_IMPORT) =="
     });
-    for drawing in &index.drawings {
+    // The drawings an open from the panel is held to something for, further
+    // down: those whose import drew something (`true`: a tab that shows the
+    // drawing) and those whose import failed (`false`: the tabs left alone).
+    let mut opens: Vec<(usize, bool)> = Vec::new();
+    for (at, drawing) in index.drawings.iter().enumerate() {
         if !import {
             break;
         }
@@ -2198,10 +2576,13 @@ fn a_real_backup_is_walked_node_by_node() {
                 ));
                 if summary.drawn == 0 {
                     not_imported.push(format!("{}: imported with no entity", drawing.name));
+                } else {
+                    opens.push((at, true));
                 }
             }
             Err(error) => {
                 import_errors += 1;
+                opens.push((at, false));
                 assert!(
                     !error.contains(&index.restored.display().to_string()),
                     "the reason {} did not import names the restore folder: {error}",
@@ -2230,6 +2611,52 @@ fn a_real_backup_is_walked_node_by_node() {
                     .join("; ")
             }
         ));
+    }
+
+    // ── Every drawing opened from the panel, in the module ───────────────
+    // What a double click on a drawing's row starts, in the interface a
+    // launch without `--classic` starts in: a drawing that imports is owed
+    // a tab that shows it, one that does not is owed its reason and the
+    // tabs left alone.
+    let mut misopened: Vec<String> = Vec::new();
+    if module && !import {
+        audit.line(
+            "== every drawing opened from the panel in the module: skipped \
+             (OCS_PID_BACKUP_AUDIT_SKIP_IMPORT) ==",
+        );
+    } else if module {
+        audit.line(
+            "== every drawing opened from the panel in the module \
+             (name | tabs | entities in its tab | time) ==",
+        );
+        let (mut own, mut blank, mut shown, mut refused) = (0, 0, 0, 0);
+        let mut open_time = Duration::ZERO;
+        for &(at, imports) in &opens {
+            let opened = open_in_module(&mut app, &index, at, imports);
+            audit.line(opened.row);
+            open_time += opened.took;
+            match opened.landing {
+                Some(Landing::NewTab) => own += 1,
+                Some(Landing::BlankTabInFront) => blank += 1,
+                Some(Landing::TabShowingIt) => shown += 1,
+                None => refused += 1,
+            }
+            for wrong in opened.wrong {
+                misopened.push(format!("{}: {wrong}", index.drawings[at].name));
+            }
+        }
+        audit.line(format!(
+            "  {} opened: {own} in a tab of their own, {blank} in the blank tab in front, \
+             {shown} in the tab that showed them already; {refused} not opened, their import \
+             fails; {} imported with no entity and left out; {} not as an open owes; all in {}",
+            own + blank + shown,
+            not_imported.len() - import_errors,
+            misopened.len(),
+            millis(open_time)
+        ));
+        for line in &misopened {
+            audit.line(format!("  not as an open owes: {line}"));
+        }
     }
 
     // ── The check of every drawing, from the backup's own details ────────
@@ -2401,6 +2828,20 @@ fn a_real_backup_is_walked_node_by_node() {
     for line in &not_imported {
         audit.line(format!("  {line}"));
     }
+    let mut unmet: Vec<String> = Vec::new();
+    if let Some(expectation) = expectation {
+        unmet = expectation.unmet(index.drawings.len(), &failed, &not_imported);
+        audit.line(format!(
+            "== expectation {},{},{} (drawings, items unread at most, not imported at most): {} ==",
+            expectation.drawings,
+            expectation.unread_at_most,
+            expectation.unopened_at_most,
+            if unmet.is_empty() { "met" } else { "not met" }
+        ));
+        for line in &unmet {
+            audit.line(format!("  {line}"));
+        }
+    }
     if let Some(folder) = &audit.out {
         std::fs::write(folder.join("report.txt"), audit.report.join("\n") + "\n")
             .expect("the report is written");
@@ -2414,4 +2855,294 @@ fn a_real_backup_is_walked_node_by_node() {
         "drawings whose items failed to read without saying so: {silent:?}"
     );
     assert!(leaked.is_empty(), "credentials shown: {leaked:?}");
+    // What the two switches add: an open in the module that left it other
+    // than an open owes, and a backup that reads worse than the run was told
+    // to expect.
+    assert!(
+        misopened.is_empty(),
+        "drawings opened from the panel in the module, not as an open owes:\n{}",
+        misopened.join("\n")
+    );
+    assert!(
+        unmet.is_empty(),
+        "the walk does not meet OCS_PID_BACKUP_AUDIT_EXPECT:\n{}",
+        unmet.join("\n")
+    );
+}
+
+/// The two switches a script sets on the walk: what each is read as, and
+/// what it holds a walk to. These run with the library's tests; the walk
+/// itself needs a real backup.
+mod switches {
+    use super::*;
+
+    fn listed(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| (*line).to_string()).collect()
+    }
+
+    #[test]
+    fn an_expectation_is_three_whole_numbers() {
+        assert_eq!(
+            Expectation::parse("53,2,1"),
+            Ok(Expectation {
+                drawings: 53,
+                unread_at_most: 2,
+                unopened_at_most: 1,
+            })
+        );
+        // As a script may well write it.
+        assert_eq!(
+            Expectation::parse(" 7 , 0 ,0 "),
+            Ok(Expectation {
+                drawings: 7,
+                unread_at_most: 0,
+                unopened_at_most: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn an_expectation_of_another_shape_is_refused_with_how_to_write_one() {
+        for (text, said) in [
+            // One number short, one too many, none at all.
+            ("7,1", "\"7,1\" is 2 value(s) where three are asked for"),
+            (
+                "7,1,1,0",
+                "\"7,1,1,0\" is 4 value(s) where three are asked for",
+            ),
+            ("", "\"\" is 1 value(s) where three are asked for"),
+            // Three values, one of them no whole number.
+            ("7,x,1", "\"x\" in \"7,x,1\" is not a whole number"),
+            ("7,,1", "\"\" in \"7,,1\" is not a whole number"),
+            ("-1,0,0", "\"-1\" in \"-1,0,0\" is not a whole number"),
+            ("7.5,1,1", "\"7.5\" in \"7.5,1,1\" is not a whole number"),
+        ] {
+            let refused = Expectation::parse(text).expect_err(text);
+            assert!(refused.starts_with(said), "{text:?}: {refused}");
+            assert!(refused.ends_with(EXPECTATION_USAGE), "{text:?}: {refused}");
+        }
+    }
+
+    #[test]
+    fn a_walk_within_its_expectation_meets_it() {
+        let expected = Expectation {
+            drawings: 7,
+            unread_at_most: 1,
+            unopened_at_most: 1,
+        };
+        let unread = listed(&["001: no drawing number"]);
+        let unopened = listed(&["001: nothing to draw"]);
+        assert_eq!(expected.unmet(7, &unread, &unopened), Vec::<String>::new());
+        // Fewer than the limits allow is within them as well.
+        assert_eq!(expected.unmet(7, &[], &[]), Vec::<String>::new());
+    }
+
+    #[test]
+    fn another_number_of_drawings_does_not_meet_the_expectation() {
+        let expected = Expectation {
+            drawings: 8,
+            unread_at_most: 1,
+            unopened_at_most: 1,
+        };
+        assert_eq!(
+            expected.unmet(7, &[], &[]),
+            ["8 drawing(s) expected, the backup lists 7"]
+        );
+    }
+
+    #[test]
+    fn more_unread_drawings_than_allowed_are_named_with_their_reasons() {
+        let expected = Expectation {
+            drawings: 7,
+            unread_at_most: 1,
+            unopened_at_most: 0,
+        };
+        let unread = listed(&["001: no drawing number", "002: the file is cut short"]);
+        assert_eq!(
+            expected.unmet(7, &unread, &[]),
+            [
+                "at most 1 drawing(s) may fail to read their items, 2 did:",
+                "  001: no drawing number",
+                "  002: the file is cut short",
+            ]
+        );
+    }
+
+    #[test]
+    fn more_drawings_that_do_not_import_than_allowed_are_named_with_their_reasons() {
+        let expected = Expectation {
+            drawings: 7,
+            unread_at_most: 1,
+            unopened_at_most: 0,
+        };
+        let unread = listed(&["001: no drawing number"]);
+        let unopened = listed(&["001: nothing to draw"]);
+        assert_eq!(
+            expected.unmet(7, &unread, &unopened),
+            [
+                "at most 0 drawing(s) may fail to import, 1 did:",
+                "  001: nothing to draw",
+            ]
+        );
+    }
+
+    #[test]
+    fn everything_a_walk_falls_short_in_is_said_at_once() {
+        let expected = Expectation {
+            drawings: 8,
+            unread_at_most: 0,
+            unopened_at_most: 0,
+        };
+        let unread = listed(&["001: no drawing number"]);
+        let unopened = listed(&["001: nothing to draw"]);
+        assert_eq!(
+            expected.unmet(7, &unread, &unopened),
+            [
+                "8 drawing(s) expected, the backup lists 7",
+                "at most 0 drawing(s) may fail to read their items, 1 did:",
+                "  001: no drawing number",
+                "at most 0 drawing(s) may fail to import, 1 did:",
+                "  001: nothing to draw",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_module_is_asked_for_with_a_one() {
+        assert_eq!(module_asked(Some("1")), Ok(true));
+        assert_eq!(module_asked(Some(" 1 ")), Ok(true));
+        assert_eq!(module_asked(None), Ok(false));
+        assert_eq!(module_asked(Some("0")), Ok(false));
+        assert_eq!(module_asked(Some("")), Ok(false));
+        // A word is no answer: the walk would run in the other interface
+        // than the one its report is filed under.
+        let refused = module_asked(Some("yes")).expect_err("a word is no answer");
+        assert!(refused.contains("\"yes\""), "{refused}");
+    }
+
+    fn opened(landing: Landing, tabs_before: usize, tabs_after: usize) -> Opened {
+        Opened {
+            landing,
+            tabs_before,
+            tabs_after,
+            in_front: true,
+            entities: 120,
+            editor: true,
+        }
+    }
+
+    #[test]
+    fn a_drawing_opened_in_a_tab_of_its_own_adds_one_tab() {
+        assert_eq!(opened(Landing::NewTab, 2, 3).wrong(), Vec::<String>::new());
+        assert_eq!(
+            opened(Landing::NewTab, 2, 2).wrong(),
+            ["2 tab(s) became 2 where 3 were due (a tab of its own)"]
+        );
+    }
+
+    #[test]
+    fn a_drawing_that_takes_a_tab_that_was_there_adds_none() {
+        assert_eq!(
+            opened(Landing::BlankTabInFront, 1, 1).wrong(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            opened(Landing::BlankTabInFront, 1, 2).wrong(),
+            ["1 tab(s) became 2 where 1 were due (the blank tab in front)"]
+        );
+        assert_eq!(
+            opened(Landing::TabShowingIt, 3, 3).wrong(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            opened(Landing::TabShowingIt, 3, 4).wrong(),
+            ["3 tab(s) became 4 where 3 were due (the tab that showed it already)"]
+        );
+    }
+
+    #[test]
+    fn an_opened_drawing_is_in_front_with_entities_and_the_editor_still_the_screen() {
+        let good = opened(Landing::NewTab, 1, 2);
+        assert_eq!(
+            Opened {
+                in_front: false,
+                ..good
+            }
+            .wrong(),
+            ["the tab in front does not show it"]
+        );
+        assert_eq!(
+            Opened {
+                entities: 0,
+                ..good
+            }
+            .wrong(),
+            ["the tab in front has no entity"]
+        );
+        assert_eq!(
+            Opened {
+                editor: false,
+                ..good
+            }
+            .wrong(),
+            ["the editor is no longer the screen"]
+        );
+        // All of it at once is all said.
+        assert_eq!(
+            Opened {
+                tabs_after: 1,
+                in_front: false,
+                entities: 0,
+                editor: false,
+                ..good
+            }
+            .wrong()
+            .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn a_drawing_that_does_not_import_leaves_the_module_as_it_was_and_says_why() {
+        let good = Refused {
+            tabs_before: 2,
+            tabs_after: 2,
+            front_kept: true,
+            reasoned: true,
+            editor: true,
+        };
+        assert_eq!(good.wrong(), Vec::<String>::new());
+        assert_eq!(
+            Refused {
+                tabs_after: 3,
+                ..good
+            }
+            .wrong(),
+            ["2 tab(s) became 3"]
+        );
+        assert_eq!(
+            Refused {
+                front_kept: false,
+                ..good
+            }
+            .wrong(),
+            ["another tab came to the front"]
+        );
+        assert_eq!(
+            Refused {
+                reasoned: false,
+                ..good
+            }
+            .wrong(),
+            ["the command line gives no reason"]
+        );
+        assert_eq!(
+            Refused {
+                editor: false,
+                ..good
+            }
+            .wrong(),
+            ["the editor is no longer the screen"]
+        );
+    }
 }
