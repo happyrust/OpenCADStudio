@@ -27,6 +27,14 @@ pub enum ClientMessage {
         /// first join, where the drawing is taken to be what the room has.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<i64>,
+        /// Which repository the `since` claims to be of: the `repo_id` this
+        /// client's drawing recorded of the room it was in (its own saved
+        /// copy, or the last session's `welcome`). A revision means nothing
+        /// across repositories, so a `since` without it cannot be honoured:
+        /// the join is answered with [`ServerMessage::AlignRefused`]
+        /// (`REPO_MISMATCH`). Absent with no `since` either: a first join.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repo_id: Option<String>,
         /// The tags the objects of this client's own copy of the drawing
         /// carry, as far as no op of its own is still on its way to say so.
         /// Two people who each opened a file of their own need not have the
@@ -75,6 +83,12 @@ pub enum ServerMessage {
         base_revision: i64,
         peers: Vec<Peer>,
         claims: Vec<ClaimInfo>,
+        /// Which repository this room is of. It goes into the drawing file
+        /// on save and comes back in the next `hello`, which is how a copy
+        /// tells "the room I was in" from "a room under the same address"
+        /// (`REQ-COLL-015`). Empty from a server that does not know it.
+        #[serde(default)]
+        repo_id: String,
         /// Present when the server replays what the session missed: right
         /// behind this message, and before anything else on the socket, come
         /// the `op_applied` of revisions `replay_from + 1 ..= base_revision`,
@@ -83,6 +97,15 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replay_from: Option<i64>,
     },
+    /// The `hello` asked to be taken as consistent — `repo_id` and/or
+    /// `since` — and the server cannot: the repository is another, the
+    /// revision is ahead of what the room has, or the op log no longer
+    /// holds what a replay needs (`REQ-COLL-015`). The session is still
+    /// established — the person sees the room — but nothing this copy does
+    /// may be submitted: `code` is one of `REPO_MISMATCH`, `REVISION_AHEAD`,
+    /// `REPLAY_GAP`, and `message` the reason in the user's words. Sent
+    /// right behind the `welcome`, before anything else on the socket.
+    AlignRefused { code: String, message: String },
     /// Structured failure. `level` names the first denying tier when the
     /// failure came out of the permission chain.
     Error {
@@ -194,6 +217,17 @@ pub mod codes {
     pub const PERM_INVALID_STATE: &str = "PERM_INVALID_STATE";
     /// A deletion refused because other objects still hang on the object.
     pub const OBJECT_REFERENCED: &str = "OBJECT_REFERENCED";
+    /// The drawing's `hello` named a repository the server is not
+    /// (`repo_id` did not match, or a `since` was given none can be named
+    /// for). The join itself stands; the copy is not taken as consistent.
+    pub const REPO_MISMATCH: &str = "REPO_MISMATCH";
+    /// The `since` a `hello` named is ahead of the revision the room has
+    /// reached (or not a revision at all): the copy knows of a room this
+    /// server does not.
+    pub const REVISION_AHEAD: &str = "REVISION_AHEAD";
+    /// The `since` a `hello` named can no longer be replayed: the op log
+    /// does not hold every revision in between (or there is no log).
+    pub const REPLAY_GAP: &str = "REPLAY_GAP";
     /// A change to an object another session deleted after the change's
     /// baseline. The deletion stands (`architecture.md` §3.3, object level).
     pub const OBJECT_DELETED: &str = "OBJECT_DELETED";
@@ -308,6 +342,7 @@ mod tests {
                 user_id: "u1".into(),
                 expires_at: 1_700_000_000,
             }],
+            repo_id: "r-test".into(),
             replay_from: None,
         };
         let value: Value = serde_json::to_value(&msg).expect("welcome must serialize");
@@ -364,6 +399,7 @@ mod tests {
             base_revision: 9,
             peers: Vec::new(),
             claims: Vec::new(),
+            repo_id: "r-test".into(),
             replay_from: Some(6),
         };
         let value: Value = serde_json::to_value(&replaying).expect("serialize");
@@ -401,7 +437,59 @@ mod tests {
             value_b: "2.5MPa".into(),
             op_ids: vec!["op-a".into(), "op-b".into()],
         };
-        assert_eq!(serde_json::to_value(&tied).expect("serialize")["op_ids"], serde_json::json!(["op-a", "op-b"]));
+        assert_eq!(
+            serde_json::to_value(&tied).expect("serialize")["op_ids"],
+            serde_json::json!(["op-a", "op-b"])
+        );
+    }
+
+    /// `REQ-COLL-015`: the repo identity rides `hello` and `welcome`, and
+    /// a refused alignment is its own message — all optional additions, so
+    /// an old frame still reads.
+    #[test]
+    fn collab_align_repo_id_and_align_refused_are_optional_additions() {
+        let plain: ClientMessage = serde_json::from_str(
+            r#"{"type":"hello","user_id":"u1","drawing_id":"PID-1101","mode":"协同编辑"}"#,
+        )
+        .expect("a hello without a repo claim");
+        assert!(matches!(plain, ClientMessage::Hello { repo_id: None, .. }));
+        assert!(!serde_json::to_string(&plain)
+            .expect("serialize")
+            .contains("repo_id"));
+
+        let claiming: ClientMessage = serde_json::from_str(
+            r#"{"type":"hello","user_id":"u1","drawing_id":"PID-1101","mode":"协同编辑",
+                "repo_id":"r-9","since":6}"#,
+        )
+        .expect("a hello that claims a repo");
+        assert!(matches!(
+            claiming,
+            ClientMessage::Hello { repo_id: Some(ref r), since: Some(6), .. } if r == "r-9"
+        ));
+        assert!(serde_json::to_string(&claiming)
+            .expect("serialize")
+            .contains(r#""repo_id":"r-9"#));
+
+        let old_welcome: ServerMessage = serde_json::from_str(
+            r#"{"type":"welcome","session_id":"s-1","base_revision":9,"peers":[],"claims":[]}"#,
+        )
+        .expect("a welcome without repo_id still parses");
+        assert!(
+            matches!(old_welcome, ServerMessage::Welcome { ref repo_id, .. } if repo_id.is_empty())
+        );
+
+        let refused = ServerMessage::AlignRefused {
+            code: codes::REPO_MISMATCH.into(),
+            message: "这份文件属于另一个服务器库".into(),
+        };
+        let value = serde_json::to_value(&refused).expect("serialize");
+        assert_eq!(value["type"], "align_refused");
+        assert_eq!(value["code"], "REPO_MISMATCH");
+        let back: ServerMessage = serde_json::from_value(value).expect("round trip");
+        assert!(matches!(
+            back,
+            ServerMessage::AlignRefused { ref code, .. } if code == codes::REPO_MISMATCH
+        ));
     }
 
     /// `hello.existing_tags`: the tags the objects of the client's own copy

@@ -42,6 +42,7 @@ fn editor(session: &str) -> OpenCADStudio {
     app.collab.apply(CollabEvent::Connected {
         session_id: session.to_owned(),
         base_revision: 0,
+        repo_id: "r-test".into(),
         peers: Vec::new(),
         claims: Vec::new(),
     });

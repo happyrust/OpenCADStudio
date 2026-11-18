@@ -2439,6 +2439,7 @@ impl OpenCADStudio {
 
         self.prepare_native_save(i);
         let mut snapshot = self.tabs[i].scene.document_for_save();
+        self.write_collab_state_into_snapshot(i, &mut snapshot);
         // A Save As renames the drawing, but the save event above evaluated
         // the name-reporting fields against the path it was opened from. Stamp
         // the destination into the snapshot and re-evaluate there, so the
@@ -3576,6 +3577,39 @@ impl OpenCADStudio {
         self.prepare_snapshot_save(i);
     }
 
+    /// `REQ-COLL-015`: the collaboration state rides inside the file —
+    /// which repository the drawing was aligned to and how far, plus the
+    /// ops the room has not answered. Written into the save snapshot only:
+    /// the live document's dirty flag and undo stack are untouched, and a
+    /// drawing no repository has claimed keeps no record.
+    fn write_collab_state_into_snapshot(&mut self, i: usize, snapshot: &mut document::Document) {
+        if self.collab_tab() == Some(i) && self.collab.had_session {
+            if let Some(repo_id) = self.collab.repo_id.clone() {
+                crate::pid::collab_state::store_state(
+                    snapshot,
+                    Some(&crate::pid::FileCollabState {
+                        drawing_id: self.collab.drawing_id.clone(),
+                        repo_id,
+                        revision: self.collab.base_revision,
+                    }),
+                );
+                let queued: Vec<crate::pid::QueuedOp> = self
+                    .collab
+                    .outbox
+                    .iter()
+                    .map(|entry| crate::pid::QueuedOp {
+                        op_id: entry.op_id.clone(),
+                        payload: entry.payload.clone(),
+                        base_revision: entry.base_revision,
+                        on: entry.on,
+                        label: entry.label.clone(),
+                    })
+                    .collect();
+                crate::pid::collab_state::store_queue(snapshot, &queued);
+            }
+        }
+    }
+
     /// Point the drawing at the file it now lives in. The fields that report
     /// the drawing's own file (FILENAME, DWGNAME, DWGPREFIX) read
     /// `document.source_path`, which is only written when a file is opened —
@@ -4238,6 +4272,7 @@ impl OpenCADStudio {
         });
         let clone_started = iced::time::Instant::now();
         let mut snapshot = self.tabs[i].scene.document_for_save();
+        self.write_collab_state_into_snapshot(i, &mut snapshot);
         // First save: references attached with a relative path type while
         // the drawing had no file become relative to it.
         if self.tabs[i].current_path.is_none() && purpose != crate::app::SavePurpose::Autosave {

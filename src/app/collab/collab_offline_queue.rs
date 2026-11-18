@@ -266,6 +266,7 @@ fn join(app: &mut OpenCADStudio, session: &str, room: &Room) {
         CollabEvent::Connected {
             session_id: session.to_owned(),
             base_revision: room.revision,
+            repo_id: "r-test".into(),
             peers: Vec::new(),
             claims: Vec::new(),
         },
@@ -293,6 +294,7 @@ fn welcome_back(app: &mut OpenCADStudio, session: &str, room: &Room) {
         CollabEvent::Connected {
             session_id: session.to_owned(),
             base_revision: room.revision,
+            repo_id: "r-test".into(),
             peers: Vec::new(),
             claims: Vec::new(),
         },
@@ -853,6 +855,7 @@ fn queued(op_id: &str, steps: &[u64], on: bool) -> Outgoing {
         on,
         sent: false,
         label: String::new(),
+        restored: false,
     }
 }
 

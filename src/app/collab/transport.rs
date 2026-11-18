@@ -614,11 +614,15 @@ fn describe_event(event: &CollabEvent) -> String {
             base_revision,
             peers,
             claims,
+            ..
         } => format!(
             "welcome session={session_id} base_revision={base_revision} peers={} claims={}",
             peers.len(),
             claims.len()
         ),
+        CollabEvent::AlignRefused { code, message } => {
+            format!("align_refused code={code} reason={message}")
+        }
         CollabEvent::PeerJoined(peer) => format!(
             "peer_joined session={} user={}",
             peer.session_id, peer.user_id
@@ -733,6 +737,9 @@ struct Told {
     ask: u64,
     /// The tags to list in the `hello`.
     tags: Vec<String>,
+    /// What the drawing file was saved aligned to, for the `hello` to
+    /// claim when no session has been up yet (`REQ-COLL-015`).
+    file: Option<crate::app::collab::FileClaim>,
     /// The UI has not said the tags: it has no drawing to speak for yet, or
     /// it did not answer in time. They are owed, and come under the same
     /// number.
@@ -756,10 +763,11 @@ fn ask_for_tags(sender: &mut mpsc::Sender<CollabEvent>, link: &Link) -> Result<O
     let deadline = Instant::now() + line.wait;
     loop {
         match line.answer(ask) {
-            Some(TagsSaid::Tags(tags)) => {
+            Some(TagsSaid::Tags(tags, file)) => {
                 return Ok(Some(Told {
                     ask,
                     tags,
+                    file,
                     owed: false,
                 }));
             }
@@ -778,6 +786,7 @@ fn ask_for_tags(sender: &mut mpsc::Sender<CollabEvent>, link: &Link) -> Result<O
     Ok(Some(Told {
         ask,
         tags: Vec::new(),
+        file: None,
         owed: true,
     }))
 }
@@ -885,16 +894,28 @@ pub(super) fn run_client(
 /// the socket dropped when this thread is already dialling again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Seen {
-    server_url: String,
+    /// Which repository the room is of, as its `welcome` said. A server
+    /// that names none (one from before `welcome.repo_id`) leaves this
+    /// empty — and the next `hello` then claims nothing it cannot name.
+    repo_id: String,
     drawing_id: String,
     revision: i64,
 }
 
 impl Seen {
     /// What the UI's baseline is once it has taken `event`.
-    fn take(seen: &mut Option<Seen>, config: &ClientConfig, replay_from: Option<i64>, event: &CollabEvent) {
+    fn take(
+        seen: &mut Option<Seen>,
+        config: &ClientConfig,
+        replay_from: Option<i64>,
+        event: &CollabEvent,
+    ) {
         match event {
-            CollabEvent::Connected { base_revision, .. } => {
+            CollabEvent::Connected {
+                base_revision,
+                repo_id,
+                ..
+            } => {
                 // With a replay the session is taken where its drawing is,
                 // and each replayed op moves it on; without one, at the
                 // room's revision, as before.
@@ -903,7 +924,7 @@ impl Seen {
                     _ => *base_revision,
                 };
                 *seen = Some(Seen {
-                    server_url: config.server_url.clone(),
+                    repo_id: repo_id.clone(),
                     drawing_id: config.drawing_id.clone(),
                     revision,
                 });
@@ -945,19 +966,32 @@ fn run_session(
     // until the room has answered each, and hands them over one at a time.)
     clear_outbound(&link.outbox);
     let mut ws = connect(&config.server_url)?;
+    // What this copy claims to be (`REQ-COLL-015`): of the room the last
+    // session was in — `seen`, fresher than the file — or, when no session
+    // has been up yet, of what the drawing file was saved aligned to. A
+    // claim names both its repository and its revision: one without the
+    // other the server cannot judge, so a `since` only goes out with a
+    // `repo_id` to stand on.
+    let claim = seen
+        .as_ref()
+        .filter(|seen| seen.drawing_id == config.drawing_id)
+        .map(|seen| (seen.repo_id.clone(), seen.revision))
+        .or_else(|| {
+            told.and_then(|told| told.file.as_ref())
+                .filter(|file| file.drawing_id == config.drawing_id)
+                .map(|file| (file.repo_id.clone(), file.revision))
+        });
     let hello = ClientMessage::Hello {
         user_id: config.user_id.clone(),
         drawing_id: config.drawing_id.clone(),
         mode: config.mode.clone(),
         client_version: config.client_version.clone(),
         workspace: String::new(),
-        // Only of the room the last session was in: another drawing's
-        // revisions say nothing of this one.
-        since: seen
-            .as_ref()
-            .filter(|seen| seen.server_url == config.server_url && seen.drawing_id == config.drawing_id)
-            .map(|seen| seen.revision),
+        since: claim.as_ref().map(|(_, revision)| *revision),
         existing_tags: told.map(|told| told.tags.clone()).unwrap_or_default(),
+        repo_id: claim
+            .map(|(repo_id, _)| repo_id)
+            .filter(|repo_id| !repo_id.is_empty()),
     };
     let wire = send_json(&mut ws, &hello)?;
     log_frame(false, &wire, None);
@@ -982,7 +1016,7 @@ fn run_session(
             close(&mut ws);
             return Ok(Ended::SubscriptionGone);
         }
-        if let Some(TagsSaid::Tags(tags)) = owed.and_then(|(ask, line)| line.answer(ask)) {
+        if let Some(TagsSaid::Tags(tags, _)) = owed.and_then(|(ask, line)| line.answer(ask)) {
             owed = None;
             if !tags.is_empty() {
                 log(&format!(
@@ -2405,7 +2439,7 @@ mod tests {
     }
 
     fn tags(list: &[&str]) -> TagsSaid {
-        TagsSaid::Tags(list.iter().map(|tag| (*tag).to_owned()).collect())
+        TagsSaid::Tags(list.iter().map(|tag| (*tag).to_owned()).collect(), None)
     }
 
     /// The `hello` lists the tags the UI said the session's drawing carries
@@ -2829,7 +2863,7 @@ mod tests {
         let (ask, _) = question(&mut receiver);
         leave_answer(&said, ask, TagsSaid::NotYet);
         let up = session_came_up(&mut receiver);
-        leave_answer(&said, ask, TagsSaid::Tags(Vec::new()));
+        leave_answer(&said, ask, TagsSaid::Tags(Vec::new(), None));
         let after = events_for(&mut receiver, Duration::from_millis(600));
         drop(receiver);
         let _ = worker.join();
@@ -2964,5 +2998,115 @@ mod tests {
         assert_eq!(line.answer(7), Some(TagsSaid::NotYet));
         leave_answer(&said, 7, tags(&["V-1001"]));
         assert_eq!(line.answer(7), Some(tags(&["V-1001"])));
+    }
+
+    /// `REQ-COLL-015`: a `hello` claims what the drawing file was saved
+    /// aligned to — repository and revision together, never a revision it
+    /// cannot say of which repository. A copy that was never in a room
+    /// claims nothing.
+    #[test]
+    fn collab_align_the_hello_claims_what_the_file_was_saved_with() {
+        let scene = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":50,"peers":[],"claims":[],"repo_id":"r-9"}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![scene]);
+        let (link, said) = link_with_tags(url, Duration::from_secs(30));
+        let (mut receiver, worker) = start_client(&link);
+        let (ask, _) = question(&mut receiver);
+        leave_answer(
+            &said,
+            ask,
+            TagsSaid::Tags(
+                Vec::new(),
+                Some(crate::app::collab::FileClaim {
+                    drawing_id: "PID-1101".into(),
+                    repo_id: "r-9".into(),
+                    revision: 42,
+                }),
+            ),
+        );
+        let up = session_came_up(&mut receiver);
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+        assert!(up, "the session did not come up");
+        let hello = hello_of(&heard, 0);
+        assert_eq!(hello["repo_id"], "r-9");
+        assert_eq!(hello["since"], 42);
+    }
+
+    /// A claim of another drawing says nothing: the file's `drawing_id`
+    /// does not match the session's, so the `hello` goes out bare.
+    #[test]
+    fn collab_align_a_claim_of_another_drawing_is_not_made() {
+        let scene = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":0,"peers":[],"claims":[],"repo_id":"r-9"}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![scene]);
+        let (link, said) = link_with_tags(url, Duration::from_secs(30));
+        let (mut receiver, worker) = start_client(&link);
+        let (ask, _) = question(&mut receiver);
+        leave_answer(
+            &said,
+            ask,
+            TagsSaid::Tags(
+                Vec::new(),
+                Some(crate::app::collab::FileClaim {
+                    drawing_id: "PID-OTHER".into(),
+                    repo_id: "r-9".into(),
+                    revision: 42,
+                }),
+            ),
+        );
+        let up = session_came_up(&mut receiver);
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+        assert!(up, "the session did not come up");
+        let hello = hello_of(&heard, 0);
+        assert!(hello.get("repo_id").is_none(), "{hello}");
+        assert!(hello.get("since").is_none(), "{hello}");
+    }
+
+    /// `REQ-COLL-015`: an `align_refused` reaches the UI as its own event —
+    /// the session is up, and the word that this copy is not consistent is
+    /// not folded into a generic server error.
+    #[test]
+    fn collab_align_a_refusal_reaches_the_ui_as_its_own_event() {
+        let scene = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":50,"peers":[],"claims":[],"repo_id":"r-9"}"#
+                    .to_owned(),
+                r#"{"type":"align_refused","code":"REPO_MISMATCH","message":"这份文件属于另一个服务器库"}"#
+                    .to_owned(),
+            ],
+            then_drop: true,
+        };
+        let (url, _heard, server) = scripted_server(vec![scene]);
+        let (link, said) = link_with_tags(url, Duration::from_secs(30));
+        let (mut receiver, worker) = start_client(&link);
+        let (ask, _) = question(&mut receiver);
+        leave_answer(&said, ask, TagsSaid::NotYet);
+        let events = events_until(&mut receiver, |event| {
+            matches!(event, CollabEvent::AlignRefused { .. })
+        });
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                CollabEvent::AlignRefused { code, .. } if code == "REPO_MISMATCH"
+            )),
+            "the refusal did not arrive: {events:?}"
+        );
     }
 }

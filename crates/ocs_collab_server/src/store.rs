@@ -1114,6 +1114,23 @@ impl Store {
         Ok(rows)
     }
 
+    /// This store's repository id: generated once on the first start that
+    /// needs it, kept in `meta.repo_id` after, and the same forever. A
+    /// drawing file keeps a copy; a `hello` that names another id was
+    /// aligned against another repository (`REQ-COLL-015`).
+    pub fn repo_id(&self) -> Result<String, String> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('repo_id', ?1)",
+            params![ocs_collab::ids::new_repo_id()],
+        )
+        .map_err(|err| format!("repo_id init: {err}"))?;
+        conn.query_row("SELECT value FROM meta WHERE key = 'repo_id'", [], |row| {
+            row.get(0)
+        })
+        .map_err(|err| format!("repo_id read: {err}"))
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
         self.conn
             .lock()
@@ -1276,6 +1293,15 @@ CREATE TABLE IF NOT EXISTS reported_tags (
   PRIMARY KEY (drawing_id, tag)
 );
 
+-- One row per database-level fact. `repo_id` identifies this store as a
+-- whole: a drawing file keeps it so a `hello` can prove that its `since`
+-- was taken of this repository and not another one behind the same URL
+-- (`REQ-COLL-015`). Written once, never changed.
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS audit_by_tag ON audit_log(object_ref, at DESC);
 CREATE INDEX IF NOT EXISTS audit_by_user ON audit_log(user_id, at DESC);
 CREATE INDEX IF NOT EXISTS sessions_by_drawing ON sessions(drawing_id, status);
@@ -1330,6 +1356,28 @@ mod tests {
         assert_eq!(store.journal_mode().expect("journal mode"), "wal");
         assert!(store.health_check());
         drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    /// `REQ-COLL-015`: the repository id is minted once and is the same for
+    /// every later open of the same database — across restarts — while two
+    /// databases never share one.
+    #[test]
+    fn the_repo_id_is_minted_once_and_survives_a_reopen() {
+        let path = temp_db_path("repo-id");
+        let first = {
+            let store = Store::open(&path).expect("open store");
+            store.repo_id().expect("repo id")
+        };
+        let second = {
+            let store = Store::open(&path).expect("reopen store");
+            store.repo_id().expect("repo id after reopen")
+        };
+        assert_eq!(first, second, "the same database keeps its id");
+        let other = Store::open_in_memory().expect("memory store");
+        assert_ne!(first, other.repo_id().expect("other repo id"));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));

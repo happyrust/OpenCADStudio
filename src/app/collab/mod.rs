@@ -82,6 +82,18 @@ pub enum CollabEvent {
         base_revision: i64,
         peers: Vec<PeerInfo>,
         claims: Vec<(String, String)>,
+        /// `welcome.repo_id`: which repository this room is of, saved with
+        /// the drawing file so the next open can prove it is coming back
+        /// to the same one (`REQ-COLL-015`).
+        repo_id: String,
+    },
+    /// `align_refused`: the server opened the session but cannot take this
+    /// copy as consistent — wrong repository, revision ahead, or the log
+    /// cannot replay what it missed (`REQ-COLL-015`). The copy is diverged
+    /// from here: nothing it does is submitted.
+    AlignRefused {
+        code: String,
+        message: String,
     },
     /// The socket ended. `reason` names the branch that ended it (`read error:
     /// ConnectionReset` vs `close frame`), which is what `VAL-CLI-020` reads.
@@ -149,7 +161,7 @@ pub enum CollabEvent {
 }
 
 /// One op this session has made that the room has not answered yet.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Outgoing {
     pub op_id: String,
     pub payload: Value,
@@ -168,6 +180,13 @@ pub struct Outgoing {
     pub sent: bool,
     /// What the step is called, for the message that says it was refused.
     pub label: String,
+    /// Whether it was read back from the drawing file it was saved into
+    /// (`PID_AUTHOR_COLLAB_QUEUE`). A restored op's undo steps died with
+    /// the process that made them — `steps` is empty — so a refusal cannot
+    /// take its step back: it marks the drawing diverged instead of
+    /// pretending it could (`REQ-COLL-015`).
+    #[serde(default)]
+    pub restored: bool,
 }
 
 /// An op of this session's the server refused whole, for the app to take
@@ -333,13 +352,25 @@ pub(super) struct ClientConfig {
     pub client_version: String,
 }
 
+/// What the drawing file was saved aligned to (`REQ-COLL-015`): the
+/// repository its collaboration records belong to and the revision it had
+/// applied when it was last saved. A file with no record has none — a
+/// drawing that was never in a room.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct FileClaim {
+    pub drawing_id: String,
+    pub repo_id: String,
+    pub revision: i64,
+}
+
 /// What the UI answers when the transport asks which tags the session's
 /// drawing carries ([`CollabEvent::TagsWanted`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum TagsSaid {
     /// The drawing is there, and these are its tags — none, for a drawing
-    /// that carries none or one that has been closed.
-    Tags(Vec<String>),
+    /// that carries none or one that has been closed. The second slot is
+    /// what the file was saved aligned to, for the `hello` to claim.
+    Tags(Vec<String>, Option<FileClaim>),
     /// The session has no drawing yet and none is on its way: the `hello`
     /// need not wait. The tags follow under the same number once the
     /// session has come by its drawing.
@@ -448,6 +479,12 @@ pub(super) struct State {
     /// Whether a session has been up before in this run, so that
     /// `base_revision` is a revision this drawing was actually at.
     pub had_session: bool,
+    /// Which repository the room this drawing belongs to is of — the
+    /// `repo_id` the last `welcome` named, or the one the drawing file was
+    /// saved with when it is a copy that was aligned before
+    /// (`REQ-COLL-015`). Written into the file on save; `None` for a
+    /// drawing no repository has ever claimed.
+    pub repo_id: Option<String>,
     /// The conflict entries the room was told of and that no ruling has
     /// arrived for, oldest first. While one stands, the field it names has
     /// the value it had before either write — except in the drawing of
@@ -609,6 +646,33 @@ impl State {
         }
     }
 
+    /// Seed the session's baseline from what the drawing file was saved
+    /// with (`REQ-COLL-015`): it was in this repository at this revision,
+    /// so it counts as a copy that was here before — `had_session` is what
+    /// lets its offline edits queue, and the `hello` claims these (the
+    /// transport is handed the claim as `FileClaim` in the same answer).
+    ///
+    /// `ops` are the queued-but-unanswered ops the file was saved with:
+    /// they re-enter the outbox as `restored` — their undo steps died with
+    /// the process that made them, so a refusal marks the drawing diverged
+    /// rather than pretending a rollback.
+    ///
+    /// Once only, ahead of the first session: from then on the in-memory
+    /// baseline is fresher than anything the file could say.
+    pub(super) fn seed_file_state(&mut self, claim: &FileClaim, ops: Vec<Outgoing>) {
+        if self.had_session {
+            return;
+        }
+        self.repo_id = Some(claim.repo_id.clone());
+        self.base_revision = claim.revision;
+        self.had_session = true;
+        // `queue_op` mints op ids under a session name; a seeded copy has
+        // none yet, and ops made before the first session still need ids.
+        // The real session's name replaces this once a `welcome` arrives.
+        self.last_session = Some(format!("file-{}", claim.repo_id));
+        self.outbox.extend(ops);
+    }
+
     /// Turn the holder a denial names into the user the panel should show.
     ///
     /// The server names the holding *session* (`VAL-SRV-011`), while the panel
@@ -673,7 +737,7 @@ impl State {
     /// Answer question `ask` of the transport's about the drawing's tags.
     pub(super) fn say_tags(&mut self, ask: u64, said: TagsSaid) {
         // Tags said to a session that is up are told by leaving it.
-        let tags_to_tell = matches!(&said, TagsSaid::Tags(tags) if !tags.is_empty());
+        let tags_to_tell = matches!(&said, TagsSaid::Tags(tags, _) if !tags.is_empty());
         if tags_to_tell && self.session_id.is_some() {
             self.rejoining = true;
         }
@@ -706,6 +770,7 @@ impl State {
                 base_revision,
                 peers,
                 claims,
+                repo_id,
             } => {
                 // The server replays what this session missed, from the
                 // revision its drawing has: the baseline stays where it is
@@ -738,6 +803,9 @@ impl State {
                 }
                 self.had_session = true;
                 self.connected = true;
+                // Which repository this room is of; what the drawing file
+                // is saved with, so its next open can say where it was.
+                self.repo_id = Some(repo_id).filter(|repo| !repo.is_empty());
                 self.last_session = Some(session_id.clone());
                 // The others on the drawing. `welcome.peers` does not list
                 // the session it welcomes; a server that still does (it
@@ -775,6 +843,12 @@ impl State {
                         let _ = self.request_claim(&tag);
                     }
                 }
+            }
+            CollabEvent::AlignRefused { code, message } => {
+                // The session is open but the copy is not consistent: it
+                // sees the room and is done submitting (`REQ-COLL-015`).
+                self.mark_diverged(format!("{message}（{code}）"));
+                self.last_error = Some(message);
             }
             CollabEvent::Resuming { from } => {
                 self.resume_from = Some(from);
@@ -1091,6 +1165,9 @@ impl State {
             "user_id": self.user_id,
             "drawing_id": self.drawing_id,
             "session_id": self.session_id,
+            // Which repository this drawing is aligned to — the last
+            // `welcome`'s, or the file's saved claim (`REQ-COLL-015`).
+            "repo_id": self.repo_id,
             "base_revision": self.base_revision,
             "peers": self
                 .peers
@@ -1208,6 +1285,7 @@ impl State {
             on,
             sent: false,
             label: label.to_owned(),
+            restored: false,
         });
         if self.own_ops.len() >= 64 {
             self.own_ops.pop_front();
@@ -1434,6 +1512,7 @@ mod tests {
         state.apply(CollabEvent::Connected {
             session_id: "s-1".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: Vec::new(),
             claims: Vec::new(),
         });
@@ -1466,6 +1545,7 @@ mod tests {
         state.apply(CollabEvent::Connected {
             session_id: "s-3".to_owned(),
             base_revision: 1,
+            repo_id: "r-test".into(),
             peers: Vec::new(),
             claims: Vec::new(),
         });
@@ -1527,6 +1607,7 @@ mod tests {
         state.apply(CollabEvent::Connected {
             session_id: "s-1".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: vec![peer("s-2", "u2")],
             claims: vec![("P-1001".to_owned(), "u1".to_owned())],
         });
@@ -1549,6 +1630,7 @@ mod tests {
         state.apply(CollabEvent::Connected {
             session_id: "s-1".to_owned(),
             base_revision: 3,
+            repo_id: "r-test".into(),
             peers: vec![peer("s-2", "u2")],
             claims: vec![("P-1001".to_owned(), "u1".to_owned())],
         });
@@ -1605,6 +1687,7 @@ mod tests {
         state.apply(CollabEvent::Connected {
             session_id: "s-2".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: vec![peer("s-1", "u1"), peer("s-2", "u2")],
             claims: Vec::new(),
         });
@@ -1684,10 +1767,8 @@ mod tests {
         state.apply(CollabEvent::Connected {
             session_id: "s-2".to_owned(),
             base_revision: 0,
-            peers: vec![
-                peer("s-2", "u2"),
-                peer("s-1", "u1"),
-            ],
+            repo_id: "r-test".into(),
+            peers: vec![peer("s-2", "u2"), peer("s-1", "u1")],
             claims: Vec::new(),
         });
         state.apply(CollabEvent::ClaimDenied {
@@ -1747,6 +1828,7 @@ mod tests {
         state.apply(CollabEvent::Connected {
             session_id: "s-1".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: Vec::new(),
             claims: Vec::new(),
         });
@@ -1765,6 +1847,7 @@ mod tests {
         second.apply(CollabEvent::Connected {
             session_id: "s-2".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: vec![peer("s-1", "u1")],
             claims: Vec::new(),
         });
@@ -1775,6 +1858,7 @@ mod tests {
         old.apply(CollabEvent::Connected {
             session_id: "s-2".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: vec![peer("s-1", "u1"), peer("s-2", "u2")],
             claims: Vec::new(),
         });
@@ -1792,6 +1876,7 @@ mod tests {
         state.apply(CollabEvent::Connected {
             session_id: "s-1".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: vec![peer("s-1", "u1"), peer("s-2", "u2")],
             claims: Vec::new(),
         });
@@ -1826,8 +1911,67 @@ mod tests {
             base_revision,
             peers: Vec::new(),
             claims: Vec::new(),
+            repo_id: "r-test".into(),
         });
         state
+    }
+
+    /// `REQ-COLL-015`: a copy the file says was in a room seeds its
+    /// baseline once — its edits then queue like a session's leftovers,
+    /// ahead of any session — and a refused alignment marks it diverged:
+    /// the session is up, the room is seen, and nothing is submitted.
+    #[test]
+    fn collab_align_a_seeded_copy_queues_and_a_refusal_diverges_it() {
+        let mut state = State::new();
+        state.server_url = "ws://127.0.0.1:3240/ws".to_owned();
+        state.drawing_id = "PID-1101".to_owned();
+        let claim = FileClaim {
+            drawing_id: "PID-1101".into(),
+            repo_id: "r-9".into(),
+            revision: 42,
+        };
+        let restored = Outgoing {
+            op_id: "op-file-r-9-1".into(),
+            payload: json!({"kind": "set_property"}),
+            base_revision: 42,
+            steps: Vec::new(),
+            on: true,
+            sent: false,
+            label: "离线改动".into(),
+            restored: true,
+        };
+        state.seed_file_state(&claim, vec![restored]);
+        assert!(state.had_session);
+        assert_eq!(state.base_revision, 42);
+        assert_eq!(state.repo_id.as_deref(), Some("r-9"));
+        assert_eq!(state.outbox.len(), 1);
+        // An edit made offline, before any session of this run, queues.
+        assert!(matches!(
+            state.queue_op(json!({"kind": "set_property"}), Vec::new(), true, "再改"),
+            Ok(Queued::Offline(2))
+        ));
+        // Seeding is once: a second call would have been a no-op anyway.
+        state.seed_file_state(&claim, Vec::new());
+        assert_eq!(state.outbox.len(), 2);
+
+        state.apply(CollabEvent::Connected {
+            session_id: "s-9".to_owned(),
+            base_revision: 50,
+            peers: Vec::new(),
+            claims: Vec::new(),
+            repo_id: "r-9".into(),
+        });
+        state.apply(CollabEvent::AlignRefused {
+            code: "REPO_MISMATCH".into(),
+            message: "这份文件属于另一个服务器库".into(),
+        });
+        assert!(state.diverged.is_some(), "refused alignment must diverge");
+        assert!(
+            state
+                .queue_op(json!({"kind": "set_property"}), Vec::new(), true, "再改")
+                .is_err(),
+            "a diverged copy submits nothing"
+        );
     }
 
     fn applied(op_id: &str, revision: i64) -> CollabEvent {
@@ -1898,6 +2042,7 @@ mod tests {
             state.apply(CollabEvent::Connected {
                 session_id: "s-2".to_owned(),
                 base_revision: revision,
+                repo_id: "r-test".into(),
                 peers: Vec::new(),
                 claims: Vec::new(),
             });

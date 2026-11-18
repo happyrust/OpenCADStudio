@@ -66,6 +66,7 @@ pub(super) fn read(text: &str) -> Reading {
             base_revision,
             peers,
             claims,
+            repo_id,
             replay_from,
         } => {
             // Said first: the session is then taken at the revision its
@@ -86,7 +87,11 @@ pub(super) fn read(text: &str) -> Reading {
                     .into_iter()
                     .map(|claim| (claim.tag, claim.user_id))
                     .collect(),
+                repo_id,
             })
+        }
+        ServerMessage::AlignRefused { code, message } => {
+            Frame::Event(CollabEvent::AlignRefused { code, message })
         }
         ServerMessage::PeerJoined(peer) => Frame::Event(CollabEvent::PeerJoined(peer_info(&peer))),
         ServerMessage::PeerLeft(peer) => Frame::Event(CollabEvent::PeerLeft {
@@ -236,6 +241,7 @@ mod tests {
                 base_revision,
                 peers,
                 claims,
+                ..
             }) => {
                 assert_eq!(session_id, "s-1");
                 assert_eq!(base_revision, 0);

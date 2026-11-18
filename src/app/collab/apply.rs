@@ -196,13 +196,29 @@ impl OpenCADStudio {
                     &self.tabs[i].scene.document,
                     self.collab.outbox.iter().map(|entry| &entry.payload),
                 );
+                // What the file was saved aligned to (`REQ-COLL-015`): it
+                // seeds the baseline once — so edits made while this copy
+                // was closed queue like a session's leftovers — and goes
+                // back as the `hello`'s claim.
+                self.seed_collab_from_file(i);
+                // The claim is the file's own word: on a first dial it is
+                // all this copy has; afterwards `seen` is fresher and the
+                // transport prefers it.
+                let claim = crate::pid::collab_state::load_state(&self.tabs[i].scene.document)
+                    .filter(|record| record.drawing_id == self.collab.drawing_id)
+                    .map(|record| super::FileClaim {
+                        drawing_id: record.drawing_id,
+                        repo_id: record.repo_id,
+                        revision: record.revision,
+                    });
                 self.collab.tags_wanted = None;
-                self.collab.say_tags(asked.ask, super::TagsSaid::Tags(tags));
+                self.collab
+                    .say_tags(asked.ask, super::TagsSaid::Tags(tags, claim));
             }
             Drawing::Closed => {
                 self.collab.tags_wanted = None;
                 self.collab
-                    .say_tags(asked.ask, super::TagsSaid::Tags(Vec::new()));
+                    .say_tags(asked.ask, super::TagsSaid::Tags(Vec::new(), None));
             }
             Drawing::NotYet => {
                 if !asked.put_off {
@@ -212,6 +228,43 @@ impl OpenCADStudio {
                 self.collab.tags_wanted = Some(asked);
             }
         }
+    }
+
+    /// Seed the baseline once from what tab `i`'s file was saved aligned to
+    /// (`REQ-COLL-015`), including the ops the room never answered before
+    /// the copy was closed. No-op once a session has been up — from then on
+    /// the in-memory baseline is fresher than the file's word.
+    fn seed_collab_from_file(&mut self, i: usize) {
+        if self.collab.had_session {
+            return;
+        }
+        let Some(record) = crate::pid::collab_state::load_state(&self.tabs[i].scene.document)
+        else {
+            return;
+        };
+        // A record for another drawing says nothing of this session's.
+        if record.drawing_id != self.collab.drawing_id {
+            return;
+        }
+        let claim = super::FileClaim {
+            drawing_id: record.drawing_id,
+            repo_id: record.repo_id,
+            revision: record.revision,
+        };
+        let ops = crate::pid::collab_state::load_queue(&self.tabs[i].scene.document)
+            .into_iter()
+            .map(|queued| super::Outgoing {
+                op_id: queued.op_id,
+                payload: queued.payload,
+                base_revision: queued.base_revision,
+                steps: Vec::new(),
+                on: queued.on,
+                sent: false,
+                label: queued.label,
+                restored: true,
+            })
+            .collect();
+        self.collab.seed_file_state(&claim, ops);
     }
 
     /// Queue one `op` carrying the `changes` made on tab `i`, or stay quiet.
@@ -254,7 +307,15 @@ impl OpenCADStudio {
             return;
         }
         if !self.collab.connected && !self.collab.had_session {
-            return;
+            // A copy the file says was in a room still queues
+            // (`REQ-COLL-015`): seed its baseline first, so this edit is a
+            // session's leftover, not a stranger's.
+            if self.is_collab_tab(i) {
+                self.seed_collab_from_file(i);
+            }
+            if !self.collab.had_session {
+                return;
+            }
         }
         let Some(payload) = broadcast::payload_for(&changes) else {
             return;
@@ -345,6 +406,15 @@ impl OpenCADStudio {
         let account = super::Refused::account(&entry, &self.collab.outbox);
         let (moved, outcome): (Vec<u64>, &str) = match tab {
             None => (Vec::new(), "协同的图纸已不在，没有可撤回的"),
+            // An op restored from the file has no undo step to take back:
+            // what it did stays in this drawing while the room refused it.
+            Some(_) if entry.restored => {
+                self.collab.mark_diverged(format!(
+                    "服务器拒绝了重开前排队的「{}」（{code}），这一步无法在本图撤回",
+                    entry.label
+                ));
+                (Vec::new(), "本图与房间已不一致")
+            }
             Some(_) if entry.steps.is_empty() => (Vec::new(), "它不对应撤销栈里的一步，没有撤回"),
             Some(_) if account.mixed => {
                 self.collab.mark_diverged(format!(
@@ -2372,6 +2442,7 @@ mod tests {
         app.collab.apply(CollabEvent::Connected {
             session_id: "s-3".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: Vec::new(),
             claims: Vec::new(),
         });
@@ -2478,6 +2549,7 @@ mod tests {
         let _ = app.update(crate::app::Message::CollabEvent(CollabEvent::Connected {
             session_id: "s-9".to_owned(),
             base_revision: 1,
+            repo_id: "r-test".into(),
             peers: Vec::new(),
             claims: Vec::new(),
         }));

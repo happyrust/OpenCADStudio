@@ -563,6 +563,7 @@ mod tests {
         app.collab.apply(CollabEvent::Connected {
             session_id: "s-1".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             // The others on the drawing: the welcome does not list the
             // session it welcomes.
             peers: vec![PeerInfo {
@@ -610,6 +611,7 @@ mod tests {
         app.collab.apply(CollabEvent::Connected {
             session_id: "s-2".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: vec![peer("s-1", "u1"), peer("s-3", "u1")],
             claims: Vec::new(),
         });
@@ -679,6 +681,7 @@ mod tests {
         app.collab.apply(CollabEvent::Connected {
             session_id: "s-9".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: vec![PeerInfo {
                 session_id: "s-9".to_owned(),
                 user_id: "u2".to_owned(),
@@ -879,6 +882,7 @@ mod tests {
         let _ = app.update(crate::app::Message::CollabEvent(CollabEvent::Connected {
             session_id: "s-1".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: Vec::new(),
             claims: Vec::new(),
         }));
@@ -890,6 +894,7 @@ mod tests {
         let _ = app.update(crate::app::Message::CollabEvent(CollabEvent::Connected {
             session_id: "s-2".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: Vec::new(),
             claims: Vec::new(),
         }));
@@ -1138,6 +1143,7 @@ mod tests {
         app.collab.apply(CollabEvent::Connected {
             session_id: "s-1".to_owned(),
             base_revision: 0,
+            repo_id: "r-test".into(),
             peers: Vec::new(),
             claims: Vec::new(),
         });

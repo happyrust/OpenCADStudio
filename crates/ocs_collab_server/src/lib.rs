@@ -59,6 +59,12 @@ pub struct AppState {
     /// to tie with it (`--tie-window-ms`). Zero — the default — holds
     /// nothing: every op commits on arrival and no two can tie.
     pub tie_window: Duration,
+    /// The repository's own id (`meta.repo_id`). A drawing file keeps a
+    /// copy so a `hello` can prove it is coming back to the repository it
+    /// aligned against (`REQ-COLL-015`). With a database it is the stored
+    /// id — stable across restarts; without one it is generated fresh each
+    /// start, so an in-memory run never stands in for a previous one.
+    pub repo_id: String,
     pub version: &'static str,
 }
 
@@ -69,6 +75,10 @@ impl AppState {
         db_path: impl Into<String>,
         session_config: SessionConfig,
     ) -> AppState {
+        let repo_id = store
+            .as_ref()
+            .and_then(|store| store.repo_id().ok())
+            .unwrap_or_else(ocs_collab::ids::new_repo_id);
         AppState {
             store: store.map(Arc::new),
             db_error,
@@ -82,6 +92,7 @@ impl AppState {
             drawings: Arc::new(Mutex::new(HashMap::new())),
             holders: Arc::new(Mutex::new(HashMap::new())),
             tie_window: Duration::ZERO,
+            repo_id,
             version: env!("CARGO_PKG_VERSION"),
         }
     }

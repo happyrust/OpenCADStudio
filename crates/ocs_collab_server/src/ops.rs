@@ -1486,6 +1486,7 @@ mod tests {
             workspace: "plant-a".into(),
             since: None,
             existing_tags: Vec::new(),
+            repo_id: None,
         };
         handle_message(state, &mut conn, hello, T0).await;
         assert!(conn.session.is_some(), "hello must open a session");
@@ -1636,6 +1637,7 @@ mod tests {
             workspace: "plant-a".into(),
             since: None,
             existing_tags: Vec::new(),
+            repo_id: None,
         };
         let welcome = handle_message(&state, &mut late, hello, T0).await;
         let told = welcome
@@ -2205,6 +2207,9 @@ mod tests {
     // ── `VAL-CROSS-008`: coming back, and being refused ──────────────────
 
     /// A `hello` from a session that says where its drawing was.
+    /// A `hello` from a copy that was here before: it claims this
+    /// repository's id and the revision its drawing had reached
+    /// (`REQ-COLL-015`).
     async fn come_back(state: &AppState, user_id: &str, since: Option<i64>) -> Vec<Reaction> {
         let mut conn = Connection::new("10.0.0.9");
         let hello = ClientMessage::Hello {
@@ -2215,6 +2220,7 @@ mod tests {
             workspace: "plant-a".into(),
             since,
             existing_tags: Vec::new(),
+            repo_id: Some(state.repo_id.clone()),
         };
         handle_message(state, &mut conn, hello, T0 + 5).await
     }
@@ -2307,6 +2313,7 @@ mod tests {
             workspace: "plant-a".into(),
             since: Some(0),
             existing_tags: Vec::new(),
+            repo_id: Some(state.repo_id.clone()),
         };
         let reactions = handle_message(&state, &mut late, hello, T0 + 5).await;
         let (_, _, replayed) = welcomed(&reactions);
@@ -2460,6 +2467,7 @@ mod tests {
             workspace: "plant-a".into(),
             since: None,
             existing_tags: Vec::new(),
+            repo_id: None,
         };
         handle_message(state, &mut conn, hello, T0).await;
         assert!(conn.session.is_some(), "hello must open a session");
@@ -2747,6 +2755,7 @@ mod tests {
             workspace: "plant-a".into(),
             since,
             existing_tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+            repo_id: Some(state.repo_id.clone()),
         };
         handle_message(state, &mut conn, hello, T0).await;
         assert!(conn.session.is_some(), "hello must open a session");
@@ -2844,14 +2853,16 @@ mod tests {
         // u2 left at revision 2 with both valves, and is sent op-3 and op-4.
         let _u2 = join_with(&state, "u2", Some(2), &["V-1001", "V-1002"]).await;
         assert!(on_word(&state).is_empty(), "{:?}", on_word(&state));
-        // u3's file has a V-1002 that was never the room's; u4 names a
-        // revision this drawing has not reached. Neither is sent a replay.
+        // u3's file has a V-1002 that was never the room's; it is sent no
+        // replay and its tags stay taken. u4 names a revision this drawing
+        // has not reached — the alignment is refused outright, and a
+        // refused copy's tags are registered for nobody.
         let _u3 = join_with(&state, "u3", None, &["V-1002"]).await;
         let _u4 = join_with(&state, "u4", Some(9), &["V-1003"]).await;
-        assert_eq!(on_word(&state), ["V-1002", "V-1003"]);
+        assert_eq!(on_word(&state), ["V-1002"]);
 
         assert_eq!(place(&state, &mut u1, "op-5", "V-1001").await, "V-1001");
-        assert_eq!(place(&state, &mut u1, "op-6", "V-1002").await, "V-1004");
+        assert_eq!(place(&state, &mut u1, "op-6", "V-1002").await, "V-1003");
     }
 
     /// Without a database the tags are still told apart, for as long as

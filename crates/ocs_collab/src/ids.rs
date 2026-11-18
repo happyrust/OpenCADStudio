@@ -29,6 +29,14 @@ pub fn new_claim_id() -> String {
     format!("cl-{}", Uuid::new_v4())
 }
 
+/// A fresh repository id: the identity of one server database, recorded in
+/// `meta.repo_id` once and read back by every later start (`REQ-COLL-015`).
+/// A drawing file stores it so a `hello` can say which repository its
+/// `since` belongs to.
+pub fn new_repo_id() -> String {
+    format!("r-{}", Uuid::new_v4())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

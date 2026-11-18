@@ -109,6 +109,7 @@ fn connected(session: &str, revision: i64) -> CollabEvent {
         base_revision: revision,
         peers: Vec::new(),
         claims: Vec::new(),
+        repo_id: "r-test".into(),
     }
 }
 
@@ -131,7 +132,7 @@ fn a_peers_retag() -> CollabEvent {
 }
 
 fn tags(list: &[&str]) -> TagsSaid {
-    TagsSaid::Tags(list.iter().map(|tag| (*tag).to_owned()).collect())
+    TagsSaid::Tags(list.iter().map(|tag| (*tag).to_owned()).collect(), None)
 }
 
 /// The tags said to question `ask`.
@@ -141,7 +142,7 @@ fn listed(app: &OpenCADStudio, ask: u64) -> Vec<String> {
         .iter()
         .rev()
         .find_map(|(answered, said)| match said {
-            TagsSaid::Tags(tags) if *answered == ask => Some(tags.clone()),
+            TagsSaid::Tags(tags, _) if *answered == ask => Some(tags.clone()),
             _ => None,
         })
         .unwrap_or_else(|| {
@@ -285,7 +286,7 @@ fn a_blank_drawing_that_takes_a_peers_symbol_has_nothing_of_its_own_to_tell() {
     );
     assert_eq!(
         app.collab.tags_said,
-        [(4, TagsSaid::NotYet), (4, TagsSaid::Tags(Vec::new()))]
+        [(4, TagsSaid::NotYet), (4, TagsSaid::Tags(Vec::new(), None))]
     );
 
     ask(&mut app, 5);
@@ -405,7 +406,10 @@ fn a_session_whose_drawing_was_closed_lists_nothing() {
     );
 
     ask(&mut app, 7);
-    assert_eq!(app.collab.tags_said, [(7, TagsSaid::Tags(Vec::new()))]);
+    assert_eq!(
+        app.collab.tags_said,
+        [(7, TagsSaid::Tags(Vec::new(), None))]
+    );
 }
 
 // ── What the room has not heard of yet ──────────────────────────────────────
