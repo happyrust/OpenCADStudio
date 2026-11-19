@@ -1951,6 +1951,8 @@ impl OpenCADStudio {
                 tab.scene.populate_meshes_from_document();
             }
         }
+        self.pid_shell.theme =
+            crate::ui::style::pid_tokens::PidTheme::from_iced(&self.active_theme);
         // Inside the P&ID module a drawing is cleared to the canvas colour
         // of the module's design. The user's model space background stays
         // as it is set, for the general interface.

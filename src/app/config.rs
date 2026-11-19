@@ -125,7 +125,7 @@ pub struct UiThemeConfig {
 
 impl Default for UiThemeConfig {
     fn default() -> Self {
-        let theme = iced::Theme::Oxocarbon;
+        let theme = iced::Theme::Light;
         Self {
             name: theme.to_string(),
             palette: UiThemePalette::from_iced(theme.seed()),
@@ -140,7 +140,7 @@ impl UiThemeConfig {
         } else if self.name.eq_ignore_ascii_case("System") {
             resolve_system_theme()
         } else {
-            builtin_theme(&self.name).unwrap_or(iced::Theme::Oxocarbon)
+            builtin_theme(&self.name).unwrap_or(iced::Theme::Light)
         }
     }
 }
@@ -221,7 +221,7 @@ pub struct UiThemePalette {
 
 impl Default for UiThemePalette {
     fn default() -> Self {
-        Self::from_iced(iced::Theme::Oxocarbon.seed())
+        Self::from_iced(iced::Theme::Light.seed())
     }
 }
 
@@ -717,8 +717,12 @@ mod tests {
 
     #[test]
     fn system_scheme_resolves_to_a_concrete_theme_and_keeps_its_name() {
-        // Fresh configs keep the existing default; SYSTEM is opt-in.
-        assert_ne!(UiThemeConfig::default().name, "System");
+        // Fresh configs keep the default Light theme; SYSTEM is opt-in.
+        assert_eq!(
+            UiThemeConfig::default().name,
+            iced::Theme::Light.to_string()
+        );
+        assert_eq!(UiThemeConfig::default().to_iced(), iced::Theme::Light);
         let mut cfg = UiThemeConfig::default();
         cfg.name = "System".to_string();
         let resolved = cfg.to_iced();
