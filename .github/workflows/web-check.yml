@@ -4,11 +4,20 @@ name: Web build check
 # desktop-only call in shared code can sit on main unnoticed until the next
 # release fails at the wasm step. Type-check the web target on every change
 # instead; this is a check, not a bundle build, so it stays fast.
+#
+# This fork leaves the web target out of CI for now, so the check runs only
+# when started by hand (Actions > Web build check > Run workflow). The web
+# target does not compile at present. uuid stops first: ocs_collab makes v4
+# ids, and on wasm32-unknown-unknown uuid has no source of randomness until
+# one of its features names one. Behind it the application calls desktop-only
+# code in nine places (SVG export, Scene::add_entities, the collaboration
+# client's settings). To check every change again, put back
+#   push:
+#     branches: [main]
+#   pull_request:
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
