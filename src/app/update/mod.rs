@@ -1392,8 +1392,22 @@ impl OpenCADStudio {
                     if response["ok"] == false {
                         let code = response["code"].as_str().unwrap_or("failed");
                         let detail = response["error"].as_str().unwrap_or("");
-                        self.command_line
-                            .push_error(&format!("automation {op}: {code} — {detail}"));
+                        let line = format!("automation {op}: {code} — {detail}");
+                        // While another request is still in flight, a rejected
+                        // caller's trail line must not advance `error_revision`
+                        // or clobber `last_error` / `last_error_code`, which
+                        // belong to the running request (`control_settle`).
+                        if self.control_busy() {
+                            let rev = self.command_line.error_revision;
+                            let err = self.command_line.last_error.clone();
+                            let err_code = self.command_line.last_error_code.clone();
+                            self.command_line.push_error(&line);
+                            self.command_line.error_revision = rev;
+                            self.command_line.last_error = err;
+                            self.command_line.last_error_code = err_code;
+                        } else {
+                            self.command_line.push_error(&line);
+                        }
                     } else if matches!(
                         response["status"].as_str(),
                         Some("completed" | "cancelled" | "waiting_input")
@@ -17149,5 +17163,140 @@ mod doc_tab_layouts_tests {
             after: false,
         });
         assert_eq!(app.doc_tab_layouts, None);
+    }
+
+    fn send_control(app: &mut OpenCADStudio, request: serde_json::Value) -> serde_json::Value {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let envelope = crate::app::control::Envelope {
+            request,
+            reply: crate::app::control::Reply::Native(tx),
+        };
+        let _ = app.update(Message::ControlRequest(envelope));
+        rx.recv().expect("control reply")
+    }
+
+    #[test]
+    fn control_busy_refusal_does_not_fail_running_request() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.main_window = Some(iced::window::Id::unique());
+        let _ = app.update(Message::TabNew);
+        let doc_id = app.tabs[app.active_tab].id;
+
+        let started = send_control(
+            &mut app,
+            serde_json::json!({
+                "protocol": 1,
+                "op": "user_select",
+                "document_id": doc_id,
+                "request_id": "req-1"
+            }),
+        );
+        assert_eq!(started["status"], "accepted");
+
+        let refused = send_control(
+            &mut app,
+            serde_json::json!({
+                "protocol": 1,
+                "op": "run",
+                "document_id": doc_id,
+                "command": "ZOOM E",
+                "request_id": "req-2"
+            }),
+        );
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["code"], "busy");
+        assert!(app
+            .command_line
+            .history
+            .iter()
+            .any(|e| e.text.contains("automation run: busy")));
+
+        app.resolve_user_select(true);
+        let settled = send_control(
+            &mut app,
+            serde_json::json!({
+                "protocol": 1,
+                "op": "operation",
+                "request_id": "req-1"
+            }),
+        );
+        assert_eq!(settled["ok"], true, "settled={settled}");
+        assert_eq!(settled["status"], "completed", "settled={settled}");
+    }
+
+    #[test]
+    fn control_busy_refusal_preserves_running_request_error_code() {
+        let mut app = OpenCADStudio::new_for_test();
+        app.main_window = Some(iced::window::Id::unique());
+        let _ = app.update(Message::TabNew);
+        let doc_id = app.tabs[app.active_tab].id;
+
+        let started = send_control(
+            &mut app,
+            serde_json::json!({
+                "protocol": 1,
+                "op": "user_select",
+                "document_id": doc_id,
+                "request_id": "req-err-1"
+            }),
+        );
+        assert_eq!(started["status"], "accepted");
+
+        app.command_line
+            .push_error_coded("SPPID_EXPORT_FAILED", "PIDBACKUPEXPORT: SPPID_EXPORT_FAILED: boom");
+
+        let refused = send_control(
+            &mut app,
+            serde_json::json!({
+                "protocol": 1,
+                "op": "capture",
+                "document_id": doc_id,
+                "request_id": "req-busy-2"
+            }),
+        );
+        assert_eq!(refused["code"], "busy");
+
+        app.resolve_user_select(true);
+        let settled = send_control(
+            &mut app,
+            serde_json::json!({
+                "protocol": 1,
+                "op": "operation",
+                "request_id": "req-err-1"
+            }),
+        );
+        assert_eq!(settled["ok"], false, "settled={settled}");
+        assert_eq!(settled["status"], "failed", "settled={settled}");
+        assert_eq!(settled["code"], "SPPID_EXPORT_FAILED", "settled={settled}");
+        assert_eq!(
+            settled["error"],
+            "PIDBACKUPEXPORT: SPPID_EXPORT_FAILED: boom",
+            "settled={settled}"
+        );
+    }
+
+    #[test]
+    fn control_refusal_without_pending_still_records_error() {
+        let mut app = OpenCADStudio::new_for_test();
+        let before = app.command_line.error_revision;
+
+        let refused = send_control(
+            &mut app,
+            serde_json::json!({
+                "protocol": 1,
+                "op": "run",
+                "command": "ZOOM E",
+                "request_id": "req-no-doc"
+            }),
+        );
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["code"], "document_required");
+        assert!(app.command_line.error_revision > before);
+        assert!(app
+            .command_line
+            .last_error
+            .as_deref()
+            .unwrap_or("")
+            .contains("automation run: document_required"));
     }
 }
