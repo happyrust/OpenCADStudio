@@ -484,26 +484,34 @@ pub(super) fn shape_primitive(
             radius,
             start_angle,
             end_angle,
-            clockwise: _,
+            clockwise,
         } => {
             let radius = at.scale_radius(*radius);
             if !radius.is_finite() || radius <= 0.0 {
                 return None;
             }
-            // The file's arc runs **clockwise** from its start angle to its
-            // end angle (pid-parse `docs/analysis/2026-09-19-igarc2d-sweeps-
-            // clockwise-from-start-to-end.md`: the Manifold's caps bulge out
-            // of its shell, to where its construction axes end, only read
-            // that way), and a DXF arc always runs counter-clockwise from
-            // start to end -- so the same arc is drawn from the file's end
-            // angle to its start angle. A mirrored placement reverses the
-            // sense once more and reflects the angles, which lands it back
-            // on the file's own order. Either way round the other, and the
-            // arc is drawn as its own complement.
-            let (start_angle, end_angle) = if at.mirrored() {
+            // The record's two angles and its last byte name one of the two
+            // arcs between them: `clockwise` runs from the start angle
+            // clockwise to the end angle, otherwise counter-clockwise
+            // (pid-parse `docs/analysis/2026-10-23-the-arc-trailing-byte-is-
+            // the-direction.md`). Only the byte tells the two halves of a
+            // half-turn apart -- `FT-Ultrasonic Flowmeter.sym`'s wave is two
+            // semicircles over the same angles, one each way -- and only it
+            // keeps an arc past a half-turn long, the 185.26deg of `Local
+            // Vent.sym`'s cap, so the arc is never folded to its short side.
+            // A mirrored placement reflects the angles and reverses the
+            // direction once more. A DXF arc runs counter-clockwise from
+            // start to end, so an arc clockwise on the sheet is drawn from
+            // its end angle.
+            let (from, to) = if at.mirrored() {
                 (at.rotation - start_angle, at.rotation - end_angle)
             } else {
-                (at.rotation + end_angle, at.rotation + start_angle)
+                (at.rotation + start_angle, at.rotation + end_angle)
+            };
+            let (start_angle, end_angle) = if *clockwise != at.mirrored() {
+                (to, from)
+            } else {
+                (from, to)
             };
             let mut arc = document::entities::Arc::new();
             arc.center = at.apply(center.0, center.1);
@@ -514,18 +522,6 @@ pub(super) fn shape_primitive(
             // angles have to be radians for the addition to mean anything.
             arc.start_angle = start_angle;
             arc.end_angle = end_angle;
-            // Every measured `igArc2d` draws its minor arc: the CV valve's
-            // diaphragm reads start<end in the file yet the reference draws
-            // a 15deg cap, not the 345deg complement the clockwise reading
-            // builds. Only an exact half-turn needs the clockwise rule --
-            // the Manifold caps sit there, and it still wins on ties. The
-            // comparison needs epsilon room: `Parametric V Drum`'s caps read
-            // `pi -> 0` where the file's pi is one ulp above `f64::consts::PI`,
-            // and an exact `>` test flips that half-turn into its complement.
-            let sweep = (arc.end_angle - arc.start_angle).rem_euclid(std::f64::consts::TAU);
-            if sweep > std::f64::consts::PI + 1e-9 {
-                std::mem::swap(&mut arc.start_angle, &mut arc.end_angle);
-            }
             arc.common.layer = LAYER_SYMBOL.to_string();
             Some(EntityType::Arc(arc))
         }

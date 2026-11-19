@@ -752,8 +752,9 @@ fn a_symbols_lettering_takes_its_placements_colour_and_nothing_else() {
     );
 }
 
-/// A body's arc runs clockwise from its start angle to its end angle,
-/// and lands on the sheet as the DXF arc that covers the same points:
+/// A body's arc whose byte says clockwise runs clockwise from its start
+/// angle to its end angle, and lands on the sheet as the DXF arc that
+/// covers the same points:
 /// the Manifold's left cap, `270° -> 90°` about a centre on the shell's
 /// left edge, is drawn as the counter-clockwise arc `90° -> 270°`, whose
 /// midpoint bulges left out of the shell -- and a mirrored placement,
@@ -776,7 +777,7 @@ fn a_bodys_arc_is_drawn_as_the_counter_clockwise_arc_over_the_same_points() {
         radius: 0.03559,
         start_angle: 3.0 * FRAC_PI_2,
         end_angle: FRAC_PI_2,
-        clockwise: false,
+        clockwise: true,
     };
     let midpoint = |arc: &document::entities::Arc| {
         let sweep = (arc.end_angle - arc.start_angle).rem_euclid(2.0 * PI);
@@ -821,10 +822,9 @@ fn a_bodys_arc_is_drawn_as_the_counter_clockwise_arc_over_the_same_points() {
 
 /// A half-turn cap whose file angles are one ulp past `f64::consts::PI`
 /// is still a half-turn: `Parametric V Drum`'s left head reads `π -> 0`
-/// with `π` stored as `3.141592653589794`, and a bare `sweep > PI`
-/// comparison flipped it into its complement (the head caved into the
-/// shell). With the epsilon, a placement rotated a quarter turn draws
-/// the cap bulging left.
+/// clockwise, with `π` stored as `3.141592653589794`, and a placement
+/// rotated a quarter turn draws the cap bulging left of its chord rather
+/// than caved into the shell.
 #[test]
 fn a_half_turn_cap_within_one_ulp_of_pi_keeps_its_clockwise_half() {
     use std::f64::consts::PI;
@@ -843,7 +843,7 @@ fn a_half_turn_cap_within_one_ulp_of_pi_keeps_its_clockwise_half() {
         radius: 0.02691,
         start_angle: 3.141592653589794,
         end_angle: 0.0,
-        clockwise: false,
+        clockwise: true,
     };
     let Some(EntityType::Arc(arc)) = shape_primitive(&head, None, &placement, &HashMap::new())
     else {
@@ -855,6 +855,117 @@ fn a_half_turn_cap_within_one_ulp_of_pi_keeps_its_clockwise_half() {
     assert!(
         mid_x < arc.center.x - 1e-6,
         "the rotated head must bulge left of its chord: mid_x {mid_x} vs chord x {}",
+        arc.center.x
+    );
+}
+
+/// A body's arc is read by its record's last byte, the direction (pid-parse
+/// `docs/analysis/2026-10-23-the-arc-trailing-byte-is-the-direction.md`).
+/// `FT-Ultrasonic Flowmeter.sym`'s wave is two semicircles over the same
+/// angles, `90° -> 270°`, one clockwise and one counter-clockwise: the first
+/// passes 0° and the second 180°, so the wave reads as an S. A mirrored
+/// placement reflects both and keeps them on opposite sides.
+#[test]
+fn pid_symbol_arc_semicircles_over_the_same_angles_take_the_halves_their_bytes_name() {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let insertion = PidPoint { x: 0.0, y: 0.0 };
+    let placement = |scale_y: f64| Placement {
+        insertion: &insertion,
+        rotation: 0.0,
+        scale: [1.0, scale_y],
+        projection: Projection {
+            mm_per_unit: 1000.0,
+            band: SheetBand::for_page(None),
+        },
+    };
+    let wave = |center_y: f64, clockwise: bool| SymbolPrimitive::Arc {
+        center: (0.0, center_y),
+        radius: 0.00127,
+        start_angle: FRAC_PI_2,
+        end_angle: 3.0 * FRAC_PI_2,
+        clockwise,
+    };
+    let midpoint = |primitive: &SymbolPrimitive, scale_y: f64| {
+        let Some(EntityType::Arc(arc)) =
+            shape_primitive(primitive, None, &placement(scale_y), &HashMap::new())
+        else {
+            panic!("the wave did not build");
+        };
+        let sweep = (arc.end_angle - arc.start_angle).rem_euclid(2.0 * PI);
+        assert!((sweep - PI).abs() < 1e-9, "a semicircle stays one: {sweep}");
+        let angle = arc.start_angle + sweep / 2.0;
+        (
+            arc.center.x + arc.radius * angle.cos(),
+            arc.center.y + arc.radius * angle.sin(),
+        )
+    };
+    let close =
+        |(x, y): (f64, f64), (ex, ey): (f64, f64)| (x - ex).abs() < 1e-6 && (y - ey).abs() < 1e-6;
+    let upper = wave(0.00127, true);
+    let lower = wave(-0.00127, false);
+
+    let at = midpoint(&upper, 1.0);
+    assert!(
+        close(at, (1.27, 1.27)),
+        "the clockwise half passes 0°: {at:?}"
+    );
+    let at = midpoint(&lower, 1.0);
+    assert!(
+        close(at, (-1.27, -1.27)),
+        "the counter-clockwise half passes 180°: {at:?}"
+    );
+
+    let at = midpoint(&upper, -1.0);
+    assert!(
+        close(at, (1.27, -1.27)),
+        "mirrored, the clockwise half still passes 0°: {at:?}"
+    );
+    let at = midpoint(&lower, -1.0);
+    assert!(
+        close(at, (-1.27, 1.27)),
+        "mirrored, the counter-clockwise half still passes 180°: {at:?}"
+    );
+}
+
+/// An arc past a half-turn keeps its long side. `Local Vent`'s cap runs
+/// counter-clockwise `88.18° -> 273.44°`, 185.26°; folded to the short side
+/// it became the 174.74° on the other side of its chord, and the gooseneck
+/// bent down where the plot bends it up.
+#[test]
+fn pid_symbol_arc_past_a_half_turn_keeps_its_long_side() {
+    use std::f64::consts::PI;
+    let insertion = PidPoint { x: 0.0, y: 0.0 };
+    let placement = Placement {
+        insertion: &insertion,
+        rotation: 0.0,
+        scale: [1.0, 1.0],
+        projection: Projection {
+            mm_per_unit: 1000.0,
+            band: SheetBand::for_page(None),
+        },
+    };
+    let cap = SymbolPrimitive::Arc {
+        center: (0.00119, -0.00254),
+        radius: 0.00254,
+        start_angle: 88.18_f64.to_radians(),
+        end_angle: 273.44_f64.to_radians(),
+        clockwise: false,
+    };
+    let Some(EntityType::Arc(arc)) = shape_primitive(&cap, None, &placement, &HashMap::new())
+    else {
+        panic!("the cap did not build");
+    };
+    let sweep = (arc.end_angle - arc.start_angle).rem_euclid(2.0 * PI);
+    assert!(
+        (sweep.to_degrees() - 185.26).abs() < 1e-9,
+        "the cap keeps its 185.26°: {}",
+        sweep.to_degrees()
+    );
+    let mid = arc.start_angle + sweep / 2.0;
+    let mid_x = arc.center.x + arc.radius * mid.cos();
+    assert!(
+        mid_x < arc.center.x - 2.5,
+        "the cap bulges left of its centre: mid_x {mid_x} vs centre x {}",
         arc.center.x
     );
 }
