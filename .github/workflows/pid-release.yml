@@ -1,0 +1,222 @@
+name: P&ID packages
+
+# Windows packages of this fork, attached to a draft release.
+#
+# The upstream release.yml cannot build this repository: iced, cryoglyph and
+# bevy are path dependencies that live beside it, and iced carries a local
+# patch. This workflow materialises them with the shared action first, then
+# builds and packs as the upstream Windows job does (same icons, same WiX
+# sources, unsigned).
+#
+# It runs for a pushed tag of two or three plain numbers (`0.1`, `0.1.1`), or
+# by hand for such a tag that exists already. These are this repository's own
+# release numbers. The program keeps the version Cargo.toml states, which
+# follows upstream's `<year>.<week>`; upstream's weekly tags are spelled
+# `v<year>.<week>`, and this workflow does not answer to them.
+#
+# The packages go to a draft release, which only people with write access see:
+# look the files over, then publish it from the Releases page.
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build (0.1, 0.1.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pid-packages-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  # Mirrors .cargo/config.toml, as the upstream release workflow does.
+  RUST_MIN_STACK: "67108864"
+
+jobs:
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          path: pid-cad
+
+      # The tag is the release number and the installer's version: 0.1 gives
+      # 0.1.0, 0.1.2 gives 0.1.2 (an MSI takes 0-255, 0-255 and 0-65535). The
+      # program itself shows the version Cargo.toml states and the commit.
+      - name: Versions
+        id: version
+        shell: bash
+        working-directory: pid-cad
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?$ ]]; then
+            echo "::error::tag '$RELEASE_TAG' is not two or three plain numbers such as 0.1 or 0.1.1"
+            exit 1
+          fi
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          patch="${BASH_REMATCH[4]:-0}"
+          # The lengths come first: a longer run of digits is more than the
+          # shell can compare as a number.
+          if [ "${#major}" -gt 3 ] || [ "${#minor}" -gt 3 ] || [ "${#patch}" -gt 5 ] ||
+             [ "$major" -gt 255 ] || [ "$minor" -gt 255 ] || [ "$patch" -gt 65535 ]; then
+            echo "::error::tag '$RELEASE_TAG' does not fit an installer version (0-255, 0-255, 0-65535)"
+            exit 1
+          fi
+          # The first `version = "..."` at the start of a line is the package's;
+          # the program shows it without the last part.
+          stated="$(awk -F'"' '/^version = "/ { print $2; exit }' Cargo.toml)"
+          if [ -z "$stated" ]; then
+            echo "::error::Cargo.toml states no package version"
+            exit 1
+          fi
+          commit="$(git rev-parse HEAD)"
+          {
+            echo "program=${stated%.*}"
+            echo "msi=$major.$minor.$patch"
+            echo "commit=$commit"
+          } >> "$GITHUB_OUTPUT"
+          echo "Tag $RELEASE_TAG at $commit: program ${stated%.*}, installer $major.$minor.$patch" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: ./pid-cad/.github/actions/checkout-fork-deps
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      # As in the upstream Windows job: build.rs embeds AppIcon.ico when the
+      # file exists, and the installer packs all three. The file icons are
+      # 48x48 SVGs, rasterised at 16x that so the large sizes stay sharp.
+      - name: Convert SVG icons to ICO
+        shell: pwsh
+        working-directory: pid-cad
+        run: |
+          magick assets/logo.svg `
+            -define icon:auto-resize=16,24,32,48,64,128,256 `
+            packaging/windows/AppIcon.ico
+          if ($LASTEXITCODE -ne 0) { throw "AppIcon.ico was not made" }
+          foreach ($kind in 'dwg', 'dxf') {
+            magick -background none -density 1536 "assets/mimetypes/image-vnd.$kind.svg" `
+              -define icon:auto-resize=16,24,32,48,64,128,256 `
+              "packaging/windows/$kind.ico"
+            if ($LASTEXITCODE -ne 0) { throw "$kind.ico was not made" }
+          }
+
+      - name: Build
+        shell: bash
+        working-directory: pid-cad
+        run: |
+          cargo build --locked --release
+          cargo build --locked --release -p dwg-thumbnailer-win
+          ls -l target/release/OpenCADStudio.exe target/release/dwg_thumbnailer_win.dll
+
+      - name: Draft release with the portable program
+        shell: pwsh
+        working-directory: pid-cad
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PROGRAM_VERSION: ${{ steps.version.outputs.program }}
+          COMMIT: ${{ steps.version.outputs.commit }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          gh release view $tag --repo $env:REPOSITORY *> $null
+          if ($LASTEXITCODE -ne 0) {
+            @(
+              "Windows x86_64 packages of the P&ID build $tag, made by the workflow ``P&ID packages`` from commit $($env:COMMIT). The program is Open CAD Studio $($env:PROGRAM_VERSION) with the SmartPlant P&ID work on top; it shows that version and the commit, not $tag."
+              ''
+              '- `*-portable.exe`: the program alone, runs without installing.'
+              '- `*-installer.msi`: installer with the DWG/DXF file icons and thumbnails. It carries the product identity of the upstream installer under a lower version number, so Windows Installer refuses it where upstream Open CAD Studio is installed: remove that first.'
+              ''
+              'Neither file is signed: Windows SmartScreen asks before the first start.'
+            ) | Set-Content -Encoding utf8 release-notes.md
+            gh release create $tag --repo $env:REPOSITORY --draft --verify-tag `
+              --title "P&ID build $tag" --notes-file release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw "the draft release was not made" }
+          }
+          $exe = "OpenCADStudio-$tag-windows-x86_64-portable.exe"
+          Copy-Item target\release\OpenCADStudio.exe $exe
+          gh release upload $tag $exe --clobber --repo $env:REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw "the portable program was not uploaded" }
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  $exe" | Set-Content -Encoding ascii SHA256SUMS-windows-x86_64.txt
+          "- ``$exe`` $([math]::Round((Get-Item $exe).Length / 1MB, 1)) MB, sha256 ``$hash``" >> $env:GITHUB_STEP_SUMMARY
+
+      # A failure here leaves the release with the portable program, and the
+      # job says so instead of failing after the long build.
+      - name: Build MSI installer
+        id: msi
+        continue-on-error: true
+        shell: pwsh
+        working-directory: pid-cad
+        run: |
+          $version = "${{ steps.version.outputs.msi }}"
+          $candle = Join-Path $env:WIX "bin\candle.exe"
+          $light  = Join-Path $env:WIX "bin\light.exe"
+          $exePath  = (Resolve-Path target\release\OpenCADStudio.exe).Path
+          $dllPath  = (Resolve-Path target\release\dwg_thumbnailer_win.dll).Path
+          $iconPath = (Resolve-Path packaging\windows\AppIcon.ico).Path
+          # GPL-3 license RTF shown on the installer's EULA page.
+          $licensePath = (Resolve-Path packaging\windows\License.rtf).Path
+          # main.wxs holds the package/feature; ui.wxs holds the installer UI
+          # and finish-screen launch checkbox. Both compile together, from the
+          # repository root: main.wxs names the file icons relative to it.
+          $mainWxs  = (Resolve-Path packaging\windows\main.wxs).Path
+          $uiWxs    = (Resolve-Path packaging\windows\ui.wxs).Path
+          # candle writes one .wixobj per source into this directory (the
+          # trailing slash tells it -out is a folder, not a single file).
+          $objDir   = Join-Path $PWD "packaging\windows\"
+          $msiPath  = Join-Path $PWD "OpenCADStudio.msi"
+          & $candle -arch x64 `
+            "-dVersion=$version" `
+            "-dSource=$exePath" `
+            "-dThumbDll=$dllPath" `
+            "-dIcon=$iconPath" `
+            "-dLicense=$licensePath" `
+            $mainWxs $uiWxs `
+            -out $objDir
+          if ($LASTEXITCODE -ne 0) { throw "candle failed" }
+          $mainObj = Join-Path $objDir "main.wixobj"
+          $uiObj   = Join-Path $objDir "ui.wixobj"
+          & $light $mainObj $uiObj -ext WixUIExtension -cultures:en-us -loc packaging/windows/strings.en-US.wxl -out $msiPath
+          if ($LASTEXITCODE -ne 0) { throw "light failed" }
+
+      - name: Add the installer and the checksums to the draft release
+        shell: pwsh
+        working-directory: pid-cad
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          MSI_OUTCOME: ${{ steps.msi.outcome }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          $files = @('SHA256SUMS-windows-x86_64.txt')
+          if ($env:MSI_OUTCOME -eq 'success') {
+            $msi = "OpenCADStudio-$tag-windows-x86_64-installer.msi"
+            Move-Item OpenCADStudio.msi $msi
+            $hash = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLower()
+            "$hash  $msi" | Add-Content -Encoding ascii SHA256SUMS-windows-x86_64.txt
+            "- ``$msi`` $([math]::Round((Get-Item $msi).Length / 1MB, 1)) MB, sha256 ``$hash``" >> $env:GITHUB_STEP_SUMMARY
+            $files += $msi
+          } else {
+            Write-Output "::warning::The MSI installer could not be built (see the step before); the release has the portable program only."
+            "- the MSI installer could not be built" >> $env:GITHUB_STEP_SUMMARY
+          }
+          gh release upload $tag @files --clobber --repo $env:REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw "the upload failed" }
+          "The draft release ``$tag`` holds the files; publish it from the Releases page when they are fit to share." >> $env:GITHUB_STEP_SUMMARY
