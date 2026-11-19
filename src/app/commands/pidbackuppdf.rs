@@ -51,8 +51,9 @@ pub(in crate::app) struct BackupPdf {
     /// that was refused before it started is not among them.
     last: Option<Result<PdfOutcome, PdfError>>,
     /// The export itself: [`pid_backup_pdf::export_in_background`], or what
-    /// a test puts in its place.
-    export: Export,
+    /// a test puts in its place: PIDBACKUPEXPORT's tests put one there too,
+    /// to run an export to PDF beside theirs.
+    pub(super) export: Export,
 }
 
 /// An export on its way.
@@ -100,7 +101,7 @@ fn request_for(index: &BackupIndex, out_dir: PathBuf) -> PdfRequest {
 /// takes its restore folder from, and as PIDPLOT takes a PDF from the
 /// drawing's -- and not from wherever the application was started.
 #[cfg(not(target_arch = "wasm32"))]
-fn folder_asked_for(index: &BackupIndex, folder: &str) -> PathBuf {
+pub(super) fn folder_asked_for(index: &BackupIndex, folder: &str) -> PathBuf {
     let folder = PathBuf::from(folder);
     let asked = match index.source.parent() {
         Some(beside) if folder.is_relative() => beside.join(folder),

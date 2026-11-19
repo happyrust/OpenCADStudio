@@ -466,13 +466,13 @@ impl OpenCADStudio {
     /// carry out the effect it asks for.
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::app) fn on_pid_backup(&mut self, msg: PidBackupMsg) -> Task<Message> {
-        // An export to PDF reads the restores while it runs: none is removed
-        // from under it, whoever asks -- `Cache=Clear`, `Press`, or the
-        // panel's own button.
+        // An export, to PDF or to publish files, reads the restores while it
+        // runs: none is removed from under it, whoever asks -- `Cache=Clear`,
+        // `Press`, or the panel's own button.
         if matches!(
             &msg,
             PidBackupMsg::Cache(pid_backup_browser::CacheMsg::Clear)
-        ) && self.pid_backup_pdf_keeps_the_cache()
+        ) && (self.pid_backup_pdf_keeps_the_cache() || self.pid_backup_export_keeps_the_cache())
         {
             return Task::none();
         }
