@@ -334,9 +334,10 @@ mod tests {
     use crate::ui::command_line::EntryKind;
     use crate::ui::window::pid_backup_browser::{self, CacheMsg, LoadState, NodeId, PidBackupMsg};
     use iced::futures::channel::oneshot;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     // ── A folder, a package, an application ──────────────────────────────────
 
@@ -1385,5 +1386,676 @@ mod tests {
         assert_eq!(app.tabs.len(), tabs);
         // And the bare verb says again what the export came to.
         assert_eq!(say(&mut app, "PIDBACKUPEXPORT"), answer[1..]);
+    }
+
+    // ── A real backup ────────────────────────────────────────────────────────
+
+    /// The backup the real export takes when `OCS_PID_BACKUP_EXPORT_REAL`
+    /// names none: the plant sample, where it lies on the machine the plan
+    /// was written on.
+    const REAL_BACKUP: &str = r"D:\work\plant-code\cad\pid-test-data";
+
+    /// The backup the broken copy is made of when
+    /// `OCS_PID_BACKUP_EXPORT_BROKEN` names none: the small sample.
+    const SMALL_BACKUP: &str =
+        r"D:\work\plant-code\cad\pid-parse\test-file\backup-test\DWG-0202GP06-01_p";
+
+    /// What the broken copy holds in the place of a drawing's `.pid`.
+    const NO_DRAWING: &[u8] = b"no SmartPlant drawing";
+
+    /// What a folder holds: every file under it by its path from there,
+    /// `/`-separated, with its length and when it was last written.
+    type Listed = BTreeMap<String, (u64, Option<SystemTime>)>;
+
+    /// What `root` holds. A file holds itself, under its own name.
+    fn listed(root: &Path) -> Listed {
+        let mut files = Listed::new();
+        let mut left = vec![root.to_path_buf()];
+        while let Some(at) = left.pop() {
+            let metadata =
+                std::fs::metadata(&at).unwrap_or_else(|error| panic!("{}: {error}", at.display()));
+            if metadata.is_dir() {
+                let entries = std::fs::read_dir(&at)
+                    .unwrap_or_else(|error| panic!("{}: {error}", at.display()));
+                left.extend(entries.map(|entry| entry.expect("an entry of the folder").path()));
+                continue;
+            }
+            let inside = at.strip_prefix(root).ok();
+            let inside = inside.filter(|inside| !inside.as_os_str().is_empty());
+            let name = inside.or_else(|| at.file_name().map(Path::new));
+            let name = name.unwrap_or(&at).to_string_lossy().replace('\\', "/");
+            files.insert(name, (metadata.len(), metadata.modified().ok()));
+        }
+        files
+    }
+
+    /// The names two listings do not agree on: a file only one of them
+    /// holds, or one whose length or time is not the same in both.
+    fn unlike(one: &Listed, other: &Listed) -> Vec<String> {
+        let names: BTreeSet<&String> = one.keys().chain(other.keys()).collect();
+        let differs = |name: &&String| one.get(*name) != other.get(*name);
+        names.into_iter().filter(differs).cloned().collect()
+    }
+
+    /// [`listed`] summed up for the report: how many files, how many bytes.
+    fn counted(files: &Listed) -> serde_json::Value {
+        let bytes: u64 = files.values().map(|(length, _)| length).sum();
+        serde_json::json!({ "files": files.len(), "bytes": bytes })
+    }
+
+    /// The folders of `index` an export must leave alone, each once, with
+    /// what each is to the backup.
+    fn watched(index: &BackupIndex) -> Vec<(&'static str, PathBuf)> {
+        let mut watched: Vec<(&'static str, PathBuf)> = Vec::new();
+        let folders = [
+            ("source", &index.source),
+            ("package", &index.backup_root),
+            ("restored", &index.restored),
+        ];
+        for (what, folder) in folders {
+            if watched.iter().all(|(_, seen)| seen != folder) {
+                watched.push((what, folder.clone()));
+            }
+        }
+        watched
+    }
+
+    /// What became of the `watched` folders, by what they held `before` the
+    /// export and `after` it: for the report, and the sentences of what
+    /// changed.
+    fn kept(
+        watched: &[(&str, PathBuf)],
+        before: &[Listed],
+        after: &[Listed],
+    ) -> (Vec<serde_json::Value>, Vec<String>) {
+        let (mut kept, mut changed) = (Vec::new(), Vec::new());
+        for ((what, folder), (before, after)) in watched.iter().zip(before.iter().zip(after)) {
+            let differing = unlike(before, after);
+            if !differing.is_empty() {
+                let folder = folder.display();
+                changed.push(format!(
+                    "the export changed the {what} ({folder}): {differing:?}"
+                ));
+            }
+            kept.push(serde_json::json!({
+                "what": what,
+                "folder": folder.display().to_string(),
+                "before": counted(before),
+                "after": counted(after),
+                "changed": differing,
+            }));
+        }
+        (kept, changed)
+    }
+
+    /// Copy the folder `from`, and all it holds, to `to`.
+    fn copy_folder(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).unwrap_or_else(|error| panic!("{}: {error}", to.display()));
+        let entries =
+            std::fs::read_dir(from).unwrap_or_else(|error| panic!("{}: {error}", from.display()));
+        for entry in entries {
+            let entry = entry.expect("an entry of the folder");
+            let (path, into) = (entry.path(), to.join(entry.file_name()));
+            if path.is_dir() {
+                copy_folder(&path, &into);
+            } else {
+                std::fs::copy(&path, &into)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            }
+        }
+    }
+
+    /// Put [`NO_DRAWING`] in the place of the first `.pid` of the package's
+    /// archives, by the archive's name and then by its own: the archive's
+    /// name and the `.pid`'s, as the index states them.
+    fn break_a_drawing(package: &Path) -> (String, String) {
+        use std::io::Write;
+        let entries = std::fs::read_dir(package)
+            .unwrap_or_else(|error| panic!("{}: {error}", package.display()));
+        let mut archives: Vec<PathBuf> = entries
+            .map(|entry| entry.expect("an entry of the folder").path())
+            .filter(|path| {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                name.starts_with("PlantData") && name.to_ascii_lowercase().ends_with(".zip")
+            })
+            .collect();
+        archives.sort();
+        for archive in archives {
+            let file = std::fs::File::open(&archive)
+                .unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
+            let mut zip = zip::ZipArchive::new(file)
+                .unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
+            let mut drawings: Vec<String> = zip
+                .file_names()
+                .filter(|name| name.to_ascii_lowercase().ends_with(".pid"))
+                .map(str::to_string)
+                .collect();
+            drawings.sort();
+            let Some(drawing) = drawings.into_iter().next() else {
+                continue;
+            };
+            let broken = archive.with_extension("broken");
+            let written = std::fs::File::create(&broken).expect("the broken archive");
+            let mut writer = zip::ZipWriter::new(written);
+            for at in 0..zip.len() {
+                let file = zip.by_index_raw(at).expect("an entry of the archive");
+                if file.name() == drawing {
+                    let options = zip::write::SimpleFileOptions::default();
+                    writer
+                        .start_file(drawing.as_str(), options)
+                        .expect("the drawing that is none");
+                    writer.write_all(NO_DRAWING).expect("its bytes");
+                } else {
+                    writer.raw_copy_file(file).expect("an entry as it was");
+                }
+            }
+            writer.finish().expect("the broken archive is written");
+            drop(zip);
+            std::fs::rename(&broken, &archive).expect("the broken archive in its place");
+            let name = archive.file_name().unwrap_or_default();
+            return (name.to_string_lossy().into_owned(), drawing);
+        }
+        panic!("no archive of {} holds a .pid", package.display());
+    }
+
+    /// One export of the backup an application holds, asked for as it is
+    /// typed, and what the command line said of it on the way.
+    struct RealExport {
+        /// The line that asked for it.
+        typed: String,
+        /// What the command line said when the command returned.
+        started: Vec<Said>,
+        /// Whether the export ran when the command returned.
+        running: bool,
+        /// Whether the index was there by then.
+        index_by_then: bool,
+        /// What the bare verb said then.
+        status: Vec<Said>,
+        /// What the command line said when the export ended.
+        ended: Vec<Said>,
+        /// What the bare verb said after that.
+        again: Vec<Said>,
+        /// From the command to the end, in seconds.
+        seconds: f64,
+        /// What the export came to.
+        result: Option<Result<ExportOutcome, ExportError>>,
+    }
+
+    /// Export the backup `app` holds into `folder` through the command, with
+    /// the plant name and the reference folder when they are given, and wait
+    /// for the end.
+    fn export_for_real(
+        app: &mut OpenCADStudio,
+        folder: &Path,
+        plant: Option<&str>,
+        reference: Option<&Path>,
+    ) -> RealExport {
+        let mut typed = "PIDBACKUPEXPORT".to_string();
+        if let Some(plant) = plant {
+            typed += &format!(" Plant=\"{plant}\"");
+        }
+        if let Some(reference) = reference {
+            typed += &format!(" Ref=\"{}\"", reference.display());
+        }
+        typed += &format!(" \"{}\"", folder.display());
+        let clock = Instant::now();
+        let task = start(app, &typed);
+        let started = said(app);
+        let running = app.pid_backup_export.running.is_some();
+        let index_by_then = folder.join("_Index.json").exists();
+        let status = ask(app, "PIDBACKUPEXPORT");
+        let ended = finish(app, task);
+        let seconds = clock.elapsed().as_secs_f64();
+        let again = say(app, "PIDBACKUPEXPORT");
+        RealExport {
+            typed,
+            started,
+            running,
+            index_by_then,
+            status,
+            ended,
+            again,
+            seconds,
+            result: app.pid_backup_export.last.clone(),
+        }
+    }
+
+    /// What the command line said, as text, for the report.
+    fn texts(said: &[Said]) -> Vec<String> {
+        let text = |said: &Said| match said {
+            Said::Line(text) => text.clone(),
+            Said::Error(text) => format!("error: {text}"),
+            Said::Other(text) => format!("other: {text}"),
+        };
+        said.iter().map(text).collect()
+    }
+
+    /// The index an export wrote into `folder`, and the names of the files
+    /// it lists, sorted, its own among them; why not, when it cannot be
+    /// read.
+    fn index_in(folder: &Path) -> Result<(serde_json::Value, Vec<String>), String> {
+        let path = folder.join("_Index.json");
+        let unread = |why: String| format!("{}: {why}", path.display());
+        let text = std::fs::read_to_string(&path).map_err(|error| unread(error.to_string()))?;
+        let index: serde_json::Value =
+            serde_json::from_str(&text).map_err(|error| unread(error.to_string()))?;
+        let drawings = index.get("drawings").and_then(serde_json::Value::as_array);
+        let files = drawings
+            .into_iter()
+            .flatten()
+            .filter_map(|drawing| drawing.get("files")?.as_array())
+            .flatten();
+        let mut names: Vec<String> = files
+            .filter_map(|file| file.as_str().map(str::to_string))
+            .collect();
+        names.push("_Index.json".to_string());
+        names.sort();
+        Ok((index, names))
+    }
+
+    /// What of `export`, of `package` into `folder` under the plant name
+    /// `plant`, is not as SPEC-sppid-export §6 has it: the command returned
+    /// with the export running and nothing of it written yet, and the bare
+    /// verb said so (criterion 8); when the export ended the command line
+    /// said its own summary, and the bare verb said it again (criterion 2);
+    /// the folder holds the files the index lists and the index, and
+    /// nothing else (criterion 1).
+    fn real_unmet(
+        export: &RealExport,
+        package: &Path,
+        folder: &Path,
+        plant: &str,
+        reference: Option<&Path>,
+    ) -> Vec<String> {
+        let mut unmet = Vec::new();
+        let owed = [exporting(package, folder, plant, reference)];
+        if export.started != owed {
+            let started = &export.started;
+            unmet.push(format!("the command said {started:?}, not {owed:?}"));
+        }
+        if !export.running {
+            unmet.push("the export did not run when the command returned".to_string());
+        }
+        if export.index_by_then {
+            unmet.push("the index was there when the command returned".to_string());
+        }
+        let so_far = format!(
+            "PIDBACKUPEXPORT: exporting to {} (plant {plant}): ",
+            folder.display()
+        );
+        let says_so = |said: &Said| matches!(said, Said::Line(text) if text.starts_with(&so_far) && text.ends_with(" s so far"));
+        if !matches!(export.status.as_slice(), [said] if says_so(said)) {
+            let status = &export.status;
+            unmet.push(format!(
+                "while the export ran the bare verb said {status:?}"
+            ));
+        }
+        let outcome = match &export.result {
+            Some(Ok(outcome)) => outcome,
+            other => {
+                let ended = &export.ended;
+                unmet.push(format!(
+                    "the export came to {other:?}; the command line said {ended:?}"
+                ));
+                return unmet;
+            }
+        };
+        let summary: Vec<Said> = pid_backup_export::summary_lines(outcome)
+            .iter()
+            .map(|text| line(format!("PIDBACKUPEXPORT: {text}")))
+            .collect();
+        if export.ended != summary {
+            let ended = &export.ended;
+            unmet.push(format!(
+                "when the export ended the command line said {ended:?}, not {summary:?}"
+            ));
+        }
+        if export.again != export.ended {
+            let again = &export.again;
+            unmet.push(format!("after the export the bare verb said {again:?}"));
+        }
+        match index_in(folder) {
+            Ok((_, owed)) => {
+                let there = names(folder);
+                if there != owed {
+                    unmet.push(format!(
+                        "the folder holds {there:?}, the index lists {owed:?}"
+                    ));
+                }
+                if outcome.files != owed.len() {
+                    let (files, listed) = (outcome.files, owed.len());
+                    unmet.push(format!(
+                        "the export says {files} files, the index lists {listed}"
+                    ));
+                }
+            }
+            Err(why) => unmet.push(why),
+        }
+        unmet
+    }
+
+    /// What `export`, into `folder`, came to and what was said of it, for
+    /// the report.
+    fn export_report(export: &RealExport, folder: &Path) -> serde_json::Value {
+        let notes = |notes: &[DrawingNote]| -> Vec<serde_json::Value> {
+            let note =
+                |note: &DrawingNote| serde_json::json!({ "name": note.name, "notes": note.notes });
+            notes.iter().map(note).collect()
+        };
+        let (outcome, error) = match &export.result {
+            Some(Ok(outcome)) => {
+                let gate = outcome.gate.as_ref().map(|gate| {
+                    serde_json::json!({
+                        "clean": gate.clean,
+                        "dirty": gate.dirty,
+                        "revision_mismatch": gate.revision_mismatch,
+                        "unpaired": gate.unpaired,
+                        "lines": gate.lines,
+                    })
+                });
+                let outcome = serde_json::json!({
+                    "written": outcome.written,
+                    "failed": outcome.failed,
+                    "pid_entries": outcome.pid_entries,
+                    "templates": outcome.templates,
+                    "unmatched": outcome.unmatched,
+                    "without_drawing_no": outcome.without_drawing_no,
+                    "unwritten": notes(&outcome.unwritten),
+                    "noted": notes(&outcome.noted),
+                    "problems": outcome.problems,
+                    "other_problems": outcome.other_problems,
+                    "warnings": outcome.warnings,
+                    "gate": gate,
+                    "export_kind": outcome.export_kind,
+                    "sql_server": outcome.sql_server(),
+                    "files": outcome.files,
+                    "index_path": outcome.index_path.display().to_string(),
+                    "elapsed_seconds": outcome.elapsed.as_secs_f64(),
+                });
+                (outcome, serde_json::Value::Null)
+            }
+            Some(Err(error)) => {
+                let error = serde_json::json!({ "code": error.code(), "text": error.to_string() });
+                (serde_json::Value::Null, error)
+            }
+            None => (serde_json::Value::Null, serde_json::Value::Null),
+        };
+        serde_json::json!({
+            "folder": folder.display().to_string(),
+            "typed": export.typed,
+            "started": texts(&export.started),
+            "running": export.running,
+            "index_by_then": export.index_by_then,
+            "status": texts(&export.status),
+            "ended": texts(&export.ended),
+            "again": texts(&export.again),
+            "seconds": export.seconds,
+            "outcome": outcome,
+            "error": error,
+            "files": names(folder),
+        })
+    }
+
+    /// Open `source` in the P&ID module of a new application, keeping what
+    /// it restores under `out`: the application, the index of the backup,
+    /// what the command line said and how long the opening took.
+    fn opened_for_real(
+        source: &Path,
+        out: &Path,
+    ) -> (OpenCADStudio, Arc<BackupIndex>, Vec<Said>, f64) {
+        let mut app = in_the_module();
+        let cache = Some(out.join("restores"));
+        pid_backup_browser::set_cache_folder(&mut app.pid_backup_browser, cache);
+        let clock = Instant::now();
+        let answer = say(&mut app, &open_line(source));
+        let seconds = clock.elapsed().as_secs_f64();
+        let Some(index) = app.pid_backup_browser.index().map(Arc::clone) else {
+            panic!("{} did not open: {answer:?}", source.display());
+        };
+        (app, index, answer, seconds)
+    }
+
+    /// Write `report` into `out` as `report.json`.
+    fn write_report(out: &Path, report: &serde_json::Value) {
+        let text = serde_json::to_string_pretty(report).expect("the report as JSON");
+        std::fs::write(out.join("report.json"), text + "\n").expect("the report is written");
+    }
+
+    /// A real backup through the commands: `PIDBACKUPOPEN` opens it in the
+    /// P&ID module, `PIDBACKUPEXPORT` exports it into an empty folder, under
+    /// the plant name and with the reference folder the caller names. Then,
+    /// of SPEC-sppid-export §6:
+    ///
+    /// - the command returned with the export running and nothing of it
+    ///   written yet, and the bare verb said so (criterion 8);
+    /// - when the export ended the command line said its own summary, and
+    ///   the bare verb said it again (criterion 2);
+    /// - the folder holds the files the index lists and the index, and
+    ///   nothing else: no file left half written (criterion 1);
+    /// - what the backup was opened from, the backup's own folder and the
+    ///   folder it is restored to hold the same files, of the same lengths
+    ///   and times, after the export as before it (criterion 11).
+    ///
+    /// What was measured goes to `report.json` before anything is asserted.
+    /// `scripts/sppid/export-compare.ps1` runs this test on every sample
+    /// backup, has `pid_publish_xml` export the same package into a folder
+    /// beside it, and compares the two folders and what each said.
+    ///
+    /// `OCS_PID_BACKUP_EXPORT_REAL` names the backup, a folder or a zip;
+    /// `OCS_PID_BACKUP_EXPORT_REAL_OUT` a folder to keep the restore, the
+    /// export and the report in; `OCS_PID_BACKUP_EXPORT_REAL_PLANT` the
+    /// plant name and `OCS_PID_BACKUP_EXPORT_REAL_REF` the reference folder,
+    /// none when they are not set. A backup that is not there fails the
+    /// test: an export that did not run must not read as one that passed.
+    #[test]
+    #[ignore = "exports a real SmartPlant backup; run alone with --ignored --nocapture"]
+    fn a_real_backup_is_exported_through_the_command_and_stays_as_it_was() {
+        let named = |variable: &str| std::env::var_os(variable).map(PathBuf::from);
+        let source = named("OCS_PID_BACKUP_EXPORT_REAL").unwrap_or_else(|| REAL_BACKUP.into());
+        assert!(source.exists(), "no backup at {}", source.display());
+        let plant = std::env::var("OCS_PID_BACKUP_EXPORT_REAL_PLANT").ok();
+        let reference = named("OCS_PID_BACKUP_EXPORT_REAL_REF");
+        let scratch = Scratch::new("real");
+        let out = named("OCS_PID_BACKUP_EXPORT_REAL_OUT");
+        let out = out.unwrap_or_else(|| scratch.path().to_path_buf());
+        // What an earlier run left must not pass for this one's.
+        for left in ["restores", "export", "report.json"] {
+            let left = out.join(left);
+            assert!(!left.exists(), "{} is there already", left.display());
+        }
+        std::fs::create_dir_all(&out).expect("the folder of the run");
+
+        let (mut app, index, answer, open_seconds) = opened_for_real(&source, &out);
+        let watched = watched(&index);
+        let before: Vec<Listed> = watched.iter().map(|(_, folder)| listed(folder)).collect();
+        let folder = out.join("export");
+        let export = export_for_real(&mut app, &folder, plant.as_deref(), reference.as_deref());
+        let after: Vec<Listed> = watched.iter().map(|(_, folder)| listed(folder)).collect();
+
+        let plant = plant.as_deref().unwrap_or(pid_backup_export::DEFAULT_PLANT);
+        let package = &index.backup_root;
+        let mut unmet = real_unmet(&export, package, &folder, plant, reference.as_deref());
+        let (kept, changed) = kept(&watched, &before, &after);
+        unmet.extend(changed);
+        let report = serde_json::json!({
+            "source": index.source.display().to_string(),
+            "package": package.display().to_string(),
+            "restored": index.restored.display().to_string(),
+            "used_in_place": index.read_only,
+            "drawings": index.drawings.len(),
+            "debug_assertions": cfg!(debug_assertions),
+            "plant": plant,
+            "reference": reference.as_ref().map(|reference| reference.display().to_string()),
+            "opened": texts(&answer),
+            "open_seconds": open_seconds,
+            "export": export_report(&export, &folder),
+            "kept": kept,
+            "unmet": unmet,
+        });
+        write_report(&out, &report);
+        eprintln!(
+            "{}: {} drawings; exported in {:.1} s; opened in {open_seconds:.1} s; report in {}",
+            source.display(),
+            index.drawings.len(),
+            export.seconds,
+            out.display()
+        );
+        assert!(
+            unmet.is_empty(),
+            "{} thing(s) are not as they should be:\n{}",
+            unmet.len(),
+            unmet.join("\n")
+        );
+    }
+
+    /// A copy of a real backup with one drawing's `.pid` made into no
+    /// drawing, through the commands as [the test of a real
+    /// backup](a_real_backup_is_exported_through_the_command_and_stays_as_it_was)
+    /// goes, and that test's checks. Then, of SPEC-sppid-export §6
+    /// (criterion 6): the index lists no file of that drawing, the export
+    /// names it among the ones it could not write and gives the reason, it
+    /// writes every other drawing, and its failure count is not 0.
+    ///
+    /// `OCS_PID_BACKUP_EXPORT_BROKEN` names the backup to copy, a folder;
+    /// `OCS_PID_BACKUP_EXPORT_BROKEN_OUT` a folder to keep the copy, the
+    /// restore, the export and the report in. The `.pid` that is made into
+    /// no drawing is the first of the package's archives, by the archive's
+    /// name and then by its own.
+    #[test]
+    #[ignore = "exports a broken copy of a real SmartPlant backup; run alone with --ignored --nocapture"]
+    fn a_real_backup_with_a_broken_drawing_names_it_and_writes_the_others() {
+        let named = |variable: &str| std::env::var_os(variable).map(PathBuf::from);
+        let source = named("OCS_PID_BACKUP_EXPORT_BROKEN").unwrap_or_else(|| SMALL_BACKUP.into());
+        assert!(source.is_dir(), "no backup folder at {}", source.display());
+        let scratch = Scratch::new("broken");
+        let out = named("OCS_PID_BACKUP_EXPORT_BROKEN_OUT");
+        let out = out.unwrap_or_else(|| scratch.path().to_path_buf());
+        for left in ["package", "restores", "export", "report.json"] {
+            let left = out.join(left);
+            assert!(!left.exists(), "{} is there already", left.display());
+        }
+        let copy = out.join("package");
+        copy_folder(&source, &copy);
+        let (archive, entry) = break_a_drawing(&copy);
+
+        let (mut app, index, answer, open_seconds) = opened_for_real(&copy, &out);
+        let watched = watched(&index);
+        let before: Vec<Listed> = watched.iter().map(|(_, folder)| listed(folder)).collect();
+        let folder = out.join("export");
+        let export = export_for_real(&mut app, &folder, None, None);
+        let after: Vec<Listed> = watched.iter().map(|(_, folder)| listed(folder)).collect();
+
+        let plant = pid_backup_export::DEFAULT_PLANT;
+        let package = &index.backup_root;
+        let mut unmet = real_unmet(&export, package, &folder, plant, None);
+        let (kept, changed) = kept(&watched, &before, &after);
+        unmet.extend(changed);
+
+        // The drawing that is none, as the index has it, and the others.
+        let entries = index_in(&folder).map_or_else(
+            |why| {
+                unmet.push(why);
+                serde_json::Value::Null
+            },
+            |(index, _)| index,
+        );
+        let drawings = entries
+            .get("drawings")
+            .and_then(serde_json::Value::as_array);
+        let text = |drawing: &serde_json::Value, key: &str| {
+            let text = drawing.get(key).and_then(serde_json::Value::as_str);
+            text.unwrap_or_default().to_string()
+        };
+        let files = |drawing: &serde_json::Value| {
+            let files = drawing.get("files").and_then(serde_json::Value::as_array);
+            files.map_or(0, Vec::len)
+        };
+        let (hit, others): (Vec<&serde_json::Value>, Vec<&serde_json::Value>) =
+            drawings.into_iter().flatten().partition(|drawing| {
+                text(drawing, "zip_file") == archive && text(drawing, "zip_entry") == entry
+            });
+        let name = match hit.as_slice() {
+            [drawing] => {
+                let name = text(drawing, "name");
+                if files(drawing) != 0 {
+                    unmet.push(format!(
+                        "the index lists files of {name}, whose .pid is none"
+                    ));
+                }
+                Some(name)
+            }
+            hit => {
+                let count = hit.len();
+                unmet.push(format!(
+                    "the index has {count} drawing(s) of {archive} {entry}"
+                ));
+                None
+            }
+        };
+        let unwritten: Vec<String> = others
+            .iter()
+            .filter(|drawing| files(drawing) == 0)
+            .map(|drawing| text(drawing, "name"))
+            .collect();
+        if !unwritten.is_empty() {
+            unmet.push(format!(
+                "drawings whose .pid is whole were not written: {unwritten:?}"
+            ));
+        }
+        if let Some(Ok(outcome)) = &export.result {
+            let named = |note: &&DrawingNote| Some(&note.name) == name.as_ref();
+            let notes: Vec<&DrawingNote> = outcome.unwritten.iter().filter(named).collect();
+            if outcome.unwritten.len() != 1
+                || !matches!(notes.as_slice(), [note] if !note.notes.is_empty())
+            {
+                let said = &outcome.unwritten;
+                unmet.push(format!(
+                    "the export names {said:?} as not written, not {name:?} with the reason"
+                ));
+            }
+            if outcome.failed == 0 {
+                unmet.push("the failure count is 0".to_string());
+            }
+            if outcome.written != others.len() {
+                let (written, whole) = (outcome.written, others.len());
+                unmet.push(format!("{written} drawing(s) written of {whole} whole"));
+            }
+        }
+        let broken = serde_json::json!({
+            "copied_from": source.display().to_string(),
+            "archive": archive,
+            "entry": entry,
+            "drawing": name,
+            "others": others.len(),
+        });
+        let report = serde_json::json!({
+            "source": index.source.display().to_string(),
+            "package": package.display().to_string(),
+            "restored": index.restored.display().to_string(),
+            "used_in_place": index.read_only,
+            "drawings": index.drawings.len(),
+            "debug_assertions": cfg!(debug_assertions),
+            "plant": plant,
+            "reference": serde_json::Value::Null,
+            "opened": texts(&answer),
+            "open_seconds": open_seconds,
+            "broken": broken,
+            "export": export_report(&export, &folder),
+            "kept": kept,
+            "unmet": unmet,
+        });
+        write_report(&out, &report);
+        eprintln!(
+            "{}: {entry} of {archive} made into no drawing; exported in {:.1} s; report in {}",
+            copy.display(),
+            export.seconds,
+            out.display()
+        );
+        assert!(
+            unmet.is_empty(),
+            "{} thing(s) are not as they should be:\n{}",
+            unmet.len(),
+            unmet.join("\n")
+        );
     }
 }
