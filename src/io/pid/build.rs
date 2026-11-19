@@ -137,6 +137,8 @@ pub(super) fn build_document_entities(
         // Alignment rides the same join but comes off the paragraph rather
         // than the character style, since it belongs to the run.
         let text_alignment = text_style.and_then(|style| style.alignment);
+        // The character width comes off the character style, like the height.
+        let text_width = text_style.and_then(|style| text_width_factor(style.width_permille));
         // ...and the record's own trailer byte beats both: it is the anchor
         // the label was placed at, where the paragraph is only the default
         // it overrides. See `apply_text_anchor`.
@@ -187,6 +189,9 @@ pub(super) fn build_document_entities(
             }
             if let Some(mm) = height_mm {
                 apply_text_height(&mut one, mm);
+            }
+            if let Some(factor) = text_width {
+                apply_text_width(&mut one, factor);
             }
             if let Some(rgb) = text_rgb {
                 apply_text_colour(&mut one, rgb);

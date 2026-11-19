@@ -1663,3 +1663,228 @@ fn a_drawing_without_a_sheet_opens_on_a_view_that_states_the_width_it_draws_over
         ((160.0, 145.0), 250.0 * 1.05, 300.0 * 1.05),
     );
 }
+
+/// A character style states its character width in thousandths of the
+/// face's own (`width_permille`), and only a narrowing or a widening becomes
+/// a width factor: `0` -- the face's own width, what nearly every style of a
+/// drawing's own lettering states -- reads like `1000` and like no statement
+/// at all, the way `pid-plot` reads it. Like the height, the width goes on
+/// the sheet's own lettering only.
+#[test]
+fn pid_text_width_only_a_stated_width_becomes_a_width_factor() {
+    assert_eq!(text_width_factor(None), None);
+    assert_eq!(text_width_factor(Some(0)), None);
+    assert_eq!(text_width_factor(Some(1000)), None);
+    assert_eq!(text_width_factor(Some(800)), Some(0.8));
+    assert_eq!(text_width_factor(Some(700)), Some(0.7));
+
+    let lettered_on = |layer: &str| {
+        let mut text = Text::new();
+        text.common.layer = layer.to_string();
+        let mut entity = EntityType::Text(text);
+        apply_text_width(&mut entity, 0.8);
+        match entity {
+            EntityType::Text(text) => text.width_factor,
+            _ => unreachable!("built as text"),
+        }
+    };
+    assert_eq!(lettered_on(LAYER_TEXT), 0.8);
+    assert_eq!(
+        lettered_on(LAYER_SYMBOL),
+        Text::new().width_factor,
+        "a symbol's lettering takes its width from its own record"
+    );
+}
+
+/// A symbol's own lettering letters at the width its record's style states:
+/// the `M` and `S` of the motor and solenoid operators in the vendor's
+/// drawings state `800`.
+#[test]
+fn pid_text_width_symbol_lettering_letters_at_its_styles_width() {
+    let insertion = PidPoint { x: 0.0, y: 0.0 };
+    let placement = Placement {
+        insertion: &insertion,
+        rotation: 0.0,
+        scale: [1.0, 1.0],
+        projection: Projection {
+            mm_per_unit: 1000.0,
+            band: SheetBand::for_page(None),
+        },
+    };
+    let primitive = SymbolPrimitive::Text {
+        text: "M".to_string(),
+        at: (0.0, 0.0),
+    };
+    let width_of = |width_permille: Option<u16>| {
+        let lettering = SymbolLettering {
+            anchor_code: 0x15,
+            rotation_rad: 0.0,
+            letter_height_m: 0.0,
+            height_m: Some(0.002_54),
+            height_mode: None,
+            width_permille,
+            rgb: Some([0, 0, 0]),
+            alignment: Some(TextAlignment::Center),
+            line_spacing: Some(1.0),
+            run_style_id: Default::default(),
+            spans: Default::default(),
+            font_name: Some("Arial".to_string()),
+        };
+        let Some(EntityType::Text(label)) =
+            shape_primitive(&primitive, Some(&lettering), &placement, &HashMap::new())
+        else {
+            panic!("symbol text did not build");
+        };
+        label.width_factor
+    };
+    assert_eq!(width_of(Some(800)), 0.8);
+    for width_permille in [None, Some(0), Some(1000)] {
+        assert_eq!(
+            width_of(width_permille),
+            Text::new().width_factor,
+            "{width_permille:?} keeps the face's own width"
+        );
+    }
+}
+
+/// The `CPE-SQ` title block letters at the width its styles state: every
+/// label of the template states `800`, and the vendor's plots narrow them to
+/// match. At the face's own width the company name ran over the title
+/// block's right-hand line.
+#[test]
+fn pid_text_width_template_lettering_letters_at_its_styles_width() {
+    let igr = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|dir| {
+            dir.join("pid-parse")
+                .join("test-file")
+                .join("Ref")
+                .join("Template Files")
+                .join("CPE-SQ-A1.igr")
+        })
+        .filter(|path| path.is_file());
+    let Some(igr) = igr else {
+        return; // fixture absent: soft-skip like the corpus tests do
+    };
+    let mut doc = Document::new();
+    let drawing = NormalizedPidGeometry {
+        page_dimensions_mm: Some((841.0, 594.0)),
+        ..Default::default()
+    };
+    let template = read_template(&igr, false).expect("the fixture parses");
+    overlay_template(&template, &drawing, &mut doc, 1.0).expect("the fixture draws");
+    let widths: Vec<(String, f64)> = doc
+        .entities()
+        .filter_map(|entity| match entity {
+            EntityType::Text(text) => Some((text.value.clone(), text.width_factor)),
+            _ => None,
+        })
+        .collect();
+    assert!(widths.len() >= 30, "a title block's labels: {widths:?}");
+    let off: Vec<_> = widths
+        .iter()
+        .filter(|(_, width)| (width - 0.8).abs() > 1e-12)
+        .collect();
+    assert!(off.is_empty(), "labels not at the stated 0.8: {off:?}");
+}
+
+/// A drawing's own lettering letters at the width its style states, and only
+/// where its style states one: in the export fixture `A01`, `项目经理` states
+/// `800` and `文件号` beside it in the title block states `0`.
+#[test]
+fn pid_text_width_sheet_lettering_letters_at_its_styles_width() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|dir| {
+            dir.join("pid-parse")
+                .join("test-file")
+                .join("export-test")
+                .join("publish-data")
+                .join("A01")
+                .join("A01.pid")
+        })
+        .filter(|path| path.is_file());
+    let Some(path) = path else {
+        return; // fixture absent: soft-skip like the corpus tests do
+    };
+    let import = load_pid(&path).expect("the fixture imports");
+    // The drawing's own lettering, not a linked template's that may letter
+    // the same words.
+    let widths_of = |value: &str| -> Vec<f64> {
+        import
+            .document
+            .entities()
+            .filter(|entity| {
+                !entity
+                    .common()
+                    .extended_data
+                    .records()
+                    .iter()
+                    .flat_map(|record| record.values.iter())
+                    .any(|datum| {
+                        matches!(datum, document::xdata::XDataValue::String(s) if s.starts_with("template="))
+                    })
+            })
+            .filter_map(|entity| match entity {
+                EntityType::Text(text) if text.value == value => Some(text.width_factor),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(widths_of("项目经理"), vec![0.8]);
+    assert_eq!(widths_of("文件号"), vec![Text::new().width_factor]);
+}
+
+/// Narrowing a label keeps the hot point its record states. The canvas steps
+/// back from the anchor by the run's advance measured at the width factor,
+/// so a right-aligned label keeps its right end and a centred one its middle.
+#[test]
+fn pid_text_width_keeps_a_right_or_centred_labels_anchor() {
+    use crate::entities::text::text_run_placement_at_scale;
+    use crate::entities::text_support::text_local_bounds;
+
+    let doc = Document::new();
+    // `0x20` is right-on-bottom and `0x10` centre-on-bottom; beside each, the
+    // share of the run's advance that lies left of the anchor.
+    for (code, left_of_anchor) in [(0x20_u8, 1.0), (0x10, 0.5)] {
+        let laid_out = |factor: Option<f64>| {
+            let mut text = Text::new();
+            text.value = "华北油田苏桥储气库群".to_string();
+            text.height = 4.0;
+            text.insertion_point.x = 700.0;
+            text.insertion_point.y = 30.0;
+            text.common.layer = LAYER_TEXT.to_string();
+            let mut entity = EntityType::Text(text);
+            apply_text_anchor(&mut entity, code);
+            if let Some(factor) = factor {
+                apply_text_width(&mut entity, factor);
+            }
+            let EntityType::Text(text) = entity else {
+                unreachable!("built as text");
+            };
+            let placement = text_run_placement_at_scale(&text, &doc, 1.0);
+            let advance = text_local_bounds(
+                &placement.font,
+                &text.value,
+                placement.height,
+                placement.width_factor,
+                placement.oblique_angle,
+            )
+            .expect("the label lays out")
+            .advance;
+            let advance = f64::from(advance);
+            (placement.origin[0] + left_of_anchor * advance, advance)
+        };
+        let (anchor, advance) = laid_out(None);
+        let (narrow_anchor, narrow_advance) = laid_out(text_width_factor(Some(800)));
+        assert!((anchor - 700.0).abs() < 1e-3, "{code:#04x}: {anchor}");
+        assert!(
+            (narrow_anchor - 700.0).abs() < 1e-3,
+            "{code:#04x} narrowed: {narrow_anchor}"
+        );
+        assert!(
+            (narrow_advance / advance - 0.8).abs() < 1e-4,
+            "{code:#04x}: {narrow_advance} against {advance}"
+        );
+    }
+}

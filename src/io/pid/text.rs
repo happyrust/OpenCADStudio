@@ -30,6 +30,46 @@ pub(super) fn apply_text_height(entity: &mut EntityType, height_mm: f64) {
     }
 }
 
+/// The width factor a character style's stated character width letters at.
+///
+/// `width_permille` is thousandths of the face's own width. The `CPE-SQ`
+/// templates letter their whole title block at `800`, and the vendor's plots
+/// narrow it to match; lettered at the face's own width, the company name
+/// runs over the title block's right-hand line. `0` is the face's own width
+/// -- what nearly every style of the drawings' own lettering states -- and
+/// `pid-plot` reads it as no statement, the same as `1000`: neither gives a
+/// factor, and the entity keeps the width it was built with.
+///
+/// `pid-plot` rounds the fraction the way the Windows print path does, which
+/// letters `800` at 0.742..0.797 depending on the height. The canvas has no
+/// device font to round against, so it letters at the stated fraction.
+pub(super) fn text_width_factor(width_permille: Option<u16>) -> Option<f64> {
+    width_permille
+        .filter(|width| *width > 0 && *width != 1000)
+        .map(|width| f64::from(width) / 1000.0)
+}
+
+/// Letter a text entity at the width its character style states, as
+/// [`text_width_factor`] reads it.
+///
+/// The anchor does not move: the canvas steps back from the hot point by the
+/// run's advance measured at the width factor, so a right-aligned label
+/// narrows towards its right end and a centred one towards its middle.
+///
+/// Scoped like [`apply_text_height`]: the sheet's own lettering on
+/// [`LAYER_TEXT`]. A symbol's lettering takes its width in `letter_label`,
+/// from its own record.
+pub(super) fn apply_text_width(entity: &mut EntityType, factor: f64) {
+    if !(factor.is_finite() && factor > 0.0) {
+        return;
+    }
+    if let EntityType::Text(text) = entity {
+        if text.common.layer == LAYER_TEXT {
+            text.width_factor = factor;
+        }
+    }
+}
+
 /// Letter a text entity in the colour its character style states.
 ///
 /// Scoped the way [`apply_text_height`] is: only the sheet's own lettering on
