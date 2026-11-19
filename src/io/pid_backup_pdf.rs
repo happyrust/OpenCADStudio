@@ -226,7 +226,7 @@ impl PdfProgress {
 
 /// `path` in full, its `.` and `..` taken out by name: the folder may not
 /// exist yet to be asked what it is.
-fn full(path: &Path) -> PathBuf {
+pub(super) fn full(path: &Path) -> PathBuf {
     let whole = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let mut plain = PathBuf::new();
     for part in whole.components() {
@@ -244,7 +244,7 @@ fn full(path: &Path) -> PathBuf {
 /// [`full`] with the links in the part of the path that exists followed,
 /// so that two spellings of one folder come out the same. For comparing
 /// only: Windows answers with a `\\?\` path.
-fn resolved(path: &Path) -> PathBuf {
+pub(super) fn resolved(path: &Path) -> PathBuf {
     let full = full(path);
     let real = full.ancestors().find_map(|existing| {
         let real = existing.canonicalize().ok()?;
@@ -256,7 +256,7 @@ fn resolved(path: &Path) -> PathBuf {
 /// Whether `path` is `folder` or lies in it, both [`resolved`]. Windows
 /// takes two names that differ in letter case for one, so they are one
 /// here.
-fn lies_in(path: &Path, folder: &Path) -> bool {
+pub(super) fn lies_in(path: &Path, folder: &Path) -> bool {
     let name = |part: Component<'_>| {
         let name = part.as_os_str().to_string_lossy();
         if cfg!(windows) {
@@ -552,7 +552,7 @@ where
 }
 
 /// What a panic had to say.
-fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
+pub(super) fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
     let literal = panic.downcast_ref::<&str>().copied();
     let formatted = || panic.downcast_ref::<String>().map(String::as_str);
     literal.or_else(formatted).unwrap_or("no message")
