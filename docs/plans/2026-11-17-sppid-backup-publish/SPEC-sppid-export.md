@@ -315,3 +315,20 @@ X1–X6 都已定（2026-11-18），按「建议」一列执行。
 - **快测试里有两条走的是真的入口，不是替身。** 现造的包只有清单文件，或者再加一个装着假 `.pid` 的 zip，没有数据库导出文件；入口很快就返回（17 条快测试一共跑 0.03 秒），写出的只有清单。真的转换没有跑，照 §7 留给 `EXP-3`。
 - **工厂名交没交对，快测试看不到。** 现造的包写不出图，清单里也不记工厂名：把工厂名换成默认值的改坏，快测试不红（`readings.md` §18.3）。`EXP-3` 比字节时，除了默认的 `P01`，要再用一个不是默认值的工厂名比一遍。
 - **动了任务没有列的一个文件。** `src/io/pid_backup_pdf.rs` 里四个小函数（`full`、`resolved`、`lies_in`、`panic_text`）从私有改成 `src/io` 之内可见，两个引擎共用；函数本身没有改。任务列的文件只有新文件和 `src/io/mod.rs`。不共用就要把这四个函数抄一份。
+
+### `EXP-2` 命令 `PIDBACKUPEXPORT`（2026-11-19）
+
+新文件 `src/app/commands/pidbackupexport.rs`，接线照 `PIDBACKUPPDF`：分发链、命令名单、起始页允许的命令、整行命令的名单各登记一处，程序状态和消息枚举各加一项。只有快测试，导出函数大多用替身；没有拿真实的包走过命令（`EXP-3`），也没有开窗口。读数和检查在 `readings.md` §20。和上文有出入、或者上文没写到的，都是实现时定的，可以推翻：
+
+- **句子是英文，每行前面是 `PIDBACKUPEXPORT: `。** 照 `EXP-1` 定的口径（上一节第一条）：汇总是引擎的句子，命令只在每行前面加命令名。§5.2 样例的第一行「正在导出 … → …」由命令说：`PIDBACKUPEXPORT: exporting <包根目录> to <输出目录> (plant <工厂名>) ...`，给了参考目录时括号里再加 `, compared with <参考目录>`，目录都写全路径。不带参数时说三样之一：没导过，`PIDBACKUPEXPORT: no export yet. PIDBACKUPEXPORT [Plant=<name>] [Ref=<folder>] <folder> writes the open backup package as publish files into <folder>.`；正在导，`PIDBACKUPEXPORT: exporting to <输出目录> (plant <工厂名>): <秒> s so far`，秒数取整、舍去零头；导过，把上次的汇总或错误原样再说一遍，问几次说几次。
+- **错误都带码，命令行写错了的除外。** 导出的错误是 `PIDBACKUPEXPORT: <码>: <原因>`，码同时记成命令行的错误码，脚本从自动化通道的回复里读得到（测试里看过 `SPPID_EXPORT_NO_PACKAGE` 那一种）。没有打开的包、包还在载入，都是 `SPPID_EXPORT_NO_PACKAGE`。只给了选项、没给目录：`SPPID_EXPORT_TARGET_INVALID`，原因 `no folder to export to was given`。**命令行写错了不带码**：不认识的选项（比如 `Plnt=`）、选项没有值（`Plant=`、`Ref=''`）、同一个选项给了两次、引号没有闭合，说的是这一行哪里写错了，`PIDBACKUPEXPORT: <哪里不对>`，命令行的错误码不设。理由：这时还没有导出被请求，§3.3 的码说的都是导出。
+- **选项怎么认。** `Plant=`、`Ref=` 不分大小写，`plant=`、`REF=` 也认。行首是一串英文字母、紧接着 `=`，才当选项读，所以目录里可以有 `=`。值不带引号时到第一个空白为止；用双引号或单引号括起来时到同样的引号为止，中间可以有空格。选项之后剩下的整段是目录，两头的引号去掉，和 `PIDBACKUPPDF` 相同；写在目录后面的 `Plant=` 不当选项读，算目录的一部分（§5.2 说选项写在目录之前；这一种没有测试）。
+- **相对路径从备份所在的文件夹算起，`Ref=` 也一样。** §5.2 没有写。用的是 `PIDBACKUPPDF` 算输出目录的那个函数（`folder_asked_for`）。开始的那一行写的是算出来的全路径。
+- **输出目录在还原目录里面：拒绝，`SPPID_EXPORT_TARGET_INVALID`。** 这是 `EXP-1` 留下的（上一节「输出目录在包里面」一条）。引擎加了一个函数 `in_the_restore(out_dir, restored)`，命令在 `check` 之前问它。判断的办法和 `check` 看包根目录时相同，用的是同一组函数，所以还原目录本身、它下面还不存在的文件夹、带 `..` 绕进去的写法、Windows 上大小写不同的写法都算在里面；旁边名字开头相同的文件夹（`restored publish`）不算。句子：`<输出目录> lies in the folder the backup is restored to (<还原目录>); export to a folder outside of it`。放在引擎里，是因为那组判断路径的函数只在 `src/io` 之内可见。来源是文件夹、就地浏览时，还原目录就是来源文件夹，和 `check` 的那一条重合；来源是 zip 时，它挡的是「导进还原缓存」。
+- **拒绝的先后。** 已经有一个在导（`BUSY`），没有包（`NO_PACKAGE`），没给目录，在还原目录里面，然后才是引擎的 `check`（上一节「`check` 的先后」）。前一样不成立就不看后一样。被拒的请求不算「上次的结果」，什么也不建。
+- **`PIDBACKUPOPEN Cache=Clear` 和 PDF 那一处合成一个判断。** PDF 在导时说 PDF 的那一句（`SPPID_PDF_BUSY`）；只有 publish 在导时说 `PIDBACKUPOPEN: SPPID_EXPORT_BUSY: the restore cache is not cleared while PIDBACKUPEXPORT exports a package`，码是 `SPPID_EXPORT_BUSY`；两样都在导时只说 PDF 的那一句。命令行的 `Cache=Clear`、按标签按下的 `Press`、面板上点的按钮走的是同一处，都被拒。
+- **和 PDF 同时导**（`SPEC-sppid-pdf.md` §5.5）：各有各的状态，谁先开始、谁先结束都不影响另一个；测试两种先后都走了一遍。
+- **只读的协同会话**：没有加进它的允许名单，和 `PIDBACKUPOPEN` 一样（§5.2）；这一条没有测试。
+- **网页版**：照 `PIDBACKUPPDF` 说一句 `PIDBACKUPEXPORT: exporting a backup package to publish files is not available in the web build.`。网页版没有编译过，这一句没有测试。
+- **REST 和 MCP 不变**（§5.3）：`git diff --stat -- src/rest_openapi.json src/mcp.rs` 是空的。
+- **动了任务没有列的两个文件。** `src/app/commands/pidbackuppdf.rs` 两处只改可见性：存导出函数的字段 `export` 改成 `pub(super)`，`EXP-2` 的测试要在那里放一个替身，才能测两样同时导；`folder_asked_for` 改成 `pub(super)`，算相对路径的办法两个命令共用。`src/io/pid_backup_export.rs` 加了 `in_the_restore` 和它的一条测试。
