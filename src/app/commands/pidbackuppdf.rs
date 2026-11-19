@@ -256,9 +256,10 @@ mod tests {
     use crate::ui::command_line::EntryKind;
     use crate::ui::window::pid_backup_browser::{self, CacheMsg, NodeId, PidBackupMsg};
     use iced::futures::channel::oneshot;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     // ── A folder, a package, an application ──────────────────────────────────
 
@@ -1008,5 +1009,504 @@ mod tests {
         };
         let no_command = answered("PIDBACKUPNOSUCH");
         assert_eq!(answered("PIDBACKUPPDFS"), no_command);
+    }
+
+    // ── A real backup ────────────────────────────────────────────────────────
+
+    /// The backup the real export takes when `OCS_PID_BACKUP_PDF_REAL` names
+    /// none: the plant sample, where it lies on the machine the plan was
+    /// written on.
+    const REAL_BACKUP: &str = r"D:\work\plant-code\cad\pid-test-data";
+
+    /// How far a page may be from the size its index entry states, in
+    /// millimetres (SPEC-sppid-pdf §6, criterion 6).
+    const PAGE_WITHIN_MM: f64 = 0.01;
+
+    /// A PDF's unit, the point, in millimetres.
+    const POINT_MM: f64 = 25.4 / 72.0;
+
+    /// What a folder holds: every file under it by its path from there,
+    /// `/`-separated, with its length and the SHA-256 of its bytes.
+    type Held = BTreeMap<String, (usize, String)>;
+
+    /// What `root` holds. A file holds itself, under its own name.
+    fn held(root: &Path) -> Held {
+        use sha2::{Digest, Sha256};
+        let mut files = Held::new();
+        let mut left = vec![root.to_path_buf()];
+        while let Some(at) = left.pop() {
+            if at.is_dir() {
+                let entries = std::fs::read_dir(&at)
+                    .unwrap_or_else(|error| panic!("{}: {error}", at.display()));
+                left.extend(entries.map(|entry| entry.expect("an entry of the folder").path()));
+                continue;
+            }
+            let bytes =
+                std::fs::read(&at).unwrap_or_else(|error| panic!("{}: {error}", at.display()));
+            let inside = at.strip_prefix(root).ok();
+            let inside = inside.filter(|inside| !inside.as_os_str().is_empty());
+            let name = inside.or_else(|| at.file_name().map(Path::new));
+            let name = name.unwrap_or(&at).to_string_lossy().replace('\\', "/");
+            let checksum = format!("{:x}", Sha256::digest(&bytes));
+            files.insert(name, (bytes.len(), checksum));
+        }
+        files
+    }
+
+    /// [`held`] summed up for the report: how many files, how many bytes,
+    /// and one checksum over every name, length and checksum.
+    fn summed(files: &Held) -> serde_json::Value {
+        use sha2::{Digest, Sha256};
+        let mut all = Sha256::new();
+        for (name, (length, checksum)) in files {
+            all.update(format!("{checksum} {length} {name}\n"));
+        }
+        let bytes: usize = files.values().map(|(length, _)| length).sum();
+        serde_json::json!({
+            "files": files.len(),
+            "bytes": bytes,
+            "sha256": format!("{:x}", all.finalize()),
+        })
+    }
+
+    /// The names two listings do not agree on: a file only one of them
+    /// holds, or one whose length or checksum is not the same in both.
+    fn unlike(one: &Held, other: &Held) -> Vec<String> {
+        let names: BTreeSet<&String> = one.keys().chain(other.keys()).collect();
+        let differs = |name: &&String| one.get(*name) != other.get(*name);
+        names.into_iter().filter(differs).cloned().collect()
+    }
+
+    /// How many pages the PDF `bytes` holds and the size of the first in
+    /// millimetres, as `lopdf` reads them; why not, when it does not parse.
+    fn pages_of(bytes: &[u8]) -> Result<(usize, Option<[f64; 2]>), String> {
+        let document = lopdf::Document::load_mem(bytes).map_err(|error| error.to_string())?;
+        let pages = document.get_pages();
+        let first = pages.values().next();
+        let size = first.and_then(|page| page_size(&document, *page));
+        Ok((pages.len(), size))
+    }
+
+    /// The size of `page` in millimetres: its media box, or the one of the
+    /// nearest node of the page tree above it that states one.
+    fn page_size(document: &lopdf::Document, page: lopdf::ObjectId) -> Option<[f64; 2]> {
+        let mut node = document.get_dictionary(page).ok()?;
+        // A tree of pages is a few levels deep; one that never ends is not
+        // followed for ever.
+        for _ in 0..32 {
+            if let Ok(media_box) = node.get_deref(b"MediaBox", document) {
+                let corners = media_box.as_array().ok()?;
+                let at = |corner: usize| {
+                    let (_, number) = document.dereference(corners.get(corner)?).ok()?;
+                    number.as_float().ok().map(f64::from)
+                };
+                let (left, bottom, right, top) = (at(0)?, at(1)?, at(2)?, at(3)?);
+                let (width, height) = ((right - left).abs(), (top - bottom).abs());
+                return Some([width * POINT_MM, height * POINT_MM]);
+            }
+            let parent = node.get(b"Parent").ok()?.as_reference().ok()?;
+            node = document.get_dictionary(parent).ok()?;
+        }
+        None
+    }
+
+    /// One export of the open backup into a folder, asked for as it is
+    /// typed.
+    struct Exported {
+        folder: PathBuf,
+        /// From the command to the end of what it started, in seconds.
+        seconds: f64,
+        /// What the command line said.
+        said: Vec<Said>,
+        /// What the export came to.
+        outcome: PdfOutcome,
+    }
+
+    /// Export the backup `app` holds into `folder` and wait for the end.
+    fn export_into(app: &mut OpenCADStudio, folder: &Path) -> Exported {
+        let clock = Instant::now();
+        let said = say(app, &export_line(folder));
+        let seconds = clock.elapsed().as_secs_f64();
+        // The outcome of this export, not of the one before it.
+        let here = |outcome: &PdfOutcome| {
+            let into = outcome.index_path.parent();
+            into.and_then(Path::file_name) == folder.file_name()
+        };
+        let outcome = match &app.pid_backup_pdf.last {
+            Some(Ok(outcome)) if here(outcome) => outcome.clone(),
+            other => panic!(
+                "the export into {} came to {other:?}; the command line said {said:?}",
+                folder.display()
+            ),
+        };
+        Exported {
+            folder: folder.to_path_buf(),
+            seconds,
+            said,
+            outcome,
+        }
+    }
+
+    /// The index `export` wrote, as JSON; why not, when it cannot be read.
+    fn index_of(export: &Exported) -> Result<serde_json::Value, String> {
+        let path = &export.outcome.index_path;
+        let text = std::fs::read_to_string(path).map_err(|error| error.to_string());
+        let index = text.and_then(|text| serde_json::from_str(&text).map_err(|e| e.to_string()));
+        index.map_err(|why| format!("{}: {why}", path.display()))
+    }
+
+    /// What of `export`, one of a backup of `drawings` drawings, is not as
+    /// SPEC-sppid-pdf §6 has it (criterion 3): the command line saying the
+    /// outcome's own summary, an entry for every drawing, counts that are
+    /// the entries', a folder holding the PDFs the entries name and the
+    /// index, and an index file that says what the outcome does.
+    fn export_unmet(export: &Exported, drawings: usize) -> Vec<String> {
+        let Exported {
+            folder,
+            said,
+            outcome,
+            ..
+        } = export;
+        let run = folder.file_name().unwrap_or_default().to_string_lossy();
+        let mut unmet = Vec::new();
+        let summary = pid_backup_pdf::summary_lines(outcome);
+        let summary = summary
+            .iter()
+            .map(|text| line(format!("PIDBACKUPPDF: {text}")));
+        let owed: Vec<Said> = std::iter::once(exporting(drawings, folder))
+            .chain(summary)
+            .collect();
+        if *said != owed {
+            unmet.push(format!(
+                "{run}: the command line said {said:?}, not {owed:?}"
+            ));
+        }
+        let pages = &outcome.pages;
+        if pages.len() != drawings {
+            let entries = pages.len();
+            unmet.push(format!(
+                "{run}: {entries} index entries for {drawings} drawings"
+            ));
+        }
+        let written = pages.iter().filter(|page| page.pdf.is_some()).count();
+        let unfiled = pages.iter().filter(|page| page.pid.is_none()).count();
+        let counted = (outcome.written, outcome.failed, outcome.without_file);
+        if counted.0 != written
+            || counted.2 != unfiled
+            || counted.0 + counted.1 + counted.2 != pages.len()
+        {
+            unmet.push(format!(
+                "{run}: the counts are {counted:?}; the entries hold {written} PDFs and {unfiled} \
+                 drawings without a file, of {}",
+                pages.len()
+            ));
+        }
+        let mut named: Vec<String> = pages.iter().filter_map(|page| page.pdf.clone()).collect();
+        named.push(pid_backup_pdf::INDEX_NAME.to_string());
+        named.sort();
+        let there = names(folder);
+        if there != named {
+            unmet.push(format!(
+                "{run}: the folder holds {there:?}, the entries name {named:?}"
+            ));
+        }
+        // The file against the outcome, by what is text and whole numbers: a
+        // size in millimetres need not read back to the last digit.
+        let told =
+            |name: &str, pid: Option<&str>, pdf: Option<&str>, error: Option<&str>, bytes| {
+                serde_json::json!([name, pid, pdf, error, bytes])
+            };
+        let came_to: Vec<serde_json::Value> = pages
+            .iter()
+            .map(|page| {
+                let (pid, pdf, error) = (
+                    page.pid.as_deref(),
+                    page.pdf.as_deref(),
+                    page.error.as_deref(),
+                );
+                told(&page.name, pid, pdf, error, serde_json::json!(page.bytes))
+            })
+            .collect();
+        match index_of(export) {
+            Ok(index) => {
+                let text = |entry: &serde_json::Value, key: &str| {
+                    entry
+                        .get(key)
+                        .and_then(|value| value.as_str().map(str::to_string))
+                };
+                let entries = index.get("pages").and_then(serde_json::Value::as_array);
+                let filed: Vec<serde_json::Value> = entries
+                    .into_iter()
+                    .flatten()
+                    .map(|entry| {
+                        let name = text(entry, "name").unwrap_or_default();
+                        let (pid, pdf, error) =
+                            (text(entry, "pid"), text(entry, "pdf"), text(entry, "error"));
+                        let bytes = entry.get("bytes").cloned().unwrap_or_default();
+                        told(
+                            &name,
+                            pid.as_deref(),
+                            pdf.as_deref(),
+                            error.as_deref(),
+                            bytes,
+                        )
+                    })
+                    .collect();
+                if filed != came_to {
+                    unmet.push(format!(
+                        "{run}: the index file's entries are not the ones the export came to"
+                    ));
+                }
+                let counts = [
+                    ("drawings", pages.len()),
+                    ("written", outcome.written),
+                    ("failed", outcome.failed),
+                    ("without_file", outcome.without_file),
+                ];
+                for (key, count) in counts {
+                    let stated = index.get(key).and_then(serde_json::Value::as_u64);
+                    if stated != u64::try_from(count).ok() {
+                        unmet.push(format!(
+                            "{run}: the index file states {key} {stated:?}, the export {count}"
+                        ));
+                    }
+                }
+            }
+            Err(why) => unmet.push(format!("{run}: {why}")),
+        }
+        unmet
+    }
+
+    /// What `folder` holds of the PDF an index `entry` names, for the
+    /// report, and what of it is not as SPEC-sppid-pdf §6 has it (criterion
+    /// 6): a file that starts as a PDF, parses, is one page, and that page
+    /// of the size the entry states.
+    fn page_measured(folder: &Path, entry: &serde_json::Value) -> (serde_json::Value, Vec<String>) {
+        let text = |key: &str| entry.get(key).and_then(serde_json::Value::as_str);
+        let name = text("name").unwrap_or("(no name)");
+        let mut measured = serde_json::json!({
+            "name": name,
+            "pid": text("pid"),
+            "pdf": text("pdf"),
+            "error": text("error"),
+        });
+        let mut unmet = Vec::new();
+        let Some(pdf) = text("pdf") else {
+            if text("error").is_none() {
+                unmet.push(format!("{name}: neither a PDF nor a reason"));
+            }
+            return (measured, unmet);
+        };
+        if let Some(error) = text("error") {
+            unmet.push(format!("{name}: a PDF and a reason ({error})"));
+        }
+        let side = |at: usize| entry.get("page_mm")?.get(at)?.as_f64();
+        let stated = side(0).zip(side(1)).map(|(width, height)| [width, height]);
+        measured["page_mm"] = serde_json::json!(stated);
+        let bytes = match std::fs::read(folder.join(pdf)) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                unmet.push(format!("{name}: {pdf}: {error}"));
+                return (measured, unmet);
+            }
+        };
+        measured["bytes"] = bytes.len().into();
+        let entered = entry.get("bytes").and_then(serde_json::Value::as_u64);
+        if entered != u64::try_from(bytes.len()).ok() {
+            let length = bytes.len();
+            unmet.push(format!(
+                "{name}: {pdf} is {length} bytes, its entry states {entered:?}"
+            ));
+        }
+        let starts = bytes.starts_with(b"%PDF-");
+        measured["starts_as_pdf"] = starts.into();
+        if !starts {
+            unmet.push(format!("{name}: {pdf} does not start with %PDF-"));
+        }
+        match pages_of(&bytes) {
+            Ok((pages, size)) => {
+                measured["pages"] = pages.into();
+                measured["media_mm"] = serde_json::json!(size);
+                if pages != 1 {
+                    unmet.push(format!("{name}: {pdf} holds {pages} pages"));
+                }
+                let near = |(stated, size): (&f64, &f64)| (stated - size).abs() <= PAGE_WITHIN_MM;
+                let fits = stated
+                    .zip(size)
+                    .is_some_and(|(stated, size)| stated.iter().zip(&size).all(near));
+                if !fits {
+                    unmet.push(format!(
+                        "{name}: the page of {pdf} is {size:?} mm, its entry states {stated:?}"
+                    ));
+                }
+            }
+            Err(why) => {
+                unmet.push(format!("{name}: {pdf} does not parse: {why}"));
+                measured["unreadable"] = why.into();
+            }
+        }
+        (measured, unmet)
+    }
+
+    /// A real backup through the commands: `PIDBACKUPOPEN` opens it in the
+    /// P&ID module, `PIDBACKUPPDF` exports it twice, into two empty folders.
+    /// Then, of SPEC-sppid-pdf §6:
+    ///
+    /// - every drawing has one index entry, with a PDF or a reason, and the
+    ///   folder holds the PDFs the entries name and the index (criterion 3);
+    /// - every PDF starts as one, parses, is one page, and that page is the
+    ///   size its entry states, within 0.01 mm (criterion 6);
+    /// - the two exports are the same files, byte for byte, the index among
+    ///   them (criterion 10);
+    /// - what the backup was opened from, the backup's own folder and the
+    ///   folder it is restored to hold the same files with the same bytes
+    ///   after the second export as before the first (criterion 12).
+    ///
+    /// What was measured goes to `report.json` before anything is asserted.
+    /// `scripts/sppid/pdf-compare.ps1` runs this test on every sample backup,
+    /// reads the reports, has `pid_plot` plot the restored drawings and
+    /// compares the pages.
+    ///
+    /// `OCS_PID_BACKUP_PDF_REAL` names the backup, a folder or a zip;
+    /// `OCS_PID_BACKUP_PDF_REAL_OUT` a folder to keep the restore, the two
+    /// exports and the report in. A backup that is not there fails the test:
+    /// an export that did not run must not read as one that passed.
+    #[test]
+    #[ignore = "exports a real SmartPlant backup twice; run alone with --ignored --nocapture"]
+    fn a_real_backup_exports_the_same_pages_twice_and_stays_as_it_was() {
+        let named = |variable: &str| std::env::var_os(variable).map(PathBuf::from);
+        let source = named("OCS_PID_BACKUP_PDF_REAL").unwrap_or_else(|| REAL_BACKUP.into());
+        assert!(source.exists(), "no backup at {}", source.display());
+        let scratch = Scratch::new("real");
+        let out = named("OCS_PID_BACKUP_PDF_REAL_OUT");
+        let out = out.unwrap_or_else(|| scratch.path().to_path_buf());
+        // What an earlier run left must not pass for this one's.
+        for left in ["restores", "run-1", "run-2", "report.json"] {
+            let left = out.join(left);
+            assert!(!left.exists(), "{} is there already", left.display());
+        }
+
+        let mut app = in_the_module();
+        let cache = Some(out.join("restores"));
+        pid_backup_browser::set_cache_folder(&mut app.pid_backup_browser, cache);
+        let clock = Instant::now();
+        let answer = say(&mut app, &open_line(&source));
+        let open_seconds = clock.elapsed().as_secs_f64();
+        let Some(index) = app.pid_backup_browser.index().map(Arc::clone) else {
+            panic!("{} did not open: {answer:?}", source.display());
+        };
+        let drawings = index.drawings.len();
+
+        // What an export must leave alone, each folder once.
+        let mut watched: Vec<(&str, &Path)> = Vec::new();
+        let folders = [
+            ("source", &index.source),
+            ("package", &index.backup_root),
+            ("restored", &index.restored),
+        ];
+        for (what, folder) in folders {
+            if watched.iter().all(|(_, seen)| *seen != folder.as_path()) {
+                watched.push((what, folder));
+            }
+        }
+        let before: Vec<Held> = watched.iter().map(|(_, folder)| held(folder)).collect();
+        let first = export_into(&mut app, &out.join("run-1"));
+        let second = export_into(&mut app, &out.join("run-2"));
+        let after: Vec<Held> = watched.iter().map(|(_, folder)| held(folder)).collect();
+
+        let mut unmet = export_unmet(&first, drawings);
+        unmet.extend(export_unmet(&second, drawings));
+        let entries = index_of(&first).unwrap_or_else(|why| {
+            unmet.push(why);
+            serde_json::Value::Null
+        });
+        let entries = entries.get("pages").and_then(serde_json::Value::as_array);
+        let mut pages = Vec::new();
+        for entry in entries.into_iter().flatten() {
+            let (measured, short) = page_measured(&first.folder, entry);
+            pages.push(measured);
+            unmet.extend(short);
+        }
+        let differing = unlike(&held(&first.folder), &held(&second.folder));
+        if !differing.is_empty() {
+            unmet.push(format!("the two exports differ in {differing:?}"));
+        }
+        let mut kept = Vec::new();
+        for ((what, folder), (before, after)) in watched.iter().zip(before.iter().zip(&after)) {
+            let changed = unlike(before, after);
+            if !changed.is_empty() {
+                let folder = folder.display();
+                unmet.push(format!(
+                    "the exports changed the {what} ({folder}): {changed:?}"
+                ));
+            }
+            kept.push(serde_json::json!({
+                "what": what,
+                "folder": folder.display().to_string(),
+                "before": summed(before),
+                "after": summed(after),
+                "changed": changed,
+            }));
+        }
+
+        let exported = |export: &Exported| {
+            let said: Vec<String> = export.said.iter().map(|said| format!("{said:?}")).collect();
+            serde_json::json!({
+                "folder": export.folder.display().to_string(),
+                "seconds": export.seconds,
+                "written": export.outcome.written,
+                "failed": export.outcome.failed,
+                "without_file": export.outcome.without_file,
+                "files": names(&export.folder),
+                "said": said,
+            })
+        };
+        let set = |variable: &str| {
+            (
+                variable.to_string(),
+                serde_json::json!(std::env::var(variable).ok()),
+            )
+        };
+        let variables = [
+            "PID_PLOT_FONTS",
+            "PID_PLOT_CJK_FONT",
+            "PID_SYMBOL_LIBRARY",
+            "PID_PLOT_CORPUS",
+        ];
+        let environment: serde_json::Map<String, serde_json::Value> =
+            variables.into_iter().map(set).collect();
+        let report = serde_json::json!({
+            "source": index.source.display().to_string(),
+            "package": index.backup_root.display().to_string(),
+            "restored": index.restored.display().to_string(),
+            "used_in_place": index.read_only,
+            "drawings": drawings,
+            "debug_assertions": cfg!(debug_assertions),
+            "environment": environment,
+            "open_seconds": open_seconds,
+            "exports": [exported(&first), exported(&second)],
+            "pages": pages,
+            "differing": differing,
+            "kept": kept,
+            "unmet": unmet,
+        });
+        let text = serde_json::to_string_pretty(&report).expect("the report as JSON");
+        std::fs::write(out.join("report.json"), text + "\n").expect("the report is written");
+        eprintln!(
+            "{}: {drawings} drawings; {} PDFs in {:.1} s, then {} in {:.1} s; opened in \
+             {open_seconds:.1} s; report in {}",
+            source.display(),
+            first.outcome.written,
+            first.seconds,
+            second.outcome.written,
+            second.seconds,
+            out.display()
+        );
+        assert!(
+            unmet.is_empty(),
+            "{} thing(s) are not as they should be:\n{}",
+            unmet.len(),
+            unmet.join("\n")
+        );
     }
 }

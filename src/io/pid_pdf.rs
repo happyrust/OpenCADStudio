@@ -964,4 +964,97 @@ mod tests {
             "not the bytes pid_plot writes: {unlike:?}"
         );
     }
+
+    /// The folder the vendor's sheets lie in when `OCS_PID_PDF_VENDOR` names
+    /// none: where they are on the machine the plan was written on.
+    const VENDOR_FOLDER: &str = r"D:\work\cad\pid-test-data\验收数据";
+
+    /// The sheets of the vendor's folder -- every `<name>.pid` with the
+    /// vendor's own print `<name>.pdf` beside it -- each plotted where it
+    /// lies, as PIDPLOT plots it ([`plot_pdf`]), into one folder as
+    /// `<name>.pdf`, with a `report.json` of what went into each page.
+    /// `scripts/sppid/pdf-compare.ps1` then has `pid_plot_compare` read each
+    /// page against the vendor's print, and holds the readings to the ones
+    /// pid-plot recorded for its own pages (SPEC-sppid-pdf §6, criterion 8).
+    ///
+    /// `OCS_PID_PDF_VENDOR` names another folder, `OCS_PID_PDF_VENDOR_OUT` a
+    /// folder to keep the pages and the report in. A folder that is not
+    /// there or holds no such sheet fails the test, and so does a sheet that
+    /// does not plot: pages that were not made must not read as compared.
+    #[test]
+    #[ignore = "plots the vendor's sheets for pid_plot_compare; run alone with --ignored --nocapture"]
+    fn the_vendors_sheets_are_plotted_where_they_lie() {
+        let folder = real_input("OCS_PID_PDF_VENDOR", || VENDOR_FOLDER.into());
+        assert!(folder.is_dir(), "no folder at {}", folder.display());
+        let kept = std::env::var_os("OCS_PID_PDF_VENDOR_OUT").map(PathBuf::from);
+        let out = kept.clone().unwrap_or_else(|| scratch("vendor"));
+        // What an earlier run left must not pass for this one's.
+        let report = out.join("report.json");
+        assert!(!report.exists(), "{} is there already", report.display());
+        std::fs::create_dir_all(&out).unwrap();
+        let mut sheets: Vec<PathBuf> = std::fs::read_dir(&folder)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| is_pid(path) && path.with_extension("pdf").is_file())
+            .collect();
+        sheets.sort();
+        assert!(
+            !sheets.is_empty(),
+            "{} holds no sheet with a print beside it",
+            folder.display()
+        );
+        let mut pages = Vec::new();
+        let mut unplotted = Vec::new();
+        for sheet in &sheets {
+            let name = sheet.file_stem().unwrap().to_string_lossy().into_owned();
+            let pdf = format!("{name}.pdf");
+            let clock = std::time::Instant::now();
+            let plotted = plot_pdf(sheet, &out.join(&pdf));
+            let seconds = clock.elapsed().as_secs_f64();
+            let page = match plotted {
+                Ok(receipt) => {
+                    eprintln!(
+                        "{name}: {} bytes in {seconds:.1} s; corpus {}; notes {:?}",
+                        receipt.bytes,
+                        receipt.corpus.display(),
+                        receipt.notes
+                    );
+                    let template = receipt.template.as_ref();
+                    serde_json::json!({
+                        "name": name,
+                        "pdf": pdf,
+                        "bytes": receipt.bytes,
+                        "primitives": receipt.primitives,
+                        "page_mm": receipt.page_mm,
+                        "template": template.map(|template| template.display().to_string()),
+                        "corpus": receipt.corpus.display().to_string(),
+                        "symbols_found": receipt.symbols_found,
+                        "symbols_referenced": receipt.symbols_referenced,
+                        "missing_symbols": receipt.missing_symbols,
+                        "notes": receipt.notes,
+                        "ledger": account_line(receipt.ledger),
+                        "seconds": seconds,
+                    })
+                }
+                Err(why) => {
+                    eprintln!("{name}: not plotted: {why}");
+                    unplotted.push(name.clone());
+                    serde_json::json!({ "name": name, "error": why, "seconds": seconds })
+                }
+            };
+            pages.push(page);
+        }
+        let told = serde_json::json!({
+            "folder": folder.display().to_string(),
+            "debug_assertions": cfg!(debug_assertions),
+            "sheets": pages,
+        });
+        let text = serde_json::to_string_pretty(&told).unwrap();
+        std::fs::write(&report, text + "\n").unwrap();
+        if kept.is_none() {
+            let _ = std::fs::remove_dir_all(&out);
+        }
+        assert!(unplotted.is_empty(), "not plotted: {unplotted:?}");
+    }
 }
