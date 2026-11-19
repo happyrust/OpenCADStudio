@@ -1675,9 +1675,9 @@ pub struct DerivedCaches {
     /// `open_path_with_phase`; surfaced in the open-complete breakdown log so
     /// open-time regressions are visible.
     pub timings: OpenTimings,
-    /// Handles an `.rvm` open created (`io::e3d::ingest_batch`). Empty for every
-    /// other format. Installed on `Scene::e3d_index` so the next E3D batch can
-    /// erase this source instead of duplicating it.
+    /// Handles an E3D batch ingest created (`io::e3d::ingest_batch`); empty
+    /// when the open ingested no batch. Installed on `Scene::e3d_index` so the
+    /// next E3D batch can erase this source instead of duplicating it.
     pub e3d_index: crate::io::e3d::E3dIngestIndex,
 }
 

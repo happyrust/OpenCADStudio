@@ -177,3 +177,19 @@
 - `E3dIngestIndex::centreline_wires` 写入后无读者（中心线实际走普通线框路径）。
 - `world_aabb` 在 `f32` 里存毫米大坐标，仅用于粗剔除；真正的高低位拆分只做在实例平移上。
 - 计划文档里 `E3dInstanceRecord::color_hint` / `local_aabb_mm` 与 `MeshKey::Catalogue` 三个字段未实现（简化合理，文档未同步）。
+
+---
+
+## 5. 2026-11-19：原生生成器暂时撤出
+
+`e3d-model` 是私有仓库，公开的 CI 拉不到它。这一天用一个提交把依赖它的部分从本仓库拿掉了：
+
+- `Cargo.toml` 里的 `e3d-model`、`e3d-io`、`e3d-attlib` 三个路径依赖（后两个只有生成器在用）；
+- `src/io/e3d/producer.rs`（原生生成器）和 `src/io/e3d/open.rs`（`.rvm` 打开入口）；
+- `src/io/mod.rs` 里的 `read_rvm_path`、`open_rvm_attempt`、文件对话框的 RVM 过滤器，以及 `is_read_only_source_path` 的 `.rvm` 一项。
+
+留下的是平台无关的那一半：`contract.rs`、`consumer.rs`、`Scene::e3d_index` 和 `src/scene/e3d_ingest_tests.rs`，测试照常跑。
+
+对照第 4 节：Phase 0（依赖挂载）、Phase 1 的生产者、Phase 2 的 `.rvm` 打开入口目前不在代码里，「已修的关键缺陷」第 2–5 条所修的代码也随之拿掉；其余各行不变。
+
+恢复办法：revert 撤出它的那个提交（`git log --diff-filter=D -- src/io/e3d/producer.rs` 能找到），三个仓库按 Phase 0 的做法放在本仓库旁边。

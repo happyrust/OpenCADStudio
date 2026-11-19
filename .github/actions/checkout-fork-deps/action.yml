@@ -67,32 +67,3 @@ runs:
         path: bevy
         fetch-depth: 1
         persist-credentials: false
-
-    # Cargo also resolves the target-specific e3d manifests on wasm, so
-    # every path dependency has to be present before any cargo command.
-    - name: Checkout e3d-model
-      uses: actions/checkout@v4
-      with:
-        repository: happyrust/e3d-model
-        ref: 5a72d3e364f2680f238228a1327e02fb6a07bf32
-        path: e3d-model
-        fetch-depth: 1
-        persist-credentials: false
-
-    - name: Checkout e3d-io
-      uses: actions/checkout@v4
-      with:
-        repository: happyrust/e3d-io
-        ref: 8a342cbe705aa5d267bf79cf0f8d63ea8412d273
-        path: e3d-io
-        fetch-depth: 1
-        persist-credentials: false
-
-    - name: Checkout e3d-attlib
-      uses: actions/checkout@v4
-      with:
-        repository: happyrust/e3d-attlib
-        ref: f37be2ebe74c21c35842b5b8c5f59d7eb8b85e81
-        path: e3d-attlib
-        fetch-depth: 1
-        persist-credentials: false

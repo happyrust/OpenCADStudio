@@ -2,8 +2,8 @@ name: Workspace check
 
 # Compile gate on Linux, Windows and macOS (pushes to main; PRs skip macOS
 # since its 7 GB runner swaps through the main crate's build, #3059). This fork
-# keeps iced, cryoglyph, bevy and the e3d readers beside the repository as path
-# dependencies; the shared action materialises them at the pinned commits first.
+# keeps iced, cryoglyph and bevy beside the repository as path dependencies;
+# the shared action materialises them at the pinned commits first.
 #
 # The workspace test targets currently lag the pinned dependency APIs, so the
 # test run is informational until those sources are updated; the compile step
@@ -35,8 +35,8 @@ jobs:
         with:
           path: pid-cad
 
-      # This fork keeps iced, bevy and the e3d readers beside the repository
-      # as path dependencies; materialise them before cargo runs.
+      # This fork keeps iced and bevy beside the repository as path
+      # dependencies; materialise them before cargo runs.
       - uses: ./pid-cad/.github/actions/checkout-fork-deps
 
       # The same libraries the Linux release build needs (windowing, GL,

@@ -1,9 +1,9 @@
 name: Compile check
 
-# Native type-check of the fork. This repository is not self-contained: iced,
-# bevy and the three e3d readers live beside it as path dependencies, and
-# iced is a local wgpu-30 fork. checkout-fork-deps materialises those trees at
-# the pinned commits; the iced patch is kept in .github/ci/.
+# Native type-check of the fork. This repository is not self-contained: iced
+# and bevy live beside it as path dependencies, and iced is a local wgpu-30
+# fork. checkout-fork-deps materialises those trees at the pinned commits; the
+# iced patch is kept in .github/ci/.
 
 on:
   push:

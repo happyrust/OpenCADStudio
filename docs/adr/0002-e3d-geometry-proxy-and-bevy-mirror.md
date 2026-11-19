@@ -3,6 +3,8 @@
 Date: 2026-10-14
 Status: Accepted
 
+> **2026-11-19 — `.rvm` is not opened at present.** The native producer and the `.rvm` file-open entry were withdrawn (see the note in ADR-0001), and with them the RVM entry of `is_read_only_source_path` named in point 1 below. The proxy-entity, mesh-sharing and mirroring decisions are unaffected, and their code stays.
+
 ## Context
 
 Once an `E3dSceneBatch` arrives in `OpenCADStudio` (either from an in-process native worker or over HTTP in WASM), its **Geometry Items** (`Element` and `ImpliedTube`), shared meshes, and **Centreline Representations** must be represented in the studio's document (`CadDocument`), scene (`Scene`), and 3D viewport pipelines (both the in-house `wgpu` mesh pipeline and the embedded Bevy PBR pipeline `BevyBridge`).

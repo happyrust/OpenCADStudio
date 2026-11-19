@@ -3,6 +3,8 @@
 Date: 2026-10-14
 Status: Accepted
 
+> **2026-11-19 — native producer withdrawn for now.** `e3d-model` is a private repository, so a public build of this fork cannot fetch it. One commit removed the dependency (together with `e3d-io` and `e3d-attlib`, which only the producer used), the native producer `src/io/e3d/producer.rs`, and the `.rvm` file-open entry `src/io/e3d/open.rs` with its branches in `src/io/mod.rs`. The contract and the consumer stay and keep their tests. Reverting that commit restores the desktop half described below.
+
 ## Context
 
 `OpenCADStudio` targets both native desktop (`x86_64` / `aarch64`) and browser (`wasm32-unknown-unknown`) runtimes from a single codebase. We want to integrate `../e3d-model` (along with `../e3d-io` and `../e3d-attlib`) so users can load, inspect, and incrementally refresh AVEVA E3D / PDMS Dabacon databases and `.rvm` files.
