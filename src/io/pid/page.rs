@@ -165,6 +165,12 @@ pub(super) fn frame_drawing(doc: &mut Document, bounds: &Bounds, page_mm: Option
     // `view_height` alone decides the zoom, so a landscape sheet in a window
     // narrower than 4:3 would spill sideways; widen it to cover that case.
     vport.view_height = (height.max(width * 0.75) * 1.05).max(1.0);
+    // A canvas narrower still cuts the sides off all the same: the backup
+    // panel docked beside it takes it down to about 1:1. The width the view
+    // has to take in rides in its aspect ratio, which restoring a view
+    // leaves unread, and opening a `.pid` widens the view to it
+    // (`Scene::widen_to_saved_width`).
+    vport.aspect_ratio = (width * 1.05).max(1.0) / vport.view_height;
     vport.handle = doc.allocate_handle();
     // `add` refuses a duplicate name, and the default entry above is one.
     doc.vports.add_or_replace(vport);

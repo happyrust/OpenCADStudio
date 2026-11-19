@@ -1582,3 +1582,84 @@ fn a_restored_backup_has_the_symbol_library_its_drawings_look_for() {
     assert!(found_under(drawing, &root).is_empty());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The view the importer states for a drawing that draws over the rectangle
+/// `drawn` spans, on `page` where it names one: its centre, its height, and
+/// the width it states it takes in (`view_height * aspect_ratio`).
+fn opening_view(page: Option<(f64, f64)>, drawn: [(f64, f64); 2]) -> ((f64, f64), f64, f64) {
+    let mut bounds = Bounds::new(Projection {
+        mm_per_unit: 1.0,
+        band: SheetBand::for_page(page),
+    });
+    for (x, y) in drawn {
+        bounds.add_mm(x, y);
+    }
+    let mut doc = Document::new();
+    frame_drawing(&mut doc, &bounds, page);
+    let view = doc
+        .vports
+        .iter()
+        .find(|vport| vport.name == "*Active")
+        .expect("the importer states the opening view");
+    (
+        (view.view_target.x, view.view_target.y),
+        view.view_height,
+        view.view_height * view.aspect_ratio,
+    )
+}
+
+fn assert_same_view(found: ((f64, f64), f64, f64), wanted: ((f64, f64), f64, f64)) {
+    let ((x, y), height, width) = found;
+    let ((wanted_x, wanted_y), wanted_height, wanted_width) = wanted;
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-9 * b.abs().max(1.0);
+    assert!(
+        close(x, wanted_x)
+            && close(y, wanted_y)
+            && close(height, wanted_height)
+            && close(width, wanted_width),
+        "found {found:?}, wanted {wanted:?}"
+    );
+}
+
+/// A landscape sheet -- `D07`'s A2, 594.328 x 420.566 -- opens centred on
+/// the sheet and as high as three quarters of its width with a twentieth
+/// over, 468.03 as measured, and the view states the width it has to take
+/// in: the sheet's with a twentieth over. Restored at its height alone, it
+/// showed 81.8% of the sheet's width on the canvas the backup panel leaves
+/// (`readings.md` §8).
+#[test]
+fn a_landscape_sheet_opens_on_a_view_that_states_its_width() {
+    let (width, height) = (594.328, 420.566);
+    assert_same_view(
+        opening_view(Some((width, height)), [(30.0, 40.0), (560.0, 400.0)]),
+        (
+            (width / 2.0, height / 2.0),
+            width * 0.75 * 1.05,
+            width * 1.05,
+        ),
+    );
+}
+
+/// A portrait sheet opens as high as the sheet with a twentieth over, and
+/// states the sheet's width with a twentieth over: a canvas no narrower
+/// than the sheet takes that in.
+#[test]
+fn a_portrait_sheet_opens_on_a_view_that_states_its_width() {
+    let (width, height) = (420.0, 594.0);
+    assert_same_view(
+        opening_view(Some((width, height)), [(20.0, 30.0), (400.0, 560.0)]),
+        ((width / 2.0, height / 2.0), height * 1.05, width * 1.05),
+    );
+}
+
+/// A drawing that names no sheet opens on what it draws, and states the
+/// width of what it draws with a twentieth over. What it draws here is
+/// narrower than 4:3, so the height is its own and not three quarters of
+/// its width.
+#[test]
+fn a_drawing_without_a_sheet_opens_on_a_view_that_states_the_width_it_draws_over() {
+    assert_same_view(
+        opening_view(None, [(10.0, 20.0), (310.0, 270.0)]),
+        ((160.0, 145.0), 250.0 * 1.05, 300.0 * 1.05),
+    );
+}
