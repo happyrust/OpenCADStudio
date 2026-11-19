@@ -779,6 +779,7 @@ pub(super) fn overlay_template(
         let height_mm = text_style.map(|h| projection.mm(h.height_m));
         let text_rgb = text_style.and_then(pid_parse::style_link::ResolvedTextHeight::rgb);
         let text_alignment = text_style.and_then(|style| style.alignment);
+        let text_width = text_style.and_then(|style| text_width_factor(style.width_permille));
         // The record's own trailer byte beats the paragraph the same way the
         // sheet's labels do: the template letters its title-block captions at
         // the hot point it states (`0x10` bottom-centre up the left column).
@@ -801,6 +802,9 @@ pub(super) fn overlay_template(
             }
             if let Some(mm) = height_mm {
                 apply_text_height(&mut one, mm);
+            }
+            if let Some(factor) = text_width {
+                apply_text_width(&mut one, factor);
             }
             if let Some(rgb) = text_rgb {
                 apply_text_colour(&mut one, rgb);

@@ -407,7 +407,9 @@ pub(super) fn paint_symbol_stroke(
 
 /// Letter a symbol's own text the way its record states: the hot point its
 /// trailer's anchor byte decodes to, the colour its character style names,
-/// and the typeface its style resolved to when the drawing pooled it.
+/// the character width it states ([`text_width_factor`]: the `M` and `S` of
+/// the motor and solenoid operators letter at `800`), and the typeface its
+/// style resolved to when the drawing pooled it.
 ///
 /// The anchor decode is the same nibble scheme [`apply_text_anchor`] reads
 /// off the sheet's records — `(code >> 4) % 3` horizontal, `(code & 0x0F) %
@@ -437,6 +439,9 @@ fn letter_label(
     sync_text_alignment_point(label);
     if let Some([r, g, b]) = lettering.rgb {
         label.common.color = foreground_color(r, g, b);
+    }
+    if let Some(factor) = text_width_factor(lettering.width_permille) {
+        label.width_factor = factor;
     }
     if let Some(name) = lettering
         .font_name
