@@ -712,5 +712,24 @@ fn ensure_layer(doc: &mut Document, name: &str, colour: Color, visible: bool, pl
     let _ = doc.layers.add(layer);
 }
 
+/// A document as the importer leaves a drawing that draws nothing on a
+/// `width` x `height` sheet (millimetres): the border drawn and the opening
+/// view stated. The repository holds no `.pid` the importer reads, so a
+/// test that opens one elsewhere opens this.
+#[cfg(test)]
+pub(crate) fn imported_sheet(page_mm: (f64, f64)) -> Document {
+    let mut doc = Document::new();
+    ensure_taxonomy_layer(&mut doc, LAYER_FRAME);
+    draw_page_border(&mut doc, Some(page_mm));
+    let mut bounds = Bounds::new(Projection {
+        mm_per_unit: 1.0,
+        band: SheetBand::for_page(Some(page_mm)),
+    });
+    bounds.add_mm(0.0, 0.0);
+    bounds.add_mm(page_mm.0, page_mm.1);
+    frame_drawing(&mut doc, &bounds, Some(page_mm));
+    doc
+}
+
 #[cfg(test)]
 mod tests;

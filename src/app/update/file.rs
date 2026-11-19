@@ -2678,6 +2678,16 @@ impl OpenCADStudio {
                 && !t.dirty
                 && self.tabs[self.active_tab].scene.document.entities().count() == 0
         };
+        // The canvas the drawing in front is shown on. A tab added for this
+        // one knows no size until it is first laid out, but it takes the
+        // front tab's place on the same canvas.
+        #[cfg(not(target_arch = "wasm32"))]
+        let front_canvas = self.tabs[self.active_tab]
+            .scene
+            .selection
+            .borrow()
+            .view
+            .vp_size;
         let i = if current_is_empty {
             self.active_tab
         } else {
@@ -2992,6 +3002,21 @@ impl OpenCADStudio {
         // selected — see #21.
         self.sync_ribbon_from_selection();
         self.tabs[i].scene.restore_saved_camera();
+        // A `.pid` states the width of its sheet beside the height the view
+        // is restored at, and a canvas too narrow for it -- the backup panel
+        // docked beside it -- gets the view widened to it. Where no canvas
+        // size is known yet (a tab added beside the start page) the view
+        // stays as restored.
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::io::pid_pdf::is_pid(&path) {
+            let own = self.tabs[i].scene.selection.borrow().view.vp_size;
+            let canvas = if own.0 > 0.0 && own.1 > 0.0 {
+                own
+            } else {
+                front_canvas
+            };
+            self.tabs[i].scene.widen_to_saved_width(canvas);
+        }
         // Grid/snap are per-drawing view settings — adopt the opened
         // file's active viewport state rather than a global preference.
         self.adopt_view_display(i);
