@@ -7,8 +7,10 @@
 //! comes up beside the drawing and inside that frame, that the module's own
 //! parts stay where they were, that a drawing opened from the panel asks for
 //! the file the restore made of it, that one a tab shows already is brought
-//! to the front and not opened again, and that a source that is no backup
-//! leaves the module in the state it leaves a `--classic` window in.
+//! to the front and not opened again, that a source that is no backup
+//! leaves the module in the state it leaves a `--classic` window in, and
+//! that `PIDPLOT` plots a drawing of the backup from the file the restore
+//! made of it and refuses any other drawing as a `--classic` window does.
 //!
 //! The backups are made up here, the way the tests of
 //! `app/commands/pidbackup.rs` and `io/pid_backup_browse.rs` make theirs,
@@ -248,7 +250,7 @@ fn say(app: &mut OpenCADStudio, line: &str) -> Vec<(EntryKind, String)> {
     let from = app.command_line.history.len();
     let task = app.run_command_line(line);
     app.drive_headless_task(task)
-        .expect("a backup is read without a window");
+        .expect("what the line starts runs without a window");
     said_since(app, from)
 }
 
@@ -794,4 +796,191 @@ fn a_folder_that_is_no_backup_is_listed_empty_in_the_module_as_in_a_classic_wind
         "{}",
         state.load
     );
+}
+
+// ── Plotting a drawing of the backup ─────────────────────────────────────
+
+/// The line that plots the drawing in front to `target`, as it is typed.
+fn plot_line(target: &Path) -> String {
+    format!("PIDPLOT \"{}\"", target.display())
+}
+
+/// The plain lines among what the command line said.
+fn lines(said: &[(EntryKind, String)]) -> Vec<&str> {
+    said.iter()
+        .filter(|(kind, _)| *kind == EntryKind::Output)
+        .map(|(_, text)| text.as_str())
+        .collect()
+}
+
+/// `PIDPLOT <file>` in the module, with a drawing of the backup in front:
+/// the plot is made from the file the restore made of that drawing, in the
+/// folder restores are kept in. The command line names that file as the
+/// plot starts, and the plotter is given it: what the command line says
+/// when the plot is over is what the plotter says of that file. With a
+/// second drawing of the backup on a tab of its own, the file named is the
+/// one of the drawing in front, whichever of the two that is.
+///
+/// The drawings made up here are none the plotter reads either, so the plot
+/// ends in the plotter's refusal and no page is written. That the refusal
+/// is the plotter's own, of this file, is what shows that the command got
+/// as far as plotting it. The open is stood in for as it is above, the tab
+/// being given the path the panel asked to have opened. A drawing of a
+/// plant, opened from the panel and plotted, is held against the page the
+/// export of the whole backup writes in `app/commands/pidplot.rs`.
+#[test]
+fn a_drawing_of_the_backup_in_front_is_plotted_from_the_file_the_restore_made_of_it() {
+    let scratch = Scratch::new("plotted");
+    let backup = backup_folder(scratch.path());
+    let mut app = launched(false);
+    let cache = restores_into(&mut app, scratch.path());
+    say(&mut app, &open_line(&backup));
+    let index = app
+        .pid_backup_browser
+        .index()
+        .expect("the backup is loaded")
+        .clone();
+    let at = index
+        .drawings
+        .iter()
+        .position(|drawing| drawing.name == "B-202")
+        .expect("B-202 is listed");
+
+    // Activated in the panel, the drawing asks for its file to be opened: a
+    // `.pid` in the folder restores are kept in, not in the backup.
+    let task = app.update(AppMessage::PidBackup(PidBackupMsg::Activate(
+        NodeId::Drawing(at),
+    )));
+    let asked = opens_asked_for(&mut app, task);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let file = asked[0].clone();
+    assert_eq!(index.drawings[at].pid_path.as_ref(), Some(&file));
+    assert!(
+        file.starts_with(&cache) && !file.starts_with(&backup),
+        "{}",
+        file.display()
+    );
+    assert!(crate::io::pid_pdf::is_pid(&file), "{}", file.display());
+    let held = |file: &Path| std::fs::read(file).ok();
+    assert_eq!(held(&file).as_deref(), Some("B-202".as_bytes()));
+
+    // The open, stood in for: the drawing in front holds the path that was
+    // asked for.
+    let front = app.active_tab;
+    assert!(!app.tabs[front].is_start);
+    app.tabs[front].current_path = Some(file.clone());
+    assert_eq!(app.pid_shell.current(), Some(PidScreen::Editor));
+
+    // What the plotter says of that file, asked without the command.
+    let target = scratch.path().join("plots").join("B-202.pdf");
+    let refusal = crate::io::pid_pdf::plot_pdf(&file, &target)
+        .expect_err("a made-up drawing is none the plotter reads");
+    assert!(!target.exists());
+
+    let said = say(&mut app, &plot_line(&target));
+
+    // The plot was started once, on that file ...
+    let starting = |file: &Path| {
+        format!(
+            "PIDPLOT: plotting {} (the .pid on disk; edits made here are not in it) ...",
+            file.display()
+        )
+    };
+    assert_eq!(lines(&said), [starting(&file)], "{said:?}");
+    // ... and came back with the plotter's own word on it.
+    let refused = format!("PIDPLOT: {refusal}");
+    let wrong = errors(&said);
+    assert_eq!(wrong.len(), 1, "{said:?}");
+    assert!(wrong[0].ends_with(&refused), "{refused}: {said:?}");
+    assert_eq!(
+        app.command_line.last_error.as_deref(),
+        Some(refused.as_str())
+    );
+    // No page was written, the drawing's file is as it was, and the module
+    // is still on its editor.
+    assert!(!target.exists());
+    assert_eq!(held(&file).as_deref(), Some("B-202".as_bytes()));
+    assert_eq!(app.pid_shell.current(), Some(PidScreen::Editor));
+
+    // Another drawing of the backup on a tab of its own: the plot is of the
+    // drawing in front, whichever of the two that is.
+    let other = index
+        .drawings
+        .iter()
+        .find(|drawing| drawing.name == "C-303")
+        .and_then(|drawing| drawing.pid_path.clone())
+        .expect("C-303 has a file");
+    give(&mut app, AppMessage::TabNew);
+    let second = app.active_tab;
+    let first = app
+        .tab_showing(&file)
+        .expect("a tab shows the first drawing");
+    assert_ne!(second, first);
+    app.tabs[second].current_path = Some(other.clone());
+    let said = say(&mut app, &plot_line(&target));
+    assert_eq!(lines(&said), [starting(&other)], "{said:?}");
+    give(&mut app, AppMessage::TabSwitch(first));
+    assert_eq!(app.active_tab, first);
+    let said = say(&mut app, &plot_line(&target));
+    assert_eq!(lines(&said), [starting(&file)], "{said:?}");
+    assert!(!target.exists());
+}
+
+/// `PIDPLOT <file>` with no drawing in front that was opened from a `.pid`
+/// plots nothing and says why, in one error. The command line of the module
+/// says what the one of a `--classic` window says, line for line: with a
+/// new drawing in front, with a backup open in the panel and none of its
+/// drawings opened, and with a drawing in front that was opened from a file
+/// of another kind. Nothing is written, and the module stays on its editor.
+#[test]
+fn with_no_drawing_from_a_pid_in_front_pidplot_is_refused_in_the_module_as_in_a_classic_window() {
+    let scratch = Scratch::new("unplotted");
+    let backup = backup_folder(scratch.path());
+    let target = scratch.path().join("plots").join("none.pdf");
+    let mut module = launched(false);
+    let mut general = launched(true);
+    restores_into(&mut module, scratch.path());
+    restores_into(&mut general, scratch.path());
+    let refused = "PIDPLOT: the active drawing was not opened from a .pid file.";
+    // What is owed whenever the line is typed from here on.
+    let refused_in_both = |module: &mut OpenCADStudio, general: &mut OpenCADStudio, when: &str| {
+        let in_module = say(module, &plot_line(&target));
+        let in_general = say(general, &plot_line(&target));
+        let wrong = errors(&in_module);
+        assert_eq!(wrong.len(), 1, "{when}: {in_module:?}");
+        assert!(wrong[0].ends_with(refused), "{when}: {in_module:?}");
+        assert!(lines(&in_module).is_empty(), "{when}: {in_module:?}");
+        assert_eq!(in_module, in_general, "{when}");
+        let last = module.command_line.last_error.as_deref();
+        assert_eq!(last, Some(refused), "{when}");
+        assert!(!target.exists(), "{when}");
+        assert_eq!(
+            module.pid_shell.current(),
+            Some(PidScreen::Editor),
+            "{when}"
+        );
+    };
+
+    // A new drawing in front, as a launch leaves it.
+    for app in [&module, &general] {
+        let front = &app.tabs[app.active_tab];
+        assert!(!front.is_start && front.current_path.is_none());
+    }
+    refused_in_both(&mut module, &mut general, "a new drawing");
+
+    // A backup open in the panel, none of its drawings opened.
+    for app in [&mut module, &mut general] {
+        let said = say(app, &open_line(&backup));
+        assert!(errors(&said).is_empty(), "{said:?}");
+        assert!(app.tabs[app.active_tab].current_path.is_none());
+    }
+    refused_in_both(&mut module, &mut general, "a backup in the panel");
+
+    // A drawing in front that was opened from a file that is no `.pid`.
+    let other = scratch.path().join("plan.dwg");
+    for app in [&mut module, &mut general] {
+        let front = app.active_tab;
+        app.tabs[front].current_path = Some(other.clone());
+    }
+    refused_in_both(&mut module, &mut general, "a drawing of another kind");
 }
