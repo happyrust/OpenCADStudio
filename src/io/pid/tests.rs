@@ -1585,7 +1585,8 @@ fn a_linked_igr_overlays_its_drafting_on_pid_frame() {
         (width - 841.0).abs() < 0.01 && (height - 594.0).abs() < 0.01,
         "the A1 template's strokes span the A1 sheet, not {width} x {height}"
     );
-    let overlay = overlay_template(&template, &drawing, &mut doc, 1.0).expect("the fixture draws");
+    let overlay = overlay_template(&template, &drawing, &mut doc, 1.0, FramePlacement::NONE)
+        .expect("the fixture draws");
     assert!(overlay.drawn > 50, "a title block is more than a few lines");
     assert!(
         overlay.page_frame_covered,
@@ -1706,7 +1707,7 @@ fn opening_view(page: Option<(f64, f64)>, drawn: [(f64, f64); 2]) -> ((f64, f64)
         bounds.add_mm(x, y);
     }
     let mut doc = Document::new();
-    frame_drawing(&mut doc, &bounds, page);
+    frame_drawing(&mut doc, &bounds, page, (0.0, 0.0));
     let view = doc
         .vports
         .iter()
@@ -1772,6 +1773,68 @@ fn a_drawing_without_a_sheet_opens_on_a_view_that_states_the_width_it_draws_over
     assert_same_view(
         opening_view(None, [(10.0, 20.0), (310.0, 270.0)]),
         ((160.0, 145.0), 250.0 * 1.05, 300.0 * 1.05),
+    );
+}
+
+/// The page sits where the drawing's frame record puts its corner: the
+/// border drawn where no template frame covers the page, and the view the
+/// drawing opens on, both start there, and keep the page's size. `N井场`
+/// states its page from (-1.04, -1.34) mm.
+#[test]
+fn pid_template_frame_corner_moves_the_page_border_and_the_opening_view() {
+    let page = (843.46, 596.71);
+    let corner = (-1.043573, -1.338395);
+    let mut doc = Document::new();
+    draw_page_border(&mut doc, Some(page), corner);
+    let border: Vec<(f64, f64)> = doc
+        .entities()
+        .find_map(|entity| match entity {
+            EntityType::LwPolyline(polyline) => Some(
+                polyline
+                    .vertices
+                    .iter()
+                    .map(|vertex| (vertex.location.x, vertex.location.y))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .expect("the border is drawn");
+    let (x, y) = corner;
+    assert_eq!(
+        border,
+        [
+            (x, y),
+            (x + page.0, y),
+            (x + page.0, y + page.1),
+            (x, y + page.1)
+        ]
+    );
+
+    let mut bounds = Bounds::new(Projection {
+        mm_per_unit: 1.0,
+        band: SheetBand::for_page(Some(page)),
+    });
+    bounds.add_mm(30.0, 40.0);
+    bounds.add_mm(800.0, 560.0);
+    let mut doc = Document::new();
+    frame_drawing(&mut doc, &bounds, Some(page), corner);
+    let view = doc
+        .vports
+        .iter()
+        .find(|vport| vport.name == "*Active")
+        .expect("the importer states the opening view");
+    let at_origin = opening_view(Some(page), [(30.0, 40.0), (800.0, 560.0)]);
+    assert_same_view(
+        (
+            (view.view_target.x, view.view_target.y),
+            view.view_height,
+            view.view_height * view.aspect_ratio,
+        ),
+        (
+            (x + page.0 / 2.0, y + page.1 / 2.0),
+            at_origin.1,
+            at_origin.2,
+        ),
     );
 }
 
@@ -1883,7 +1946,8 @@ fn pid_text_width_template_lettering_letters_at_its_styles_width() {
         ..Default::default()
     };
     let template = read_template(&igr, false).expect("the fixture parses");
-    overlay_template(&template, &drawing, &mut doc, 1.0).expect("the fixture draws");
+    overlay_template(&template, &drawing, &mut doc, 1.0, FramePlacement::NONE)
+        .expect("the fixture draws");
     let widths: Vec<(String, f64)> = doc
         .entities()
         .filter_map(|entity| match entity {
