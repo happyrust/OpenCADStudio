@@ -411,10 +411,13 @@ pub(super) fn paint_symbol_stroke(
 /// the motor and solenoid operators letter at `800`), and the typeface its
 /// style resolved to when the drawing pooled it.
 ///
-/// The anchor decode is the same nibble scheme [`apply_text_anchor`] reads
-/// off the sheet's records — `(code >> 4) % 3` horizontal, `(code & 0x0F) %
-/// 3` vertical — applied directly since the `apply_text_*` helpers are
-/// scoped to the sheet's own [`LAYER_TEXT`]. The colour is the undercoat
+/// The anchor decode reads the high nibble the way [`apply_text_anchor`]
+/// reads the sheet's records, `(code >> 4) % 3`, and the low one onto the
+/// canvas's own lines, `(code & 0x0F) % 3` — `0` bottom, `1` top, `2`
+/// middle. The sheet's records sit on the face's lines instead; a symbol's
+/// lettering has not been measured against them (`readings.md` §5.4 item
+/// 8). It is applied directly since the `apply_text_*` helpers are scoped
+/// to the sheet's own [`LAYER_TEXT`]. The colour is the undercoat
 /// only: where the placement names a style of its own, `apply_symbology`
 /// repaints it over this afterwards, which is measured behaviour -- LG and
 /// LT author their bubble letters `#FF0000` here and the placement letters

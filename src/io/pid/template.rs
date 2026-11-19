@@ -819,7 +819,7 @@ pub(super) fn overlay_template(
             }
             match anchor_code {
                 Some(code) => {
-                    apply_text_anchor(&mut one, code);
+                    apply_text_anchor(&mut one, code, text_style);
                     apply_text_box(&mut one, code, box_width_mm, text_alignment);
                 }
                 None => {

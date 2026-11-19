@@ -1855,7 +1855,7 @@ fn pid_text_width_keeps_a_right_or_centred_labels_anchor() {
             text.insertion_point.y = 30.0;
             text.common.layer = LAYER_TEXT.to_string();
             let mut entity = EntityType::Text(text);
-            apply_text_anchor(&mut entity, code);
+            apply_text_anchor(&mut entity, code, None);
             if let Some(factor) = factor {
                 apply_text_width(&mut entity, factor);
             }
@@ -1912,7 +1912,7 @@ fn boxed_label(
     text.rotation = rotation;
     text.common.layer = LAYER_TEXT.to_string();
     let mut entity = EntityType::Text(text);
-    apply_text_anchor(&mut entity, code);
+    apply_text_anchor(&mut entity, code, None);
     apply_text_box(&mut entity, code, box_width_mm, paragraph);
     let EntityType::Text(text) = entity else {
         unreachable!("built as text");
@@ -2041,7 +2041,7 @@ fn pid_text_box_absent_leaves_the_anchor_code_in_charge() {
     anchored.insertion_point.y = 50.0;
     anchored.common.layer = LAYER_TEXT.to_string();
     let mut anchored = EntityType::Text(anchored);
-    apply_text_anchor(&mut anchored, 0x15);
+    apply_text_anchor(&mut anchored, 0x15, None);
     let EntityType::Text(anchored) = anchored else {
         unreachable!("built as text");
     };
@@ -2105,4 +2105,175 @@ fn pid_text_box_sheet_numbers_start_at_their_box_left_edge() {
         assert_eq!(*alignment, TextHorizontalAlignment::Left, "{starts:?}");
         assert!((x - (insertion - 45.307 / 2.0)).abs() < 0.01, "{starts:?}");
     }
+}
+
+/// A sheet record's lettering as its styles state it: 7 pt in `font`, the
+/// paragraph's lines spaced by `leading`, the height measured the way
+/// `height_mode` says.
+fn line_lettering(
+    font: &str,
+    leading: Option<pid_parse::style_link::LineLeading>,
+    height_mode: Option<u8>,
+) -> pid_parse::style_link::ResolvedTextHeight {
+    pid_parse::style_link::ResolvedTextHeight {
+        style_id: 0,
+        height_m: 0.002_469,
+        height_mode,
+        width_permille: None,
+        colour: None,
+        alignment: None,
+        line_spacing: None,
+        leading,
+        font_name: Some(font.to_string()),
+    }
+}
+
+/// Where the canvas starts the baseline of a 2.469 mm sheet record inserted
+/// at (100, 50) and placed by its anchor code, in drawing millimetres.
+fn line_origin(
+    code: u8,
+    rotation: f64,
+    lettering: Option<&pid_parse::style_link::ResolvedTextHeight>,
+) -> [f64; 2] {
+    use crate::entities::text::text_run_placement_at_scale;
+
+    let mut text = Text::new();
+    text.value = "PG-1001".to_string();
+    text.height = 2.469;
+    text.insertion_point.x = 100.0;
+    text.insertion_point.y = 50.0;
+    text.rotation = rotation;
+    text.common.layer = LAYER_TEXT.to_string();
+    let mut entity = EntityType::Text(text);
+    apply_text_anchor(&mut entity, code, lettering);
+    let EntityType::Text(text) = entity else {
+        unreachable!("built as text");
+    };
+    let placement = text_run_placement_at_scale(&text, &Document::new(), 1.0);
+    [placement.origin[0], placement.origin[1]]
+}
+
+/// The low nibble of a sheet record's anchor code names the line its
+/// insertion point sits on, the way `pid-plot` reads it: `0` the baseline,
+/// `1` and `3` the face's ascender line, `2` the top of the body. Arial
+/// Narrow's ascender is 58 px of a 72 px body whose capitals take 44.
+#[test]
+fn pid_text_line_low_nibble_names_the_line_the_insertion_sits_on() {
+    use pid_parse::style_link::LineLeading;
+
+    let narrow = line_lettering("Arial Narrow", Some(LineLeading::FractionTile), Some(0x0D));
+    for (code, above) in [
+        (0x10_u8, 0.0),
+        (0x00, 0.0),
+        (0x01, 58.0 / 44.0),
+        (0x21, 58.0 / 44.0),
+        (0x03, 58.0 / 44.0),
+        (0x12, 1.0),
+    ] {
+        let origin = line_origin(code, 0.0, Some(&narrow));
+        assert!(
+            (origin[1] - (50.0 - above * 2.469)).abs() < 1e-6,
+            "{code:#04x}: baseline at {}",
+            origin[1]
+        );
+    }
+}
+
+/// Any other low nibble centres the run on the middle of the body, halfway
+/// between the face's ascender and descender lines, so where that is depends
+/// on the face: half a cap height up in Arial Narrow, 0.539 of one in 仿宋
+/// and 0.478 in Arial. A face outside `pid-plot`'s table, and a record with
+/// no style at all, are measured as Arial, the way `pid-plot` measures them.
+#[test]
+fn pid_text_line_middle_sits_where_the_face_puts_it() {
+    use pid_parse::style_link::LineLeading;
+
+    for (font, middle) in [
+        (Some("Arial Narrow"), 22.0 / 44.0),
+        (Some("Arial"), 22.0 / 46.0),
+        (Some("宋体"), 26.0 / 49.2),
+        (Some("SimSun"), 26.0 / 49.2),
+        (Some("仿宋"), 26.0 / 48.2),
+        (Some("Braggadocio"), 22.0 / 46.0),
+        (None, 22.0 / 46.0),
+    ] {
+        let lettering =
+            font.map(|font| line_lettering(font, Some(LineLeading::FractionTile), Some(0x0D)));
+        for code in [0x05_u8, 0x15, 0x25, 0x18, 0x38, 0x48, 0x58] {
+            let origin = line_origin(code, 0.0, lettering.as_ref());
+            assert!(
+                (origin[1] - (50.0 - middle * 2.469)).abs() < 1e-6,
+                "{font:?} {code:#04x}: baseline at {}",
+                origin[1]
+            );
+        }
+    }
+}
+
+/// The device tags lettered in Arial Narrow under a paragraph whose lines are
+/// spaced by the face's ascent hang from half its ascender, 29 px against the
+/// 44 its capitals take, rather than from the middle of the body: `pid-plot`
+/// measured them 0.656 of a body down. Only an `8` does: a `5` under the same
+/// paragraph keeps the middle, and so does an `8` under any other spacing.
+#[test]
+fn pid_text_line_ascent_spaced_tags_hang_from_half_the_ascender() {
+    use pid_parse::style_link::LineLeading;
+
+    let ascent_spaced = line_lettering(
+        "Arial Narrow",
+        Some(LineLeading::FractionAscender),
+        Some(0x0D),
+    );
+    let tile_spaced = line_lettering("Arial Narrow", Some(LineLeading::FractionTile), Some(0x0D));
+    for (code, lettering, above) in [
+        (0x48_u8, &ascent_spaced, 29.0 / 44.0),
+        (0x08, &ascent_spaced, 29.0 / 44.0),
+        (0x45, &ascent_spaced, 0.5),
+        (0x48, &tile_spaced, 0.5),
+    ] {
+        let origin = line_origin(code, 0.0, Some(lettering));
+        assert!(
+            (origin[1] - (50.0 - above * 2.469)).abs() < 1e-6,
+            "{code:#04x} {:?}: baseline at {}",
+            lettering.leading,
+            origin[1]
+        );
+    }
+}
+
+/// A character style that measures its height to the face's ascent rather
+/// than its capitals puts the ascender line one height up and the rest in
+/// proportion: the top of the body at 44/58 of it and the middle at half
+/// that. No sheet or template record of the corpus states it.
+#[test]
+fn pid_text_line_ascent_measured_height_scales_by_the_ascent() {
+    let ascent_measured = line_lettering("Arial Narrow", None, Some(0x0C));
+    for (code, above) in [
+        (0x10_u8, 0.0),
+        (0x01, 1.0),
+        (0x12, 44.0 / 58.0),
+        (0x15, 22.0 / 58.0),
+    ] {
+        let origin = line_origin(code, 0.0, Some(&ascent_measured));
+        assert!(
+            (origin[1] - (50.0 - above * 2.469)).abs() < 1e-6,
+            "{code:#04x}: baseline at {}",
+            origin[1]
+        );
+    }
+}
+
+/// The baseline drops across the run rather than down the page: a record
+/// lettered up the page has its baseline to the right of the insertion.
+#[test]
+fn pid_text_line_rotated_record_drops_across_its_baseline() {
+    use pid_parse::style_link::LineLeading;
+
+    let narrow = line_lettering("Arial Narrow", Some(LineLeading::FractionTile), Some(0x0D));
+    let origin = line_origin(0x01, std::f64::consts::FRAC_PI_2, Some(&narrow));
+    assert!(
+        (origin[0] - (100.0 + 58.0 / 44.0 * 2.469)).abs() < 1e-6,
+        "{origin:?}"
+    );
+    assert!((origin[1] - 50.0).abs() < 1e-6, "{origin:?}");
 }
