@@ -257,6 +257,12 @@ pub fn build_index_in(
     } else {
         find_backup_root(&restored.root)
     };
+    // Nothing of a backup, here or below, and no drawing: there is nothing
+    // to list, and what was unpacked to find that out is not kept.
+    if !is_backup_folder(&backup_root) && restored.drawings.is_empty() {
+        discard_restore(source, target.is_some(), &restored);
+        return Err(not_a_backup(source));
+    }
     let scan = scan_backup_folder(&backup_root)
         .map_err(|error| crate::tf!("cannot scan {}: {}", backup_root.display(), error))?;
 
@@ -426,6 +432,48 @@ pub fn find_backup_root(root: &Path) -> PathBuf {
         level = next;
     }
     root.to_path_buf()
+}
+
+/// What a source with nothing to list is refused with: it holds nothing of a
+/// backup ([`is_backup_folder`], in it or two levels down) and no drawing.
+fn not_a_backup(source: &Path) -> String {
+    crate::tf!(
+        "{} is not a SmartPlant P&ID backup: no Manifest.txt, Export.dmp or PlantData~ archive in it, and no .pid drawing",
+        source.display()
+    )
+    .into_owned()
+}
+
+/// Take away the restore of a source that was refused, so that nothing of
+/// what is no backup stays unpacked. Only a copy that was unpacked apart
+/// from the source goes: a folder used where it lies is the source itself.
+/// In the cache the restore goes whether this call made it or an earlier one
+/// left it there -- the cache is this module's own. In a folder the user
+/// `named` for the restore only what this call made goes: that folder was
+/// new or empty before, and it goes whole, as when a restore fails half way.
+/// A restore that was kept there from an earlier call is theirs, and stays.
+fn discard_restore(source: &Path, named: bool, restored: &crate::io::pid_backup::Restored) {
+    if !restored.extracted || (named && restored.reused) {
+        return;
+    }
+    // Never the source, nor a folder the source lies in. Paths that cannot
+    // be resolved are not told apart, and then nothing is removed.
+    let apart = match (
+        std::fs::canonicalize(source),
+        std::fs::canonicalize(&restored.root),
+    ) {
+        (Ok(source), Ok(root)) => !source.starts_with(root),
+        _ => false,
+    };
+    if !apart {
+        return;
+    }
+    if let Err(error) = std::fs::remove_dir_all(&restored.root) {
+        log::warn!(
+            "{}: the restore of a source that is no backup could not be removed: {error}",
+            restored.root.display()
+        );
+    }
 }
 
 fn manifest_summary(manifest: &pid_parse::backup::Manifest) -> ManifestSummary {
@@ -1618,6 +1666,424 @@ mod tests {
         );
         assert_eq!(index.plant_groups[0].name, "00");
         assert_eq!(index.plant_groups[0].children[0].drawings, vec![0]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── A source with nothing to list ────────────────────────────────────
+
+    /// What a source that holds nothing of a backup and no drawing is refused
+    /// with, as an English interface says it.
+    fn not_a_backup_in_english(source: &Path) -> String {
+        format!(
+            "{} is not a SmartPlant P&ID backup: no Manifest.txt, Export.dmp or PlantData~ \
+             archive in it, and no .pid drawing",
+            source.display()
+        )
+    }
+
+    /// The refusal that `result` is. An index fails the test, which then says
+    /// what was listed.
+    fn refusal(result: Result<BackupIndex, String>) -> String {
+        match result {
+            Ok(index) => panic!(
+                "{} was listed: {} drawing(s), warnings {:?}",
+                index.source.display(),
+                index.drawings.len(),
+                index.warnings
+            ),
+            Err(reason) => reason,
+        }
+    }
+
+    /// What the folder `cache` holds, as [`manifest_of`] lists it; nothing
+    /// when the folder was never made.
+    fn kept_in(cache: &Path) -> Vec<String> {
+        if cache.is_dir() {
+            manifest_of(cache)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// A folder with nothing of a backup in it -- no manifest, no dump, no
+    /// drawing archive -- and no drawing is refused: one sentence that names
+    /// the folder and says it is no backup, and no index. The folder is the
+    /// user's, and holds afterwards what it held; nothing was unpacked for
+    /// it, into the cache or into the folder a command names for the
+    /// restore. A folder with nothing at all in it is refused the same way.
+    #[test]
+    fn a_folder_with_nothing_of_a_backup_is_refused_and_left_as_it_was() {
+        let root = scratch("refused-folder");
+        let folder = root.join("holiday");
+        std::fs::create_dir_all(folder.join("album").join("day 1")).unwrap();
+        std::fs::write(folder.join("notes.txt"), b"nothing of a backup").unwrap();
+        std::fs::write(folder.join("album").join("day 1").join("beach.jpg"), b"jpg").unwrap();
+        let before = manifest_of(&folder);
+        assert!(
+            before
+                .iter()
+                .any(|entry| entry == "album/day 1/beach.jpg:3"),
+            "{before:?}"
+        );
+        let cache = root.join("cache");
+
+        let reason = refusal(build_index_in(&folder, None, Some(&cache)));
+        assert_eq!(reason, not_a_backup_in_english(&folder));
+        assert_eq!(manifest_of(&folder), before);
+        assert_eq!(kept_in(&cache), Vec::<String>::new());
+
+        // With a folder named for the restore: refused as well, and that
+        // folder is not made.
+        let named = root.join("out");
+        let reason = refusal(build_index_in(&folder, Some(&named), Some(&cache)));
+        assert_eq!(reason, not_a_backup_in_english(&folder));
+        assert_eq!(manifest_of(&folder), before);
+        assert!(!named.exists());
+
+        let empty = root.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let reason = refusal(build_index_in(&empty, None, Some(&cache)));
+        assert_eq!(reason, not_a_backup_in_english(&empty));
+        assert!(empty.is_dir());
+        assert_eq!(kept_in(&cache), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A zip with nothing of a backup in it and no drawing is refused with
+    /// the same sentence, and nothing of it stays in the cache: what was
+    /// unpacked to find that out is taken away again. The zip is as it was.
+    /// Asked a second time it is refused a second time -- no restore was
+    /// left to reuse -- and the restore of another source in the same cache
+    /// is there throughout.
+    #[test]
+    fn a_zip_with_nothing_of_a_backup_is_refused_and_nothing_of_it_stays_in_the_cache() {
+        let root = scratch("refused-zip");
+        let zip = root.join("holiday.zip");
+        write_zip(
+            &zip,
+            &[
+                ("notes.txt", b"nothing of a backup"),
+                ("album/day 1/beach.jpg", b"jpg"),
+            ],
+        );
+        let bytes = std::fs::read(&zip).unwrap();
+        let cache = root.join("cache");
+        // A backup, restored into the same cache before.
+        let plant = root.join("plant.zip");
+        write_zip(
+            &plant,
+            &[("Manifest.txt", b"Name<<|>>SQPlant\n"), ("00/A.pid", b"a")],
+        );
+        let listed = build_index_in(&plant, None, Some(&cache)).unwrap();
+        assert_eq!(listed.drawings.len(), 1);
+        let held = kept_in(&cache);
+        assert!(
+            held.iter().any(|entry| entry.ends_with("/00/A.pid:1")),
+            "{held:?}"
+        );
+
+        for _ in 0..2 {
+            let reason = refusal(build_index_in(&zip, None, Some(&cache)));
+            assert_eq!(reason, not_a_backup_in_english(&zip));
+            assert_eq!(kept_in(&cache), held);
+            assert_eq!(std::fs::read(&zip).unwrap(), bytes);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A restore of such a zip that an earlier version of the program left in
+    /// the cache -- it listed the zip as a backup of no drawing -- goes with
+    /// the refusal: the cache is the program's own, and the restore of what
+    /// is no backup is of no use in it.
+    #[test]
+    fn an_earlier_restore_of_a_refused_zip_is_taken_out_of_the_cache() {
+        let root = scratch("refused-earlier");
+        let zip = root.join("holiday.zip");
+        write_zip(&zip, &[("notes.txt", b"nothing of a backup")]);
+        let cache = root.join("cache");
+        // As the earlier version left it: unpacked, finished, and reused when
+        // the zip is opened again.
+        let earlier = crate::io::pid_backup::restore_in(&zip, None, Some(&cache)).unwrap();
+        assert!(
+            earlier.root.starts_with(&cache),
+            "{}",
+            earlier.root.display()
+        );
+        assert!(earlier.root.join("notes.txt").is_file());
+        let again = crate::io::pid_backup::restore_in(&zip, None, Some(&cache)).unwrap();
+        assert!(again.reused);
+
+        let reason = refusal(build_index_in(&zip, None, Some(&cache)));
+        assert_eq!(reason, not_a_backup_in_english(&zip));
+        assert_eq!(kept_in(&cache), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// With a folder named for the restore, the refusal takes away what this
+    /// call unpacked there and nothing else. The folder was new or empty
+    /// before the call -- a restore is made into no other -- so it goes
+    /// whole, as it does when a restore fails half way. A finished restore
+    /// of the same zip that was kept there since an earlier version is not
+    /// this call's work: the zip is refused, and that folder stays as it is.
+    #[test]
+    fn a_refused_zip_leaves_no_restore_in_a_folder_named_for_it_but_an_earlier_one() {
+        let root = scratch("refused-named");
+        let zip = root.join("holiday.zip");
+        write_zip(&zip, &[("notes.txt", b"nothing of a backup")]);
+        let cache = root.join("cache");
+        let named = root.join("out");
+
+        for made_before in [false, true] {
+            if made_before {
+                std::fs::create_dir_all(&named).unwrap();
+            }
+            let reason = refusal(build_index_in(&zip, Some(&named), Some(&cache)));
+            assert_eq!(reason, not_a_backup_in_english(&zip));
+            assert!(!named.exists(), "made before: {made_before}");
+        }
+        assert_eq!(kept_in(&cache), Vec::<String>::new());
+
+        let earlier = crate::io::pid_backup::restore_in(&zip, Some(&named), Some(&cache)).unwrap();
+        assert_eq!(earlier.root, named);
+        let held = manifest_of(&named);
+        assert!(held.iter().any(|entry| entry == "notes.txt:19"), "{held:?}");
+        let reason = refusal(build_index_in(&zip, Some(&named), Some(&cache)));
+        assert_eq!(reason, not_a_backup_in_english(&zip));
+        assert_eq!(manifest_of(&named), held);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Drawings alone are something to list. A folder that holds `.pid`
+    /// files and nothing of a backup is browsed where it lies, as it was
+    /// before there was a refusal, and a zip of drawings is unpacked and
+    /// listed. Neither has a manifest.
+    #[test]
+    fn drawings_with_nothing_of_a_backup_around_them_are_listed_as_before() {
+        let root = scratch("drawings-alone");
+        let folder = root.join("drawings");
+        std::fs::create_dir_all(folder.join("unit 1")).unwrap();
+        std::fs::write(folder.join("A.pid"), b"a").unwrap();
+        std::fs::write(folder.join("unit 1").join("B.pid"), b"b").unwrap();
+        std::fs::write(folder.join("notes.txt"), b"not a drawing").unwrap();
+        let before = manifest_of(&folder);
+        let cache = root.join("cache");
+        let names = |index: &BackupIndex| -> Vec<String> {
+            let mut names: Vec<String> = index
+                .drawings
+                .iter()
+                .map(|drawing| drawing.name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+
+        let index = build_index_in(&folder, None, Some(&cache)).unwrap();
+        assert!(index.read_only);
+        assert_eq!(index.restored, folder);
+        assert_eq!(index.backup_root, folder);
+        assert!(index.manifest.is_none());
+        assert_eq!(names(&index), ["A", "B"]);
+        assert_eq!(manifest_of(&folder), before);
+        assert_eq!(kept_in(&cache), Vec::<String>::new());
+
+        let zip = root.join("drawings.zip");
+        write_zip(&zip, &[("A.pid", b"a"), ("unit 1/B.pid", b"b")]);
+        let index = build_index_in(&zip, None, Some(&cache)).unwrap();
+        assert!(!index.read_only);
+        assert!(
+            index.restored.starts_with(&cache),
+            "{}",
+            index.restored.display()
+        );
+        assert!(index.manifest.is_none());
+        assert_eq!(names(&index), ["A", "B"]);
+        for drawing in &index.drawings {
+            let file = drawing
+                .pid_path
+                .as_ref()
+                .expect("a listed drawing has a file");
+            assert!(
+                file.starts_with(&index.restored) && file.is_file(),
+                "{}",
+                file.display()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A folder with a backup one or two levels below it is no stranger
+    /// either: the backup in it is found, as before.
+    #[test]
+    fn a_folder_with_a_backup_two_levels_below_it_is_listed_as_before() {
+        let root = scratch("backup-below");
+        let deliveries = root.join("deliveries");
+        let backup = synthetic_backup(&deliveries.join("2026"));
+        let index = build_index_in(&deliveries, None, Some(&root.join("cache"))).unwrap();
+        assert!(index.read_only);
+        assert_eq!(index.backup_root, backup);
+        assert_eq!(
+            index
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.name.as_deref()),
+            Some("SQPlant")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What makes a source a backup is what [`is_backup_folder`] asks for,
+    /// not its drawings: a backup that holds no drawing file is listed, with
+    /// no drawing, as before -- as a zip, as a zip that wraps the backup in
+    /// a folder, and as a folder.
+    #[test]
+    fn a_backup_without_a_drawing_file_is_listed_as_before() {
+        let root = scratch("backup-no-drawing");
+        let cache = root.join("cache");
+        let plant = |index: &BackupIndex| {
+            index
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.name.clone())
+        };
+
+        let zip = root.join("plant.zip");
+        write_zip(&zip, &[("Manifest.txt", b"Name<<|>>SQPlant\n")]);
+        let index = build_index_in(&zip, None, Some(&cache)).unwrap();
+        assert!(index.drawings.is_empty());
+        assert_eq!(index.backup_root, index.restored);
+        assert_eq!(plant(&index).as_deref(), Some("SQPlant"));
+
+        let wrapped = root.join("wrapped.zip");
+        write_zip(&wrapped, &[("plant/Manifest.txt", b"Name<<|>>SQPlant\n")]);
+        let index = build_index_in(&wrapped, None, Some(&cache)).unwrap();
+        assert!(index.drawings.is_empty());
+        assert_eq!(index.backup_root, index.restored.join("plant"));
+        assert_eq!(plant(&index).as_deref(), Some("SQPlant"));
+
+        let folder = root.join("plant");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("Manifest.txt"), b"Name<<|>>SQPlant\n").unwrap();
+        let index = build_index_in(&folder, None, Some(&cache)).unwrap();
+        assert!(index.read_only);
+        assert!(index.drawings.is_empty());
+        assert_eq!(index.backup_root, folder);
+        assert_eq!(plant(&index).as_deref(), Some("SQPlant"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The refusal speaks the UI language, as the other failures of the index
+    /// do: a Chinese interface is told in Chinese, and in every language of
+    /// the interface the sentence names the source. The language is one
+    /// loader for the whole process, so this runs in a child process of the
+    /// test binary, as `the_index_failures_speak_the_ui_language` does.
+    #[test]
+    fn the_refusal_of_what_is_no_backup_speaks_the_ui_language() {
+        const CHILD: &str = "OCS_PID_BACKUP_NOT_A_BACKUP_CHILD";
+        const NAME: &str =
+            "io::pid_backup_browse::tests::the_refusal_of_what_is_no_backup_speaks_the_ui_language";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("the test binary has a path"),
+            )
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .expect("the test binary must start");
+            assert!(
+                output.status.success(),
+                "the child run failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        let root = scratch("refused-chinese");
+        let folder = root.join("holiday");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("notes.txt"), b"nothing of a backup").unwrap();
+        let cache = root.join("cache");
+        let named = folder.display().to_string();
+        for language in crate::i18n::Language::ALL {
+            if language == crate::i18n::Language::System {
+                continue;
+            }
+            crate::i18n::set_language(language).expect("Fluent resources must parse");
+            let reason = refusal(build_index_in(&folder, None, Some(&cache)));
+            assert!(reason.contains(&named), "{language:?}: {reason}");
+            assert!(!reason.contains("__ocs_fmt_"), "{language:?}: {reason}");
+        }
+        crate::i18n::set_language(crate::i18n::Language::ZhCn)
+            .expect("Chinese Fluent resources must parse");
+        let reason = refusal(build_index_in(&folder, None, Some(&cache)));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            reason,
+            format!(
+                "{} 不是 SmartPlant P&ID 备份：里面没有 Manifest.txt、Export.dmp 或 PlantData~ \
+                 压缩包，也没有 .pid 图纸",
+                folder.display()
+            )
+        );
+    }
+
+    /// What goes with a refusal, case by case. A restore that was unpacked
+    /// into the cache goes, whichever call made it. One unpacked into a
+    /// folder named for it goes when this call made it and stays when it was
+    /// found there. A folder that was not unpacked into stays. And a folder
+    /// that is the source, or that the source lies in, is not removed
+    /// whatever the restore says of itself; nor is anything removed for a
+    /// source that cannot be found, which nothing can be told apart from.
+    #[test]
+    fn only_a_restore_that_was_unpacked_apart_from_its_source_is_discarded() {
+        let root = scratch("discarded");
+        let restore = |name: &str, extracted: bool, reused: bool| {
+            let folder = root.join(name);
+            std::fs::create_dir_all(folder.join("inner")).unwrap();
+            std::fs::write(folder.join("inner").join("kept.txt"), b"k").unwrap();
+            crate::io::pid_backup::Restored {
+                root: folder,
+                extracted,
+                reused,
+                drawings: Vec::new(),
+            }
+        };
+        let kept = |restored: &crate::io::pid_backup::Restored| {
+            restored.root.join("inner").join("kept.txt").is_file()
+        };
+        let zip = root.join("source.zip");
+        std::fs::write(&zip, b"zip").unwrap();
+
+        for reused in [false, true] {
+            let in_cache = restore("in-cache", true, reused);
+            discard_restore(&zip, false, &in_cache);
+            assert!(!in_cache.root.exists(), "reused: {reused}");
+        }
+        let named_now = restore("named-now", true, false);
+        discard_restore(&zip, true, &named_now);
+        assert!(!named_now.root.exists());
+        let named_before = restore("named-before", true, true);
+        discard_restore(&zip, true, &named_before);
+        assert!(kept(&named_before));
+
+        let not_unpacked = restore("not-unpacked", false, false);
+        discard_restore(&zip, false, &not_unpacked);
+        assert!(kept(&not_unpacked));
+        // A restore that claims to be unpacked, in the folder the source is
+        // or lies in.
+        let is_source = restore("is-the-source", true, false);
+        discard_restore(&is_source.root, false, &is_source);
+        assert!(kept(&is_source));
+        let holds_source = restore("holds-the-source", true, false);
+        discard_restore(
+            &holds_source.root.join("inner").join("kept.txt"),
+            false,
+            &holds_source,
+        );
+        assert!(kept(&holds_source));
+        let unresolved = restore("unresolved", true, false);
+        discard_restore(&root.join("gone.zip"), false, &unresolved);
+        assert!(kept(&unresolved));
         let _ = std::fs::remove_dir_all(&root);
     }
 

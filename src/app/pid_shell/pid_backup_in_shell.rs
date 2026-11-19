@@ -757,14 +757,35 @@ fn a_path_that_is_not_there_is_refused_in_the_module_as_in_a_classic_window() {
     );
 }
 
-/// A folder that is no backup is not refused. The reading takes a folder as
-/// it lies, loose drawings and all, so one with nothing of a backup in it is
-/// listed as a backup of no drawing, with a warning and without an error.
-/// Whether that ought to be an error is not settled here: what is held to is
-/// that the module says and shows what a `--classic` window does, and takes
-/// the next command.
+/// What a source that holds nothing of a backup and no drawing is refused
+/// with.
+fn not_a_backup(source: &Path) -> String {
+    format!(
+        "{} is not a SmartPlant P&ID backup: no Manifest.txt, Export.dmp or PlantData~ archive \
+         in it, and no .pid drawing",
+        source.display()
+    )
+}
+
+/// What the folder `folder` holds, itself; nothing when it was never made.
+fn kept(folder: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(folder)
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default()
+}
+
+/// A folder that is no backup is refused: with nothing of a backup in it and
+/// no drawing there is nothing to list. One error on the command line, which
+/// names the folder and says that it is no backup; the panel shown, idle,
+/// with the reason in it and no row. The same lines and the same panel as in
+/// a `--classic` window. The folder is as it was, nothing was unpacked for
+/// it, and the module takes the next command.
+///
+/// Until the refusal was added such a folder was listed as a backup of no
+/// drawing, with a warning and without an error, and this test held the
+/// module to that.
 #[test]
-fn a_folder_that_is_no_backup_is_listed_empty_in_the_module_as_in_a_classic_window() {
+fn a_folder_that_is_no_backup_is_refused_in_the_module_as_in_a_classic_window() {
     let scratch = Scratch::new("no-backup");
     let backup = backup_folder(scratch.path());
     let folder = scratch.path().join("holiday");
@@ -772,48 +793,44 @@ fn a_folder_that_is_no_backup_is_listed_empty_in_the_module_as_in_a_classic_wind
     std::fs::write(folder.join("notes.txt"), "nothing of a backup").expect("a file in it");
     let mut module = launched(false);
     let mut general = launched(true);
-    restores_into(&mut module, scratch.path());
+    let cache = restores_into(&mut module, scratch.path());
     restores_into(&mut general, scratch.path());
+    let tabs = module.tabs.len();
 
     let in_module = say(&mut module, &open_line(&folder));
     let in_general = say(&mut general, &open_line(&folder));
 
-    // No error: a count of no drawing, and a warning at the least.
-    assert!(errors(&in_module).is_empty(), "{in_module:?}");
-    let warnings = module
-        .pid_backup_browser
-        .index()
-        .unwrap_or_else(|| panic!("the folder is listed: {in_module:?}"))
-        .warnings
-        .clone();
-    assert!(!warnings.is_empty(), "{in_module:?}");
-    let report = crate::tf!(
-        "PIDBACKUPOPEN: {} drawing(s), {} warning(s)",
-        0,
-        warnings.len()
-    )
-    .into_owned();
-    assert!(
-        in_module.contains(&(EntryKind::Output, report.clone())),
-        "{report}: {in_module:?}"
-    );
+    // One error: the reason, after the command line's own mark of an error.
+    let reason = not_a_backup(&folder);
+    let refused = crate::tf!("PIDBACKUPOPEN: {}", reason.clone()).into_owned();
+    let wrong = errors(&in_module);
+    assert_eq!(wrong.len(), 1, "{in_module:?}");
+    assert!(wrong[0].ends_with(&refused), "{refused}: {in_module:?}");
     assert_eq!(in_module, in_general);
     let state = panel_state(&module);
     assert!(state.visible);
     assert_eq!(state.side, Some(DockSide::Right));
-    assert!(
-        state.load.starts_with("0 drawing(s), "),
-        "{}: {warnings:?}",
-        state.load
-    );
-    assert_eq!(state.error, None);
+    assert_eq!(state.load, "idle");
+    assert_eq!(state.error, Some(reason));
+    assert!(state.rows.is_empty(), "{:?}", state.rows);
     assert_eq!(state, panel_state(&general));
+    // The folder holds what it held, and nothing was unpacked for it.
+    assert_eq!(
+        std::fs::read_to_string(folder.join("notes.txt"))
+            .ok()
+            .as_deref(),
+        Some("nothing of a backup")
+    );
+    assert_eq!(kept(&folder), [folder.join("notes.txt")]);
+    assert_eq!(kept(&cache), Vec::<PathBuf>::new());
 
     // The module is where it was, and the next command is taken.
     assert_eq!(module.pid_shell.current(), Some(PidScreen::Editor));
+    assert_eq!(module.tabs.len(), tabs);
     let said = say(&mut module, &open_line(&backup));
     assert!(errors(&said).is_empty(), "{said:?}");
     let state = panel_state(&module);
+    assert_eq!(state.error, None);
     assert!(
         state
             .load
@@ -821,6 +838,99 @@ fn a_folder_that_is_no_backup_is_listed_empty_in_the_module_as_in_a_classic_wind
         "{}",
         state.load
     );
+}
+
+/// A zip that is no backup is refused in the same words, and nothing of it
+/// stays in the folder restores are kept in. The same lines and the same
+/// panel as in a `--classic` window, and the module takes the next command.
+#[test]
+fn a_zip_that_is_no_backup_is_refused_and_nothing_of_it_is_kept() {
+    use std::io::Write;
+    let scratch = Scratch::new("no-backup-zip");
+    let backup = backup_folder(scratch.path());
+    let zip = scratch.path().join("holiday.zip");
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(&zip).expect("the zip"));
+    writer
+        .start_file("notes.txt", zip::write::SimpleFileOptions::default())
+        .expect("a file of the zip");
+    writer.write_all(b"nothing of a backup").expect("its bytes");
+    writer.finish().expect("the zip is written");
+    let mut module = launched(false);
+    let mut general = launched(true);
+    let cache = restores_into(&mut module, scratch.path());
+    restores_into(&mut general, scratch.path());
+
+    let in_module = say(&mut module, &open_line(&zip));
+    let in_general = say(&mut general, &open_line(&zip));
+
+    let reason = not_a_backup(&zip);
+    let refused = crate::tf!("PIDBACKUPOPEN: {}", reason.clone()).into_owned();
+    let wrong = errors(&in_module);
+    assert_eq!(wrong.len(), 1, "{in_module:?}");
+    assert!(wrong[0].ends_with(&refused), "{refused}: {in_module:?}");
+    assert_eq!(in_module, in_general);
+    let state = panel_state(&module);
+    assert!(state.visible);
+    assert_eq!(state.load, "idle");
+    assert_eq!(state.error, Some(reason));
+    assert!(state.rows.is_empty(), "{:?}", state.rows);
+    assert_eq!(state, panel_state(&general));
+    assert_eq!(kept(&cache), Vec::<PathBuf>::new());
+
+    // The next command is taken, and what it unpacks is kept.
+    let said = say(&mut module, &open_line(&backup));
+    assert!(errors(&said).is_empty(), "{said:?}");
+    let state = panel_state(&module);
+    assert_eq!(state.error, None);
+    assert!(
+        state
+            .load
+            .starts_with(&format!("{} drawing(s)", DRAWINGS.len())),
+        "{}",
+        state.load
+    );
+    assert_eq!(kept(&cache).len(), 1);
+}
+
+/// A folder that holds drawings and nothing of a backup is not refused: it
+/// has something to list. It is listed where it lies, as it was before
+/// there was a refusal -- no error on the command line, its drawings in the
+/// index, nothing unpacked -- and the same in a `--classic` window.
+#[test]
+fn a_folder_of_drawings_alone_is_listed_in_the_module_as_in_a_classic_window() {
+    let scratch = Scratch::new("drawings-alone");
+    let folder = scratch.path().join("drawings");
+    std::fs::create_dir_all(folder.join("unit 1")).expect("the folder");
+    std::fs::write(folder.join("A-101.pid"), "A-101").expect("a drawing");
+    std::fs::write(folder.join("unit 1").join("B-202.pid"), "B-202").expect("a drawing");
+    let mut module = launched(false);
+    let mut general = launched(true);
+    let cache = restores_into(&mut module, scratch.path());
+    restores_into(&mut general, scratch.path());
+
+    let in_module = say(&mut module, &open_line(&folder));
+    let in_general = say(&mut general, &open_line(&folder));
+
+    assert!(errors(&in_module).is_empty(), "{in_module:?}");
+    assert_eq!(in_module, in_general);
+    let index = module
+        .pid_backup_browser
+        .index()
+        .unwrap_or_else(|| panic!("the folder is listed: {in_module:?}"));
+    let mut names: Vec<&str> = index
+        .drawings
+        .iter()
+        .map(|drawing| drawing.name.as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["A-101", "B-202"]);
+    assert!(index.read_only);
+    assert_eq!(index.restored, folder);
+    let state = panel_state(&module);
+    assert!(state.visible);
+    assert_eq!(state.error, None);
+    assert_eq!(state, panel_state(&general));
+    assert_eq!(kept(&cache), Vec::<PathBuf>::new());
 }
 
 // ── Plotting a drawing of the backup ─────────────────────────────────────

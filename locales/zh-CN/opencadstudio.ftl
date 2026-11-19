@@ -9158,6 +9158,7 @@ pid-backup =
     .declared-but-missing = __ocs_fmt_0__ 在 Manifest.txt 中登记，但备份未包含它（__ocs_fmt_1__）
     .scan-problem = __ocs_fmt_0__：__ocs_fmt_1__
     .cannot-scan = 无法扫描 __ocs_fmt_0__：__ocs_fmt_1__
+    .not-a-backup = __ocs_fmt_0__ 不是 SmartPlant P&ID 备份：里面没有 Manifest.txt、Export.dmp 或 PlantData~ 压缩包，也没有 .pid 图纸
     .cannot-read-drawing = 无法读取 __ocs_fmt_0__：__ocs_fmt_1__
     .cannot-start-reading = 无法开始读取图纸：__ocs_fmt_0__
     .cannot-start-indexing = 无法开始建立备份索引：__ocs_fmt_0__

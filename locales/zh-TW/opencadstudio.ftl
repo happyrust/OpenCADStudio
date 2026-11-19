@@ -9172,6 +9172,7 @@ pid-backup =
     .declared-but-missing = __ocs_fmt_0__ is listed in Manifest.txt but the backup does not carry it (__ocs_fmt_1__)
     .scan-problem = __ocs_fmt_0__: __ocs_fmt_1__
     .cannot-scan = cannot scan __ocs_fmt_0__: __ocs_fmt_1__
+    .not-a-backup = __ocs_fmt_0__ is not a SmartPlant P&ID backup: no Manifest.txt, Export.dmp or PlantData~ archive in it, and no .pid drawing
     .cannot-read-drawing = cannot read __ocs_fmt_0__: __ocs_fmt_1__
     .cannot-start-reading = cannot start reading the drawing: __ocs_fmt_0__
     .cannot-start-indexing = cannot start indexing the backup: __ocs_fmt_0__

@@ -3152,6 +3152,104 @@ SQL Server 包：
 | 每种错误的码都有测试 | 达到。八种里有两种（`NO_PACKAGE`、`BUSY`）引擎自己不报，什么时候报要到 `EXP-2` 才有测试 | 第 12 条（八个码，两两不同）；另外六种各有测试真的报出来：第 1、2、3、6、10、11 条 |
 | `python scripts/arch_check.py report` 里 `io` 开头各行的数字没有变大 | 达到 | 报告 36 行，改前改后逐行相同，`io` 开头的四行是 3、1、1、1；新文件里写到 `crate::app`、`crate::ui`、`crate::modules`、`crate::patreon` 的是 0 行 |
 
+## 19. 不是备份的来源在读取那一层报错（`EXP-1b`，2026-11-19）
+
+证据在 `D:\scratch\ocs-sppid\2026-11-19-exp1b\`（仓库之外）：`red\`、`green\` 是快测试的红和绿，`gates\` 是门禁和故意改坏，`plant-classic\` 是第一次走查留下的一个目录（那一遍用的是后来改过的程序，见 §19.6，以 `2026-11-19-exp1b-walk\` 为准），`before\` 是改之前的文件。编译器是 `PDF-7` 做到一半换上的那一个（`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`，§17.7）。
+
+### 19.1 加了什么
+
+四个 Rust 文件加 23 个翻译资源，加 633 行、减 32 行；其中程序加 48 行、减 0 行（`build_index_in` 里 6 行，两个新函数 42 行），其余是测试（按 `git diff --numstat` 的四个源文件加 23 个 `.ftl` 算）。
+
+| 文件 | 改了什么 |
+|---|---|
+| `src/io/pid_backup_browse.rs` | `build_index_in` 在 `restore_in` 之后、`scan_backup_folder` 之前加一段：`is_backup_folder(&backup_root)` 不成立、`restored.drawings` 也是空的，就 `discard_restore` 再 `Err(not_a_backup(source))`。新函数 `not_a_backup`（一句，进翻译表）和 `discard_restore`（删这次解出来的东西）。测试：9 条新的（3 条钉「有东西可看就照旧列」，6 条钉拒绝和删的范围）加 3 个小帮手 |
+| `src/app/pid_shell/pid_backup_in_shell.rs` | 钉旧行为的那条测试改名为 `a_folder_that_is_no_backup_is_refused_in_the_module_as_in_a_classic_window` 并改成钉新行为；另加 `a_zip_that_is_no_backup_is_refused_and_nothing_of_it_is_kept`、`a_folder_of_drawings_alone_is_listed_in_the_module_as_in_a_classic_window`；两个小帮手 `not_a_backup`、`kept` |
+| `src/i18n.rs` | 测试里那份属性名单加 `not-a-backup` |
+| `src/locale_catalog.rs` | 句子的对照表加一行，指到 `pid-backup` 的 `not-a-backup` |
+| `locales\*.ftl`（23 个） | `pid-backup` 下加 `.not-a-backup`；`zh-CN` 是中文，其余照这个仓库的做法是英文原文 |
+
+规则：
+
+- **「是不是备份」问的是包根目录。** 来源自己像备份就用来源；不像就往下找两层（`find_backup_root`），在找到的那一层问 `is_backup_folder`。两层里找不到时 `find_backup_root` 返回还原目录本身，于是问的是还原目录。这样 zip 里套一层文件夹、还原缓存里再套一层文件夹的摆法都认。
+- **「有没有图纸」看还原出来的东西。** `restored.drawings` 是 `restore_in` 解出来的 `.pid` 名单，不是来源文件夹里现找的。
+- **只有图纸、没有清单的来源照旧就地浏览。** 只要有一张 `.pid` 就不拒绝；`RD-1` 记的那种「只放了几张 `.pid` 的文件夹」不受影响。
+- **删的是这次解出来的东西。** `discard_restore(source, named, restored)`：`restored.extracted` 为假（就地使用）就什么都不删；缓存里的删（不管是不是这次解出来的，缓存是程序自己的）；用户点名的还原目录只删这次新建的（`named && restored.reused` 时留着）。删之前把来源和还原目录都换成真实路径，来源在还原目录里面才删，换不成真实路径就不删。
+- **`--classic` 跟着变**（`SPEC-sppid-read.md` §8 的例外）。
+
+### 19.2 先红后绿
+
+三轮，`red\red-1..3.done.txt`、`green\green-1..3.done.txt`：
+
+| 轮 | 红的做法 | 结果 |
+|---|---|---|
+| 1 | 句子、翻译表、测试都加上，`build_index_in` 还没有拒绝 | 11 条红：8 条新的 `pid_backup_browse` 测试、2 条新的 `pid_backup_in_shell` 测试、`i18n::tests::the_pid_backup_panel_labels_are_chinese_in_simplified_chinese`（翻译表多了一个键，中文那份还没加，它报的是缺键）。`pid_backup_in_shell` 那两条的失败信息里能看见旧行为：`PIDBACKUPOPEN: 0 drawing(s), 1 warning(s)` 和 `the folder is used in place (read-only).` |
+| 2 | 拒绝加上了，`discard_restore` 的边界还没有 | 2 条红：`a_backup_without_a_drawing_file_is_listed_as_before`（只有清单的包被拒了）、`only_a_restore_that_was_unpacked_apart_from_its_source_is_discarded`（换不成真实路径的那一摆） |
+| 3 | 删还原的那一步接上，`pid_backup_in_shell` 的「只有图纸」一条还没有 | 1 条红：`a_folder_of_drawings_alone_is_listed_in_the_module_as_in_a_classic_window` |
+| 绿 | — | 347 过、0 失败、5 忽略（`pid_backup pidbackup` 两组） |
+
+### 19.3 故意改坏
+
+28 处（`gates\mutants-a.txt` 写着每一处改什么），一次开一处（`OCS_MUTANT=<号>`），程序只编一次，每一号各跑一遍；跑完把两个文件换回去，校验值和改坏前相同（`905b1afc…`、`6a200808…`）。
+
+- **每一处都至少打红一条测试**，没有「开了也全绿」的。
+- **本任务的 13 条测试里 12 条至少红过一次。** 没有红过的是 `i18n::tests::the_pid_backup_panel_labels_are_chinese_in_simplified_chinese`：它钉的是「中文界面下这个面板的标签是中文」，这一次没有动那批标签，28 处里也没有一处能让它红。它在这一步里只起一个作用：`i18n.rs` 的名单和翻译表对不上时它会红（第 1 轮就是它红的）。
+- **顺带红了的旧测试 15 条**，都是因为改坏把「只有图纸」「只有清单」的来源也拒了，或者把缓存的还原删多了。逐条列在 `gates\mutants-result.txt` 末尾。
+- **改坏的限度。** 28 处是挑的，不是穷举。有两处只能靠「跑之前写明看不到」的边界：第 22 号（整个缓存目录删掉）写了守卫，只删测试自己那份 `cache` 文件夹；第 23 号（删完再建空文件夹）靠测试数条目。
+
+### 19.4 三个样本包
+
+`walk-samples.ps1` 一次，8 次走查（`D:\scratch\ocs-sppid\2026-11-19-exp1b-walk\`，表在 `summary.md`）：
+
+| 包 | 图纸 | 读不出 | 打不开 | 画出的图元 | 期望值 | 结果 |
+|---|---:|---:|---:|---:|---|---|
+| 全厂包（目录） | 53 | 2 | 1 | 149349 | `53,2,1` | 过 |
+| 小包（目录） | 7 | 1 | 1 | 1697 | `7,1,1` | 过 |
+| 小包（zip） | 7 | 1 | 1 | 1697 | `7,1,1` | 过 |
+| SQL Server 包（目录） | 12 | 11 | 2 | 956 | `12,11,2` | 过 |
+
+8 次全过，6 项比较全部相同（每个包的两种界面、小包的目录和 zip）；三个数、图元数和读不出、打不开的名单都和 `RD-3`（`readings.md` §4）相同。连同 cargo 一共 22 分 45 秒。
+
+### 19.5 和任务、规格写法的出入
+
+- **多改了 `src/i18n.rs` 和 `src/locale_catalog.rs`。** 任务是「错误句子要进翻译表时连同翻译资源」；这个仓库的翻译表有两处要登记：`i18n.rs` 的测试名单和 `locale_catalog.rs` 的句子对照表。只改 `.ftl` 的话，`the_pid_backup_panel_labels_are_chinese_in_simplified_chinese` 会红。
+- **多加了 5 条 `pid_backup_browse` 的测试**，钉「有东西可看就照旧列」的四种摆法和删还原的边界。任务只要求改 `pid_backup_in_shell` 那一条；不加这几条，「拒绝的范围」就没有测试钉住，28 处改坏里第 2、4、5、6、12–21 号全靠它们。
+- **`readings.md` 也动了**（任务的文件里没有它）。照 §1 第 9 条，读数记在这里。
+- **23 个语言里只有 `zh-CN` 是中文。** 这个仓库里同一个块的其余句子（`.cannot-scan`、`.cannot-read-drawing` 等）在别的语言里也都是英文原文，跟着做。
+- **删还原的范围是实现时定的**：缓存里的删，用户点名的还原目录只删这次新建的，来源本身和它所在的文件夹一律不碰。任务没有写要不要删、删哪些。
+
+### 19.6 检查的限度
+
+- **没有用真实的「不是备份」的目录试过。** 快测试里的来源都是现造的（一个放了几张照片的文件夹、一个只有 `notes.txt` 的 zip、一个空文件夹）。真实机器上有人误给一个下载文件夹时会不会被拒、删了会不会心疼，没有试。
+- **「换不成真实路径就不删」这一条只有快测试**，造的是一个指向不存在位置的路径。
+- **缓存里同时开着别的还原时删的只是这一个**，没有在真实缓存上试过多开几个包再给一个不是备份的来源。
+- **第一次走查（`plant-classic\`）是中途留下的**：那一遍用的是还没有修格式的程序，只跑完了第一个包就被我停掉，以 `2026-11-19-exp1b-walk\` 的完整一遍为准。
+- **只量了测试构建。** 只在这台机器、Windows PowerShell 5.1（走查）和 PowerShell 7（门禁）上跑过。
+
+### 19.7 门禁和验收判定
+
+| 门禁 | 读数 |
+|---|---|
+| 先红后绿 | 三轮（§19.2） |
+| 快测试 `pid_backup pidbackup` | 347 过、0 失败、5 忽略。逐组：`pid_backup` 294 过、3 忽略；`pidbackup` 53 过、2 忽略。这一组改前没有用同样的过滤词量过，测试条数的变化看下一行的库测试总数 |
+| 库测试 `cargo test --offline --locked --lib` | 7,078 条：7,021 过、53 忽略、4 失败；失败的是比对设计稿的那 4 条，名字和上一次相同 |
+| clippy `--lib` | 660，和上一个提交相同。逐条比（`clippy_diff.py`，和 `EXP-1` 第二遍的 `clippy-lib2.log` 对）：两边各 721 条、带位置的各 674 条，只有 `locale_catalog.rs:4` 那一条的栈大小数不同（869,922 → 870,035 字节；句子加了 113 个字符，这一条是照着函数体大小算的） |
+| clippy `--lib --profile test` | 1,058，和上一个提交相同。逐条比（和 `clippy-lib-test2.log` 对）：两边各 1,119 条、带位置的各 1,072 条；不同的只有那三处 `unnecessary_to_owned` 的行号（1444/1447/1606 → 1492/1495/1654，测试往上挪了 48 行）和同一条栈大小数。指到 `pid_backup_browse.rs` 的两边都是 3 条，指到 `pid_backup_in_shell.rs` 的两边都是 0 条 |
+| 格式 | `fmt-newhunks` 新增 0（四个文件都是） |
+| `arch_check.py report` | 36 行，和改前逐行相同 |
+| `scripts/sppid` 的 Python 测试 | 130 条全过 |
+| 故意改坏以后换回去 | 换回去了，校验值和改坏前相同（§19.3） |
+
+验收（`todo.md` 的 `EXP-1b`）：
+
+| 验收项 | 判定 | 依据 |
+|---|---|---|
+| 不像备份、也没有 `.pid` 的目录：一条错误，点出它不是备份包；面板可见、没有载入、记着原因；新界面和 `--classic` 相同；之后能打开真的备份 | 达到 | `a_folder_with_nothing_of_a_backup_is_refused_and_left_as_it_was`（第 1、25、27 号改坏打红）、`a_folder_that_is_no_backup_is_refused_in_the_module_as_in_a_classic_window`（第 1、25、27 号） |
+| 没有备份内容的 zip：同样一条错误，缓存里不留这次解出来的东西 | 达到 | `a_zip_with_nothing_of_a_backup_is_refused_and_nothing_of_it_stays_in_the_cache`（第 1、7、11、22、23、25、27 号）、`a_zip_that_is_no_backup_is_refused_and_nothing_of_it_is_kept`（第 1、7、11、22、23、25、27 号） |
+| 只有 `.pid` 的文件夹：照旧列出，没有错误 | 达到 | `a_folder_of_drawings_alone_is_listed_in_the_module_as_in_a_classic_window`（第 2、3 号）、`drawings_with_nothing_of_a_backup_around_them_are_listed_as_before`（第 2、3、28 号） |
+| 旧测试改成钉新行为；其余测试全过；靠「空目录也能打开」才过的逐条列出 | 达到；**这样的一条也没有**（§19.5、`todo.md` 那一条） | 347 过、0 失败 |
+| 三个样本包照常打开，读数和 `RD-3` 相同 | 达到 | §19.4 |
+| 成功标准 4 的说明和 §11 更新 | 达到 | `SPEC-sppid-read.md` 成功标准 4 后一句、§11 的 `EXP-1b` 一节 |
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -3176,3 +3274,4 @@ SQL Server 包：
 | 2026-11-19 | 加 §16：新界面下单张出图（`PDF-6`）。加了什么、快测试、真实包上单张和整包比字节（全厂包的 3 张三遍，补量 8 次）、故意改坏（16 处）、和任务及规格写法的出入、检查的限度、门禁和验收判定。这一步只加测试，程序没有改。任务点的 3 张没有量到不同。补量量到两件事：打不开的图没有单张；参考目录里没有字体而包里有时，单张出不了、整包出得了（另排 `PDF-7`）。§11.6、§12.6 里写着留给 `PDF-6` 的 3 处补了后来的结果。开头的状态说明补上 §16 |
 | 2026-11-19 | 加 §17：备份里的图单张出图，用整包导出的参考目录和字体目录（`PDF-7`）。改了什么、快测试的红和绿、真实样本的五轮、故意改坏的两轮（21 处）、和任务及规格写法的出入、检查的限度、门禁和验收判定。做到一半这台机器的编译器被换了（不是我换的）：门禁跑了两遍；clippy 的两个数在新编译器上超过原来的上限，量了基线，原因是编译器（§17.7）。§12.5、§16.3、§16.6 各补了后来的结果。开头的状态说明补上 §17 |
 | 2026-11-19 | 加 §18：导出 publish 文件的引擎（`EXP-1`）。加了什么、动手之前钉的命令行工具在三个真实的包上写出什么、快测试的红和绿（四轮）、故意改坏的两轮（86 处）、和任务及规格写法的出入、检查的限度、门禁和验收判定。只有快测试，没有拿本程序导真实的包。门禁跑了两遍：第一遍 `--profile test` 的 clippy 比上一个提交多 2 条，在新文件的测试里，改了以后整套重跑。开头的状态说明补上 §18 |
+| 2026-11-19 | 加 §19：不是备份的来源在读取那一层报错（`EXP-1b`）。加了什么、先红后绿的三轮、故意改坏 28 处、三个样本包的 8 次走查、和任务及规格写法的出入、检查的限度、门禁和验收判定。开头的状态说明补上 §19 |

@@ -7499,6 +7499,7 @@ pub(super) fn message_attribute(source: &str) -> Option<(&'static str, &'static 
         }
         "{}: {}" => Some(("pid-backup", "scan-problem")),
         "cannot scan {}: {}" => Some(("pid-backup", "cannot-scan")),
+        "{} is not a SmartPlant P&ID backup: no Manifest.txt, Export.dmp or PlantData~ archive in it, and no .pid drawing" => Some(("pid-backup", "not-a-backup")),
         "cannot read {}: {}" => Some(("pid-backup", "cannot-read-drawing")),
         "cannot start reading the drawing: {}" => Some(("pid-backup", "cannot-start-reading")),
         "cannot start indexing the backup: {}" => Some(("pid-backup", "cannot-start-indexing")),

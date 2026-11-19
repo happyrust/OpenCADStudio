@@ -156,7 +156,7 @@
   - [x] 面板打开时，特性面板仍然隐藏，编辑器的标签条还在；关掉面板后它不再可见。
   - [x] 激活一个图纸节点：发出打开这张图的请求，指向还原出来的那个 `.pid`。（没有模拟双击，原因和替代的三步见 `SPEC-sppid-read.md` §11。）
   - [x] 给一个不存在的路径：命令行有一条错误，程序继续运行；面板的状态和 `--classic` 下做同样的事之后相同。（原来和下一条写在一起，拆开记。）
-  - [ ] 给一个不是备份的目录：命令行有一条错误。**没有达到，这一步程序也没有改。** 实际不报错：它被当成没有图纸的备份列出来，带一条警告。原因在读取那一层，`--classic` 下完全一样。测试钉住的是现在的行为：两种界面下命令行说的话和面板的状态相同，程序继续运行。原因、为什么不在这一步改、处理意见见 `SPEC-sppid-read.md` §11。**已定（2026-11-18）：按建议改成报错，另加任务 `EXP-1b`；这半条到那时勾。**
+  - [x] 给一个不是备份的目录：命令行有一条错误。**这一步没有达到，程序也没有改**（实际不报错：被当成没有图纸的备份列出来，带一条警告）；**`EXP-1b` 做完时达到**：一条错误，点出它不是备份包，面板可见、没有载入、记着原因，新界面和 `--classic` 下相同。原因、为什么不在这一步改、处理意见见 `SPEC-sppid-read.md` §11。
   - [x] `pid_backup`、`pidbackup` 现有的测试一条不改，全部通过（成功标准 10）。（`pidbackup` 29 过、1 忽略；`pid_backup` 231 过、3 忽略，其中 5 条是这次新加的。）
 - **验证**：`cargo test --offline --locked --lib pid_backup_in_shell`；`cargo test --offline --locked --lib pidbackup`；`cargo test --offline --locked --lib pid_backup`
 - **依赖**：DEP-4
@@ -469,16 +469,17 @@
 
 - **做什么**：`src/io/pid_backup_browse.rs` 建索引时（`build_index_in`）判断来源里有没有东西可看。「像不像备份」用现成的函数：`is_backup_folder`（有 `Manifest.txt`、`Export.dmp` 或 `PlantData~` 开头的文件），`find_backup_root`（往下找两层）。**既不像备份、里面也没有一张 `.pid` 的来源**，返回错误，点出这个来源不是备份包，什么也不列；命令行因此有一条错误，面板和给了不存在的路径时一样：可见，没有载入，记着原因。目录和 zip 都照这个判（按代码看，没有备份内容的 zip 现在也是解开后列出空列表；做的时候先用测试坐实）。**只有 `.pid`、没有清单的文件夹照旧就地浏览**：它有图可看，现在就能用，拒绝它是减功能；这一点是我的建议，做到这一步时你没有别的意见就照此做。导出的口径更严（`EXP-1`：没有 `Manifest.txt` 就是 `SPPID_EXPORT_NOT_A_BACKUP`），两处各判各的。这是 `SPEC-sppid-read.md` §8「读取那一层的行为不改」经你同意的一处例外，`--classic` 下跟着变。
 - **验收**：
-  - [ ] 一个不像备份、也没有 `.pid` 的目录：`PIDBACKUPOPEN` 在命令行给一条错误，点出它不是备份包；面板可见、没有载入、记着原因；新界面和 `--classic` 下相同；程序继续运行，之后能打开真的备份。（就是 `RD-1` 没勾的那半条，达到后回去勾上。）
-  - [ ] 一个没有备份内容的 zip：同样一条错误，缓存目录里不留下这次解出来的东西。
-  - [ ] 只有 `.pid` 的文件夹：照旧列出这些图，没有错误。
-  - [ ] `pid_backup_in_shell` 里钉住旧行为的那条测试改成钉新行为。`pid_backup`、`pidbackup` 其余现有的测试全部通过；其中确有靠「空目录也能打开」才过的，逐条列出，写明它原来测的是什么、怎么改，不删测试；别的一条不改。
-  - [ ] 三个样本包照常打开：`walk-samples.ps1` 全过，读数和 `RD-3` 的相同。
-  - [ ] `SPEC-sppid-read.md` 成功标准 4 的说明和 §11 跟着更新。
+  - [x] 一个不像备份、也没有 `.pid` 的目录：`PIDBACKUPOPEN` 在命令行给一条错误，点出它不是备份包；面板可见、没有载入、记着原因；新界面和 `--classic` 下相同；程序继续运行，之后能打开真的备份。（就是 `RD-1` 没勾的那半条，达到后回去勾上。）（一条错误 `PIDBACKUPOPEN: <目录> is not a SmartPlant P&ID backup: …`；面板可见、`idle`、没有一行、记着这条原因；`--classic` 下逐行相同；之后打开真备份照常。`RD-1` 那半条已勾。）
+  - [x] 一个没有备份内容的 zip：同样一条错误，缓存目录里不留下这次解出来的东西。（同样一条错误；解出来的那一份当场删掉，缓存目录里 0 个条目；zip 的字节前后相同。再问一次仍然拒绝，上一次留下的还原也被删掉。）
+  - [x] 只有 `.pid` 的文件夹：照旧列出这些图，没有错误。（两张图都列出，没有错误，就地浏览，缓存目录里 0 个条目。）
+  - [x] `pid_backup_in_shell` 里钉住旧行为的那条测试改成钉新行为。`pid_backup`、`pidbackup` 其余现有的测试全部通过；其中确有靠「空目录也能打开」才过的，逐条列出，写明它原来测的是什么、怎么改，不删测试；别的一条不改。（旧的那条改名为 `a_folder_that_is_no_backup_is_refused_in_the_module_as_in_a_classic_window`，改成钉新行为；另加两条快测试（zip、只有图纸）。`pid_backup` 294 过、3 忽略，`pidbackup` 53 过、2 忽略，全过。**靠「空目录也能打开」才过的一条也没有**：现有测试里打开的都是带 `Manifest.txt` 或带 `.pid` 的来源，拒绝它们等于减功能，所以没有一条要改；只有 `pid_backup_in_shell` 那一条钉的是旧行为。`pid_backup_browse` 里另有 5 条新测试钉住「有东西可看就照旧列」的四种摆法。）
+  - [x] 三个样本包照常打开：`walk-samples.ps1` 全过，读数和 `RD-3` 的相同。（8 次走查全过，6 项比较全部相同；`53,2,1`、`7,1,1`、`12,11,2`，画出的图元 149349、1697、956，都和 `RD-3` 相同。连同 cargo 一共 22 分 45 秒。）
+  - [x] `SPEC-sppid-read.md` 成功标准 4 的说明和 §11 跟着更新。（成功标准 4 后面加了一句「`EXP-1b` 改了」；§11 加 `EXP-1b` 一节。）
 - **验证**：`cargo test --offline --locked --lib pid_backup`；`cargo test --offline --locked --lib pidbackup`；`walk-samples.ps1` 一次；`python scripts/arch_check.py report`
 - **依赖**：EXP-1；RD-3（用 `walk-samples.ps1` 证明样本包不受影响）
 - **文件**：`src/io/pid_backup_browse.rs`；`src/app/pid_shell/pid_backup_in_shell.rs`；错误句子要进翻译表时连同翻译资源；`SPEC-sppid-read.md`
 - **规模**：S
+- **做完**（2026-11-19）：改了 4 个 Rust 文件加 23 个翻译资源，加 633 行、减 32 行，其中程序加 48 行，其余是测试。做法：`src/io/pid_backup_browse.rs` 的 `build_index_in` 在还原之后看一眼——`is_backup_folder`（在来源或往下两层的包根目录上问）不成立、`restored.drawings` 也是空的，就报错，什么也不列；报错前把这次解出来的东西删掉（`discard_restore`：缓存里的删，用户点名的还原目录只删这次新建的，来源本身和它所在的文件夹一律不碰）。句子进翻译表（`pid-backup` 的 `not-a-backup`），23 个语言都加了，只有 `zh-CN` 是中文。只有 `.pid` 的文件夹照旧就地浏览。`--classic` 跟着变（`SPEC-sppid-read.md` §8 的例外）。**先红后绿**：三轮，红的分别是句子和测试加上、程序还没有拒绝（11 条红，其中一条是翻译表缺键）、拒绝只做了一半（2 条红）、删还原的那一步没有接上（1 条红）。**故意改坏 28 处，每一处都至少打红一条测试**；本任务的 13 条里 12 条至少红过一次，`i18n::tests::the_pid_backup_panel_labels_are_chinese_in_simplified_chinese` 一次也没有红——它钉的是「中文界面下这个面板的标签是中文」，这一次没有动那批标签，写在 `readings.md` §19.3。**门禁**：库测试 7,078 条，7,021 过、53 忽略、4 失败（比对设计稿的那 4 条，名字和上一次相同）；clippy 660（`--lib`）和 1,058（`--lib --profile test`），和上一个提交在同一个编译器上的读数相同；`fmt-newhunks` 新增 0；`arch_check` 报告 36 行，和改前逐行相同；`scripts/sppid` 的 Python 测试 130 条全过。和任务写法的出入记在 `SPEC-sppid-read.md` §11 和 `readings.md` §19.5：多加了 9 条 `pid_backup_browse` 的测试（3 条钉「有东西可看就照旧列」的三种摆法，6 条钉拒绝和删的范围）、多改了 `src/i18n.rs` 和 `src/locale_catalog.rs`（翻译表的测试名单和句子对照表）、`readings.md` 也动了（任务没列）。证据在 `D:\scratch\ocs-sppid\2026-11-19-exp1b\`（仓库之外）。
 
 ### EXP-2 【接线】命令 `PIDBACKUPEXPORT`
 

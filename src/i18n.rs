@@ -1298,6 +1298,7 @@ mod tests {
         "declared-but-missing",
         "scan-problem",
         "cannot-scan",
+        "not-a-backup",
         "cannot-read-drawing",
         "cannot-start-reading",
         "cannot-start-indexing",
