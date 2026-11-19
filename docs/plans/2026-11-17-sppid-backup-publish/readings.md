@@ -1,6 +1,6 @@
 # 读数记录（SmartPlant 备份包：升级解析库、读取、出 PDF、导出）
 
-> 状态：**进行中**。§1 是升级 `pid-parse` 之前的一组（`DEP-2`，2026-11-18）；§2 是换版本这一步的记录（`DEP-3`，2026-11-18）；§3 是升级之后的一组、逐张对比和判定（`DEP-4`，2026-11-18）；§4 是三个包、两种界面的走查（`RD-3`，2026-11-18）；§5 是真实窗口和显示对照（`RD-4`，2026-11-18）；§6 是图框按文件引用的模板套（`RD-5`，2026-11-18）；§7 是已经开着的图从面板再开时切过去（`RD-6`，2026-11-18）；§8 是 `RD-7` 查原因时量的数，这一步没有改程序（2026-11-19）；§9 是套图框时也画模板里的符号（`RD-10`，2026-11-19）；§10 是还原缓存被系统清理掉一部分时不照用（`RD-12`，2026-11-19）；§11 是从钉的提交编出对比用的命令行工具，和 `pid_plot --batch` 对全厂包的读数（`PDF-1`，2026-11-19）；§12 是单张出图和命令行工具对齐（`PDF-2`，2026-11-19）；§13 是整包出 PDF 的引擎（`PDF-3`，2026-11-19）；§14 是命令 `PIDBACKUPPDF`（`PDF-4`，2026-11-19）；§15 是真实包上的 PDF 比对和读数（`PDF-5`，2026-11-19）；§16 是新界面下单张出图（`PDF-6`，2026-11-19）；§17 是备份里的图单张出图用整包导出的参考目录和字体目录（`PDF-7`，2026-11-19）；§18 是导出 publish 文件的引擎（`EXP-1`，2026-11-19）；§19 是不是备份的来源在读取那一层报错（`EXP-1b`，2026-11-19）；§20 是命令 `PIDBACKUPEXPORT`（`EXP-2`，2026-11-19）；§21 是真实包上的导出比对和读数（`EXP-3`，2026-11-19）。后面各块的读数接着记在 §21 之后。
+> 状态：**进行中**。§1 是升级 `pid-parse` 之前的一组（`DEP-2`，2026-11-18）；§2 是换版本这一步的记录（`DEP-3`，2026-11-18）；§3 是升级之后的一组、逐张对比和判定（`DEP-4`，2026-11-18）；§4 是三个包、两种界面的走查（`RD-3`，2026-11-18）；§5 是真实窗口和显示对照（`RD-4`，2026-11-18）；§6 是图框按文件引用的模板套（`RD-5`，2026-11-18）；§7 是已经开着的图从面板再开时切过去（`RD-6`，2026-11-18）；§8 是 `RD-7` 查原因时量的数，这一步没有改程序（2026-11-19）；§9 是套图框时也画模板里的符号（`RD-10`，2026-11-19）；§10 是还原缓存被系统清理掉一部分时不照用（`RD-12`，2026-11-19）；§11 是从钉的提交编出对比用的命令行工具，和 `pid_plot --batch` 对全厂包的读数（`PDF-1`，2026-11-19）；§12 是单张出图和命令行工具对齐（`PDF-2`，2026-11-19）；§13 是整包出 PDF 的引擎（`PDF-3`，2026-11-19）；§14 是命令 `PIDBACKUPPDF`（`PDF-4`，2026-11-19）；§15 是真实包上的 PDF 比对和读数（`PDF-5`，2026-11-19）；§16 是新界面下单张出图（`PDF-6`，2026-11-19）；§17 是备份里的图单张出图用整包导出的参考目录和字体目录（`PDF-7`，2026-11-19）；§18 是导出 publish 文件的引擎（`EXP-1`，2026-11-19）；§19 是不是备份的来源在读取那一层报错（`EXP-1b`，2026-11-19）；§20 是命令 `PIDBACKUPEXPORT`（`EXP-2`，2026-11-19）；§21 是真实包上的导出比对和读数（`EXP-3`，2026-11-19）；§22 是合入 `sppid-exp2`、升级 `pid-parse` 到 `a85fa10` 与新 94 套验证集复测读数（2026-11-19）。后面各块的读数接着记在 §22 之后。
 > 用途：`SPEC-sppid-deps.md` §3.2 的「不变差」拿升级前后两组数判；后面各块的读数也接着记在这里。
 > 规矩：数都出自当次命令的输出。报告全文、日志、截图、PDF 在仓库外，这里只记数和位置。
 
@@ -3671,6 +3671,67 @@ SQL Server 包：
 | 8 | 厂商 11 张的读数不比 `pid-plot` 自己的记录差 | 过 | §15.2：11 张逐张等于记录 |
 | 9 | publish 文件和 PDF 导进同一个目录后，`<图名>.pdf` 和 `<图名>_Data.xml` 成对 | 没有验 | 照计划在总验收（`ACC-1`）用 `scripts/sppid/check-pairs.ps1` 验（`SPEC-sppid-pdf.md` §6 第 7 条）。按名字的预查对得上：全厂包 53 对 53，小包 7 对 7；SQL Server 包另有 11 份只有 PDF，都是图框模板（§21.2） |
 
+## 22. 合入 `sppid-exp2`、升级 `pid-parse` 到 `a85fa10` 与新 94 套验证集复测（2026-11-19）
+
+| 项 | 值 |
+|---|---|
+| 本程序的提交 | `20209db42`（将 `sppid-exp2` 合入 `main`）、`aba66b75a`（修命令词解析两处边界问题）、`268fea286`（`Cargo.toml` / `Cargo.lock` 升级 `pid-parse` 到 `a85fa10`） |
+| `pid-parse` 的提交 | `96ee00cf7555` → `a85fa10285cc5379953495fa391f374981b9e587`（已推送 `pid-parse` 的 `origin/main`） |
+| 命令行对比工具 | `D:\scratch\ocs-sppid\tools\a85fa10\`（`scripts\sppid\build-pid-tools.ps1` 离线编出 `pid_plot.exe`、`pid_plot_compare.exe`、`pid_publish_xml.exe`） |
+| 新验证集 | `D:\work\plant-code\cad\pid-test-data\publish\sppid导出\sppid导出格式.pid+xml`（含 `01` 56 套、`02` 28 套、`03` 10 套，共 94 套同版导出的 `.pid` + `_Data.xml` + `_Meta.xml`，`Plant="P01"`） |
+| 证据 | `D:\scratch\ocs-sppid\2026-11-19-export-compare-a85fa10\`（全量 7 组复测与门禁日志）、`D:\scratch\ocs-sppid\2026-11-19-export-compare-new94\`（新 94 套嵌套参考目录端到端比对） |
+
+### 22.1 改了什么
+
+**`pid-parse`（`1f9fad3`、`fe5bca1`、`a85fa10`）**：
+
+1. **`src/parsers/attribute_rows.rs`**：`0x8010` 文本解码对仅含双字节多字节字符（如 GBK `"停止"` 字节 `CD A3 D6 B9` 碰巧通过 UTF-8 校验变成 `"\u{0363}\u{05b9}"`）补充汉字块判据，回退 GBK 解码，消除 9 处 `"停止"` 乱码。
+2. **`src/publish/catalog.rs`**：`PIDHeatTransferEquipment` 的 `INamedEquipment` 接口由 `always` 改为 `if_value`（消除 34 处无名换热管段空 `<INamedEquipment />`）；登记 `EqType6`（`SPID_EquipmentType6`），消除 23 处换热器子分类缺失。
+3. **`src/publish/codelist_values.rs`**：将 `LEAF_LEVELS` 扩充为从 107 份厂商 XML 核对出的 58 条零冲突层级链（补齐 `263 <- 261 <- 260 <- 235`、`5078 <- 5058 <- 5055` 等）。
+4. **`src/publish/pid_load.rs`**：过滤 `item_type == "PipeRun"` 且带 `SYMBOL` 路径的跨线跳弯符号（`Piping\Gaps\gap-curves.sym`），不再误产空壳 `<PipeRun>`（13 处清零）。
+5. **`src/publish/backup_package.rs`**：`PackageGate` 支持递归扫描 `reference_dir` 子目录（如 `01/`、`02/`、`03/`），按唯一 `<Container DocUID>` 回退配对重命名图纸，并在 `FluidSystem` 超限时输出原因行（消除 7 张 `findings 0` 假阳性）。
+6. **`tests/publish_completeness.rs`、`tests/publish_from_pid.rs`**：正向完整度棘轮同步上调（`pid-parse` 1,602 条库单测与全部 18 套 `publish_*` 集成测试通过，`clippy -D warnings` 0 警告）。
+
+**本程序（`aba66b75a`、`268fea286`）**：
+
+1. **`src/app/commands/pidbackupexport.rs`、`src/app/commands/pidbackuppdf.rs`**：修复命令词头 `Plant=` / `Ref=` 区分大小写问题（如小写 `plant=SQPlant`、`ref=...` 原先被误当输出目录），并支持句末含 `=` 的相对输出目录（如 `PIDBACKUPEXPORT out=1`），新增 4 条单测。
+2. **`Cargo.toml`、`Cargo.lock`**：6 处 `pid-parse` git 修订号及 `Cargo.lock` 中 7 个衍生 crate 升级至 `a85fa10285cc5379953495fa391f374981b9e587`。
+
+### 22.2 新 94 套验证集读数
+
+1. **94 套同版 `.pid ↔ _Data.xml` 单图门禁（`pid-parse`）**：修复前 `64 / 94`（68.1%）一致、`30` 张有差异；修复后提升至 **`82 / 94`（87.2%）一致、`12` 张有差异**。剩余 12 张经 `.pid` 原始字节搜索取证，均属数据库侧对象/列（如 `FluidSystem` 编码、跨图连接 OPC/OffPage、`InstrumentLoop`、管线保温温度与伴热介质、`SIOther`）或图面标签与数据库存储格式独立（如 `50"` vs `50`、`DN500-PG-10202` vs `500-PG-10202`、全大写备注等），单 `.pid` 文件内不含对应源字节。
+2. **全厂备份包（53 张）对新 94 套目录（`PIDBACKUPEXPORT "<输出>" Ref="D:\work\plant-code\cad\pid-test-data\publish\sppid导出\sppid导出格式.pid+xml"`）**：
+   - 写出 53 张、160 个文件，失败计数 0，用时 30.0 秒；与 `pid_publish_xml` 160 / 160 逐字节相同。
+   - 比对结论：**`53 drawing(s), 15 the same, 32 with findings, 0 of another revision, 6 without a reference`**（其中 2 张重命名图纸经 `DocUID` 回退自动配对），与 `pid_publish_xml --diff-against` 结论完全一致，逐张比对 **2,693 行逐行相同**（退出码 0）。
+
+### 22.3 全量 7 组真实包复测（`export-compare.ps1`）
+
+命令：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sppid\export-compare.ps1 -Out D:\scratch\ocs-sppid\2026-11-19-export-compare-a85fa10`（命令行工具自动取 `D:\scratch\ocs-sppid\tools\a85fa10`）。
+
+| 导出 | 写出 | 失败计数 | 文件 | 和 `pid_publish_xml` 报的数 | 和 `pid_publish_xml` 逐字节相同 / 共 | 用时 | 期望值 | 结果 |
+|---|---:|---:|---:|---|---|---:|---|---|
+| `plant` | 53 | 0 | 160 | 相同 | 160 / 160 | 28.2 s | `files=160,written=53,failed=0,pid=53,templates=0,unmatched=0,shells=2` | 过 |
+| `plant-sqplant` | 53 | 0 | 160 | 相同 | 160 / 160 | 25.3 s | `files=160,written=53,failed=0,pid=53,templates=0,unmatched=0,shells=2` | 过 |
+| `plant-ref`（原 11 张验收数据） | 53 | 0 | 160 | 相同 | 160 / 160 | 31.7 s | `files=160,written=53,failed=0,pid=53,templates=0,unmatched=0,shells=2,gate=7/0/4/42` | 过 |
+| `small` | 7 | 0 | 22 | 相同 | 22 / 22 | 0.2 s | `files=22,written=7,failed=0` | 过 |
+| `small-zip` | 7 | 0 | 22 | 相同 | 22 / 22 | 0.2 s | `files=22,written=7,failed=0` | 过 |
+| `small-broken` | 6 | 1 | 19 | 相同 | 19 / 19 | 0.2 s | `files=19,written=6,unwritten=1,failed>0` | 过 |
+| `sqlserver` | 1 | 0 | 4 | 相同 | 4 / 4 | 0.1 s | `written=1,pid=12,templates=11` | 过 |
+
+7 次整包导出全部通过，小包目录和 zip 的 14 个 `_Data.xml`、`_Meta.xml` 逐字节相同，包和还原目录不变，脚本退出码 0。
+
+### 22.4 门禁
+
+| 门禁 | 读数 |
+|---|---|
+| `cargo test --offline --locked --lib` | 7,086 条：7,030 过，55 忽略，1 失败（唯一失败项为工作区未提交设计稿的 `ui::style::pid_fonts::tests::the_faces_are_the_weights_the_design_uses`） |
+| 快测试 | `pidbackup` 70 过、4 忽略；`pid_backup` 295 过 |
+| `cargo clippy --offline --locked --lib` | 656 条警告（与 §21.9 相同） |
+| `cargo clippy --offline --locked --lib --profile test` | 1,051 条警告（与 §21.9 相同） |
+| `scripts/fmt-newhunks.ps1`（`pidbackupexport.rs`、`pidbackuppdf.rs`） | `before=0 after=0 new=0` |
+| `python scripts/arch_check.py report` | 33 对模块、183 个文件，`io` 四行 `3、1、1、1`（与 §21.9 逐行相同） |
+| `scripts/sppid` 的 Python 测试 | 159 条全过 |
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -3698,3 +3759,4 @@ SQL Server 包：
 | 2026-11-19 | 加 §19：不是备份的来源在读取那一层报错（`EXP-1b`）。加了什么、先红后绿的三轮、故意改坏 28 处、三个样本包的 8 次走查、和任务及规格写法的出入、检查的限度、门禁和验收判定。开头的状态说明补上 §19 |
 | 2026-11-19 | 加 §20：命令 `PIDBACKUPEXPORT`（`EXP-2`）。加了什么、先红后绿（红重跑了一次）、故意改坏的三轮、和任务及规格写法的出入、检查的限度、门禁（两遍）和验收判定，连同改前的基线为什么和 §19 不同。只有快测试，没有拿真实的包走命令。这一步在单独的工作树和分支 `sppid-exp2` 上做。开头的状态说明补上 §20；**更正**：上一行说开头的状态说明补上了 §19，实际没有补，这次一并补上 |
 | 2026-11-19 | 加 §21：真实包上的导出比对和读数（`EXP-3`）。加了什么、脚本整跑的读数（七次导出）、用时、真实窗口的三次和自动化通道的两件事、反过来验（改错期望值，程序临时改坏两轮，改回后第一轮因为没有重编而作废）、出表程序的测试和故意改坏（36 处）、和任务及规格写法的出入、检查的限度、门禁和验收判定、检查点 B 的 9 条（8 条过，第 9 条照计划留到总验收）。没有量到不同。开头的状态说明补上 §21 |
+| 2026-11-19 | 加 §22：合入 `sppid-exp2`、修复命令词解析两处边界问题、`pid-parse` 升级到 `a85fa10`（含 94 套验证集修复：`64/94 → 82/94` 一致）、全量 7 组真实包复测（100% 逐字节一致）与新 94 套嵌套参考目录端到端比对（`15/32/0/6`，2,693 行逐行相同）及门禁读数。开头的状态说明补上 §22 |
