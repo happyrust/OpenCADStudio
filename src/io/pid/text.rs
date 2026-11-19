@@ -162,6 +162,64 @@ pub(super) fn apply_text_anchor(entity: &mut EntityType, code: u8) {
     }
 }
 
+/// Letter a record that states a text box from the edge of the box its
+/// paragraph names.
+///
+/// A boxed `igTextBox` is laid out in its box, not on its insertion point: the
+/// anchor code says where inside the box the insertion sits -- left, middle or
+/// right -- which recovers the box, and the paragraph's alignment says which
+/// edge of it the run hangs from, the left one when the paragraph states
+/// none. The vertical stays where [`apply_text_anchor`] put it. The
+/// connectors' drawing numbers are the measured case: a 45.3 mm box centred
+/// on the insertion, and the vendor's plots start a left-aligned number at the
+/// box's left edge and end a right-aligned one at its right edge, where
+/// centring the run on the insertion put it about 9 mm off (`pid-parse`'s
+/// `docs/analysis/2026-10-19-igtextbox-box-is-where-the-text-starts.md` and
+/// `docs/analysis/2026-10-20-a-field-hangs-from-its-box-edge.md`).
+///
+/// Call it after [`apply_text_anchor`] with the same code. Scoped like it: the
+/// sheet's own lettering only.
+pub(super) fn apply_text_box(
+    entity: &mut EntityType,
+    code: u8,
+    box_width_mm: Option<f64>,
+    paragraph: Option<TextAlignment>,
+) {
+    use crate::entities::text::sync_text_alignment_point;
+
+    let Some(width) = box_width_mm.filter(|width| width.is_finite() && *width > 0.0) else {
+        return;
+    };
+    if let EntityType::Text(text) = entity {
+        if text.common.layer != LAYER_TEXT {
+            return;
+        }
+        let insertion_share = match (code >> 4) % 3 {
+            1 => 0.5,
+            2 => 1.0,
+            _ => 0.0,
+        };
+        let (alignment, edge_share) = match paragraph.unwrap_or(TextAlignment::Left) {
+            TextAlignment::Left => (TextHorizontalAlignment::Left, 0.0),
+            TextAlignment::Center => (TextHorizontalAlignment::Center, 0.5),
+            TextAlignment::Right => (TextHorizontalAlignment::Right, 1.0),
+        };
+        let back = width * (insertion_share - edge_share);
+        let (sin, cos) = text.rotation.sin_cos();
+        let (dx, dy) = (cos * back, sin * back);
+        // Past the anchor the two points are the same hot point, and the
+        // canvas letters from `alignment_point`: both move, or the run stays.
+        text.insertion_point.x -= dx;
+        text.insertion_point.y -= dy;
+        if let Some(point) = text.alignment_point.as_mut() {
+            point.x -= dx;
+            point.y -= dy;
+        }
+        text.horizontal_alignment = alignment;
+        sync_text_alignment_point(text);
+    }
+}
+
 /// The code points SmartPlant may end a line of a label on.
 ///
 /// The corpus only ever uses `U+000D`, a bare carriage return with no line

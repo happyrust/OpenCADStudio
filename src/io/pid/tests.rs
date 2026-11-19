@@ -1888,3 +1888,221 @@ fn pid_text_width_keeps_a_right_or_centred_labels_anchor() {
         );
     }
 }
+
+/// A sheet label placed the way the importer places it -- the anchor code,
+/// then the box when the record states one -- and laid out the way the canvas
+/// lays it out: the entity, the run's origin and its advance along the
+/// baseline, in drawing millimetres.
+fn boxed_label(
+    value: &str,
+    insertion: (f64, f64),
+    rotation: f64,
+    code: u8,
+    box_width_mm: Option<f64>,
+    paragraph: Option<TextAlignment>,
+) -> (Text, [f64; 2], f64) {
+    use crate::entities::text::text_run_placement_at_scale;
+    use crate::entities::text_support::text_local_bounds;
+
+    let mut text = Text::new();
+    text.value = value.to_string();
+    text.height = 2.469;
+    text.insertion_point.x = insertion.0;
+    text.insertion_point.y = insertion.1;
+    text.rotation = rotation;
+    text.common.layer = LAYER_TEXT.to_string();
+    let mut entity = EntityType::Text(text);
+    apply_text_anchor(&mut entity, code);
+    apply_text_box(&mut entity, code, box_width_mm, paragraph);
+    let EntityType::Text(text) = entity else {
+        unreachable!("built as text");
+    };
+    let placement = text_run_placement_at_scale(&text, &Document::new(), 1.0);
+    let advance = text_local_bounds(
+        &placement.font,
+        &text.value,
+        placement.height,
+        placement.width_factor,
+        placement.oblique_angle,
+    )
+    .expect("the label lays out")
+    .advance;
+    let origin = [placement.origin[0], placement.origin[1]];
+    (text, origin, f64::from(advance))
+}
+
+/// A boxed record whose paragraph is left-aligned starts at its box's left
+/// edge. The connectors' drawing numbers are the case: a 45.307 mm box with
+/// the insertion at its middle (`0x48`), around a number some 28 mm long.
+#[test]
+fn pid_text_box_starts_a_left_aligned_run_at_the_box_left_edge() {
+    let label = |width| {
+        boxed_label(
+            "DWG-0100集05-37",
+            (106.956, 505.482),
+            0.0,
+            0x48,
+            width,
+            Some(TextAlignment::Left),
+        )
+    };
+    let (text, origin, advance) = label(Some(45.307));
+    let (_, unboxed, _) = label(None);
+    assert!(advance < 40.0, "a box wider than its text: {advance}");
+    assert_eq!(text.horizontal_alignment, TextHorizontalAlignment::Left);
+    assert!(
+        (origin[0] - (106.956 - 45.307 / 2.0)).abs() < 1e-6,
+        "starts at the box's left edge: {origin:?}"
+    );
+    assert!(
+        (origin[1] - unboxed[1]).abs() < 1e-9,
+        "keeps the line the anchor code puts it on: {origin:?} against {unboxed:?}"
+    );
+}
+
+/// A right-aligned paragraph hangs the run from the box's right edge: the
+/// three such numbers of the reference drawings end 0.05 mm inside it.
+#[test]
+fn pid_text_box_ends_a_right_aligned_run_at_the_box_right_edge() {
+    let (text, origin, advance) = boxed_label(
+        "DWG-0100集05-42",
+        (689.867, 300.0),
+        0.0,
+        0x48,
+        Some(45.307),
+        Some(TextAlignment::Right),
+    );
+    assert!(advance < 40.0, "a box wider than its text: {advance}");
+    assert_eq!(text.horizontal_alignment, TextHorizontalAlignment::Right);
+    assert!(
+        (origin[0] + advance - (689.867 + 45.307 / 2.0)).abs() < 1e-3,
+        "ends at the box's right edge: {origin:?} + {advance}"
+    );
+}
+
+/// A centred paragraph letters the run at the box's middle, and the anchor
+/// code still says where the box is: a left anchor (`0x05`) puts the
+/// insertion on the box's left edge, so the run centres half a box further
+/// along.
+#[test]
+fn pid_text_box_centres_a_centre_aligned_run_in_the_box() {
+    let (text, origin, advance) = boxed_label(
+        "323",
+        (63.922, 335.647),
+        0.0,
+        0x05,
+        Some(20.0),
+        Some(TextAlignment::Center),
+    );
+    assert!(advance < 20.0, "a box wider than its text: {advance}");
+    assert_eq!(text.horizontal_alignment, TextHorizontalAlignment::Center);
+    assert!(
+        (origin[0] + advance / 2.0 - (63.922 + 10.0)).abs() < 1e-3,
+        "centred in the box: {origin:?} + {advance} / 2"
+    );
+}
+
+/// The box lies along the baseline: a record lettered up the page moves up
+/// it, and stays where it was across it.
+#[test]
+fn pid_text_box_moves_a_rotated_run_along_its_baseline() {
+    let label = |width| {
+        boxed_label(
+            "DWG-0100集05-37",
+            (74.005, 283.540),
+            std::f64::consts::FRAC_PI_2,
+            0x48,
+            width,
+            Some(TextAlignment::Left),
+        )
+    };
+    let (_, origin, _) = label(Some(42.009));
+    let (_, unboxed, _) = label(None);
+    assert!(
+        (origin[1] - (283.540 - 42.009 / 2.0)).abs() < 1e-6,
+        "starts at the box's lower edge: {origin:?}"
+    );
+    // The canvas turns a run in `f32`: the centred one steps back half its
+    // advance along a cosine of about -4e-8, some 7e-7 mm across.
+    assert!(
+        (origin[0] - unboxed[0]).abs() < 1e-3,
+        "stays across the baseline: {origin:?} against {unboxed:?}"
+    );
+}
+
+/// A record that states no box letters at its insertion by its anchor code,
+/// whatever its paragraph says.
+#[test]
+fn pid_text_box_absent_leaves_the_anchor_code_in_charge() {
+    let mut anchored = Text::new();
+    anchored.value = "PG-1001".to_string();
+    anchored.height = 2.469;
+    anchored.insertion_point.x = 100.0;
+    anchored.insertion_point.y = 50.0;
+    anchored.common.layer = LAYER_TEXT.to_string();
+    let mut anchored = EntityType::Text(anchored);
+    apply_text_anchor(&mut anchored, 0x15);
+    let EntityType::Text(anchored) = anchored else {
+        unreachable!("built as text");
+    };
+    for paragraph in [
+        None,
+        Some(TextAlignment::Left),
+        Some(TextAlignment::Center),
+        Some(TextAlignment::Right),
+    ] {
+        let (text, _, _) = boxed_label("PG-1001", (100.0, 50.0), 0.0, 0x15, None, paragraph);
+        assert_eq!(
+            (
+                text.horizontal_alignment,
+                text.vertical_alignment,
+                text.insertion_point,
+                text.alignment_point,
+            ),
+            (
+                anchored.horizontal_alignment,
+                anchored.vertical_alignment,
+                anchored.insertion_point,
+                anchored.alignment_point,
+            ),
+            "{paragraph:?}"
+        );
+    }
+}
+
+/// Read from a drawing: `DWG-0100集05-38` is lettered twice on the corpus's
+/// `一级闪蒸分离器B`, by records that state a 45.307 mm box around
+/// insertions at x = 106.956 and 693.814 mm and a left-aligned paragraph. Both
+/// start at their box's left edge.
+#[test]
+fn pid_text_box_sheet_numbers_start_at_their_box_left_edge() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|dir| {
+            dir.join("pid-parse")
+                .join("test-file")
+                .join("集注站 凝析油闪蒸单元 一级闪蒸分离器B工艺及自控流程图.pid")
+        })
+        .filter(|path| path.is_file());
+    let Some(path) = path else {
+        return; // fixture absent: soft-skip like the corpus tests do
+    };
+    let import = load_pid(&path).expect("the fixture imports");
+    let mut starts: Vec<(TextHorizontalAlignment, f64)> = import
+        .document
+        .entities()
+        .filter_map(|entity| match entity {
+            EntityType::Text(text) if text.value == "DWG-0100集05-38" => Some((
+                text.horizontal_alignment,
+                text.alignment_point.unwrap_or(text.insertion_point).x,
+            )),
+            _ => None,
+        })
+        .collect();
+    starts.sort_by(|a, b| a.1.total_cmp(&b.1));
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    for ((alignment, x), insertion) in starts.iter().zip([106.956, 693.814]) {
+        assert_eq!(*alignment, TextHorizontalAlignment::Left, "{starts:?}");
+        assert!((x - (insertion - 45.307 / 2.0)).abs() < 0.01, "{starts:?}");
+    }
+}

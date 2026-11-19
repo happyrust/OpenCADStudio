@@ -783,9 +783,17 @@ pub(super) fn overlay_template(
         // The record's own trailer byte beats the paragraph the same way the
         // sheet's labels do: the template letters its title-block captions at
         // the hot point it states (`0x10` bottom-centre up the left column).
-        let anchor_code = match &entity.kind {
-            PidGraphicKind::Text { anchor_code, .. } => Some(*anchor_code),
-            _ => None,
+        // A boxed record hangs from its box the same way too.
+        let (anchor_code, box_width_mm) = match &entity.kind {
+            PidGraphicKind::Text {
+                anchor_code,
+                text_box_width,
+                ..
+            } => (
+                Some(*anchor_code),
+                text_box_width.map(|width| projection.mm(width)),
+            ),
+            _ => (None, None),
         };
         let font_style = text_style
             .and_then(|style| style.font_name.as_deref())
@@ -810,7 +818,10 @@ pub(super) fn overlay_template(
                 apply_text_colour(&mut one, rgb);
             }
             match anchor_code {
-                Some(code) => apply_text_anchor(&mut one, code),
+                Some(code) => {
+                    apply_text_anchor(&mut one, code);
+                    apply_text_box(&mut one, code, box_width_mm, text_alignment);
+                }
                 None => {
                     if let Some(alignment) = text_alignment {
                         apply_text_alignment(&mut one, alignment);
