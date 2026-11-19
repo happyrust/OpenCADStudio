@@ -137,7 +137,12 @@ fn say_result(command_line: &mut CommandLine, result: &Result<PdfOutcome, PdfErr
 
 impl OpenCADStudio {
     pub(super) fn dispatch_pidbackuppdf(&mut self, cmd: &str, _i: usize) -> Option<Task<Message>> {
-        let rest = cmd.strip_prefix("PIDBACKUPPDF")?;
+        let verb = "PIDBACKUPPDF";
+        let head = cmd.get(..verb.len())?;
+        if !head.eq_ignore_ascii_case(verb) {
+            return None;
+        }
+        let rest = &cmd[verb.len()..];
         if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
             return None;
         }

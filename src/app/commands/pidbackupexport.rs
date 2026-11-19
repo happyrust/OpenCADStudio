@@ -138,13 +138,17 @@ fn option(rest: &str) -> Result<Option<(&str, &str, &str)>, String> {
     if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphabetic()) {
         return Ok(None);
     }
+    let known = key.eq_ignore_ascii_case("Plant") || key.eq_ignore_ascii_case("Ref");
     let quote = after.chars().next().filter(|c| matches!(c, '"' | '\''));
     let Some(quote) = quote else {
-        let (value, after) = after.split_once(char::is_whitespace).unwrap_or((after, ""));
-        return Ok(Some((key, value, after)));
+        let (value, tail) = after.split_once(char::is_whitespace).unwrap_or((after, ""));
+        if !known && tail.trim().is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some((key, value, tail)));
     };
     match after[quote.len_utf8()..].split_once(quote) {
-        Some((value, after)) => Ok(Some((key, value, after))),
+        Some((value, tail)) => Ok(Some((key, value, tail))),
         None => Err(format!("the quote after {key}= is not closed")),
     }
 }
@@ -207,7 +211,12 @@ impl OpenCADStudio {
         cmd: &str,
         _i: usize,
     ) -> Option<Task<Message>> {
-        let rest = cmd.strip_prefix("PIDBACKUPEXPORT")?;
+        let verb = "PIDBACKUPEXPORT";
+        let head = cmd.get(..verb.len())?;
+        if !head.eq_ignore_ascii_case(verb) {
+            return None;
+        }
+        let rest = &cmd[verb.len()..];
         if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
             return None;
         }
@@ -873,6 +882,7 @@ mod tests {
             (format!("PIDBACKUPEXPORT \"{o}\""), "P01", None),
             (format!("PIDBACKUPEXPORT   '{o}'  "), "P01", None),
             ("PIDBACKUPEXPORT publish out".to_string(), "P01", None),
+            ("pidbackupexport publish out".to_string(), "P01", None),
             (format!("PIDBACKUPEXPORT Plant=P02 {o}"), "P02", None),
             (
                 format!("PIDBACKUPEXPORT Ref=\"{r}\" Plant='Plant 7' {o}"),
@@ -904,6 +914,16 @@ mod tests {
         }
         // The stand-in makes nothing, and neither does the command.
         assert_eq!(names(scratch.path()), ["package", "restored", "the ref"]);
+
+        // A bare relative folder whose name holds `=` (and is not followed by
+        // another folder) is taken as the output folder rather than rejected
+        // as an unknown option.
+        let eq_out = scratch.join("out=1");
+        let export = start(&mut app, "pidbackupexport Plant=P04 out=1");
+        let started = exporting(&package, &eq_out, "P04", None);
+        assert_eq!(said(&app), [started]);
+        assert_eq!(stand_in.requests().last().unwrap().out_dir, eq_out);
+        end(&mut app, &stand_in, export, Ok(outcome(&eq_out)));
     }
 
     #[test]
