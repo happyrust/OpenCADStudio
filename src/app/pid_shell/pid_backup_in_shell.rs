@@ -8,9 +8,11 @@
 //! parts stay where they were, that a drawing opened from the panel asks for
 //! the file the restore made of it, that one a tab shows already is brought
 //! to the front and not opened again, that a source that is no backup
-//! leaves the module in the state it leaves a `--classic` window in, and
-//! that `PIDPLOT` plots a drawing of the backup from the file the restore
-//! made of it and refuses any other drawing as a `--classic` window does.
+//! leaves the module in the state it leaves a `--classic` window in, that
+//! `PIDPLOT` plots a drawing of the backup from the file the restore made
+//! of it and refuses any other drawing as a `--classic` window does, and
+//! that the plot of a drawing of the backup is given what the export of the
+//! backup gives its plots.
 //!
 //! The backups are made up here, the way the tests of
 //! `app/commands/pidbackup.rs` and `io/pid_backup_browse.rs` make theirs,
@@ -219,6 +221,29 @@ fn backup_folder(scratch: &Path) -> PathBuf {
     }
     writer.finish().expect("the archive is written");
     backup
+}
+
+/// [`backup_folder`]'s backup as a zip written to `to`: its files in a
+/// folder of the zip, and a `Ref` beside them. What is opened, the folder
+/// the backup's files lie in and the folder it is restored to are three
+/// places then.
+fn zipped(backup: &Path, to: &Path) -> PathBuf {
+    use std::io::Write;
+    let mut writer = zip::ZipWriter::new(std::fs::File::create(to).expect("the zip"));
+    let options = zip::write::SimpleFileOptions::default();
+    for name in ["Manifest.txt", "PlantData~2~711.zip"] {
+        let bytes = std::fs::read(backup.join(name)).expect("a file of the backup");
+        writer
+            .start_file(format!("Backup/{name}"), options)
+            .expect("a file of the zip");
+        writer.write_all(&bytes).expect("its bytes");
+    }
+    writer
+        .start_file("Backup/Ref/Symbols/valve.sym", options)
+        .expect("a symbol of the zip");
+    writer.write_all(b"s").expect("its bytes");
+    writer.finish().expect("the zip is written");
+    to.to_path_buf()
 }
 
 /// Have `app` keep what it unpacks in the scratch folder, as the setting
@@ -983,4 +1008,174 @@ fn with_no_drawing_from_a_pid_in_front_pidplot_is_refused_in_the_module_as_in_a_
         app.tabs[front].current_path = Some(other.clone());
     }
     refused_in_both(&mut module, &mut general, "a drawing of another kind");
+}
+
+// ── What the plot of a drawing of the backup is given ────────────────────
+
+/// What a plotter was handed: the drawing, the file to write, and what the
+/// plot is given beside the two.
+type Handed = (PathBuf, PathBuf, Option<crate::io::pid_pdf::Project>);
+
+/// What the stand-in for the plotter says of every drawing.
+const STOOD_IN: &str = "a stand-in plots nothing";
+
+/// Start the plot of `drawing` to `target` as `PIDPLOT` and the PDF export
+/// start it, with a stand-in for the plotter that keeps what it is handed
+/// and writes nothing: what it was handed, each time it was called, and what
+/// the command line said.
+fn plot_stood_in_for(
+    app: &mut OpenCADStudio,
+    drawing: &Path,
+    target: &Path,
+) -> (Vec<Handed>, Vec<(EntryKind, String)>) {
+    let from = app.command_line.history.len();
+    let mut handed = Vec::new();
+    let task = app.plot_pid_pdf_by(
+        drawing.to_path_buf(),
+        target.to_path_buf(),
+        |drawing, target, project| {
+            handed.push((drawing, target, project));
+            std::future::ready(Err(STOOD_IN.to_owned()))
+        },
+    );
+    app.drive_headless_task(task)
+        .expect("what the plot starts runs without a window");
+    (handed, said_since(app, from))
+}
+
+/// The plot of a drawing of the backup the panel holds is given, beside the
+/// drawing, what the export of that backup gives the plot of each of its
+/// drawings: the folder that holds the backup's `Ref`, and the backup's own
+/// `fonts` as one more folder to look for faces in. `PIDPLOT`'s page of the
+/// drawing is then the page `PIDBACKUPPDF` writes of it, also where the
+/// faces are in no folder but the backup's. The backup's own folder is the
+/// one its files lie in, which is not what was opened when that is a zip.
+/// A drawing that lies in neither folder of the backup, and any drawing
+/// while no backup is open, is given nothing beside itself: its project is
+/// found from where it lies, as it was before. So is a drawing of a backup
+/// that was open before this one.
+///
+/// The plotter is stood in for by one that keeps what it is handed. That
+/// `PIDPLOT` plots the file of the drawing in front is shown above, and
+/// `io::pid_backup_pdf` holds what a drawing is given to what its export
+/// gives its own plots.
+#[test]
+fn the_plot_of_a_drawing_of_the_open_backup_is_given_what_the_export_of_the_backup_gives() {
+    let scratch = Scratch::new("given");
+    let backup = backup_folder(scratch.path());
+    let mut app = launched(false);
+    let cache = restores_into(&mut app, scratch.path());
+    let target = scratch.path().join("plots").join("page.pdf");
+    let elsewhere = scratch.path().join("vendor").join("V-1.pid");
+    // Start the plot of `drawing`: what it is given beside the drawing. The
+    // plotter is handed that drawing and the file to write, once, and what
+    // it answers is what the command line says of the plot.
+    let given = |app: &mut OpenCADStudio, drawing: &Path| {
+        let (handed, said) = plot_stood_in_for(app, drawing, &target);
+        let [(plotted, written, project)] =
+            <[Handed; 1]>::try_from(handed).expect("the plotter is handed one plot");
+        assert_eq!(plotted, drawing);
+        assert_eq!(written, target);
+        let starting = format!(
+            "PIDPLOT: plotting {} (the .pid on disk; edits made here are not in it) ...",
+            drawing.display()
+        );
+        assert_eq!(lines(&said), [starting], "{said:?}");
+        let wrong = errors(&said);
+        assert_eq!(wrong.len(), 1, "{said:?}");
+        assert!(
+            wrong[0].ends_with(&format!("PIDPLOT: {STOOD_IN}")),
+            "{said:?}"
+        );
+        project
+    };
+
+    // No backup is open.
+    assert_eq!(given(&mut app, &elsewhere), None);
+
+    say(&mut app, &open_line(&backup));
+    let index = app
+        .pid_backup_browser
+        .index()
+        .expect("the backup is loaded")
+        .clone();
+    // The backup's own folder is the one the manifest lies in, and what it
+    // is restored to is in the folder restores are kept in.
+    let (own, restored) = (index.backup_root.clone(), index.restored.clone());
+    assert!(own.join("Manifest.txt").is_file(), "{}", own.display());
+    assert!(
+        restored.starts_with(&cache) && !restored.starts_with(&own),
+        "{}",
+        restored.display()
+    );
+    let file = index
+        .drawings
+        .iter()
+        .find(|drawing| drawing.name == "B-202")
+        .and_then(|drawing| drawing.pid_path.clone())
+        .expect("B-202 has a file");
+    assert!(file.starts_with(&restored), "{}", file.display());
+    // The backup's own `fonts` whichever folder holds its `Ref`.
+    let with_ref_in = |folder: &Path| {
+        Some(crate::io::pid_pdf::Project {
+            folder: folder.to_path_buf(),
+            fonts: vec![own.join("fonts")],
+        })
+    };
+
+    // Neither folder of this backup holds a `Ref`: the one it is restored
+    // to stands for it, as it does in the export.
+    assert_eq!(given(&mut app, &file), with_ref_in(&restored));
+    // A drawing in the backup's own folder is one of the backup's too.
+    let loose = own.join("L-404.pid");
+    assert_eq!(given(&mut app, &loose), with_ref_in(&restored));
+    // A `Ref` beside the backup's own files is the backup's ...
+    std::fs::create_dir_all(own.join("Ref")).expect("a Ref beside the backup");
+    assert_eq!(given(&mut app, &file), with_ref_in(&own));
+    // ... and the one of the restore comes before it.
+    std::fs::create_dir_all(restored.join("Ref")).expect("a Ref in the restore");
+    assert_eq!(given(&mut app, &file), with_ref_in(&restored));
+
+    // A drawing that is none of the backup's, with the backup still open.
+    assert_eq!(given(&mut app, &elsewhere), None);
+
+    // The same backup opened from a zip that holds it one folder down, a
+    // `Ref` beside its files. What was opened, the backup's own folder and
+    // the folder it is restored to are three places then: the folder given
+    // is the one that holds the `Ref`, and the fonts are the ones beside
+    // the backup's own files, not beside what was opened.
+    let packed = zipped(&backup, &scratch.path().join("packed.zip"));
+    say(&mut app, &open_line(&packed));
+    let unpacked = app
+        .pid_backup_browser
+        .index()
+        .expect("the zip is loaded")
+        .clone();
+    let (inner, outer) = (unpacked.backup_root.clone(), unpacked.restored.clone());
+    assert!(unpacked.source.is_file(), "{}", unpacked.source.display());
+    assert!(inner.join("Manifest.txt").is_file(), "{}", inner.display());
+    assert!(
+        inner != outer && inner.starts_with(&outer) && outer.starts_with(&cache),
+        "{} in {}",
+        inner.display(),
+        outer.display()
+    );
+    assert!(inner.join("Ref").is_dir() && !outer.join("Ref").is_dir());
+    let sheet = unpacked
+        .drawings
+        .iter()
+        .find(|drawing| drawing.name == "B-202")
+        .and_then(|drawing| drawing.pid_path.clone())
+        .expect("B-202 has a file in the zip too");
+    assert!(sheet.starts_with(&inner), "{}", sheet.display());
+    assert_eq!(
+        given(&mut app, &sheet),
+        Some(crate::io::pid_pdf::Project {
+            folder: inner.clone(),
+            fonts: vec![inner.join("fonts")],
+        })
+    );
+    // A drawing of the backup that was open before is none of this one's.
+    assert_eq!(given(&mut app, &file), None);
+    assert!(!target.exists());
 }

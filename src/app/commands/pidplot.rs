@@ -14,6 +14,12 @@
 //! command line when the file is written. Bare `PIDPLOT` only prompts, like
 //! bare PIDTAG: the driver dispatches the first word of an inline line on its
 //! own first.
+//!
+//! A drawing of the backup package that is open is plotted with what the
+//! export of the package gives the plot of each of its drawings -- the folder
+//! the package's `Ref` is in, and the package's own `fonts` to look for faces
+//! in -- so PIDPLOT's page of it is the page PIDBACKUPPDF writes of it. The
+//! project of any other drawing is found from where the drawing lies.
 
 use super::*;
 
@@ -117,6 +123,30 @@ impl OpenCADStudio {
         drawing: std::path::PathBuf,
         target: std::path::PathBuf,
     ) -> Task<Message> {
+        self.plot_pid_pdf_by(drawing, target, crate::io::pid_pdf::plot_pdf_in_background)
+    }
+
+    /// [`Self::plot_pid_pdf`] with the plotter given: `plot(drawing, target,
+    /// project)` writes the PDF of `drawing` to `target` and says what went
+    /// in, as [`crate::io::pid_pdf::plot_pdf_in_background`] does. The
+    /// project it is handed is [`Self::pid_plot_project`]'s.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(in crate::app) fn plot_pid_pdf_by<Plot, Plotted>(
+        &mut self,
+        drawing: std::path::PathBuf,
+        target: std::path::PathBuf,
+        plot: Plot,
+    ) -> Task<Message>
+    where
+        Plot: FnOnce(
+            std::path::PathBuf,
+            std::path::PathBuf,
+            Option<crate::io::pid_pdf::Project>,
+        ) -> Plotted,
+        Plotted: std::future::Future<Output = Result<crate::io::pid_pdf::PidPdfReceipt, String>>
+            + Send
+            + 'static,
+    {
         if target == drawing {
             self.command_line
                 .push_error("PIDPLOT: the PDF cannot replace the drawing itself.");
@@ -126,10 +156,21 @@ impl OpenCADStudio {
             "PIDPLOT: plotting {} (the .pid on disk; edits made here are not in it) ...",
             drawing.display()
         ));
-        Task::perform(
-            crate::io::pid_pdf::plot_pdf_in_background(drawing, target),
-            Message::PidPdfFinished,
-        )
+        let project = self.pid_plot_project(&drawing);
+        Task::perform(plot(drawing, target, project), Message::PidPdfFinished)
+    }
+
+    /// What the plot of `drawing` is given beside the drawing. A drawing of
+    /// the backup package the panel holds is given what the export of that
+    /// package gives the plot of each of its drawings
+    /// ([`crate::io::pid_backup_pdf::project_of`]), so that PIDPLOT and
+    /// PIDBACKUPPDF plot it from one `Ref` and look for its faces in the same
+    /// folders. Any other drawing is given nothing: its project is found from
+    /// where it lies.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pid_plot_project(&self, drawing: &std::path::Path) -> Option<crate::io::pid_pdf::Project> {
+        let index = self.pid_backup_browser.index()?;
+        crate::io::pid_backup_pdf::project_of(drawing, &index.backup_root, &index.restored)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -347,6 +388,17 @@ mod tests {
             (file, pdf): (&Path, &Path),
             unmet: &mut Vec<String>,
         ) -> serde_json::Value {
+            // What the command gives the plot of this file beside the file,
+            // asked for as the command asks for it.
+            let given = app.pid_plot_project(file);
+            if given.is_none() {
+                unmet.push(format!("{name}: the plot is given nothing of the backup"));
+            }
+            let shown = |folder: &std::path::PathBuf| folder.display().to_string();
+            let given = given.map(|project| {
+                let fonts: Vec<String> = project.fonts.iter().map(shown).collect();
+                serde_json::json!({ "folder": shown(&project.folder), "fonts": fonts })
+            });
             let (said, seconds) = say(app, &format!("PIDPLOT \"{}\"", pdf.display()));
             let lines = of_kind(&said, EntryKind::Output);
             let starting = format!(
@@ -376,6 +428,7 @@ mod tests {
             }
             serde_json::json!({
                 "pdf": pdf.display().to_string(),
+                "given": given,
                 "seconds": seconds,
                 "bytes": bytes.as_ref().map(Vec::len),
                 "sha256": bytes.as_deref().map(sha256),
@@ -410,7 +463,9 @@ mod tests {
         /// - the tab a sheet is opened in holds the `.pid` the restore made
         ///   of it, and the module stays on its editor;
         /// - `PIDPLOT` plots that file, without an error, and writes the PDF
-        ///   it was asked for;
+        ///   it was asked for; its plot is given something of the backup
+        ///   (the report says what), and a run with `PID_PLOT_CORPUS` naming
+        ///   a folder without fonts shows the backup's own fonts are in it;
         /// - that PDF and the one the export writes of the same drawing are
         ///   one file, byte for byte.
         ///

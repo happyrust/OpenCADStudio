@@ -420,6 +420,15 @@ pub fn plot_pdf(drawing: &Path, target: &Path) -> Result<PidPdfReceipt, String> 
     plot_from(drawing, target, sources_for(drawing))
 }
 
+/// Where a drawing belongs, stated by a caller that knows, as
+/// [`plot_pdf_against`] takes it: the folder holding its `Ref`, and further
+/// folders to look for faces in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    pub folder: PathBuf,
+    pub fonts: Vec<PathBuf>,
+}
+
 /// [`plot_pdf`] for a caller that knows where the drawing belongs, as one
 /// plotting every sheet of a backup does: `project` is the folder holding
 /// its `Ref` -- the folder the backup was restored to -- and `fonts` are
@@ -526,9 +535,11 @@ fn write_page(
 
 /// [`plot_pdf`] on a worker thread: parsing the sheet and its template and
 /// subsetting CJK faces takes seconds, which the UI thread must not wait out.
+/// With a `project` stated it is [`plot_pdf_against`] that runs there.
 pub async fn plot_pdf_in_background(
     drawing: PathBuf,
     target: PathBuf,
+    project: Option<Project>,
 ) -> Result<PidPdfReceipt, String> {
     let (sender, receiver) = iced::futures::channel::oneshot::channel();
     std::thread::Builder::new()
@@ -538,7 +549,13 @@ pub async fn plot_pdf_in_background(
         // symbol and template structures.
         .stack_size(64 * 1024 * 1024)
         .spawn(move || {
-            let _ = sender.send(plot_pdf(&drawing, &target));
+            let plotted = match &project {
+                Some(Project { folder, fonts }) => {
+                    plot_pdf_against(&drawing, &target, folder, fonts)
+                }
+                None => plot_pdf(&drawing, &target),
+            };
+            let _ = sender.send(plotted);
         })
         .map_err(|error| format!("cannot start the plot: {error}"))?;
     receiver
@@ -873,6 +890,12 @@ mod tests {
     /// byte, and the account both receipts carry must be the line `pid_plot`
     /// prints.
     ///
+    /// The copy is then plotted on the worker thread, as PIDPLOT plots
+    /// ([`plot_pdf_in_background`]): with the restored folder stated it must
+    /// be that file once more, and with nothing stated the plot [`plot_pdf`]
+    /// makes of the copy, whose corpus is found from where the copy lies and
+    /// is not the restored folder.
+    ///
     /// `OCS_PID_PDF_REAL_BACKUP` names another backup,
     /// `OCS_PID_PDF_REAL_PLOTTER` another `pid_plot`, `OCS_PID_PDF_REAL_OUT` a
     /// folder to keep both sets of pages in. A backup or plotter that is not
@@ -915,6 +938,42 @@ mod tests {
             std::fs::create_dir_all(root.join("apart")).unwrap();
             std::fs::copy(drawing, &apart).unwrap();
             let whole = plot_pdf_against(&apart, &stated, &restored.root, &[]).unwrap();
+            // The copy on the worker thread, with the project and without.
+            let alike = |one: &PidPdfReceipt, other: &PidPdfReceipt| {
+                one.ledger == other.ledger && one.corpus == other.corpus && one.notes == other.notes
+            };
+            let page = |kind: &str| root.join(kind).join(format!("{name}.pdf"));
+            let read = |kind: &str| std::fs::read(page(kind)).ok();
+            let project = Project {
+                folder: restored.root.clone(),
+                fonts: Vec::new(),
+            };
+            let handed = iced::futures::executor::block_on(plot_pdf_in_background(
+                apart.clone(),
+                page("handed"),
+                Some(project),
+            ));
+            let handed = handed.is_ok_and(|handed| alike(&handed, &whole))
+                && read("handed").is_some_and(|bytes| read("stated") == Some(bytes));
+            let alone = plot_pdf(&apart, &page("alone"));
+            let left = iced::futures::executor::block_on(plot_pdf_in_background(
+                apart.clone(),
+                page("left"),
+                None,
+            ));
+            let found = match &left {
+                Ok(left) => left.corpus.display().to_string(),
+                Err(why) => format!("none ({why})"),
+            };
+            let left = match (&left, &alone) {
+                (Ok(left), Ok(alone)) => {
+                    alike(left, alone)
+                        && left.corpus != whole.corpus
+                        && read("left").is_some_and(|bytes| read("alone") == Some(bytes))
+                }
+                (Err(left), Err(alone)) => left == alone,
+                _ => false,
+            };
             let fonts = std::env::join_paths(sources_for(drawing).fonts).unwrap();
             let run = std::process::Command::new(&plotter)
                 .arg(drawing)
@@ -952,7 +1011,11 @@ mod tests {
                 stated.len(),
                 stated == theirs
             );
-            if ours != theirs || stated != theirs || !agreed || !accounted {
+            eprintln!(
+                "{name}: on the worker thread, the project stated: the stated plot {handed}; \
+                 nothing stated: corpus {found}, the plot found from where the copy lies {left}"
+            );
+            if ours != theirs || stated != theirs || !agreed || !accounted || !handed || !left {
                 unlike.push(name);
             }
         }

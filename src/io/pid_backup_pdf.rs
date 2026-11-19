@@ -425,13 +425,36 @@ pub fn export(request: &PdfRequest, progress: &PdfProgress) -> Result<PdfOutcome
 /// first; a folder used where it lies keeps its `Ref` beside its own files,
 /// and the folder its drawings are unpacked to has none.
 fn plot_sources(request: &PdfRequest) -> (&Path, [PathBuf; 1]) {
-    let holds_ref = |folder: &&PathBuf| folder.join(crate::io::pid_backup::REFERENCE_DIR).is_dir();
-    let folders = [&request.restored, &request.package_dir];
-    let project = folders
+    sources_of(&request.package_dir, &request.restored)
+}
+
+/// [`plot_sources`] of the package that lies in `package_dir` and is
+/// restored to `restored`.
+fn sources_of<'a>(package_dir: &'a Path, restored: &'a Path) -> (&'a Path, [PathBuf; 1]) {
+    let holds_ref = |folder: &&Path| folder.join(crate::io::pid_backup::REFERENCE_DIR).is_dir();
+    let project = [restored, package_dir]
         .into_iter()
         .find(holds_ref)
-        .unwrap_or(&request.restored);
-    (project, [request.package_dir.join("fonts")])
+        .unwrap_or(restored);
+    (project, [package_dir.join("fonts")])
+}
+
+/// What [`export`] gives the plot of every drawing of a package, for one of
+/// them plotted by itself, as PIDPLOT plots the drawing in front: given
+/// this, its page is the one the export writes of it. A drawing of the
+/// package lies in one of the package's two folders. Any other is `None`:
+/// its project is found from where it lies ([`pid_pdf::plot_pdf`]). A
+/// folder that is not named holds no drawing.
+pub fn project_of(drawing: &Path, package_dir: &Path, restored: &Path) -> Option<pid_pdf::Project> {
+    let holds = |folder: &Path| !folder.as_os_str().is_empty() && drawing.starts_with(folder);
+    if !(holds(package_dir) || holds(restored)) {
+        return None;
+    }
+    let (folder, fonts) = sources_of(package_dir, restored);
+    Some(pid_pdf::Project {
+        folder: folder.to_path_buf(),
+        fonts: fonts.to_vec(),
+    })
 }
 
 /// [`export`] with the plot of one drawing given: `plot(drawing, target)`
@@ -1383,6 +1406,60 @@ mod tests {
         std::fs::remove_file(request.restored.join("Ref")).unwrap();
         std::fs::create_dir_all(request.restored.join("Ref")).unwrap();
         assert_eq!(plot_sources(&request), (request.restored.as_path(), fonts));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_drawing_of_the_package_plotted_by_itself_is_given_what_the_export_gives() {
+        let root = scratch("single");
+        let request = package(&root, &["00/00/A.pid"], &[]);
+        let (package_dir, restored) = (&request.package_dir, &request.restored);
+        // One drawing in the folder the package is restored to, one in the
+        // package's own.
+        let unpacked = request.drawings[0].pid.clone().unwrap();
+        let own = package_dir.join("00").join("02").join("K.pid");
+        let given = |drawing: &Path| project_of(drawing, package_dir, restored);
+        let export_gives = || {
+            let (folder, fonts) = plot_sources(&request);
+            pid_pdf::Project {
+                folder: folder.to_path_buf(),
+                fonts: fonts.to_vec(),
+            }
+        };
+
+        // Whichever folder holds the package's `Ref`: neither, the package's
+        // own, the restore's as well.
+        let mut folders = Vec::new();
+        for holder in [None, Some(package_dir), Some(restored)] {
+            if let Some(holder) = holder {
+                std::fs::create_dir_all(holder.join("Ref")).unwrap();
+            }
+            let export = export_gives();
+            assert_eq!(given(&unpacked), Some(export.clone()));
+            assert_eq!(given(&own), Some(export.clone()));
+            folders.push(export.folder);
+        }
+        assert_eq!(
+            folders,
+            [restored.clone(), package_dir.clone(), restored.clone()]
+        );
+
+        // A drawing in neither folder is none of the package's: beside the
+        // two, above them, or in a folder whose name only begins as theirs.
+        let outside = [
+            root.join("vendor").join("V.pid"),
+            root.join("V.pid"),
+            root.join("restored-2").join("00").join("00").join("A.pid"),
+            root.join("package2").join("K.pid"),
+        ];
+        for drawing in &outside {
+            assert_eq!(given(drawing), None, "{}", drawing.display());
+        }
+        // A folder that is not named holds no drawing.
+        let unnamed = Path::new("");
+        assert_eq!(project_of(&unpacked, unnamed, unnamed), None);
+        assert_eq!(project_of(&outside[0], unnamed, restored), None);
+        assert_eq!(project_of(&outside[0], package_dir, unnamed), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
