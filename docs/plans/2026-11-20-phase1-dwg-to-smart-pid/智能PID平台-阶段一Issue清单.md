@@ -145,7 +145,7 @@
 **缺资料。** RES-02 ✔。
 
 **对应任务。** L0-4（M）
-**状态与补充约定。** **待执行（前置 `#107` 已完成）**：实现 `xml_diff.py` 时，差异分类与排除规则须对齐 `pid-parse/src/publish/diff.rs` 口径，合成管线按 `Name` 对齐而非字面随机 UID。
+**状态与解决记录。** **已完成（2026-11-20，[#108](https://github.com/happyrust/pid-cad/issues/108)）**：落地 `scripts/sppid/{xml_diff,legend_vs_xml,render_vs_pdf,test_metrics_108}.py`（共用 TSV 固定表头，先红 `5 failed` → 全绿 `176 passed`）；合成管线支持按唯一 `Name` 对齐并预留 `--allowlist` 白名单；全量 `94` 套 XML/PDF 自检与 `11` 套厂商验收记录核对全部零差异通过（详见 `readings.md` §5）。
 
 ---
 
@@ -1152,7 +1152,7 @@
 | `ISSUE-L0-8` | [#118](https://github.com/happyrust/pid-cad/issues/118) | `done-local`（本地已完成） | 对照 `pid-parse @ a85fa10` 完成 Q1–Q13 核实，见 `03-parse-answers.md` 与 `readings.md` §4 |
 | `ISSUE-L1-1` | [#112](https://github.com/happyrust/pid-cad/issues/112) | `done-local`（已在基线完成） | `RD-7/11/8/14/9/13` + `ACC-1` 已在 `main`（`dd96a50f7..51b654a87`）完成 |
 | 备份包新界面（关联） | [#115](https://github.com/happyrust/pid-cad/issues/115) | `done-local`（已在基线完成） | 检查点 C `UI-1..UI-9` + 审核加固 `6377fe233` 已在 `main` 完成 |
-| `ISSUE-L0-4` | [#108](https://github.com/happyrust/pid-cad/issues/108) | `phase1`（前置 `#107` 已解锁，待做） | 下一步可并行启动，对齐 `pid-parse::publish::diff` 口径 |
+| `ISSUE-L0-4` | [#108](https://github.com/happyrust/pid-cad/issues/108) | `done-local`（本地已完成） | 落地三款纯标准库度量脚本，`pytest` 176/176 过，94 套 XML/PDF 自检零差异，见 `readings.md` §5 |
 | `ISSUE-L1-3` | [#113](https://github.com/happyrust/pid-cad/issues/113) | `phase1`（前置 `#107` 已解锁，待做） | 下一步可并行启动 |
 | `ISSUE-L1-6` | [#114](https://github.com/happyrust/pid-cad/issues/114) | `phase1`（前置 `#107` 已解锁，待做） | 下一步可并行启动，区分 618 / 644 / 728 三套符号库分母 |
 | `.sym` 预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | 暂缓（避让并行分支） | 待 `pid-symbol-identity` 合入 `main` 后实施 |

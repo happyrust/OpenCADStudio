@@ -122,3 +122,32 @@
 3. **Q4–Q8（publish XML 导出与目录）**：`src/publish/{model,xml_writer,pid_writer,catalog,codelist_values,pipeline,unit_values}.rs` 已提供纯内存 DTO 写出器、21 类接口规则、58 条类型分级链、三级确定性 `UUID v5` 管线合成与 `oleaut32` 15 位有效数字单位换算。**决断：`L4-1` 选定方案 A（统一模型映射至发布 DTO + 外层封装 UTF-8 BOM / CRLF / `0-3-6-3-2` 缩进以通过 `#111` 严格模式门禁）。**
 4. **Q9–Q13（索引同步、摘要、流差异、符号缓存与受控差分）**：已列出新增顶层对象的 5 步同步清单（持久 ID `(segment << 13) | index`、记录链与 `record_count`、`0x0081 JSheetLayer` `+12` 对象计数、`/PSMspacemap` 反向入边槽、嵌套 `/JSitesList`）；确认常规生产图不带 `/TaggedTxtData/Drawing` 而将图号存于 `P&IDAttributes.DrawingNo`；确认 `pid_inspect --controlled-diff-dir --json` 可直接用于 `L5-2` / `LX-3` 受控样本差分。
 
+---
+
+## 5. L0-4（#108）：三类度量工具集（XML 比对、识别对真值、显示对比，2026-11-20）
+
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-20` |
+| 基线提交 | `79aa6ed5b`（`main`） |
+| `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
+| 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
+| 新增文件 | `scripts/sppid/xml_diff.py`、`scripts/sppid/legend_vs_xml.py`、`scripts/sppid/render_vs_pdf.py`、`scripts/sppid/test_metrics_108.py` |
+| 证据目录子项 | `2026-11-20-issue108/`（`red.txt`、`green.txt`、`real-xml-diff.txt`、`real-legend-self.txt`、`real-pdf-self.txt`、`real-vendor11-metrics.txt`） |
+
+### 5.1 先红后绿与统一格式门禁
+
+- **统一输出契约**：三款脚本共用固定 TSV 表头 `kind\ttarget\tlocation\texpected\tactual\tdetail`（一行一个差异）与末尾 `SUMMARY\t...` 汇总行，零外部第三方依赖（纯 Python 标准库）。
+- **先红验证（`red.txt`）**：`test_metrics_108.py` 5 组测试对骨架运行，`5 failed in 0.26s`（退出码 `1`，全部命中目标断言）。
+- **实现后全绿（`green.txt`）**：`python -m pytest scripts/sppid -q -p no:cacheprovider` -> **`176 passed`**（原 `171` 条 + 新增 `5` 组覆盖自检、三类故意改坏、`PIDPipeline` 按 `Name` 对齐、`--allowlist` 白名单及未设语料目录跳过的测试全过）。
+
+### 5.2 全批真实样本自检与回归核验
+
+| 脚本 | 实测范围 | 输出汇总（`SUMMARY`） | 退出码 |
+|---|---|---|---:|
+| `xml_diff.py --corpus` | `EXPORT_SET` 全量 `94` 份 `_Data.xml` 自检 | `files=94, diffs=0, allowlisted=0, raw_diffs=0` | `0` |
+| `legend_vs_xml.py --corpus` | `EXPORT_SET` 全量 `94` 份 `_Data.xml`（提取 `16,390` 个可标记符号合成理想识别回环） | `files=94, ref_symbols=16390, rec_symbols=16390, matched=16390, recall=1.000000, precision=1.000000, tag_accuracy=1.000000, diffs=0` | `0` |
+| `render_vs_pdf.py --corpus` | `EXPORT_PDF` 全量 `94` 份参考 PDF 自检 | `sheets=94, min_coverage=1.000000, max_extra_mm=0.000, text_matched=49997/49997, diffs=0` | `0` |
+| `render_vs_pdf.py --metrics-json` | `11` 张厂商参考图 `pid_plot_compare` 验收记录核对 | `sheets=11, min_coverage=0.982943, max_extra_mm=187.091, text_matched=4007/4018, diffs=0` | `0` |
+
+

@@ -32,7 +32,7 @@
 | `L0-8` `pid-parse @ a85fa10` 能力核实 | [#118](https://github.com/happyrust/pid-cad/issues/118) | **已完成**（2026-11-20） | 落盘 `03-parse-answers.md` 与 `readings.md` §4，逐条给出源码路径行号，锁定 `L4-1` 方案 A 与 `L5-4` 整流替换记录链方案 |
 | `L1-1` 显示修正五项与总验收 | [#112](https://github.com/happyrust/pid-cad/issues/112) | **已在基线完成** | 提交 `dd96a50f7..51b654a87`（含 `RD-7/11/8/14/9/13` + `ACC-1`），见 `2026-11-17-sppid-backup-publish/readings.md` §22–§29 |
 | 备份包新版浏览与导出界面（关联） | [#115](https://github.com/happyrust/pid-cad/issues/115) | **已在基线完成** | 提交 `0f9f1f859..6377fe233`（检查点 C `UI-1..UI-9` + 审核加固），见 `2026-11-17-sppid-backup-publish/readings.md` §32–§41 |
-| `L0-4` 度量工具集（XML/识别/PDF） | [#108](https://github.com/happyrust/pid-cad/issues/108) | **待执行（已解锁）** | 前置 `#107` 已完成，可随时启动（对齐 `pid-parse::publish::diff` 口径） |
+| `L0-4` 度量工具集（XML/识别/PDF） | [#108](https://github.com/happyrust/pid-cad/issues/108) | **已完成**（2026-11-20） | 落地 `scripts/sppid/{xml_diff,legend_vs_xml,render_vs_pdf,test_metrics_108}.py`；94 套 XML/PDF 自检与 11 套厂商 PDF 验收记录核对全过，见 `readings.md` §5 |
 | `L1-3` 符号缺失清单 | [#113](https://github.com/happyrust/pid-cad/issues/113) | **待执行（已解锁）** | 前置 `#107` 已完成，可随时启动 |
 | `L1-6` `.sym` 解码状态普查 | [#114](https://github.com/happyrust/pid-cad/issues/114) | **待执行（已解锁）** | 前置 `#107` 已完成，区分 618 / 644 / 728 三套符号库分母 |
 | `L0-9` 符号与 SPPID 类变体对应表 | [#119](https://github.com/happyrust/pid-cad/issues/119) | **待执行（已解锁）** | 前置 `#107` 与 `#118`（Q3 两跳连接）均已完成，可启动生成 `assets/pid-class-map.json` 初稿 |
