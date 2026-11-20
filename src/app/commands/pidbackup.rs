@@ -523,10 +523,24 @@ impl OpenCADStudio {
                 .push_error(crate::tf!("PIDBACKUPOPEN: {}", error).as_ref()),
             None => {}
         }
+        let mut auto_items_task = Task::none();
         if let Some(error) = failure {
             self.command_line
                 .push_error(crate::tf!("PIDBACKUPOPEN: {}", error).as_ref());
         } else if loaded {
+            let drawing_count = self
+                .pid_backup_browser
+                .index()
+                .map_or(0, |idx| idx.drawings.len());
+            self.pid_shell
+                .backup
+                .reset_for_loaded_package(drawing_count);
+            if drawing_count > 0
+                && self.pid_shell.current() == Some(crate::app::pid_shell::PidScreen::Backup)
+            {
+                auto_items_task =
+                    crate::app::pid_shell::backup::ensure_drawing_items_loaded(self, 0);
+            }
             if let Some(index) = self.pid_backup_browser.index() {
                 self.command_line.push_output(
                     crate::tf!(
@@ -555,7 +569,7 @@ impl OpenCADStudio {
                 .push_error(crate::tf!("PIDBACKUPOPEN: {}", error).as_ref()),
             None => {}
         }
-        let task = self.run_pid_backup_effect(effect);
+        let task = Task::batch([self.run_pid_backup_effect(effect), auto_items_task]);
         // The selection moved: once the panel is laid out again the tree
         // scrolls to it. Without a window there is nothing to scroll.
         if pid_backup_browser::take_reveal(&mut self.pid_backup_browser) {

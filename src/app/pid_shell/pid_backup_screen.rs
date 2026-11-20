@@ -414,3 +414,233 @@ fn pid_backup_screen_ui4_uses_only_pid_tokens_and_renders_both_themes() {
         assert!(bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}empty")));
     }
 }
+
+#[test]
+fn pid_backup_screen_ui5_group_tree_and_drawing_search_filter_precisely() {
+    let _one = crate::headless_ui_lock();
+    let mut app = app_on_backup();
+
+    let index = BackupIndex {
+        source: PathBuf::from("D:/plant/NestedPlant"),
+        restored: PathBuf::from("D:/plant/NestedPlant"),
+        backup_root: PathBuf::from("D:/plant/NestedPlant"),
+        read_only: true,
+        plant_groups: vec![
+            GroupNode {
+                name: "SQPlant".to_owned(),
+                path: "SQPlant".to_owned(),
+                drawings: vec![0],
+                children: vec![GroupNode {
+                    name: "00".to_owned(),
+                    path: "SQPlant / 00".to_owned(),
+                    drawings: vec![1],
+                    children: Vec::new(),
+                }],
+            },
+            GroupNode {
+                name: crate::io::pid_backup_browse::UNREGISTERED_GROUP.to_owned(),
+                path: crate::io::pid_backup_browse::UNREGISTERED_GROUP.to_owned(),
+                drawings: vec![2],
+                children: Vec::new(),
+            },
+            GroupNode {
+                name: crate::io::pid_backup_browse::UNGROUPED.to_owned(),
+                path: crate::io::pid_backup_browse::UNGROUPED.to_owned(),
+                drawings: vec![3],
+                children: Vec::new(),
+            },
+        ],
+        drawings: vec![
+            DrawingEntry {
+                name: "A-100 主装置总图".to_owned(),
+                pid_path: Some(PathBuf::from("D:/plant/NestedPlant/A-100.pid")),
+                group_path: "SQPlant".to_owned(),
+                meta: vec![("DrawingNumber".to_owned(), "A-100".to_owned())],
+            },
+            DrawingEntry {
+                name: "B-200 压缩机流程图".to_owned(),
+                pid_path: Some(PathBuf::from("D:/plant/NestedPlant/B-200.pid")),
+                group_path: "SQPlant / 00".to_owned(),
+                meta: vec![("DrawingNumber".to_owned(), "B-200".to_owned())],
+            },
+            DrawingEntry {
+                name: "U-300 散落图纸".to_owned(),
+                pid_path: Some(PathBuf::from("D:/plant/NestedPlant/U-300.pid")),
+                group_path: crate::io::pid_backup_browse::UNREGISTERED_GROUP.to_owned(),
+                meta: Vec::new(),
+            },
+            DrawingEntry {
+                name: "M-400 缺文件图纸".to_owned(),
+                pid_path: None,
+                group_path: crate::io::pid_backup_browse::UNGROUPED.to_owned(),
+                meta: vec![("Title".to_owned(), "Missing Sheet".to_owned())],
+            },
+        ],
+        ..BackupIndex::default()
+    };
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(index));
+    app.pid_shell.backup.reset_for_loaded_package(4);
+
+    // Special groups render localized Chinese labels (S2).
+    assert!(says(&app, "未登记图纸"));
+    assert!(says(&app, "未分组"));
+    let bounds = drawn(&app);
+    assert!(bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}drawing:0")));
+    assert!(bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}drawing:3")));
+
+    // Selecting nested group `SQPlant / 00` shows only drawing 1.
+    click_at(
+        &mut app,
+        bounds[&format!("{SCREEN_BOUNDS_PREFIX}group:SQPlant / 00")].center(),
+    );
+    let bounds_sub = drawn(&app);
+    assert!(!bounds_sub.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}drawing:0")));
+    assert!(bounds_sub.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}drawing:1")));
+    assert_eq!(app.pid_shell.backup.selected_drawing, Some(1));
+
+    // Selecting parent `SQPlant` includes subtree drawings 0 and 1, then keyword narrows to B-200.
+    click_at(
+        &mut app,
+        bounds_sub[&format!("{SCREEN_BOUNDS_PREFIX}group:SQPlant")].center(),
+    );
+    let _ = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::DrawingFilterChanged("b-200".to_owned()),
+    )));
+    let bounds_kw = drawn(&app);
+    assert!(!bounds_kw.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}drawing:0")));
+    assert!(bounds_kw.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}drawing:1")));
+}
+
+#[test]
+fn pid_backup_screen_ui5_details_show_db_fields_filter_items_and_surface_unreadable_or_missing() {
+    use crate::io::pid_backup_browse::{DrawingItem, DrawingItems, ItemAttribute, ItemGroup};
+    use crate::ui::window::pid_backup_browser::ItemsState;
+
+    let _one = crate::headless_ui_lock();
+    let scratch = temp_scratch("ui5-details");
+    let bad_pid = scratch.join("D04.pid");
+    std::fs::write(&bad_pid, b"not-an-ole-compound-pid").unwrap();
+
+    let mut app = app_on_backup();
+    let index = BackupIndex {
+        source: scratch.clone(),
+        restored: scratch.clone(),
+        backup_root: scratch.clone(),
+        read_only: true,
+        drawings: vec![
+            DrawingEntry {
+                name: "D01 可读工艺图".to_owned(),
+                pid_path: Some(scratch.join("D01.pid")),
+                group_path: "SQPlant / 00".to_owned(),
+                meta: vec![
+                    ("DrawingNumber".to_owned(), "D01-A".to_owned()),
+                    ("PlantArea".to_owned(), "Area-00".to_owned()),
+                ],
+            },
+            DrawingEntry {
+                name: "D04 损坏对象图".to_owned(),
+                pid_path: Some(bad_pid),
+                group_path: "SQPlant / 00".to_owned(),
+                meta: vec![("DrawingNumber".to_owned(), "D04-ERR".to_owned())],
+            },
+            DrawingEntry {
+                name: "D05 登记缺文件图".to_owned(),
+                pid_path: None,
+                group_path: crate::io::pid_backup_browse::UNGROUPED.to_owned(),
+                meta: vec![("DrawingNumber".to_owned(), "D05-MISS".to_owned())],
+            },
+        ],
+        ..BackupIndex::default()
+    };
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(index));
+    app.pid_backup_browser.items.insert(
+        0,
+        ItemsState::Ready(Arc::new(DrawingItems {
+            drawing_uid: "DOC-001".to_owned(),
+            drawing_name: "D01 可读工艺图".to_owned(),
+            item_count: 2,
+            groups: vec![
+                ItemGroup {
+                    item_type: "Equipment".to_owned(),
+                    items: vec![DrawingItem {
+                        uid: "EQ-1".to_owned(),
+                        label: "V-1001".to_owned(),
+                        item_type: "Equipment".to_owned(),
+                        class: Some("Vessel".to_owned()),
+                        attributes: vec![ItemAttribute {
+                            interface: "IJNamedItem".to_owned(),
+                            name: "Name".to_owned(),
+                            value: "V-1001".to_owned(),
+                        }],
+                    }],
+                },
+                ItemGroup {
+                    item_type: "Instrument".to_owned(),
+                    items: vec![DrawingItem {
+                        uid: "IN-2".to_owned(),
+                        label: "PT-1001".to_owned(),
+                        item_type: "Instrument".to_owned(),
+                        class: Some("PressureTransmitter".to_owned()),
+                        attributes: Vec::new(),
+                    }],
+                },
+            ],
+            data: Default::default(),
+        })),
+    );
+    app.pid_shell.backup.reset_for_loaded_package(3);
+
+    // 1. Readable drawing shows DB fields, type chips, and filters by type + keyword + expand.
+    let bounds0 = drawn(&app);
+    assert!(bounds0.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}db_fields")));
+    assert!(bounds0.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}item:EQ-1")));
+    assert!(bounds0.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}item:IN-2")));
+
+    click_at(
+        &mut app,
+        bounds0[&format!("{SCREEN_BOUNDS_PREFIX}item_type:Instrument")].center(),
+    );
+    let bounds_inst = drawn(&app);
+    assert!(!bounds_inst.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}item:EQ-1")));
+    assert!(bounds_inst.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}item:IN-2")));
+
+    click_at(
+        &mut app,
+        bounds_inst[&format!("{SCREEN_BOUNDS_PREFIX}item_type:all")].center(),
+    );
+    let _ = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::ItemQueryChanged("v-1001".to_owned()),
+    )));
+    let _ = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::ToggleItemExpanded("EQ-1".to_owned()),
+    )));
+    let bounds_q = drawn(&app);
+    assert!(bounds_q.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}item:EQ-1")));
+    assert!(!bounds_q.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}item:IN-2")));
+    assert!(says(&app, "  IJNamedItem.Name = V-1001"));
+
+    // 2. Selecting D04 automatically triggers background item load -> Failed(reason) shown clearly.
+    click_at(
+        &mut app,
+        bounds_q[&format!("{SCREEN_BOUNDS_PREFIX}drawing:1")].center(),
+    );
+    assert!(matches!(
+        app.pid_backup_browser.items.get(&1),
+        Some(ItemsState::Failed(_))
+    ));
+    let bounds_d04 = drawn(&app);
+    assert!(bounds_d04.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}items_error")));
+    assert!(says(&app, "无法读取图内对象"));
+    assert!(says(&app, "D04-ERR"));
+
+    // 3. Selecting missing-file drawing D05 disables open button and shows missing-file notice.
+    click_at(
+        &mut app,
+        bounds_d04[&format!("{SCREEN_BOUNDS_PREFIX}drawing:2")].center(),
+    );
+    let bounds_d05 = drawn(&app);
+    assert!(bounds_d05.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}missing_file_notice")));
+    assert!(says(&app, "D05-MISS"));
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}

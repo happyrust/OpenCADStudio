@@ -5393,6 +5393,21 @@ SQL Server 包：
   - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
   - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
 
+---
+
+## 36. UI-5：浏览画面装置组树、图纸搜索清单、属性与图内对象详情（2026-11-20）
+
+- **起点与编译器**：`main @ c4487bde8`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui5\`。
+- **改动**：
+  1. `src/app/pid_shell/backup.rs`：实现已打开状态三栏主体（左栏递归装置组树与「未登记图纸」/「未分组」中文显示、中栏搜索框与带状态标记的可滚动图纸列表、右栏动态数据库键值列 + `DrawingNo` 与图内对象按类型标签/关键字过滤及展开接口属性；缺文件时置灰打开按钮并展示原因，图内对象读取失败时展示明确原因而非空表）。
+  2. `src/app/commands/pidbackup.rs`：备份包加载完成时重置 `backup::State` 并在 `PidScreen::Backup` 下自动后台预读首张可读图纸对象。
+- **先红后绿**：2 条 `pid_backup_screen_ui5_*` 先红 0 过 2 败（`red.txt`），实现后 `pid_backup_screen` 6/6 全过（`green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7135 条（7079 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -5435,3 +5450,4 @@ SQL Server 包：
 | 2026-11-20 | 加 §33（检查点 C 第 1 段 `UI-2` 导出状态结构化访问器、界面启动入口与 1 秒跳秒订阅）：`BackupExport` / `BackupPdf` 只读访问器与界面预检/启动入口、`BackupPdf::Running.started`、`view::subscription` 1 秒跳秒订阅，4 条快测试先红后绿及全套门禁读数；顺带重编最新 `target\release\OpenCADStudio.exe` |
 | 2026-11-20 | 加 §34（检查点 C 第 2 段 `UI-3` 导航三处接线与 `backup` 空画面骨架）：`PidScreen::Backup`、`screen-catalog.json`、`00-overview.md` 及文档契约 15 屏同步注册，先红后绿及全套门禁读数 |
 | 2026-11-20 | 加 §35（检查点 C 第 2 段 `UI-4` 浏览画面三态与包概要顶栏）：未打开/载入中/出错三态、三类包概要、清缓存忙碌保护与经典面板入口，4 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §36（检查点 C 第 2 段 `UI-5` 浏览画面三栏主体）：装置组树中文映射、搜索清单、数据库属性与图内对象过滤详情，2 条快测试先红后绿及全套门禁读数 |

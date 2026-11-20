@@ -1,22 +1,25 @@
 //! 备份数据包 — screen `backup`; in the design, frames `BkF01`..`BkF11`
 //! (and their light counterparts `BkL01`..`BkL11`).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{alignment, font, Background, Border, Color, Element, Fill, Padding, Task};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::{alignment, font, Background, Border, Color, Element, Fill, Length, Padding, Task};
 
 use super::{Message as ShellMessage, PidScreen, ViewFn};
 use crate::app::{Message as AppMessage, OpenCADStudio};
-use crate::io::pid_backup_browse::{BackupIndex, FileKind};
+use crate::io::pid_backup_browse::{BackupIndex, DrawingEntry, DrawingItems, FileKind, GroupNode};
 use crate::ui::style::pid_fonts;
 use crate::ui::style::pid_tokens::{ColorToken, NumberToken, PidTheme};
-use crate::ui::window::pid_backup_browser::{CacheMsg, LoadState, PidBackupMsg};
+use crate::ui::window::pid_backup_browser::{self, CacheMsg, ItemsState, LoadState, PidBackupMsg};
 use crate::ui::wrap_bar::PosReport;
 
 /// Prefix of every bounds rectangle reported inside the `backup` screen.
 pub const SCREEN_BOUNDS_PREFIX: &str = "PID_BACKUP_SCREEN:";
+
+const MAX_RENDERED_ITEMS: usize = 200;
 
 fn part_id(name: &str) -> String {
     format!("{SCREEN_BOUNDS_PREFIX}{name}")
@@ -34,9 +37,35 @@ pub enum NoticeTone {
     Warning,
 }
 
+/// Which detail section is shown in the right-hand inspector pane.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DetailTab {
+    /// Show both database columns and drawing items stacked (default).
+    #[default]
+    All,
+    /// Only database / drawing attributes.
+    Properties,
+    /// Only drawing model items.
+    Items,
+}
+
 /// What the screen remembers between frames.
 #[derive(Default)]
 pub struct State {
+    /// Selected plant-group path (`None` = all drawings).
+    pub selected_group: Option<String>,
+    /// Case-insensitive filter on drawing names.
+    pub drawing_filter: String,
+    /// Selected index into [`BackupIndex::drawings`].
+    pub selected_drawing: Option<usize>,
+    /// Active tab in the right-hand detail pane.
+    pub detail_tab: DetailTab,
+    /// Optional exact `ModelItemType` filter on the selected drawing's items.
+    pub item_type_filter: Option<String>,
+    /// Case-insensitive filter on item label / UID / class / attribute values.
+    pub item_query: String,
+    /// Item UIDs expanded to inspect published `interface.name = value` rows.
+    pub expanded_items: HashSet<String>,
     /// Inline notice from the last secondary action (e.g. cache clear).
     pub notice: Option<(NoticeTone, String)>,
     /// Optional test double replacing the native source picker dialog.
@@ -46,9 +75,29 @@ pub struct State {
 impl std::fmt::Debug for State {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("State")
+            .field("selected_group", &self.selected_group)
+            .field("drawing_filter", &self.drawing_filter)
+            .field("selected_drawing", &self.selected_drawing)
+            .field("detail_tab", &self.detail_tab)
+            .field("item_type_filter", &self.item_type_filter)
+            .field("item_query", &self.item_query)
             .field("notice", &self.notice)
             .field("has_source_picker", &self.source_picker.is_some())
             .finish()
+    }
+}
+
+impl State {
+    /// Reset browse selection when a fresh backup index finishes loading.
+    pub fn reset_for_loaded_package(&mut self, drawing_count: usize) {
+        self.selected_group = None;
+        self.drawing_filter.clear();
+        self.selected_drawing = (drawing_count > 0).then_some(0);
+        self.detail_tab = DetailTab::All;
+        self.item_type_filter = None;
+        self.item_query.clear();
+        self.expanded_items.clear();
+        self.notice = None;
     }
 }
 
@@ -61,6 +110,20 @@ pub enum Message {
     ClearCache,
     /// Switch to the editor and reveal the classic docked backup panel (S3).
     OpenClassicPanel,
+    /// Filter drawings by plant-group subtree (`None` = all drawings).
+    SelectGroup(Option<String>),
+    /// Update the drawing-name search query.
+    DrawingFilterChanged(String),
+    /// Select a drawing by its index in `BackupIndex::drawings`.
+    SelectDrawing(usize),
+    /// Switch the right-hand detail view mode.
+    SelectDetailTab(DetailTab),
+    /// Filter the selected drawing's items by `ModelItemType`.
+    SelectItemType(Option<String>),
+    /// Update the item search query.
+    ItemQueryChanged(String),
+    /// Expand or collapse one item's published attributes by UID.
+    ToggleItemExpanded(String),
 }
 
 /// The function that draws the screen.
@@ -71,6 +134,19 @@ pub fn is_sql_server_package(index: &BackupIndex) -> bool {
     index.files.iter().any(|file| {
         file.kind == FileKind::ExportDump && file.format.to_ascii_lowercase().contains("sql server")
     })
+}
+
+/// Format a `group_path` (`A / Unregistered`) with localized special group names (S2).
+pub fn display_group_path(group_path: &str) -> String {
+    if group_path.trim().is_empty() {
+        return pid_backup_browser::screen_group_label(crate::io::pid_backup_browse::UNGROUPED)
+            .to_owned();
+    }
+    group_path
+        .split(" / ")
+        .map(pid_backup_browser::screen_group_label)
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 /// Summary title line of an open backup package.
@@ -136,6 +212,34 @@ pub fn header_meta_line(index: &BackupIndex) -> String {
     )
 }
 
+/// Kick off background `DrawingItems` loading for `drawing_idx` if needed.
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn ensure_drawing_items_loaded(
+    app: &mut OpenCADStudio,
+    drawing_idx: usize,
+) -> Task<AppMessage> {
+    if app.pid_backup_browser.items.contains_key(&drawing_idx) {
+        return Task::none();
+    }
+    let Some(path) = app
+        .pid_backup_browser
+        .index()
+        .and_then(|idx| idx.drawings.get(drawing_idx))
+        .and_then(|entry| entry.pid_path.clone())
+    else {
+        return Task::none();
+    };
+    app.pid_backup_browser
+        .items
+        .insert(drawing_idx, ItemsState::Loading);
+    Task::perform(
+        crate::io::pid_backup_browse::load_items_in_background(path),
+        move |result| {
+            AppMessage::PidBackup(PidBackupMsg::ItemsLoaded(drawing_idx, result.map(Arc::new)))
+        },
+    )
+}
+
 /// Take one of the screen's messages.
 pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessage> {
     match message {
@@ -190,6 +294,89 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessa
             }
             Task::none()
         }
+        Message::SelectGroup(group) => {
+            app.pid_shell.backup.selected_group = group;
+            if let Some(index) = app.pid_backup_browser.index().cloned() {
+                let filtered = pid_backup_browser::filter_drawings(
+                    &index,
+                    app.pid_shell.backup.selected_group.as_deref(),
+                    &app.pid_shell.backup.drawing_filter,
+                );
+                if app
+                    .pid_shell
+                    .backup
+                    .selected_drawing
+                    .is_none_or(|cur| !filtered.contains(&cur))
+                {
+                    app.pid_shell.backup.selected_drawing = filtered.first().copied();
+                    app.pid_shell.backup.item_type_filter = None;
+                    app.pid_shell.backup.expanded_items.clear();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(first) = app.pid_shell.backup.selected_drawing {
+                        return ensure_drawing_items_loaded(app, first);
+                    }
+                }
+            }
+            Task::none()
+        }
+        Message::DrawingFilterChanged(query) => {
+            app.pid_shell.backup.drawing_filter = query;
+            if let Some(index) = app.pid_backup_browser.index().cloned() {
+                let filtered = pid_backup_browser::filter_drawings(
+                    &index,
+                    app.pid_shell.backup.selected_group.as_deref(),
+                    &app.pid_shell.backup.drawing_filter,
+                );
+                if app
+                    .pid_shell
+                    .backup
+                    .selected_drawing
+                    .is_none_or(|cur| !filtered.contains(&cur))
+                {
+                    app.pid_shell.backup.selected_drawing = filtered.first().copied();
+                    app.pid_shell.backup.item_type_filter = None;
+                    app.pid_shell.backup.expanded_items.clear();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(first) = app.pid_shell.backup.selected_drawing {
+                        return ensure_drawing_items_loaded(app, first);
+                    }
+                }
+            }
+            Task::none()
+        }
+        Message::SelectDrawing(idx) => {
+            if app.pid_shell.backup.selected_drawing != Some(idx) {
+                app.pid_shell.backup.selected_drawing = Some(idx);
+                app.pid_shell.backup.item_type_filter = None;
+                app.pid_shell.backup.expanded_items.clear();
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ensure_drawing_items_loaded(app, idx)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                Task::none()
+            }
+        }
+        Message::SelectDetailTab(tab) => {
+            app.pid_shell.backup.detail_tab = tab;
+            Task::none()
+        }
+        Message::SelectItemType(item_type) => {
+            app.pid_shell.backup.item_type_filter = item_type;
+            Task::none()
+        }
+        Message::ItemQueryChanged(query) => {
+            app.pid_shell.backup.item_query = query;
+            Task::none()
+        }
+        Message::ToggleItemExpanded(uid) => {
+            if !app.pid_shell.backup.expanded_items.remove(&uid) {
+                app.pid_shell.backup.expanded_items.insert(uid);
+            }
+            Task::none()
+        }
     }
 }
 
@@ -205,14 +392,26 @@ fn card_style(theme: PidTheme, fill: ColorToken, stroke: ColorToken) -> containe
     }
 }
 
+fn send(msg: Message) -> AppMessage {
+    AppMessage::PidShell(ShellMessage::Backup(msg))
+}
+
 fn action_button<'a>(
     theme: PidTheme,
     bounds_key: &'static str,
     label: &'static str,
     primary: bool,
-    on_press: Message,
+    on_press: Option<Message>,
 ) -> Element<'a, AppMessage> {
-    let (bg, fg, stroke, weight) = if primary {
+    let enabled = on_press.is_some();
+    let (bg, fg, stroke, weight) = if !enabled {
+        (
+            ColorToken::BgRaised,
+            ColorToken::TextMuted,
+            ColorToken::Border,
+            font::Weight::Medium,
+        )
+    } else if primary {
         (
             ColorToken::Accent,
             ColorToken::TextOnAccent,
@@ -228,7 +427,7 @@ fn action_button<'a>(
         )
     };
     let radius = NumberToken::RadiusSm.value(theme);
-    let btn = button(
+    let mut btn = button(
         text(label)
             .size(12)
             .font(pid_fonts::ui(theme, weight))
@@ -237,7 +436,7 @@ fn action_button<'a>(
     .padding(Padding::from([7, 12]))
     .style(move |_, status| {
         let fill = match status {
-            button::Status::Hovered | button::Status::Pressed if !primary => {
+            button::Status::Hovered | button::Status::Pressed if enabled && !primary => {
                 ColorToken::BgHover.color(theme)
             }
             _ => bg.color(theme),
@@ -253,10 +452,40 @@ fn action_button<'a>(
             shadow: iced::Shadow::default(),
             snap: false,
         }
-    })
-    .on_press(AppMessage::PidShell(ShellMessage::Backup(on_press)));
+    });
+    if let Some(msg) = on_press {
+        btn = btn.on_press(send(msg));
+    }
 
     PosReport::owned(part_id(bounds_key), btn).into()
+}
+
+fn search_field<'a>(
+    theme: PidTheme,
+    bounds_key: &'static str,
+    placeholder: &'static str,
+    value: &str,
+    on_input: fn(String) -> Message,
+) -> Element<'a, AppMessage> {
+    let radius = NumberToken::RadiusSm.value(theme);
+    let input = text_input(placeholder, value)
+        .size(12)
+        .font(pid_fonts::ui(theme, font::Weight::Normal))
+        .padding([7, 10])
+        .style(move |general: &iced::Theme, status| text_input::Style {
+            background: Background::Color(ColorToken::BgInput.color(theme)),
+            border: Border {
+                color: ColorToken::BorderControl.color(theme),
+                width: 1.0,
+                radius: radius.into(),
+            },
+            placeholder: ColorToken::TextMuted.color(theme),
+            value: ColorToken::TextPrimary.color(theme),
+            selection: ColorToken::AccentSoft.color(theme),
+            ..text_input::default(general, status)
+        })
+        .on_input(move |val| send(on_input(val)));
+    PosReport::owned(part_id(bounds_key), input).into()
 }
 
 fn empty_view<'a>(theme: PidTheme) -> Element<'a, AppMessage> {
@@ -276,14 +505,14 @@ fn empty_view<'a>(theme: PidTheme) -> Element<'a, AppMessage> {
                     "open_zip",
                     "打开备份 zip",
                     true,
-                    Message::PickSource { folder: false }
+                    Some(Message::PickSource { folder: false })
                 ),
                 action_button(
                     theme,
                     "open_folder",
                     "打开备份文件夹",
                     true,
-                    Message::PickSource { folder: true }
+                    Some(Message::PickSource { folder: true })
                 ),
             ]
             .spacing(10),
@@ -380,14 +609,14 @@ fn error_view<'a>(
                 "retry_zip",
                 "重新选择 zip",
                 true,
-                Message::PickSource { folder: false }
+                Some(Message::PickSource { folder: false })
             ),
             action_button(
                 theme,
                 "retry_folder",
                 "重新选择文件夹",
                 true,
-                Message::PickSource { folder: true }
+                Some(Message::PickSource { folder: true })
             ),
         ]
         .spacing(10),
@@ -429,28 +658,28 @@ fn package_header<'a>(index: &'a BackupIndex, theme: PidTheme) -> Element<'a, Ap
             "switch_zip",
             "切换 zip",
             false,
-            Message::PickSource { folder: false }
+            Some(Message::PickSource { folder: false })
         ),
         action_button(
             theme,
             "switch_folder",
             "切换文件夹",
             false,
-            Message::PickSource { folder: true }
+            Some(Message::PickSource { folder: true })
         ),
         action_button(
             theme,
             "clear_cache",
             "清理还原缓存",
             false,
-            Message::ClearCache
+            Some(Message::ClearCache)
         ),
         action_button(
             theme,
             "classic_panel",
             "在经典面板中查看库表",
             false,
-            Message::OpenClassicPanel
+            Some(Message::OpenClassicPanel)
         ),
     ]
     .spacing(8)
@@ -474,6 +703,704 @@ fn package_header<'a>(index: &'a BackupIndex, theme: PidTheme) -> Element<'a, Ap
     });
 
     PosReport::owned(part_id("header"), bar).into()
+}
+
+fn push_group_nodes<'a>(
+    out: &mut Vec<Element<'a, AppMessage>>,
+    nodes: &'a [GroupNode],
+    depth: usize,
+    selected: Option<&str>,
+    theme: PidTheme,
+) {
+    let radius = NumberToken::RadiusSm.value(theme);
+    for node in nodes {
+        let is_selected = selected == Some(node.path.as_str());
+        let direct = node.drawings.len();
+        let total = pid_backup_browser::group_total_drawings(node);
+        let count_label = if total == direct {
+            format!("{total}")
+        } else {
+            format!("{direct} / {total}")
+        };
+        let label = pid_backup_browser::screen_group_label(&node.name).to_owned();
+        let indent = (depth as f32) * 14.0;
+        let path_owned = node.path.clone();
+        let bounds_name = format!("group:{}", node.path);
+        let row_btn = button(
+            row![
+                Space::new().width(Length::Fixed(indent)),
+                text(label)
+                    .size(12)
+                    .font(pid_fonts::ui(
+                        theme,
+                        if is_selected {
+                            font::Weight::Semibold
+                        } else {
+                            font::Weight::Normal
+                        }
+                    ))
+                    .color(
+                        if is_selected {
+                            ColorToken::TextPrimary
+                        } else {
+                            ColorToken::TextSecondary
+                        }
+                        .color(theme)
+                    ),
+                Space::new().width(Fill),
+                text(count_label)
+                    .size(11)
+                    .font(pid_fonts::mono(theme, font::Weight::Normal))
+                    .color(ColorToken::TextMuted.color(theme)),
+            ]
+            .spacing(6)
+            .align_y(alignment::Vertical::Center),
+        )
+        .width(Fill)
+        .padding([6, 10])
+        .style(move |_, status| {
+            let bg = if is_selected {
+                Some(Background::Color(ColorToken::AccentSoft.color(theme)))
+            } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                Some(Background::Color(ColorToken::BgHover.color(theme)))
+            } else {
+                None
+            };
+            button::Style {
+                background: bg,
+                text_color: ColorToken::TextPrimary.color(theme),
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: radius.into(),
+                },
+                shadow: iced::Shadow::default(),
+                snap: false,
+            }
+        })
+        .on_press(send(Message::SelectGroup(Some(path_owned))));
+
+        out.push(PosReport::owned(part_id(&bounds_name), row_btn).into());
+        push_group_nodes(out, &node.children, depth + 1, selected, theme);
+    }
+}
+
+fn group_tree_pane<'a>(
+    app: &'a OpenCADStudio,
+    index: &'a BackupIndex,
+    theme: PidTheme,
+) -> Element<'a, AppMessage> {
+    let selected = app.pid_shell.backup.selected_group.as_deref();
+    let all_selected = selected.is_none();
+    let radius = NumberToken::RadiusSm.value(theme);
+
+    let all_btn = button(
+        row![
+            text("全部图纸")
+                .size(12)
+                .font(pid_fonts::ui(
+                    theme,
+                    if all_selected {
+                        font::Weight::Semibold
+                    } else {
+                        font::Weight::Normal
+                    }
+                ))
+                .color(
+                    if all_selected {
+                        ColorToken::TextPrimary
+                    } else {
+                        ColorToken::TextSecondary
+                    }
+                    .color(theme)
+                ),
+            Space::new().width(Fill),
+            text(format!("{}", index.drawings.len()))
+                .size(11)
+                .font(pid_fonts::mono(theme, font::Weight::Normal))
+                .color(ColorToken::TextMuted.color(theme)),
+        ]
+        .align_y(alignment::Vertical::Center),
+    )
+    .width(Fill)
+    .padding([6, 10])
+    .style(move |_, status| {
+        let bg = if all_selected {
+            Some(Background::Color(ColorToken::AccentSoft.color(theme)))
+        } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+            Some(Background::Color(ColorToken::BgHover.color(theme)))
+        } else {
+            None
+        };
+        button::Style {
+            background: bg,
+            text_color: ColorToken::TextPrimary.color(theme),
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: radius.into(),
+            },
+            shadow: iced::Shadow::default(),
+            snap: false,
+        }
+    })
+    .on_press(send(Message::SelectGroup(None)));
+
+    let mut rows: Vec<Element<'a, AppMessage>> =
+        vec![PosReport::owned(part_id("group:all"), all_btn).into()];
+    push_group_nodes(&mut rows, &index.plant_groups, 0, selected, theme);
+
+    let content = column![
+        text("装置组")
+            .size(11)
+            .font(pid_fonts::ui(theme, font::Weight::Semibold))
+            .color(ColorToken::TextMuted.color(theme)),
+        scrollable(column(rows).spacing(4)).height(Fill),
+    ]
+    .spacing(8);
+
+    PosReport::owned(
+        part_id("group_pane"),
+        container(content)
+            .width(240)
+            .height(Fill)
+            .padding([12, 12])
+            .style(move |_| container::Style {
+                background: Some(Background::Color(ColorToken::BgPanel.color(theme))),
+                border: Border {
+                    color: ColorToken::Border.color(theme),
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..container::Style::default()
+            }),
+    )
+    .into()
+}
+
+fn drawing_list_pane<'a>(
+    app: &'a OpenCADStudio,
+    index: &'a BackupIndex,
+    filtered: &[usize],
+    selected_idx: Option<usize>,
+    theme: PidTheme,
+) -> Element<'a, AppMessage> {
+    let radius = NumberToken::RadiusSm.value(theme);
+    let mut list_rows: Vec<Element<'a, AppMessage>> = Vec::with_capacity(filtered.len().max(1));
+
+    if filtered.is_empty() {
+        list_rows.push(
+            text("没有匹配的图纸")
+                .size(12)
+                .font(pid_fonts::ui(theme, font::Weight::Normal))
+                .color(ColorToken::TextMuted.color(theme))
+                .into(),
+        );
+    } else {
+        for &idx in filtered {
+            let entry = &index.drawings[idx];
+            let is_selected = selected_idx == Some(idx);
+            let status_badge = if entry.is_missing() {
+                Some(("缺文件", ColorToken::Danger))
+            } else if matches!(
+                app.pid_backup_browser.items.get(&idx),
+                Some(ItemsState::Failed(_))
+            ) {
+                Some(("对象读不出", ColorToken::Amber))
+            } else {
+                None
+            };
+            let grp = display_group_path(&entry.group_path);
+            let mut sub_row = row![text(grp)
+                .size(11)
+                .font(pid_fonts::ui(theme, font::Weight::Normal))
+                .color(ColorToken::TextSecondary.color(theme)),]
+            .spacing(8)
+            .align_y(alignment::Vertical::Center);
+            if let Some((badge_text, badge_tok)) = status_badge {
+                sub_row = sub_row.push(
+                    text(badge_text)
+                        .size(11)
+                        .font(pid_fonts::ui(theme, font::Weight::Semibold))
+                        .color(badge_tok.color(theme)),
+                );
+            }
+
+            let row_btn = button(
+                column![
+                    text(entry.name.as_str())
+                        .size(12.5)
+                        .font(pid_fonts::ui(
+                            theme,
+                            if is_selected {
+                                font::Weight::Semibold
+                            } else {
+                                font::Weight::Medium
+                            }
+                        ))
+                        .color(ColorToken::TextPrimary.color(theme)),
+                    sub_row,
+                ]
+                .spacing(3),
+            )
+            .width(Fill)
+            .padding([8, 10])
+            .style(move |_, status| {
+                let bg = if is_selected {
+                    Some(Background::Color(ColorToken::AccentSoft.color(theme)))
+                } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                    Some(Background::Color(ColorToken::BgHover.color(theme)))
+                } else {
+                    Some(Background::Color(ColorToken::BgPanel.color(theme)))
+                };
+                button::Style {
+                    background: bg,
+                    text_color: ColorToken::TextPrimary.color(theme),
+                    border: Border {
+                        color: ColorToken::Border.color(theme),
+                        width: 1.0,
+                        radius: radius.into(),
+                    },
+                    shadow: iced::Shadow::default(),
+                    snap: false,
+                }
+            })
+            .on_press(send(Message::SelectDrawing(idx)));
+
+            list_rows.push(PosReport::owned(part_id(&format!("drawing:{idx}")), row_btn).into());
+        }
+    }
+
+    let header_count = format!("图纸清单（{} / {}）", filtered.len(), index.drawings.len());
+    let content = column![
+        text(header_count)
+            .size(11)
+            .font(pid_fonts::ui(theme, font::Weight::Semibold))
+            .color(ColorToken::TextMuted.color(theme)),
+        search_field(
+            theme,
+            "drawing_search",
+            "按图纸名称搜索过滤…",
+            &app.pid_shell.backup.drawing_filter,
+            Message::DrawingFilterChanged,
+        ),
+        scrollable(column(list_rows).spacing(4)).height(Fill),
+    ]
+    .spacing(8);
+
+    PosReport::owned(
+        part_id("drawing_list_pane"),
+        container(content)
+            .width(380)
+            .height(Fill)
+            .padding([12, 12])
+            .style(move |_| container::Style {
+                background: Some(Background::Color(ColorToken::BgPanel.color(theme))),
+                border: Border {
+                    color: ColorToken::Border.color(theme),
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..container::Style::default()
+            }),
+    )
+    .into()
+}
+
+fn db_properties_card<'a>(
+    entry: &'a DrawingEntry,
+    items_state: Option<&'a ItemsState>,
+    theme: PidTheme,
+) -> Element<'a, AppMessage> {
+    let mut rows: Vec<Element<'a, AppMessage>> = Vec::new();
+    rows.push(
+        text("图纸属性（数据库登记列与图纸对象标识）")
+            .size(12.5)
+            .font(pid_fonts::ui(theme, font::Weight::Semibold))
+            .color(ColorToken::TextPrimary.color(theme))
+            .into(),
+    );
+    if let Some(ItemsState::Ready(items)) = items_state {
+        let uid_label = if items.drawing_uid.is_empty() {
+            "（空）"
+        } else {
+            items.drawing_uid.as_str()
+        };
+        rows.push(
+            text(format!(
+                "DrawingNo: {} · 文件图名: {}",
+                uid_label, items.drawing_name
+            ))
+            .size(11.5)
+            .font(pid_fonts::mono(theme, font::Weight::Medium))
+            .color(ColorToken::Accent.color(theme))
+            .into(),
+        );
+    }
+    if entry.meta.is_empty() {
+        rows.push(
+            text("（无数据库登记字段）")
+                .size(11.5)
+                .font(pid_fonts::ui(theme, font::Weight::Normal))
+                .color(ColorToken::TextMuted.color(theme))
+                .into(),
+        );
+    } else {
+        for (col_name, col_val) in &entry.meta {
+            let shown = if col_val.is_empty() {
+                "（空）"
+            } else {
+                col_val.as_str()
+            };
+            rows.push(
+                row![
+                    text(format!("{col_name}:"))
+                        .size(11.5)
+                        .font(pid_fonts::mono(theme, font::Weight::Medium))
+                        .color(ColorToken::TextSecondary.color(theme)),
+                    text(shown)
+                        .size(11.5)
+                        .font(pid_fonts::mono(theme, font::Weight::Normal))
+                        .color(ColorToken::TextPrimary.color(theme)),
+                ]
+                .spacing(8)
+                .into(),
+            );
+        }
+    }
+
+    PosReport::owned(
+        part_id("db_fields"),
+        container(scrollable(column(rows).spacing(4)).height(160))
+            .width(Fill)
+            .padding([12, 14])
+            .style(move |_| card_style(theme, ColorToken::BgPanel, ColorToken::Border)),
+    )
+    .into()
+}
+
+fn items_ready_body<'a>(
+    app: &'a OpenCADStudio,
+    items: &'a DrawingItems,
+    theme: PidTheme,
+) -> Element<'a, AppMessage> {
+    let counts = pid_backup_browser::item_type_counts(items);
+    let active_type = app.pid_shell.backup.item_type_filter.as_deref();
+    let radius = NumberToken::RadiusSm.value(theme);
+
+    let make_chip = |bounds_name: String,
+                     chip_label: String,
+                     selected: bool,
+                     target: Option<String>|
+     -> Element<'a, AppMessage> {
+        let btn = button(
+            text(chip_label)
+                .size(11)
+                .font(pid_fonts::ui(
+                    theme,
+                    if selected {
+                        font::Weight::Semibold
+                    } else {
+                        font::Weight::Normal
+                    },
+                ))
+                .color(
+                    if selected {
+                        ColorToken::TextOnAccent
+                    } else {
+                        ColorToken::TextSecondary
+                    }
+                    .color(theme),
+                ),
+        )
+        .padding([4, 9])
+        .style(move |_, _| button::Style {
+            background: Some(Background::Color(
+                if selected {
+                    ColorToken::Accent
+                } else {
+                    ColorToken::BgRaised
+                }
+                .color(theme),
+            )),
+            text_color: ColorToken::TextPrimary.color(theme),
+            border: Border {
+                color: if selected {
+                    ColorToken::Accent
+                } else {
+                    ColorToken::Border
+                }
+                .color(theme),
+                width: 1.0,
+                radius: radius.into(),
+            },
+            shadow: iced::Shadow::default(),
+            snap: false,
+        })
+        .on_press(send(Message::SelectItemType(target)));
+        PosReport::owned(part_id(&bounds_name), btn).into()
+    };
+
+    let mut chips: Vec<Element<'a, AppMessage>> = Vec::with_capacity(counts.len() + 1);
+    chips.push(make_chip(
+        "item_type:all".to_owned(),
+        format!("全部 ({})", items.item_count),
+        active_type.is_none(),
+        None,
+    ));
+    for (ty, cnt) in counts {
+        chips.push(make_chip(
+            format!("item_type:{ty}"),
+            format!("{ty} ({cnt})"),
+            active_type == Some(ty),
+            Some(ty.to_owned()),
+        ));
+    }
+
+    let matched = pid_backup_browser::filter_drawing_items(
+        items,
+        active_type,
+        &app.pid_shell.backup.item_query,
+    );
+    let mut item_rows: Vec<Element<'a, AppMessage>> =
+        Vec::with_capacity(matched.len().min(MAX_RENDERED_ITEMS) + 1);
+
+    if matched.is_empty() {
+        item_rows.push(
+            text("当前筛选条件下没有图内对象")
+                .size(12)
+                .font(pid_fonts::ui(theme, font::Weight::Normal))
+                .color(ColorToken::TextMuted.color(theme))
+                .into(),
+        );
+    } else {
+        for item in matched.iter().take(MAX_RENDERED_ITEMS) {
+            let expanded = app.pid_shell.backup.expanded_items.contains(&item.uid);
+            let cls_suffix = item
+                .class
+                .as_deref()
+                .map(|c| format!(" · {c}"))
+                .unwrap_or_default();
+            let header_line = format!(
+                "{} {} · {}{} · UID {}",
+                if expanded { "▼" } else { "▶" },
+                item.label,
+                item.item_type,
+                cls_suffix,
+                item.uid
+            );
+            let uid_owned = item.uid.clone();
+            let mut item_col = column![button(
+                text(header_line)
+                    .size(11.5)
+                    .font(pid_fonts::mono(theme, font::Weight::Medium))
+                    .color(ColorToken::TextPrimary.color(theme)),
+            )
+            .width(Fill)
+            .padding([5, 8])
+            .style(move |_, status| button::Style {
+                background: Some(Background::Color(
+                    if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                        ColorToken::BgHover
+                    } else {
+                        ColorToken::BgRaised
+                    }
+                    .color(theme),
+                )),
+                text_color: ColorToken::TextPrimary.color(theme),
+                border: Border {
+                    color: ColorToken::Border.color(theme),
+                    width: 1.0,
+                    radius: radius.into(),
+                },
+                shadow: iced::Shadow::default(),
+                snap: false,
+            })
+            .on_press(send(Message::ToggleItemExpanded(uid_owned))),]
+            .spacing(3);
+
+            if expanded {
+                for attr in &item.attributes {
+                    item_col = item_col.push(
+                        text(format!(
+                            "  {}.{} = {}",
+                            attr.interface, attr.name, attr.value
+                        ))
+                        .size(11)
+                        .font(pid_fonts::mono(theme, font::Weight::Normal))
+                        .color(ColorToken::TextSecondary.color(theme)),
+                    );
+                }
+            }
+            item_rows
+                .push(PosReport::owned(part_id(&format!("item:{}", item.uid)), item_col).into());
+        }
+        if matched.len() > MAX_RENDERED_ITEMS {
+            item_rows.push(
+                text(format!(
+                    "已显示前 {MAX_RENDERED_ITEMS} 条（共 {} 条），可输入关键字进一步过滤。",
+                    matched.len()
+                ))
+                .size(11)
+                .font(pid_fonts::ui(theme, font::Weight::Normal))
+                .color(ColorToken::TextMuted.color(theme))
+                .into(),
+            );
+        }
+    }
+
+    column![
+        text(format!("图内对象（共 {} 个）", items.item_count))
+            .size(12.5)
+            .font(pid_fonts::ui(theme, font::Weight::Semibold))
+            .color(ColorToken::TextPrimary.color(theme)),
+        scrollable(row(chips).spacing(6)).direction(scrollable::Direction::Horizontal(
+            scrollable::Scrollbar::default()
+        )),
+        search_field(
+            theme,
+            "item_search",
+            "按位号、UID、类别或属性值过滤对象…",
+            &app.pid_shell.backup.item_query,
+            Message::ItemQueryChanged,
+        ),
+        scrollable(column(item_rows).spacing(4)).height(Fill),
+    ]
+    .spacing(8)
+    .height(Fill)
+    .into()
+}
+
+fn detail_pane<'a>(
+    app: &'a OpenCADStudio,
+    index: &'a BackupIndex,
+    selected_idx: Option<usize>,
+    theme: PidTheme,
+) -> Element<'a, AppMessage> {
+    let Some(idx) = selected_idx.filter(|&i| i < index.drawings.len()) else {
+        return container(
+            text("请从左侧选择一张图纸查看数据库字段与图内对象")
+                .size(12.5)
+                .font(pid_fonts::ui(theme, font::Weight::Normal))
+                .color(ColorToken::TextMuted.color(theme)),
+        )
+        .width(Fill)
+        .height(Fill)
+        .center_x(Fill)
+        .center_y(Fill)
+        .into();
+    };
+
+    let entry = &index.drawings[idx];
+    let items_state = app.pid_backup_browser.items.get(&idx);
+
+    let open_btn = action_button(
+        theme,
+        "open_drawing",
+        "在编辑器中打开",
+        true,
+        None, // Wired in UI-6; disabled when missing file as well.
+    );
+
+    let mut top = column![row![
+        column![
+            text(entry.name.as_str())
+                .size(15)
+                .font(pid_fonts::ui(theme, font::Weight::Semibold))
+                .color(ColorToken::TextPrimary.color(theme)),
+            text(format!("所属组：{}", display_group_path(&entry.group_path)))
+                .size(11.5)
+                .font(pid_fonts::ui(theme, font::Weight::Normal))
+                .color(ColorToken::TextSecondary.color(theme)),
+        ]
+        .spacing(2),
+        Space::new().width(Fill),
+        open_btn,
+    ]
+    .align_y(alignment::Vertical::Center),]
+    .spacing(10);
+
+    if entry.is_missing() {
+        top = top.push(PosReport::owned(
+            part_id("missing_file_notice"),
+            container(
+                text("该图纸仅在数据库中登记，备份包内缺少对应的 .pid 文件，无法在编辑器中打开。")
+                    .size(12)
+                    .font(pid_fonts::ui(theme, font::Weight::Medium))
+                    .color(ColorToken::Danger.color(theme)),
+            )
+            .width(Fill)
+            .padding([8, 12])
+            .style(move |_| card_style(theme, ColorToken::DangerSoft, ColorToken::Danger)),
+        ));
+    }
+
+    let items_card_content: Element<'a, AppMessage> = if entry.is_missing() {
+        text("因缺少 .pid 图纸文件，无法读取图内对象。")
+            .size(12)
+            .font(pid_fonts::ui(theme, font::Weight::Normal))
+            .color(ColorToken::TextSecondary.color(theme))
+            .into()
+    } else {
+        match items_state {
+            Some(ItemsState::Ready(items)) => items_ready_body(app, items, theme),
+            Some(ItemsState::Failed(reason)) => PosReport::owned(
+                part_id("items_error"),
+                container(
+                    column![
+                        text("无法读取图内对象")
+                            .size(12.5)
+                            .font(pid_fonts::ui(theme, font::Weight::Semibold))
+                            .color(ColorToken::Amber.color(theme)),
+                        text(reason.as_str())
+                            .size(12)
+                            .font(pid_fonts::ui(theme, font::Weight::Normal))
+                            .color(ColorToken::TextPrimary.color(theme)),
+                    ]
+                    .spacing(4),
+                )
+                .width(Fill)
+                .padding([10, 12])
+                .style(move |_| card_style(theme, ColorToken::AmberSoft, ColorToken::Amber)),
+            )
+            .into(),
+            Some(ItemsState::Loading) | None => text("正在读取图内对象…")
+                .size(12)
+                .font(pid_fonts::ui(theme, font::Weight::Normal))
+                .color(ColorToken::TextSecondary.color(theme))
+                .into(),
+        }
+    };
+
+    let items_card: Element<'a, AppMessage> = PosReport::owned(
+        part_id("items_card"),
+        container(items_card_content)
+            .width(Fill)
+            .height(Fill)
+            .padding([12, 14])
+            .style(move |_| card_style(theme, ColorToken::BgPanel, ColorToken::Border)),
+    )
+    .into();
+
+    let mut pane_col = column![top].spacing(12).width(Fill).height(Fill);
+    if matches!(
+        app.pid_shell.backup.detail_tab,
+        DetailTab::All | DetailTab::Properties
+    ) {
+        pane_col = pane_col.push(db_properties_card(entry, items_state, theme));
+    }
+    if matches!(
+        app.pid_shell.backup.detail_tab,
+        DetailTab::All | DetailTab::Items
+    ) {
+        pane_col = pane_col.push(items_card);
+    }
+
+    container(pane_col)
+        .width(Fill)
+        .height(Fill)
+        .padding([14, 18])
+        .into()
 }
 
 fn ready_view<'a>(
@@ -507,17 +1434,28 @@ fn ready_view<'a>(
             }),
         );
     }
-    root = root.push(
-        container(
-            text(format!("已载入 {} 张图纸", index.drawings.len()))
-                .size(12.5)
-                .font(pid_fonts::ui(theme, font::Weight::Normal))
-                .color(ColorToken::TextSecondary.color(theme)),
-        )
-        .width(Fill)
-        .height(Fill)
-        .padding([16, 20]),
+
+    let filtered = pid_backup_browser::filter_drawings(
+        index,
+        app.pid_shell.backup.selected_group.as_deref(),
+        &app.pid_shell.backup.drawing_filter,
     );
+    let selected_idx = app
+        .pid_shell
+        .backup
+        .selected_drawing
+        .filter(|idx| filtered.contains(idx))
+        .or_else(|| filtered.first().copied());
+
+    let three_pane = row![
+        group_tree_pane(app, index, theme),
+        drawing_list_pane(app, index, &filtered, selected_idx, theme),
+        detail_pane(app, index, selected_idx, theme),
+    ]
+    .width(Fill)
+    .height(Fill);
+
+    root = root.push(three_pane);
     root.width(Fill).height(Fill).into()
 }
 
