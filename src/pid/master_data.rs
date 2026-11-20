@@ -973,7 +973,9 @@ fn write_project_file_at(
 }
 
 /// 磁盘上的项目文件，顶层对象；没有这个文件是 `None`。顶层的 `version` 要认得。
-fn project_file_on_disk(path: &Path) -> Result<Option<Map<String, Value>>, MasterDataError> {
+pub(crate) fn project_file_on_disk(
+    path: &Path,
+) -> Result<Option<Map<String, Value>>, MasterDataError> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),

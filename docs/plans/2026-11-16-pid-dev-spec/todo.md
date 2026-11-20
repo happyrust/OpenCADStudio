@@ -512,13 +512,14 @@
 
 - **做什么**：`list_drawings`（§3.7：目录下直接放着的 `.dwg`，跳过以 `.` 或 `~$` 开头的，带上项目文件给的图号与 PBS 节点）；`build_index`（§3.4 – §3.6：`complete`、`drawings[]`、`duplicates[]`、`links[]`、`unresolved[]`）；`ProjectIndex::places`。都是只吃摘要的纯函数。
 - **验收**：
-  - [ ] 两张图各有一台 `P-1001` → 报一处跨图重号；两张图都有管线 `L-1001` → 不报。
-  - [ ] 连接符配对的五种结果各一例：配成对、`one_sided`、`target_missing`、`unpaired`、`ambiguous`。
-  - [ ] 一张图读不出来时 `complete` 为假、其余照常；两个文件得出同一个图号 → `INDEX_DRAWING_ID_DUPLICATED`。
+  - [x] 两张图各有一台 `P-1001` → 报一处跨图重号；两张图都有管线 `L-1001` → 不报。
+  - [x] 连接符配对的五种结果各一例：配成对、`one_sided`、`target_missing`、`unpaired`、`ambiguous`。
+  - [x] 一张图读不出来时 `complete` 为假、其余照常；两个文件得出同一个图号 → `INDEX_DRAWING_ID_DUPLICATED`。
 - **验证**：`cargo test --offline --locked --lib project_index`
 - **依赖**：IX-2；MD-2（`list_drawings` 要读项目文件里的 `drawings[]`）
 - **文件**：`src/pid/project_index.rs`
 - **规模**：M
+- **补（2026-11-20）**：一个提交。与任务写法不同、或任务没有说的：改了 `src/pid/master_data.rs` 的一处可见性——列图要读项目文件，`project_file_on_disk`（去掉 BOM、查格式版本、文件不存在算没有）从私有改成 `pub(crate)` 直接用；`drawings[]` 每项的校验写在 `project_index.rs`，报主数据同一套错，位置从 `drawings` 起。多了错误码 `INDEX_IO_ERROR`（项目目录本身读不了），命令和 REST 怎么报留给 `IX-5` 起的接线任务。配对要两边互相唯一才进 `links`：同一线号同进程配对连着跨三张图时，只看一边会一边进 `links`、一边报 `ambiguous`，这里两边都报 `ambiguous`。服务器记着的对端图在项目里、但读不出来时报 `one_sided`，`target_missing` 只给项目里没有的图。「其他」也参与跨图重号：照 §3.5 正文，待决问题 I1 的建议栏只写了设备、阀门、仪表。读不出来的图也占着它的图号。新加的族枚举叫 `LinkFamily`（`Family` 已是 §11.2 的私有结构），JSON 照旧是 `family`。其余定下的读法记在项目索引规格 §11.4。**先红后绿**：先放空壳，新加的 8 条测试编得过、都败在断言上（列图写错那条败在该报错却返回了空列表）；第一次编译时新枚举与私有的 `Family` 撞名，改名后再跑才是这个红。实现后 21 条第一次就全过。**读数**：主程序库 7327 条，7267 通过、57 默认不跑、3 失败（比对设计稿的三条）；比上次的基线多 8 条，都是新加的、都过了；那条偶发失败的像素测试这次过了；clippy 656 / 1051，与基线相同，`project_index.rs`、`master_data.rs` 没有告警；格式检查两个文件都干净。**新基线**：主程序库 7327 条（7267 / 57 / 3；那条像素测试偶发失败时是 7266 / 57 / 4）。
 
 ### IX-4 【纯】摘要的文件往返、合成图与性能预算
 

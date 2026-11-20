@@ -1,17 +1,25 @@
-//! 项目索引（SPEC-pid-project-index）：先是一张图的摘要。
+//! 项目索引（SPEC-pid-project-index）：一张图的摘要，和由各图摘要合成的项目索引。
 //!
 //! [`summarize`] 只读一张图：带 `PID_AUTHOR` 记录的实体按 §3.1 的归类表
 //! 归成对象，符号实例的每个端口各记一条；管段、管线自己的线和信号线的两端
 //! 按 §3.2 现算接到了什么，连接符记下对端是怎么配的。同一张图摘要两次得到
 //! 逐字节相同的 JSON，摘要不改图。[`graph`] 由摘要推出 §3.3 的连通图。
+//!
+//! [`list_drawings`] 列出项目目录里要读的图；[`build_index`] 把各图的摘要合成
+//! 项目索引：跨图重号、页间连接符配对（§3.4–§3.6）；[`ProjectIndex::places`] 查
+//! 一个位号在哪些图上。这几样都不读图、不写图。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fmt;
+use std::path::{Path, PathBuf};
 
 use document::entities::Insert;
 use document::types::Vector3;
 use document::{Document, EntityType, Handle};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use super::master_data::{self, MasterDataError, PROJECT_FILE};
 use super::persist::PidAuthor;
 use super::propagate::split_props;
 use super::symbols::{placed_ports, PortDir, SymbolLibrary};
@@ -241,6 +249,171 @@ pub struct Graph {
     pub nodes: Vec<String>,
     pub edges: Vec<[String; 2]>,
 }
+
+/// 项目索引格式的版本。
+pub const INDEX_VERSION: u32 = 1;
+
+/// 项目目录里要读的一张图（§3.7）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrawingFile {
+    /// 文件名，不带目录。
+    pub file: String,
+    pub path: PathBuf,
+    pub drawing_id: String,
+    pub pbs: Option<String>,
+}
+
+/// 读不出来、做不了摘要的一张图。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedDrawing {
+    pub drawing_id: String,
+    /// 文件名，不带目录。
+    pub file: String,
+    pub pbs: Option<String>,
+    /// 读不出来的原因。
+    pub error: String,
+}
+
+/// 项目索引（§3.4）。字段顺序就是 JSON 里的顺序。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectIndex {
+    pub version: u32,
+    pub project_dir: String,
+    /// 生成的时间，Unix 秒。
+    pub generated_at: i64,
+    /// 所有图都读出来了才为真。
+    pub complete: bool,
+    pub drawings: Vec<IndexDrawing>,
+    pub duplicates: Vec<Duplicate>,
+    pub links: Vec<Link>,
+    pub unresolved: Vec<Unresolved>,
+}
+
+/// 索引里的一张图（§3.4 `drawings[]`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexDrawing {
+    pub drawing_id: String,
+    pub file: Option<String>,
+    pub source: SummarySource,
+    pub pbs: Option<String>,
+    /// 对象数；读不出来的图是 `None`。
+    pub objects: Option<usize>,
+    /// 读不出来的原因。
+    pub error: Option<String>,
+}
+
+/// 跨图重复的一个位号（§3.5）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Duplicate {
+    pub type_code: String,
+    pub tag: String,
+    pub places: Vec<Place>,
+}
+
+/// 一个对象在项目里的一处。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Place {
+    pub drawing_id: String,
+    pub at: [f64; 2],
+    pub handle: String,
+}
+
+/// 页间连接符属于哪一族。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkFamily {
+    Pipe,
+    Signal,
+}
+
+/// 配成对的一对连接符（§3.4 `links[]`）：`from` 是流出侧，`to` 是流入侧。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Link {
+    pub family: LinkFamily,
+    pub from: LinkEnd,
+    pub to: LinkEnd,
+}
+
+/// 一对连接符里的一个。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkEnd {
+    pub drawing_id: String,
+    pub line: String,
+    pub at: [f64; 2],
+    pub handle: String,
+}
+
+/// 连接符为什么没配成对（§3.6）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkStatus {
+    /// 记着配过对，对面却找不到。
+    OneSided,
+    /// 记着的对端图不在项目里。
+    TargetMissing,
+    /// 没配过对。
+    Unpaired,
+    /// 对面不止一个，分不出是哪个。
+    Ambiguous,
+}
+
+/// 没配成对的一个连接符（§3.4 `unresolved[]`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Unresolved {
+    pub drawing_id: String,
+    pub kind: String,
+    pub line: String,
+    pub at: [f64; 2],
+    pub handle: String,
+    pub status: LinkStatus,
+    /// 它指的目标图号；没指是 `None`。
+    pub target: Option<String>,
+}
+
+/// 列项目图纸、建索引时的错。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IndexError {
+    /// 两个文件得出同一个图号（§3.7），索引不生成。`files` 按文件名排。
+    DrawingIdDuplicated {
+        drawing_id: String,
+        files: [String; 2],
+    },
+    /// 项目文件读不出来。
+    ProjectFile(MasterDataError),
+    /// 读项目目录时文件系统报的错。
+    Io { path: String, reason: String },
+}
+
+impl IndexError {
+    /// 错误码。项目文件的错用主数据那边的错误码。
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::DrawingIdDuplicated { .. } => "INDEX_DRAWING_ID_DUPLICATED",
+            Self::ProjectFile(error) => error.code(),
+            Self::Io { .. } => "INDEX_IO_ERROR",
+        }
+    }
+}
+
+impl fmt::Display for IndexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DrawingIdDuplicated {
+                drawing_id,
+                files: [first, second],
+            } => write!(
+                f,
+                "{}: {first} 和 {second} 的图号都是 {drawing_id}",
+                self.code()
+            ),
+            Self::ProjectFile(error) => write!(f, "{PROJECT_FILE}：{error}"),
+            Self::Io { path, reason } => write!(f, "{}: {path} {reason}", self.code()),
+        }
+    }
+}
+
+impl std::error::Error for IndexError {}
 
 /// 摘要一张图（§3.1）。只读，不改 `doc`。
 ///
@@ -1343,6 +1516,499 @@ fn length_unit(insunits: i16) -> &'static str {
     }
 }
 
+// ── 项目索引 ──────────────────────────────────────────────────────────────────
+
+/// 列出项目目录 `project_dir` 里要读的图（§3.7）：直接放在目录里、扩展名是 `.dwg`
+/// （不分大小写）的文件，按文件名排；不进子目录，文件名以 `.` 或 `~$` 开头的跳过。
+/// 图号和 PBS 节点取项目文件 `drawings[]` 给这个文件写的（文件名不分大小写），没写
+/// 图号的取文件名去掉扩展名；`drawings[]` 里有、目录里没有的文件不理。项目文件读不
+/// 出来或写错、目录读不了、两个文件得出同一个图号时报错。
+pub fn list_drawings(project_dir: &Path) -> Result<Vec<DrawingFile>, IndexError> {
+    let listed = listed_drawings(project_dir)?;
+    let entries = std::fs::read_dir(project_dir).map_err(|error| io_error(project_dir, &error))?;
+    let mut drawings = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|error| io_error(project_dir, &error))?.path();
+        let Some(file) = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        let is_dwg = path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dwg"));
+        if !is_dwg || file.starts_with('.') || file.starts_with("~$") || !path.is_file() {
+            continue;
+        }
+        let given = listed.get(&file.to_lowercase());
+        let drawing_id = given
+            .and_then(|given| given.drawing_id.clone())
+            .or_else(|| {
+                path.file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+            })
+            .unwrap_or_default();
+        let pbs = given.and_then(|given| given.pbs.clone());
+        drawings.push(DrawingFile {
+            file,
+            path,
+            drawing_id,
+            pbs,
+        });
+    }
+    drawings.sort_by(|left, right| left.file.cmp(&right.file));
+    check_drawing_ids(
+        drawings
+            .iter()
+            .map(|drawing| (drawing.drawing_id.as_str(), drawing.file.as_str())),
+    )?;
+    Ok(drawings)
+}
+
+/// 项目文件 `drawings[]` 给一个文件写的图号和 PBS 节点；空的算没写。
+struct Listed {
+    drawing_id: Option<String>,
+    pbs: Option<String>,
+}
+
+/// 项目文件里的 `drawings[]`，按小写的文件名查。没有项目文件、没写 `drawings` 或写
+/// 的是 `null` 时是空的。写错时报的错与主数据的同一套，位置从 `drawings` 起。
+fn listed_drawings(project_dir: &Path) -> Result<HashMap<String, Listed>, IndexError> {
+    let mut listed = HashMap::new();
+    let project = master_data::project_file_on_disk(&project_dir.join(PROJECT_FILE))
+        .map_err(IndexError::ProjectFile)?;
+    let items = match project.as_ref().and_then(|project| project.get("drawings")) {
+        None | Some(Value::Null) => return Ok(listed),
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(schema_error("drawings".to_string(), "应为数组")),
+    };
+    for (index, item) in items.iter().enumerate() {
+        let at = format!("drawings[{index}]");
+        let Value::Object(item) = item else {
+            return Err(schema_error(at, "应为对象"));
+        };
+        let file = match item.get("file") {
+            Some(Value::String(file)) if !file.trim().is_empty() => file,
+            Some(Value::String(_)) => {
+                return Err(IndexError::ProjectFile(
+                    MasterDataError::RequiredFieldMissing {
+                        at: format!("{at}.file"),
+                    },
+                ));
+            }
+            Some(_) => return Err(schema_error(format!("{at}.file"), "应为文本")),
+            None => return Err(schema_error(format!("{at}.file"), "缺少这个键")),
+        };
+        let given = Listed {
+            drawing_id: optional_text(item, &at, "drawing_id")?,
+            pbs: optional_text(item, &at, "pbs")?,
+        };
+        if listed.insert(file.to_lowercase(), given).is_some() {
+            return Err(IndexError::ProjectFile(MasterDataError::Duplicate {
+                at: format!("{at}.file"),
+                value: file.clone(),
+            }));
+        }
+    }
+    Ok(listed)
+}
+
+/// `drawings[]` 一项里的 `key`：可以不写、写 `null` 或写空的文本，都算没写。
+fn optional_text(
+    item: &serde_json::Map<String, Value>,
+    at: &str,
+    key: &str,
+) -> Result<Option<String>, IndexError> {
+    match item.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) if text.trim().is_empty() => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(_) => Err(schema_error(format!("{at}.{key}"), "应为文本或 null")),
+    }
+}
+
+fn schema_error(at: String, reason: &str) -> IndexError {
+    IndexError::ProjectFile(MasterDataError::Schema {
+        at,
+        reason: reason.to_string(),
+    })
+}
+
+fn io_error(path: &Path, error: &std::io::Error) -> IndexError {
+    IndexError::Io {
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    }
+}
+
+/// 两个文件得出同一个图号时报 [`IndexError::DrawingIdDuplicated`]。`drawings` 是一对对
+/// 的（图号，文件名）；报出的两个文件按文件名排。
+fn check_drawing_ids<'a>(
+    drawings: impl Iterator<Item = (&'a str, &'a str)>,
+) -> Result<(), IndexError> {
+    let mut sorted: Vec<(&str, &str)> = drawings.collect();
+    sorted.sort_unstable();
+    for pair in sorted.windows(2) {
+        let ((drawing_id, first), (other, second)) = (pair[0], pair[1]);
+        if drawing_id == other {
+            return Err(IndexError::DrawingIdDuplicated {
+                drawing_id: drawing_id.to_string(),
+                files: [first.to_string(), second.to_string()],
+            });
+        }
+    }
+    Ok(())
+}
+
+/// 把各图的摘要 `summaries` 和读不出来的图 `failed` 合成项目索引（§3.4–§3.6）。
+/// 只看给的这些，不读文件。两张图（读不出来的也算）图号相同时报
+/// [`IndexError::DrawingIdDuplicated`]，不出索引。
+pub fn build_index(
+    project_dir: &Path,
+    summaries: &[DrawingSummary],
+    failed: &[FailedDrawing],
+) -> Result<ProjectIndex, IndexError> {
+    build_index_at(project_dir, summaries, failed, unix_seconds())
+}
+
+/// 同 [`build_index`]，`generated_at` 取 `now`。
+fn build_index_at(
+    project_dir: &Path,
+    summaries: &[DrawingSummary],
+    failed: &[FailedDrawing],
+    now: i64,
+) -> Result<ProjectIndex, IndexError> {
+    check_drawing_ids(
+        summaries
+            .iter()
+            .map(|summary| {
+                (
+                    summary.drawing_id.as_str(),
+                    summary.file.as_deref().unwrap_or_default(),
+                )
+            })
+            .chain(
+                failed
+                    .iter()
+                    .map(|drawing| (drawing.drawing_id.as_str(), drawing.file.as_str())),
+            ),
+    )?;
+    let mut drawings: Vec<IndexDrawing> = summaries
+        .iter()
+        .map(|summary| IndexDrawing {
+            drawing_id: summary.drawing_id.clone(),
+            file: summary.file.clone(),
+            source: summary.source,
+            pbs: summary.pbs.clone(),
+            objects: Some(summary.objects.len()),
+            error: None,
+        })
+        .chain(failed.iter().map(|drawing| IndexDrawing {
+            drawing_id: drawing.drawing_id.clone(),
+            file: Some(drawing.file.clone()),
+            source: SummarySource::File,
+            pbs: drawing.pbs.clone(),
+            objects: None,
+            error: Some(drawing.error.clone()),
+        }))
+        .collect();
+    drawings.sort_by(|left, right| left.drawing_id.cmp(&right.drawing_id));
+    let (links, unresolved) = pair_connectors(summaries, &drawings);
+    Ok(ProjectIndex {
+        version: INDEX_VERSION,
+        project_dir: project_dir.to_string_lossy().into_owned(),
+        generated_at: now,
+        complete: failed.is_empty(),
+        drawings,
+        duplicates: duplicates(summaries),
+        links,
+        unresolved,
+    })
+}
+
+/// 跨图重号（§3.5）：设备、阀门、仪表、其他里位号非空、有自己编号的，按
+/// `(type_code, tag)` 归在一起，落在两张以上的图上才算；列出它所有的出现处，
+/// 同一张图上重了的也列。
+fn duplicates(summaries: &[DrawingSummary]) -> Vec<Duplicate> {
+    let mut seen: BTreeMap<(&str, &str), Vec<Place>> = BTreeMap::new();
+    for summary in summaries {
+        for object in summary
+            .objects
+            .iter()
+            .filter(|object| counts_across_drawings(object))
+        {
+            seen.entry((object.type_code.as_str(), object.tag.as_str()))
+                .or_default()
+                .push(place_of(summary, object));
+        }
+    }
+    seen.into_iter()
+        .filter(|(_, places)| {
+            let drawings: HashSet<&str> = places
+                .iter()
+                .map(|place| place.drawing_id.as_str())
+                .collect();
+            drawings.len() > 1
+        })
+        .map(|((type_code, tag), mut places)| {
+            places.sort_by(compare_places);
+            Duplicate {
+                type_code: type_code.to_string(),
+                tag: tag.to_string(),
+                places,
+            }
+        })
+        .collect()
+}
+
+fn counts_across_drawings(object: &SummaryObject) -> bool {
+    object.own_tag
+        && !object.tag.is_empty()
+        && matches!(
+            object.kind,
+            ObjectKind::Equipment | ObjectKind::Valve | ObjectKind::Instrument | ObjectKind::Other
+        )
+}
+
+fn place_of(summary: &DrawingSummary, object: &SummaryObject) -> Place {
+    Place {
+        drawing_id: summary.drawing_id.clone(),
+        at: object.at,
+        handle: object.handle.clone(),
+    }
+}
+
+/// 出现处按图号、定位点（先 x 后 y）、句柄排。
+fn compare_places(left: &Place, right: &Place) -> std::cmp::Ordering {
+    left.drawing_id
+        .cmp(&right.drawing_id)
+        .then_with(|| compare_at(left.at, right.at))
+        .then_with(|| compare_handles(&left.handle, &right.handle))
+}
+
+fn compare_ends(left: &LinkEnd, right: &LinkEnd) -> std::cmp::Ordering {
+    left.drawing_id
+        .cmp(&right.drawing_id)
+        .then_with(|| left.line.cmp(&right.line))
+        .then_with(|| compare_at(left.at, right.at))
+        .then_with(|| compare_handles(&left.handle, &right.handle))
+}
+
+/// 句柄按数值比；读不出数值的排在前面，再按字面比。
+fn compare_handles(left: &str, right: &str) -> std::cmp::Ordering {
+    let value = |handle: &str| parse_handle(handle).map(|handle| handle.value());
+    value(left).cmp(&value(right)).then_with(|| left.cmp(right))
+}
+
+/// 记着配过对的连接符到哪里找对面（§3.6）。
+#[derive(Clone, Copy)]
+enum Scope<'a> {
+    /// 服务器配的对：只在这张图上找。
+    Drawing(&'a str),
+    /// 同进程配的对：对端图不可知，在其余各图上找。
+    Elsewhere,
+}
+
+/// 配对时要对上的：族、是不是流入、流出侧线号、流入侧线号。
+type PlugKey<'a> = (LinkFamily, bool, &'a str, &'a str);
+
+/// 一个页间连接符和它所在的图。
+struct Plug<'a> {
+    drawing_id: &'a str,
+    connector: &'a SummaryConnector,
+    kind: Option<ConnectorKind>,
+}
+
+impl<'a> Plug<'a> {
+    /// 记着配过对时到哪里找；`target`、`none` 和没配上的 `local` 不找。
+    fn scope(&self) -> Option<Scope<'a>> {
+        let connector = self.connector;
+        match connector.peer_kind {
+            PeerKind::Server => connector.peer_drawing.as_deref().map(Scope::Drawing),
+            PeerKind::Local if connector.upstream.is_some() && connector.downstream.is_some() => {
+                Some(Scope::Elsewhere)
+            }
+            _ => None,
+        }
+    }
+
+    fn key(&self) -> Option<PlugKey<'a>> {
+        let kind = self.kind?;
+        Some((
+            link_family(kind),
+            kind.is_inflow(),
+            self.connector.upstream.as_deref()?,
+            self.connector.downstream.as_deref()?,
+        ))
+    }
+
+    fn end(&self) -> LinkEnd {
+        LinkEnd {
+            drawing_id: self.drawing_id.to_string(),
+            line: self.connector.line.clone(),
+            at: self.connector.at,
+            handle: self.connector.handle.clone(),
+        }
+    }
+}
+
+fn link_family(kind: ConnectorKind) -> LinkFamily {
+    match kind {
+        ConnectorKind::PipeIn | ConnectorKind::PipeOut => LinkFamily::Pipe,
+        ConnectorKind::SignalIn | ConnectorKind::SignalOut => LinkFamily::Signal,
+    }
+}
+
+/// 页间连接符配对（§3.6）。对面要方向相反、同族、两个线号都相同，而且自己也
+/// 记着配过对。两边都只找到对方才算配成对，记一次，`from` 是流出侧；一边只
+/// 找到一个、那一个却不止找到它时（同一线号同进程配对连着跨三张以上的图，
+/// 待决问题 I2）两边都是 `ambiguous`。
+fn pair_connectors(
+    summaries: &[DrawingSummary],
+    drawings: &[IndexDrawing],
+) -> (Vec<Link>, Vec<Unresolved>) {
+    let known: HashSet<&str> = drawings
+        .iter()
+        .map(|drawing| drawing.drawing_id.as_str())
+        .collect();
+    let plugs: Vec<Plug<'_>> = summaries
+        .iter()
+        .flat_map(|summary| {
+            summary.connectors.iter().map(move |connector| Plug {
+                drawing_id: summary.drawing_id.as_str(),
+                connector,
+                kind: ConnectorKind::parse(&connector.kind),
+            })
+        })
+        .collect();
+    let mut searchable: HashMap<PlugKey<'_>, Vec<usize>> = HashMap::new();
+    for (index, plug) in plugs.iter().enumerate() {
+        if let (Some(_), Some(key)) = (plug.scope(), plug.key()) {
+            searchable.entry(key).or_default().push(index);
+        }
+    }
+    // 每个连接符找到的对面；不找的是 `None`。
+    let found: Vec<Option<Vec<usize>>> = plugs
+        .iter()
+        .map(|plug| {
+            let scope = plug.scope()?;
+            let Some((family, inflow, upstream, downstream)) = plug.key() else {
+                return Some(Vec::new());
+            };
+            let others = searchable
+                .get(&(family, !inflow, upstream, downstream))
+                .map_or(&[][..], Vec::as_slice);
+            Some(
+                others
+                    .iter()
+                    .copied()
+                    .filter(|&other| match scope {
+                        Scope::Drawing(drawing_id) => plugs[other].drawing_id == drawing_id,
+                        Scope::Elsewhere => plugs[other].drawing_id != plug.drawing_id,
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let mut links = Vec::new();
+    let mut unresolved = Vec::new();
+    for (index, plug) in plugs.iter().enumerate() {
+        let partner = match found[index].as_deref() {
+            Some(&[other]) if found[other].as_deref() == Some(&[index][..]) => Some(other),
+            _ => None,
+        };
+        if let Some(other) = partner {
+            if let Some(kind) = plug.kind.filter(|kind| !kind.is_inflow()) {
+                links.push(Link {
+                    family: link_family(kind),
+                    from: plug.end(),
+                    to: plugs[other].end(),
+                });
+            }
+            continue;
+        }
+        let status = match (&found[index], plug.scope()) {
+            (None, _) => LinkStatus::Unpaired,
+            (_, Some(Scope::Drawing(drawing_id))) if !known.contains(drawing_id) => {
+                LinkStatus::TargetMissing
+            }
+            (Some(others), _) if others.is_empty() => LinkStatus::OneSided,
+            _ => LinkStatus::Ambiguous,
+        };
+        let connector = plug.connector;
+        unresolved.push(Unresolved {
+            drawing_id: plug.drawing_id.to_string(),
+            kind: connector.kind.clone(),
+            line: connector.line.clone(),
+            at: connector.at,
+            handle: connector.handle.clone(),
+            status,
+            target: connector.peer_drawing.clone(),
+        });
+    }
+    links.sort_by(|left, right| {
+        compare_ends(&left.from, &right.from).then_with(|| compare_ends(&left.to, &right.to))
+    });
+    unresolved.sort_by(|left, right| {
+        left.drawing_id
+            .cmp(&right.drawing_id)
+            .then_with(|| left.line.cmp(&right.line))
+            .then_with(|| compare_at(left.at, right.at))
+            .then_with(|| compare_handles(&left.handle, &right.handle))
+    });
+    (links, unresolved)
+}
+
+impl ProjectIndex {
+    /// 位号 `tag` 在项目里的所有出现处：索引里读得出来的各张图上，有自己编号、
+    /// 位号是它的对象；`type_code` 给了就只看这个类型。管线这样跨图同号的也列。
+    /// `summaries` 是做这份索引用的摘要，索引里没有的图不算。按图号、定位点、
+    /// 句柄排；空位号查不到东西。
+    #[must_use]
+    pub fn places(
+        &self,
+        summaries: &[DrawingSummary],
+        type_code: Option<&str>,
+        tag: &str,
+    ) -> Vec<Place> {
+        if tag.is_empty() {
+            return Vec::new();
+        }
+        let indexed: HashSet<&str> = self
+            .drawings
+            .iter()
+            .filter(|drawing| drawing.error.is_none())
+            .map(|drawing| drawing.drawing_id.as_str())
+            .collect();
+        let mut places: Vec<Place> = summaries
+            .iter()
+            .filter(|summary| indexed.contains(summary.drawing_id.as_str()))
+            .flat_map(|summary| {
+                summary
+                    .objects
+                    .iter()
+                    .filter(move |object| {
+                        object.own_tag
+                            && object.tag == tag
+                            && type_code.is_none_or(|code| object.type_code == code)
+                    })
+                    .map(move |object| place_of(summary, object))
+            })
+            .collect();
+        places.sort_by(compare_places);
+        places
+    }
+}
+
+fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
+}
+
 #[cfg(test)]
 pub(crate) use synthetic::synthetic_drawing;
 
@@ -1804,7 +2470,6 @@ mod tests {
     use super::*;
     use crate::app::OpenCADStudio;
     use serde_json::{json, Value};
-    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
@@ -3235,5 +3900,750 @@ mod tests {
             median.as_secs_f64() * 1e3,
             BUDGET.as_millis()
         );
+    }
+
+    // ── 项目索引 ──
+
+    const NOW: i64 = 1_794_800_000;
+
+    /// 造索引用的一张图的摘要：只带给的对象和连接符，文件名是图号加 `.dwg`。
+    fn drawing_with(
+        drawing_id: &str,
+        objects: Vec<SummaryObject>,
+        connectors: Vec<SummaryConnector>,
+    ) -> DrawingSummary {
+        DrawingSummary {
+            version: SUMMARY_VERSION,
+            drawing_id: drawing_id.to_string(),
+            file: Some(format!("{drawing_id}.dwg")),
+            source: SummarySource::File,
+            fingerprint: None,
+            pbs: None,
+            length_unit: "mm".to_string(),
+            objects,
+            segments: Vec::new(),
+            signal_ends: Vec::new(),
+            connectors,
+            ports: Vec::new(),
+        }
+    }
+
+    fn object_at(
+        kind: ObjectKind,
+        type_code: &str,
+        tag: &str,
+        at: [f64; 2],
+        handle: &str,
+    ) -> SummaryObject {
+        SummaryObject {
+            kind,
+            type_code: type_code.to_string(),
+            type_label: String::new(),
+            tag: tag.to_string(),
+            own_tag: kind.has_own_tag(),
+            tag_source: "auto".to_string(),
+            tag_status: "ok".to_string(),
+            symbol: None,
+            symbol_known: true,
+            props: BTreeMap::new(),
+            overrides: Vec::new(),
+            owner: None,
+            layer: "0".to_string(),
+            at,
+            bbox: [at[0], at[1], at[0], at[1]],
+            handle: handle.to_string(),
+        }
+    }
+
+    /// 一个连接符：`peer` 是对端怎么记的和对端图号，`lines` 是流出侧、流入侧线号。
+    fn plug(
+        kind: &str,
+        line: &str,
+        at: [f64; 2],
+        handle: &str,
+        peer: (PeerKind, Option<&str>),
+        lines: [Option<&str>; 2],
+    ) -> SummaryConnector {
+        SummaryConnector {
+            kind: kind.to_string(),
+            line: line.to_string(),
+            at,
+            radius: 3.0,
+            peer_kind: peer.0,
+            peer_drawing: peer.1.map(str::to_string),
+            upstream: lines[0].map(str::to_string),
+            downstream: lines[1].map(str::to_string),
+            handle: handle.to_string(),
+        }
+    }
+
+    fn place_on(drawing_id: &str, at: [f64; 2], handle: &str) -> Place {
+        Place {
+            drawing_id: drawing_id.to_string(),
+            at,
+            handle: handle.to_string(),
+        }
+    }
+
+    fn failed(drawing_id: &str, error: &str) -> FailedDrawing {
+        FailedDrawing {
+            drawing_id: drawing_id.to_string(),
+            file: format!("{drawing_id}.dwg"),
+            pbs: None,
+            error: error.to_string(),
+        }
+    }
+
+    fn index_of(summaries: &[DrawingSummary], failed: &[FailedDrawing]) -> ProjectIndex {
+        build_index_at(Path::new("D:/proj/cdu"), summaries, failed, NOW).expect("索引")
+    }
+
+    /// §3.5 的两张图：算的四类（设备、阀门、仪表、其他）各有一个两张图都有的位号，
+    /// `V-1001` 在第一张上还有两个；不算的（管线、管路、信号线、不单独编号的管件、打断符、
+    /// 没位号的）两张图上也同号；只在一张图里重的 `V-2001`、类型不同的 `X-1` 也在。
+    fn tagged_pair() -> [DrawingSummary; 2] {
+        use ObjectKind::{
+            Break, Equipment, Fitting, Instrument, Other, PipeLine, PipeRun, SignalLine, Valve,
+        };
+        let first = drawing_with(
+            "PID-1101",
+            vec![
+                object_at(Equipment, "EQUIPMENT", "P-1001", [120.0, 80.0], "2A4"),
+                object_at(Valve, "VALVE", "V-1001", [30.0, 0.0], "A1"),
+                object_at(Valve, "VALVE", "V-1001", [10.0, 0.0], "A2"),
+                object_at(Instrument, "INSTRUMENT", "PT-1001", [0.0, 40.0], "A3"),
+                object_at(Other, "NOTE", "N-1", [0.0, 90.0], "A4"),
+                object_at(Other, "NOTE", "X-1", [0.0, 95.0], "A5"),
+                object_at(Valve, "VALVE", "V-2001", [50.0, 0.0], "A6"),
+                object_at(Valve, "VALVE", "V-2001", [60.0, 0.0], "A7"),
+                object_at(PipeLine, "PIPE_LINE", "L-1001", [0.0, 0.0], "A8"),
+                object_at(PipeRun, "PIPE_RUN", "L-1001-01", [0.0, 0.0], "A9"),
+                object_at(SignalLine, "SIGNAL_LINE", "S-2001", [0.0, 40.0], "AA"),
+                object_at(Fitting, "FITTING", "L-1001-01", [70.0, 0.0], "AB"),
+                object_at(Break, "FITTING", "", [80.0, 0.0], "AC"),
+                object_at(Instrument, "INSTRUMENT", "", [0.0, 60.0], "AD"),
+            ],
+            Vec::new(),
+        );
+        let second = drawing_with(
+            "PID-1102",
+            vec![
+                object_at(Equipment, "EQUIPMENT", "P-1001", [60.0, 40.0], "1F0"),
+                object_at(Valve, "VALVE", "V-1001", [20.0, 0.0], "B1"),
+                object_at(Instrument, "INSTRUMENT", "PT-1001", [0.0, 40.0], "B2"),
+                object_at(Other, "NOTE", "N-1", [0.0, 90.0], "B3"),
+                object_at(Equipment, "EQUIPMENT", "X-1", [0.0, 95.0], "B4"),
+                object_at(PipeLine, "PIPE_LINE", "L-1001", [0.0, 0.0], "B5"),
+                object_at(PipeRun, "PIPE_RUN", "L-1001-01", [0.0, 0.0], "B6"),
+                object_at(SignalLine, "SIGNAL_LINE", "S-2001", [0.0, 40.0], "B7"),
+                object_at(Fitting, "FITTING", "L-1001-01", [70.0, 0.0], "B8"),
+                object_at(Break, "FITTING", "", [80.0, 0.0], "B9"),
+                object_at(Instrument, "INSTRUMENT", "", [0.0, 60.0], "BA"),
+            ],
+            Vec::new(),
+        );
+        [first, second]
+    }
+
+    /// 两张图各有一台 `P-1001` 报一处，两张图都有的管线 `L-1001` 不报（§3.5、成功
+    /// 标准第 5 条）。一处重号列出它所有的出现处。
+    #[test]
+    fn a_tag_on_two_drawings_is_a_duplicate_but_a_line_number_is_not() {
+        let index = index_of(&tagged_pair(), &[]);
+        let duplicate = |type_code: &str, tag: &str, places: Vec<Place>| Duplicate {
+            type_code: type_code.to_string(),
+            tag: tag.to_string(),
+            places,
+        };
+        let expected = vec![
+            duplicate(
+                "EQUIPMENT",
+                "P-1001",
+                vec![
+                    place_on("PID-1101", [120.0, 80.0], "2A4"),
+                    place_on("PID-1102", [60.0, 40.0], "1F0"),
+                ],
+            ),
+            duplicate(
+                "INSTRUMENT",
+                "PT-1001",
+                vec![
+                    place_on("PID-1101", [0.0, 40.0], "A3"),
+                    place_on("PID-1102", [0.0, 40.0], "B2"),
+                ],
+            ),
+            duplicate(
+                "NOTE",
+                "N-1",
+                vec![
+                    place_on("PID-1101", [0.0, 90.0], "A4"),
+                    place_on("PID-1102", [0.0, 90.0], "B3"),
+                ],
+            ),
+            duplicate(
+                "VALVE",
+                "V-1001",
+                vec![
+                    place_on("PID-1101", [10.0, 0.0], "A2"),
+                    place_on("PID-1101", [30.0, 0.0], "A1"),
+                    place_on("PID-1102", [20.0, 0.0], "B1"),
+                ],
+            ),
+        ];
+        assert_eq!(index.duplicates, expected);
+        assert!(index.complete);
+    }
+
+    /// 合成图当成两张图：每个设备、阀门、仪表的位号都重了，线号、管路号、信号线号
+    /// 不报；合成图的连接符都没配过对。
+    #[test]
+    fn two_copies_of_the_synthetic_drawing_repeat_every_numbered_tag_but_no_line() {
+        let library = SymbolLibrary::builtin();
+        let doc = synthetic_drawing(40);
+        let summaries: Vec<DrawingSummary> = ["PID-1101", "PID-1102"]
+            .into_iter()
+            .map(|drawing_id| {
+                let meta = SummaryMeta {
+                    drawing_id: drawing_id.to_string(),
+                    file: Some(format!("{drawing_id}.dwg")),
+                    ..meta()
+                };
+                summarize(&doc, &library, meta, DEFAULT_TOLERANCE)
+            })
+            .collect();
+        let index = index_of(&summaries, &[]);
+        let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
+        for duplicate in &index.duplicates {
+            *kinds.entry(duplicate.type_code.as_str()).or_default() += 1;
+            let drawings: Vec<&str> = duplicate
+                .places
+                .iter()
+                .map(|place| place.drawing_id.as_str())
+                .collect();
+            assert_eq!(drawings, ["PID-1101", "PID-1102"], "{}", duplicate.tag);
+        }
+        assert_eq!(
+            kinds,
+            BTreeMap::from([("EQUIPMENT", 6), ("INSTRUMENT", 8), ("VALVE", 8)])
+        );
+        assert!(index.links.is_empty());
+        assert_eq!(index.unresolved.len(), 2 * 2 * 3);
+        assert!(index
+            .unresolved
+            .iter()
+            .all(|plug| plug.status == LinkStatus::Unpaired && plug.target.is_none()));
+    }
+
+    /// §3.6 的配对，只看各图记下的：服务器配的对只在对端图上找，同进程配的对在其余
+    /// 各图上找；方向相反、同族、两个线号都相同才算。配成对、`one_sided`、
+    /// `target_missing`、`unpaired`、`ambiguous` 各有几例；同一线号同进程配对连着跨三张图
+    /// 时四个都报 `ambiguous`（待决问题 I2）。
+    #[test]
+    fn connectors_pair_across_drawings_only_on_what_was_recorded() {
+        let server = |drawing: &'static str| (PeerKind::Server, Some(drawing));
+        let local = (PeerKind::Local, None);
+        let both = |up: &'static str, down: &'static str| [Some(up), Some(down)];
+        let only = |up: &'static str| [Some(up), None];
+        let at = [0.0, 0.0];
+        let first = drawing_with(
+            "PID-1101",
+            Vec::new(),
+            vec![
+                plug(
+                    "pipe_out",
+                    "L-1001",
+                    at,
+                    "A1",
+                    server("PID-1102"),
+                    both("L-1001", "L-2001"),
+                ),
+                plug(
+                    "pipe_out",
+                    "L-1003",
+                    at,
+                    "A2",
+                    server("PID-1199"),
+                    both("L-1003", "L-3001"),
+                ),
+                plug(
+                    "signal_out",
+                    "S-2001",
+                    at,
+                    "A3",
+                    server("PID-1102"),
+                    both("S-2001", "S-2002"),
+                ),
+                plug(
+                    "pipe_out",
+                    "L-1004",
+                    at,
+                    "A4",
+                    (PeerKind::None, None),
+                    only("L-1004"),
+                ),
+                plug(
+                    "pipe_out",
+                    "L-1005",
+                    at,
+                    "A5",
+                    (PeerKind::Target, Some("PID-1102")),
+                    only("L-1005"),
+                ),
+                plug(
+                    "pipe_out",
+                    "L-1006",
+                    at,
+                    "A6",
+                    local,
+                    both("L-1006", "L-1006"),
+                ),
+                plug("signal_out", "S-1", at, "A7", local, both("S-1", "S-9")),
+                plug(
+                    "pipe_out",
+                    "L-1008",
+                    at,
+                    "A8",
+                    server("PID-1104"),
+                    both("L-1008", "L-4001"),
+                ),
+                plug(
+                    "pipe_out",
+                    "L-1009",
+                    at,
+                    "A9",
+                    server("PID-1102"),
+                    both("L-1009", "L-2009"),
+                ),
+            ],
+        );
+        let second = drawing_with(
+            "PID-1102",
+            Vec::new(),
+            vec![
+                plug(
+                    "pipe_in",
+                    "L-2001",
+                    at,
+                    "B1",
+                    server("PID-1101"),
+                    both("L-1001", "L-2001"),
+                ),
+                plug(
+                    "pipe_in",
+                    "L-1006",
+                    at,
+                    "B2",
+                    local,
+                    both("L-1006", "L-1006"),
+                ),
+                plug(
+                    "pipe_out",
+                    "L-1006",
+                    at,
+                    "B3",
+                    local,
+                    both("L-1006", "L-1006"),
+                ),
+                plug("pipe_in", "L-7", at, "B4", local, only("L-7")),
+                plug(
+                    "signal_in",
+                    "S-2003",
+                    at,
+                    "B5",
+                    server("PID-1101"),
+                    both("S-2001", "S-2003"),
+                ),
+                plug(
+                    "signal_in",
+                    "L-2009",
+                    at,
+                    "B6",
+                    server("PID-1101"),
+                    both("L-1009", "L-2009"),
+                ),
+            ],
+        );
+        let third = drawing_with(
+            "PID-1103",
+            Vec::new(),
+            vec![
+                plug(
+                    "pipe_in",
+                    "L-1006",
+                    at,
+                    "C1",
+                    local,
+                    both("L-1006", "L-1006"),
+                ),
+                plug("signal_in", "S-9", at, "C2", local, both("S-1", "S-9")),
+            ],
+        );
+        let index = index_of(&[first, second, third], &[failed("PID-1104", "不是 DWG")]);
+
+        let end = |drawing_id: &str, line: &str, handle: &str| LinkEnd {
+            drawing_id: drawing_id.to_string(),
+            line: line.to_string(),
+            at,
+            handle: handle.to_string(),
+        };
+        let expected = vec![
+            Link {
+                family: LinkFamily::Pipe,
+                from: end("PID-1101", "L-1001", "A1"),
+                to: end("PID-1102", "L-2001", "B1"),
+            },
+            Link {
+                family: LinkFamily::Signal,
+                from: end("PID-1101", "S-1", "A7"),
+                to: end("PID-1103", "S-9", "C2"),
+            },
+        ];
+        assert_eq!(index.links, expected);
+
+        let statuses: BTreeMap<&str, (LinkStatus, Option<&str>)> = index
+            .unresolved
+            .iter()
+            .map(|plug| (plug.handle.as_str(), (plug.status, plug.target.as_deref())))
+            .collect();
+        let expected = BTreeMap::from([
+            ("A2", (LinkStatus::TargetMissing, Some("PID-1199"))),
+            ("A3", (LinkStatus::OneSided, Some("PID-1102"))),
+            ("A4", (LinkStatus::Unpaired, None)),
+            ("A5", (LinkStatus::Unpaired, Some("PID-1102"))),
+            ("A6", (LinkStatus::Ambiguous, None)),
+            ("A8", (LinkStatus::OneSided, Some("PID-1104"))),
+            ("A9", (LinkStatus::OneSided, Some("PID-1102"))),
+            ("B2", (LinkStatus::Ambiguous, None)),
+            ("B3", (LinkStatus::Ambiguous, None)),
+            ("B4", (LinkStatus::Unpaired, None)),
+            ("B5", (LinkStatus::OneSided, Some("PID-1101"))),
+            ("B6", (LinkStatus::OneSided, Some("PID-1101"))),
+            ("C1", (LinkStatus::Ambiguous, None)),
+        ]);
+        assert_eq!(statuses, expected);
+        let order: Vec<&str> = index
+            .unresolved
+            .iter()
+            .map(|plug| plug.handle.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            ["A2", "A4", "A5", "A6", "A8", "A9", "A3", "B2", "B3", "B6", "B4", "B5", "C1"]
+        );
+        assert_eq!(
+            index.unresolved.first(),
+            Some(&Unresolved {
+                drawing_id: "PID-1101".to_string(),
+                kind: "pipe_out".to_string(),
+                line: "L-1003".to_string(),
+                at,
+                handle: "A2".to_string(),
+                status: LinkStatus::TargetMissing,
+                target: Some("PID-1199".to_string()),
+            })
+        );
+        assert!(!index.complete);
+    }
+
+    /// 一张图读不出来：它带着原因进 `drawings`，`complete` 为假，其余照常。两个文件
+    /// 得出同一个图号就不出索引（§3.7），读不出来的图也占着它的图号。
+    #[test]
+    fn an_unreadable_drawing_leaves_the_index_incomplete_and_a_repeated_drawing_id_stops_it() {
+        let [mut first, second] = tagged_pair();
+        first.source = SummarySource::Open;
+        first.pbs = Some("1001-01".to_string());
+        let mut broken = failed("PID-1100", "不是 DWG 文件");
+        broken.pbs = Some("1001-02".to_string());
+        let index = index_of(&[first.clone(), second.clone()], &[broken]);
+        assert!(!index.complete);
+        let expected = vec![
+            IndexDrawing {
+                drawing_id: "PID-1100".to_string(),
+                file: Some("PID-1100.dwg".to_string()),
+                source: SummarySource::File,
+                pbs: Some("1001-02".to_string()),
+                objects: None,
+                error: Some("不是 DWG 文件".to_string()),
+            },
+            IndexDrawing {
+                drawing_id: "PID-1101".to_string(),
+                file: Some("PID-1101.dwg".to_string()),
+                source: SummarySource::Open,
+                pbs: Some("1001-01".to_string()),
+                objects: Some(first.objects.len()),
+                error: None,
+            },
+            IndexDrawing {
+                drawing_id: "PID-1102".to_string(),
+                file: Some("PID-1102.dwg".to_string()),
+                source: SummarySource::File,
+                pbs: None,
+                objects: Some(second.objects.len()),
+                error: None,
+            },
+        ];
+        assert_eq!(index.drawings, expected);
+        assert_eq!(index.duplicates.len(), 4, "读得出来的两张图照常比");
+
+        let dir = Path::new("D:/proj/cdu");
+        let mut copy = first.clone();
+        copy.file = Some("PID-1101-copy.dwg".to_string());
+        let repeated =
+            build_index_at(dir, &[first.clone(), second, copy], &[], NOW).expect_err("图号重了");
+        assert_eq!(
+            repeated,
+            IndexError::DrawingIdDuplicated {
+                drawing_id: "PID-1101".to_string(),
+                files: ["PID-1101-copy.dwg".to_string(), "PID-1101.dwg".to_string()],
+            }
+        );
+        assert_eq!(repeated.code(), "INDEX_DRAWING_ID_DUPLICATED");
+        let mut twin = failed("PID-1101", "读不出来");
+        twin.file = "PID-1101.DWG".to_string();
+        assert_eq!(
+            build_index_at(dir, &[first], &[twin], NOW),
+            Err(IndexError::DrawingIdDuplicated {
+                drawing_id: "PID-1101".to_string(),
+                files: ["PID-1101.DWG".to_string(), "PID-1101.dwg".to_string()],
+            })
+        );
+    }
+
+    fn touch(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), b"").expect("建文件");
+    }
+
+    /// 列出的图：文件名、图号、PBS 节点；顺便查 `path` 是目录加文件名。
+    fn listed(dir: &Path) -> Vec<(String, String, Option<String>)> {
+        list_drawings(dir)
+            .expect("列图")
+            .into_iter()
+            .map(|file| {
+                assert_eq!(file.path, dir.join(&file.file));
+                (file.file, file.drawing_id, file.pbs)
+            })
+            .collect()
+    }
+
+    fn entry(file: &str, drawing_id: &str, pbs: Option<&str>) -> (String, String, Option<String>) {
+        (
+            file.to_string(),
+            drawing_id.to_string(),
+            pbs.map(str::to_string),
+        )
+    }
+
+    /// §3.7：目录下直接放着的 `.dwg`（扩展名不分大小写），跳过 `.` 和 `~$` 开头的、
+    /// 别的扩展名、子目录里的和叫 `.dwg` 的目录，按文件名排。图号和 PBS 节点取项目
+    /// 文件 `drawings[]` 给的（文件名不分大小写），没给图号的取文件名去掉扩展名；
+    /// `drawings[]` 里目录中没有的文件不理。
+    #[test]
+    fn list_drawings_takes_the_dwg_files_right_in_the_folder() {
+        let scratch = Scratch::new();
+        let dir = scratch.0.as_path();
+        for name in [
+            "PID-1101.dwg",
+            "pid-1102.DWG",
+            "PID-1103.dwg",
+            ".PID-1104.dwg",
+            "~$PID-1101.dwg",
+            "notes.txt",
+            "PID-1105.dwg.bak",
+        ] {
+            touch(dir, name);
+        }
+        std::fs::create_dir(dir.join("publish")).expect("子目录");
+        touch(&dir.join("publish"), "PID-1106.dwg");
+        std::fs::create_dir(dir.join("folder.dwg")).expect("叫 .dwg 的目录");
+        assert_eq!(
+            listed(dir),
+            [
+                entry("PID-1101.dwg", "PID-1101", None),
+                entry("PID-1103.dwg", "PID-1103", None),
+                entry("pid-1102.DWG", "pid-1102", None),
+            ]
+        );
+
+        let project = json!({
+            "version": 1,
+            "drawings": [
+                { "file": "pid-1101.dwg", "drawing_id": "P&ID-1101", "pbs": "1001-01" },
+                { "file": "PID-1103.dwg", "drawing_id": null, "pbs": "1001-02" },
+                { "file": "PID-1107.dwg", "drawing_id": "PID-X" }
+            ]
+        });
+        std::fs::write(dir.join(PROJECT_FILE), format!("\u{feff}{project}")).expect("项目文件");
+        assert_eq!(
+            listed(dir),
+            [
+                entry("PID-1101.dwg", "P&ID-1101", Some("1001-01")),
+                entry("PID-1103.dwg", "PID-1103", Some("1001-02")),
+                entry("pid-1102.DWG", "pid-1102", None),
+            ]
+        );
+    }
+
+    /// 项目文件读不出来、`drawings[]` 写错、同一个文件写了两遍、两个文件得出同一个图号、
+    /// 目录读不了，都不列。
+    #[test]
+    fn list_drawings_refuses_a_bad_project_file_and_a_repeated_drawing_id() {
+        let scratch = Scratch::new();
+        let dir = scratch.0.as_path();
+        touch(dir, "PID-1101.dwg");
+        touch(dir, "PID-1103.dwg");
+        let refused = |drawings: Value| {
+            let project = json!({ "version": 1, "drawings": drawings });
+            std::fs::write(dir.join(PROJECT_FILE), project.to_string()).expect("项目文件");
+            list_drawings(dir).expect_err("该报错")
+        };
+        let schema = |at: &str, reason: &str| {
+            IndexError::ProjectFile(MasterDataError::Schema {
+                at: at.to_string(),
+                reason: reason.to_string(),
+            })
+        };
+        let wrong_type = refused(json!([{ "file": "PID-1101.dwg" }, { "file": 1103 }]));
+        assert_eq!(wrong_type, schema("drawings[1].file", "应为文本"));
+        assert_eq!(wrong_type.code(), "MASTERDATA_SCHEMA_ERROR");
+        assert_eq!(
+            refused(json!({ "file": "PID-1101.dwg" })),
+            schema("drawings", "应为数组")
+        );
+        assert_eq!(
+            refused(json!([{ "file": "PID-1101.dwg", "pbs": 1001 }])),
+            schema("drawings[0].pbs", "应为文本或 null")
+        );
+        assert_eq!(
+            refused(json!([{ "file": "PID-1101.dwg" }, { "file": "pid-1101.DWG" }])),
+            IndexError::ProjectFile(MasterDataError::Duplicate {
+                at: "drawings[1].file".to_string(),
+                value: "pid-1101.DWG".to_string(),
+            })
+        );
+        let repeated = refused(json!([{ "file": "PID-1101.dwg", "drawing_id": "PID-1103" }]));
+        assert_eq!(
+            repeated,
+            IndexError::DrawingIdDuplicated {
+                drawing_id: "PID-1103".to_string(),
+                files: ["PID-1101.dwg".to_string(), "PID-1103.dwg".to_string()],
+            }
+        );
+        assert_eq!(repeated.code(), "INDEX_DRAWING_ID_DUPLICATED");
+
+        std::fs::write(dir.join(PROJECT_FILE), r#"{"version":2}"#).expect("项目文件");
+        let newer = list_drawings(dir).expect_err("版本太高");
+        assert_eq!(newer.code(), "MASTERDATA_VERSION_UNSUPPORTED");
+        let missing = list_drawings(&dir.join("nowhere")).expect_err("没有这个目录");
+        assert_eq!(missing.code(), "INDEX_IO_ERROR");
+    }
+
+    /// 一个位号在项目里的所有出现处：可以限定类型；管线这样跨图同号的也列；不单独
+    /// 编号的管件不算它所在管路的出现处；索引里没有的图不算。
+    #[test]
+    fn places_lists_every_drawing_a_tag_is_on() {
+        let [first, second] = tagged_pair();
+        let index = index_of(&[first.clone(), second.clone()], &[]);
+        let stray = drawing_with(
+            "PID-1199",
+            vec![object_at(
+                ObjectKind::Equipment,
+                "EQUIPMENT",
+                "P-1001",
+                [0.0, 0.0],
+                "C1",
+            )],
+            Vec::new(),
+        );
+        let summaries = [first, second, stray];
+        let handles = |type_code: Option<&str>, tag: &str| -> Vec<String> {
+            index
+                .places(&summaries, type_code, tag)
+                .into_iter()
+                .map(|place| format!("{}/{}", place.drawing_id, place.handle))
+                .collect()
+        };
+        assert_eq!(handles(None, "P-1001"), ["PID-1101/2A4", "PID-1102/1F0"]);
+        assert_eq!(handles(None, "X-1"), ["PID-1101/A5", "PID-1102/B4"]);
+        assert_eq!(handles(Some("EQUIPMENT"), "X-1"), ["PID-1102/B4"]);
+        assert_eq!(handles(None, "L-1001"), ["PID-1101/A8", "PID-1102/B5"]);
+        assert_eq!(handles(None, "L-1001-01"), ["PID-1101/A9", "PID-1102/B6"]);
+        assert_eq!(
+            handles(None, "V-1001"),
+            ["PID-1101/A2", "PID-1101/A1", "PID-1102/B1"]
+        );
+        assert!(handles(None, "").is_empty());
+        assert!(handles(None, "P-9999").is_empty());
+        assert_eq!(
+            index
+                .places(&summaries, Some("EQUIPMENT"), "P-1001")
+                .first(),
+            Some(&place_on("PID-1101", [120.0, 80.0], "2A4"))
+        );
+    }
+
+    /// 索引的 JSON：键序照 §3.4，读得回来。
+    #[test]
+    fn the_index_json_keeps_the_key_order_of_the_spec() {
+        let pair = [Some("L-1001"), Some("L-2001")];
+        let mut first = drawing_with(
+            "PID-1101",
+            vec![object_at(
+                ObjectKind::Equipment,
+                "EQUIPMENT",
+                "P-1001",
+                [120.0, 80.0],
+                "2A4",
+            )],
+            vec![
+                plug(
+                    "pipe_out",
+                    "L-1001",
+                    [240.0, 80.0],
+                    "2C0",
+                    (PeerKind::Server, Some("PID-1102")),
+                    pair,
+                ),
+                plug(
+                    "pipe_out",
+                    "L-1003",
+                    [240.0, 20.0],
+                    "2D0",
+                    (PeerKind::None, None),
+                    [Some("L-1003"), None],
+                ),
+            ],
+        );
+        first.source = SummarySource::Open;
+        first.pbs = Some("1001-01".to_string());
+        let second = drawing_with(
+            "PID-1102",
+            vec![object_at(
+                ObjectKind::Equipment,
+                "EQUIPMENT",
+                "P-1001",
+                [60.0, 40.0],
+                "1F0",
+            )],
+            vec![plug(
+                "pipe_in",
+                "L-2001",
+                [0.0, 80.0],
+                "1B3",
+                (PeerKind::Server, Some("PID-1101")),
+                pair,
+            )],
+        );
+        let index = index_of(&[first, second], &[]);
+        let expected = concat!(
+            r#"{"version":1,"project_dir":"D:/proj/cdu","generated_at":1794800000,"complete":true,"#,
+            r#""drawings":[{"drawing_id":"PID-1101","file":"PID-1101.dwg","source":"open","pbs":"1001-01","objects":1,"error":null},"#,
+            r#"{"drawing_id":"PID-1102","file":"PID-1102.dwg","source":"file","pbs":null,"objects":1,"error":null}],"#,
+            r#""duplicates":[{"type_code":"EQUIPMENT","tag":"P-1001","places":[{"drawing_id":"PID-1101","at":[120.0,80.0],"handle":"2A4"},{"drawing_id":"PID-1102","at":[60.0,40.0],"handle":"1F0"}]}],"#,
+            r#""links":[{"family":"pipe","from":{"drawing_id":"PID-1101","line":"L-1001","at":[240.0,80.0],"handle":"2C0"},"to":{"drawing_id":"PID-1102","line":"L-2001","at":[0.0,80.0],"handle":"1B3"}}],"#,
+            r#""unresolved":[{"drawing_id":"PID-1101","kind":"pipe_out","line":"L-1003","at":[240.0,20.0],"handle":"2D0","status":"unpaired","target":null}]}"#
+        );
+        assert_eq!(serde_json::to_string(&index).expect("JSON"), expected);
+        let back: ProjectIndex = serde_json::from_str(expected).expect("读回");
+        assert_eq!(back, index);
     }
 }
