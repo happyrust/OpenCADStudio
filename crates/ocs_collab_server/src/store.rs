@@ -1178,9 +1178,10 @@ impl Store {
     }
 
     /// This store's repository id: generated once on the first start that
-    /// needs it, kept in `meta.repo_id` after, and the same forever. A
-    /// drawing file keeps a copy; a `hello` that names another id was
-    /// aligned against another repository (`REQ-COLL-015`).
+    /// needs it, kept in `meta.repo_id` after, and the same from then on
+    /// unless [`Self::renew_repo_id`] gives it another. A drawing file keeps
+    /// a copy; a `hello` that names another id was aligned against another
+    /// repository (`REQ-COLL-015`).
     pub fn repo_id(&self) -> Result<String, String> {
         let conn = self.lock()?;
         conn.execute(
@@ -1192,6 +1193,24 @@ impl Store {
             row.get(0)
         })
         .map_err(|err| format!("repo_id read: {err}"))
+    }
+
+    /// Gives this store a new repository id in place of the one it had, and
+    /// says which. For the first start after a backup was restored
+    /// (`--new-repo-id`): the restored log stops at a revision that copies
+    /// made since have passed, and once the room moves past it again such a
+    /// copy would pass for consistent. Under a new id every copy that names
+    /// the old one is `REPO_MISMATCH` instead (`SPEC-collab-offline-sync.md`
+    /// §6). Nothing else in the store changes.
+    pub fn renew_repo_id(&self) -> Result<String, String> {
+        let repo_id = ocs_collab::ids::new_repo_id();
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('repo_id', ?1)",
+            params![repo_id],
+        )
+        .map_err(|err| format!("repo_id renew: {err}"))?;
+        Ok(repo_id)
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
@@ -1399,7 +1418,8 @@ CREATE TABLE IF NOT EXISTS reported_tags (
 -- One row per database-level fact. `repo_id` identifies this store as a
 -- whole: a drawing file keeps it so a `hello` can prove that its `since`
 -- was taken of this repository and not another one behind the same URL
--- (`REQ-COLL-015`). Written once, never changed.
+-- (`REQ-COLL-015`). Written once; changed only by `--new-repo-id`, the
+-- start after a backup was restored.
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -1485,6 +1505,52 @@ mod tests {
         assert_eq!(first, second, "the same database keeps its id");
         let other = Store::open_in_memory().expect("memory store");
         assert_ne!(first, other.repo_id().expect("other repo id"));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    /// `OFF-11`: after a restore from backup the server starts once with
+    /// `--new-repo-id`. The store then has a new id — on every later open
+    /// too — and everything else it had: the op log is as it was.
+    #[test]
+    fn new_repo_id_replaces_the_id_and_keeps_the_log() {
+        let path = temp_db_path("new-repo-id");
+        let old = {
+            let store = Store::open(&path).expect("open");
+            store.ensure_drawing("PID-1101").expect("drawing");
+            let record = OpRecord {
+                op_id: "op-r-1-1".into(),
+                session_id: "s-1".into(),
+                user_id: "u1".into(),
+                base_revision: 0,
+                at: 1_700_000_000,
+                changes: r#"[{"kind":"set_property","object_ref":"P-1001","field":"设计压力","value":"1.6MPa"}]"#.into(),
+            };
+            store
+                .apply_op("PID-1101", 0, &[], Some(&record))
+                .expect("logged");
+            store.repo_id().expect("repo id")
+        };
+
+        let renewed = {
+            let store = Store::open(&path).expect("reopen");
+            let renewed = store.renew_repo_id().expect("renewed");
+            assert_eq!(store.repo_id().expect("repo id"), renewed);
+            renewed
+        };
+        assert_ne!(renewed, old, "a new id, not the one the copies remember");
+
+        let store = Store::open(&path).expect("open after");
+        assert_eq!(store.repo_id().expect("repo id"), renewed, "and it stays");
+        let log = store.load_ops("PID-1101", 0).expect("the log");
+        let logged: Vec<_> = log
+            .iter()
+            .map(|op| (op.revision, op.op_id.as_str()))
+            .collect();
+        assert_eq!(logged, [(1, "op-r-1-1")]);
+        assert_eq!(log[0].changes[0]["value"], "1.6MPa");
+        drop(store);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));

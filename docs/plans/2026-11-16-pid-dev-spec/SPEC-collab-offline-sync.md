@@ -953,3 +953,42 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 - 控制接口和自动化里直接退出的路（直接调 `exit_app` 的）和「终止」（`leave_keeping_recovery`）不问。
 - 退出时在「图纸未保存」里选了「不保存」、再在这里按「取消」的，那几张图已经按不保存处理（标成没改过，内容还在），与原来退出时多张图中途按「取消」相同。关图时不会这样：问在丢掉修改之前。
 - 端到端没有跑，归 `OFF-12`。
+
+### 11.14 `OFF-11`：库打不开时不接受会话，`--new-repo-id`（2026-11-20）
+
+**做法。**
+
+- **库打不开时不接受会话。** 服务器的状态 `AppState` 加了一个标记 `store_unavailable`，只由服务器程序在 `--db` 打不开时设上（`main.rs` 的 `unavailable`）。设上时，`hello` 在别的检查之前就得到 `error STORE_UNAVAILABLE`（新加的码，在 `protocol.rs` 的 `codes` 里），随后服务器发关闭帧并断开（`ws.rs`）：不建会话，不进房间，`hello` 带来的位号不登记。服务器的标准输出记一行「拒绝 hello user=… drawing=…：库打不开，不接受会话」。`GET /health` 照旧报 503，`POST /session` 照旧回 503「数据库不可用」，这两处没有改。启动时标准错误上，「数据库初始化失败：……」后面多一行「不接受会话：hello 一律答 STORE_UNAVAILABLE，GET /health 报 503」。
+- **代码里直接建的、不带库的服务器不受影响。** 判断用的是这个单设的标记，不是「没有库」或「有 `db_error`」：测试里不带库建的状态，有的也带着 `db_error`（如 `ws.rs` 的 `storeless_state`），它们照旧接受会话。
+- **`--new-repo-id`。** 不带值的启动参数。带它启动时，库打开以后先换库标识（`Store::renew_repo_id`：生成一个新的 `r-<UUID>`，替掉 `meta` 表里原来那个），再照常往下走（清掉上次的会话、播种）；标准输出有一行「库标识已换成 <新标识>」。只换这一项，操作日志、对象和各种登记都不动；之后不带它启动，读到的就是新标识。换标识失败时按库打不开处理（上面第一条），不拿旧标识接着服务。用法说明（参数写错时打印的那段）也加了这个参数。
+- **运行说明。** `SPEC-collab-server.md` 新加 §2.1「运行说明：库文件、库标识与备份」，本规格 §6 的五条都在，写成运行时照着做的规定（带上换标识的命令和输出）；§2 的参数表改了 `--db` 一行、加了 `--new-repo-id` 一行；§7「单进程、单库文件」一条改为指向 §2.1；实现记录是那边的 §9.2。
+- **需求文档的错误码表登记了 `STORE_UNAVAILABLE`**（`docs/pid-platform/requirements/70-collaboration-and-permissions.md`，排在 `NOT_ALIGNED` 后面）。
+
+与任务写法不同、或任务没有说的：
+
+1. **「文件」一栏没有列需求文档。** 文档检查要求协议库里定义的每个码都登记在需求文档的错误码表里，加了码不登记，文档检查就不过（第一次跑全套时就是这样），所以一起改了。
+2. **没有改 `http.rs`。** 没有库时 `POST /session` 本来就回 503（`SESSION_UNKNOWN`「数据库不可用」），`GET /health` 本来就报 503。
+3. **拒绝时的说明不带库文件的路径。** 规格没给这句话，用「服务器的库打不开，不接受会话：请管理员检查服务器的库文件后重启服务器」。路径只出现在服务器自己的输出里。
+4. **`--new-repo-id` 每次带都换**，不记「已经换过」：照任务的写法「写入一个新的库标识后照常启动」。所以它不能留在常用的启动命令或脚本里，§2.1 和参数表都这样写了。
+5. **换标识失败时不接受会话**（上文）。任务没有说这种情形；拿旧标识接着服务，正是这个参数要防的。
+6. **测试和验收的对应**（新加 7 条：`ws.rs` 3 条、`store.rs` 1 条、`main.rs` 3 条；验证命令的两个过滤词分别选到 3 条和 4 条）。
+   - 验收 1：`main.rs` 的 `store_unavailable_a_database_that_cannot_be_opened_takes_no_session`：`--db` 指向一个目录，用服务器程序建状态的同一个函数（`build_state`）起一个真的监听，从套接字上看：`GET /health` 是 503；升级成 WebSocket 后发 `hello`，收到 `error STORE_UNAVAILABLE`，接着是关闭帧，连接随即结束。`ws.rs` 的 `store_unavailable_a_hello_is_refused_and_the_connection_closed`：应答就是这条错误加关闭，没有建会话，`hello` 带的位号没有登记，说明里没有库文件路径。
+   - 验收 2：`ws.rs` 的 `store_unavailable_is_not_what_a_storeless_state_built_in_code_is`：两种不带库的建法（一种带着 `db_error`）照旧建会话、不关连接。原有的 180 + 18 条一条没改，照过。
+   - 验收 3：`main.rs` 的 `new_repo_id_at_startup_changes_the_id_once_and_it_stays`：在一个临时库文件上，先不带参数启动、提交一步；再带 `--new-repo-id` 启动，标识变了；再不带参数启动，标识还是新的，那一步还在（房间的修订是 1，对象上是改过的值），用新标识从头加入能补到它。`store.rs` 的 `new_repo_id_replaces_the_id_and_keeps_the_log`：库这一层换了、重开后还是新的、操作日志还在。`main.rs` 的 `new_repo_id_is_a_flag_without_a_value`：参数不带值，用法说明里有它。
+   - 验收 4：上面启动那条里，用旧标识加入得到 `REPO_MISMATCH`；`ws.rs` 的 `new_repo_id_a_drawing_that_remembers_the_old_id_gets_repo_mismatch`：同一个库换了标识以后，报旧标识的得到 `REPO_MISMATCH`，只报修订、不报库标识的不核对，照常加入。
+   - 验收 5：`SPEC-collab-server.md` §2.1，五条按本规格 §6 的次序。
+
+另外手工跑了服务器程序（`--bind 127.0.0.1 --port 3299`，证据在仓库外）：`--db` 指向一个目录时，`/health` 是 503，`hello` 得到 `STORE_UNAVAILABLE` 后收到关闭帧，标准错误上是上面说的两行；在一个新库文件上先不带参数启动，再带 `--new-repo-id` 启动（输出「库标识已换成 ……」），`welcome` 里的库标识变了，报旧标识加入的在 `welcome` 里得到 `REPO_MISMATCH`；再不带参数启动，标识还是新的。几次启动都结束后，端口上没有残留的进程。
+
+**先红后绿。** 先写测试；生产代码先只加了测试要用到的错误码、标记（不设）、`Cli` 的 `new_repo_id`（参数还不认）和 `renew_repo_id`（原样交回原来的标识），不接到任何地方。第一次跑：7 条 1 过 6 败。过的是不带库建的状态照旧建会话那条，它守的是不该变的行为。败的：`ws.rs` 拒绝那条和套接字那条都败在 `hello` 得到的是 `welcome`；换标识的三条（`store.rs`、`ws.rs`、`main.rs` 启动那条）败在标识没变，`ws.rs` 那条表现为没有 `REPO_MISMATCH`；参数那条败在不认识 `--new-repo-id`。实现后 7 条全过。之后给启动那条加了「对象还在」的核对（加上就过），按格式检查改了换行，再对最终的文件跑全套。
+
+**读数**（对最终的文件，起点 `dadb22a4d`）：主程序库 7236 条，7179 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）。两个协同 crate：97；184 + 21 全过，起点 180 + 18，多的 4 + 3 条是新加的。clippy 656（`--lib`）和 1051（`--lib --profile test`），与起点相同；两个协同 crate 另跑了 `cargo clippy --offline --locked -p ocs_collab -p ocs_collab_server --all-targets`，只有 `ops.rs` 测试里原有的一条类型过于复杂的警告，改到的文件里没有。格式检查：改到的 5 个代码文件新增 0。文档检查 590 项过 589 项，没过的是设计稿与生成表的比对（起点相同）；第一次跑全套时错误码表那项没过，登记 `STORE_UNAVAILABLE` 之后过了。
+
+**限制和没有做的。**
+
+- 客户端没有专门处理 `STORE_UNAVAILABLE`：当作一般的服务器错误，在命令行打一行「协同：服务器拒绝了请求（STORE_UNAVAILABLE：……）」，队列不动、不丢；连接被关后照常退避重连，每次重连再得到一次、再打一行。面板上没有专门的说法。
+- 这个标记只在启动时定。运行中库出了错（比如磁盘满），`/health` 会报 503，但会话照常接受，与以前相同。
+- 第 3 条（操作日志不清理）和第 5 条（一个库文件同一时间只给一个服务器进程用）只写成规定，代码不检查，也不给库文件加锁。
+- 恢复备份之后「所有人取同一份图纸重新开始」仍按 §5.5 的后一种办法手工做。
+- `SPEC-collab-protocol.md` §6 的错误码表没有加 `STORE_UNAVAILABLE`，与另外四个离线的码一样，登记在本规格 §4.3 和需求文档的错误码表里。
+- 端到端（OS-19）没有跑，归 `OFF-13` 的 `o08_server_store`。

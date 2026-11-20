@@ -343,15 +343,16 @@
 
 - **做什么**：离线规格 §6，堵 G11。库打不开时：`hello` 得到 `error STORE_UNAVAILABLE` 后断开，`GET /health` 仍报 503；代码里直接建不带库的服务器（测试用）不受影响。加启动参数 `--new-repo-id`：写入一个新的库标识后照常启动。把离线规格 §6 的五条写进 `SPEC-collab-server.md`，成为运行说明一节。
 - **验收**：
-  - [ ] 库打不开时启动：`hello` 得到 `STORE_UNAVAILABLE`，连接被关闭；`/health` 是 503。
-  - [ ] 代码里直接建不带库的服务器：行为与改之前相同，现有测试全过。
-  - [ ] 带 `--new-repo-id` 启动一次：库标识变了，操作日志和对象都在；之后不带它启动，标识保持新的。
-  - [ ] 记着旧库标识的图加入：得到 `REPO_MISMATCH`。
-  - [ ] `SPEC-collab-server.md` 有运行说明一节，五条都在。
+  - [x] 库打不开时启动：`hello` 得到 `STORE_UNAVAILABLE`，连接被关闭；`/health` 是 503。
+  - [x] 代码里直接建不带库的服务器：行为与改之前相同，现有测试全过。
+  - [x] 带 `--new-repo-id` 启动一次：库标识变了，操作日志和对象都在；之后不带它启动，标识保持新的。
+  - [x] 记着旧库标识的图加入：得到 `REPO_MISMATCH`。
+  - [x] `SPEC-collab-server.md` 有运行说明一节，五条都在。
 - **验证**：`cargo test --offline --locked -p ocs_collab_server store_unavailable`；`cargo test --offline --locked -p ocs_collab_server new_repo_id`
 - **依赖**：OFF-1
 - **文件**：`crates/ocs_collab_server/src/main.rs`、`crates/ocs_collab_server/src/lib.rs`、`crates/ocs_collab_server/src/ws.rs`、`crates/ocs_collab_server/src/store.rs`、`crates/ocs_collab/src/protocol.rs`（加错误码常量）；`docs/plans/2026-11-16-pid-dev-spec/SPEC-collab-server.md`
 - **规模**：M
+- **补（2026-11-20）**：在 `collab-off2` 分支上接着 `OFF-10` 做，一个提交。库打不开时，服务器程序设上 `AppState.store_unavailable`：`hello` 在别的检查之前得到 `error STORE_UNAVAILABLE`（新错误码），接着是关闭帧、连接断开，不建会话、不登记位号；`/health` 和 `POST /session` 照旧回 503；代码里直接建的不带库的状态不设这个标记，照旧接受会话。新启动参数 `--new-repo-id`（不带值）：开库后先换库标识（`Store::renew_repo_id`），操作日志和对象不动，启动输出「库标识已换成 <新标识>」；换失败时按库打不开处理。`SPEC-collab-server.md` 新加 §2.1 运行说明（离线规格 §6 的五条），改了 §2 的参数表和 §7。与任务写法不同、或任务没有说的：另改了需求文档 `docs/pid-platform/requirements/70-collaboration-and-permissions.md`（错误码表登记 `STORE_UNAVAILABLE`，文档检查要求协议库的每个码都登记）；`http.rs` 没改；拒绝的说明不带库文件路径；`--new-repo-id` 每次带都换；换标识失败时不接受会话。另手工跑了服务器程序，两种情形与测试一致。详见离线规格 §11.14。**读数**：主程序库 7236 条，7179 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）；两个协同 crate 97；184 + 21 全过，起点 180 + 18，多的 7 条是新加的；clippy 656 / 1051，与起点相同；两个协同 crate 的 clippy（`--all-targets`）只有 `ops.rs` 原有的一条；格式检查新增 0；文档检查 590 项过 589 项，没过的是设计稿与生成表的比对。**新基线**：主程序库 7236 条（7179 / 55 / 2）；两个协同 crate 97；184 + 21。**没有做的**：客户端没有专门处理 `STORE_UNAVAILABLE`（命令行一行警告，队列不动，退避重连时每次再来一次）；标记只在启动时定，运行中库出了错会话照常接受；操作日志不清理、一个库文件一个进程只写成规定，代码不检查；协议规格的错误码表没加这个码；端到端没跑（归 `OFF-13`）。
 
 ### OFF-12 【脚本】端到端场景（一）：跨重启提交、编号、对不上、不一致
 

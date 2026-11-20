@@ -242,6 +242,11 @@ pub mod codes {
     /// not judged, logged or told to the room, and it is not refused
     /// either: the step stays with its sender for a connection that aligns.
     pub const NOT_ALIGNED: &str = "NOT_ALIGNED";
+    /// The server's database could not be opened, so it takes no session:
+    /// a `hello` is answered with this and the connection closed. What the
+    /// session sent would be kept nowhere, and judged against a repository
+    /// id made up for this one run (`SPEC-collab-offline-sync.md` §6).
+    pub const STORE_UNAVAILABLE: &str = "STORE_UNAVAILABLE";
     /// A change to an object another session deleted after the change's
     /// baseline. The deletion stands (`architecture.md` §3.3, object level).
     pub const OBJECT_DELETED: &str = "OBJECT_DELETED";

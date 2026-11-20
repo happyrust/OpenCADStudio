@@ -547,6 +547,18 @@ pub async fn handle_message(
         ..
     } = &message
     {
+        if state.store_unavailable {
+            println!(
+                "[ocs_collab_server] 拒绝 hello user={user_id} drawing={drawing_id}：库打不开，不接受会话"
+            );
+            return vec![
+                Reaction::Send(error_message(
+                    codes::STORE_UNAVAILABLE,
+                    "服务器的库打不开，不接受会话：请管理员检查服务器的库文件后重启服务器",
+                )),
+                Reaction::Close,
+            ];
+        }
         if conn.session.is_some() {
             return vec![Reaction::Send(error_message(
                 codes::INVALID_MESSAGE,
@@ -3097,5 +3109,96 @@ mod tests {
             1,
             "its tags are registered"
         );
+    }
+
+    /// What the binary builds on a database it could not open.
+    fn unavailable_state() -> AppState {
+        let mut state = storeless_state();
+        state.store_unavailable = true;
+        state
+    }
+
+    /// `OFF-11`: with no database the server would keep nothing a session
+    /// did, so it takes none. The `hello` is answered `STORE_UNAVAILABLE`
+    /// and the connection closed: no session, nothing told to the room, no
+    /// tag registered.
+    #[tokio::test]
+    async fn store_unavailable_a_hello_is_refused_and_the_connection_closed() {
+        let state = unavailable_state();
+        let mut conn = conn();
+        let listing = hello_with("u1", "协同编辑", &["V-1001"]);
+        let reactions = handle_message(&state, &mut conn, listing, T0).await;
+        let [Reaction::Send(ServerMessage::Error { code, message, .. }), Reaction::Close] =
+            reactions.as_slice()
+        else {
+            panic!("an error, then the close: {reactions:?}");
+        };
+        assert_eq!(code, codes::STORE_UNAVAILABLE);
+        assert!(message.contains("库"), "{message}");
+        assert!(
+            !message.contains(&state.db_path),
+            "the path stays on the server: {message}"
+        );
+        assert!(conn.session.is_none(), "no session");
+        assert!(crate::ops::reported_tags(&state, "PID-1101", None).is_empty());
+    }
+
+    /// `OFF-11`: a state built in code without a store — what these tests
+    /// call storeless — is not one whose database failed to open. It takes
+    /// sessions as it did, whatever its `db_error` says.
+    #[tokio::test]
+    async fn store_unavailable_is_not_what_a_storeless_state_built_in_code_is() {
+        let bare = AppState::new(None, None, ":memory:", SessionConfig::default());
+        for state in [storeless_state(), bare] {
+            assert!(!state.store_unavailable);
+            let mut conn = conn();
+            let reactions =
+                handle_message(&state, &mut conn, hello("u1", "协同编辑", ""), T0).await;
+            assert!(conn.session.is_some(), "{reactions:?}");
+            assert!(!reactions.contains(&Reaction::Close), "{reactions:?}");
+        }
+    }
+
+    /// `OFF-11`: after a restore from backup the server is started once
+    /// with `--new-repo-id`. A copy that remembers the id from before is
+    /// then of another repository — `REPO_MISMATCH` — even where the room
+    /// has moved on to the very revision it names, which is what made the
+    /// old id dangerous. The same claim under the new id passes.
+    #[tokio::test]
+    async fn new_repo_id_a_drawing_that_remembers_the_old_id_gets_repo_mismatch() {
+        let store = Store::open_in_memory().expect("memory store");
+        let old = store.repo_id().expect("repo id");
+        let renewed = store.renew_repo_id().expect("renewed");
+        let state = AppState::new(Some(store), None, ":memory:", SessionConfig::default());
+        assert_eq!(state.repo_id, renewed);
+
+        let mut first = conn();
+        handle_message(&state, &mut first, hello("u1", "协同编辑", ""), T0).await;
+        let op = ClientMessage::Op {
+            session_id: session_id(&first),
+            base_revision: 0,
+            op_id: "op-1".into(),
+            payload: json!({"kind": "set_property", "object_ref": "V-1001",
+                "field": "设计压力", "value": "1.6MPa"}),
+        };
+        handle_message(&state, &mut first, op, T0 + 1).await;
+
+        let mut remembering = conn();
+        let mut hello_from_before = hello("u2", "协同编辑", "");
+        if let ClientMessage::Hello { repo_id, since, .. } = &mut hello_from_before {
+            *repo_id = Some(old);
+            *since = Some(1);
+        }
+        let reactions = handle_message(&state, &mut remembering, hello_from_before, T0 + 2).await;
+        assert_eq!(
+            refused(&reactions).map(|(code, _)| code),
+            Some(codes::REPO_MISMATCH.to_owned()),
+            "{reactions:?}"
+        );
+
+        let mut current = conn();
+        let hello_now = hello_back(&state, "u3", Some(1));
+        let reactions = handle_message(&state, &mut current, hello_now, T0 + 3).await;
+        assert_eq!(refused(&reactions), None, "{reactions:?}");
     }
 }
