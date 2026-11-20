@@ -807,3 +807,57 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 - 管段号不退（上文）。
 - 被拒以后用 `inverse` 撤回是 `OFF-8` 的事，这次只读、只存。
 - 端到端没有跑，归 `OFF-12`。
+
+### 11.11 `OFF-8`：重开后被拒的条目按反向修改撤回（2026-11-20）
+
+**做法。** 同一次运行里做的步骤被拒，仍用撤销栈退回（客户端规格 §4.3），没有改。从图里恢复的条目（`restored`）被拒，原来一律标 `ROLLBACK_FAILED`；现在走 §5.4（`take_back_restored`）：
+
+- 按 `inverse` 撤回，写法与写别人的修改相同：`write_as_received` 是从 `apply_remote_changes` 的循环里抽出来的（立起「正在写别人的修改」、登记 `remote_log`、`settle_remote_writes`），不广播；原来的循环改用它，行为不变。
+- 「仍是这一步写下的样子」：对 `inverse` 的每一项，找这一步的 `payload` 里与它提到同一个名字的变更（名字：对象的位号、改位号改成的位号、管段所在的管线和管段上带位号的管件，`Change::names`），这些变更都还成立才执行这一项，否则跳过。一条的全部项在执行之前一次判完，再按顺序执行，前一项改完不影响后一项的判断。各种「成立」照 §5.4 的表（`broadcast::still_as_written`）：改属性看字段现在的值等于写下的值（空等于没有）；改位号看有对象带着新位号；新建符号看它还在；删除符号看本图没有对象带这个位号；连接符看还在 / 已不在（`connectors::as_said`）；管线看线段集合与这一步说的一致，管段看 `run_state` 读出的（所在管线，账目）与这一步说的相等（`pipes::as_said`）。
+- 让位的两个码（`OP_SUPERSEDED`、`OBJECT_DELETED`）不读 `inverse`，整条跳过：补齐时房间的样子已经写进本图。
+- 别的码（`CLAIM_HELD`、`PERM_DENIED_*`、`OBJECT_REFERENCED`、`STALE_BASE_REVISION`、`DUPLICATE_INFLOW_CONNECTOR`）都走上面的逐项判断：别人动过的项跳过，其余的撤回。`STALE_BASE_REVISION` 不单独处理。
+- 冲突（`conflict` 帧）走原来的路，没有改：条目出队，本图保持我写的值，等人裁决。
+
+**连带的条目**（`Refused::built_on`）。
+
+- 按名字认：被拒那一步的变更提到的名字（改属性的除外，`Change::built_names`），队列里还没发出的条目只要有一项变更提到其中一个，就算建在它上面；这条自己的名字也加进来，建在它上面的也算。
+- 重开后这次运行新做的、建在它上面的步骤，照 §5.4 用撤销栈退回：从这类条目里排得最早的那条起，按同一次运行的做法（`Refused::account`）从栈顶退到最深的一步，退回的步骤进重做栈，可以重做；顺带退回的步骤的条目一并作废。撤销栈那段从 `take_back_rejected` 抽成 `take_back_steps`，两处共用，`take_back_rejected` 的行为不变。
+- 顺序：先退这次运行新做的（它们最后做），再按 `inverse` 从后往前撤恢复的连带条目，最后撤被拒的那一条。与它无关的照发。
+
+**留下记录。**
+
+- 被拒的那条：命令行一句（警告，与同一次运行的被拒相同），拒绝记录一条，未同步清单一条（`state` 为 `refused`，带 `op_id`、`label`、`payload`、`user_id`、`at`、`code`、`message`、`rolled_back`）。
+- 连带作废的：每条命令行一句、拒绝记录一条（`message` 写「建在被拒的「…」（码）上，一并作废」）；恢复的另记一条未同步清单。这次运行新做的不进清单：它们在重做栈里，找得回来。
+- 让位的也记，`rolled_back` 是 `true`；撤回时有项因为别人改过而跳过的，`rolled_back` 也是 `true`：本图已是房间的样子。
+- 清单按标签页的文档放在内存里（`collab.refused`），存盘时追加到写出的那一份的未同步清单里（`write_collab_state_into_snapshot` 的两个分支都追加，与 `unqueued` 各自追加），不标图。内存里的不清，写出的那一份是本图的副本，再存一次也不会重复。
+- 拒绝记录仍只留最近 8 条（原来就是这样，抽成 `log_refusal` 两处共用）。
+
+**撤不回。** 没有 `inverse`、`inverse` 里有本客户端不认识的变更、有项写不进本图（位号对不上一个对象）：标 `ROLLBACK_FAILED`，清单里 `rolled_back: false`。连带的这次运行新做的步骤已不在撤销栈里，或者之后的撤销重做把它和别的步骤一起动过，也标 `ROLLBACK_FAILED`。
+
+与任务写法不同、或任务没有说的：
+
+1. **任务「文件」一栏列的是 `apply.rs`、`mod.rs`、`collab_state.rs`。** 另改了 `src/app/collab/broadcast.rs`（`names`、`built_names`、`still_as_written`）、`src/app/collab/pipes.rs` 和 `src/app/collab/connectors.rs`（各一个 `as_said`，「仍是」的判断要读它们的账目）、`src/app/update/file.rs`（存盘带上 `refused`）。
+2. **让位的码不按项判断，整条不读 `inverse`。** 结果与「全部跳过」相同。
+3. **改属性不算被建在上面。** §5.4 说的「同一批对象」是被拒那一步新建、改名、删除的对象，或者同一条线、同一条管路。被拒的是改属性时，后面对同一个对象的写各自成立，照发。
+4. **这次运行新做的连带步骤只记拒绝记录，不进未同步清单**（上文）。
+5. **`Outgoing::restored` 的注释随之改了**：原来写的是被拒就标不一致（`REQ-COLL-015`），现在是按 `inverse` 撤回，没有才标。
+6. **测试和验收的对应**（新文件 `collab_restored_rollback.rs` 12 条。每条都是离线真做几步、读出 `inverse`、存盘，在另一个编辑器里打开、接回房间，按传输层读报文的方式收服务器的拒绝帧）。
+   - 验收 1：`claim_held_takes_a_property_change_back`、`perm_denied_role_takes_a_placed_symbol_back`、`object_referenced_puts_an_erased_symbol_back`、`stale_base_revision_takes_a_retag_back`。每条后面排一条改另一台泵的无关条目，查它照发、值还在。
+   - 验收 2：`op_superseded_takes_nothing_back`、`object_deleted_takes_nothing_back`。
+   - 验收 3：`somebody_elses_value_on_the_same_field_stays`。
+   - 验收 4：`what_was_queued_on_the_refused_op_goes_with_it_and_the_rest_goes_out`（恢复的连带条目：放阀门被拒，阀门的设计压力跟着作废）、`a_step_made_after_reopening_on_the_refused_op_goes_back_by_the_undo_stack`（重开后新做的，进重做栈）。
+   - 验收 5：`a_restored_op_in_a_conflict_stays_on_the_drawing_and_leaves_the_queue`。
+   - 验收 6：`a_restored_op_without_an_inverse_cannot_be_taken_back`，连同存盘以后文件里的标记和清单。
+   - 验收 7：`what_is_refused_is_on_the_unsynced_list_after_a_save`；另外每条测试都查拒绝记录和清单。
+
+**先红后绿。** 先写测试，生产代码只加了一个空字段（`collab.refused`）。第一次跑 12 条：1 过 11 败。过的是冲突那条，原来就对。败的 11 条：验收 1、2、3 的 7 条败在「标了不一致」（原来的做法：恢复的条目被拒一律标 `ROLLBACK_FAILED`）；没有 `inverse` 那条标是标了，败在清单里没有这一条；连带的两条败在阀门还在；存盘那条败在拒绝记录只有 1 条，连带的那条没有作废。实现后第一次跑 12 条全过。之后只按格式检查改了换行，再对最终的文件跑全套。
+
+**读数**（对最终的文件，起点 `9ab2081c8`）：主程序库 7201 条，7144 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）；起点 7189 条（7132 / 55 / 2），多的 12 条是新加的，都过。两个协同 crate 97；180 + 18 全过，与起点相同。clippy 656（`--lib`）和 1051（`--lib --profile test`），与起点相同；改到的文件里的警告与起点逐条相同。格式检查：改到的 7 个代码文件新增 0；`collab/mod.rs` 开头模块排序那处还在，登记新测试的那一行落在它里面；`apply.rs` 比起点少 2 处（`take_back_rejected` 开头解构的那一行、挪进 `take_back_steps` 的取栈那一行，随改动排好）；新测试文件 0。文档检查 590 项过 589 项，没过的是设计稿与生成表的比对。
+
+**限制和没有做的。**
+
+- 管线、管段、管件和连接符的「仍是」判断（`pipes::as_said`、`connectors::as_said`）这次没有被拒的测试：12 条用的是属性、位号和符号。它们的 `inverse` 写回本图与之前相同，由 §11.10 的测试管；这次多的是写之前的判断。
+- `STALE_BASE_REVISION` 的例子是改位号，没有「别人动过同一条线」的管线例子。
+- `inverse` 有几项写进去、几项写不进去时，写进去的不退，标 `ROLLBACK_FAILED`。
+- 拒绝记录只留最近 8 条，不存盘；存盘留下的是未同步清单。
+- 端到端没有跑，归 `OFF-12`。

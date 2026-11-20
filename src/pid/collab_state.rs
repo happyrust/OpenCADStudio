@@ -40,6 +40,8 @@ pub const ROLLBACK_FAILED: &str = "ROLLBACK_FAILED";
 
 /// [`Unsynced::state`]：做了，没有排上队。
 pub const UNQUEUED: &str = "unqueued";
+/// [`Unsynced::state`]：提交过，服务器整步拒绝；或者建在被拒的一步上，跟着作废。
+pub const REFUSED: &str = "refused";
 
 /// 这份文件上一次对齐到的协同位置。
 #[derive(Clone, Debug, PartialEq, Eq)]

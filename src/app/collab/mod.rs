@@ -52,6 +52,8 @@ mod collab_op_ids;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_pipe_ops;
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_restored_rollback;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_save_exits;
 
 /// A server address as it may be shown — in the log, on the command line,
@@ -197,9 +199,10 @@ pub struct Outgoing {
     pub label: String,
     /// Whether it was read back from the drawing file it was saved into
     /// (`PID_AUTHOR_COLLAB_QUEUE`). A restored op's undo steps died with
-    /// the process that made them — `steps` is empty — so a refusal cannot
-    /// take its step back: it marks the drawing diverged instead of
-    /// pretending it could (`REQ-COLL-015`).
+    /// the process that made them — `steps` is empty — so a refusal takes
+    /// it back by its `inverse` instead, and marks the drawing diverged
+    /// when it has none rather than pretend it could (`REQ-COLL-015`;
+    /// `SPEC-collab-offline-sync.md` §5.4).
     pub restored: bool,
     /// Who queued it: the user id in effect when the step was made, or what
     /// the file said of a restored op — nothing, for one a version from
@@ -298,6 +301,42 @@ impl Refused {
         }
         out.in_effect = in_effect.into_iter().collect();
         out
+    }
+
+    /// What waits in `queue` behind `refused`, an op restored from the
+    /// drawing's file, and is built on it — by id, in the order queued
+    /// (`SPEC-collab-offline-sync.md` §5.4). Such an op names, by tag, what
+    /// the refused op made, renamed or erased, or the line or run it was
+    /// about (`broadcast::Change::built_names`) — or what an op built on it
+    /// did, which is built on it too. A restored op has no undo steps to
+    /// go by (`account`), so the names are all there is.
+    pub fn built_on(
+        refused: &Outgoing,
+        queue: &std::collections::VecDeque<Outgoing>,
+    ) -> Vec<String> {
+        use std::collections::BTreeSet;
+        let said = |op: &Outgoing| {
+            broadcast::changes_from_payload(std::slice::from_ref(&op.payload)).changes
+        };
+        let mut names: BTreeSet<String> = said(refused)
+            .iter()
+            .flat_map(broadcast::Change::built_names)
+            .collect();
+        let mut along = Vec::new();
+        if names.is_empty() {
+            return along;
+        }
+        for queued in queue.iter().filter(|queued| !queued.sent) {
+            let changes = said(queued);
+            if changes
+                .iter()
+                .any(|change| change.names().iter().any(|name| names.contains(name)))
+            {
+                names.extend(changes.iter().flat_map(broadcast::Change::built_names));
+                along.push(queued.op_id.clone());
+            }
+        }
+        along
     }
 }
 
@@ -574,6 +613,13 @@ pub(super) struct State {
     /// see them, so a save puts them on the drawing's record and marks it
     /// `UNQUEUED_EDITS` (`SPEC-collab-offline-sync.md` §5.1).
     pub unqueued: BTreeMap<u64, Vec<Value>>,
+    /// Ops restored from a drawing's file that the room refused, or that
+    /// went with one it refused, by the tab's document id, as `refused`
+    /// entries of the unsynced list. What they did is out of the drawing
+    /// again, or never was, and there is no redo to bring it back: the
+    /// entry is what is left of it. A save puts them on the drawing's
+    /// record; they do not mark it (§5.4).
+    pub refused: BTreeMap<u64, Vec<Value>>,
     /// Why this drawing can no longer be taken to be what the room has: a
     /// revision that never arrived, or a peer's change that could not be
     /// applied here. After a peer's change that could not be applied the

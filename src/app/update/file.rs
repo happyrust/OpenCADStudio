@@ -3615,8 +3615,9 @@ impl OpenCADStudio {
     /// the record (`diverged`; `SPEC-collab-offline-sync.md` §5.1): the
     /// mark it was read with or this run gave it, else `UNQUEUED_EDITS` when
     /// edits no queue took were made on it, which go on its unsynced list.
-    /// A drawing that is not the session's keeps its record's three as they
-    /// were read.
+    /// Ops restored from its file that the room refused go there too, and
+    /// mark nothing (§5.4). A drawing that is not the session's keeps its
+    /// record's three as they were read.
     ///
     /// Every exit that writes the whole drawing calls this on the copy it
     /// writes; one that writes another drawing out of it calls
@@ -3630,6 +3631,12 @@ impl OpenCADStudio {
             .collab
             .unqueued_for_save(self.tabs[i].id)
             .map(|(entries, mark)| (entries.to_vec(), mark));
+        let refused = self
+            .collab
+            .refused
+            .get(&self.tabs[i].id)
+            .cloned()
+            .unwrap_or_default();
         if self.collab_tab() == Some(i) && self.collab.had_session {
             if let Some(repo_id) = self.collab.repo_id.clone() {
                 let diverged = self
@@ -3668,19 +3675,27 @@ impl OpenCADStudio {
                 if let Some((entries, _)) = &unqueued {
                     crate::pid::collab_state::append_unsynced(snapshot, entries);
                 }
+                if !refused.is_empty() {
+                    crate::pid::collab_state::append_unsynced(snapshot, &refused);
+                }
                 return;
             }
         }
-        let Some((entries, mark)) = unqueued else {
+        if unqueued.is_none() && refused.is_empty() {
             return;
-        };
+        }
         let Some(record) = crate::pid::collab_state::load_state(snapshot) else {
             return;
         };
-        let kept = crate::pid::collab_state::load_diverged(snapshot);
-        let mark = kept.unwrap_or(mark);
-        crate::pid::collab_state::store_state_diverged(snapshot, Some(&record), Some(&mark));
-        crate::pid::collab_state::append_unsynced(snapshot, &entries);
+        if let Some((entries, mark)) = unqueued {
+            let kept = crate::pid::collab_state::load_diverged(snapshot);
+            let mark = kept.unwrap_or(mark);
+            crate::pid::collab_state::store_state_diverged(snapshot, Some(&record), Some(&mark));
+            crate::pid::collab_state::append_unsynced(snapshot, &entries);
+        }
+        if !refused.is_empty() {
+            crate::pid::collab_state::append_unsynced(snapshot, &refused);
+        }
     }
 
     /// A block, objects or the whole drawing written out make another

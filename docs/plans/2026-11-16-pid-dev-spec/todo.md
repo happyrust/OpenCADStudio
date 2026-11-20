@@ -293,17 +293,18 @@
 
 - **做什么**：离线规格 §5.4，G8 的后一半。从图里恢复的条目被拒时，按 `inverse` 逐项撤回：本图里仍是这一步写下的样子才执行，否则跳过。按拒绝的码收场（离线规格 §5.4 的表）。连带的条目一并作废，从后往前撤。每条记一条拒绝记录和一条未同步清单（`refused`）。没有 `inverse` 或执行失败：标 `ROLLBACK_FAILED`，清单里记 `rolled_back: false`。撤回用接收别人修改的那条路写进本图，不广播。
 - **验收**：
-  - [ ] 四种原因各一例（`CLAIM_HELD`、`PERM_DENIED_ROLE`、`OBJECT_REFERENCED`、`STALE_BASE_REVISION`）：被拒的那一步从本图撤回，队列里后面无关的条目照常提交。
-  - [ ] 让位两例（`OP_SUPERSEDED`、`OBJECT_DELETED`）：反向修改全部跳过，本图是房间的样子，不标不一致。
-  - [ ] 别人改过同一个字段之后我的修改被拒：本图保持别人的值，不改回我离线前的值。
-  - [ ] 建在被拒条目上的后续条目一并撤回，各记一条；无关的照发。
-  - [ ] 进入冲突条目的恢复条目：不撤回，出队。
-  - [ ] 没有 `inverse` 的条目被拒：标 `ROLLBACK_FAILED`，清单里 `rolled_back: false`。
-  - [ ] 每条被拒的恢复条目：拒绝记录一条，未同步清单一条，保存后还在。
+  - [x] 四种原因各一例（`CLAIM_HELD`、`PERM_DENIED_ROLE`、`OBJECT_REFERENCED`、`STALE_BASE_REVISION`）：被拒的那一步从本图撤回，队列里后面无关的条目照常提交。
+  - [x] 让位两例（`OP_SUPERSEDED`、`OBJECT_DELETED`）：反向修改全部跳过，本图是房间的样子，不标不一致。
+  - [x] 别人改过同一个字段之后我的修改被拒：本图保持别人的值，不改回我离线前的值。
+  - [x] 建在被拒条目上的后续条目一并撤回，各记一条；无关的照发。
+  - [x] 进入冲突条目的恢复条目：不撤回，出队。
+  - [x] 没有 `inverse` 的条目被拒：标 `ROLLBACK_FAILED`，清单里 `rolled_back: false`。
+  - [x] 每条被拒的恢复条目：拒绝记录一条，未同步清单一条，保存后还在。
 - **验证**：`cargo test --offline --locked --lib collab_restored_rollback`
 - **依赖**：OFF-5、OFF-7
 - **文件**：`src/app/collab/apply.rs`、`src/app/collab/mod.rs`、`src/pid/collab_state.rs`；新建测试文件 `src/app/collab/collab_restored_rollback.rs`
 - **规模**：M
+- **补（2026-11-20）**：在 `collab-off2` 分支上接着 `OFF-7` 做，一个提交。从图里恢复的条目被拒时，原来一律标 `ROLLBACK_FAILED`，现在按 `inverse` 撤回（新的 `take_back_restored`）：逐项先看本图是否仍是这一步写下的样子（`broadcast::still_as_written`，管线和连接符各一个 `as_said`），一条的全部项判完再执行；写法与写别人的修改相同（从 `apply_remote_changes` 的循环里抽出的 `write_as_received`），不广播。让位的两个码整条不撤，冲突照旧。连带的条目按名字认（`Refused::built_on`）：重开后新做的用撤销栈退回（从 `take_back_rejected` 抽出的 `take_back_steps`），恢复的按 `inverse` 从后往前撤，最后撤被拒的那条，无关的照发。每条命令行一句、拒绝记录一条；恢复的另记一条未同步清单（`refused`，带码、说明和 `rolled_back`），存盘时写进文件，不标图。撤不回的标 `ROLLBACK_FAILED`，清单里 `rolled_back: false`。与任务写法不同、或任务没有说的：「文件」一栏之外另改了 `src/app/collab/broadcast.rs`、`src/app/collab/pipes.rs`、`src/app/collab/connectors.rs`、`src/app/update/file.rs`；让位的码整条不读 `inverse`，结果与「全部跳过」相同；改属性被拒时，后面对同一个对象的写不算建在它上面，照发；重开后新做的连带步骤只记拒绝记录，不进未同步清单（它们在重做栈里）。详见离线规格 §11.11。**读数**：主程序库 7201 条，7144 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）；起点 7189 条（7132 / 55 / 2），多的 12 条是新加的，都过；两个协同 crate 97；180 + 18 全过，与起点相同；clippy 656 / 1051，与起点相同（改到的文件里的警告与起点逐条相同）；格式检查新增 0（`collab/mod.rs` 开头模块排序那处还在）；文档检查 590 项过 589 项，没过的是设计稿与生成表的比对。**新基线**：主程序库 7201 条（7144 / 55 / 2）；两个协同 crate 97；180 + 18。**没有做的**：管线、管段、管件和连接符的「仍是」判断没有被拒的测试；`STALE_BASE_REVISION` 没有「别人动过同一条线」的管线例子；`inverse` 写到一半失败时，写进去的不退；端到端没跑（归 `OFF-12`）。
 
 ### OFF-9 【接线】未同步清单、导出、去掉同步记录
 

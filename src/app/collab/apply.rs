@@ -560,12 +560,11 @@ impl OpenCADStudio {
     /// out of the drawing again is this person's own business and goes out
     /// as it would have.
     fn take_back_rejected(&mut self, rejection: super::Rejection) {
-        use crate::app::tab_document::HistorySnapshot;
-        let super::Rejection { entry, code, message } = rejection;
-        let step_of = |snapshot: &HistorySnapshot| match snapshot {
-            HistorySnapshot::Delta(delta) => delta.collab_step,
-            _ => 0,
-        };
+        let super::Rejection {
+            entry,
+            code,
+            message,
+        } = rejection;
         let tab = self.collab_tab();
         if let Some(i) = tab {
             // A step still open is this person's too, made on top of the
@@ -573,21 +572,15 @@ impl OpenCADStudio {
             // arrives, and goes back with the refused one if it is above it.
             self.finish_pending_history(i);
         }
+        // An op restored from the file has no undo step to take back, only
+        // its inverse.
+        if let (Some(i), true) = (tab, entry.restored) {
+            self.take_back_restored(i, entry, &code, &message);
+            return;
+        }
         let account = super::Refused::account(&entry, &self.collab.outbox);
         let (moved, outcome): (Vec<u64>, &str) = match tab {
             None => (Vec::new(), "协同的图纸已不在，没有可撤回的"),
-            // An op restored from the file has no undo step to take back:
-            // what it did stays in this drawing while the room refused it.
-            Some(_) if entry.restored => {
-                self.collab.mark_diverged(
-                    ROLLBACK_FAILED,
-                    format!(
-                        "服务器拒绝了重开前排队的「{}」（{code}），这一步无法在本图撤回",
-                        entry.label
-                    ),
-                );
-                (Vec::new(), "本图与房间已不一致")
-            }
             Some(_) if entry.steps.is_empty() => (Vec::new(), "它不对应撤销栈里的一步，没有撤回"),
             Some(_) if account.mixed => {
                 self.collab.mark_diverged(
@@ -605,39 +598,22 @@ impl OpenCADStudio {
             Some(_) if account.in_effect.is_empty() => {
                 (Vec::new(), "本图已经是房间里的样子，不需要再动")
             }
-            Some(i) => {
-                let history = &self.tabs[i].history;
-                let stack = if entry.on { &history.undo_stack } else { &history.redo_stack };
-                // From the top of the stack down to the deepest step that
-                // has to move — if every such step is there.
-                let from_top: Vec<u64> = stack.iter().rev().map(step_of).collect();
-                let reach = account
-                    .in_effect
-                    .iter()
-                    .map(|step| from_top.iter().position(|there| there == step))
-                    .collect::<Option<Vec<usize>>>()
-                    .and_then(|depths| depths.into_iter().max());
-                match reach {
-                    Some(depth) => {
-                        let steps: Vec<u64> = from_top[..=depth].to_vec();
-                        self.replay_history_quietly(i, entry.on, steps.len());
-                        (steps, if entry.on { "已撤回" } else { "已恢复" })
-                    }
-                    None => {
-                        self.collab.mark_diverged(
-                            ROLLBACK_FAILED,
-                            format!(
-                                "服务器拒绝了「{}」（{code}），而这一步已不在撤销栈里，无法撤回",
-                                entry.label
-                            ),
-                        );
-                        (
-                            Vec::new(),
-                            "这一步已不在撤销栈里，无法撤回，本图与房间已不一致",
-                        )
-                    }
+            Some(i) => match self.take_back_steps(i, entry.on, &account.in_effect) {
+                Some(steps) => (steps, if entry.on { "已撤回" } else { "已恢复" }),
+                None => {
+                    self.collab.mark_diverged(
+                        ROLLBACK_FAILED,
+                        format!(
+                            "服务器拒绝了「{}」（{code}），而这一步已不在撤销栈里，无法撤回",
+                            entry.label
+                        ),
+                    );
+                    (
+                        Vec::new(),
+                        "这一步已不在撤销栈里，无法撤回，本图与房间已不一致",
+                    )
                 }
-            }
+            },
         };
         // What the queue still holds for the refused steps and for what was
         // made on top of them is not sent.
@@ -662,7 +638,7 @@ impl OpenCADStudio {
         // error as the outcome of the command they ran.
         self.command_line.push_warning(&text);
         self.collab.last_error = Some(text.clone());
-        self.collab.rejection_log.push(serde_json::json!({
+        self.log_refusal(serde_json::json!({
             "op_id": entry.op_id,
             "code": code,
             "label": entry.label,
@@ -671,10 +647,306 @@ impl OpenCADStudio {
             "ops_dropped": dropped,
             "message": message,
         }));
+        self.refresh_properties();
+    }
+
+    /// Keep `entry` in the refusal log, which holds the last eight.
+    fn log_refusal(&mut self, entry: serde_json::Value) {
+        self.collab.rejection_log.push(entry);
         if self.collab.rejection_log.len() > 8 {
             self.collab.rejection_log.remove(0);
         }
+    }
+
+    /// Move back the steps of tab `i` that `in_effect` names — off the
+    /// drawing for steps that put something on it (`on`), on again for
+    /// steps that took something off — from the top of the stack down to
+    /// the deepest of them, if every one of them is still there. The steps
+    /// moved, from the top.
+    fn take_back_steps(&mut self, i: usize, on: bool, in_effect: &[u64]) -> Option<Vec<u64>> {
+        use crate::app::tab_document::HistorySnapshot;
+        let step_of = |snapshot: &HistorySnapshot| match snapshot {
+            HistorySnapshot::Delta(delta) => delta.collab_step,
+            _ => 0,
+        };
+        let history = &self.tabs[i].history;
+        let stack = if on {
+            &history.undo_stack
+        } else {
+            &history.redo_stack
+        };
+        let from_top: Vec<u64> = stack.iter().rev().map(step_of).collect();
+        let depth = in_effect
+            .iter()
+            .map(|step| from_top.iter().position(|there| there == step))
+            .collect::<Option<Vec<usize>>>()?
+            .into_iter()
+            .max()?;
+        let steps = from_top[..=depth].to_vec();
+        self.replay_history_quietly(i, on, steps.len());
+        Some(steps)
+    }
+
+    /// Take back an op restored from the drawing's file that the room
+    /// refused whole (`SPEC-collab-offline-sync.md` §5.4).
+    ///
+    /// Its undo steps died with the process that made them. What it kept
+    /// is its inverse, written the way a peer's change is: item by item,
+    /// each only where the drawing is still as the op left it — what
+    /// somebody else did there since is the room's, and stays. A refusal
+    /// that yields to the room (`OP_SUPERSEDED`, `OBJECT_DELETED`) takes
+    /// nothing back: what the room has is in the drawing already.
+    ///
+    /// What waits behind it and builds on it (`collab::Refused::built_on`)
+    /// goes with it, from the last back: this run's steps by the undo stack,
+    /// with whatever this run did on top of them, as for any step of this
+    /// run's; restored ones by their own inverses. The rest goes out as it
+    /// would have. Each op that goes is said on the command line and
+    /// logged; a restored one also goes on the unsynced list, there being
+    /// no redo to bring it back. One that cannot be taken back marks the
+    /// drawing `ROLLBACK_FAILED`.
+    fn take_back_restored(&mut self, i: usize, entry: super::Outgoing, code: &str, message: &str) {
+        use ocs_collab::protocol::codes;
+        let built_on = super::Refused::built_on(&entry, &self.collab.outbox);
+        // What became of each op that goes along: the outcome, whether what
+        // a restored one did is out of the drawing, and the steps moved.
+        let mut along: std::collections::HashMap<String, (String, Option<bool>, usize)> =
+            std::collections::HashMap::new();
+        // This run's steps were made last: they go first.
+        let first_of_this_run = self
+            .collab
+            .outbox
+            .iter()
+            .position(|queued| !queued.restored && built_on.contains(&queued.op_id));
+        if let Some(at) = first_of_this_run {
+            let first = self.collab.outbox[at].clone();
+            let after: std::collections::VecDeque<super::Outgoing> =
+                self.collab.outbox.iter().skip(at + 1).cloned().collect();
+            let account = super::Refused::account(&first, &after);
+            if account.mixed {
+                self.collab.mark_diverged(
+                    ROLLBACK_FAILED,
+                    format!(
+                        "服务器拒绝了重开前排队的「{}」（{code}），而建在它上面的「{}」之后有一次撤销或重做\
+                         把它和别的步骤一起动了，无法只撤回这一部分",
+                        entry.label, first.label
+                    ),
+                );
+            } else {
+                let moved = if account.in_effect.is_empty() {
+                    Some(Vec::new())
+                } else {
+                    self.take_back_steps(i, first.on, &account.in_effect)
+                };
+                let outcome = match &moved {
+                    Some(steps) if steps.is_empty() => "本图里已经没有它，不需要再动".to_owned(),
+                    Some(steps) => format!("已用撤销栈退回（共 {} 步，可以重做）", steps.len()),
+                    None => {
+                        self.collab.mark_diverged(
+                            ROLLBACK_FAILED,
+                            format!(
+                                "服务器拒绝了重开前排队的「{}」（{code}），而建在它上面的「{}」已不在撤销栈里，\
+                                 无法撤回",
+                                entry.label, first.label
+                            ),
+                        );
+                        "已不在撤销栈里，无法撤回，本图与房间已不一致".to_owned()
+                    }
+                };
+                let steps_moved = moved.as_ref().map_or(0, Vec::len);
+                for op_id in std::iter::once(&first.op_id).chain(&account.void) {
+                    along.insert(op_id.clone(), (outcome.clone(), None, steps_moved));
+                }
+            }
+        }
+        // Then the restored ones built on it, from the last back.
+        let restored: Vec<super::Outgoing> = self
+            .collab
+            .outbox
+            .iter()
+            .filter(|queued| queued.restored && built_on.contains(&queued.op_id))
+            .cloned()
+            .collect();
+        for queued in restored.iter().rev() {
+            let (outcome, rolled_back) = self.take_back_by_inverse(i, queued, false, code);
+            along.insert(queued.op_id.clone(), (outcome, Some(rolled_back), 0));
+        }
+        let yields = code == codes::OP_SUPERSEDED || code == codes::OBJECT_DELETED;
+        let (outcome, rolled_back) = self.take_back_by_inverse(i, &entry, yields, code);
+
+        // Said and kept in the order they were queued, the refused op first.
+        let went: Vec<super::Outgoing> = self
+            .collab
+            .outbox
+            .iter()
+            .filter(|queued| !queued.sent && along.contains_key(&queued.op_id))
+            .cloned()
+            .collect();
+        self.collab
+            .outbox
+            .retain(|queued| queued.sent || !along.contains_key(&queued.op_id));
+        let label = |op: &super::Outgoing| {
+            if op.label.is_empty() {
+                "这一步".to_owned()
+            } else {
+                op.label.clone()
+            }
+        };
+        let mut text = format!(
+            "协同：服务器没有接受重开前排队的「{}」（{code}：{message}）：{outcome}",
+            label(&entry)
+        );
+        if !went.is_empty() {
+            text.push_str(&format!(
+                "；排在它后面、建在它上面的 {} 个操作一并作废",
+                went.len()
+            ));
+        }
+        // A warning, not an error, as for a step of this run's.
+        self.command_line.push_warning(&text);
+        self.collab.last_error = Some(text);
+        self.log_refusal(serde_json::json!({
+            "op_id": entry.op_id,
+            "code": code,
+            "label": entry.label,
+            "outcome": outcome,
+            "steps_moved": 0,
+            "ops_dropped": went.len(),
+            "message": message,
+        }));
+        self.keep_refused(i, &entry, code, message, rolled_back);
+        let why = format!("建在被拒的「{}」（{code}）上，一并作废", label(&entry));
+        for queued in &went {
+            let Some((outcome, rolled_back, steps_moved)) = along.get(&queued.op_id).cloned()
+            else {
+                continue;
+            };
+            self.command_line
+                .push_warning(&format!("协同：「{}」{why}：{outcome}", label(queued)));
+            self.log_refusal(serde_json::json!({
+                "op_id": queued.op_id,
+                "code": code,
+                "label": queued.label,
+                "outcome": outcome,
+                "steps_moved": steps_moved,
+                "ops_dropped": 0,
+                "message": why,
+            }));
+            if let Some(rolled_back) = rolled_back {
+                self.keep_refused(i, queued, code, &why, rolled_back);
+            }
+        }
         self.refresh_properties();
+    }
+
+    /// Take restored op `entry` back out of tab `i` by its inverse (§5.4),
+    /// unless the refusal `yields` to the room, whose state is in the
+    /// drawing already. What became of it, and whether what it did is out
+    /// of the drawing. One that cannot be taken back marks the drawing.
+    fn take_back_by_inverse(
+        &mut self,
+        i: usize,
+        entry: &super::Outgoing,
+        yields: bool,
+        code: &str,
+    ) -> (String, bool) {
+        if yields {
+            return (
+                "让位：房间里的样子已经在本图里，不需要再动".to_owned(),
+                true,
+            );
+        }
+        match self.write_inverse(i, entry) {
+            Ok((_, 0)) => ("已按反向修改撤回".to_owned(), true),
+            Ok((0, passed)) => (
+                format!("{passed} 项已被别人改过，保留别人的，本图已是房间的样子"),
+                true,
+            ),
+            Ok((_, passed)) => (
+                format!("已按反向修改撤回，其中 {passed} 项已被别人改过，保留别人的"),
+                true,
+            ),
+            Err(why) => {
+                self.collab.mark_diverged(
+                    ROLLBACK_FAILED,
+                    format!(
+                        "服务器拒绝了重开前排队的「{}」（{code}），{why}，无法在本图撤回",
+                        entry.label
+                    ),
+                );
+                (format!("{why}，无法撤回，本图与房间已不一致"), false)
+            }
+        }
+    }
+
+    /// Write onto tab `i`, the way a peer's change is written, the items of
+    /// restored op `entry`'s inverse for which the drawing is still as the
+    /// op left it: every change of the op about the same object holds
+    /// (`broadcast::still_as_written`). How many were written and how many
+    /// passed over, or why it cannot be done.
+    fn write_inverse(
+        &mut self,
+        i: usize,
+        entry: &super::Outgoing,
+    ) -> Result<(usize, usize), String> {
+        let Some(inverse) = &entry.inverse else {
+            return Err("它存进图里时还没有算出反向修改".to_owned());
+        };
+        let read = broadcast::changes_from_payload(inverse);
+        if !read.unread.is_empty() {
+            return Err(format!(
+                "它的反向修改里有本客户端不认识的变更（{}）",
+                read.unread.join("、")
+            ));
+        }
+        let said = broadcast::changes_from_payload(std::slice::from_ref(&entry.payload)).changes;
+        let document = &self.tabs[i].scene.document;
+        let (held, passed): (Vec<broadcast::Change>, Vec<broadcast::Change>) =
+            read.changes.into_iter().partition(|undo| {
+                let names = undo.names();
+                said.iter()
+                    .filter(|change| change.names().iter().any(|name| names.contains(name)))
+                    .all(|change| broadcast::still_as_written(document, change))
+            });
+        let applied = self.write_as_received(i, &held);
+        if !applied.unresolved.is_empty() {
+            return Err(format!(
+                "它的反向修改有 {} 项写不进本图（{}）",
+                applied.unresolved.len(),
+                applied.unresolved.join("、")
+            ));
+        }
+        Ok((held.len(), passed.len()))
+    }
+
+    /// Put restored op `gone` on the unsynced list of tab `i`'s drawing as
+    /// `refused`, with what the room said and whether what it did is out of
+    /// the drawing: there is no redo to bring it back, and this is what is
+    /// left of it (§5.4). A save writes it into the file.
+    fn keep_refused(
+        &mut self,
+        i: usize,
+        gone: &super::Outgoing,
+        code: &str,
+        message: &str,
+        rolled_back: bool,
+    ) {
+        let entry = crate::pid::collab_state::Unsynced {
+            state: crate::pid::collab_state::REFUSED.to_owned(),
+            op_id: Some(gone.op_id.clone()),
+            label: gone.label.clone(),
+            payload: gone.payload.clone(),
+            user_id: gone.user_id.clone(),
+            at: ocs_collab::ids::now_unix(),
+            code: Some(code.to_owned()),
+            message: message.to_owned(),
+            rolled_back: Some(rolled_back),
+        };
+        let Ok(entry) = serde_json::to_value(entry) else {
+            return;
+        };
+        let id = self.tabs[i].id;
+        self.collab.refused.entry(id).or_default().push(entry);
     }
 
     /// Take the top `steps` steps of tab `i` back (`undo`) or put them on
@@ -906,7 +1178,7 @@ impl OpenCADStudio {
             if parsed.is_empty() {
                 continue;
             }
-            let applied = self.write_remote_changes(i, &parsed);
+            let applied = self.write_as_received(i, &parsed);
             if !applied.unresolved.is_empty() {
                 failure.get_or_insert(format!(
                     "操作 {}：位号 {} 在本图里对不上一个对象（没有，或者有好几个），这部分变更未应用",
@@ -914,21 +1186,7 @@ impl OpenCADStudio {
                     applied.unresolved.join("、")
                 ));
             }
-            // Kept, with the entities each was written to, for the undo and
-            // redo that come later (`replay_remote_after`).
-            for (change, handles) in &applied.resolved {
-                self.collab.remote_seq += 1;
-                self.collab.remote_log.push(super::AppliedRemote {
-                    seq: self.collab.remote_seq,
-                    handles: handles.clone(),
-                    change: change.clone(),
-                });
-            }
-            if applied.is_empty() {
-                continue;
-            }
             total += applied.handles.len() + applied.erased.len();
-            self.settle_remote_writes(i, &applied.handles, &applied.retagged);
         }
         self.applying_remote = false;
         self.prune_remote_log(i);
@@ -956,6 +1214,28 @@ impl OpenCADStudio {
             None if total > 0 => self.collab.last_apply_error = None,
             None => {}
         }
+    }
+
+    /// Write `changes` onto tab `i` the way a peer's change is written:
+    /// nothing of it is this client's to send, and each change is kept, with
+    /// the entities it was written to, for the undo and redo that come later
+    /// (`replay_remote_after`).
+    fn write_as_received(&mut self, i: usize, changes: &[broadcast::Change]) -> broadcast::Applied {
+        let receiving = std::mem::replace(&mut self.applying_remote, true);
+        let applied = self.write_remote_changes(i, changes);
+        for (change, handles) in &applied.resolved {
+            self.collab.remote_seq += 1;
+            self.collab.remote_log.push(super::AppliedRemote {
+                seq: self.collab.remote_seq,
+                handles: handles.clone(),
+                change: change.clone(),
+            });
+        }
+        if !applied.is_empty() {
+            self.settle_remote_writes(i, &applied.handles, &applied.retagged);
+        }
+        self.applying_remote = receiving;
+        applied
     }
 
     /// Write one op's changes onto tab `i`, in the order it states them.
