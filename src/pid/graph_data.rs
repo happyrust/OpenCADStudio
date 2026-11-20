@@ -153,7 +153,11 @@ pub fn load(doc: &Document, key: &str) -> Option<Vec<serde_json::Value>> {
             continue;
         }
         if let Some(rest) = text.strip_prefix(PART_PREFIX) {
-            if let Some((_, chunk)) = rest.split_once(':') {
+            if let Some((index, chunk)) = rest.split_once(':') {
+                // 序号 0 是下一条的头一片：紧挨着的上一条分片条目到此为止。
+                if index == "0" {
+                    flush_pending(&mut pending, &mut items);
+                }
                 pending.push_str(chunk);
                 continue;
             }
@@ -780,6 +784,25 @@ mod tests {
             1,
             "分片应当拼回一条数据条目，实际 {}",
             items.len()
+        );
+    }
+
+    /// 相邻两条都超过单条上限、都切成分片：读回仍是两条，按原顺序。
+    #[test]
+    fn two_split_items_in_a_row_come_back_as_two() {
+        let first = serde_json::json!({ "which": "first", "text": "甲".repeat(MAX_TEXT_BYTES) });
+        let second = serde_json::json!({ "which": "second", "text": "乙".repeat(MAX_TEXT_BYTES) });
+        let mut doc = Document::new();
+        store(
+            &mut doc,
+            PID_AUTHOR_TOPOLOGY,
+            &[first.clone(), second.clone()],
+        );
+
+        assert_eq!(
+            load(&doc, PID_AUTHOR_TOPOLOGY),
+            Some(vec![first, second]),
+            "相邻两条分片条目应当各自拼回"
         );
     }
 }
