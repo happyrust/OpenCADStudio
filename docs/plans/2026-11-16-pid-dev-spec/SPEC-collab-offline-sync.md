@@ -519,11 +519,11 @@ OS-16（逐种变更的反向修改）在程序内的测试里验，不起进程
 | # | 问题 | 依据 | 后果 | 任务 |
 |---|---|---|---|---|
 | R1 | 重开程序后的第一次连接，补发到一半断线，重连时报出的修订偏大 | 读代码。`src/app/collab/transport.rs` 的 `Seen::take`：这次运行还没连上过时，收到 `welcome` 记下的是房间的修订，不是补发的起点；补发来的每一条都不比它大，这个数不再动 | 断线后的下一次 `hello.since` 是房间的修订，服务器不会再补发剩下的几条。界面按真正写进图的修订算（`src/app/collab/mod.rs` 处理 `Connected` 的地方），发现房间比本图新而没有补发，标不一致。服务器上的数据不丢，但这张图只能换成最新的。不重开程序的重连没有这个问题 | `OFF-2`，已处理（2026-11-20），见 11.5 |
-| R2 | 重开后第一次上报图上已有的位号时，图里的队列还没有读回来 | 读代码。`src/app/collab/apply.rs` 的 `answer_collab_tags`：先算 `existing_tags`，后调 `seed_collab_from_file`。`existing_tags` 靠待发队列把房间还不知道的对象剔掉，这时队列是空的。（在这之前改过图就没事：`broadcast_changes` 会先把队列读回来。） | 排队的 `insert_symbol` 放下的对象，位号被当成图上已有的报给服务器；排队改过位号的对象按新位号报。按服务器现有的规则推：位号登记之后，轮到那条排队的修改时它要的位号已经被占，会被另给一个。这一步是推的，没有跑过 | `OFF-3`（它本来就要在加入之前读队列） |
+| R2 | 重开后第一次上报图上已有的位号时，图里的队列还没有读回来 | 读代码。`src/app/collab/apply.rs` 的 `answer_collab_tags`：先算 `existing_tags`，后调 `seed_collab_from_file`。`existing_tags` 靠待发队列把房间还不知道的对象剔掉，这时队列是空的。（在这之前改过图就没事：`broadcast_changes` 会先把队列读回来。） | 排队的 `insert_symbol` 放下的对象，位号被当成图上已有的报给服务器；排队改过位号的对象按新位号报。按服务器现有的规则推：位号登记之后，轮到那条排队的修改时它要的位号已经被占，会被另给一个。这一步是推的，没有跑过 | `OFF-3`，已处理（2026-11-20），见 11.6 |
 | R3 | 只报 `since`、不报 `repo_id` 的 `hello` 现在一律被拒 | 读代码。`crates/ocs_collab_server/src/ws.rs` 的 `hello`：两项里报了任何一项就算声称对齐，没报库标识按对不上处理，回 `REPO_MISMATCH`，不补发。这是那批改动有意收紧的（`protocol.rs` 里 `Hello.repo_id` 的说明，设计说明 §6）；服务器原有的补发测试都改成了带 `repo_id` | 与 `OFF-2` 验收的最后一条（`hello` 不带 `repo_id` 的客户端，行为与改之前相同）对不上：两项都不带的相同；只带 `since` 的不同，改之前会补发。入库之后的桌面端对着入库之后的服务器总是两项一起报，受影响的是旧版本的桌面端：断线重连时不再得到补发 | `OFF-2` 开工时定：保留收紧、改写那条验收，或者放宽服务器。已定放宽服务器（2026-11-20），见 11.5 |
 | R4 | 入库时，新生成的 M3 基线图带着同步记录和一条排队的修改，`x05_m3_persistence`、`x12_after_session` 在新的证据目录上不过 | 跑出来。`src/pid/dwg_roundtrip.rs` 的 `fixture()` 加了这两条记录（库标识 `r-fixture`、修订 42、排队的 `op-s-1-7`），而生成基线的 `write_the_m3_baseline_drawing` 用的是同一个 `fixture()`。两台桌面端拿它加入，都被判 `REPO_MISMATCH` | `x05` 11 项过、15 项不过，`x12` 17 项过、2 项不过。以前生成的基线没有这两条记录，沿用旧证据目录的不受影响 | 已处理（2026-11-18），见 11.4 |
 | R5 | 被拒之后界面上没有「需要取得最新图纸」这一句 | 读代码。`src/app/collab/mod.rs` 处理 `AlignRefused`：记下的原因是「<服务器给的原因>（<码>）」；面板（`src/ui/window/pid_collab.rs`）显示「本图与房间已不一致，本地修改不再提交。」加这个原因。「请取得最新图纸后重新打开」只在房间的修改写不进本图时出现在命令行（`apply.rs`） | `REQ-COLL-015` 验收 3 要这一句。§5.2 和 OS-08 已经把它交给 `OFF-2`，这里只是记下入库时的样子 | `OFF-2`，已处理（2026-11-20），见 11.5 |
-| R6 | `collab::Outgoing` 多了没人用的序列化派生 | 读代码。`src/app/collab/mod.rs`：加了 `Serialize`、`Deserialize` 和 `restored` 上的默认值标注；存盘用的是 `pid::QueuedOp`，不经过它 | 没有后果 | `OFF-3` 顺手去掉 |
+| R6 | `collab::Outgoing` 多了没人用的序列化派生 | 读代码。`src/app/collab/mod.rs`：加了 `Serialize`、`Deserialize` 和 `restored` 上的默认值标注；存盘用的是 `pid::QueuedOp`，不经过它 | 没有后果 | `OFF-3`，已去掉（2026-11-20），见 11.6 |
 
 另有四处说明文字还是改之前的说法，改到这些文件的任务顺手改（`ws.rs`、`transport.rs` 两处已在 `OFF-2` 里改了，11.5）：
 
@@ -574,3 +574,38 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 **读数**（对最终的文件）：`cargo test --offline --locked --lib` 7129 条，7072 通过、55 忽略、2 失败；失败的是比对设计稿的两条（`the_grid_is_drawn_the_way_the_design_draws_it`、`the_code_states_nothing_the_design_does_not`），起点 `51b654a87` 也是这两条。起点是 7118 条（7061 / 55 / 2），多的 11 条就是新加的，都过。`-p ocs_collab -p ocs_collab_server` 是 96；170 + 18，全过（起点 96；168 + 18）。`clippy` 656（`--lib`）和 1051（`--lib --profile test`），与起点相同，点到这次改的文件的几条起点都有；固定门禁第 3 条写的 630 / 965 是换新编译器之前的数，换了之后各提交按起点比（`2028dc92a` 起的提交说明）。格式检查：12 个代码文件里 11 个新增 0；`mod.rs` 报新增 1 处，是文件开头模块声明的排序，起点就有这一处，新加的 `mod collab_align_refused;` 落进了它的上下文，脚本按正文比对就算成新的（改前 19 处，改后 18 处）。为了不新增，紧挨着改动的几处原有不一致顺手按 rustfmt 改了（`claims.rs` 两处、`collab_offline_queue.rs` 一处）。文档检查（`python -m pytest scripts/pid-platform`）590 项过 589 项，没过的是设计稿与生成表的比对，与这次改动无关。
 
 **没有做的、要知道的。** 端到端没有跑：三种对不上和硬发 `op` 的场景 `o03_align_refused` 属于 `OFF-12`。§5.2 第二步客户端自己判的三种（记录里有 `diverged`、队列里有别人排的条目、队列读不全）不在这个任务里，归 `OFF-3`、`OFF-5`。
+
+### 11.6 `OFF-3`：与任务写法不同的地方和读数（2026-11-20）
+
+按任务做完：修改编号改成 `op-<运行标识>-<序号>`（`crates/ocs_collab/src/ids.rs` 的 `new_run_id`、`op_id`）。运行标识每次启动程序取一个（在这次运行做第一步修改时取），连没连上都一样；序号在一次运行里从 1 数起；从图里恢复的条目保留原来的编号。原来按会话号编号的 `transport::next_op_id` 和进程里的计数去掉了，没连上时借用上一次会话号（或 `file-<库标识>`）的办法也去掉了。队列条目加了 `user_id`、`queued_at`：存盘的 `pid::QueuedOp` 和内存里的 `collab::Outgoing` 都加，旧条目读进来这两项为空。发 `hello` 之前客户端先看队列（`State::judge_queue`）：有别人排的或没记谁排的条目、有读不出的条目、有重号，就不报 `repo_id`、`since`，不上报位号，这次连接按对不上处理并说明原因。G3 和 G4 的后一半堵上了，11.2 的 R2、R6 一并处理。与任务写法、或与原来的代码不同的地方：
+
+1. **客户端自己判出的三种，码是客户端自己的。** 服务器不发这三个码，所以不进协议规格，也不进需求文档 70 的错误码表。它们出现在状态接口的 `not_aligned.code`、面板的原因和命令行那一句里。三种同时有时只报排在前面的一种：
+   - QUEUED_BY_OTHERS：队列里有别人排的条目，或者没有 `user_id` 的。原因写「图里带着 <用户号> 排队未提交的修改」，几个用户用「、」隔开；有没记谁排的，就补一句「没有记下是谁排的」。
+   - QUEUE_UNREADABLE：队列里有读不出来的条目，原因里写条数。
+   - QUEUE_DUPLICATE_ID：有两条同号，原因里写出那个编号。
+
+   判的是待发队列本身，从图里恢复的条目和这次运行排的一起判：这次运行中途换了用户号，原来那个用户排的也算别人的。会话图的标签页关了、队列还在的，照样判。
+2. **读不出来的条目原样留着，存盘时写回去。** 任务只说读不全就按对不上处理。原来读队列时解析不了的条目直接跳过，存一次盘就没了，下次打开队列看着是全的，又会照常声称对齐。现在 `graph_data::load_reporting` 把读不出的原文也交出来；`collab_state::read_queue` 把是 JSON 但不是一条修改的原样留下，连 JSON 都不是的按原文留成一个 JSON 字符串；存盘时（`store_queue_keeping`）排在读得出的条目后面写回去。旧的 `load`、`load_queue` 行为不变。
+3. **对不上的连接什么都不声称。** 客户端判出对不上时，`hello` 不带 `repo_id`、`since`（上一次会话交到界面的位置也不报），不带位号，服务器把它当作一份什么都没说的图接进来；客户端自己把这次连接按对不上处理（对传输层的回答是 `TagsSaid::Apart`，`welcome` 说什么都一样）。这次连接收到的修订不推进 `transport.rs` 的 `Seen`，下一次对得上的连接仍报原来的位置。会话已经起来、之后才判出对不上的：这次连接马上按对不上处理，传输层离开会话再重新加入，新的连接什么都不声称。
+4. **R2：先读回队列，再算上报的位号。** `answer_collab_tags` 原来先算 `existing_tags`，后读回图里的队列，排队的 `insert_symbol` 放下的位号会被当成图上已有的报上去。现在先读回队列（`seed_collab_from_file`），再判队列，最后算位号。红的时候跑出来了：排队放下的阀门位号和泵一起报了。
+5. **R6：去掉了 `collab::Outgoing` 的序列化派生和 `restored` 上的默认值标注。**
+6. **改到「文件」一栏以外的文件。** `src/pid/graph_data.rs`（第 2 条的 `load_reporting`）；`src/app/update/file.rs`（存盘带上两个新字段和读不出的条目）；`src/pid/dwg_roundtrip.rs`、`src/app/collab/collab_align_refused.rs`、`src/app/collab/collab_offline_queue.rs`（结构字面量补两个新字段；`collab_align_refused.rs` 里那一条写成 u1 排的，那组测试的行为不变）。`transport.rs` 的 `an_op_needs_an_id_and_every_id_is_new` 改名 `an_op_needs_an_id`，只留「没有编号进不了队列」那一半；`two_sessions_never_make_the_same_op_id` 删了，它测的函数没了，编号不撞改由 `collab_op_ids.rs` 和协议包的新测试来测。
+7. **另外一个提交。** 写测试时发现 `graph_data::load` 会把紧挨着的两条分片条目拼成一条，拼不成 JSON 就两条都丢。排队修改的 `payload` 长一点就会分片，两条挨着就会丢。这个单独修了，先入库，提交是 `132e8fa6b`。
+8. **测试和验收的对应。**
+   - 验收 1：`two_starts_name_their_steps_apart_and_every_step_gets_through`。两次启动各排两步，第三次启动全部恢复后提交，四条按顺序各发一次。
+   - 验收 2：`two_people_offline_name_their_steps_apart`。
+   - 验收 3：`a_restored_step_goes_out_under_its_own_name_and_a_replay_of_it_settles_it`。守的是现有行为，红的时候就过。
+   - 验收 4：`who_queued_a_step_and_when_survive_a_save_and_an_old_entry_still_reads`。
+   - 验收 5：`somebody_elses_queue_is_not_sent_and_the_person_is_told_whose_it_is` 和 `a_step_that_says_nobody_queued_it_is_not_sent`；传输层另有 `collab_op_ids_a_copy_held_apart_claims_nothing_and_takes_nothing_from_its_session`，测 `hello` 不带 `since`、`repo_id`，以及那次连接不改变下一次的 `since`。
+   - 验收 6：`two_steps_under_one_name_hold_the_connection_apart`。
+   - 第 2 条：`an_entry_that_cannot_be_read_holds_the_connection_apart_and_is_saved_back` 和 `text_that_is_not_json_is_kept_as_it_was_found`。
+   - R2：`a_symbol_the_file_still_has_to_send_is_not_listed`。
+   - 协议包：`run_ids_are_unique_and_name_the_ops_of_their_run`。
+
+   模拟重新启动时，前一个程序实例存盘后先关掉，下一个再打开同一张图。不关的话，前一个还占着图纸的编辑锁，后一个只能只读打开，存不了盘；第一遍绿测里验收 1 那条就是这样败的。
+
+**先红后绿。** 先写测试，再把新字段和新接口以不改行为的形式加上，让它们编译通过。这时跑：主程序库的 11 条里 10 条失败，过的是验收 3 那条；协议包的 1 条失败；都败在断言上。失败信息里可以看到原来的编号是 `op-file-r-file-2` 这样的，序号是进程里的计数，两次启动会从同一个数开始；别人的队列照样声称对齐。实现后：协议包 3 条全过；主程序库只有验收 1 败在上面说的编辑锁，改成先关后开之后全过。
+
+**读数**（对最终的文件）：`cargo test --offline --locked --lib` 7140 条，7083 通过、55 忽略、2 失败；失败的是比对设计稿的两条（`the_grid_is_drawn_the_way_the_design_draws_it`、`the_code_states_nothing_the_design_does_not`），起点 `132e8fa6b` 也是这两条。起点是 7130 条（7073 / 55 / 2），多 10 条：新加 11 条（`collab_op_ids.rs` 10 条、`transport.rs` 1 条），删掉 1 条（第 6 条说的 `two_sessions_never_make_the_same_op_id`），新加的都过。`-p ocs_collab -p ocs_collab_server` 是 97；170 + 18，全过（起点 96；170 + 18，多的 1 条是协议包的新测试）。`clippy` 656（`--lib`）和 1051（`--lib --profile test`），与起点相同；点到这次改的文件的几条，与 `OFF-2` 做完时逐条相同，只是行号随改动挪了。格式检查：11 个代码文件里 10 个新增 0；`mod.rs` 报新增 1 处，还是 11.5 说的文件开头模块声明的排序，新加的 `mod collab_op_ids;` 落进了它的上下文（改前改后都是 18 处）。文档检查（`python -m pytest scripts/pid-platform`）590 项过 589 项，没过的仍是设计稿与生成表的比对，与这次改动无关。
+
+**发现了、没有改的。** 会话先连上、图后打开时（启动时没给图，后来才打开带同步记录的图），`seed_collab_from_file` 因为这次运行已经有过会话而什么都不做：图里存着的队列不会读回来，再存一次盘就被这次运行的队列盖掉，队列里别人排的条目也就判不到。这是 `OFF-1` 起就有的，不在这个任务里改，建议并进 `OFF-5`（它也要改打开时读记录的地方）。还有一种窄的情况没处理：界面在等待时限内没回答传输层的问话，`hello` 先按上次的位置声称了对齐，之后才判出对不上：那次连接在离开之前收到的修订会推进 `Seen`。端到端没有跑，归 `OFF-12`。

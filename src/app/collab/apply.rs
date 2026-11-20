@@ -192,15 +192,25 @@ impl OpenCADStudio {
                 if step_open || !self.collab.pending_remote.is_empty() {
                     return;
                 }
+                // What the file was saved aligned to (`REQ-COLL-015`): it
+                // seeds the baseline once — so edits made while this copy
+                // was closed queue like a session's leftovers — and goes
+                // back as the `hello`'s claim. Seeded ahead of the tags: a
+                // symbol a step of the file's queue placed is not the
+                // room's yet, and is not listed.
+                self.seed_collab_from_file(i);
+                self.collab.tags_wanted = None;
+                // A queue that is not this person's to send: the `hello`
+                // claims nothing and lists nothing.
+                if let Some(apart) = self.collab.judge_queue() {
+                    self.collab
+                        .say_tags(asked.ask, super::TagsSaid::Apart(apart));
+                    return;
+                }
                 let tags = broadcast::existing_tags(
                     &self.tabs[i].scene.document,
                     self.collab.outbox.iter().map(|entry| &entry.payload),
                 );
-                // What the file was saved aligned to (`REQ-COLL-015`): it
-                // seeds the baseline once — so edits made while this copy
-                // was closed queue like a session's leftovers — and goes
-                // back as the `hello`'s claim.
-                self.seed_collab_from_file(i);
                 // The claim is the file's own word: on a first dial it is
                 // all this copy has; afterwards `seen` is fresher and the
                 // transport prefers it.
@@ -211,14 +221,18 @@ impl OpenCADStudio {
                         repo_id: record.repo_id,
                         revision: record.revision,
                     });
-                self.collab.tags_wanted = None;
                 self.collab
                     .say_tags(asked.ask, super::TagsSaid::Tags(tags, claim));
             }
             Drawing::Closed => {
                 self.collab.tags_wanted = None;
-                self.collab
-                    .say_tags(asked.ask, super::TagsSaid::Tags(Vec::new(), None));
+                // The queue outlives the drawing's tab, and is judged the
+                // same without it.
+                let said = match self.collab.judge_queue() {
+                    Some(apart) => super::TagsSaid::Apart(apart),
+                    None => super::TagsSaid::Tags(Vec::new(), None),
+                };
+                self.collab.say_tags(asked.ask, said);
             }
             Drawing::NotYet => {
                 if !asked.put_off {
@@ -251,7 +265,9 @@ impl OpenCADStudio {
             repo_id: record.repo_id,
             revision: record.revision,
         };
-        let ops = crate::pid::collab_state::load_queue(&self.tabs[i].scene.document)
+        let queue = crate::pid::collab_state::read_queue(&self.tabs[i].scene.document);
+        let ops = queue
+            .ops
             .into_iter()
             .map(|queued| super::Outgoing {
                 op_id: queued.op_id,
@@ -262,9 +278,11 @@ impl OpenCADStudio {
                 sent: false,
                 label: queued.label,
                 restored: true,
+                user_id: queued.user_id,
+                queued_at: queued.queued_at,
             })
             .collect();
-        self.collab.seed_file_state(&claim, ops);
+        self.collab.seed_file_state(&claim, ops, queue.unreadable);
     }
 
     /// Queue one `op` carrying the `changes` made on tab `i`, or stay quiet.

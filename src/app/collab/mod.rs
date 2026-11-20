@@ -40,6 +40,8 @@ mod collab_large_props;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_offline_queue;
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_op_ids;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_pipe_ops;
 
 /// A server address as it may be shown — in the log, on the command line,
@@ -164,7 +166,7 @@ pub enum CollabEvent {
 }
 
 /// One op this session has made that the room has not answered yet.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Outgoing {
     pub op_id: String,
     pub payload: Value,
@@ -188,8 +190,15 @@ pub struct Outgoing {
     /// the process that made them — `steps` is empty — so a refusal cannot
     /// take its step back: it marks the drawing diverged instead of
     /// pretending it could (`REQ-COLL-015`).
-    #[serde(default)]
     pub restored: bool,
+    /// Who queued it: the user id in effect when the step was made, or what
+    /// the file said of a restored op — nothing, for one a version from
+    /// before saved. Only the person who queued an op sends it
+    /// (`State::judge_queue`).
+    pub user_id: Option<String>,
+    /// When it was queued, in Unix seconds; for a restored op, what the file
+    /// said.
+    pub queued_at: Option<i64>,
 }
 
 /// An op of this session's the server refused whole, for the app to take
@@ -308,6 +317,16 @@ impl NotAligned {
     }
 }
 
+/// What a copy holds itself apart for before its `hello`
+/// (`State::judge_queue`). The client's own codes: no server sends them.
+///
+/// Steps somebody else queued, or that say nobody.
+const QUEUED_BY_OTHERS: &str = "QUEUED_BY_OTHERS";
+/// Two steps under one name.
+const QUEUE_DUPLICATE_ID: &str = "QUEUE_DUPLICATE_ID";
+/// Entries of the queue that could not be read.
+const QUEUE_UNREADABLE: &str = "QUEUE_UNREADABLE";
+
 /// Whether `code`, on an `error` that names no op, can only be the refusal
 /// of an op. A server from before `error.op_id` answers a refused op this
 /// way; with one op on the wire at a time it can only mean that one.
@@ -401,6 +420,12 @@ pub(super) enum TagsSaid {
     /// that carries none or one that has been closed. The second slot is
     /// what the file was saved aligned to, for the `hello` to claim.
     Tags(Vec<String>, Option<FileClaim>),
+    /// The drawing is there, and its queue is not this person's to send
+    /// (`State::judge_queue`): the `hello` claims nothing — neither the
+    /// file's word nor where the last session left the drawing — and lists
+    /// no tags, and the connection is held apart, for this reason, whatever
+    /// the `welcome` says.
+    Apart(NotAligned),
     /// The session has no drawing yet and none is on its way: the `hello`
     /// need not wait. The tags follow under the same number once the
     /// session has come by its drawing.
@@ -584,9 +609,22 @@ pub(super) struct State {
     pub rolling_back: bool,
     /// The last number given to an undo step (`next_step`).
     step_seq: u64,
-    /// The id of the last session that was up: ops made with none up are
-    /// numbered under it (the id is the server's and nobody else's).
-    last_session: Option<String>,
+    /// This run's name, under which it names its ops
+    /// (`ocs_collab::ids::op_id`): drawn with the first op it names, so no
+    /// other start of the program — this person's or anybody's — names a
+    /// step alike, whether or not a session was ever up.
+    run_id: String,
+    /// How many ops this run has named.
+    ops_named: u64,
+    /// The entries of the queue the drawing file was saved with that could
+    /// not be read as ops, as they were found (`collab_state::QueueRead`).
+    /// A save puts them back; while there is one, no connection claims
+    /// alignment (`judge_queue`).
+    pub unreadable_queue: Vec<Value>,
+    /// Why this copy holds itself apart, as it said in its last answer to
+    /// the transport's question (`TagsSaid::Apart`): the connection that
+    /// answer was for is held apart for it, whatever the `welcome` says.
+    apart_before_hello: Option<NotAligned>,
     /// tag → when the claim on it runs out, in Unix seconds, for the claims
     /// the server has said it of: those standing at the last `welcome`, and
     /// one this session asked for and was refused. A claim this session was
@@ -717,18 +755,69 @@ impl State {
     ///
     /// Once only, ahead of the first session: from then on the in-memory
     /// baseline is fresher than anything the file could say.
-    pub(super) fn seed_file_state(&mut self, claim: &FileClaim, ops: Vec<Outgoing>) {
+    pub(super) fn seed_file_state(
+        &mut self,
+        claim: &FileClaim,
+        ops: Vec<Outgoing>,
+        unreadable: Vec<Value>,
+    ) {
         if self.had_session {
             return;
         }
         self.repo_id = Some(claim.repo_id.clone());
         self.base_revision = claim.revision;
         self.had_session = true;
-        // `queue_op` mints op ids under a session name; a seeded copy has
-        // none yet, and ops made before the first session still need ids.
-        // The real session's name replaces this once a `welcome` arrives.
-        self.last_session = Some(format!("file-{}", claim.repo_id));
         self.outbox.extend(ops);
+        self.unreadable_queue = unreadable;
+    }
+
+    /// What this copy finds against itself before it says what it is
+    /// (`SPEC-collab-offline-sync.md` §5.2, step two): a queue that is not
+    /// this person's to send — steps somebody else queued, or that say
+    /// nobody; entries that could not be read; two steps under one name.
+    pub(super) fn judge_queue(&self) -> Option<NotAligned> {
+        let mut others: Vec<&str> = Vec::new();
+        let mut nobody = false;
+        for entry in &self.outbox {
+            match entry.user_id.as_deref() {
+                Some(user) if user == self.user_id => {}
+                Some(user) if !others.contains(&user) => others.push(user),
+                Some(_) => {}
+                None => nobody = true,
+            }
+        }
+        if !others.is_empty() || nobody {
+            let message = match (others.is_empty(), nobody) {
+                (false, false) => format!("图里带着 {} 排队未提交的修改", others.join("、")),
+                (false, true) => format!(
+                    "图里带着 {} 排队未提交的修改，还有的没有记下是谁排的",
+                    others.join("、")
+                ),
+                (true, _) => "图里带着排队未提交的修改，没有记下是谁排的".to_owned(),
+            };
+            return Some(NotAligned {
+                code: QUEUED_BY_OTHERS.to_owned(),
+                message,
+            });
+        }
+        if !self.unreadable_queue.is_empty() {
+            return Some(NotAligned {
+                code: QUEUE_UNREADABLE.to_owned(),
+                message: format!(
+                    "图里排队未提交的修改有 {} 条读不出来",
+                    self.unreadable_queue.len()
+                ),
+            });
+        }
+        let mut names = std::collections::BTreeSet::new();
+        let twice = self
+            .outbox
+            .iter()
+            .find(|entry| !names.insert(entry.op_id.as_str()))?;
+        Some(NotAligned {
+            code: QUEUE_DUPLICATE_ID.to_owned(),
+            message: format!("图里排队未提交的修改有两条都叫 {}", twice.op_id),
+        })
     }
 
     /// Turn the holder a denial names into the user the panel should show.
@@ -799,6 +888,18 @@ impl State {
         if tags_to_tell && self.session_id.is_some() {
             self.rejoining = true;
         }
+        match &said {
+            TagsSaid::Apart(reason) => {
+                // Said to a session that is up, the answer came too late
+                // for its `hello`: it is held apart from now, and the
+                // transport leaves it to join again claiming nothing.
+                if self.session_id.is_some() && self.not_aligned.is_none() {
+                    self.hold_apart(reason.clone());
+                }
+                self.apart_before_hello = Some(reason.clone());
+            }
+            TagsSaid::Tags(..) | TagsSaid::NotYet => self.apart_before_hello = None,
+        }
         #[cfg(test)]
         self.tags_said.push((ask, said.clone()));
         #[cfg(not(target_arch = "wasm32"))]
@@ -831,8 +932,10 @@ impl State {
                 repo_id,
             } => {
                 // Each connection is judged afresh. One the `welcome`
-                // refused is held apart (`REQ-COLL-015`).
+                // refused is held apart (`REQ-COLL-015`), and so is one
+                // this copy held apart before its `hello` — for that.
                 let refused = self.align_refused.take();
+                let refused = self.apart_before_hello.clone().or(refused);
                 // The server replays what this session missed, from the
                 // revision its drawing has: the baseline stays where it is
                 // and each replayed op moves it on, like any op. Nothing
@@ -877,7 +980,6 @@ impl State {
                     self.repo_id = Some(repo_id).filter(|repo| !repo.is_empty());
                 }
                 self.connected = true;
-                self.last_session = Some(session_id.clone());
                 // The others on the drawing. `welcome.peers` does not list
                 // the session it welcomes; a server that still does (it
                 // used to) is read the same way.
@@ -1364,12 +1466,10 @@ impl State {
                 "本图与房间已不一致（{reason}），已停止提交变更，需要重新同步"
             ));
         }
-        let session = match (&self.session_id, &self.last_session) {
-            (Some(live), _) => live.clone(),
-            (None, Some(last)) if self.had_session => last.clone(),
-            _ => return Err("未连接协同服务器".to_owned()),
-        };
-        let op_id = transport::next_op_id(&session);
+        if self.session_id.is_none() && !self.had_session {
+            return Err("未连接协同服务器".to_owned());
+        }
+        let op_id = self.name_op();
         #[cfg(test)]
         self.sent.push(payload.clone());
         self.outbox.push_back(Outgoing {
@@ -1381,6 +1481,8 @@ impl State {
             sent: false,
             label: label.to_owned(),
             restored: false,
+            user_id: Some(self.user_id.clone()),
+            queued_at: Some(ocs_collab::ids::now_unix()),
         });
         if self.own_ops.len() >= 64 {
             self.own_ops.pop_front();
@@ -1405,6 +1507,16 @@ impl State {
         _label: &str,
     ) -> Result<Queued, String> {
         Err("网页版不支持协同变更".to_owned())
+    }
+
+    /// The id of the next op this run makes: `op-<run id>-<n>`, from 1.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn name_op(&mut self) -> String {
+        if self.run_id.is_empty() {
+            self.run_id = ocs_collab::ids::new_run_id();
+        }
+        self.ops_named += 1;
+        ocs_collab::ids::op_id(&self.run_id, self.ops_named)
     }
 
     /// Ask the transport to send one `claim` / `release` for `tag`.
@@ -2044,8 +2156,10 @@ mod tests {
             sent: false,
             label: "离线改动".into(),
             restored: true,
+            user_id: None,
+            queued_at: None,
         };
-        state.seed_file_state(&claim, vec![restored]);
+        state.seed_file_state(&claim, vec![restored], Vec::new());
         assert!(state.had_session);
         assert_eq!(state.base_revision, 42);
         assert_eq!(state.repo_id.as_deref(), Some("r-9"));
@@ -2056,7 +2170,7 @@ mod tests {
             Ok(Queued::Offline(2))
         ));
         // Seeding is once: a second call would have been a no-op anyway.
-        state.seed_file_state(&claim, Vec::new());
+        state.seed_file_state(&claim, Vec::new(), Vec::new());
         assert_eq!(state.outbox.len(), 2);
 
         // The refusal is said ahead of the session it comes with.

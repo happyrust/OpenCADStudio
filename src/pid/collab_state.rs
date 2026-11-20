@@ -47,6 +47,24 @@ pub struct QueuedOp {
     pub on: bool,
     /// 它叫什么，被拒时的那句话用。
     pub label: String,
+    /// 谁排的：排队时的用户号。只有排队的人自己提交它。旧版本存的条目没有
+    /// 这一项。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// 什么时候排的，Unix 秒。旧版本存的条目没有这一项。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_at: Option<i64>,
+}
+
+/// 读回的队列：读得出的条目，和读不出的那些。
+#[derive(Clone, Debug, Default)]
+pub struct QueueRead {
+    /// 按写入顺序。
+    pub ops: Vec<QueuedOp>,
+    /// 读不出的条目，原样：是 JSON 但不是一条 op 的，就是那个 JSON；连
+    /// JSON 都不是的，是它的原文（一个 JSON 字符串）。它们也是没提交的修改，
+    /// 存盘时原样写回去（[`store_queue_keeping`]），不能就这样丢掉。
+    pub unreadable: Vec<serde_json::Value>,
 }
 
 /// 写入（或清空）三项协同状态。`None` 表示这份文件不从属于任何库——
@@ -77,20 +95,40 @@ pub fn load_state(doc: &Document) -> Option<FileCollabState> {
 
 /// 整队列重写：先清后填。空队列删除记录，不留空 XRecord。
 pub fn store_queue(doc: &mut Document, ops: &[QueuedOp]) {
+    store_queue_keeping(doc, ops, &[]);
+}
+
+/// 整队列重写，读不出的条目 `unreadable` 原样排在后面（[`QueueRead`]）。
+pub fn store_queue_keeping(doc: &mut Document, ops: &[QueuedOp], unreadable: &[serde_json::Value]) {
     let items: Vec<serde_json::Value> = ops
         .iter()
         .filter_map(|op| serde_json::to_value(op).ok())
+        .chain(unreadable.iter().cloned())
         .collect();
     graph_data::store(doc, PID_AUTHOR_COLLAB_QUEUE, &items);
 }
 
-/// 读回队列：按写入顺序。解析失败的一条被跳过，不拖垮整队。
+/// 读回队列：按写入顺序。解析失败的一条被跳过，不拖垮整队；要知道跳过
+/// 了哪些，用 [`read_queue`]。
 pub fn load_queue(doc: &Document) -> Vec<QueuedOp> {
-    graph_data::load(doc, PID_AUTHOR_COLLAB_QUEUE)
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|item| serde_json::from_value(item.clone()).ok())
-        .collect()
+    read_queue(doc).ops
+}
+
+/// 读回队列，连同读不出的条目。
+pub fn read_queue(doc: &Document) -> QueueRead {
+    let Some(loaded) = graph_data::load_reporting(doc, PID_AUTHOR_COLLAB_QUEUE) else {
+        return QueueRead::default();
+    };
+    let mut read = QueueRead::default();
+    for item in loaded.items {
+        match serde_json::from_value::<QueuedOp>(item.clone()) {
+            Ok(op) => read.ops.push(op),
+            Err(_) => read.unreadable.push(item),
+        }
+    }
+    read.unreadable
+        .extend(loaded.unreadable.into_iter().map(serde_json::Value::String));
+    read
 }
 
 #[cfg(test)]
@@ -128,6 +166,8 @@ mod tests {
                 base_revision: i as i64,
                 on: true,
                 label: format!("步骤 {i}"),
+                user_id: None,
+                queued_at: None,
             })
             .collect();
         store_queue(&mut doc, &ops);

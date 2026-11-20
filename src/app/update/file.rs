@@ -3630,9 +3630,15 @@ impl OpenCADStudio {
                         base_revision: entry.base_revision,
                         on: entry.on,
                         label: entry.label.clone(),
+                        user_id: entry.user_id.clone(),
+                        queued_at: entry.queued_at,
                     })
                     .collect();
-                crate::pid::collab_state::store_queue(snapshot, &queued);
+                crate::pid::collab_state::store_queue_keeping(
+                    snapshot,
+                    &queued,
+                    &self.collab.unreadable_queue,
+                );
             }
         }
     }

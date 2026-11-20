@@ -519,6 +519,8 @@ fn fixture() -> (Document, Vec<Handle>) {
             base_revision: 42,
             on: true,
             label: "改属性".into(),
+            user_id: None,
+            queued_at: None,
         }],
     );
 

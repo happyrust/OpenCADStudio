@@ -483,20 +483,6 @@ pub(super) fn request_release(session_id: &str, tag: &str) -> Result<(), String>
     queue_release(app_outbox(), tag)
 }
 
-/// Monotonic counter behind [`next_op_id`]. The id only has to be unique
-/// within this process's session; the server echoes it back verbatim.
-static OP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-/// A fresh `op_id` for an op of `session_id`. The room broadcast of our own
-/// change comes back with this id, which is how the app tells its own op from
-/// a peer's — so it has to be the room's only one. The session id is the
-/// server's, unique among everyone on it; a process id and a counter are
-/// only unique on this machine, and two machines count from 1 alike.
-pub(super) fn next_op_id(session_id: &str) -> String {
-    let n = OP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("op-{session_id}-{n}")
-}
-
 /// Put an `op` carrying one semantic change on `outbox`. `base_revision` is
 /// the revision the change was made against (`VAL-CLI-010`). An op with no id
 /// never gets there: the id is how its echo is told from a peer's change.
@@ -744,6 +730,9 @@ struct Told {
     /// it did not answer in time. They are owed, and come under the same
     /// number.
     owed: bool,
+    /// The copy holds itself apart ([`TagsSaid::Apart`]): the `hello`
+    /// claims nothing, and the connection does not move `seen` on.
+    apart: bool,
 }
 
 /// Ask the UI which tags the session's drawing carries, and wait for what
@@ -769,6 +758,16 @@ fn ask_for_tags(sender: &mut mpsc::Sender<CollabEvent>, link: &Link) -> Result<O
                     tags,
                     file,
                     owed: false,
+                    apart: false,
+                }));
+            }
+            Some(TagsSaid::Apart(_)) => {
+                return Ok(Some(Told {
+                    ask,
+                    tags: Vec::new(),
+                    file: None,
+                    owed: false,
+                    apart: true,
                 }));
             }
             Some(TagsSaid::NotYet) => break,
@@ -788,6 +787,7 @@ fn ask_for_tags(sender: &mut mpsc::Sender<CollabEvent>, link: &Link) -> Result<O
         tags: Vec::new(),
         file: None,
         owed: true,
+        apart: false,
     }))
 }
 
@@ -972,10 +972,12 @@ fn run_session(
     // has been up yet, of what the drawing file was saved aligned to. The
     // server judges a claim that names its repository; a `since` of a room
     // that named none (a server from before `welcome.repo_id`) goes out
-    // alone and is only replayed from.
+    // alone and is only replayed from. A copy that holds itself apart
+    // ([`TagsSaid::Apart`]) claims nothing.
+    let apart = told.is_some_and(|told| told.apart);
     let claim = seen
         .as_ref()
-        .filter(|seen| seen.drawing_id == config.drawing_id)
+        .filter(|seen| !apart && seen.drawing_id == config.drawing_id)
         .map(|seen| (seen.repo_id.clone(), seen.revision))
         .or_else(|| {
             told.and_then(|told| told.file.as_ref())
@@ -1007,10 +1009,10 @@ fn run_session(
     };
     // Whether this connection took the drawing as the room's. One whose
     // `welcome` refused it, or that came back to a room that moved on past
-    // the claimed revision with no replay, is held apart by the UI: what it
-    // hears does not move the drawing on, and the next `hello` claims again
-    // what the drawing is.
-    let mut aligned = true;
+    // the claimed revision with no replay, or of a copy that holds itself
+    // apart, is held apart by the UI: what it hears does not move the
+    // drawing on, and the next `hello` claims again what the drawing is.
+    let mut aligned = !apart;
 
     loop {
         if link.stop_requested() {
@@ -1024,20 +1026,35 @@ fn run_session(
             close(&mut ws);
             return Ok(Ended::SubscriptionGone);
         }
-        if let Some(TagsSaid::Tags(tags, _)) = owed.and_then(|(ask, line)| line.answer(ask)) {
-            owed = None;
-            if !tags.is_empty() {
-                log(&format!(
-                    "界面说出了本图已有的 {} 个位号：断开后重新加入，随 hello 上报",
-                    tags.len()
-                ));
+        match owed.and_then(|(ask, line)| line.answer(ask)) {
+            Some(TagsSaid::Tags(tags, _)) => {
+                owed = None;
+                if !tags.is_empty() {
+                    log(&format!(
+                        "界面说出了本图已有的 {} 个位号：断开后重新加入，随 hello 上报",
+                        tags.len()
+                    ));
+                    leave(&mut ws, link.leave_wait, || {
+                        link.stop_requested() || sender.is_closed()
+                    });
+                    return Ok(Ended::Closed(
+                        "要向服务器上报本图已有的位号，正在重新加入会话".to_owned(),
+                    ));
+                }
+            }
+            // The drawing came, and the copy holds itself apart: this
+            // connection claimed what the drawing is, and moves `seen` on
+            // with what it hears. It is left, and the next claims nothing.
+            Some(TagsSaid::Apart(_)) => {
+                log("界面说本图不对齐：断开后重新加入，不声称图纸对齐到哪里");
                 leave(&mut ws, link.leave_wait, || {
                     link.stop_requested() || sender.is_closed()
                 });
                 return Ok(Ended::Closed(
-                    "要向服务器上报本图已有的位号，正在重新加入会话".to_owned(),
+                    "本图与房间对不上，正在不带对齐位置重新加入会话".to_owned(),
                 ));
             }
+            Some(TagsSaid::NotYet) | None => {}
         }
         match ws.read() {
             Ok(Message::Text(text)) => {
@@ -1089,7 +1106,7 @@ fn run_session(
                         *came_up = true;
                         let moved_on = replay_from.is_none()
                             && claimed.is_some_and(|since| *base_revision > since);
-                        aligned = !refused && !moved_on;
+                        aligned = !apart && !refused && !moved_on;
                     }
                     if aligned {
                         Seen::take(seen, config, replay_from, &event);
@@ -1981,33 +1998,14 @@ mod tests {
     }
 
     /// An op with no id could not be told from a peer's when it comes back, so
-    /// it never gets as far as the queue; and every id handed out is new.
+    /// it never gets as far as the queue. (Ids are the UI's to hand out, one
+    /// run's apart from every other's: `collab_op_ids`.)
     #[test]
-    fn an_op_needs_an_id_and_every_id_is_new() {
+    fn an_op_needs_an_id() {
         let outbox = Outbox::default();
         assert!(queue_op(&outbox, None, 0, "  ", serde_json::json!({})).is_err());
         assert!(drain_outbound(&outbox).is_empty());
         assert!(request_op("s-1", 0, "", serde_json::json!({})).is_err());
-
-        let first = next_op_id("s-1");
-        let second = next_op_id("s-1");
-        assert!(!first.is_empty());
-        assert_ne!(first, second);
-    }
-
-    /// An id is the room's only one, not this machine's: it carries the
-    /// session, which the server hands out to one connection. Two editors
-    /// with the same process id counting from the same number must not make
-    /// the same id — one would take the other's op for its own echo.
-    #[test]
-    fn two_sessions_never_make_the_same_op_id() {
-        let mine = next_op_id("s-aaaa");
-        let theirs = next_op_id("s-bbbb");
-        assert!(mine.contains("s-aaaa"), "{mine}");
-        // Whatever their counter says, the session part differs.
-        let n = mine.rsplit('-').next().expect("counter");
-        assert_ne!(mine, format!("op-s-bbbb-{n}"));
-        assert!(theirs.starts_with("op-s-bbbb-"), "{theirs}");
     }
 
     /// A status line may be dropped when the UI is behind. A peer's change
@@ -3217,5 +3215,58 @@ mod tests {
         let again = hello_of(&heard, 1);
         assert_eq!(again["repo_id"], "r-9", "{again}");
         assert_eq!(again["since"], 42, "{again}");
+    }
+
+    /// `OFF-3`: a copy that holds itself apart before its `hello`
+    /// ([`TagsSaid::Apart`]) claims nothing — neither the file's word nor
+    /// where the last session left the drawing — and what it hears on that
+    /// connection does not move on what the next `hello` claims.
+    #[test]
+    fn collab_op_ids_a_copy_held_apart_claims_nothing_and_takes_nothing_from_its_session() {
+        let first = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":42,"peers":[],"claims":[],"repo_id":"r-9","replay_from":42}"#
+                    .to_owned(),
+                r#"{"type":"op_applied","op_id":"op-peer-43","revision":43,"changes":[]}"#.to_owned(),
+            ],
+            then_drop: true,
+        };
+        let apart = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-2","base_revision":50,"peers":[],"claims":[],"repo_id":"r-9"}"#
+                    .to_owned(),
+                r#"{"type":"op_applied","op_id":"op-peer-51","revision":51,"changes":[]}"#.to_owned(),
+            ],
+            then_drop: true,
+        };
+        let third = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-3","base_revision":51,"peers":[],"claims":[],"repo_id":"r-9","replay_from":43}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![first, apart, third]);
+        let (link, said) = link_with_tags(url, Duration::from_secs(30));
+        let (mut receiver, worker) = start_client(&link);
+        let held_apart = TagsSaid::Apart(crate::app::collab::NotAligned {
+            code: "QUEUED_BY_OTHERS".into(),
+            message: "图里带着 u1 排队未提交的修改".into(),
+        });
+        for answer in [file_r9_at_42(), held_apart, file_r9_at_42()] {
+            let (ask, _) = question(&mut receiver);
+            leave_answer(&said, ask, answer);
+        }
+        let up = session_came_up(&mut receiver);
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+        assert!(up, "the third session did not come up");
+        let apart = hello_of(&heard, 1);
+        assert!(apart.get("repo_id").is_none(), "{apart}");
+        assert!(apart.get("since").is_none(), "{apart}");
+        let again = hello_of(&heard, 2);
+        assert_eq!(again["since"], 43, "{again}");
+        assert_eq!(again["repo_id"], "r-9", "{again}");
     }
 }
