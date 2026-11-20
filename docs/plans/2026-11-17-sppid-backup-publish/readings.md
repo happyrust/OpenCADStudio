@@ -5378,6 +5378,21 @@ SQL Server 包：
   - `rustfmt --check backup.rs` 0 差异，`scripts\fmt-newhunks.ps1` 对 `mod.rs`、`pid_shell_startup.rs`、`pid_shell_chrome.rs` 全部新增 `0`；
   - `python scripts/arch_check.py report`：与改前逐行相同。
 
+---
+
+## 35. UI-4：浏览画面未打开、载入中、出错三态及包概要顶栏（2026-11-20）
+
+- **起点与编译器**：`main @ acfabf006`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui4\`。
+- **改动**：
+  1. `src/app/pid_shell/backup.rs`：实现未打开（两个选择入口 + 可注入 `SourcePicker`）、载入中（来源路径 + 跳秒）、出错（原因全文 + 重新选择入口）三态及已打开顶栏（Oracle / SQL Server / 散放 `.pid` 三类概要、「清理还原缓存」忙碌拦截内联提示、「在经典面板中查看库表」切回编辑器展开停靠面板），全部样式取自 `pid_tokens`。
+  2. `src/app/commands/pidbackup.rs`：在 `PidScreen::Backup` 下打开备份包时不自动弹开经典停靠面板；新建 `src/app/pid_shell/pid_backup_screen.rs` 无窗口 `iced_test` 测试。
+- **先红后绿**：4 条 `pid_backup_screen_ui4_*` 先红 0 过 4 败（`red.txt`），实现后 4/4 全过（`green.txt`），`pid_backup_in_shell` 16/16 全过（`in_shell_green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7133 条（7077 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -5419,3 +5434,4 @@ SQL Server 包：
 | 2026-11-20 | 加 §32（检查点 C 第 1 段 `UI-1` 备份包载入计时与浏览只读访问器）：`PidBackupBrowser` 载入计时与来源保留、特殊组中文映射、装置组子树与图内对象过滤纯函数，4 条快测试先红后绿及全套门禁读数 |
 | 2026-11-20 | 加 §33（检查点 C 第 1 段 `UI-2` 导出状态结构化访问器、界面启动入口与 1 秒跳秒订阅）：`BackupExport` / `BackupPdf` 只读访问器与界面预检/启动入口、`BackupPdf::Running.started`、`view::subscription` 1 秒跳秒订阅，4 条快测试先红后绿及全套门禁读数；顺带重编最新 `target\release\OpenCADStudio.exe` |
 | 2026-11-20 | 加 §34（检查点 C 第 2 段 `UI-3` 导航三处接线与 `backup` 空画面骨架）：`PidScreen::Backup`、`screen-catalog.json`、`00-overview.md` 及文档契约 15 屏同步注册，先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §35（检查点 C 第 2 段 `UI-4` 浏览画面三态与包概要顶栏）：未打开/载入中/出错三态、三类包概要、清缓存忙碌保护与经典面板入口，4 条快测试先红后绿及全套门禁读数 |

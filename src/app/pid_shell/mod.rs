@@ -163,6 +163,8 @@ pub mod workbench;
 
 #[cfg(test)]
 mod pid_backup_in_shell;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pid_backup_screen;
 #[cfg(test)]
 mod pid_editor_screen;
 #[cfg(test)]
@@ -603,7 +605,7 @@ impl OpenCADStudio {
 
     /// Show `screen`; when it cannot be shown, say why on the command line
     /// and leave what was showing.
-    fn show_pid_screen(&mut self, screen: PidScreen) -> bool {
+    pub(in crate::app) fn show_pid_screen(&mut self, screen: PidScreen) -> bool {
         if !self.pid_shell.show(screen) {
             self.command_line.push_error(&format!(
                 "界面「{}」（{}）还没有实现，不能切换。",

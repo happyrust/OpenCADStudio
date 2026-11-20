@@ -1,0 +1,416 @@
+//! Headless `iced_test` verification of the `backup` screen (`UI-4`..`UI-6`).
+
+use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use iced::{Point, Rectangle, Size};
+
+use super::backup::{self, Message as BackupMessage, SCREEN_BOUNDS_PREFIX};
+use super::*;
+use crate::cli::GuiConfig;
+use crate::io::pid_backup_browse::{
+    BackupFile, BackupIndex, DrawingEntry, FileKind, GroupNode, ManifestSummary, RefFile, RefNode,
+};
+use crate::ui::style::pid_tokens::PidTheme;
+use crate::ui::window::pid_backup_browser::{self, LoadState};
+
+const WINDOW: Size = Size::new(1600.0, 1000.0);
+
+fn app_on_backup() -> OpenCADStudio {
+    let mut app = OpenCADStudio::new_for_test();
+    app.default_assoc_prompted = true;
+    app.donation_prompt_version = env!("OCS_APP_VERSION").to_owned();
+    let first = app.open_first_screen(&GuiConfig::default());
+    app.drive_headless_task(first)
+        .expect("first screen opens headlessly");
+    let _ = app.update(AppMessage::WindowResized(WINDOW.width, WINDOW.height));
+    assert!(app.show_pid_screen(PidScreen::Backup));
+    app
+}
+
+fn headless() -> iced::Renderer {
+    use iced_test::core::renderer;
+    iced_test::futures::futures::executor::block_on(<iced::Renderer as renderer::Headless>::new(
+        renderer::Settings::default(),
+        std::env::var("ICED_TEST_BACKEND").ok().as_deref(),
+    ))
+    .expect("headless renderer")
+}
+
+fn drawn(app: &OpenCADStudio) -> BTreeMap<String, Rectangle> {
+    use iced_test::core::{mouse, renderer};
+    use iced_test::runtime::user_interface::{Cache, UserInterface};
+    crate::ui::wrap_bar::forget_bounds("");
+    let mut renderer = headless();
+    let mut ui = UserInterface::build(app.view_main(), WINDOW, Cache::default(), &mut renderer);
+    ui.draw(
+        &mut renderer,
+        &app.active_theme,
+        &renderer::Style {
+            text_color: iced::Color::BLACK,
+        },
+        mouse::Cursor::Unavailable,
+    );
+    crate::ui::wrap_bar::recorded_bounds().into_iter().collect()
+}
+
+fn says(app: &OpenCADStudio, needle: &str) -> bool {
+    use iced_test::core::widget;
+    use iced_test::runtime::user_interface::{Cache, UserInterface};
+    use iced_test::Selector;
+    let mut renderer = headless();
+    let mut ui = UserInterface::build(app.view_main(), WINDOW, Cache::default(), &mut renderer);
+    let mut find = Selector::find(needle);
+    ui.operate(&renderer, &mut widget::operation::black_box(&mut find));
+    matches!(
+        widget::Operation::finish(&find),
+        widget::operation::Outcome::Some(Some(_))
+    )
+}
+
+fn click_at(app: &mut OpenCADStudio, point: Point) {
+    use iced_test::core::{mouse, shell, window as core_window};
+    use iced_test::runtime::user_interface::{Cache, UserInterface};
+    let mut renderer = headless();
+    let mut cache = Cache::default();
+    let events = [
+        iced::Event::Mouse(mouse::Event::CursorMoved { position: point }),
+        iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+    ];
+    for event in events {
+        let mut messages = Vec::new();
+        {
+            let mut ui = UserInterface::build(app.view_main(), WINDOW, cache, &mut renderer);
+            let _ = ui.update(
+                &core_window::Headless,
+                &shell::Waker::noop(),
+                &[event],
+                mouse::Cursor::Available(point),
+                &mut renderer,
+                &mut messages,
+            );
+            cache = ui.into_cache();
+        }
+        for message in messages {
+            let task = app.update(message);
+            app.drive_headless_task(task)
+                .expect("headless click task completes");
+        }
+    }
+}
+
+fn temp_scratch(tag: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let dir = std::env::temp_dir().join(format!(
+        "ocs-pid-backup-screen-{}-{}-{}",
+        tag,
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    dir
+}
+
+fn write_minimal_backup_zip(zip_path: &Path) {
+    let file = std::fs::File::create(zip_path).expect("create zip");
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default();
+    zip.start_file("Manifest.txt", opts).expect("manifest");
+    zip.write_all(
+        b"[General]\r\nName=TestPlant\r\nVersion=7.02\r\nDateCreated=11/20/2026 08:00:00\r\nBackupType=2\r\n",
+    )
+    .expect("write manifest");
+    zip.finish().expect("finish zip");
+}
+
+#[test]
+fn pid_backup_screen_ui4_empty_loading_and_error_states_render_and_drive_picker() {
+    let _one = crate::headless_ui_lock();
+    let scratch = temp_scratch("ui4-states");
+    let cache_dir = scratch.join("cache");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+
+    let mut app = app_on_backup();
+    pid_backup_browser::set_cache_folder(&mut app.pid_backup_browser, Some(cache_dir));
+
+    // 1. Empty state.
+    let bounds = drawn(&app);
+    assert!(bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}empty")));
+    assert!(bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}open_zip")));
+    assert!(bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}open_folder")));
+    assert!(says(&app, "打开备份 zip"));
+    assert!(says(&app, "打开备份文件夹"));
+
+    // 2. Pick an empty non-backup folder -> transitions to Error state.
+    let bad_folder = scratch.join("not-a-backup");
+    std::fs::create_dir_all(&bad_folder).unwrap();
+    let picked_bad = bad_folder.clone();
+    app.pid_shell.backup.source_picker = Some(Arc::new(move |folder| {
+        assert!(folder, "open_folder asks for a folder");
+        Some(Some(picked_bad.clone()))
+    }));
+    click_at(
+        &mut app,
+        bounds[&format!("{SCREEN_BOUNDS_PREFIX}open_folder")].center(),
+    );
+    assert!(app.pid_backup_browser.error.is_some());
+    let err_bounds = drawn(&app);
+    assert!(err_bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}error")));
+    assert!(err_bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}retry_zip")));
+    assert!(err_bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}retry_folder")));
+    assert!(says(&app, "重新选择 zip"));
+    assert!(says(&app, "重新选择文件夹"));
+
+    // 3. Loading state shows source path, loading prompt, and elapsed seconds.
+    let loading_src = scratch.join("plant-loading.zip");
+    app.pid_backup_browser.load = LoadState::Loading(loading_src.clone());
+    app.pid_backup_browser.loading_started_at =
+        Some(iced::time::Instant::now() - Duration::from_secs(6));
+    let load_bounds = drawn(&app);
+    assert!(load_bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}loading")));
+    assert!(says(&app, "正在还原并建立索引…"));
+
+    // 4. Retry zip with a valid backup zip -> advances to Ready.
+    app.pid_backup_browser.load = LoadState::Idle;
+    let good_zip = scratch.join("good-backup.zip");
+    write_minimal_backup_zip(&good_zip);
+    let picked_good = good_zip.clone();
+    app.pid_shell.backup.source_picker = Some(Arc::new(move |folder| {
+        assert!(!folder, "retry_zip asks for a zip");
+        Some(Some(picked_good.clone()))
+    }));
+    let err_bounds = drawn(&app);
+    click_at(
+        &mut app,
+        err_bounds[&format!("{SCREEN_BOUNDS_PREFIX}retry_zip")].center(),
+    );
+    assert!(matches!(app.pid_backup_browser.load, LoadState::Ready(_)));
+    assert!(
+        !app.show_pid_backup,
+        "opening from the new backup screen keeps the classic docked panel closed"
+    );
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn pid_backup_screen_ui4_package_header_renders_oracle_sql_server_and_loose_pid_summaries() {
+    let _one = crate::headless_ui_lock();
+    let mut app = app_on_backup();
+
+    // Case A: Oracle package with ManifestSummary.
+    let oracle_index = BackupIndex {
+        source: PathBuf::from("D:/plant/SQPlant.zip"),
+        restored: PathBuf::from("C:/temp/restored-sq"),
+        backup_root: PathBuf::from("C:/temp/restored-sq"),
+        read_only: false,
+        manifest: Some(ManifestSummary {
+            name: Some("SQPlant".to_owned()),
+            version: Some("7.02".to_owned()),
+            date_created: Some("07/19/2026 20:13:24".to_owned()),
+            backup_type: Some("2".to_owned()),
+            spid: None,
+        }),
+        files: vec![BackupFile {
+            name: "Export.dmp".to_owned(),
+            kind: FileKind::ExportDump,
+            format: "Oracle exp".to_owned(),
+            ..BackupFile::default()
+        }],
+        plant_groups: vec![GroupNode {
+            name: "SQPlant".to_owned(),
+            path: "SQPlant".to_owned(),
+            children: Vec::new(),
+            drawings: vec![0],
+        }],
+        drawings: vec![DrawingEntry {
+            name: "A-101".to_owned(),
+            pid_path: Some(PathBuf::from("C:/temp/restored-sq/A-101.pid")),
+            group_path: "SQPlant".to_owned(),
+            meta: Vec::new(),
+        }],
+        ref_tree: RefNode {
+            name: "Ref".to_owned(),
+            dirs: Vec::new(),
+            files: vec![RefFile {
+                name: "sym.sym".to_owned(),
+                size: 128,
+            }],
+        },
+        warnings: vec!["one warning".to_owned()],
+        ..BackupIndex::default()
+    };
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(oracle_index));
+    let bounds = drawn(&app);
+    for key in [
+        "header",
+        "switch_zip",
+        "switch_folder",
+        "clear_cache",
+        "classic_panel",
+    ] {
+        assert!(
+            bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}{key}")),
+            "missing {key}"
+        );
+    }
+    assert!(says(&app, "清理还原缓存"));
+    assert!(says(&app, "在经典面板中查看库表"));
+
+    // Case B: SQL Server package summary.
+    let sql_index = BackupIndex {
+        source: PathBuf::from("D:/plant/SqlBackup"),
+        restored: PathBuf::from("D:/plant/SqlBackup"),
+        backup_root: PathBuf::from("D:/plant/SqlBackup"),
+        read_only: true,
+        manifest: Some(ManifestSummary {
+            name: Some("SqlPlant".to_owned()),
+            version: Some("8.00".to_owned()),
+            date_created: Some("08/01/2026 10:00:00".to_owned()),
+            backup_type: Some("1".to_owned()),
+            spid: None,
+        }),
+        files: vec![BackupFile {
+            name: "Export.dmp".to_owned(),
+            kind: FileKind::ExportDump,
+            format: "SQL Server MTF".to_owned(),
+            ..BackupFile::default()
+        }],
+        ..BackupIndex::default()
+    };
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(sql_index));
+    let _ = drawn(&app);
+    assert!(says(
+        &app,
+        &backup::header_title_line(app.pid_backup_browser.index().unwrap())
+    ));
+
+    // Case C: Loose .pid folder without Manifest.txt.
+    let loose_index = BackupIndex {
+        source: PathBuf::from("D:/drawings/loose-pids"),
+        restored: PathBuf::from("D:/drawings/loose-pids"),
+        backup_root: PathBuf::from("D:/drawings/loose-pids"),
+        read_only: true,
+        manifest: None,
+        drawings: vec![DrawingEntry {
+            name: "L-01".to_owned(),
+            pid_path: Some(PathBuf::from("D:/drawings/loose-pids/L-01.pid")),
+            group_path: "loose-pids".to_owned(),
+            meta: Vec::new(),
+        }],
+        ..BackupIndex::default()
+    };
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(loose_index));
+    let _ = drawn(&app);
+    assert!(
+        backup::header_meta_line(app.pid_backup_browser.index().unwrap())
+            .contains("直接使用目录（只读）")
+    );
+}
+
+#[test]
+fn pid_backup_screen_ui4_clear_cache_and_classic_panel_actions_respect_export_busy() {
+    let _one = crate::headless_ui_lock();
+    let scratch = temp_scratch("ui4-actions");
+    let cache_dir = scratch.join("cache");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let stale_zip = scratch.join("stale.zip");
+    write_minimal_backup_zip(&stale_zip);
+    let stale_restore = crate::io::pid_backup::restore_in(&stale_zip, None, Some(&cache_dir))
+        .expect("create real cached restore")
+        .root;
+    assert!(stale_restore.exists());
+
+    let pkg_dir = scratch.join("pkg");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(pkg_dir.join("Manifest.txt"), "[General]\r\nName=P1\r\n").unwrap();
+    let dummy_pid = pkg_dir.join("A01.pid");
+    std::fs::write(&dummy_pid, b"not-polled").unwrap();
+
+    let mut app = app_on_backup();
+    pid_backup_browser::set_cache_folder(&mut app.pid_backup_browser, Some(cache_dir.clone()));
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(BackupIndex {
+        source: pkg_dir.clone(),
+        restored: pkg_dir.clone(),
+        backup_root: pkg_dir.clone(),
+        read_only: true,
+        manifest: Some(ManifestSummary {
+            name: Some("P1".to_owned()),
+            ..ManifestSummary::default()
+        }),
+        drawings: vec![DrawingEntry {
+            name: "A01".to_owned(),
+            pid_path: Some(dummy_pid),
+            group_path: "P1".to_owned(),
+            meta: Vec::new(),
+        }],
+        ..BackupIndex::default()
+    }));
+
+    // 1. Clear cache while idle succeeds and removes stale restore.
+    let task = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::ClearCache,
+    )));
+    app.drive_headless_task(task).unwrap();
+    assert!(
+        !stale_restore.exists(),
+        "idle clear cache removes stale restore"
+    );
+
+    // 2. Start a PDF export without polling its background future -> running!
+    let out_pdf = scratch.join("out-pdf");
+    let _unpolled_export = app
+        .start_pid_backup_pdf_ui(out_pdf)
+        .expect("pdf export starts");
+    assert!(app.pid_backup_pdf.is_running());
+
+    let _ = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::ClearCache,
+    )));
+    assert!(
+        app.pid_shell
+            .backup
+            .notice
+            .as_ref()
+            .is_some_and(|(tone, msg)| *tone == backup::NoticeTone::Warning && msg.contains("导出")),
+        "busy export blocks cache clearing with an inline warning: {:?}",
+        app.pid_shell.backup.notice
+    );
+
+    // 3. OpenClassicPanel switches to Editor and reveals PanelId::PidBackup.
+    assert!(!app.show_pid_backup);
+    let bounds = drawn(&app);
+    click_at(
+        &mut app,
+        bounds[&format!("{SCREEN_BOUNDS_PREFIX}classic_panel")].center(),
+    );
+    assert_eq!(app.pid_shell.current(), Some(PidScreen::Editor));
+    assert!(app.show_pid_backup);
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn pid_backup_screen_ui4_uses_only_pid_tokens_and_renders_both_themes() {
+    let _one = crate::headless_ui_lock();
+    let src = include_str!("backup.rs");
+    for forbidden in ["from_rgb", "from_rgba", "Color::from", "0x"] {
+        assert!(
+            !src.contains(forbidden),
+            "backup.rs must use pid_tokens instead of literal colour `{forbidden}`"
+        );
+    }
+
+    let mut app = app_on_backup();
+    for theme in [PidTheme::Light, PidTheme::Dark] {
+        app.pid_shell.theme = theme;
+        let bounds = drawn(&app);
+        assert!(bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}empty")));
+    }
+}

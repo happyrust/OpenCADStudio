@@ -482,7 +482,8 @@ impl OpenCADStudio {
         if matches!(
             &msg,
             PidBackupMsg::Loaded(_) | PidBackupMsg::SourcePicked(Some(_))
-        ) {
+        ) && self.pid_shell.current() != Some(crate::app::pid_shell::PidScreen::Backup)
+        {
             self.show_pid_backup_panel();
         }
         // The command line reports what a finished load found, and a read
