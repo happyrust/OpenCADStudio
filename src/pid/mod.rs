@@ -11,6 +11,7 @@
 pub mod collab_state;
 pub mod dwg_roundtrip;
 pub mod graph_data;
+pub mod master_data;
 pub mod perf_budget;
 pub mod persist;
 pub mod propagate;

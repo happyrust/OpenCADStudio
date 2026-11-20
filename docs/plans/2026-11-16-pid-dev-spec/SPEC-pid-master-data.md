@@ -327,3 +327,28 @@ MCP：`pid_masterdata` 进 `READ_OPS`，`pid_masterdata_set` 进 `EXECUTE_OPS`�
 | 计划 T3.1「管道等级表及允许公称直径范围」 | 覆盖 | 范围用扩展属性 `公称直径下限` / `公称直径上限` 表示；按它检查是一条自定义规则，写法见 `SPEC-pid-drc.md` |
 | 计划 T3.1「绝热等级表、流体介质代码表、PBS 节点树」 | 覆盖 | §3.1 |
 | 计划 T3.1「单图存 XRecord，项目目录可选共享 `pid-project.json`」 | 覆盖 | §3.2 |
+
+## 11. 实现记录
+
+实现与本规格、任务文字有出入的地方，以及规格没写到、实现时定下的读法，记在这里（`todo.md` §1 第 7 条）。
+
+### 11.1 `MD-1`：数据对象、默认内容、校验、比法（2026-11-20）
+
+**做了什么**（新文件 `src/pid/master_data.rs`，`src/pid/mod.rs` 登记一行）：
+
+- 数据对象 `MasterData`、`Diameter`、`Entry`、`PbsNode` 和三张表的标识 `Table`。`Entry` 的扩展属性存成名值对，按文件里的顺序；`to_json` 按 §3.1 的键序写出。
+- `defaults(legend_standard)`：19 个直径，其余为空；`revision`、`updated_at` 都是 0，表示还没写过。
+- `validate(value)`：错误类型 `MasterDataError`，`code()` 是 §3.6 的码，`at()` 是出错位置（整个对象是空串，显示成「顶层」）。只有校验类的五个码；`MASTERDATA_CONFLICT`、`MASTERDATA_EXISTS`、`MASTERDATA_NOT_CONFIGURED` 属于存放和命令，留给 `MD-2`、`MD-3`。
+- 比法 `has_diameter`、`entry`、`names` 和 `pbs_subtree`。§5.1 没列、另外公开的：`to_json`、`table`、`Entry::attr`、直径的读法 `parse_dn`、`MasterDataError::at`、`Table::key`。
+
+**规格没写到、这里定下的：**
+
+1. **哪些键可以不写。** `legend_standard`、`outer_diameter`、`parent` 不写当作 `null`，`hidden` 不写当作假，`attrs` 不写当作空对象；其余的键缺了报 `MASTERDATA_SCHEMA_ERROR`，位置是缺的那个键。缺 `name` 键也是这个码，不是 `REQUIRED_FIELD_MISSING`——后者只给「有这个键、内容为空」。
+2. **认不得的键读时不理，写回时不带。** 指的是主数据对象里面的键；项目文件顶层认不得的键要保留，那是 `MD-2` 的事。
+3. **取值的约束。** `version`、`revision` 要是非负整数，`version` 为 0 也不行；`updated_at` 要是整数；`dn` 要是 1 到 4294967295 的整数；`outer_diameter` 可以是任意数；`label` 不超过 16、`name` 不超过 64，都按字符数算，不按字节数。不合的都报 `MASTERDATA_SCHEMA_ERROR`。
+4. **什么算空。** 名称去掉首尾空白后为空就算空（§3.5 比之前要去空白，只有空白的名称永远比不上）；PBS 节点号为空也报 `REQUIRED_FIELD_MISSING`（§3.6 只写了名称）。名称两端的空白不去掉、也不拒收，原样存；这样的名称比不上任何属性值，要不要拒收等有了编辑入口再定。
+5. **重复。** 逐字比，区分大小写（`A1A` 与 `a1a` 不算重复），只在同一张表里比；报在后出现的那一个上。
+6. **报哪一处。** 只报第一处：先看 `version`，比程序认识的高就不再往下读（后面的结构坏了也报 `MASTERDATA_VERSION_UNSUPPORTED`）；其余按 §3.1 的键序逐个读。PBS 先逐个读完、查重，再查上级在不在，最后查环；成环报在环上下标最小的节点的 `parent` 上，说明里写出整个环，如 `1001 → 1001-01-A → 1001-01 → 1001`。
+7. **直径的读法。** 去掉 `DN` 和它后面的空白，余下的要全是 ASCII 数字：`+80`、全角的 `８０`、`DN8 0`、超出 `u32` 的都算读不出来。§3.5 只说「按整数解析」，按一般的整数解析 `+80` 是 80，这里不认。
+
+**测试**（同文件，都以 `master_data` 开头）：10 条常规，1 条耗时（`master_data_2000_pipe_classes_parse_and_validate_within_50_ms`，默认不跑）。先只放数据对象和空壳函数，10 条都编得过、都败在断言上；实现后全过。耗时：2,000 行管道等级、每行 5 个扩展属性，文本 460,477 字节，解析加校验三次 16.46 / 16.53 / 17.25 ms，中位数 16.53 ms，预算 50 ms（测试配置下主程序包不优化，`serde_json` 按 `opt-level = 2` 编）。
