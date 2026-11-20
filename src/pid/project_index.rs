@@ -820,10 +820,8 @@ mod tests {
         draw(app, "PIDINSERT vessel", &[[200.0, 12.0]]);
         draw(app, "PIDPIPE", &[[200.0, 100.0], [300.0, 100.0]]);
         draw(app, "PIDPIPE run", &[[14.0, 0.0], [200.0, 0.0]]);
-        // 管件顺着管路方向放：在另一头已经接着管件的管段上再插管件，`PIDFITTING`
-        // 拆出的新段终点不带原来的 `peer`，先放的那个管件这一侧就断了。
-        draw(app, "PIDFITTING transmitter", &[[40.0, 0.0]]);
         draw(app, "PIDFITTING gate_valve", &[[100.0, 0.0]]);
+        draw(app, "PIDFITTING transmitter", &[[40.0, 0.0]]);
         draw(app, "PIDBREAK", &[[150.0, 0.0]]);
         draw(
             app,
