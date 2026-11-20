@@ -358,7 +358,7 @@ MCP：`pid_masterdata` 进 `READ_OPS`，`pid_masterdata_set` 进 `EXECUTE_OPS`�
 **做了什么**（只改 `src/pid/master_data.rs`）：
 
 - §5.1 列的 `PID_AUTHOR_MASTERDATA`、`PROJECT_FILE`、`Source`、`Resolved`、`resolve`、`store_in_drawing`、`write_project_file`。另外公开了只读一处的 `read_project_file`、`load_from_drawing`（`MD-3` 的 STATUS 要用它们说出「图内那份没在用」），和项目文件的格式版本 `PROJECT_FILE_VERSION`。
-- 错误多了两个码。`MASTERDATA_CONFLICT` 是 §3.6 的。`MASTERDATA_IO_ERROR` 是新加的，§3.6 没有：读写项目文件时文件系统报的错，出错位置是文件路径。接 REST 时（`MD-3`）它按「没列的一律 400」走，要不要单列到时再定。`MASTERDATA_EXISTS`、`MASTERDATA_NOT_CONFIGURED` 属于命令，留给 `MD-3`。
+- 错误多了两个码。`MASTERDATA_CONFLICT` 是 §3.6 的。`MASTERDATA_IO_ERROR` 是新加的，§3.6 没有：读写项目文件时文件系统报的错，出错位置是文件路径。接 REST 时（`MD-4`）它按「没列的一律 400」走，要不要单列到时再定。`MASTERDATA_EXISTS`、`MASTERDATA_NOT_CONFIGURED` 属于命令，留给 `MD-3`。
 - `MASTERDATA_VERSION_UNSUPPORTED` 也带出错位置了：项目文件顶层的 `version` 和主数据里的 `version` 都可能报它，位置分别是 `version` 和 `master_data.version`。
 - `dwg_roundtrip.rs` 没动：空白图纸直接能存成 DWG 再读回，用不着那里的辅助函数。
 
@@ -375,3 +375,37 @@ MCP：`pid_masterdata` 进 `READ_OPS`，`pid_masterdata_set` 进 `EXECUTE_OPS`�
 7. **「目录不可写」怎么测。** Windows 上目录的只读属性挡不住在里面写文件，换了三种做法：项目文件的位置上是个不空的目录（临时文件写出来了，改名失败）；目录不存在；项目文件被别的程序以只许读的方式开着（只在 Windows 上跑）。三种都查了原文件不变、没留下临时文件。
 
 **测试**（同文件，都以 `master_data` 开头）：新加 11 条，其中 1 条只在 Windows 上跑。§3.2 的四种情形在 `resolve` 的三条里：只有项目文件与两处都有一条，只有图内与都没有一条，项目文件坏了一条；另有一条是图内记录坏了。其余各条：DWG 存了再打开，图内那份不变；冲突时文件逐字节不变；别的顶层键还在，键序对；同一份数据、同一时间两次写出逐字节相同；三种写失败；读不出的项目文件不覆盖。先放空壳函数，11 条都编得过、都败在断言上；实现后主数据 21 条全过（耗时那条默认不跑）。
+
+### 11.3 `MD-3`：命令 `PIDMASTERDATA`（2026-11-20）
+
+**做了什么**（新文件 `src/app/commands/pidmasterdata.rs`；`src/app/commands/mod.rs` 登记模块、接进分派、加进命令表；`src/app/command_driver/utilities.rs` 把它登记成整行一条命令；`src/app/collab/apply.rs` 加只读的那一条）：
+
+- §5.2 的五种写法。子命令和目标不分大小写；不认识的子命令或目标、缺文件名，都报错并说出正确的写法。
+- `MASTERDATA_EXISTS`（`INIT` 的目标位置已有主数据，`EXPORT` 的文件已存在）和 `MASTERDATA_NOT_CONFIGURED`（`EXPORT`、`EMBED` 时未配置）是命令文件里的常量，没有加进 `MasterDataError`：这两个是命令自己的判断，读写主数据的函数不会报。其余的码照 `MasterDataError::code()` 报。报错时命令行的错误码也设上。
+- 写图内记录先 `push_undo_snapshot` 再写，撤销一步记录就没了；写项目文件、导出文件不进撤销。
+- 只读：`readonly_refuses_command` 加一条，`PIDMASTERDATA` 只放行不带子命令、`STATUS`、`EXPORT`；命令名进 `READONLY_ALLOWED`。
+
+**任务没列、多改的文件：** `src/pid/master_data.rs` 加了 `write_drawing_record(doc, data, expected_revision)`，写图内记录，规矩同 `write_project_file`：修订号取记录上原有的加 1，没有记录或读不出修订号是 1；给了 `expected_revision` 而对不上报 `MASTERDATA_CONFLICT`，什么也不写；`updated_at` 取当前时间；原记录坏了照样盖掉；返回写进去的那一份。撤销快照仍由调用方先推。`INIT`、`IMPORT` 写图内时用它，`MD-4` 的写操作写图内时也用它。`MASTERDATA_CONFLICT` 的说明和显示改成不提项目文件，两处都会报它。
+
+**规格没写到、这里定下的：**
+
+1. **「图纸已保存」怎么算。** 看图纸有没有文件路径（从文件打开的，或存过的），有没有没存的改动不管。项目文件在那个路径所在的目录。
+2. **写项目文件而图纸没有路径。** 写了 `PROJECT` 而图纸还没存过：报错、不写，提示先存图或写进图内。§3.6 没有对应的码，这条和其他写法上的错（不认识的子命令或目标、缺文件名）都不带码。
+3. **`INIT` 遇到读不出来的主数据。** 目标位置有主数据但读不出来（项目文件坏了、图内记录坏了），`INIT` 不动它，报读的时候的码。要换掉它用 `IMPORT`；项目文件整个读不出来时 `IMPORT` 也不写（§11.2 第 2 条），得先手工修好或挪走。
+4. **文件名。** 是这一行剩下的部分，可以带空格，也可以加一对双引号；不是完整路径时从图纸所在目录算，没存过的图从当前目录算。`IMPORT` 末尾一个词是 `PROJECT` 或 `DRAWING`（不分大小写）就是目标，所以文件名本身以这两个词之一结尾时要加引号。
+5. **导出与导入的格式。** `EXPORT` 写出 §3.1 的主数据对象，`revision`、`updated_at` 照生效的那份；缩进 2 格、不带 BOM、末尾一个换行，同项目文件。只新建文件：已存在报 `MASTERDATA_EXISTS`，不覆盖；写到一半失败就删掉。`IMPORT` 读同样的形状，开头的 BOM 跳过；不是 JSON 报 `MASTERDATA_SCHEMA_ERROR`，校验不过报校验的码和位置（从主数据对象算起，如 `pipe_classes[1].name`），什么也不写。文件里的 `revision`、`updated_at` 不看，修订号按目标位置原有的加 1。
+6. **`EMBED`。** 只在生效的是项目文件时有事做：把那一份原样抄进图内记录，修订号和时间照抄——抄的是同一份，单独拿到图纸的人看修订号就知道是项目的第几版。图内已是一样的就不写，也不推撤销步。生效的就是图内记录时只说一声；未配置报 `MASTERDATA_NOT_CONFIGURED`；项目文件读不出来报它的码，不拿图内那份顶替。
+7. **`STATUS` 怎么说。** 读不出来用警告说（读状态这件事本身成了，同 §5.3 的 `unreadable`），未配置用提示说，都不设错误码。项目文件生效而图内也有一份时，加一行说图内那份没在用；项目文件读不出来而图内有一份时，说不拿它顶替。写进图内而生效的是项目文件时（`INIT DRAWING`、`IMPORT … DRAWING`），写完加一条警告：图内这份不生效。
+8. **只读挡在哪里。** 只读会话拦编辑的那道锁（`refuses_step`）只挡图纸修改；项目文件写在图纸外面，挡它的只有命令入口这一道。`MD-4` 的写操作写项目文件时要自己查只读。
+
+**测试**（`pidmasterdata.rs` 6 条，都以 `pidmasterdata` 开头；`master_data.rs` 新加 2 条；`apply.rs` 的两条只读测试，名单里各加了几种写法）：
+
+- 一条龙 `INIT` → `STATUS` → `EXPORT` → 改文件 → `IMPORT`，查每一步的输出和落盘内容；再 `INIT`、再 `EXPORT` 到同一个文件都报 `MASTERDATA_EXISTS`，文件逐字节不变；导入有重复项的文件报 `MASTERDATA_DUPLICATE`，项目文件不变。
+- 没存过的图写进图内：一个撤销步，撤销后没有这条记录；写 `PROJECT` 报错。
+- 导入到图内；`EMBED` 抄进图内、撤销后没有记录；未配置时 `EMBED`、`EXPORT` 报 `MASTERDATA_NOT_CONFIGURED`。
+- 只读会话：`INIT`、`INIT DRAWING`、两种目标的 `IMPORT`、`EMBED` 被拒，项目文件、图内记录、撤销步都没变；`STATUS`、不带子命令、`EXPORT` 可用。
+- 从命令行执行 `PIDMASTERDATA INIT DRAWING` 只执行一次：一个撤销步，只建一次，没有先跑一遍 `STATUS`。
+- 命令表里有它；几种写错的写法都报错、以命令名开头，什么也没写。
+- `write_drawing_record`：修订号接着记录上的数；对不上时报冲突、记录不变；空白图纸给了 `expected_revision` 也算冲突；坏了的记录照样盖掉。
+
+先放空壳（命令什么也不做，`write_drawing_record` 原样返回传进来的那份、不写），8 条新测试编得过、都败在断言上；实现后全过。

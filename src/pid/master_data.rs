@@ -128,8 +128,8 @@ pub enum MasterDataError {
     PbsInvalid { at: String, reason: String },
     /// 格式版本比程序认识的高；`at` 是那个 `version` 键的位置。
     VersionUnsupported { at: String, found: u64 },
-    /// 写项目文件时，磁盘上主数据的修订号已经不是调用方读到的 `expected`：有人先写过。
-    /// `found` 为 `None` 是磁盘上没有主数据，或读不出它的修订号。
+    /// 写项目文件或图内记录时，那里主数据的修订号已经不是调用方读到的 `expected`：
+    /// 有人先写过。`found` 为 `None` 是那里没有主数据，或读不出它的修订号。
     Conflict { expected: u64, found: Option<u64> },
     /// 读写项目文件时文件系统报的错。
     Io { path: String, reason: String },
@@ -188,7 +188,7 @@ impl fmt::Display for MasterDataError {
                 found: Some(found),
             } => write!(
                 f,
-                "{}: 项目文件里的主数据已是修订 {found}，不是读到时的 {expected}",
+                "{}: 要写的那份主数据已是修订 {found}，不是读到时的 {expected}",
                 self.code()
             ),
             Self::Conflict {
@@ -196,7 +196,7 @@ impl fmt::Display for MasterDataError {
                 found: None,
             } => write!(
                 f,
-                "{}: 项目文件里没有主数据的修订号，读到时是修订 {expected}",
+                "{}: 要写的地方没有主数据的修订号，读到时是修订 {expected}",
                 self.code()
             ),
         }
@@ -762,6 +762,44 @@ pub fn load_from_drawing(doc: &Document) -> Option<Result<MasterData, MasterData
         _ => Err(schema(String::new(), "图内记录应当恰好是一个 JSON 对象")),
     };
     Some(read)
+}
+
+/// 把 `data` 写成图内记录（§3.4），规矩同 [`write_project_file`]：先看图内原有那条记录的
+/// 修订号，`expected_revision` 给了而不相等是 `MASTERDATA_CONFLICT`，什么也不写；写进去的
+/// 修订号是原有的加 1（还没有是 1），`updated_at` 取当前时间。原有那条读不出来也照样
+/// 盖掉，里面还认得出修订号就接着它数。撤销快照由调用方先推。返回写进去的那一份。
+pub fn write_drawing_record(
+    doc: &mut Document,
+    data: &MasterData,
+    expected_revision: Option<u64>,
+) -> Result<MasterData, MasterDataError> {
+    write_drawing_record_at(doc, data, expected_revision, unix_seconds())
+}
+
+/// 同 [`write_drawing_record`]，`updated_at` 取 `now`。
+fn write_drawing_record_at(
+    doc: &mut Document,
+    data: &MasterData,
+    expected_revision: Option<u64>,
+    now: i64,
+) -> Result<MasterData, MasterDataError> {
+    let on_record = graph_data::load(doc, PID_AUTHOR_MASTERDATA)
+        .and_then(|items| items.first()?.get("revision")?.as_u64());
+    if let Some(expected) = expected_revision {
+        if on_record != Some(expected) {
+            return Err(MasterDataError::Conflict {
+                expected,
+                found: on_record,
+            });
+        }
+    }
+    let written = MasterData {
+        revision: on_record.map_or(1, |revision| revision.saturating_add(1)),
+        updated_at: now,
+        ..data.clone()
+    };
+    store_in_drawing(doc, &written);
+    Ok(written)
 }
 
 /// 把 `data` 写进目录 `dir` 里的项目文件（§4）。先读磁盘上主数据的修订号：
@@ -1505,6 +1543,65 @@ mod tests {
             !graph_data::keys().contains(&PID_AUTHOR_MASTERDATA),
             "the graph keys stay as they were"
         );
+    }
+
+    /// 写图内记录与写项目文件一个规矩：修订号接着图内原有的数，给了期望的修订号就比，
+    /// 对不上什么也不写。
+    #[test]
+    fn master_data_writing_the_drawing_record_counts_on_from_the_record() {
+        let mut doc = Document::new();
+        let first = write_drawing_record_at(&mut doc, &read(&sample()), None, 100).unwrap();
+        assert_eq!((first.revision, first.updated_at), (1, 100));
+        assert_eq!(load_from_drawing(&doc), Some(Ok(first.clone())));
+
+        let second = write_drawing_record_at(&mut doc, &other_data(), Some(1), 200).unwrap();
+        assert_eq!((second.revision, second.updated_at), (2, 200));
+        assert_eq!(second.legend_standard.as_deref(), Some("另一套图例"));
+        assert_eq!(load_from_drawing(&doc), Some(Ok(second.clone())));
+
+        assert_eq!(
+            write_drawing_record_at(&mut doc, &first, Some(1), 300),
+            Err(MasterDataError::Conflict {
+                expected: 1,
+                found: Some(2),
+            })
+        );
+        assert_eq!(
+            load_from_drawing(&doc),
+            Some(Ok(second)),
+            "a conflict writes nothing"
+        );
+
+        let mut blank = Document::new();
+        assert_eq!(
+            write_drawing_record_at(&mut blank, &first, Some(1), 300),
+            Err(MasterDataError::Conflict {
+                expected: 1,
+                found: None,
+            })
+        );
+        assert_eq!(load_from_drawing(&blank), None);
+    }
+
+    /// 原有的图内记录读不出来也照样盖掉；里面还认得出修订号就接着它数。
+    #[test]
+    fn master_data_a_broken_drawing_record_is_overwritten() {
+        let mut doc = Document::new();
+        graph_data::store(
+            &mut doc,
+            PID_AUTHOR_MASTERDATA,
+            &[with("/nominal_diameters", json!("坏了"))],
+        );
+        assert!(matches!(load_from_drawing(&doc), Some(Err(_))));
+        let written = write_drawing_record_at(&mut doc, &other_data(), None, 100).unwrap();
+        assert_eq!(written.revision, 4, "the sample is at revision 3");
+        assert_eq!(load_from_drawing(&doc), Some(Ok(written)));
+
+        let mut garbled = Document::new();
+        graph_data::store(&mut garbled, PID_AUTHOR_MASTERDATA, &[json!("不是对象")]);
+        let written = write_drawing_record_at(&mut garbled, &other_data(), None, 100).unwrap();
+        assert_eq!(written.revision, 1);
+        assert_eq!(load_from_drawing(&garbled), Some(Ok(written)));
     }
 
     #[test]

@@ -76,6 +76,7 @@ pub(in crate::app) mod pidbackuppdf;
 mod pidbulk;
 mod pidconnector;
 mod pidlegend;
+pub(in crate::app) mod pidmasterdata;
 pub(in crate::app) mod pidmove;
 pub(in crate::app) mod pidpalette;
 mod pidpipe;
@@ -938,6 +939,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_pidscreen(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_pidmasterdata(cmd, i) {
+            return Some(t);
+        }
         None
     }
 
@@ -1628,6 +1632,9 @@ inventory::submit!(crate::command::CommandRegistration {
         "PIDINSERT",
         "PIDLEGEND",
         "PIDLINE",
+        // The project's master data (`pid::master_data`): which copy is in
+        // effect, and making, exporting, importing and embedding it.
+        "PIDMASTERDATA",
         "PIDPAIR",
         "PIDPALETTE",
         "PIDPIPE",

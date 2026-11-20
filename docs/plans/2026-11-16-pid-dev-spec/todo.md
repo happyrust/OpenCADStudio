@@ -458,13 +458,14 @@
 
 - **做什么**：新建 `src/app/commands/pidmasterdata.rs`：`STATUS`（不带子命令同它）、`INIT [PROJECT|DRAWING]`、`EXPORT <文件>`、`IMPORT <文件> [PROJECT|DRAWING]`、`EMBED`（§5.2）。写图内记录是一次图纸修改，先 `push_undo_snapshot` 再写，所以能撤销。只读会话里只放行不带子命令、`STATUS`、`EXPORT`，照 `PIDLEGEND` 的写法在 `readonly_refuses_command` 加一条。命令带参数，要登记成「整行当一条命令」。
 - **验收**：
-  - [ ] 一条龙：`INIT` → `STATUS` → `EXPORT` → 改文件 → `IMPORT`，每一步的输出与落盘内容正确；目标位置已有主数据时 `INIT` 报 `MASTERDATA_EXISTS`。
-  - [ ] 写图内记录后撤销一步，图内没有这条记录。
-  - [ ] 只读会话里 `INIT`、`IMPORT`、`EMBED` 被拒，`STATUS`、`EXPORT` 可用；从命令行执行 `PIDMASTERDATA INIT DRAWING` 只执行一次。
+  - [x] 一条龙：`INIT` → `STATUS` → `EXPORT` → 改文件 → `IMPORT`，每一步的输出与落盘内容正确；目标位置已有主数据时 `INIT` 报 `MASTERDATA_EXISTS`。
+  - [x] 写图内记录后撤销一步，图内没有这条记录。
+  - [x] 只读会话里 `INIT`、`IMPORT`、`EMBED` 被拒，`STATUS`、`EXPORT` 可用；从命令行执行 `PIDMASTERDATA INIT DRAWING` 只执行一次。
 - **验证**：`cargo test --offline --locked --lib pidmasterdata`
 - **依赖**：MD-2
 - **文件**：新建 `src/app/commands/pidmasterdata.rs`；`src/app/commands/mod.rs`、`src/app/command_driver/utilities.rs`、`src/app/collab/apply.rs`
 - **规模**：M
+- **补（2026-11-20）**：一个提交。与任务写法不同、或任务没有说的：多改了 `src/pid/master_data.rs`，加 `write_drawing_record`（写图内记录，规矩同 `write_project_file`，`MD-4` 也用它）；`MASTERDATA_EXISTS`、`MASTERDATA_NOT_CONFIGURED` 是命令文件里的常量，不进 `MasterDataError`；写 `PROJECT` 而图纸没存过，报不带码的错；`INIT` 遇到读不出来的主数据不动它；`EMBED` 原样抄、修订号不加；只读会话里挡项目文件写入的只有命令入口这一道，`MD-4` 的写操作要自己查只读；其余定下的读法（「已保存」怎么算、文件名与引号、导出导入的格式、`STATUS` 怎么说）记在主数据规格 §11.3。**先红后绿**：先放空壳，新加的 8 条测试（命令 6 条、`write_drawing_record` 2 条）编得过、都败在断言上；实现后全过，主数据原有的 21 条和只读的两条照过（耗时那条默认不跑）。**读数**：主程序库 7296 条，7237 通过、56 默认不跑、3 失败（比对设计稿的三条）；比 `MD-2` 后的基线多 8 条，都是新加的、都过了；那条偶发失败的像素测试这次过了；clippy 656 / 1051，与基线相同，新代码没有告警；格式检查改过的四个文件新增 0 处，新文件 `rustfmt --check` 干净。**新基线**：主程序库 7296 条（7237 / 56 / 3；那条像素测试偶发失败时是 7236 / 56 / 4）。
 
 ### MD-4 【接线】主数据的操作与接口
 

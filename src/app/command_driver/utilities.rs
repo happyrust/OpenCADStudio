@@ -1404,6 +1404,9 @@ impl OpenCADStudio {
             || tokens[0].eq_ignore_ascii_case("PIDBACKUPPDF")
             // `PIDBACKUPEXPORT [Plant=<name>] [Ref=<folder>] <folder>` likewise.
             || tokens[0].eq_ignore_ascii_case("PIDBACKUPEXPORT")
+            // `PIDMASTERDATA INIT DRAWING`, `... IMPORT <file>` and the rest
+            // are one whole line; the bare verb would first report the status.
+            || tokens[0].eq_ignore_ascii_case("PIDMASTERDATA")
         {
             return self.dispatch_command(cmd);
         }
