@@ -266,7 +266,7 @@
 | 项 | 值 |
 |---|---|
 | 测量日期 | `2026-11-20` |
-| 基线提交 | `9ac724b12`（`main`） |
+| 基线提交 | `9ac724b12`（入库提交 `d3fc99080`） |
 | 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
 | 新增文件 | `scripts/sppid/corpus_correspondence.py`、`scripts/sppid/test_corpus_correspondence.py` |
 | 证据目录子项 | `2026-11-20-issue120/`（`red.txt`、`green.txt`、`real-correspondence.txt`、`correspondence.csv`、`correspondence-summary.md`、`corpus.manifest.json`） |
@@ -283,6 +283,17 @@
 | `EXPORT_PDF` 配对情况 | `94` | 精确同名 **`84`** 张 + 同上近形字候选 **`10`** 张，未配上图纸 `0` 张，全部非空 |
 | **0 字节空 DXF 剔除** | **`4`** | `EXPORT_DXF` 中有 `4` 个文件字节数为 `0`（空文件），自动标记 `exact_empty_0_bytes` 并排除在识别度量分母之外 |
 | **有效非空 DXF 识别分母** | **`90`** | 其中精确同名非空 `80` 张、近形字候选非空 `10` 张（合计 `90` 张供 `L0-5` / `L3-0` 实跑识别） |
+
+---
+
+## 10. L0-7（#121）：外部平台验收口径与减法送测规程落盘（2026-11-20）
+
+- **落盘文件**：`docs/plans/2026-11-20-phase1-dwg-to-smart-pid/04-external-platform-protocol.md`
+- **核定要点**：
+  1. 明确「外部平台最低要求未知，当前以已通过样本严格一致（`#111` `StrictVendor` + `#108` `xml_diff`）为代理标准」；
+  2. 逐条登记 `RES-15` 五项待补信息（`EXT-01`–`EXT-05`）及缺省保守策略；
+  3. 固化三轮以内「减法送测」单变量变体矩阵（第一轮 `00-control` + `V1-01..V1-05` 一次探测是否读 `.pid`、是否强检管网拓扑、必填业务属性、BOM/缩进字节敏感度及自研 UID 接受度）与 `receipt.json` 标准回执格式。
+
 
 
 

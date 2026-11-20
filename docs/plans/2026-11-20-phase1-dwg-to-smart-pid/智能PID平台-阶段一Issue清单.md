@@ -202,7 +202,7 @@
 
 ---
 
-### ISSUE-L0-7 外部平台的验收口径没有落地成可执行流程
+### ISSUE-L0-7 外部平台的验收口径没有落地成可执行流程（GitHub [#121](https://github.com/happyrust/pid-cad/issues/121)）
 
 **现状问题。**
 - 已知：外部平台是其他单位的数字化交付平台，我们没有它的代码；已知 SPPID 产出的 `.pid` 与配套 XML 能通过；**最低要求未知**。
@@ -229,6 +229,7 @@
 **缺资料。** RES-15 ✖（阻塞"精确口径"）。缺则按代理标准执行，所有报告写"最低要求未知"。
 
 **对应任务。** L0-7（S）
+**状态与解决记录。** **已完成（2026-11-20，[#121](https://github.com/happyrust/pid-cad/issues/121)）**：落盘同目录 `04-external-platform-protocol.md`（见 `readings.md` §10），明确「最低要求未知，按已通过样本一致代理标准执行」，列出 `RES-15` 五项待补信息、三轮单变量减法矩阵及 `receipt.json` 标准格式。
 
 ---
 
@@ -1159,9 +1160,9 @@
 | `ISSUE-L1-3` | [#113](https://github.com/happyrust/pid-cad/issues/113) | `done-local`（本地已完成） | 提交 `11c8c784b`：落地 `src/io/pid_sym_missing.rs`，53 图与 94 图全量扫描无缓存缺失均为 `0`，见 `readings.md` §6 |
 | `ISSUE-L1-6` | [#114](https://github.com/happyrust/pid-cad/issues/114) | `done-local`（本地已完成） | 提交 `336b7b362`：落地 `src/io/pid_sym_census.rs` + `sym-census.ps1`，`plant644` 与 `full618` 全量零失败，见 `readings.md` §7 |
 | `ISSUE-L0-9` | [#119](https://github.com/happyrust/pid-cad/issues/119) | `done-local`（本地已完成） | 提交 `9ac724b12`：落地 `src/io/pid_variant_map.rs` + `assets/pid-class-map.json`（237 种类变体，零客户数据），见 `readings.md` §8 |
-| `ISSUE-L0-3` | [#120](https://github.com/happyrust/pid-cad/issues/120) | `done-local`（本地已完成） | 落地 `corpus_correspondence.py`，94 套三件套齐全，剔除 4 份空 DXF 锁定 90 张有效分母，见 `readings.md` §9 |
-| `ISSUE-L0-7` | [#121](https://github.com/happyrust/pid-cad/issues/121) | `in-progress`（进行中） | 编写 `04-external-platform-protocol.md` |
-| `ISSUE-L0-5` / `L3-0` | [#122](https://github.com/happyrust/pid-cad/issues/122) | `phase1`（前置 `#120` 已解锁） | 90 张有效 DXF 实跑识别对齐参考 XML 并列 Top N 缺口（收口检查点 A） |
+| `ISSUE-L0-3` | [#120](https://github.com/happyrust/pid-cad/issues/120) | `done-local`（本地已完成） | 提交 `d3fc99080`：落地 `corpus_correspondence.py`，94 套三件套齐全，剔除 4 份空 DXF 锁定 90 张有效分母，见 `readings.md` §9 |
+| `ISSUE-L0-7` | [#121](https://github.com/happyrust/pid-cad/issues/121) | `done-local`（本地已完成） | 落盘 `04-external-platform-protocol.md`，固化代理标准、三轮减法变体与回执模板，见 `readings.md` §10 |
+| `ISSUE-L0-5` / `L3-0` | [#122](https://github.com/happyrust/pid-cad/issues/122) | `in-progress`（进行中） | 90 张有效 DXF 实跑识别对齐参考 XML 并列 Top N 缺口（收口检查点 A） |
 | `ISSUE-L4-1..3` | [#123](https://github.com/happyrust/pid-cad/issues/123) | `phase1`（前置已解锁） | 新建 `src/io/pid_publish/` 自有模型导出 publish XML 底座 |
 | `.sym` 预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | 暂缓（避让并行分支） | 待 `pid-symbol-identity` 合入 `main` 后实施 |
 | 分级表可观测性（关联） | [#117](https://github.com/happyrust/pid-cad/issues/117) | 待定范围 | 与 `L4-2` / `L0-9` 衔接，建议先做第 1 步表外计数输出 |
