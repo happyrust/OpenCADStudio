@@ -1785,6 +1785,7 @@ impl OpenCADStudio {
     pub(in crate::app) fn apply_config(&mut self, cfg: crate::app::config::AppConfig) {
         self.apply_settings(&cfg.settings);
         self.ui_theme = cfg.theme.clone();
+        self.ui_theme.migrate_legacy_default();
         // A saved `System` scheme re-resolves at boot: the stored palette is
         // whatever the last resolution produced, so refresh it alongside the
         // live theme (COLORSCHEME SYSTEM documents this boot-time read).
@@ -13056,5 +13057,23 @@ mod minimized_save_tests {
         assert!(saved.refreshed_preview.is_none());
         assert!(path.is_file());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_config_upgrades_legacy_oxocarbon_to_light_in_pid_shell() {
+        let mut app = OpenCADStudio::new_for_test();
+        let legacy: crate::app::config::AppConfig = serde_json::from_str(
+            r#"{"theme":{"name":"Oxocarbon","palette":{"background":[35,35,35],"text":[208,208,208],"primary":[0,180,255],"success":[0,193,90],"warning":[190,149,255],"danger":[246,45,15]}}}"#,
+        )
+        .expect("deserialize legacy settings");
+
+        app.apply_config(legacy);
+
+        assert_eq!(app.active_theme, iced::Theme::Light);
+        assert!(app.ui_theme.light_default_migrated);
+        assert_eq!(
+            app.pid_shell.theme,
+            crate::ui::style::pid_tokens::PidTheme::Light
+        );
     }
 }
