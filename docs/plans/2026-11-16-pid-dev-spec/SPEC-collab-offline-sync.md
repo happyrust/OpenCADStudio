@@ -609,3 +609,43 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 **读数**（对最终的文件）：`cargo test --offline --locked --lib` 7140 条，7083 通过、55 忽略、2 失败；失败的是比对设计稿的两条（`the_grid_is_drawn_the_way_the_design_draws_it`、`the_code_states_nothing_the_design_does_not`），起点 `132e8fa6b` 也是这两条。起点是 7130 条（7073 / 55 / 2），多 10 条：新加 11 条（`collab_op_ids.rs` 10 条、`transport.rs` 1 条），删掉 1 条（第 6 条说的 `two_sessions_never_make_the_same_op_id`），新加的都过。`-p ocs_collab -p ocs_collab_server` 是 97；170 + 18，全过（起点 96；170 + 18，多的 1 条是协议包的新测试）。`clippy` 656（`--lib`）和 1051（`--lib --profile test`），与起点相同；点到这次改的文件的几条，与 `OFF-2` 做完时逐条相同，只是行号随改动挪了。格式检查：11 个代码文件里 10 个新增 0；`mod.rs` 报新增 1 处，还是 11.5 说的文件开头模块声明的排序，新加的 `mod collab_op_ids;` 落进了它的上下文（改前改后都是 18 处）。文档检查（`python -m pytest scripts/pid-platform`）590 项过 589 项，没过的仍是设计稿与生成表的比对，与这次改动无关。
 
 **发现了、没有改的。** 会话先连上、图后打开时（启动时没给图，后来才打开带同步记录的图），`seed_collab_from_file` 因为这次运行已经有过会话而什么都不做：图里存着的队列不会读回来，再存一次盘就被这次运行的队列盖掉，队列里别人排的条目也就判不到。这是 `OFF-1` 起就有的，不在这个任务里改，建议并进 `OFF-5`（它也要改打开时读记录的地方）。还有一种窄的情况没处理：界面在等待时限内没回答传输层的问话，`hello` 先按上次的位置声称了对齐，之后才判出对不上：那次连接在离开之前收到的修订会推进 `Seen`。端到端没有跑，归 `OFF-12`。
+
+### 11.7 `OFF-4`：与任务写法不同的地方和读数（2026-11-20）
+
+**先查清的（任务第一步，读代码）。** 操作日志（`ops` 表）有 `op_id` 列，但主键是 `(drawing_id, revision)`，`op_id` 上没有索引，按编号查要扫整张表。冲突条目（`conflicts` 表）不存编号：哪两条修改并列，只在当时广播的 `conflict` 帧里（`op_ids`），库里没有。冲突条目从不删除（库里只有占用、会话会删，测试里删过审计）。服务器自己生成的编号是 `pair-…`、`carry-…`（连接符配对、沿连接符带过去的修改）和 `resolve-<条目号>`（裁决），与客户端的 `op-…` 不会撞。库打不开、无库运行时没有操作日志。
+
+按任务做完：
+
+- **库结构。** `ops` 加索引 `ops_by_op_id (drawing_id, op_id)`；新表 `conflict_ops (conflict_id, op_id)` 记每个冲突条目收下的两条修改，按 `op_ids` 的顺序；再加索引 `conflict_ops_by_op`。都用 `IF NOT EXISTS` 写在打开库时建表的那一步（`store.rs` 的 `create_schema`），旧库文件打开时补上，原有的数据不动。新的冲突条目和它收下的编号在一个事务里写（`insert_conflict_holding`）。
+- **服务器。** 收到 `op` 先查：编号在这张图的操作日志里，或挂在这张图一个待裁决的冲突条目上，就不裁决、不写日志、不写审计、不广播，只给发送者回：先是每个这样的条目的 `conflict`（`op_ids` 是条目当初记下的两条），再是日志那一行的 `op_applied`（修订号和变更取那一行）。两样都没有的（从没来过，或当初被拒）照常裁决。服务器的标准输出记一行「重复提交」。
+- **客户端没有改代码。** 收到修订号不高于本图的 `op_applied`，原来就是出队、不回退、不标不一致（`mod.rs` 的 `OpApplied` 分支）；`conflict` 原来就按条目号只记一次、把 `op_ids` 里自己的出队。`mod.rs` 只加了新测试模块的登记；新加的测试守这些行为。
+
+与任务写法不同、或任务没有说的：
+
+1. **先认重复，再查权限和占用。** 查在会话失效的检查之后、权限（`write_access`）和占用（`held_by_another`）之前。收下过的修改当时是允许的；要是现在因为位号被别人占用、或权限变了而拒绝，发送者会把房间里已经有的一步撤掉。查两次：`ws.rs` 的 `op` 里先查（`ops::heard_before`），`ops::receive` 在裁决用的锁里再查，两条同号同时到时，后进锁的那条也认得出。
+2. **回答走发送者自己的通道，排在房间先前说过的话后面。** 回答是只给一个会话的消息（`SendTo`，经 `state.direct`）。同一个连接上，房间广播走订阅、直发走另一个通道，套接字循环的 `tokio::select!` 随机挑分支，直发的可能抢在已经排着的广播前面。回答里带着修订号，它要是比前面的广播先到，客户端看到修订号跳了，会标不一致（「收到修订 N，本地基线是 M：中间的变更没有收到」）。所以 `ws.rs` 加了 `earlier_in_the_room`：发直发的消息之前，先把这个连接的订阅里已经排着的消息发出去（照旧按 `should_forward` 过滤）。这对所有直发都生效（原有的直发还有会话被接管的通知、只读切换的通知、并列窗口到期后给发送者的结果），只是让发出的顺序与发生的先后一致，内容不变。订阅落后太多、被丢了消息时（`Lagged`）补发到那里为止：丢了的消息本来就会让客户端看到缺口。
+3. **并列窗口里的同号。** 开了并列窗口（`--tie-window-ms`）时，先到的那条可能还在窗口里暂存，没进日志。后到的同号不裁决、不跟谁并列，排在它后面、同一时刻到期（`HeldOp.repeat`）；到期时先到的那条先裁决，后到的再查一次：有结果就回那个结果，先到的被拒了才照常裁决。
+4. **一条修改既进了冲突条目、又有别的变更生效时，两样都回。** 并列只拦并列的那几项变更，同一条修改里别的变更照常生效、写进日志（`tie`）。当初发送者收到的就是一条 `conflict` 加一条 `op_applied`，重发时回的也是这两条，顺序相同。
+5. **已裁决的条目不再回。** 任务只说「没裁决的冲突条目」。裁决之后再来的同号：日志里有（第 4 条那样有别的变更生效过）就回那一行；没有就照常裁决，裁决已经写过那个字段，它多半让位（`OP_SUPERSEDED`）。
+6. **改到「文件」一栏以外的文件：没有。**
+7. **测试和验收的对应。**
+   - 验收 1：`duplicate_op_a_valve_sent_twice_is_placed_once`。同一个放阀门的修改发两次：只有一个阀门，修订是 1，日志一行，房间只听到一次。
+   - 验收 2：同一条测试断言第二次只回发送者一条 `op_applied`，修订号和变更与第一次的相同；另有重启之后的（`duplicate_op_one_taken_before_a_restart_is_answered_after_it`）和位号后来被别人占用的（`duplicate_op_a_tag_taken_since_does_not_refuse_an_op_taken_before`）。
+   - 验收 3：服务器 `duplicate_op_one_queue_sent_from_two_copies_takes_effect_once`（三步，第二份副本一条不被拒、每条收到当初的修订号）；客户端 `collab_duplicate_op_two_copies_of_one_queue_both_end_empty`（按服务器现在的发法喂帧，两份队列都清空、都在房间的修订、都不标不一致）。
+   - 验收 4：`collab_duplicate_op_an_answer_behind_the_drawing_settles_the_step_and_moves_nothing_back`。按服务器现在的发法，回答总在它之前的广播后面到，那一步多半已经在广播里出队了；这条测试直接喂帧，守的是规则本身。
+   - 验收 5：`duplicate_op_one_refused_before_is_judged_again`。当初因为位号被占用被拒，放开之后再发就生效。守的是现有行为，红的时候就过。
+   - 验收 6：`duplicate_op_a_database_from_before_finds_its_ops_by_id`（删掉新索引和新表当作旧库，重开后都补上，旧的修改按编号查得到）；服务器对同一个库文件重启，由验收 2 里那条重启的测试覆盖。
+   - 冲突条目：`duplicate_op_one_in_a_conflict_entry_is_answered_with_the_entry`、`duplicate_op_a_conflict_entry_keeps_the_ops_it_holds`；客户端 `collab_duplicate_op_an_entry_said_again_is_one_entry`。
+   - 第 2 条的顺序：`duplicate_op_what_the_room_was_told_before_goes_out_first`。第 3 条：`duplicate_op_sent_again_inside_the_window_is_answered_with_the_first`。
+
+**先红后绿。** 先写测试，再把新接口以不改行为的形式加上（按编号查日志、查待裁决条目都返回空，写冲突条目不记编号，`heard_before`、`earlier_in_the_room` 返回空，库结构不动），编译通过后跑：服务器的 10 条里 9 条失败，都败在断言上——同号的阀门放了两个（第二个改派成 `V-1002`），重启之后也一样；第二份副本的第一步就被拒（`OP_SUPERSEDED`）；窗口里的第二条又生效一次（修订到 2）；冲突条目里的编号重发后被暂存；位号被别人占用时回 `CLAIM_HELD`；旧库重开后没有补上索引和表；直发之前没有补发。过的 1 条是验收 5 那条。客户端 3 条红的时候就过（测的是现有行为）。实现之后服务器 10 条、客户端 3 条全过。
+
+**读数**（对最终的文件）：`cargo test --offline --locked --lib` 7143 条，7086 通过、55 忽略、2 失败；失败的是比对设计稿的两条（`the_grid_is_drawn_the_way_the_design_draws_it`、`the_code_states_nothing_the_design_does_not`），起点 `cdcb9f162` 也是这两条。起点是 7140 条（7083 / 55 / 2），多的 3 条就是 `collab_duplicate_op.rs` 新加的，都过。`-p ocs_collab -p ocs_collab_server` 是 97；180 + 18，全过（起点 97；170 + 18，多的 10 条是服务器的新测试：`ops.rs` 7 条、`store.rs` 2 条、`ws.rs` 1 条）；按格式检查改了服务器的换行之后又跑了一次，结果相同。`clippy` 656（`--lib`）和 1051（`--lib --profile test`），与起点相同，没有一条点到这次改的客户端文件。服务器不在这两项里，另外跑了 `cargo clippy -p ocs_collab_server --all-targets`：库 0 条，测试 1 条，是 `ops.rs` 里起点就有的测试辅助 `welcomed` 的返回类型太复杂。格式检查：5 个代码文件新增都是 0（`mod.rs` 开头模块声明排序那处还在，改前改后都是 18 处）。文档检查（`python -m pytest scripts/pid-platform`）590 项过 589 项，没过的仍是设计稿与生成表的比对，与这次改动无关。
+
+**限制和没有做的。**
+
+- 两份副本交错着提交同一份队列时，后一份的后一步可能被拒：甲的第一步生效、乙的第一步得到回答之后，乙发出的第二步要是比甲的第二步先到服务器，它不在日志里，照常裁决；第一步写的字段是甲的会话写的，乙的第二步对同一字段就让位（`OP_SUPERSEDED`），乙撤回这一步；接着甲的第二步生效、广播到乙，两边仍然一致。结果是对的，只是乙那边会看到一次拒绝。一份发完、另一份才连上时不会这样：后连上的那份从补发里就认出了自己的步骤，根本不发（§5.3 第一项）。
+- 改之前建的库里，待裁决的冲突条目没有记编号，这些编号重发时认不出，照常裁决。日志里的修改认得出。
+- 无库运行时没有日志可查，只有并列窗口里的同号认得出；`OFF-11` 改为这时不接受会话。
+- `crates/ocs_collab/src/protocol.rs` 里 `OpApplied` 的说明还写着「广播给这张图的每个会话」，重复提交的回答只给发送者。这个文件不在这次的范围里，没有改；以本规格 §4.3 为准。
+- 端到端没有跑，归 `OFF-12`（`OS-07`）。

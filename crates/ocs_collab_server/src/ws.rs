@@ -241,7 +241,23 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, peer_addr: S
             } => {
                 match direct {
                     Some(message) => {
-                        if !send_message(&mut socket, &message).await {
+                        let own = conn
+                            .session
+                            .as_ref()
+                            .map(|session| session.session_id.as_str())
+                            .unwrap_or_default();
+                        let earlier = match subscription.as_mut() {
+                            Some(subscription) => earlier_in_the_room(subscription, own),
+                            None => Vec::new(),
+                        };
+                        let mut sent = true;
+                        for message in earlier.iter().chain([&message]) {
+                            if !send_message(&mut socket, message).await {
+                                sent = false;
+                                break;
+                            }
+                        }
+                        if !sent {
                             break;
                         }
                     }
@@ -495,6 +511,20 @@ pub fn should_forward(own_session_id: &str, message: &ServerMessage) -> bool {
         }
         _ => true,
     }
+}
+
+/// What `own_session_id`'s room was told and its socket has not been sent
+/// yet, as [`should_forward`] lets it through. Sent ahead of what is said to
+/// that session alone (`OFF-4`): an answer to an op sent again names the
+/// revision it took effect at, and a copy that heard it before the
+/// revisions in front of it would take them for a gap.
+pub fn earlier_in_the_room(
+    subscription: &mut Subscription,
+    own_session_id: &str,
+) -> Vec<ServerMessage> {
+    std::iter::from_fn(|| subscription.try_recv())
+        .filter(|message| should_forward(own_session_id, message))
+        .collect()
 }
 
 /// Applies one client message to the shared state and returns what the socket
@@ -1103,6 +1133,22 @@ async fn op(
             error_message(&code, "会话已失效，无法提交操作"),
             &op_id,
         ))];
+    }
+
+    // An op the drawing has had before is answered with what came of it
+    // (`OFF-4`), before what may be written and by whom is asked: it was
+    // allowed when it came, and a refusal now would have its sender take
+    // back a step the room has.
+    if let Some(outcome) = crate::ops::heard_before(
+        state,
+        session,
+        peer_addr,
+        base_revision,
+        &op_id,
+        &payload,
+        now,
+    ) {
+        return outcome.reactions;
     }
 
     // A session that may not write does not write, whatever its client
@@ -2794,6 +2840,38 @@ mod tests {
                 reason: "released".into(),
             }
         ));
+    }
+
+    /// `OFF-4`: what is said to one session alone goes after what its room
+    /// was told before. The answer to an op sent again names the revision it
+    /// took effect at; the revisions in front of it reach the copy first, in
+    /// the order the room was told them, each once.
+    #[test]
+    fn duplicate_op_what_the_room_was_told_before_goes_out_first() {
+        let bus = crate::bus::Bus::new(8);
+        let mut room = bus.subscribe("PID-1101");
+        let applied = |revision: i64| ServerMessage::OpApplied {
+            op_id: format!("op-r-1-{revision}"),
+            revision,
+            changes: vec![],
+        };
+        let me = Peer {
+            session_id: "s-1".into(),
+            user_id: "u1".into(),
+            display_name: "u1".into(),
+        };
+        bus.publish("PID-1101", &applied(1));
+        bus.publish("PID-1101", &ServerMessage::PeerJoined(me));
+        bus.publish("PID-1101", &applied(2));
+
+        assert_eq!(
+            earlier_in_the_room(&mut room, "s-1"),
+            [applied(1), applied(2)]
+        );
+        assert!(
+            earlier_in_the_room(&mut room, "s-1").is_empty(),
+            "each once"
+        );
     }
 
     /// `REQ-COLL-015`: a `hello` whose copy claims alignment is judged. A
