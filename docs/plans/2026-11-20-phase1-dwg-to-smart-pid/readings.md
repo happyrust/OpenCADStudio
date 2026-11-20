@@ -386,3 +386,46 @@
 | `scripts\fmt-newhunks.ps1` | — | `src/io/mod.rs` 及 `src/io/pid_publish/*.rs` 共 6 个文件全部 **`new=0`** | **0 格式偏差** |
 | `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
 | `python -m pytest scripts/sppid -q -p no:cacheprovider` | `181 passed` | **`181 passed`** | 全绿 |
+
+---
+
+## 13. L3-1（#124）：外置图例到 SPPID 类变体映射规则与解析器（2026-11-20）
+
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-20` |
+| 基线提交 | `b49ed5274`（`main`） |
+| `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
+| 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
+| 新增 / 修改文件 | `assets/pid-sppid-legend-map.json`、`src/io/mod.rs`、`src/io/pid_convert/{mod,class_map}.rs` |
+| 证据目录子项 | `2026-11-20-issue124/`（`red.txt`、`green-fast.txt`、`real-90dxf-audit.txt`、`block-audit-90dxf.json`、`gate-cargo-test-lib.txt`、`gate-clippy-lib.txt`、`gate-clippy-test.txt`） |
+
+### 13.1 先红后绿与零冲突外置架构
+
+- **零并行分支冲突设计**：新建独立模块 `src/io/pid_convert/` 与纯 ASCII 外置规则 `assets/pid-sppid-legend-map.json`（不改动 `assets/pid-legend.json` 或 `src/io/pid_legend/*`），联合 `assets/pid-class-map.json`（237 种类变体）完成「DXF/DWG 图块与图层 → 忽略过滤 / 归一化主干 → `(sppid_class, variant_id, symbol_path)`」解析。
+- **先红后绿**：
+  - 先红（`red.txt`）：`0 passed; 2 failed; 1 ignored`（退出码 `101`，全部命中目标断言）；
+  - 转绿（`green-fast.txt`）：`2 passed; 0 failed; 1 ignored`（退出码 `0`），验证精确主干命中、`__MIRROREDTEXT` / 前导 `_` / 尾部副本数字归一化、`DCS_` 别名、`DrawingBorder`/`REMARKS*`/`*_DWG` 过滤、显式 `block_overrides` 及未映射图层提示。
+
+### 13.2 全批 `90` 张有效 DXF 业务图块映射覆盖率实测（`block-audit-90dxf.json`）
+
+| 指标 | 实测数值 | 说明 |
+|---|---:|---|
+| 评估有效非空 DXF 图纸数 | `90` | 与 §9 / §11 识别有效分母完全一致 |
+| 模型空间 `INSERT` 总数 | `17,178` | 全批图块放置总数 |
+| 过滤非业务块（`ignored_inserts`） | `1,326` | 含 `DrawingBorder`、`HiddenObjects`、`Notes` 图框层与 `REMARKS*` 说明框等 |
+| 净业务图块总数（`business_inserts`） | **`15,852`** | 全部进入类变体映射分母 |
+| **成功映射至 SPPID 类变体数（`mapped_inserts`）** | **`15,852`** | **映射覆盖率 `100.0000%`（`unmapped_inserts = 0`）** |
+
+按 SPPID 目标类分布：`PIDPipingComponent` `6,678`、`PIDInstrument` `2,877`、`PIDControlSystemFunction` `1,947`、`PIDInlineInstrument` `1,870`、`PIDBranchPoint` `834`、`PIDNozzle` `779`、`PIDProcessEquipment` `341`、`PIDNote` `288`（自动与 10 类可标记符号分离，不再污染符号精确率）、`PIDMechanicalEquipment` `147`、`PIDHeatTransferEquipment` `54`、`PIDProcessVessel` `37`。
+
+### 13.3 固定门禁读数
+
+| 门禁项 | 改前读数（§12.3） | 改后实测 | 结论 |
+|---|---|---|---|
+| `cargo test --offline --locked --lib` | `7,166` 条 | **`7,169` 条**（**`7,107` 过** / **`61` 忽略** / **`1` 同一既有 `.pen` 字重失败**） | `+3` 条测试，**0 新增失败** |
+| `cargo clippy --offline --locked --lib` | `656` 条警告 | **`656` 条警告** | **0 新增警告** |
+| `cargo clippy --offline --locked --lib --profile test` | `1,051` 条警告 | **`1,051` 条警告** | **0 新增警告** |
+| `scripts\fmt-newhunks.ps1` | — | `src/io/mod.rs`、`src/io/pid_convert/{mod,class_map}.rs` 全部 **`new=0`** | **0 格式偏差** |
+| `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
+

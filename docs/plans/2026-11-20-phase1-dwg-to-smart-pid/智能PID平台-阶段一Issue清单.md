@@ -1021,7 +1021,7 @@
 
 ---
 
-### ISSUE-L3-1 图例映射缺失，识别结果挂不上 SPPID 的类
+### ISSUE-L3-1 图例映射缺失，识别结果挂不上 SPPID 的类（GitHub [#124](https://github.com/happyrust/pid-cad/issues/124)）
 
 （与 ISSUE-L0-9 衔接：L0-9 建变体目录，L3-1 建识别规则。）
 
@@ -1033,9 +1033,10 @@
 - 映射上的对象在 XML 里写出正确类型与码表值。
 - 每加一批规则，报告 diff 可控。
 
-**缺资料。** RES-02 ✔、RES-03 ✔；RES-01 ⚠（连接方式）。
+**缺资料。** RES-02 ✔、RES-03 ✔；RES-01 ✔（连接方式已由 #118/#119 完成）。
 
 **对应任务。** L3-1（L）
+**状态与解决记录。** **已完成（2026-11-20，[#124](https://github.com/happyrust/pid-cad/issues/124)）**：落地纯 ASCII 外置规则 `assets/pid-sppid-legend-map.json` 与 `src/io/pid_convert/class_map.rs`（先红后绿，避开并行分支）；90 张有效非空 DXF 全量实测：过滤 `1,326` 个非业务图框/说明框后，净业务图块 **`15,852 / 15,852`（100.00%）** 映射到 `assets/pid-class-map.json` 变体（`unmapped = 0`），详见 `readings.md` §13。
 
 ---
 
@@ -1166,7 +1167,11 @@
 | `ISSUE-L0-9` | [#119](https://github.com/happyrust/pid-cad/issues/119) | `done-local`（本地已完成） | 提交 `9ac724b12`：落地 `src/io/pid_variant_map.rs` + `assets/pid-class-map.json`（237 种类变体，零客户数据），见 `readings.md` §8 |
 | `ISSUE-L0-3` | [#120](https://github.com/happyrust/pid-cad/issues/120) | `done-local`（本地已完成） | 提交 `d3fc99080`：落地 `corpus_correspondence.py`，94 套三件套齐全，剔除 4 份空 DXF 锁定 90 张有效分母，见 `readings.md` §9 |
 | `ISSUE-L0-7` | [#121](https://github.com/happyrust/pid-cad/issues/121) | `done-local`（本地已完成） | 提交 `849133af1`：落盘 `04-external-platform-protocol.md`，固化代理标准、三轮减法变体与回执模板，见 `readings.md` §10 |
-| `ISSUE-L0-5` / `L3-0` | [#122](https://github.com/happyrust/pid-cad/issues/122) | `done-local`（本地已完成 · 检查点 A） | 落地 `legend_baseline.py`，90 张有效 DXF 实跑基线与 Top 15 块名缺口已出，见 `readings.md` §11 |
-| `ISSUE-L4-1..3` | [#123](https://github.com/happyrust/pid-cad/issues/123) | `in-progress`（进行中） | 新建 `src/io/pid_publish/` 自有模型导出 publish XML 底座 |
+| `ISSUE-L0-5` / `L3-0` | [#122](https://github.com/happyrust/pid-cad/issues/122) | `done-local`（本地已完成 · 检查点 A） | 提交 `833eb92e9`：落地 `legend_baseline.py`，90 张有效 DXF 实跑基线与 Top 15 块名缺口已出，见 `readings.md` §11 |
+| `ISSUE-L4-1..3` | [#123](https://github.com/happyrust/pid-cad/issues/123) | `done-local`（本地已完成） | 提交 `b49ed5274`：落地 `src/io/pid_publish/` 自有模型导出底座，1,881 对象单图回环双端严格校验零违规，见 `readings.md` §12 |
+| `ISSUE-L3-1` | [#124](https://github.com/happyrust/pid-cad/issues/124) | `done-local`（本地已完成） | 落地 `assets/pid-sppid-legend-map.json` + `src/io/pid_convert/class_map.rs`，90 张 DXF `15,852 / 15,852`（100%）映射，见 `readings.md` §13 |
+| `ISSUE-L3-2 / L3-7` | [#125](https://github.com/happyrust/pid-cad/issues/125) | `in-progress`（进行中） | 存量图位号识别与配对增强、三档置信度及 90 图复跑度量 |
+| `ISSUE-L4-4 / L4-5` | [#126](https://github.com/happyrust/pid-cad/issues/126) | `phase1`（已建单待推进） | 管网派生对象合成与组合名称、公称直径换算规则 |
+| `ISSUE-L4-6 / L4-7` | [#127](https://github.com/happyrust/pid-cad/issues/127) | `phase1`（已建单待推进） | 单图与批量 DWG/DXF 转 publish XML 导出入口及对账门禁 |
 | `.sym` 预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | 暂缓（避让并行分支） | 待 `pid-symbol-identity` 合入 `main` 后实施 |
 | 分级表可观测性（关联） | [#117](https://github.com/happyrust/pid-cad/issues/117) | 待定范围 | 与 `L4-2` / `L0-9` 衔接，建议先做第 1 步表外计数输出 |
