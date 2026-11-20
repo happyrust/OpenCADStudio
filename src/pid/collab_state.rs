@@ -108,6 +108,11 @@ pub struct QueuedOp {
     /// 什么时候排的，Unix 秒。旧版本存的条目没有这一项。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queued_at: Option<i64>,
+    /// 撤回这一条要做的修改，形状与 `payload` 里的变更相同，按要执行的
+    /// 顺序（离线规格 §4.1）。没有这一项，这一条重开程序后撤不回（§5.4）；
+    /// 旧版本存的条目也没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inverse: Option<Vec<serde_json::Value>>,
 }
 
 /// 读回的队列：读得出的条目，和读不出的那些。
@@ -281,6 +286,7 @@ mod tests {
                 label: format!("步骤 {i}"),
                 user_id: None,
                 queued_at: None,
+                inverse: None,
             })
             .collect();
         store_queue(&mut doc, &ops);

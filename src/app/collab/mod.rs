@@ -42,6 +42,8 @@ mod collab_duplicate_op;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_existing_tags;
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_inverse;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_large_props;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_offline_queue;
@@ -207,6 +209,18 @@ pub struct Outgoing {
     /// When it was queued, in Unix seconds; for a restored op, what the file
     /// said.
     pub queued_at: Option<i64>,
+    /// What takes its steps back out of the drawing again — for an op that
+    /// put them on, what undoing them tells the room; for one that took them
+    /// off, what putting them on again does — in the order they are to be
+    /// applied (`SPEC-collab-offline-sync.md` §4.1). It goes into the file
+    /// with the op, so that a refusal heard after the process that made the
+    /// steps is gone can still take them back (§5.4). Read while the editor
+    /// has nothing else on hand (`OpenCADStudio::read_queued_inverses`);
+    /// `None` until then, and for an op it could not be read for. Never sent.
+    pub inverse: Option<Vec<Value>>,
+    /// Whether `inverse` has been looked for: an op it could not be read for
+    /// is not tried again.
+    pub inverse_read: bool,
 }
 
 /// An op of this session's the server refused whole, for the app to take
@@ -656,6 +670,10 @@ pub(super) struct State {
     /// neither the read-only gate nor a claim stands in the way — the
     /// drawing is being put back to what the room has.
     pub rolling_back: bool,
+    /// Held while what takes a queued op's steps back out is being read
+    /// (`OpenCADStudio::read_queued_inverses`): what taking them back says
+    /// to the room is kept here instead of being said.
+    reading_inverse: Option<Vec<broadcast::Change>>,
     /// The last number given to an undo step (`next_step`).
     step_seq: u64,
     /// This run's name, under which it names its ops
@@ -1603,6 +1621,8 @@ impl State {
             restored: false,
             user_id: Some(self.user_id.clone()),
             queued_at: Some(ocs_collab::ids::now_unix()),
+            inverse: None,
+            inverse_read: false,
         });
         if self.own_ops.len() >= 64 {
             self.own_ops.pop_front();
@@ -2278,6 +2298,8 @@ mod tests {
             restored: true,
             user_id: None,
             queued_at: None,
+            inverse: None,
+            inverse_read: true,
         };
         state.seed_file_state(&claim, vec![restored], Vec::new());
         assert!(state.had_session);

@@ -537,6 +537,8 @@ fn fixture() -> (Document, Vec<Handle>) {
             label: "改属性".into(),
             user_id: None,
             queued_at: None,
+            inverse: Some(vec![serde_json::json!({"kind": "set_property",
+                "object_ref": "V-1001", "field": "设计压力", "value": "1.0MPa"})]),
         }],
     );
 
@@ -671,6 +673,9 @@ mod tests {
         assert_eq!(queue[0].op_id, "op-s-1-7");
         assert_eq!(queue[0].base_revision, 42);
         assert_eq!(queue[0].payload["object_ref"], "V-1001");
+        let inverse = queue[0].inverse.as_deref().expect("反向修改读回");
+        assert_eq!(inverse.len(), 1);
+        assert_eq!(inverse[0]["value"], "1.0MPa");
     }
 
     /// `OFF-6`：三条协同记录（记录、队列、未同步清单）DWG 与 DXF 各存一次

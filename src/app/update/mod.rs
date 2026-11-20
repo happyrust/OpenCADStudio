@@ -679,6 +679,9 @@ impl OpenCADStudio {
         if self.collab.tags_wanted.is_some() {
             self.answer_collab_tags();
         }
+        // Here, not on a frame tick: ticks come only while something on
+        // screen moves, and not at all without a window.
+        self.read_queued_inverses();
         if let Some((resized, key)) = outline_switch_before {
             if resized || self.outline_switch_key() != key {
                 self.outline_switch_hover = false;

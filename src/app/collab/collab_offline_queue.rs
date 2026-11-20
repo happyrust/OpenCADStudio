@@ -864,6 +864,8 @@ fn queued(op_id: &str, steps: &[u64], on: bool) -> Outgoing {
         restored: false,
         user_id: None,
         queued_at: None,
+        inverse: None,
+        inverse_read: false,
     }
 }
 

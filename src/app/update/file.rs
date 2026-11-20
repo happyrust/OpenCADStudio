@@ -3657,6 +3657,7 @@ impl OpenCADStudio {
                         label: entry.label.clone(),
                         user_id: entry.user_id.clone(),
                         queued_at: entry.queued_at,
+                        inverse: entry.inverse.clone(),
                     })
                     .collect();
                 crate::pid::collab_state::store_queue_keeping(

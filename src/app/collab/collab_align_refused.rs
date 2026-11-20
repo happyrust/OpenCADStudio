@@ -91,6 +91,7 @@ fn opened_from_file() -> OpenCADStudio {
             label: "改设计压力".to_owned(),
             user_id: Some("u1".to_owned()),
             queued_at: Some(1_794_900_000),
+            inverse: None,
         }],
     );
     app.collab.server_url = "ws://127.0.0.1:3240/ws".to_owned();

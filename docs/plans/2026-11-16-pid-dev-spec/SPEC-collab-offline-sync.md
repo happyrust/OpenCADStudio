@@ -739,3 +739,71 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 - 用带记录的样板新建的图会带上记录（第 2 条），留给 `OFF-9`。
 - REFEDIT 改了参照图并写回时，参照图里要是有同步记录，这次修改不进它的未同步清单，重开时记录仍对得上。按 §5.1，它是「不是会话的图」，应记一条 `unqueued`。没有做。
 - 端到端没有跑，归 `OFF-12`。
+
+### 11.10 `OFF-7`：反向修改的前提、做法和读数（2026-11-20）
+
+**前提的结论：十种变更都能算出反向修改，撤不回的 0 种。** 都用做法一（§5.4）：条目排进队列以后，编辑器手上没有别的事时，把它那几步安静地退回再放上；退回时本来要对房间说的变更截下来，就是它的 `inverse`。符号、属性、连接器、管线走的是同一条路，十种变更的发出代码一行没改。每种都按 OS-16 验：离线做一步，读出 `inverse`，再像写别人的修改那样把它写回本图（`op_applied` 加 `apply_remote_changes`，不报错、不标不一致），本图的对象（形状、类型、位号、拓扑角色、所属、属性、覆盖）和拓扑记录（句柄换成名字）与做这一步之前相同。
+
+| 这一步发出的 | `inverse`（按执行顺序） | 测试 |
+|---|---|---|
+| `set_property` | `set_property`，值是改之前的 | `a_property_changed` |
+| `set_tag` | `set_tag` | `a_retag` |
+| `insert_symbol` | `delete_object` | `a_symbol_placed` |
+| `delete_object`（符号） | `insert_symbol` | `a_symbol_erased` |
+| `create_connector` | `delete_connector` | `a_connector_made` |
+| `delete_connector` | `create_connector` | `a_connector_erased` |
+| `create_pipe_line` | `delete_object` | `a_pipe_line_drawn` |
+| `add_pipe_run` | `delete_object`（见下一段） | `a_run_drawn` |
+| `insert_fitting` | `delete_object`、`update_pipe_run` | `a_fitting_put_on_a_run` |
+| `update_pipe_run` | `update_pipe_run` | `a_run_changed` |
+| `delete_object`（管线） | `create_pipe_line` | `a_pipe_line_erased` |
+| `delete_object`（管段连同各段） | `add_pipe_run` | `a_run_erased_with_its_segments` |
+| `delete_object`（带位号的阀门） | `insert_fitting` | `a_tagged_fitting_erased` |
+
+左栏是测试查的这一步发出的种类（只查有这一种），中栏是测试逐条比较的 `inverse`。
+
+另两例：改管线的管道等级，管段跟着改，这一步发出两条 `set_property`（管线、管段），`inverse` 也是两条，值都是改之前的（`a_line_property_carried_to_its_run`）。撤回一步的条目（`on` 为假，撤回的是连接器）从重做栈读，`inverse` 是 `create_connector`，把它放回去（`a_step_taken_back`）。
+
+**一处差异：管段号不退。** `add_pipe_run` 的 `inverse` 是删掉这条管段，和有人删掉它一样：管线记录的 `next_run_ordinal` 停在这条管段用过之后（2），不回到 1，下一条管段叫 L-1001-02。其余都相同。`inverse` 只能用这十种变更说，没有哪一种改这个计数；同一次运行里的撤销是整份记录退回，会回到 1。管段号不回收，不会重名，所以记为能，没有另想办法。测试把这个差异钉住（`a_run_drawn`）。
+
+**属性超过 2 KB。** 一个 60 项属性、超过 `XDATA_SOFT_LIMIT` 的设备：改其中一项（`one_of_many_properties_changed`），`inverse` 的 `set_property` 给回这一项原来的值；删掉它（`a_symbol_with_many_properties_erased`），`inverse` 的 `insert_symbol` 带着全部 60 项。两例写回以后，属性和原来一样放在实体旁边的记录里，不在实体自己的记录里。
+
+**做法一对别的东西的影响。**
+
+- 什么时候读：每条消息处理完以后（`update` 的出口，紧跟在 `answer_collab_tags` 之后），而且手上没别的事：没有进行中的命令；会话那张图没有没关的一步（夹点拖动、改属性、插件请求进行中都开着一步）；没有行内文字编辑器；不在写别人的修改，不在回滚。一步关上以后，下一条消息就读到（`the_next_message_reads_it`）。
+- 原计划挂在帧刷新（`on_tick`）上。帧刷新只在屏幕上有东西在动时才订阅，没有窗口时根本没有，读不读、什么时候读就取决于有没有动画，所以改到消息出口。
+- 退回再放上以后放回原样的：选择集（连同顺序和选中的约束）、悬停高亮、布局、当前图层、图层隔离、是否已修改、编辑修订号、相机和相机计数。`reading_leaves_the_stacks_the_selection_and_the_view_as_they_were` 比对撤销栈、重做栈、这些状态和全部对象，读前读后相同；也没有多发：测试里记下的已发条数不变，各条目要发的内容逐字不变。
+- 不放回的：几何计数（`geometry_epoch`）。读的过程中按中间状态建过的东西，计数倒回去以后会被当成新的。不倒回去的代价是按它缓存的东西重建一次，插件多收到一次「文档已变更」。
+- 编辑修订号放回去：读它的地方（控制接口的过期检查、后台保存完成时的比对、外部参照管理器）都不在退回再放上的当中读，没有按中间修订号记下的东西；放回去以后，读之前开始的后台保存完成时照常把图标成未修改。
+- 进行中的命令：不读，命令结束以后再读（`nothing_is_read_while_a_command_is_under_way`）。
+- 在线：已经发出去、还没回答的条目不读，排在它后面的照常读；后面那条发出去时与原来逐字相同（`an_op_on_the_wire_is_left_alone_and_what_goes_out_is_as_it_was`）。发出的请求原来就只带 `payload`，`inverse` 不上线。断线时发出去的条目都退回未发，之后照常读。
+
+**存盘。** `inverse` 跟着条目写进文件（`QueuedOp.inverse`，没有时不写这个键），重开以后恢复的条目带着它（`the_inverse_goes_into_the_file_with_its_op_and_comes_back`：存成 DWG，读回队列，再在新的编辑器里打开、接回房间时播种）。旧版本存的条目没有这个键，照常读进来，再写出去与原来逐字相同（`an_op_saved_without_an_inverse_reads_and_writes_as_before`）。往返测试（`dwg_roundtrip.rs`）的未同步条目也带上了 `inverse`，七个版本的 DWG 和 DXF 往返都读回不变。
+
+与任务写法不同、或任务没有说的：
+
+1. **「入队时算出」实际是入队以后、手上没事的第一个消息出口算出**，做法一本来就是这样。读到之前就存盘，存进去的这一条没有 `inverse`。
+2. **任务「文件」一栏列的 `broadcast.rs`、`pipes.rs`、`connectors.rs` 没有改**：做法一用的是撤销栈和原有的发出路径。实际改的生产代码是 `src/app/collab/apply.rs`（截取、读取）、`src/app/collab/mod.rs`（条目的两个字段、截取开关、登记新测试）、`src/pid/collab_state.rs`（文件里的条目）、`src/app/update/file.rs`（存盘带上）、`src/app/update/mod.rs`（消息出口调读取）；另有四个测试文件给构造的条目补了新字段，`dwg_roundtrip.rs` 的 fixture 带上 `inverse`。
+3. **`broadcast_changes` 开头的早退拆成两步。** 原来「正在写别人的修改」和「正在回滚」一起早退。读的时候回滚标志立着，截取要放在它前面；退回时重新写入的别人的修改不能截进来，所以截取放在两者中间。截取开关关着时与原来相同。
+4. **`update_pipe_run` 单独发出的条件比预想的窄**：管段被碰过（段或管件来、去、挪动），又不是新建、没有新放的管件。改管线的管道等级发出的是两条 `set_property`。前提测试据此改用「放了阀门的管段删掉一段」。
+5. **钩子从帧刷新改到消息出口**（见上）。
+6. **测试和验收的对应。**
+   - 验收 1：本节的结论表和表后两例。
+   - 验收 2：结论表的 13 例和表后两例。
+   - 验收 3：`one_of_many_properties_changed`、`a_symbol_with_many_properties_erased`。
+   - 验收 4：`the_inverse_goes_into_the_file_with_its_op_and_comes_back`、`an_op_saved_without_an_inverse_reads_and_writes_as_before`，加往返测试。
+   - 验收 5：`reading_leaves_the_stacks_the_selection_and_the_view_as_they_were`、`nothing_is_read_while_a_command_is_under_way`、`the_next_message_reads_it`。
+   - 验收 6：`an_op_on_the_wire_is_left_alone_and_what_goes_out_is_as_it_was`。
+
+**先红后绿。** 先写测试，生产代码只有条目的字段和一个空的读取函数。第一次跑 21 条：1 过 20 败。过的是旧条目照常读写。败的 20 条里 19 条败在没读出反向修改：16 条是「没有 `inverse`」，3 条在读取标记的断言上，它们之前的检查（周边状态、发送、命令）都过了。剩下 1 条是测试写错了种类（上面第 4 条），换成两条重跑：22 条 1 过 21 败，都败在没读出反向修改。实现时另加了 `the_next_message_reads_it`（钩子改到消息出口时加的，没有单独跑红）。实现后第一次 23 条 21 过 2 败：`a_run_drawn` 败在管段号（上文），改为把差异钉进测试；`reading_leaves_…` 败在新加的「读之前还没读过」断言上：测试的请求当中，消息出口已经把三条都读了，连后来被撤回的那一步也在撤回之前读到，改为清掉读过的结果再从头读。另把六条只查「包含」「非空」的管线断言收紧成逐条比较。再跑 23 条全过，六条收紧的与按 `pipes.rs` 的规则推的一致。往返测试的改动守的是编解码层，`QueuedOp` 加了字段就过。
+
+**读数**（对最终的文件，起点 `60d560155`）：主程序库 7189 条，7132 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）；起点 7166 条（7109 / 55 / 2），多的 23 条是新加的，都过。两个协同 crate 97；180 + 18 全过，与起点相同。clippy 656（`--lib`）和 1051（`--lib --profile test`），与起点相同；改到的文件里的警告与起点逐条相同，只是 `collab_offline_queue.rs` 里 `two_in_the_room` 那条栈帧警告的字节数从 791840 变成 792160：编辑器的状态多了一个字段，每个大 32 字节（没改到的 `collab_large_props.rs` 里两条同样的警告也各大了 320 字节）。格式检查：改到的 10 个代码文件新增 0，处数与起点相同（`collab/mod.rs` 开头模块排序那处还在），新测试文件 0。文档检查 590 项过 589 项，没过的是设计稿与生成表的比对。
+
+**限制和没有做的。**
+
+- 读到之前这一步已经被撤回的条目（`on` 为真、步骤已不在撤销栈上）没有 `inverse`。消息出口一有空就读，界面上很难碰到；测试里清掉读过的结果重读时才出现。
+- 已经发出去、还没回答的条目不读，断线退回未发以后才读；在它发出去以后、回答或断线之前存的盘，这一条没有 `inverse`。
+- 读到之前就存盘的条目没有 `inverse`（第 1 条）。
+- 管段号不退（上文）。
+- 被拒以后用 `inverse` 撤回是 `OFF-8` 的事，这次只读、只存。
+- 端到端没有跑，归 `OFF-12`。

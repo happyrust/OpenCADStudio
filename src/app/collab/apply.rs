@@ -345,6 +345,8 @@ impl OpenCADStudio {
                 restored: true,
                 user_id: queued.user_id,
                 queued_at: queued.queued_at,
+                inverse: queued.inverse,
+                inverse_read: true,
             })
             .collect();
         let diverged = crate::pid::collab_state::load_diverged(&self.tabs[i].scene.document);
@@ -357,7 +359,7 @@ impl OpenCADStudio {
     }
 
     /// Queue one `op` carrying the `changes` made on tab `i`, or stay quiet.
-    /// Five things silence it:
+    /// Six things silence it:
     ///
     /// * there has never been a session — the offline-first invariant
     ///   (`VAL-CLI-017`): a client that has not joined yet has nobody to
@@ -368,6 +370,8 @@ impl OpenCADStudio {
     ///   it;
     /// * the step is being taken back because the server refused it
     ///   (`rolling_back`): the room never had it;
+    /// * the step is being taken back to read what takes a queued op back
+    ///   out (`read_queued_inverses`): what it says is kept for that op;
     /// * tab `i` is not the session's drawing: an edit to another sheet is
     ///   that sheet's own, and would reach the room as a change to this one;
     /// * the session is read-only, which may not write. The command gate
@@ -397,7 +401,15 @@ impl OpenCADStudio {
         on: bool,
         label: &str,
     ) {
-        if self.applying_remote || self.collab.rolling_back {
+        if self.applying_remote {
+            return;
+        }
+        // Ahead of `rolling_back`, which is up while the steps are read.
+        if let Some(read) = self.collab.reading_inverse.as_mut() {
+            read.extend(changes);
+            return;
+        }
+        if self.collab.rolling_back {
             return;
         }
         if !self.collab.connected && !self.collab.had_session {
@@ -681,6 +693,125 @@ impl OpenCADStudio {
         }
         self.collab.rolling_back = false;
         self.active_tab = in_front;
+    }
+
+    /// Read what takes the steps of each op still waiting to go out back out
+    /// of the drawing (`Outgoing::inverse`; `SPEC-collab-offline-sync.md`
+    /// §4.1), which a refusal heard after this process is gone needs (§5.4).
+    /// It is what the room would be told on their being taken back — undone,
+    /// for an op that put them on; put on again, for one that took them off
+    /// — and is read by doing just that, quietly, and putting them back
+    /// (`inverse_of`).
+    ///
+    /// Run after every message (`update`), and does something only while
+    /// nothing else is on hand: no command under way and no step open in the
+    /// session's drawing, no text being edited in place, no peer's change
+    /// being written, no step being rolled back. What taking steps back and
+    /// putting them on again moves besides the drawing is put back as it
+    /// was: the selection, what is highlighted, the layout, the layer and
+    /// what is isolated, whether the drawing is changed and its revision,
+    /// and the view. The geometry epoch is not: what was built for the
+    /// drawing meanwhile is built for it again.
+    ///
+    /// An op on the wire is left alone, its answer being on its way. One
+    /// whose steps are not all where it left them, or that takes nothing
+    /// back, has none; neither is looked at again.
+    pub(in crate::app) fn read_queued_inverses(&mut self) {
+        let unread = |entry: &super::Outgoing| {
+            !entry.sent && !entry.restored && !entry.inverse_read && !entry.steps.is_empty()
+        };
+        if self.applying_remote
+            || self.collab.rolling_back
+            || self.graph_undo_open
+            || !self.collab.outbox.iter().any(unread)
+        {
+            return;
+        }
+        let Some(i) = self.collab_tab() else {
+            return;
+        };
+        if self.tabs[i].active_cmd.is_some()
+            || self.tabs[i].history.pending.is_some()
+            || self.mtext_editor.is_some()
+            || self.table_cell_editor.is_some()
+        {
+            return;
+        }
+        let tab = &self.tabs[i];
+        let selected = tab.scene.selected_handles_in_order();
+        let constraint = tab.scene.selected_constraint;
+        let hover = tab.scene.hover_highlight;
+        let layout = tab.scene.current_layout.clone();
+        let layer = tab.active_layer.clone();
+        let isolated = tab.layiso_state.clone();
+        let dirty = tab.dirty;
+        let revision = tab.edit_revision;
+        let camera = tab.scene.camera.borrow().clone();
+        let camera_generation = tab.scene.camera_generation;
+        for at in 0..self.collab.outbox.len() {
+            if !unread(&self.collab.outbox[at]) {
+                continue;
+            }
+            let entry = &self.collab.outbox[at];
+            let (steps, on) = (entry.steps.clone(), entry.on);
+            let inverse = self
+                .inverse_of(i, &steps, on)
+                .filter(|changes| !changes.is_empty())
+                .map(|changes| changes.iter().map(broadcast::Change::to_json).collect());
+            let entry = &mut self.collab.outbox[at];
+            entry.inverse = inverse;
+            entry.inverse_read = true;
+        }
+        let tab = &mut self.tabs[i];
+        tab.scene.replace_selection_exact(&selected);
+        tab.scene.selected_constraint = constraint;
+        tab.scene.set_hover_highlight(hover);
+        tab.scene.current_layout = layout;
+        tab.active_layer = layer;
+        tab.layiso_state = isolated;
+        tab.dirty = dirty;
+        tab.edit_revision = revision;
+        *tab.scene.camera.borrow_mut() = camera;
+        tab.scene.camera_generation = camera_generation;
+        self.refresh_properties();
+    }
+
+    /// What taking `steps` of tab `i` back out of the drawing tells the
+    /// room, in the order it tells it: undoing them, when they are on it
+    /// (`on`), or putting them on again. The stack they are on is gone down
+    /// one step at a time to the deepest of them and put back whole after;
+    /// of what that says, only what their own steps say is kept. `None`
+    /// when they are not all on that stack.
+    fn inverse_of(&mut self, i: usize, steps: &[u64], on: bool) -> Option<Vec<broadcast::Change>> {
+        use crate::app::tab_document::HistorySnapshot;
+        let history = &self.tabs[i].history;
+        let stack = if on {
+            &history.undo_stack
+        } else {
+            &history.redo_stack
+        };
+        let from_top: Vec<bool> = stack
+            .iter()
+            .rev()
+            .map(|snapshot| match snapshot {
+                HistorySnapshot::Delta(delta) => steps.contains(&delta.collab_step),
+                _ => false,
+            })
+            .collect();
+        if from_top.iter().filter(|&&own| own).count() != steps.len() {
+            return None;
+        }
+        let depth = from_top.iter().rposition(|&own| own)? + 1;
+        let mut said = Vec::new();
+        for &own in &from_top[..depth] {
+            if own {
+                self.collab.reading_inverse = Some(Vec::new());
+            }
+            self.replay_history_quietly(i, on, 1);
+            said.extend(self.collab.reading_inverse.take().into_iter().flatten());
+        }
+        self.replay_history_quietly(i, !on, depth);
+        Some(said)
     }
 
     /// Fold every remote `op_applied` the state is holding onto the open

@@ -65,6 +65,7 @@ fn file_op() -> QueuedOp {
         label: "改设计压力".to_owned(),
         user_id: Some("u1".to_owned()),
         queued_at: Some(1_794_900_000),
+        inverse: None,
     }
 }
 
