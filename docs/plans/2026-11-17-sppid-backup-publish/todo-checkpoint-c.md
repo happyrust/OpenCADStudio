@@ -58,14 +58,15 @@
   2. `src/app/commands/pidbackupexport.rs`：暴露 `pub(in crate::app)` 只读方法读取当前运行状态（输出目录、工厂名、参考目录、已用秒数）及最近一次结构化结果 `Option<&Result<ExportOutcome, ExportError>>`；提供从界面直接传入 `(out_dir, plant, reference_dir)` 启动后台 publish 导出的入口函数，与 `PIDBACKUPEXPORT` 共享同一状态与清缓存拦截。
   3. `src/app/view/mod.rs`：当窗口处于新界面且 `pid_backup` 处于 `Loading`、或 `pid_backup_export` / `pid_backup_pdf` 正在运行时，在 `subscription()` 中挂载 `iced::time::every(Duration::from_secs(1))` 触发界面重绘跳秒；空闲时零订阅开销。
 - **验收**：
-  - [ ] 从界面入口函数发起 publish 导出与 PDF 导出后，运行期能读到输出目录、已用秒数及 PDF 的 `done / total`；同时敲不带参数的 `PIDBACKUPEXPORT` / `PIDBACKUPPDF` 返回同一运行中状态，清还原缓存同样被拒。
-  - [ ] 导出完成后，`last_outcome()` 直接返回结构化 `Ok(&ExportOutcome)` / `Err(&ExportError)` 与 `Ok(&PdfOutcome)` / `Err(&PdfError)`，无需反解英文字符串；从命令行发起的导出完成后访问器同样能读到结果。
-  - [ ] 前置校验不通过（如目录非空或同名 `.pdf` 冲突）时当场返回结构化错误，不覆盖上一次已完成导出的 `last` 记录。
-  - [ ] 任一导出或备份载入运行中时 `subscription()` 产出 1 秒定时订阅，三者均空闲时不挂该订阅。
+  - [x] 从界面入口函数发起 publish 导出与 PDF 导出后，运行期能读到输出目录、已用秒数及 PDF 的 `done / total`；同时敲不带参数的 `PIDBACKUPEXPORT` / `PIDBACKUPPDF` 返回同一运行中状态，清还原缓存同样被拒。
+  - [x] 导出完成后，`last_outcome()` 直接返回结构化 `Ok(&ExportOutcome)` / `Err(&ExportError)` 与 `Ok(&PdfOutcome)` / `Err(&PdfError)`，无需反解英文字符串；从命令行发起的导出完成后访问器同样能读到结果。
+  - [x] 前置校验不通过（如目录非空或同名 `.pdf` 冲突）时当场返回结构化错误，不覆盖上一次已完成导出的 `last` 记录。
+  - [x] 任一导出或备份载入运行中时 `subscription()` 产出 1 秒定时订阅，三者均空闲时不挂该订阅。
 - **验证**：`cargo test --offline --locked --lib pidbackupexport`；`cargo test --offline --locked --lib pidbackuppdf`
 - **依赖**：UI-1
-- **文件**：`src/app/commands/pidbackupexport.rs`、`src/app/commands/pidbackuppdf.rs`、`src/app/view/mod.rs`、`src/app/mod.rs`、`src/app/update/mod.rs`
+- **文件**：`src/app/commands/pidbackupexport.rs`、`src/app/commands/pidbackuppdf.rs`、`src/app/view/mod.rs`
 - **规模**：M
+- **做完**（2026-11-20）：`BackupExport` 与 `BackupPdf` 新增 `is_running`、`running_status`、`last_outcome` 只读访问器（`BackupPdf::Running` 补 `started: Instant`），`OpenCADStudio` 新增 `check_pid_backup_export_ui`、`start_pid_backup_export_ui`、`check_pid_backup_pdf_ui`、`start_pid_backup_pdf_ui` 并与命令行共享同一执行路径，顶层 `view::subscription()` 按 `pid_backup_wants_second_tick()` 挂载 1 秒 `Message::Tick` 订阅；4 条 `ui2_*` 先红后绿（`pidbackup` 70 过 / 4 忽略 / 0 失败；全库 7126 条；clippy `656` / `1051` 零新增；三个文件 `fmt-newhunks` 均新增 0；`arch_check` 零变化）。读数见 `readings.md` §33，证据在 `D:\scratch\ocs-sppid\2026-11-20-ui2\`。
 
 ---
 

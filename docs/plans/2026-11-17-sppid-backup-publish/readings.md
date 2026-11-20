@@ -5344,6 +5344,24 @@ SQL Server 包：
   - `scripts\fmt-newhunks.ps1`：`pid_backup_browser.rs` 新增 `0`（21 → 21），`pidbackup.rs` 新增 `0`（36 → 36）；
   - `python scripts/arch_check.py report`：与改前逐行相同（33 对模块，183 个文件）。
 
+---
+
+## 33. UI-2：导出状态结构化访问器、界面启动入口与 1 秒跳秒订阅（2026-11-20）
+
+- **起点与编译器**：`main @ 0f9f1f859`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui2\`。
+- **改动**：
+  1. `src/app/commands/pidbackupexport.rs`：`BackupExport` 新增 `is_running`、`running_status`、`last_outcome`；`OpenCADStudio` 新增 `check_pid_backup_export_ui` 与 `start_pid_backup_export_ui`，并与 `PIDBACKUPEXPORT` 命令复用同一路径（忙碌拦截、还原缓存清理保护、结构化结果保留一致）。
+  2. `src/app/commands/pidbackuppdf.rs`：`BackupPdf::Running` 增加 `started: Instant`；`BackupPdf` 新增 `is_running`、`running_status`（返回输出目录、已完成张数、总张数、已用时间）、`last_outcome`；`OpenCADStudio` 新增 `check_pid_backup_pdf_ui` 与 `start_pid_backup_pdf_ui`（允许目录内已有 publish 文件以支持同目录成对交付，拦截同名 `.pdf` 或 `_PdfIndex.json`）。
+  3. `src/app/view/mod.rs`：新增 `OpenCADStudio::pid_backup_wants_second_tick`（处于新界面且备份包载入中、或任一导出运行中时为真），并在 `subscription()` 中按需挂载 `iced::time::every(Duration::from_secs(1)).map(Message::Tick)`，空闲时零开销。
+  4. 顺带重编最新 `target\release\OpenCADStudio.exe`（`2026-11-20 12:07:17`），使本机直接启动 release 程序即生效默认亮色主题及最新修复。
+- **先红后绿**：4 条快测试 `ui2_*` 在空壳实现下 0 过 4 失败（`red.txt`），接入实现后 4 条全过（`ui2_green.txt`），`pidbackup` 全组 70 过、4 忽略、0 失败（`green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：共 7126 条（第一遍 7070 过 / 55 忽略 / 1 失败；移除无用包装函数后复跑 7069 过 / 55 忽略 / 2 失败，多出的一条 `pid_shell_chrome::what_the_editor_shows_is_drawn_in_the_frame_where_a_window_of_its_own_draws_it` 与 §20 一样为并发负载偶发，单独连跑 3 遍全过；剩余 1 条仍为未提交 `.pen` 字重测试）；
+  - `cargo clippy --offline --locked --lib`：`656`（与基线 `656` 相同，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（与基线 `1051` 相同，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：`pidbackupexport.rs` 新增 `0`（0 → 0），`pidbackuppdf.rs` 新增 `0`（0 → 0），`src/app/view/mod.rs` 新增 `0`（11 → 11）；
+  - `python scripts/arch_check.py report`：与改前逐行相同（33 对模块，183 个文件）。
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -5383,3 +5401,4 @@ SQL Server 包：
 | 2026-11-20 | 加 §29：按现在钉的版本重跑 `EXP-3` 的比对（七次导出全过，和 `a85fa10` 的 `pid_publish_xml` 逐字节相同；和 `EXP-3` 那次逐个导出比，不同的正好是升级动到的那些，SQL Server 包没变）；`ACC-1` 的交付目录和新的这一次比，第四条按新的基线重判为过，总验收通过。§28.11 末尾加「后来」一句，开头的状态说明加上 §29 |
 | 2026-11-20 | 把 `main` 合进 `sppid-exp2`：主线记的 §24 改号为 §30（小节号跟着改，其余照录；`todo.md` 里指向它的 5 处跟着改），开头的状态说明加上 §30、§31，§29 那一句补上主线做过的一次；加 §31：这次合并的记录 |
 | 2026-11-20 | 加 §32（检查点 C 第 1 段 `UI-1` 备份包载入计时与浏览只读访问器）：`PidBackupBrowser` 载入计时与来源保留、特殊组中文映射、装置组子树与图内对象过滤纯函数，4 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §33（检查点 C 第 1 段 `UI-2` 导出状态结构化访问器、界面启动入口与 1 秒跳秒订阅）：`BackupExport` / `BackupPdf` 只读访问器与界面预检/启动入口、`BackupPdf::Running.started`、`view::subscription` 1 秒跳秒订阅，4 条快测试先红后绿及全套门禁读数；顺带重编最新 `target\release\OpenCADStudio.exe` |
