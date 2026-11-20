@@ -99,12 +99,18 @@ impl OpenCADStudio {
                 crate::ui::window::pid_collab::CONFLICT_BOUNDS_PREFIX,
             );
         }
+        // The line under the banner, likewise, once nothing is left unsent.
+        let sync = self.collab_sync_line();
+        if self.pid_collab_view.sync.is_some() != sync.is_some() {
+            crate::ui::wrap_bar::forget_bounds(crate::ui::window::pid_collab::SYNC_BOUNDS_ID);
+        }
         self.pid_collab_view = CollabView {
             connected: state.connected,
             server_url: state.server_url.clone(),
             session_id: state.session_id.clone(),
             readonly: state.readonly,
             diverged: mismatch,
+            sync,
             peers,
             conflicts,
             claims,

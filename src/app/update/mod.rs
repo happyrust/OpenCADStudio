@@ -243,6 +243,11 @@ impl OpenCADStudio {
             self.pending_close = None;
             self.save_dialog_for_unsaved = false;
         }
+        // Closing the question about steps not synced is its 取消.
+        if self.active_modal == Some(CollabUnsynced) {
+            self.unsynced_question = None;
+            self.pending_tab_closes.clear();
+        }
         if self.active_modal == Some(BlockEditorSettings) {
             self.block_editor_settings = None;
         }
@@ -14474,6 +14479,8 @@ impl OpenCADStudio {
             Message::UnsavedDialogDiscard => self.on_unsaved_dialog_discard(),
 
             Message::UnsavedDialogSave => self.on_unsaved_dialog_save(),
+            Message::CollabUnsyncedLeave => self.on_unsynced_leave(),
+            Message::CollabUnsyncedCancel => self.on_unsynced_cancel(),
             Message::BlockEditChangesSave => self.resolve_block_edit_close(true),
             Message::BlockSaveAsName(name) => {
                 let i = self.active_tab;

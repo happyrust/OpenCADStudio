@@ -1,8 +1,9 @@
 //! What a drawing has that the server never took, and the way out of a
 //! drawing apart from the room (`SPEC-collab-offline-sync.md` §4.4, §4.5,
 //! §5.5): `PIDCOLLAB UNSYNCED [CLEAR]`, `EXPORT <path>` and `DETACH
-//! [FORCE]`, and the four fields `GET /api/v1/collab/status` says where the
-//! drawing stands with.
+//! [FORCE]`, the four fields `GET /api/v1/collab/status` says where the
+//! drawing stands with, and the collaboration panel's line that says it to
+//! the person (§5.6).
 //!
 //! A drawing's queue is the session's own once the session has read the
 //! drawing in (`seeded`), and otherwise what its file brought. Its unsynced
@@ -13,6 +14,7 @@ use serde_json::{json, Value};
 
 use crate::app::OpenCADStudio;
 use crate::pid::collab_state::{self, Diverged};
+use crate::ui::window::pid_collab::SyncLine;
 
 /// §4.4's `state` of a step still in the queue.
 const QUEUED: &str = "queued";
@@ -24,10 +26,7 @@ impl OpenCADStudio {
     /// front.
     pub(in crate::app) fn collab_status_json(&self) -> Value {
         let mut status = self.collab.status_json();
-        let tab = match self.collab.document {
-            Some(id) => self.tabs.iter().position(|tab| tab.id == id),
-            None => self.front_tab(),
-        };
+        let tab = self.status_tab();
         let (align, why) = self.align(tab);
         let (code, message) = why.unzip();
         status["align"] = json!(align);
@@ -35,6 +34,39 @@ impl OpenCADStudio {
         status["align_message"] = json!(message);
         status["unsynced_count"] = json!(tab.map_or(0, |i| self.unsynced_list(i).len()));
         status
+    }
+
+    /// What the panel says under its banner (§5.6), from what the status
+    /// says: why the drawing is apart from the room and how many of its
+    /// changes never reached it (`queued_ops` + `unsynced_count`), or else
+    /// how many steps wait (`queued_ops`). Nothing with no collaboration
+    /// configured.
+    pub(in crate::app) fn collab_sync_line(&self) -> Option<SyncLine> {
+        if !self.collab.wanted() {
+            return None;
+        }
+        let tab = self.status_tab();
+        let steps = self.collab.outbox.len();
+        match self.align(tab) {
+            ("diverged" | "refused", Some((_, reason))) => Some(SyncLine::Apart {
+                reason,
+                entries: steps + tab.map_or(0, |i| self.unsynced_list(i).len()),
+            }),
+            _ if steps > 0 => Some(SyncLine::Waiting {
+                connected: self.collab.connected,
+                steps,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The drawing the status speaks of: the session's, or with none
+    /// settled the one in front.
+    fn status_tab(&self) -> Option<usize> {
+        match self.collab.document {
+            Some(id) => self.tabs.iter().position(|tab| tab.id == id),
+            None => self.front_tab(),
+        }
     }
 
     /// `PIDCOLLAB UNSYNCED`: the queue and the unsynced list of the drawing

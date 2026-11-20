@@ -907,3 +907,49 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 - 读不出的队列条目导出时只有 `raw`，`changes` 为空。
 - `unsynced_count` 只数清单，不数队列。
 - 端到端没有跑，归 `OFF-12`。
+
+### 11.13 `OFF-10`：面板上待同步的一行，退出和关图时的提醒（2026-11-20）
+
+**做法。**
+
+- **面板上的一行。** 面板的数据 `CollabView` 加了 `sync`，由 `collab_sync_line`（`unsynced.rs`）算出，画在顶上那条连接状态下面。它和状态接口看同一张图（会话的图，会话还没定图时是前台的图；两边共用 `status_tab`），用同一个 `align`：
+  - `align` 为 `diverged` 或 `refused`：「不一致：<原因>；未同步 n 条」，原因是 `align_message`，n 是队列加清单，即状态接口的 `queued_ops` 加 `unsynced_count`。
+  - 其余情形队列不空时：连着是「已连接，n 步待同步」，没连着是「离线，n 步待同步」，n 是 `queued_ops`。
+  - 队列空、或者没配协同（服务器地址为空）：没有这一行。
+
+  待同步用暗色字，不一致用提醒色（与「不一致」角标同色）。
+- **不一致时下面那段说明不再重复原因。** 原来是「本图与房间已不一致，本地修改不再提交。」后接原因，再一行「需要取得最新图纸」（§11.5 第 3 条）。上面这一行已经是「不一致：<原因>……」时，说明只留那一句和取最新图纸的提示；不是时照旧带原因。
+- **退出和关图时问一次**（新文件 `src/app/collab/leaving.rs`）。配了协同、会话的队列不空时：
+  - 退出程序：在「块编辑未保存」「图纸未保存」都过了、本来要退出的地方问（`quit_unless_unsynced`）。接上的路：主窗口的关闭按钮和命令行 `EXIT` / `QUIT`（都走 `request_quit_with_block_edits`；`FILEDIA` 为 0 时先在命令行问完每张图存不存）、「图纸未保存」对话框的「保存」和「不保存」、存盘完成后接着退出（`SaveContinuation::Quit`）。
+  - 关图：只问会话那张图（`collab.document`）。`on_tab_close` 在「图纸未保存」的检查之后、关掉之前问；在「图纸未保存」里选了「不保存」的，在丢掉修改之前问；选了「保存」的，存完关图时问。
+  - 对话框是程序级的（`ModalKind::CollabUnsynced`，切换图纸时不关），标题「修改未同步」，正文是图名和 §5.6 那句话。按钮：退出时「退出」「取消」，关图时「关闭」「取消」。「退出」（「关闭」）接着做被问住的那件事，不再问；「取消」和 Esc 留下。控制接口的 `dialog_ok` 等于「退出」（「关闭」），`dialog_cancel` 等于「取消」。
+  - 脚本在跑（`script_running`）时没人答对话框：命令行打出同一句话，接着退出或关图。
+  - 一次关多张图（`pending_tab_closes`）走到会话那张图时停在这个问题上：「关闭」接着关剩下的，「取消」剩下的都不关，与「图纸未保存」的「取消」相同。
+
+与任务写法不同、或任务没有说的：
+
+1. **「文件」一栏列的是 `pid_collab.rs`、`claims.rs`、`update/mod.rs`、`block_editor.rs`。** 问题本身放在新文件 `src/app/collab/leaving.rs`；另改了 `src/app/collab/unsynced.rs`（这一行，和状态接口共用的选图）、`src/app/collab/mod.rs`、`src/app/mod.rs`（两个字段、对话框种类、两个消息）、`src/app/view/modal.rs`（对话框）、`src/app/update/dialog.rs`、`src/app/update/file.rs`、`src/app/update/command.rs`（退出和关图的各条路）、`src/app/tool_windows.rs`（程序级）、`src/app/control/actions.rs`（控制接口的按钮）、`docs/dialog-windows.md`（对话框的归属表）。
+2. **「不一致」这一行也管 `refused`。** 状态接口里被隔开的连接（`refused`）同样不提交，这一行照「不一致」写，原因是它的 `align_message`。
+3. **不一致时那段说明不再重复原因**（上文）。§11.5 第 3 条和 R5 说的面板文字跟着变了。
+4. **OS-18 的「提交完数字归零」按这一行消失来做**，不显示「0 步待同步」；状态接口的 `queued_ops` 为 0。
+5. **规格没给对话框的标题**，用「修改未同步」。关图时按钮写「关闭」，不写「退出」。没有回车键的默认按钮。
+6. **脚本不弹框**（上文）。`FILEDIA` 为 0 时交互的 `EXIT` 也弹这个对话框，命令行上没有对应的问法。
+7. **测试和验收的对应**（新文件 `collab_exit_prompt.rs` 13 条，其中 `pid_collab` 模块 4 条，验证命令的两个过滤词都能选到；`pid_collab.rs` 里新加 3 条）。
+   - 验收 1：`pid_collab::offline_the_line_says_how_many_steps_wait`、`pid_collab::connected_the_line_says_how_many_steps_wait_until_they_are_taken`、`pid_collab::apart_the_line_says_why_and_how_many_never_reached_the_room`，每条都拿状态接口的应答核对数字；`pid_collab.rs` 的 `the_sync_line_and_the_prompt_read_as_the_spec_has_them`（文字）、`the_sync_line_is_drawn_under_the_banner_while_steps_wait`、`apart_the_line_gives_the_reason_and_the_note_does_not_repeat_it`。
+   - 验收 2：`connected_the_line_says_how_many_steps_wait_until_they_are_taken`（房间收下两步以后 `queued_ops` 为 0，这一行没有了）。
+   - 验收 3：`quitting_with_steps_queued_asks_and_cancel_stays`、`quitting_with_steps_queued_and_saying_quit_quits`、`quitting_with_nothing_queued_asks_nothing`；脚本 `a_script_is_told_on_the_command_line_and_quits`。
+   - 验收 4：`closing_the_sessions_drawing_asks_and_closing_another_does_not`、`closing_the_sessions_drawing_with_unsaved_changes_asks_about_those_first`、`closing_every_drawing_stops_at_the_question`。
+   - 验收 5：`the_three_questions_come_block_edits_unsaved_changes_steps_not_synced`。
+   - 验收 6：`without_collaboration_the_way_out_is_as_it_was`、`pid_collab::without_collaboration_there_is_no_line`；面板原有的 11 条不改，照过。
+
+**先红后绿。** 先写测试；生产代码先只加了测试要用到的类型、字段和消息（不加编译不过），不接到任何地方。第一次跑：`collab_exit_prompt` 3 过 10 败，`pid_collab` 13 过 5 败。过的是没配协同、队列空这几条本来就不该问、不该显示的，面板原有的 11 条，和文字那条（文字与类型一起写下）。败的：退出的两条和带未保存修改关图的那条败在没有问（程序直接退了、图直接关了），脚本那条败在命令行没说，次序那条败在「图纸未保存」之后没有第三问，面板的五条败在没有这一行。另外两条关图的第一次败在准备上：用控制接口 `new` 开的「另一张图」换掉的是当前那张（会话的图）；改用新建标签以后再跑三条关图的，0 过 3 败，败在没有问。实现后两组全过（13 条、18 条）。之后只按格式检查改了换行，并把 `leaving` 的转出从模块清单中间挪到清单后面，再对最终的文件跑全套。
+
+**读数**（对最终的文件，起点 `e6ba81d88`）：主程序库 7236 条，7179 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）；起点 7220 条（7163 / 55 / 2），多的 16 条是新加的，都过。两个协同 crate 97；180 + 18 全过，与起点相同。clippy 656（`--lib`）和 1051（`--lib --profile test`），与起点相同；改到的文件里的警告与起点逐条相同，只有 `update/mod.rs` 里 `update` 栈帧大小那条的数字从 1155039 变成 1155055（多了两个消息分支）。格式检查：改到的 13 个代码文件，除 `collab/mod.rs` 开头模块排序那处以外新增 0（那处原来就有，`mod leaving;` 落在里面，它的两段跟着变）；两个新文件 0。文档检查 590 项过 589 项，没过的是设计稿与生成表的比对。
+
+**限制和没有做的。**
+
+- 这一行和退出提醒数的是会话的队列（`outbox`），与状态接口的 `queued_ops` 相同：会话还没读入的图，图里原有的队列不算。这些本来就随图存着，不会因为退出而丢。
+- 网页版（没有协同传输）的退出和存盘接续没有接。
+- 控制接口和自动化里直接退出的路（直接调 `exit_app` 的）和「终止」（`leave_keeping_recovery`）不问。
+- 退出时在「图纸未保存」里选了「不保存」、再在这里按「取消」的，那几张图已经按不保存处理（标成没改过，内容还在），与原来退出时多张图中途按「取消」相同。关图时不会这样：问在丢掉修改之前。
+- 端到端没有跑，归 `OFF-12`。

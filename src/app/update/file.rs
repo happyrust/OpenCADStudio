@@ -4800,7 +4800,7 @@ impl OpenCADStudio {
                     tasks.push(self.open_unsaved_dialog_window());
                 } else {
                     tasks.push(self.close_unsaved_dialog_window());
-                    tasks.push(self.exit_app());
+                    tasks.push(self.quit_unless_unsynced());
                 }
             }
             crate::app::SaveContinuation::CloseTab => {

@@ -2443,6 +2443,12 @@ pub(super) struct OpenCADStudio {
     /// "Close All Other Drawings". Dirty drawings pause this queue at the
     /// existing unsaved-changes dialog and resume after Save or Discard.
     pending_tab_closes: std::collections::VecDeque<u64>,
+    /// The question quitting, or closing the session's drawing, asks while
+    /// steps wait for the room; `None` while it is not up.
+    unsynced_question: Option<collab::UnsyncedQuestion>,
+    /// Set while 退出 / 关闭 goes on with what the question was asked about,
+    /// so the way out does not ask it a second time.
+    leaving_anyway: bool,
     /// Latest save job per stable tab id. Older completions may finish, but
     /// cannot mark a newer document state clean or redirect its path.
     #[cfg(not(target_arch = "wasm32"))]
@@ -3462,6 +3468,7 @@ pub enum ModalKind {
     StyleImport,
     Unsaved,
     BlockEditChanges,
+    CollabUnsynced,
     BlockEditPicker,
     Rename,
     Purge,
@@ -4194,6 +4201,10 @@ pub enum Message {
     BlockEditChangesSave,
     BlockEditChangesDiscard,
     BlockEditChangesCancel,
+    /// 退出 / 关闭 in the question about steps not synced.
+    CollabUnsyncedLeave,
+    /// 取消 in it.
+    CollabUnsyncedCancel,
     BlockSaveAsName(String),
     BlockSaveAsApply,
     BlockVisibility(crate::ui::window::block_visibility::Action),
@@ -6984,6 +6995,8 @@ impl OpenCADStudio {
             pending_close: None,
             pending_tab_closes: std::collections::VecDeque::new(),
             pending_block_close: None,
+            unsynced_question: None,
+            leaving_anyway: false,
             #[cfg(not(target_arch = "wasm32"))]
             active_save_jobs: std::collections::HashMap::new(),
             #[cfg(not(target_arch = "wasm32"))]

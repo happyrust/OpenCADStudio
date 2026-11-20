@@ -26,6 +26,7 @@ pub(super) mod broadcast;
 mod apply;
 mod claims;
 pub(super) mod connectors;
+mod leaving;
 pub(super) mod pipes;
 mod unsynced;
 #[cfg(not(target_arch = "wasm32"))]
@@ -43,6 +44,8 @@ mod collab_duplicate_op;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_existing_tags;
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_exit_prompt;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_inverse;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_large_props;
@@ -58,6 +61,8 @@ mod collab_restored_rollback;
 mod collab_save_exits;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_unsynced;
+
+pub(crate) use leaving::{Leaving, UnsyncedQuestion};
 
 /// A server address as it may be shown — in the log, on the command line,
 /// in `/collab/status`: without whatever stands before an `@` in its
