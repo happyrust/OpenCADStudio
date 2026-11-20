@@ -29,8 +29,10 @@ L5（§9 L5，只记录不评判）：L5 重开，记下删 VD 这一步的结�
 
 OS-14（没有写权限）：图纸状态改成只读后 P 重开。写权限按会话判，不按对象分：P 的两步都以
 PERM_DENIED_STATE 被拒并撤回，P 与 u2 一致，拒绝记录与清单各两条，服务器没多 op。（「之后无关的步骤
-照常提交」在 X 里验：没有写权限时这份里没有能提交的一步。）这一段放在最后：改图纸状态本身也是写操作，
-只读之后服务器不让任何人再把它改回去。
+照常提交」在 X 里验：没有写权限时这份里没有能提交的一步。）
+
+REQ-COLL-004（只读切回）：最后项目管理员 u4 把图纸从只读切回协同编辑（切换图纸状态只过角色和 PBS 两级，
+不受当前状态限制），一个新的 WS 会话（u2）再改 P-1001 的备注：提交成功，服务器上是新值。
 
 被拒的是从文件里恢复的步骤，没有撤销栈可退，程序按反向修改撤回，拒绝记录里说的是「已按反向修改撤回」。
 
@@ -307,6 +309,17 @@ try:
             and status.get("unsynced_count") == 2,
             f"拒绝记录 {len(told)} 条，未同步清单里被拒的 {len(listed)} 条"
             f"（{[(e.get('code'), e.get('rolled_back')) for e in listed]}），op_id 一一对上；unsynced_count={status.get('unsynced_count')}")
+
+    # ── REQ-COLL-004：只读切回协同编辑 ──────────────────────────────────────────────────────────────
+    st, body = srv.http("POST", f"/drawing/{oh.DRAWING}/state", {"user_id": "u4", "state": "协同编辑"})
+    ws, welcome = oh.ws_join(srv, "o05-u2-after", "u2")
+    answer = (oh.ws_write(ws, (welcome or {}).get("base_revision") or 0, "op-o05-after-readonly", NOTE, "切回之后")
+              if ws.session_id else None)
+    now = oh.server_value(srv, NOTE)
+    R.check("REQ-COLL-004", st == 200 and (answer or {}).get("type") == "op_applied" and now == "切回之后",
+            f"项目管理员 u4 把图纸从只读切回协同编辑：{st} {body}；之后 u2 改 {OBJ} 的备注："
+            f"{(answer or {}).get('type')} {(answer or {}).get('code') or ''}，服务器上是 {now!r}")
+    ws.close()
     finish(p, "P 收尾")
 except SystemExit:
     raise

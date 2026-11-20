@@ -1131,7 +1131,7 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 
 **发现了、没有改的。**
 
-1. **图纸改成只读以后改不回来。** 改图纸状态（`POST /drawing/{id}/state`）查的是「授权配置」，它算写操作（`crates/ocs_collab/src/permission.rs` 的 `is_write`），只读这一层拒绝一切写操作（`state_allows`），所以只读以后谁也改不回去，项目管理员 u4 得到 403 `PERM_DENIED_STATE`。`o05` 第一版把 P 放在中间、之后改回协同编辑，就停在这里；现在 P 放在最后。是不是本来就这样定的、要不要给改状态开口子，留给 CP-A4。
+1. **图纸改成只读以后改不回来。** 改图纸状态（`POST /drawing/{id}/state`）查的是「授权配置」，它算写操作（`crates/ocs_collab/src/permission.rs` 的 `is_write`），只读这一层拒绝一切写操作（`state_allows`），所以只读以后谁也改不回去，项目管理员 u4 得到 403 `PERM_DENIED_STATE`。`o05` 第一版把 P 放在中间、之后改回协同编辑，就停在这里；现在 P 放在最后。是不是本来就这样定的、要不要给改状态开口子，留给 CP-A4。后来按 `REQ-COLL-004` 修了，见 §11.18。
 2. **`x12_after_session` 里「没有弹出对话框」那一项只看 `state.modal`。** 对话框是工具窗，两次更新之间 `modal` 通常是空的，这一项判不出有没有对话框开着。那个场景这次没有动。
 
 **L5 的现状（只记录，不判通过或失败）。** L5 离线删了 VD（V-1004），这期间 u2 把 VD 的设计压力改成了 0.6MPa。L5 重开后：补齐时 u2 那一步写不进本图，L5 标不一致（`align` 是 `diverged`，`REMOTE_UNAPPLIED`，说明是「位号 V-1004 在本图里对不上一个对象（没有，或者有好几个），这部分变更未应用」）；没有拒绝记录；删 VD 那一步留在队列里（1 条），没有发出去；服务器上 VD 还在，设计压力是 u2 写的 0.6MPa；u2 的图里有 VD，L5 的图里没有，两边的图不同。写场景时、对照里不开开关的那一次和下面「读数」那一轮都是这样。与 §9 的 L5 和 §11.16 第 1 条说的一致：标了不一致之后的出路是 §5.5。
@@ -1183,3 +1183,15 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 - L5 只记了现状，没有判；它的出路是 §5.5，归 CP-A4 再看。
 - OS-20、OS-21 不在这一组验（`README.md` 第 4.10 节）。
 - 只在这一台机器上跑过。
+
+### 11.18 CP-A4 之后的修正（2026-11-20）
+
+**只读的图纸切回可编辑（`REQ-COLL-004`）。** §11.17「发现了、没有改的」第 1 条：改图纸状态（`POST /drawing/{id}/state`）走的是完整的三级判定，只读那一级拒绝一切写操作，所以只读以后谁也改不回去。查需求时又找到一处同样的原因：服务器在三级判定之外还查单人编辑的编辑权持有者，图纸是单人编辑、别人正在编辑时，管理员也解除不了锁定（切回协同编辑），得到 403 `PERM_DENIED_STATE`。两处都与 `docs/pid-platform/requirements/70-collaboration-and-permissions.md` 不合：迁移规则第 1 条和 `REQ-COLL-004` 验收 2 写的是切换图纸状态只过角色权限、PBS 节点 ACL 两级，不受图纸当前状态限制；第 2 条和验收 3 写明只读可以切回可编辑状态。
+
+- **改法。** `ocs_collab` 加了 `decide_without_state`，只过前两级；`decide` 改成先调它、再查图纸状态那一级，结果不变。服务器加了 `perm::evaluate_state_switch`，按 `授权配置` 只过前两级，改状态的接口改用它，不再查图纸状态，也不再查单人编辑的持有者。别的写操作照旧走完整的判定：只读时照旧拒绝那五种写操作（`readonly_state_denies_all_five_write_operations` 没有动），处理冲突等入口照旧用 `perm::evaluate`。缺少权限时照旧是 `PERM_DENIED_ROLE` 或 `PERM_DENIED_PBS`，原状态不变。
+- **单元测试 4 个。** `ocs_collab` 的 `permission::tests::a_state_switch_passes_on_the_first_two_tiers_in_every_state`：三种状态下都只看两级，完整的判定在只读时仍然拒绝，角色不够是角色那一级、不在 ACL 里是 PBS 那一级。服务器的 `perm::tests::a_state_switch_is_judged_on_the_role_and_pbs_tiers_only`：只读的图纸上完整判定拒绝、只看两级放行，角色不够、ACL 不够、图纸不存在各一例；`http::tests::a_readonly_drawing_switches_back_to_collaborative`：验收 3，切回协同编辑后，有编辑权限的用户改图纸不再得 `PERM_DENIED_STATE`；`http::tests::a_locked_drawing_unlocks_while_somebody_else_edits_it`：单人编辑、别人有活跃的会话时切回协同编辑。先红后绿：把接口临时换回原来的判定，两个接口测试都失败（得 403，应为 200），换回后通过。
+- **端到端。** `o05` 最后加了一项，标 `REQ-COLL-004`：项目管理员 u4 把图纸从只读切回协同编辑，一个新的 WS 会话（u2）再改 P-1001 的备注，提交成功，服务器上是新值。原来那几项没有动，P 仍在最后。
+
+**读数**（起点 `079b19a24` 加这次的改动）：`cargo test -p ocs_collab --lib` 98 个全过；`cargo test -p ocs_collab_server` 187 + 21 个全过；`cargo clippy -p ocs_collab -p ocs_collab_server --all-targets` 只有 `ops.rs` 里原有的一条（类型太复杂），这次改的文件里没有。`o05` 用重编的 debug 服务器单独跑一次（种子图另生成，证据在仓库外）：42 项全过（原来的 41 项加新的一项），92 秒，残留进程 0，仓库里没有多出文件。没有重跑整组和别的场景。`cargo fmt --check` 在这两个 crate 上起点就不过（原有的出入很多），这次没有整体格式化，新写的几行照周围的写法排。
+
+**发现了、没有改的。** 只读时，服务器保留一个编辑权持有者，它照旧能写（`VAL-CLI-011`；`http.rs` 里写着谁算持有者是实现方的选择、待用户确认）。迁移规则第 3 条和 `REQ-COLL-004` 验收 5 写的是只读时没有任何编辑会话可写、不保留编辑权持有者。两者不同；这次没有动，留给用户定。
