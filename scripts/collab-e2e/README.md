@@ -67,6 +67,7 @@
 - 「有」的 228 条里，80 条有端到端脚本，148 条只靠单元测试（第 1 节的第 2 件事）。
 - `VAL-DRAW-029` 是契约里预留的空号，所以绘图区是 31 条。
 - 「mission 记录」两栏照抄 mission 的状态文件：已取证是它的 `passed`，未取证是它的 `pending`。
+- 离线规格（`docs/plans/2026-11-16-pid-dev-spec/SPEC-collab-offline-sync.md`）§7 的 21 条成功标准（`OS-01` – `OS-21`）不是验收契约，不在上表里。它们对到哪些检查见第 4.10 节：19 条有能重跑的检查（OS-16 只靠单元测试，其余 18 条有端到端场景），OS-20、OS-21 在别的任务里验。
 
 ## 3. 怎么跑
 
@@ -106,7 +107,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 - 契约的端口段被占用时（比如同一台机器上另一个工作区也在跑），给 `-PortShift 100`，整段挪到 3310–3359。检查项的说明文字里写的仍是契约的端口号，实际用的端口看控制台输出里的 `port=`。
 - 例：`powershell -File scripts\collab-e2e\run19.ps1 -EvidenceDir <仓库外的目录> -Label <这一轮的名字>`。
 
-**42 个场景，分八组，另有一项收尾的整轮检查**
+**46 个场景，分八组，另有一项收尾的整轮检查**
 
 | 组 | 场景 | 入口 |
 |---|---|---|
@@ -117,7 +118,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | 服务器进程（4 个） | `s01_restart`、`s02_port_in_use`、`s03_disconnect`、`s04_concurrent_ops` | `run_cross.ps1 -Only <场景名> -New` |
 | 看图（5 个） | `g01_palette`、`g02_insert`、`g03_preview`、`g04_tag_display`、`g05_pipe_break` | `run_cross.ps1 -Only <场景名> -New` |
 | 计时（3 个） | `p01_insert_timing`、`p02_bulk_tags`、`p03_tag_rule_budget` | `run_cross.ps1 -Only <场景名> -New` |
-| 离线使用与上线后同步（4 个） | `o01_restart_resubmit`、`o02_ids_and_duplicates`、`o03_align_refused`、`o04_diverged_sticks` | `run_cross.ps1 -Only <场景名> -New` |
+| 离线使用与上线后同步（8 个） | `o01_restart_resubmit`、`o02_ids_and_duplicates`、`o03_align_refused`、`o04_diverged_sticks`、`o05_refused_rollback`、`o06_unsynced_exit`、`o07_no_server_dxf`、`o08_server_store` | `run_cross.ps1 -Only <场景名> -New` |
 | 收尾的整轮检查（1 项） | `r01_entry_rules` | 总入口每一轮都在最后跑它 |
 
 - **总入口 `run19.ps1`**：八组按表里的顺序依次跑，最后跑 `r01_entry_rules`。除上面三个参数外还有 `-Label`（这一轮的名字）、`-OnlyHarness`（只跑第一组）、`-Only19`（只跑第二、三组）、`-OnlyNew`（只跑第四组）、`-OnlyServer`（只跑第五组）、`-OnlyPictures`（只跑第六组）、`-OnlyTiming`（只跑第七组）、`-OnlyOffline`（只跑第八组）；几个一起给时，跑的是各自那几组合起来。不管挑了哪几组，收尾的 `r01_entry_rules` 都照跑。
@@ -144,12 +145,14 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
   - `p01_insert_timing`（`VAL-DRAW-030`、`032`）：起一个不连协同的 GUI，在新建的空图里建 5000 条线。一次放置是契约写的三个请求（`PIDINSERT vessel`、给点、回车），每个请求由 `curl.exe` 发出、由它自己计时（`time_total`），三个数相加是一个样本，里面没有起进程的时间。连放 20 次取中位数，要求不超过 100 毫秒；再把符号库里的符号轮着放，放到图里共有 200 个，然后再放 20 次：中位数同样不超过 100 毫秒，比第一组的增长不超过 100%。**每个计时的请求之前停 0.2 秒**（为什么，见第 5.3 节 `VAL-DRAW-030`、`032` 那一行）；不停顿、一个接一个发的第三组也量、也写进说明，不拿来判。20 个原始样本都留在证据目录的 `p01-timing.json` 里。
   - `p02_bulk_tags`（`VAL-DRAW-031`）：起一个 GUI，在新建的空图里用一个批量请求（`pid_insert_batch`）放 2000 个设备符号，做三遍，每遍换一张新的空图。按契约的口径计时：从批量请求之前最后一次 `/api/v1/ready` 答回来起，到第 2000 个实例读得到非空的位号为止，用脚本的单调时钟，取三遍的中位数，要求不超过 3000 毫秒。停表之后读回：带作者记录的实体 2000 个，位号两两不同，头一个 `P-1001`、末一个 `P-3000`。
   - `p03_tag_rule_budget`（`VAL-SEM-014`）：不起 GUI。契约指定的证据是主程序库里一条默认不跑的测试（`tag_rule_bulk_2000_under_three_seconds`），场景在脚本所在的仓库里用 `cargo test --offline --locked --lib -- --ignored --nocapture <测试名>` 跑它，判两件事：cargo 的退出码是 0、正好跑了这一条并且通过；测试打印的三轮用时，中位数不超过 3000 毫秒，每轮的末个位号是 `P-3000`、2000 个位号两两不同。cargo 先要把测试程序编出来：2026-11-17 的几次执行里它每次都重新编了一遍（控制台里有 `Compiling` 一行），连编带跑 66–184 秒，测试本身只有几十毫秒。源码没有变也重编，原因在 `build.rs`：它向 cargo 声明了「`packaging/windows/AppIcon.ico` 变了就重编」，声明之前没有看这个文件在不在，而它只在做发布构建之前才生成，平时不在，版本库里也没有；文件不在，cargo 每次都把主程序这个包当成变过的。让 cargo 自己说理由（`cargo test --offline --locked --lib --no-run -v`，连着两轮，其间什么都没有改），两轮都是其余 661 个包不用重编，只有这一个包要重编，理由是这个文件不存在，各编了一分多钟。这几次都是在仓库的另一份检出里跑的；这个文件在普通的检出里同样没有，所以应当也是这样，没有另试。这是 `build.rs` 的事，场景没有绕开它，`build.rs` 也没有改。cargo 的输出原样存在证据目录的 `p03-cargo.console.txt` 里。
-- **离线那一组**（`SPEC-collab-offline-sync.md` §8；`o01`–`o04` 是 2026-11-20 写的，`o05`–`o08` 归 `OFF-13`）判的是离线规格 §7 的成功标准，每个检查项标的是 OS 编号。起真实的服务器和桌面端，用 `x00_seed.py` 那张种子图的副本；杀掉、重起服务器（同一个库，或者换一个新库、换回另存的库），让桌面端退出再重开同一份图。看的是 §8 说的几样：状态接口（`align`、`align_code`、`align_message`、`unsynced_count`、`queued_ops`）、服务器的操作日志（直接读库）、桌面端收发的帧（实例日志里记的）、存盘文件里的三条记录。三条记录由一个不连协同的实例打开存盘文件读出：存盘的实例只把记录写进存下的那一份，不写回它接着编辑的文档。退出照人的做法：`QUIT`，问「修改未同步」时答「退出」（控制接口的 `dialog_ok`）。这些做法写在共用的 `oh.py` 里。
+- **离线那一组**（`SPEC-collab-offline-sync.md` §8；八个场景都是 2026-11-20 写的，`o01`–`o04` 在 `OFF-12`，`o05`–`o08` 在 `OFF-13`）判的是离线规格 §7 的成功标准，每个检查项标的是 OS 编号，哪一条对到哪几项见第 4.10 节。起真实的服务器和桌面端，用 `x00_seed.py` 那张种子图的副本；杀掉、重起服务器（同一个库，或者换一个新库、换回另存的库；`o08` 另用打不开的库、带 `--new-repo-id` 起），让桌面端退出再重开同一份图。服务器进程没了、连不上时，`o08` 把请求和 WS 连接记成「没有应答」照常判下去（那几项不过），不抛异常。看的是 §8 说的几样：状态接口（`align`、`align_code`、`align_message`、`unsynced_count`、`queued_ops`，和拒绝记录 `rejections`）、服务器的操作日志（直接读库）、桌面端收发的帧（实例日志里记的）、存盘文件里的三条记录，另有 `PIDCOLLAB UNSYNCED` 在命令行上列出的和 `PIDCOLLAB EXPORT` 导出的文件。三条记录由一个不连协同的实例打开存盘文件读出：存盘的实例只把记录写进存下的那一份，不写回它接着编辑的文档。退出照人的做法：`QUIT`，问「修改未同步」时答「退出」（控制接口的 `dialog_ok`）。这些做法写在共用的 `oh.py` 里。命令行上的提示行开头带「ⓘ 」，场景比对 `PIDCOLLAB UNSYNCED` 的输出之前先去掉它。面板上的字和退出提示取不到原文，`o06` 换了读法：
+  - 面板上待同步的那一行：控制接口读不到字。读的是这一行画没画出来（程序上报的界面元素里有没有 `pid-collab-sync`）和算这一行用的两个数（`connected`、`queued_ops`），另留截图；字本身由程序内的测试按同样的两个数核对（第 4.10 节的 OS-18）。
+  - 退出时问「修改未同步」：对话框是工具窗，两次更新之间停在界面状态的 `tool_windows` 里，`modal` 通常是空的。场景看 `tool_windows` 里有没有 `CollabUnsynced`，答「取消」「退出」用控制接口的 `dialog_cancel`、`dialog_ok`；问的那句话由程序内的测试核对。
 - **种子图和基线图**：证据目录里没有时，总入口先生成。两张种子图用 `x00_seed.py`、`t01_seed.py`；`x05_m3_persistence`、`x12_after_session` 用的基线图 `PID-1101-m3.dwg` 由一条默认不跑的测试写出（`write_the_m3_baseline_drawing`），总入口用 `cargo test` 跑它，第一次要等测试程序编出来（几分钟）。基线图是一份还没有进过任何协同房间的图，不带同步记录和排队的修改（`REQ-COLL-015`）；带着的话，桌面端一加入就被服务器按库标识不符拒绝，这两个场景不过。往返测试用的那份数据从 `5f672c831` 起带着这两条记录，生成器在写出之前把它们去掉（2026-11-18 改的）；在这之间生成的基线图是带着的，证据目录里有这样一份时，删掉它再跑一次总入口。分组入口不生成这三张图：换了新的证据目录时，先跑一次总入口。只跑第一组、第五组、第六组、第七组（`-OnlyHarness`、`-OnlyServer`、`-OnlyPictures`、`-OnlyTiming`）时总入口也不生成，这四组用不着；只跑第八组（`-OnlyOffline`）时只生成 `x00_seed.py` 那一张，这一组只用它。
 - **单独跑几个场景**：`run_all.ps1 -Only <场景名>`、`run_cross.ps1 -Only <场景名>`，多个场景名用逗号隔开；第一、四、五、六、七、八组的场景和 `r01_entry_rules` 要再加 `-New`（表里「入口」一列写着）。
 - **结果落在哪里**：都在证据目录里。每个场景一份控制台输出（`logs/<场景名>.console.txt`）和一份 `logs/<场景名>.result.txt`，场景结束时打印一行 `=== <场景名>: N PASS / M FAIL ===`；总入口收尾在证据目录的根上写 `summary-<Label>-<时间>.txt`，每个场景一行 `pass=`、`fail=`、`exit=`，每组一行小计。有检查项失败、或者进程的退出码不是 0 的场景，小计里都记成不干净（`not clean`）；重跑过的场景，第一次尝试单占一行，不计入小计。
 - **入口还记什么**：每个场景结束后记下耗时、残留进程数（场景结束后还在跑、可执行文件在 `-BinDir` 或证据目录下的进程；`run_cross.ps1` 另记留下的自动化通道描述文件数），以及场景自己报的桌面记录——场景前后各看一次指针位置与前台窗口，写「没变」或「变了」。这几样只写进汇总，入口不拿它们判失败，要人看一眼。桌面记录分不出是场景动的还是当时用机器的人动的。总入口另在开头和结尾各记一次机器上不属于这一轮的同名进程数，出了失败好对照。
-- **要多久**：七组加收尾检查一遍约 19 分钟（2026-11-17 最近的那一轮：脚手架与入口规程 1 分半，冲突与跨区流程 2 分多，桌面端客户端近 11 分钟，后补的跨区流程 40 秒，服务器进程 8 秒，看图 1 分钟，计时 2 分多；这一轮起一个实例 1.6 秒上下，上一轮偏慢，六组加收尾用了 20 分钟）。后加的离线那一组 4 分钟上下（2026-11-20 `o04` 加了一项之后的那一轮：`o01` 26 秒，`o02` 52 秒，`o03` 57 秒，`o04` 118 秒；同一天单跑新的 `o04` 是 90 秒），只跑这一组（`-OnlyOffline`）连生成种子图和收尾检查 4 分半。最慢的是 `t22_ttl`（真等 300 秒的占用到期），其次是 `t23_stale`、`t25_offline`、`t20_session`、`t02_harness_rules`（各一分多钟）；计时那一组里 `p03_tag_rule_budget` 要等 cargo 编测试程序，这一轮连编带跑 70 秒。证据目录是新的时候，前面还要加上生成基线图的几分钟。
+- **要多久**：七组加收尾检查一遍约 19 分钟（2026-11-17 最近的那一轮：脚手架与入口规程 1 分半，冲突与跨区流程 2 分多，桌面端客户端近 11 分钟，后补的跨区流程 40 秒，服务器进程 8 秒，看图 1 分钟，计时 2 分多；这一轮起一个实例 1.6 秒上下，上一轮偏慢，六组加收尾用了 20 分钟）。后加的离线那一组八个场景 7 分半上下（2026-11-20 `OFF-13` 的那一轮：`o01` 28 秒，`o02` 51 秒，`o03` 48 秒，`o04` 93 秒，`o05` 97 秒，`o06` 39 秒，`o07` 63 秒，`o08` 26 秒），只跑这一组（`-OnlyOffline`）连生成种子图和收尾检查 7 分 40 秒。最慢的是 `t22_ttl`（真等 300 秒的占用到期），其次是 `t23_stale`、`t25_offline`、`t20_session`、`t02_harness_rules`（各一分多钟），离线那一组里的 `o05`、`o04` 也各要一分半上下；计时那一组里 `p03_tag_rule_budget` 要等 cargo 编测试程序，这一轮连编带跑 70 秒。证据目录是新的时候，前面还要加上生成基线图的几分钟。
 - **起实例慢的时候会红的一项**：`t25_offline` 里标 `VAL-CLI-015` 的一项，按契约要求服务器连不上时 GUI 启动后 5 秒内就绪。这台机器平时起一个实例两三秒，这一项过；起一个实例要五秒以上的时候（机器正忙，或者机器本来就慢）它会红，2026-11-17 的第四遍就是这样（第 3.3 节）。5 秒是契约的数，场景没有放宽。
 - **原来也这样、现在跟着机器走的两项**：`t02_harness_rules` 里标 `VAL-INFRA-014` 的两项。场景先在一个连不上的端口上起一次实例，到上限换端口重试；一项要求重试的那一次在上限里就绪，另一项要求第一次的启动日志里已经写下连不上端口的原因。上限原来写死 6 秒：起一个实例要六七秒以上的时候，重试的那一次来不及就绪，第一次也还没走到连端口那一步就到时了，两项都红（第四遍就是这样）。2026-11-17 改成：场景前面三次正常启动里最慢的一次，取它的两倍加一秒，不少于 6 秒（契约的 60 秒走的是同一段代码）。改完拿一份启动到就绪要 8 秒多的变异程序试过：改之前的脚本红的就是这两项，改之后 13 项全过，上限取的是 19 秒（第 5.4 节）。第五遍全量里起实例快（前面三次最慢 1.8 秒），上限取的是下限 6 秒。
 - **直接用 `python` 跑单个场景**：先设环境变量 `OCS_E2E_EVIDENCE_DIR`，再执行 `python scripts\collab-e2e\<场景名>.py`。这样跑没有入口的重跑和记账，还会在本目录留下 `__pycache__`（已被 `.gitignore` 忽略；先设 `PYTHONDONTWRITEBYTECODE=1` 就不会留）。经入口跑不会留，`r01_entry_rules` 会查这一点。
@@ -185,6 +188,7 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 - 为补第 5.1 节（一）的缺口新写的和改的（2026-11-17）：新写了看图的五个场景（`g01`–`g05`）和它们共用的两个模块——`shot.py`（只用标准库读 PNG、量像素）、`gh.py`（等新的一帧、清设置目录、坐标与像素互换），都没有原件。冒烟场景 `t00_smoke` 加了 3 项（`VAL-INFRA-009` 1 项、`VAL-INFRA-010` 2 项），原有的 7 项没有动。`t21_claims` 里量占用色的那一项（`VAL-CLI-008`）原来用另装的图像库读图，改成用 `shot.py`，数哪种颜色、数哪个矩形都没有变；改的这一项前后两遍的结果一字不差，其余 14 项里 12 项一字不差、2 项只有会话号和到期时刻不同。总入口加了看图这一组和 `-OnlyPictures`；`run_cross.ps1` 只改了开头的说明。两个脚手架、`e2e_env.ps1`、`run_all.ps1` 没有动。
 - 为补第 5.1 节（二）的缺口新写的和改的（2026-11-17）：新写了计时的三个场景（`p01`–`p03`）和前两个共用的模块 `ph.py`（让 `curl.exe` 发一个请求并报它自己计的用时，数机器上在跑的编译器和别的实例，新建空图），都没有原件。`curl.exe` 要发的地址、请求体和实例的访问令牌经标准输入给它，不出现在命令行上，也不写进文件。总入口加了计时这一组和 `-OnlyTiming`；`run_cross.ps1` 只改了开头的说明。`t02_harness_rules` 改了等就绪上限的取法（见上面的「原来也这样、现在跟着机器走的两项」），13 项检查判什么没有变。两个脚手架、`e2e_env.ps1`、`run_all.ps1` 没有动。
 - 为离线使用与上线后同步新写的（2026-11-20，`OFF-12`）：新写了离线的四个场景（`o01`–`o04`）和它们共用的模块 `oh.py`（读状态接口、操作日志、收发的帧和存盘文件里的三条记录，导出队列，照人的做法退出，另存和换回服务器的库），都没有原件。总入口加了离线这一组和 `-OnlyOffline`。两个脚手架、`e2e_env.ps1`、`run_all.ps1`、`run_cross.ps1` 没有动。
+- 为离线使用与上线后同步新写的（2026-11-20，`OFF-13`）：新写了离线的另外四个场景（`o05`–`o08`），都没有原件。第八组按文件名找场景，总入口没有改；`oh.py`、两个脚手架、`e2e_env.ps1`、`run_all.ps1`、`run_cross.ps1` 都没有动。
 
 ### 3.3 最近的执行
 
@@ -555,6 +559,34 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 | `VAL-CROSS-011` | 只读会话的截图与审计交叉验证 | — | `x04_readonly_role.py` 11 项 | 有 | 只读标识和属性面板的行是从程序上报的界面状态读的，截图本身只查了写出来 |
 | `VAL-CROSS-012` | 协同会话结束后本地文件可独立打开且无协同残留 | `ui::window::pid_collab::tests::a_panel_with_no_server_says_so_and_how_to_set_one` | `x12_after_session.py` 15 项 | 有 |  |
 
+### 4.10 离线使用与上线后同步 `OS`（21 条）
+
+离线规格（`docs/plans/2026-11-16-pid-dev-spec/SPEC-collab-offline-sync.md`）§7 的 21 条成功标准。它们不是验收契约，不计入第 2 节的合计。场景是第八组的 `o01`–`o08`（第 3.2 节的「离线那一组」），检查项的标签就是 OS 编号，前提标 `setup`；同一个场景里同一个编号的几项，按出现的次序记作 a、b、c（离线规格 §11.15、§11.17 的对照运行也这样叫）。「N 项」取自 2026-11-20 `OFF-13` 的那一轮 `run19.ps1 -OnlyOffline`，八个场景都没有失败的项。「覆盖」的取值同第 1 节；OS-20、OS-21 不在这一组验，记「—」。单元测试只在它替代或补足端到端检查的地方写出（OS-16、OS-18、OS-19），各任务另加的单元测试见离线规格 §11 的各节。
+
+| 编号 | 成功标准 | 场景与检查项 | 覆盖 | 说明 |
+|---|---|---|---|---|
+| `OS-01` | 没有服务器：带同步记录的图打开、绘制、保存、重开，三条记录都在，失败步骤数为 0 | `o07_no_server_dxf.py` 4 项 | 有 | 图里的三条记录是场景先连着服务器造出来的：同步记录、排队的一步、被拒并撤回的一条清单。服务器不在时带协同参数打开，画直线、画圆、放阀门、改属性、保存，失败的步骤 0（01a）；退出重开，画的都在（01b）；不连协同的实例读文件，同步记录和清单与打开前相同，队列是原来那条加新排的两条（01c）；不连协同的实例打开、画、保存，三条记录不变（01d） |
+| `OS-02` | 三条记录经 DWG 和 DXF 存盘再读回，内容不变 | `o07_no_server_dxf.py` 2 项 | 有 | 带协同参数的实例经控制接口另存 DWG 和 DXF，不连协同的实例分别读回，三条记录与原图逐项相同（02a）；带协同参数打开那份 DXF，队列和清单的条数相同、按离线对待（02b）。七个版本的 DWG 和 DXF 另有往返测试（`dwg_roundtrip.rs`，离线规格 §11.10） |
+| `OS-03` | 跨重启：断线、改 n 步、保存、退出、重开、连上，补齐别人的修改，n 步按原次序提交，两端相同 | `o01_restart_resubmit.py` 4 项 | 有 | n 是 3，其中同一个字段改两次（次序一反结果就不同）。房间在这期间往前走一步；重开后 `hello` 带 `since` 和库标识，补发的先写进图、再发自己的 |
+| `OS-04` | 开程序时没有服务器：图里有记录就排队；服务器起来后提交，两端相同 | `o01_restart_resubmit.py` 2 项 | 有 |  |
+| `OS-05` | 连续两次离线运行：两次排的修改编号互不相同，全部提交，没有一条被吞掉 | `o02_ids_and_duplicates.py` 2 项 | 有 |  |
+| `OS-06` | 两个人同时离线各改各的，先后回来：各自的修改都到对方图上，两端相同 | `o02_ids_and_duplicates.py` 2 项 | 有 |  |
+| `OS-07` | 同一份带队列的图在两台机器上先后打开：每条修改在房间里只生效一次 | `o02_ids_and_duplicates.py` 2 项 | 有 | 「第二台机器」是同一台机器上的第二个实例（自己的 APPDATA，用户仍是 u1）。副本在补齐时自己认出了重号、一条没发，服务器认编号这一层由第二项测：一个 WS 会话把日志里已有的编号再发一次，只回当初那条 `op_applied`、不广播 |
+| `OS-08` | 三种对不上（库标识不符、本地修订领先、日志不够）：显示原因和「需要取得最新图纸」；一步都没有发出去；房间的修改没有写进这份图；保存后图里的库标识和修订不变 | `o03_align_refused.py` 9 项 | 有 | 三种（`REPO_MISMATCH`、`REVISION_AHEAD`、`REPLAY_GAP`）各 3 项：说了什么；发没发、写没写；保存后读回 |
+| `OS-09` | 没对上的会话硬发 `op`：服务器拒绝，码是 `NOT_ALIGNED`，房间里没有这一步 | `o03_align_refused.py` 2 项 | 有 | 硬发的是一个 WS 会话：桌面端对不上时不发 |
+| `OS-10` | 标了不一致的图保存、重开、加入：仍按不一致处理，不上报位号，不发队列 | `o04_diverged_sticks.py` 4 项 | 有 | 补齐时写不进而标的（`REMOTE_UNAPPLIED`）保存、重开；带着队列补齐时写不进的（2026-11-20 修了那处缺陷后加的，离线规格 §11.16）；带着队列、又在不连协同时改过的（`UNQUEUED_EDITS`）打开、再重开。重开时的 `hello` 里没有库标识、`since` 和已有位号 |
+| `OS-11` | 带记录的图在没连协同的运行里做了语义修改并保存：下次加入按不一致处理并说明原因；只动位置的修改不触发 | `o04_diverged_sticks.py` 2 项 | 有 |  |
+| `OS-12` | 明确给的图号与图里记录的不同：不在这张图上起会话，图里的记录没有被改写；没给图号时取图里记录的；`PIDCOLLAB DETACH` 并保存之后三条记录都没有了，加入时按没同步过的图对待 | `o04_diverged_sticks.py` 3 项 | 有 |  |
+| `OS-13` | 当前用户不是排队的人：不代发，按对不上处理 | `o04_diverged_sticks.py` 2 项 | 有 | 对不上的码是客户端自己的 `QUEUED_BY_OTHERS` |
+| `OS-14` | 重开后被拒并撤回，四种原因各一例（占用、没有写权限、删除仍被引用的对象、别人动过同一条线）：被拒的那一步从本图撤回，后面无关的照常提交，两端相同，拒绝记录和未同步清单各有一条 | `o05_refused_rollback.py` 8 项 | 有 | 一份图里排三种（`CLAIM_HELD`、`OBJECT_REFERENCED`、`STALE_BASE_REVISION`）加一步无关的：码和撤回的说法、三步在本图撤回、无关的提交、两端相同、记录与清单的编号对上（14a – e）。没有写权限另用一份图，图纸状态改成只读之后重开（`PERM_DENIED_STATE`，14f – h）：写权限按会话判，这份图里没有能提交的一步，「后面无关的照常提交」在前一份里验。被拒的是从文件里恢复的步骤，按反向修改撤回，拒绝记录里说「已按反向修改撤回」。被引用的对象是一个 WS 会话先加一条带 `from` 的管路造出来的：服务器只按管路的 `from`、`to` 认引用，桌面端画管路时不带这两个字段 |
+| `OS-15` | 重开后让位（别人改了同一个字段、别人删了对象）：本图是房间的样子，不标不一致 | `o05_refused_rollback.py` 3 项 | 有 | 两步让位（`OP_SUPERSEDED`、`OBJECT_DELETED`），同一次重连里无关的一步照常提交 |
+| `OS-16` | 客户端会发的十种变更逐种：做一步、按反向修改撤回，本图的位号、属性、拓扑记录与做这一步之前相同 | `app::collab::collab_inverse::a_property_changed`<br>`app::collab::collab_inverse::a_retag`<br>`app::collab::collab_inverse::a_symbol_placed`<br>`app::collab::collab_inverse::a_symbol_erased`<br>`app::collab::collab_inverse::a_connector_made`<br>`app::collab::collab_inverse::a_connector_erased`<br>`app::collab::collab_inverse::a_pipe_line_drawn`<br>`app::collab::collab_inverse::a_run_drawn`<br>`app::collab::collab_inverse::a_fitting_put_on_a_run`<br>`app::collab::collab_inverse::a_run_changed`<br>`app::collab::collab_inverse::a_pipe_line_erased`<br>`app::collab::collab_inverse::a_run_erased_with_its_segments`<br>`app::collab::collab_inverse::a_tagged_fitting_erased`<br>`app::collab::collab_inverse::a_line_property_carried_to_its_run`<br>`app::collab::collab_inverse::a_step_taken_back`<br>`app::collab::collab_inverse::one_of_many_properties_changed`<br>`app::collab::collab_inverse::a_symbol_with_many_properties_erased` | 有 | 只靠单元测试，不起进程（离线规格 §8 定的）。前 13 条是十种变更逐种（删除分符号、管线、管段、带位号的阀门），后四条是改管线属性带着管段、撤回的一步、属性超过 2 KB 的两例。撤不回的 0 种；管段号不退是记下的差异（离线规格 §11.10） |
+| `OS-17` | 未同步清单列出队列里的、被拒的、没排上队的；导出的文件条数对得上；清单随图保存 | `o06_unsynced_exit.py` 4 项 | 有 | 只有排队的两步时，`PIDCOLLAB UNSYNCED` 的第一行是「排队 2 条，被拒 0 条，没排上队 0 条」（17a）；三种各一条时列出三行（17b），导出的文件按状态各 1 条，与状态接口的数对得上（17c）；保存后不连协同的实例读出的队列和清单与导出的同号（17d）。没排上队的那条是不连协同的实例在副本上改出来的 |
+| `OS-18` | 离线时面板显示「离线，n 步待同步」，提交完数字归零；队列不空时退出提示一次 | `o06_unsynced_exit.py` 6 项<br>`ui::window::pid_collab::tests::the_sync_line_and_the_prompt_read_as_the_spec_has_them`<br>`ui::window::pid_collab::tests::the_sync_line_is_drawn_under_the_banner_while_steps_wait`<br>`app::collab::collab_exit_prompt::pid_collab::offline_the_line_says_how_many_steps_wait`<br>`app::collab::collab_exit_prompt::quitting_with_steps_queued_asks_and_cancel_stays` | 有 | 场景读不到面板上的字：读的是这一行在不在和 `connected`、`queued_ops` 两个数，另留截图；字由单元测试按同样的两个数核对（第 3.2 节的「离线那一组」）。在线、队列空时没有这一行（18a），离线两步时有（18b）；服务器回来后被拒的一步撤回、另一步提交，队列为 0，这一行没了（18e，归零就是这一行消失，`OFF-10` 的做法）。退出：队列两步时 `QUIT` 问一次，答「取消」留下、队列不变（18c），再 `QUIT` 再问、答「退出」就退出（18d）；队列空时不问（18f） |
+| `OS-19` | 服务器的库打不开：不接受会话；用 `--new-repo-id` 启动后，旧图纸得到 `REPO_MISMATCH` | `o08_server_store.py` 6 项<br>`ocs_collab_server[main.rs]::tests::store_unavailable_a_database_that_cannot_be_opened_takes_no_session`<br>`ocs_collab_server[main.rs]::tests::new_repo_id_at_startup_changes_the_id_once_and_it_stays`<br>`ocs_collab_server::ws::tests::store_unavailable_a_hello_is_refused_and_the_connection_closed`<br>`ocs_collab_server::ws::tests::new_repo_id_a_drawing_that_remembers_the_old_id_gets_repo_mismatch` | 有 | 库打不开是用 `--db` 指向一个目录造的：进程在跑，`/health` 和 `POST /session` 是 503（19a）；`hello` 得到 `STORE_UNAVAILABLE`，接着连接关闭（19b）；桌面端没有会话、一步不发（19c）。带 `--new-repo-id` 启动：输出新标识（19d）；旧图纸对不上（`REPO_MISMATCH`）、一步不发、队列还在（19e）；再不带参数启动，标识还是新的（19f） |
+| `OS-20` | 发布：队列不空、不一致、没对账三种情形各被拦，码对得上；放行时清单写 `reconciled: false` | 在 `PUB-4` 验 | — | `PUB-4` 验收的最后一条（「协同前提」）；这一组不跑 |
+| `OS-21` | 原有 228 条契约的场景全部照过 | 在 `CC-7` 验 | — | `CC-7` 是全量复验，届时连这八个场景一起跑 |
+
 ## 5. 缺口
 
 ### 5.1 没有覆盖或只覆盖一部分的（0 条）
@@ -650,4 +682,5 @@ cargo test --offline --locked -p ocs_collab -p ocs_collab_server
 - 第三遍（补了第 5.2 节的断言后跑的五组全量）与第二遍逐个场景、逐个标签比过：除补了断言的四个场景之外，其余 26 个场景和收尾的整轮检查各标签通过和失败的项数全部相同；四个场景里多出来的正是新加的 38 项，另有 `t20_session` 的 `VAL-CLI-001` 从 4 项通过、1 项失败变成 5 项通过。
 - 第四遍（补了看图的场景后跑的六组全量）与第三遍逐个场景、逐个标签比过：两遍都有的 34 份结果（31 个场景、两张种子图、`t03_vanish_retry` 的第一次）里，31 份各标签的通过数和失败数完全相同。不同的 3 份：`t00_smoke` 多了 3 项（`VAL-INFRA-009` 1 项、`VAL-INFRA-010` 2 项），原有的 7 项不变；`t02_harness_rules` 的 `VAL-INFRA-014` 由 4 项通过变成 2 项通过、2 项失败；`t25_offline` 的 `VAL-CLI-015` 由 6 项通过变成 5 项通过、1 项失败。后两处的原因见第 3.3 节。看图的五个场景只在第四遍里有。
 - 第五遍（补了计时的场景后跑的七组全量）与第四遍逐个场景、逐个标签比过：两遍都有的结果文件 39 个（含两个种子脚本和 `t03_vanish_retry` 留下的第一次尝试），37 个各标签通过、没过的项数全都相同；不同的 2 个是 `t02_harness_rules`（`VAL-INFRA-014` 通过 2 → 4）和 `t25_offline`（`VAL-CLI-015` 通过 5 → 6），项数没有变，都是上一遍没过的这一遍过了（第 3.3 节）。计时的三个场景只在第五遍里有。
+- 离线那一节（第 4.10 节，2026-11-20 `OFF-13`）：OS-01 – OS-21 各出现一次。项数是逐个场景、逐个标签从 `OFF-13` 那一轮 `run19.ps1 -OnlyOffline` 的结果文件里数的：八个场景 238 项全过，带 OS 编号的 67 项与表里写的逐条相同。表里引用的 25 个单元测试（OS-16 的 17 个，OS-18、OS-19 各 4 个）都在源码里唯一地找到；它们在离线规格 §11.16 那次全量测试里是通过的，`OFF-13` 没有动 Rust 代码。这 67 项每一项都至少在一次对照运行里失败过：`o01` – `o04` 的 34 项见离线规格 §11.15（`o04` 后加的那一项见 §11.16），`o05` – `o08` 的 33 项见 §11.17。
 - 「有」「部分」「缺」是逐条对着契约正文和测试、脚本的代码判断的，判断时没有重新执行端到端脚本。前六个区逐条读了契约正文和测试代码；后三个区以状态文档当时的逐条结论为准，对带计时、截图判据的和后补的几条另读了脚本的检查项。
