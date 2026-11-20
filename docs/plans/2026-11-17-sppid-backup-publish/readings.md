@@ -5362,6 +5362,22 @@ SQL Server 包：
   - `scripts\fmt-newhunks.ps1`：`pidbackupexport.rs` 新增 `0`（0 → 0），`pidbackuppdf.rs` 新增 `0`（0 → 0），`src/app/view/mod.rs` 新增 `0`（11 → 11）；
   - `python scripts/arch_check.py report`：与改前逐行相同（33 对模块，183 个文件）。
 
+---
+
+## 34. UI-3：导航三处接线与 `backup` 空画面骨架（2026-11-20）
+
+- **起点与编译器**：`main @ 6523d84d9`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui3\`（工作区 `.pen` 备份在 `D:\scratch\ocs-sppid\2026-11-20-pen-backup\`）。
+- **改动**：
+  1. 工作区 `docs/pid-platform/design/pid-platform.pen`（按方案 A1 留在本地不入库）补入 `Nav backup`（`Group 设计` 内紧跟 `Nav editor`）及 22 个双主题画框（`BkF01..11` / `BkL01..11`）。
+  2. 新建 `src/app/pid_shell/backup.rs`，在 `src/app/pid_shell/mod.rs` 注册 `PidScreen::Backup`（`id = "backup"`、`title = "备份数据包"`、`group = NavGroup::Design`、`needs_drawing = false`），同步更新 `docs/pid-platform/prototype/specs/screen-catalog.json`、`docs/pid-platform/requirements/00-overview.md`（`REQ-MIG-008..010`）及文档检查 `SCREEN_IDS`（`conftest.py`、`test_traceability.py`）。
+- **先红后绿**：`VIEW = None` 且未改 `screen-catalog.json` 时 `the_screens_are_the_ones_the_design_navigates_to` 与 `pid_shell_ui3_backup_screen_is_registered_in_nav_and_draws_its_frame` 2 条按预期红灯（`red.txt`）；接线后 `pid_shell_startup` 14/14、`pid_shell_chrome` 11/11、`pytest scripts/pid-platform` 590/590 全过（`green.txt`、`chrome_green.txt`、`pytest_docs.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7129 条（7073 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `rustfmt --check backup.rs` 0 差异，`scripts\fmt-newhunks.ps1` 对 `mod.rs`、`pid_shell_startup.rs`、`pid_shell_chrome.rs` 全部新增 `0`；
+  - `python scripts/arch_check.py report`：与改前逐行相同。
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -5402,3 +5418,4 @@ SQL Server 包：
 | 2026-11-20 | 把 `main` 合进 `sppid-exp2`：主线记的 §24 改号为 §30（小节号跟着改，其余照录；`todo.md` 里指向它的 5 处跟着改），开头的状态说明加上 §30、§31，§29 那一句补上主线做过的一次；加 §31：这次合并的记录 |
 | 2026-11-20 | 加 §32（检查点 C 第 1 段 `UI-1` 备份包载入计时与浏览只读访问器）：`PidBackupBrowser` 载入计时与来源保留、特殊组中文映射、装置组子树与图内对象过滤纯函数，4 条快测试先红后绿及全套门禁读数 |
 | 2026-11-20 | 加 §33（检查点 C 第 1 段 `UI-2` 导出状态结构化访问器、界面启动入口与 1 秒跳秒订阅）：`BackupExport` / `BackupPdf` 只读访问器与界面预检/启动入口、`BackupPdf::Running.started`、`view::subscription` 1 秒跳秒订阅，4 条快测试先红后绿及全套门禁读数；顺带重编最新 `target\release\OpenCADStudio.exe` |
+| 2026-11-20 | 加 §34（检查点 C 第 2 段 `UI-3` 导航三处接线与 `backup` 空画面骨架）：`PidScreen::Backup`、`screen-catalog.json`、`00-overview.md` 及文档契约 15 屏同步注册，先红后绿及全套门禁读数 |

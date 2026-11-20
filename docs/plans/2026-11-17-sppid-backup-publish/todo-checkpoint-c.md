@@ -79,13 +79,14 @@
   2. `docs/pid-platform/requirements/00-overview.md` 将 `REQ-MIG-008`、`REQ-MIG-009`、`REQ-MIG-010` 的承载画面更新为 `backup`；
   3. 新建 `src/app/pid_shell/backup.rs`（最小 `State`、`Message`、`VIEW = Some(view)`、`PID_SHELL:backup` 外框），并在 `src/app/pid_shell/mod.rs` 中接入 `PidScreen::Backup`（`id = "backup"`，`title = "备份数据包"`，`group = NavGroup::Design`（或照定稿 `.pen`），`needs_drawing = false`）与 `PIDSCREEN backup` 命令切换。
 - **验收**：
-  - [ ] `pid_shell_startup::the_screens_are_the_ones_the_design_navigates_to` 通过（`.pen`、`screen-catalog.json`、`PidScreen::ALL` 三处完全一致）。
-  - [ ] `nav()` 列出 `Editor` 与 `Backup`；点击左侧导航「备份数据包」或执行 `PIDSCREEN backup` 切换到 `PidScreen::Backup`，画布上报 `PID_SHELL:backup` 矩形。
-  - [ ] `docs/pid-platform/` 文档检查测试通过。
+  - [x] `pid_shell_startup::the_screens_are_the_ones_the_design_navigates_to` 通过（`.pen`、`screen-catalog.json`、`PidScreen::ALL` 三处完全一致）。
+  - [x] `nav()` 列出 `Editor` 与 `Backup`；点击左侧导航「备份数据包」或执行 `PIDSCREEN backup` 切换到 `PidScreen::Backup`，画布上报 `PID_SHELL:backup` 矩形。
+  - [x] `docs/pid-platform/` 文档检查测试通过。
 - **验证**：`cargo test --offline --locked --lib pid_shell_startup`
 - **依赖**：Pencil 设计稿定稿（`sppid-design`）
 - **文件**：新建 `src/app/pid_shell/backup.rs`；修改 `src/app/pid_shell/mod.rs`、`src/app/pid_shell/pid_shell_startup.rs`、`docs/pid-platform/prototype/specs/screen-catalog.json`、`docs/pid-platform/requirements/00-overview.md`
 - **规模**：S
+- **做完**（2026-11-20）：新建 `src/app/pid_shell/backup.rs` 并在 `PidScreen::ALL`（`设计` 组紧跟 `Editor`）、`screen-catalog.json`、`00-overview.md`（`REQ-MIG-008..010`）及文档契约 `SCREEN_IDS` 同步注册 `backup`（`备份数据包`）；先红后绿（`pid_shell_startup` 14/14、`pid_shell_chrome` 11/11、`pytest scripts/pid-platform` 590/590；全库 7129 条：7073 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试；clippy `656` / `1051` 零新增；`fmt-newhunks` 均新增 0；`arch_check` 0 变化）。读数见 `readings.md` §34，证据在 `D:\scratch\ocs-sppid\2026-11-20-ui3\`。
 
 ### UI-4 【界面】浏览画面：未打开、载入中、出错三种状态及缓存与经典面板入口
 

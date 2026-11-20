@@ -145,6 +145,7 @@ pub mod canvas;
 pub mod chrome;
 pub(crate) mod rebase;
 
+pub mod backup;
 pub mod bom;
 pub mod color_rules;
 pub mod drawings;
@@ -196,6 +197,8 @@ pub enum PidScreen {
     Drawings,
     /// 03 P&ID 编辑器.
     Editor,
+    /// 备份数据包.
+    Backup,
     /// 04 符号调色板.
     Palette,
     /// 05 属性面板.
@@ -247,10 +250,11 @@ impl NavGroup {
 
 impl PidScreen {
     /// Every screen of the design, in its order.
-    pub const ALL: [PidScreen; 14] = [
+    pub const ALL: [PidScreen; 15] = [
         PidScreen::Workbench,
         PidScreen::Drawings,
         PidScreen::Editor,
+        PidScreen::Backup,
         PidScreen::Palette,
         PidScreen::Properties,
         PidScreen::TypeLib,
@@ -272,6 +276,7 @@ impl PidScreen {
             PidScreen::Workbench => "workbench",
             PidScreen::Drawings => "drawings",
             PidScreen::Editor => "editor",
+            PidScreen::Backup => "backup",
             PidScreen::Palette => "palette",
             PidScreen::Properties => "properties",
             PidScreen::TypeLib => "typelib",
@@ -292,6 +297,7 @@ impl PidScreen {
             PidScreen::Workbench => "工作台",
             PidScreen::Drawings => "图纸管理",
             PidScreen::Editor => "P&ID 编辑器",
+            PidScreen::Backup => "备份数据包",
             PidScreen::Palette => "符号调色板",
             PidScreen::Properties => "属性面板",
             PidScreen::TypeLib => "业务类型库",
@@ -312,6 +318,7 @@ impl PidScreen {
             PidScreen::Workbench
             | PidScreen::Drawings
             | PidScreen::Editor
+            | PidScreen::Backup
             | PidScreen::Palette
             | PidScreen::Properties => NavGroup::Design,
             PidScreen::TypeLib
@@ -339,6 +346,7 @@ impl PidScreen {
             PidScreen::Workbench => workbench::VIEW,
             PidScreen::Drawings => drawings::VIEW,
             PidScreen::Editor => editor::VIEW,
+            PidScreen::Backup => backup::VIEW,
             PidScreen::Palette => palette::VIEW,
             PidScreen::Properties => properties::VIEW,
             PidScreen::TypeLib => typelib::VIEW,
@@ -392,6 +400,8 @@ pub struct PidShell {
     pub drawings: drawings::State,
     /// 03 P&ID 编辑器.
     pub editor: editor::State,
+    /// 备份数据包.
+    pub backup: backup::State,
     /// 04 符号调色板.
     pub palette: palette::State,
     /// 05 属性面板.
@@ -476,6 +486,8 @@ pub enum Message {
     Drawings(drawings::Message),
     /// 03 P&ID 编辑器.
     Editor(editor::Message),
+    /// 备份数据包.
+    Backup(backup::Message),
     /// 04 符号调色板.
     Palette(palette::Message),
     /// 05 属性面板.
@@ -574,6 +586,7 @@ impl OpenCADStudio {
             Message::Workbench(message) => workbench::update(self, message),
             Message::Drawings(message) => drawings::update(self, message),
             Message::Editor(message) => editor::update(self, message),
+            Message::Backup(message) => backup::update(self, message),
             Message::Palette(message) => palette::update(self, message),
             Message::Properties(message) => properties::update(self, message),
             Message::TypeLib(message) => typelib::update(self, message),
