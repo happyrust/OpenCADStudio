@@ -7218,6 +7218,13 @@ impl OpenCADStudio {
         id
     }
 
+    /// Test hook for code outside `crate::app` (the drawing summary tests):
+    /// the active tab's drawing, read without reaching into `tabs`.
+    #[cfg(test)]
+    pub(crate) fn active_document_for_test(&self) -> &document::Document {
+        &self.tabs[self.active_tab].scene.document
+    }
+
     /// Open a declarative plugin modal dialog on the currently active tab.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn open_plugin_dialog(&mut self, def: ocs_plugin_api::dialog::DialogDef) {

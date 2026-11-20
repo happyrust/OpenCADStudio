@@ -14,6 +14,7 @@ pub mod graph_data;
 pub mod master_data;
 pub mod perf_budget;
 pub mod persist;
+pub mod project_index;
 pub mod propagate;
 pub mod symbols;
 pub mod tag_engine;
