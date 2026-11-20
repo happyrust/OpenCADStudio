@@ -396,14 +396,15 @@
 
 - **做什么**：在阶段 A 最后一个代码提交上从头跑一遍：全部单元测试与协同两个 crate 的测试；客户端八个场景（110 项）、冲突三个场景（61 项）、跨区流程 12 个场景。2026-11-17 加：离线同步的八个场景（`o01` – `o08`，总入口的第八组），离线规格 §7 的 OS-01 – OS-21 每条也记下证据。每条契约记下证据：跑的什么命令，输出在哪个文件。不通过的不许带过：能修的另开一个修复任务（先写复现它的测试），修不了的记为已知限制并请你同意。
 - **验收**：
-  - [ ] 228 条契约每条有证据位置，没有「没跑却算过」的。
-  - [ ] 端到端场景全部通过；不通过的每一个都有去向（修复它的提交号，或经你同意的已知限制）。
-  - [ ] 记下复验所在的提交号。
-  - [ ] 离线规格 §7 的 OS-01 – OS-21 每条有证据位置（OS-20 记「在 `PUB-4` 验」）。
+  - [x] 228 条契约每条有证据位置，没有「没跑却算过」的。
+  - [x] 端到端场景全部通过；不通过的每一个都有去向（修复它的提交号，或经你同意的已知限制）。
+  - [x] 记下复验所在的提交号。
+  - [x] 离线规格 §7 的 OS-01 – OS-21 每条有证据位置（OS-20 记「在 `PUB-4` 验」）。
 - **验证**：`cargo test --offline --locked --lib`；`cargo test --offline --locked -p ocs_collab -p ocs_collab_server`；`scripts\collab-e2e\run_all.ps1`、`scripts\collab-e2e\run_cross.ps1`，查看汇总文件；总入口 `scripts\collab-e2e\run19.ps1`（含第八组）
 - **依赖**：CC-1、CC-2、CC-3、CC-6、OFF-13
 - **文件**：不改代码；证据在仓库外；`scripts/collab-e2e/README.md` 的对照表补上证据位置
 - **规模**：M
+- **补（2026-11-20）**：复验在 `collab-off2` 分支的提交 `3450558e6` 上做（工作区干净），没有改代码，之后只改了文档。证据目录在仓库外：`D:\scratch\ocs-sppid\2026-11-20-cc7`。**命令与输出**：`cargo test --offline --locked --lib` → `unit-lib.txt`（7239 条：7182 通过、55 默认不跑、2 失败；连重编测试程序 188 秒）；`cargo test --offline --locked -p ocs_collab -p ocs_collab_server` → `unit-collab.txt`（98；187 + 21，全过）；两个可执行文件开跑前在这份检出里编（`build-gui.txt`、`build-server.txt`，服务器不用重编）；`run19.ps1 -EvidenceDir <证据目录>\e2e -PortShift 300 -Label cc7` → `e2e\`，汇总是 `e2e\summary-cc7-20261120-210132.txt`。**结果**：八组 46 个场景加收尾的整轮检查 830 项全部通过（各组 33、357、81、56、45、14、239、5），残留进程 0，桌面记录 50 次都是「没变」，跑完工作区仍干净，用时 31 分钟。**逐条的证据**：证据目录里的 `evidence.py` 读 `scripts/collab-e2e/README.md` 第 4 节的 249 行（228 条契约、21 条 OS）。表里列的 369 个单元测试在输出里都是 `ok`；113 处场景引用按标签数的项数都与表里写的相同、都是 `PASS`；对不上的 0 处（`evidence-check.txt`、`evidence.tsv`）。README 各表加了最后一列「复验证据」，按核对结果生成（`annotate.py`）；OS-20 记「在 `PUB-4` 验」，OS-21 改成由这一遍取证；另补了第 1 节、第 2 节、第 3.1 节的读数、第 3.2 节的用时、第 3.3 节这一遍的记录、第 5.2 节最后一行。**没过的**：主程序库的 2 条设计稿比对（`the_grid_is_drawn_the_way_the_design_draws_it`、`the_code_states_nothing_the_design_does_not`），文档检查里的 1 项（`test_the_committed_table_is_what_the_design_generates`）同源：`7d545f845`（2026-11-19，默认主题改成亮色）给代码里的主题表加了设计稿没有的 11 个变量（`canvas-grid-major` 等）、网格改用变量，仓库里的设计稿没有跟着改。离线同步的起点 `51b654a87` 就有，与协同无关，228 条契约没有引用它们；去向请你定。
 
 ### CC-8 【文档】状态文档结项
 
