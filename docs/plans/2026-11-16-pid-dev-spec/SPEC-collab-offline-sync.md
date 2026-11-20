@@ -861,3 +861,49 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 - `inverse` 有几项写进去、几项写不进去时，写进去的不退，标 `ROLLBACK_FAILED`。
 - 拒绝记录只留最近 8 条，不存盘；存盘留下的是未同步清单。
 - 端到端没有跑，归 `OFF-12`。
+
+### 11.12 `OFF-9`：未同步清单、导出、去掉同步记录（2026-11-20）
+
+**做法。** 实现在新文件 `src/app/collab/unsynced.rs`；`PIDCOLLAB` 的四个新子命令在 `claims.rs` 里解析后调它。四个子命令都对着前台的图（开始页不算），没有图纸时报「没有打开的图纸」。
+
+- **队列和清单从哪里读。** 会话已经读入这张图（`collab.document` 是它，且 `seeded`）时，队列是会话的 `outbox`，后接读不出的条目（`unreadable_queue`）；否则是图里的队列记录。清单是图里的未同步清单，后接这次运行记下的没排上队的（`collab.unqueued`）和被拒的（`collab.refused`），与存盘写出的次序相同。
+- **`UNSYNCED`**：先一行总数「排队 n 条，被拒 n 条，没排上队 n 条」（清单里有别的 `state` 时加「其他 n 条」），再每条一行：状态、`op_id`、`label`、用户、码和说明，被拒的另写已撤回或没有撤回；读不出的写「读不出的一条」。
+- **`UNSYNCED CLEAR`**：这次运行记下的两种从内存里清掉，图里的未同步清单记录从正在编辑的文档上去掉，下次存盘生效；队列不动。没排上队的修改给图的 `UNQUEUED_EDITS` 标记留下（`collab.unqueued_marks`，存盘时 `unqueued_for_save` 先看它）。
+- **`EXPORT <路径>`**：按 §4.4 写 JSON：`version` 为 1、`kind` 为 `collab_unsynced`、`drawing_id`、`repo_id`、`revision`（会话读入的图用会话的，否则用图的记录，没有记录是 `null`）、`exported_at`、`diverged`（码、说明、时间，没有是 `null`）、`entries`。`entries` 先排队列（`state` 为 `queued`），后接清单（照抄清单里的字段）；每条的 `payload` 按协议 §4 展开成 `changes`，嵌套的 `changes` 拉平。读不出的条目带原样的 `raw`，`changes` 为空。文件里不写服务器地址。路径两头的引号去掉；写不进去时命令行报「写不进 <路径>：<原因>」，图、撤销栈和脏标记都不动。
+- **`DETACH [FORCE]`**：
+  - 前台的图是会话的图，而且状态是 `ok`：拒绝，让先断开协同。
+  - 队列或清单不空、没带 `FORCE`：拒绝，说明排队几条、未同步几条，指到 `PIDCOLLAB EXPORT <路径>` 和 `PIDCOLLAB DETACH FORCE`。
+  - 否则三条记录立即从正在编辑的文档上去掉（`without_collab_records`），下次存盘写出的文件里就没有；这张图在内存里的清单和标记一并忘掉。图是会话的图，或者会话还没定图、而图的记录就是本次会话的图号时，会话关于它的状态也忘掉（`State::forget_drawing`）：队列、读不出的条目、不一致、`repo_id`、基线修订号（归零）、`had_session`，并记下 `detached`。
+- **去掉记录以后的加入。** 传输线程记着上次会话停在的修订号（`seen`），下一次 `hello` 优先说它，不看图里的记录。所以加了一种答复 `TagsSaid::Detached`：`detached` 时，界面对位号的问题这样答；传输层收到后忘掉 `seen`，`hello` 不带 `since` 和 `repo_id`；这个答复要是会话进行中欠着的（`run_session` 等位号那条路），先离开房间再重新加入。下一次被房间接受为对上的连接（`Connected` 时没被隔开）清掉 `detached`。
+- **状态接口。** `collab_status` 在原来的应答上加四个字段（`collab_status_json`），原有字段不动；`GET /api/v1/collab/status` 由 `rest.rs` 转给同一个控制操作。看会话的图，会话还没定图时看前台的图。`align` 依次判断：图知道自己不一致（会话的不一致记录、图里的标记、这次运行没排上队的修改的标记）为 `diverged`，`align_code` 和 `align_message` 是那条标记的码和说明；有连接时，被隔开（`not_aligned`）为 `refused`，带它的码和说明，否则为 `ok`；没有连接时，图里有记录、或者这次运行有会话对上过这张图，为 `offline`；其余为 `none`。`unsynced_count` 是清单的条数，不含队列（队列条数原来就有 `queued_ops`）。
+- **写错子命令的提示**列全九个：`ON`、`OFF`、`SERVER`、`USER`、`DRAWING`、`UNSYNCED`、`UNSYNCED CLEAR`、`EXPORT <路径>`、`DETACH [FORCE]`。
+- **用样板新建的图不带三条记录**：`QNEW` 的默认样板、`NEW` 选的样板、控制接口 `new` 带 `template`，三条路都走 `apply_template`，在那里去掉。
+
+与任务写法不同、或任务没有说的：
+
+1. **「文件」一栏列的是 `claims.rs`、`mod.rs`、`apply.rs`、`collab_state.rs`、`rest_openapi.json`。** 实现另放在新文件 `src/app/collab/unsynced.rs`；另改了 `src/app/collab/transport.rs`（`Detached` 答复）、`src/app/control/mod.rs`（状态接口改用 `collab_status_json`）、`src/app/control/sheets.rs`（样板）。`collab_state.rs` 没改，原有的读写函数够用。`src/rest_openapi.json` 里没有协同状态接口这一项，没改。
+2. **`DETACH` 立即从正在编辑的文档上去掉记录**，不只是从存盘写出的那一份里去掉，这样之后的加入、状态和清单马上按没同步过的图看。与记录本身一样，这不标脏、不进撤销栈：去掉以后不存盘就关掉，文件里的记录还在。
+3. **`UNSYNCED CLEAR` 留下 `UNQUEUED_EDITS` 标记。** 标记说的是图与房间不一致，清单清掉并不改变这一点；只有 `DETACH` 去掉标记。
+4. **传输层跟着改了**（上文「去掉记录以后的加入」）。只改界面，同一次运行里去掉记录以后重连，`hello` 仍带上次会话的 `since`。
+5. **`OFF-5` 留给这里的样板问题定为去掉**（上文最后一项）。
+6. **测试和验收的对应**（新文件 `collab_unsynced.rs` 18 条，其中 `collab_status` 模块 6 条；`transport.rs` 里 1 条，名字也带 `collab_unsynced`）。
+   - 验收 1：`the_list_says_what_is_queued_refused_and_unqueued`（图里的队列 2 条、被拒 1 条、没排上队 1 条）、`the_sessions_drawing_lists_its_queue_as_it_stands`（会话读入以后离线又改了一步，队列 3 条）。
+   - 验收 2：`the_export_has_the_queue_and_the_list_and_no_server_address`、`an_export_that_cannot_be_written_says_so_and_changes_nothing`。
+   - 验收 3：`clearing_the_list_leaves_the_queue_and_the_mark`。
+   - 验收 4：`detach_with_something_unsynced_is_refused_and_says_why`、`detach_force_takes_the_three_records_off_at_the_next_save`（存盘后重开，对位号问题的答复不带位置）、`detach_with_nothing_unsynced_needs_no_force`、`detach_after_a_session_in_this_run_claims_nothing_on_the_next_join`；传输层 `collab_unsynced_a_detached_copy_claims_nothing_of_where_the_last_session_left_it`（上次会话停在 43，去掉记录以后的 `hello` 没有 `since` 和 `repo_id`，再下一次照常）。
+   - 验收 5：`detach_against_an_aligned_session_is_refused`。
+   - 验收 6：`collab_status` 模块，五种状态各一条，外加 `the_fields_that_were_there_read_as_before`（去掉四个新字段以后与 `status_json` 相同）。
+   - 验收 7：`a_mistyped_subcommand_lists_the_four_new_ones`。
+   - 样板：`a_drawing_started_from_a_template_has_none_of_its_records`。
+
+**先红后绿。** 先写测试，生产代码只加了 `TagsSaid::Detached` 和传输层收到它的两个分支（不加编译不过）。第一次跑 18 条（样板那条还没写）：0 过 18 败。子命令和状态的测试败在子命令还不认识（命令行只回「只接受 ON、OFF……」）、应答里没有 `align`，导出那条败在文件不存在，传输层那条败在第二次 `hello` 还带 `since: 43`。实现后 18 条全过，`collab_status` 的 6 条全过。样板那条后加：先跑一次，败在新建的图里还有样板的记录（样板里的对象到了）；在 `apply_template` 里去掉以后过。之后只按格式检查改了换行，再对最终的文件跑全套。
+
+**读数**（对最终的文件，起点 `14c8de6c5`）：主程序库 7220 条，7163 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）；起点 7201 条（7144 / 55 / 2），多的 19 条是新加的，都过。两个协同 crate 97；180 + 18 全过，与起点相同。clippy 656（`--lib`）和 1051（`--lib --profile test`），与起点相同；改到的文件里的警告与起点逐条相同。格式检查：改到的 6 个代码文件，除 `collab/mod.rs` 开头模块排序那处以外新增 0（那处原来就有，`mod unsynced;` 和登记新测试的一行落在里面，它的两段跟着变）；两个新文件 0。文档检查 590 项过 589 项，没过的是设计稿与生成表的比对。
+
+**限制和没有做的。**
+
+- `DETACH` 不断开被隔开的连接：连接被隔开（`refused` 或 `diverged`）时去掉记录，要等下一次重连才按没同步过的图加入。
+- 去掉记录不标脏，不存盘就关掉，文件里的记录还在（上文第 2 条）。
+- 读不出的队列条目导出时只有 `raw`，`changes` 为空。
+- `unsynced_count` 只数清单，不数队列。
+- 端到端没有跑，归 `OFF-12`。

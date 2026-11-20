@@ -27,6 +27,7 @@ mod apply;
 mod claims;
 pub(super) mod connectors;
 pub(super) mod pipes;
+mod unsynced;
 #[cfg(not(target_arch = "wasm32"))]
 mod messages;
 #[cfg(not(target_arch = "wasm32"))]
@@ -55,6 +56,8 @@ mod collab_pipe_ops;
 mod collab_restored_rollback;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_save_exits;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_unsynced;
 
 /// A server address as it may be shown — in the log, on the command line,
 /// in `/collab/status`: without whatever stands before an `@` in its
@@ -490,6 +493,11 @@ pub(super) enum TagsSaid {
     /// no tags, and the connection is held apart, for this reason, whatever
     /// the `welcome` says.
     Apart(NotAligned),
+    /// The drawing is there, these are its tags, and it has been taken off
+    /// the room it was in (`PIDCOLLAB DETACH`) since a session was last up:
+    /// the `hello` claims nothing — not where the last session left the
+    /// drawing either — and the connection is not held apart.
+    Detached(Vec<String>),
     /// The session has no drawing yet and none is on its way: the `hello`
     /// need not wait. The tags follow under the same number once the
     /// session has come by its drawing.
@@ -620,6 +628,12 @@ pub(super) struct State {
     /// entry is what is left of it. A save puts them on the drawing's
     /// record; they do not mark it (§5.4).
     pub refused: BTreeMap<u64, Vec<Value>>,
+    /// The `UNQUEUED_EDITS` mark of a drawing whose unsynced list was
+    /// cleared (`PIDCOLLAB UNSYNCED CLEAR`), by the tab's document id. The
+    /// entries go; that edits were made which no queue took stays true, and
+    /// a save keeps saying so until the drawing is taken off its room
+    /// (§4.5).
+    pub unqueued_marks: BTreeMap<u64, Diverged>,
     /// Why this drawing can no longer be taken to be what the room has: a
     /// revision that never arrived, or a peer's change that could not be
     /// applied here. After a peer's change that could not be applied the
@@ -650,6 +664,11 @@ pub(super) struct State {
     /// `base_revision` is a revision this drawing was actually at. One held
     /// apart from the room does not count.
     pub had_session: bool,
+    /// The session's drawing was taken off the room it was in (`PIDCOLLAB
+    /// DETACH`) since a session was last up: the next `hello` claims nothing
+    /// of where the drawing is, not even where the last session left it
+    /// ([`TagsSaid::Detached`]).
+    pub detached: bool,
     /// Which repository the room this drawing belongs to is of — the
     /// `repo_id` the last `welcome` that took the drawing as aligned named,
     /// or the one the drawing file was saved with when it is a copy that
@@ -853,10 +872,15 @@ impl State {
 
     /// The edits no queue took on the drawing of tab `tab` (by document id),
     /// with the mark a save gives the drawing for them: `UNQUEUED_EDITS`,
-    /// dated by the first. `None` while there are none.
+    /// dated by the first. A drawing whose list was cleared keeps the mark
+    /// it had then, with what no queue took since. `None` while there are
+    /// none.
     pub(super) fn unqueued_for_save(&self, tab: u64) -> Option<(&[Value], Diverged)> {
-        let entries = self.unqueued.get(&tab).filter(|kept| !kept.is_empty())?;
-        let first = &entries[0];
+        let entries = self.unqueued.get(&tab).map_or(&[][..], Vec::as_slice);
+        if let Some(kept) = self.unqueued_marks.get(&tab) {
+            return Some((entries, kept.clone()));
+        }
+        let first = entries.first()?;
         let mark = Diverged {
             code: crate::pid::collab_state::UNQUEUED_EDITS.to_owned(),
             message: format!(
@@ -867,6 +891,39 @@ impl State {
             at: first["at"].as_i64().unwrap_or_default(),
         };
         Some((entries, mark))
+    }
+
+    /// Forget that the drawing of tab `tab` (by document id) was ever in a
+    /// room (`PIDCOLLAB DETACH`): its unsynced list and the mark it kept and,
+    /// when it is the `session`'s drawing, the queue, the divergence, the
+    /// repository and the revision the session had it at. The next `hello`
+    /// claims nothing of where it is.
+    pub(super) fn forget_drawing(&mut self, tab: u64, session: bool) {
+        self.unqueued.remove(&tab);
+        self.refused.remove(&tab);
+        self.unqueued_marks.remove(&tab);
+        if self.foreign_tab == Some(tab) {
+            self.foreign_tab = None;
+        }
+        if self.record_read == Some(tab) {
+            self.record_read = None;
+        }
+        if !session {
+            return;
+        }
+        self.outbox.clear();
+        self.unreadable_queue.clear();
+        self.diverged = None;
+        self.diverged_as = None;
+        self.saved_diverged = None;
+        self.revision_gap = false;
+        self.opened_late = None;
+        self.repo_id = None;
+        self.base_revision = 0;
+        self.had_session = false;
+        // There is no record left to read in.
+        self.seeded = true;
+        self.detached = true;
     }
 
     /// Why the drawing and the room do not match, as the panel and the
@@ -1065,7 +1122,10 @@ impl State {
     /// Answer question `ask` of the transport's about the drawing's tags.
     pub(super) fn say_tags(&mut self, ask: u64, said: TagsSaid) {
         // Tags said to a session that is up are told by leaving it.
-        let tags_to_tell = matches!(&said, TagsSaid::Tags(tags, _) if !tags.is_empty());
+        let tags_to_tell = matches!(
+            &said,
+            TagsSaid::Tags(tags, _) | TagsSaid::Detached(tags) if !tags.is_empty()
+        );
         if tags_to_tell && self.session_id.is_some() {
             self.rejoining = true;
         }
@@ -1079,7 +1139,9 @@ impl State {
                 }
                 self.apart_before_hello = Some(reason.clone());
             }
-            TagsSaid::Tags(..) | TagsSaid::NotYet => self.apart_before_hello = None,
+            TagsSaid::Tags(..) | TagsSaid::Detached(_) | TagsSaid::NotYet => {
+                self.apart_before_hello = None
+            }
         }
         #[cfg(test)]
         self.tags_said.push((ask, said.clone()));
@@ -1155,6 +1217,7 @@ impl State {
                 };
                 if apart.is_none() {
                     self.had_session = true;
+                    self.detached = false;
                     // Which repository this room is of; what the drawing
                     // file is saved with, so its next open can say where it
                     // was. One that is held apart keeps what it had.

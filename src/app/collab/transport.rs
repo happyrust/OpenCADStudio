@@ -733,6 +733,10 @@ struct Told {
     /// The copy holds itself apart ([`TagsSaid::Apart`]): the `hello`
     /// claims nothing, and the connection does not move `seen` on.
     apart: bool,
+    /// The copy was taken off the room it was in ([`TagsSaid::Detached`]):
+    /// where the last session left the drawing is forgotten, and the
+    /// `hello` claims nothing.
+    forget: bool,
 }
 
 /// Ask the UI which tags the session's drawing carries, and wait for what
@@ -759,6 +763,17 @@ fn ask_for_tags(sender: &mut mpsc::Sender<CollabEvent>, link: &Link) -> Result<O
                     file,
                     owed: false,
                     apart: false,
+                    forget: false,
+                }));
+            }
+            Some(TagsSaid::Detached(tags)) => {
+                return Ok(Some(Told {
+                    ask,
+                    tags,
+                    file: None,
+                    owed: false,
+                    apart: false,
+                    forget: true,
                 }));
             }
             Some(TagsSaid::Apart(_)) => {
@@ -768,6 +783,7 @@ fn ask_for_tags(sender: &mut mpsc::Sender<CollabEvent>, link: &Link) -> Result<O
                     file: None,
                     owed: false,
                     apart: true,
+                    forget: false,
                 }));
             }
             Some(TagsSaid::NotYet) => break,
@@ -788,6 +804,7 @@ fn ask_for_tags(sender: &mut mpsc::Sender<CollabEvent>, link: &Link) -> Result<O
         file: None,
         owed: true,
         apart: false,
+        forget: false,
     }))
 }
 
@@ -841,6 +858,9 @@ pub(super) fn run_client(
         let Ok(told) = ask_for_tags(sender, link) else {
             return Ok(());
         };
+        if told.as_ref().is_some_and(|told| told.forget) {
+            seen = None;
+        }
         // The answer may have settled the drawing number: the one the
         // drawing's sync record names, when none was given for this run.
         let config = link.config();
@@ -1055,6 +1075,20 @@ fn run_session(
                 });
                 return Ok(Ended::Closed(
                     "本图与房间对不上，正在不带对齐位置重新加入会话".to_owned(),
+                ));
+            }
+            // The drawing came, and it was taken off the room it was in:
+            // this connection claimed where the last session left it. That
+            // is forgotten, the connection is left, and the next claims
+            // nothing.
+            Some(TagsSaid::Detached(_)) => {
+                *seen = None;
+                log("界面说本图已去掉同步记录：断开后重新加入，不声称图纸对齐到哪里");
+                leave(&mut ws, link.leave_wait, || {
+                    link.stop_requested() || sender.is_closed()
+                });
+                return Ok(Ended::Closed(
+                    "本图已去掉同步记录，正在不带对齐位置重新加入会话".to_owned(),
                 ));
             }
             Some(TagsSaid::NotYet) | None => {}
@@ -3270,6 +3304,58 @@ mod tests {
         assert!(apart.get("since").is_none(), "{apart}");
         let again = hello_of(&heard, 2);
         assert_eq!(again["since"], 43, "{again}");
+        assert_eq!(again["repo_id"], "r-9", "{again}");
+    }
+
+    /// `OFF-9`: a copy taken off the room it was in (`PIDCOLLAB DETACH`,
+    /// [`TagsSaid::Detached`]) claims nothing — not where the last session
+    /// left the drawing either — and the session it then joins is where
+    /// the next `hello` starts from.
+    #[test]
+    fn collab_unsynced_a_detached_copy_claims_nothing_of_where_the_last_session_left_it() {
+        let first = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":42,"peers":[],"claims":[],"repo_id":"r-9","replay_from":42}"#
+                    .to_owned(),
+                r#"{"type":"op_applied","op_id":"op-peer-43","revision":43,"changes":[]}"#.to_owned(),
+            ],
+            then_drop: true,
+        };
+        let detached = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-2","base_revision":50,"peers":[],"claims":[],"repo_id":"r-9"}"#
+                    .to_owned(),
+            ],
+            then_drop: true,
+        };
+        let third = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-3","base_revision":50,"peers":[],"claims":[],"repo_id":"r-9","replay_from":50}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![first, detached, third]);
+        let (link, said) = link_with_tags(url, Duration::from_secs(30));
+        let (mut receiver, worker) = start_client(&link);
+        for answer in [
+            file_r9_at_42(),
+            TagsSaid::Detached(Vec::new()),
+            TagsSaid::Tags(Vec::new(), None),
+        ] {
+            let (ask, _) = question(&mut receiver);
+            leave_answer(&said, ask, answer);
+        }
+        let up = session_came_up(&mut receiver);
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+        assert!(up, "the third session did not come up");
+        let detached = hello_of(&heard, 1);
+        assert!(detached.get("since").is_none(), "{detached}");
+        assert!(detached.get("repo_id").is_none(), "{detached}");
+        let again = hello_of(&heard, 2);
+        assert_eq!(again["since"], 50, "{again}");
         assert_eq!(again["repo_id"], "r-9", "{again}");
     }
 }

@@ -310,17 +310,18 @@
 
 - **做什么**：离线规格 §4.4、§4.5、§5.5，给 G9 一条出路。`PIDCOLLAB` 加四个子命令（它的子命令在 `src/app/collab/claims.rs` 里解析）：`UNSYNCED`（列出队列和未同步清单）、`UNSYNCED CLEAR`（清掉清单，队列不动）、`EXPORT <路径>`（导出成文件）、`DETACH [FORCE]`（去掉本图的三条记录，下次保存时生效，之后按没同步过的图对待）。状态接口（`collab_status`）加 `align`、`align_code`、`align_message`、`unsynced_count`，原有字段不动；应答在 `src/rest_openapi.json` 里有逐字段的描述时随之更新。
 - **验收**：
-  - [ ] `PIDCOLLAB UNSYNCED` 列出队列里的、被拒的、没排上队的，条数与图里的记录相符。
-  - [ ] `PIDCOLLAB EXPORT` 写出的文件符合离线规格 §4.4，条数对得上，里面没有服务器地址；路径写不进去时报错，不动图。
-  - [ ] `PIDCOLLAB UNSYNCED CLEAR` 之后清单为空，队列不变。
-  - [ ] `PIDCOLLAB DETACH`：队列或清单不空时拒绝并说明；带 `FORCE`、或者两者都空时执行，保存后文件里三条记录都没有，重开加入时 `hello` 不带 `since`。
-  - [ ] 对着一个对上了的会话执行 `DETACH`：拒绝。
-  - [ ] 状态接口的四个字段在五种状态下（`none`、`offline`、`ok`、`refused`、`diverged`）取值正确；原有字段与改之前相同。
-  - [ ] `PIDCOLLAB` 写错子命令时的提示里列全了新加的四个。
+  - [x] `PIDCOLLAB UNSYNCED` 列出队列里的、被拒的、没排上队的，条数与图里的记录相符。
+  - [x] `PIDCOLLAB EXPORT` 写出的文件符合离线规格 §4.4，条数对得上，里面没有服务器地址；路径写不进去时报错，不动图。
+  - [x] `PIDCOLLAB UNSYNCED CLEAR` 之后清单为空，队列不变。
+  - [x] `PIDCOLLAB DETACH`：队列或清单不空时拒绝并说明；带 `FORCE`、或者两者都空时执行，保存后文件里三条记录都没有，重开加入时 `hello` 不带 `since`。
+  - [x] 对着一个对上了的会话执行 `DETACH`：拒绝。
+  - [x] 状态接口的四个字段在五种状态下（`none`、`offline`、`ok`、`refused`、`diverged`）取值正确；原有字段与改之前相同。
+  - [x] `PIDCOLLAB` 写错子命令时的提示里列全了新加的四个。
 - **验证**：`cargo test --offline --locked --lib collab_unsynced`；`cargo test --offline --locked --lib collab_status`
 - **依赖**：OFF-5、OFF-8
 - **文件**：`src/app/collab/claims.rs`、`src/app/collab/mod.rs`、`src/app/collab/apply.rs`、`src/pid/collab_state.rs`、`src/rest_openapi.json`；新建测试文件 `src/app/collab/collab_unsynced.rs`
 - **规模**：M
+- **补（2026-11-20）**：在 `collab-off2` 分支上接着 `OFF-8` 做，一个提交。实现在新文件 `src/app/collab/unsynced.rs`，四个子命令都对着前台的图：`UNSYNCED` 先列总数再逐条列（队列在会话读入这张图以后是会话的，否则是图里的；清单是图里的加这次运行记下的没排上队的和被拒的）；`UNSYNCED CLEAR` 清掉清单，队列不动，没排上队的修改给图的 `UNQUEUED_EDITS` 标记留下；`EXPORT` 按 §4.4 写 JSON，不写服务器地址，写不进去时报错、不动图；`DETACH` 对着对上了的会话拒绝，队列或清单不空且没带 `FORCE` 时拒绝并指到 `EXPORT` 和 `DETACH FORCE`，否则三条记录立即从正在编辑的文档上去掉（不标脏、不进撤销栈，下次存盘生效），会话关于这张图的状态一并忘掉。去掉以后的加入：界面答新的 `TagsSaid::Detached`，传输层忘掉上次会话停在的修订号，`hello` 不带 `since`。状态接口加四个字段（`collab_status_json`），原有字段不动。写错子命令的提示列全九个。与任务写法不同、或任务没有说的：「文件」一栏之外另放了新文件 `unsynced.rs`，另改了 `src/app/collab/transport.rs`、`src/app/control/mod.rs`、`src/app/control/sheets.rs`；`collab_state.rs` 和 `src/rest_openapi.json` 没改（后者里没有协同状态接口这一项）；`DETACH` 从正在编辑的文档上立即去掉，不只是从存盘写出的那一份里；`CLEAR` 留下标记；`OFF-5` 留下的样板问题定为去掉：用样板新建的图（`QNEW`、`NEW` 选样板、控制接口 `new` 带 `template`，都走 `apply_template`）不带三条记录。详见离线规格 §11.12。**读数**：主程序库 7220 条，7163 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）；起点 7201 条（7144 / 55 / 2），多的 19 条是新加的，都过；两个协同 crate 97；180 + 18 全过，与起点相同；clippy 656 / 1051，与起点相同（改到的文件里的警告与起点逐条相同）；格式检查新增 0（`collab/mod.rs` 开头模块排序那处还在）；文档检查 590 项过 589 项，没过的是设计稿与生成表的比对。**新基线**：主程序库 7220 条（7163 / 55 / 2）；两个协同 crate 97；180 + 18。**没有做的**：`DETACH` 不断开被隔开的连接，要等下一次重连；去掉记录不标脏，不存盘就关掉记录还在；读不出的队列条目导出时只有 `raw`；`unsynced_count` 只数清单；端到端没跑（归 `OFF-12`）。
 
 ### OFF-10 【界面】面板显示待同步的步数，退出时提醒
 

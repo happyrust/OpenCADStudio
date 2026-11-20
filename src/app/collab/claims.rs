@@ -213,12 +213,29 @@ impl OpenCADStudio {
                 self.set_collab_setting(CollabSetting::Drawing, value);
                 Some(Task::none())
             }
+            ("UNSYNCED", "") => {
+                self.list_unsynced();
+                Some(Task::none())
+            }
+            ("UNSYNCED", value) if value.eq_ignore_ascii_case("CLEAR") => {
+                self.clear_unsynced();
+                Some(Task::none())
+            }
+            ("EXPORT", value) => {
+                self.export_unsynced(value);
+                Some(Task::none())
+            }
+            ("DETACH", value) if value.is_empty() || value.eq_ignore_ascii_case("FORCE") => {
+                self.detach(!value.is_empty());
+                Some(Task::none())
+            }
             _ => {
                 // The word only: what follows it may be an address, and an
                 // address is not echoed as typed (`shown_address`).
                 self.command_line.push_error(&format!(
                     "PIDCOLLAB: 只接受 ON、OFF、SERVER <ws://主机:端口/ws>、USER <用户>、\
-                     DRAWING <图号>，实得 \"{word}\"。"
+                     DRAWING <图号>、UNSYNCED、UNSYNCED CLEAR、EXPORT <路径>、\
+                     DETACH [FORCE]，实得 \"{word}\"。"
                 ));
                 Some(Task::none())
             }

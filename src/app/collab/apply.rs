@@ -282,8 +282,12 @@ impl OpenCADStudio {
                         repo_id: record.repo_id,
                         revision: record.revision,
                     });
-                self.collab
-                    .say_tags(asked.ask, super::TagsSaid::Tags(tags, claim));
+                let said = if self.collab.detached {
+                    super::TagsSaid::Detached(tags)
+                } else {
+                    super::TagsSaid::Tags(tags, claim)
+                };
+                self.collab.say_tags(asked.ask, said);
             }
             Drawing::Closed => {
                 self.collab.tags_wanted = None;
@@ -291,6 +295,7 @@ impl OpenCADStudio {
                 // same without it.
                 let said = match self.collab.judge_queue() {
                     Some(apart) => super::TagsSaid::Apart(apart),
+                    None if self.collab.detached => super::TagsSaid::Detached(Vec::new()),
                     None => super::TagsSaid::Tags(Vec::new(), None),
                 };
                 self.collab.say_tags(asked.ask, said);

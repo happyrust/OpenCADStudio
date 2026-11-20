@@ -761,7 +761,7 @@ impl OpenCADStudio {
             return (self.control_state(), Task::none());
         }
         if op == "collab_status" {
-            return (self.collab.status_json(), Task::none());
+            return (self.collab_status_json(), Task::none());
         }
         if op == "operation" {
             let id = req["request_id"].as_str().unwrap_or("");
