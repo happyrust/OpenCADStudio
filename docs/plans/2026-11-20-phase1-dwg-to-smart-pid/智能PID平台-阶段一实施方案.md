@@ -277,11 +277,12 @@ flowchart LR
 - **依赖**：L0-1。**资料**：RES-02 ✔。
 - **解决记录（2026-11-20）**：提交 `538ec0112` 落地 `scripts/sppid/corpus_index.py`、`scripts/sppid/corpus-layout.md`、`scripts/sppid/test_corpus_index.py`（先红 `8 failed` → 全绿 `167 passed`）；通过外置 `--manifest` 只读扫描真实语料 `1,115` 个文件（`manifest_sha256=487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038`），`verify`、单字节篡改报错、未设环境变量退出码 `0` 及零绝对路径审计全部通过，详见 `readings.md` §2。
 
-#### L0-3 对应关系表（M）
+#### L0-3 对应关系表（M）— **已完成（[#120](https://github.com/happyrust/pid-cad/issues/120)）**
 - **目标**：建立"原始图 ↔ 拆分图 ↔ `.pid` ↔ XML ↔ DXF/PDF ↔ 备份包内路径"的一一对应。
 - **做法**：① 用文件名前缀做初配（`<图名>.pid` / `_Data.xml` / `_Meta.xml` 同名）；② 用图名与 DXF/PDF 匹配；③ 对多页合并的原图，用拆分对照表（若有）或按图名与文字相似度做候选；④ 输出 `corpus.manifest.json` 里的一张 `correspondence` 段，以及一份人可读的 CSV。
 - **验收**：每张 `.pid` 都有 `_Data.xml` 与 `_Meta.xml`；无法对应的项单列并写明原因；数量对不上时（例如 `.pid` 数多于原图数）在报告里点名。
 - **依赖**：L0-2。**资料**：RES-02 ✔、RES-16 ⚠（缺则按相似度候选，人工确认）。
+- **解决记录（2026-11-20）**：落地 `scripts/sppid/{corpus_correspondence,test_corpus_correspondence}.py`（先红后绿，`pytest` `179 passed`）；全批 `94` 套 `.pid` + `_Data.xml` + `_Meta.xml` 100% 齐全，DXF/PDF 配对 `84` 张精确同名 + `10` 张近形字微差候选（相似度 `0.9286–0.9714`），并自动检出剔除 `4` 份 `0` 字节空 DXF，锁定 `90` 张有效非空识别分母，详见 `readings.md` §9。
 
 #### L0-4 度量工具集（M）— **已完成（[#108](https://github.com/happyrust/pid-cad/issues/108)）**
 - **目标**：把"像不像"变成可算的数字。

@@ -210,7 +210,7 @@
 | 项 | 值 |
 |---|---|
 | 测量日期 | `2026-11-20` |
-| 基线提交 | `336b7b362`（`main`） |
+| 基线提交 | `336b7b362`（入库提交 `9ac724b12`） |
 | `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
 | 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
 | 新增 / 修改文件 | `assets/pid-class-map.json`、`src/io/mod.rs`、`src/io/pid_variant_map.rs` |
@@ -258,6 +258,32 @@
 | `scripts\fmt-newhunks.ps1` | — | `src/io/mod.rs`、`pid_sym_missing.rs`、`pid_sym_census.rs`、`pid_variant_map.rs` 全部 **`new=0`** | **0 格式偏差** |
 | `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
 | `python -m pytest scripts/sppid -q -p no:cacheprovider` | `176 passed` | **`176 passed`** | 全绿 |
+
+---
+
+## 9. L0-3（#120）：样本对应关系表与识别分母核定（2026-11-20）
+
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-20` |
+| 基线提交 | `9ac724b12`（`main`） |
+| 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
+| 新增文件 | `scripts/sppid/corpus_correspondence.py`、`scripts/sppid/test_corpus_correspondence.py` |
+| 证据目录子项 | `2026-11-20-issue120/`（`red.txt`、`green.txt`、`real-correspondence.txt`、`correspondence.csv`、`correspondence-summary.md`、`corpus.manifest.json`） |
+
+### 9.1 先红后绿与全批 `94` 套配对核验
+
+- **先红后绿**：`red.txt` 3 条测试全部在目标断言变红（退出码 `1`）→ 实现后 `green.txt`：`python -m pytest scripts/sppid -q -p no:cacheprovider` **`179 passed`**（退出码 `0`）；写回 `correspondence` 段后再次执行 `corpus_index.py verify` 通过（零绝对路径、原 `sections` 哈希不变）。
+- **全批真实语料配对读数**：
+
+| 指标 | 实测数量 | 说明 |
+|---|---:|---|
+| `EXPORT_SET` `.pid` 总数 | `94` | 三件套（`.pid` + `_Data.xml` + `_Meta.xml`）齐全 **`94 / 94`**（缺失 `0`） |
+| `EXPORT_DXF` 配对情况 | `94` | 精确同名 **`84`** 张 + 同音/近形字微差候选 **`10`** 张（如 `集/及`、`撬/橇`、`储存/存储`、`聚洁/聚结`，相似度 `0.9286–0.9714`），未配上图纸 `0` 张 |
+| `EXPORT_PDF` 配对情况 | `94` | 精确同名 **`84`** 张 + 同上近形字候选 **`10`** 张，未配上图纸 `0` 张，全部非空 |
+| **0 字节空 DXF 剔除** | **`4`** | `EXPORT_DXF` 中有 `4` 个文件字节数为 `0`（空文件），自动标记 `exact_empty_0_bytes` 并排除在识别度量分母之外 |
+| **有效非空 DXF 识别分母** | **`90`** | 其中精确同名非空 `80` 张、近形字候选非空 `10` 张（合计 `90` 张供 `L0-5` / `L3-0` 实跑识别） |
+
 
 
 
