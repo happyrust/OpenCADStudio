@@ -5408,6 +5408,21 @@ SQL Server 包：
   - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
   - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
 
+---
+
+## 37. UI-6：从 `backup` 开图、已开标签页复用、失败留屏不弹窗与切屏保持（2026-11-20）
+
+- **起点与编译器**：`main @ 07fa48bb6`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui6\`。
+- **改动**：
+  1. `src/app/pid_shell/backup.rs`：`State` 增加 `opening_drawing`、`open_failures`、`last_clicked_drawing` 及规范化路径匹配方法；实现「在编辑器中打开」按钮与图纸行双击开图、已开图纸直接 `TabSwitch` 切入 `PidScreen::Editor`、「正在打开…」文案与 `open_error` 错误提示条。
+  2. `src/app/update/mod.rs`：`Message::FileOpened` 成功分支对来自 `backup` 的路径先切入 `PidScreen::Editor` 再执行 `on_file_opened`（确保 `RD-7` 按编辑器画布宽度自适应图幅）；失败分支按 S4 记入 `backup.open_failures` 并留在 `PidScreen::Backup`，不弹 `ModalKind::Recovery`（编辑器命令行打开坏图仍维持恢复弹窗）。
+- **先红后绿**：2 条 `pid_backup_screen_ui6_*` 先红 0 过 2 败（`red.txt`），实现后 `pid_backup_screen` 8/8 全过（`green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7137 条（7081 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -5451,3 +5466,4 @@ SQL Server 包：
 | 2026-11-20 | 加 §34（检查点 C 第 2 段 `UI-3` 导航三处接线与 `backup` 空画面骨架）：`PidScreen::Backup`、`screen-catalog.json`、`00-overview.md` 及文档契约 15 屏同步注册，先红后绿及全套门禁读数 |
 | 2026-11-20 | 加 §35（检查点 C 第 2 段 `UI-4` 浏览画面三态与包概要顶栏）：未打开/载入中/出错三态、三类包概要、清缓存忙碌保护与经典面板入口，4 条快测试先红后绿及全套门禁读数 |
 | 2026-11-20 | 加 §36（检查点 C 第 2 段 `UI-5` 浏览画面三栏主体）：装置组树中文映射、搜索清单、数据库属性与图内对象过滤详情，2 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §37（检查点 C 第 2 段 `UI-6` 从 `backup` 开图与切屏保持）：按钮/双击开图切编辑器、复用已开标签页、坏图按 S4 留屏不弹恢复窗，2 条快测试先红后绿及全套门禁读数 |

@@ -1,7 +1,7 @@
 //! 备份数据包 — screen `backup`; in the design, frames `BkF01`..`BkF11`
 //! (and their light counterparts `BkL01`..`BkL11`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -66,6 +66,12 @@ pub struct State {
     pub item_query: String,
     /// Item UIDs expanded to inspect published `interface.name = value` rows.
     pub expanded_items: HashSet<String>,
+    /// Path of a drawing currently being opened from this screen.
+    pub opening_drawing: Option<PathBuf>,
+    /// Error text by path for drawings that failed to open from this screen.
+    pub open_failures: HashMap<PathBuf, String>,
+    /// Last `(drawing_idx, instant)` clicked in the list, for double-click open.
+    pub last_clicked_drawing: Option<(usize, iced::time::Instant)>,
     /// Inline notice from the last secondary action (e.g. cache clear).
     pub notice: Option<(NoticeTone, String)>,
     /// Optional test double replacing the native source picker dialog.
@@ -87,6 +93,17 @@ impl std::fmt::Debug for State {
     }
 }
 
+fn same_drawing_path(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let (Ok(ca), Ok(cb)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        return ca == cb;
+    }
+    false
+}
+
 impl State {
     /// Reset browse selection when a fresh backup index finishes loading.
     pub fn reset_for_loaded_package(&mut self, drawing_count: usize) {
@@ -97,7 +114,38 @@ impl State {
         self.item_type_filter = None;
         self.item_query.clear();
         self.expanded_items.clear();
+        self.opening_drawing = None;
+        self.open_failures.clear();
+        self.last_clicked_drawing = None;
         self.notice = None;
+    }
+
+    /// Whether `path` is currently being opened from the `backup` screen.
+    pub fn is_opening_path(&self, path: &Path) -> bool {
+        self.opening_drawing
+            .as_deref()
+            .is_some_and(|cur| same_drawing_path(cur, path))
+    }
+
+    /// Clear `opening_drawing` if it matches `path`, returning `true` when it did.
+    pub fn complete_opening_path(&mut self, path: &Path) -> bool {
+        if let Some(cur) = self.opening_drawing.clone() {
+            if same_drawing_path(&cur, path) {
+                self.opening_drawing = None;
+                self.open_failures.remove(&cur);
+                self.open_failures.remove(path);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Record an inline open failure for `path` without raising a global modal (S4).
+    pub fn record_open_failure(&mut self, path: PathBuf, reason: String) {
+        if self.is_opening_path(&path) {
+            self.opening_drawing = None;
+        }
+        self.open_failures.insert(path, reason);
     }
 }
 
@@ -116,6 +164,8 @@ pub enum Message {
     DrawingFilterChanged(String),
     /// Select a drawing by its index in `BackupIndex::drawings`.
     SelectDrawing(usize),
+    /// Open the currently selected drawing in the P&ID editor (`UI-6`).
+    OpenSelectedDrawing,
     /// Switch the right-hand detail view mode.
     SelectDetailTab(DetailTab),
     /// Filter the selected drawing's items by `ModelItemType`.
@@ -240,6 +290,28 @@ pub(in crate::app) fn ensure_drawing_items_loaded(
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn open_drawing_at(app: &mut OpenCADStudio, drawing_idx: usize) -> Task<AppMessage> {
+    let Some(path) = app
+        .pid_backup_browser
+        .index()
+        .and_then(|idx| idx.drawings.get(drawing_idx))
+        .and_then(|entry| entry.pid_path.clone())
+    else {
+        return Task::none();
+    };
+    if let Some(tab_idx) = app.tab_showing(&path) {
+        app.pid_shell.backup.opening_drawing = None;
+        app.pid_shell.backup.open_failures.remove(&path);
+        let switch = app.update(AppMessage::TabSwitch(tab_idx));
+        let _ = app.show_pid_screen(PidScreen::Editor);
+        return switch;
+    }
+    app.pid_shell.backup.opening_drawing = Some(path.clone());
+    app.pid_shell.backup.open_failures.remove(&path);
+    app.update(AppMessage::OpenRecent(path))
+}
+
 /// Take one of the screen's messages.
 pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessage> {
     match message {
@@ -345,6 +417,17 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessa
             Task::none()
         }
         Message::SelectDrawing(idx) => {
+            let now = iced::time::Instant::now();
+            let double_clicked =
+                app.pid_shell
+                    .backup
+                    .last_clicked_drawing
+                    .is_some_and(|(prev, at)| {
+                        prev == idx
+                            && now.saturating_duration_since(at)
+                                <= std::time::Duration::from_millis(500)
+                    });
+            app.pid_shell.backup.last_clicked_drawing = Some((idx, now));
             if app.pid_shell.backup.selected_drawing != Some(idx) {
                 app.pid_shell.backup.selected_drawing = Some(idx);
                 app.pid_shell.backup.item_type_filter = None;
@@ -352,7 +435,40 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessa
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                ensure_drawing_items_loaded(app, idx)
+                let items_task = ensure_drawing_items_loaded(app, idx);
+                if double_clicked {
+                    Task::batch([items_task, open_drawing_at(app, idx)])
+                } else {
+                    items_task
+                }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = double_clicked;
+                Task::none()
+            }
+        }
+        Message::OpenSelectedDrawing => {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let Some(index) = app.pid_backup_browser.index().cloned() else {
+                    return Task::none();
+                };
+                let filtered = pid_backup_browser::filter_drawings(
+                    &index,
+                    app.pid_shell.backup.selected_group.as_deref(),
+                    &app.pid_shell.backup.drawing_filter,
+                );
+                let Some(idx) = app
+                    .pid_shell
+                    .backup
+                    .selected_drawing
+                    .filter(|i| filtered.contains(i))
+                    .or_else(|| filtered.first().copied())
+                else {
+                    return Task::none();
+                };
+                open_drawing_at(app, idx)
             }
             #[cfg(target_arch = "wasm32")]
             {
@@ -1293,13 +1409,25 @@ fn detail_pane<'a>(
 
     let entry = &index.drawings[idx];
     let items_state = app.pid_backup_browser.items.get(&idx);
+    let is_opening = entry
+        .pid_path
+        .as_deref()
+        .is_some_and(|p| app.pid_shell.backup.is_opening_path(p));
+    let open_failure = entry
+        .pid_path
+        .as_ref()
+        .and_then(|p| app.pid_shell.backup.open_failures.get(p));
 
     let open_btn = action_button(
         theme,
         "open_drawing",
-        "在编辑器中打开",
+        if is_opening {
+            "正在打开…"
+        } else {
+            "在编辑器中打开"
+        },
         true,
-        None, // Wired in UI-6; disabled when missing file as well.
+        (!entry.is_missing() && !is_opening).then_some(Message::OpenSelectedDrawing),
     );
 
     let mut top = column![row![
@@ -1331,6 +1459,27 @@ fn detail_pane<'a>(
             )
             .width(Fill)
             .padding([8, 12])
+            .style(move |_| card_style(theme, ColorToken::DangerSoft, ColorToken::Danger)),
+        ));
+    }
+    if let Some(open_err) = open_failure {
+        top = top.push(PosReport::owned(
+            part_id("open_error"),
+            container(
+                column![
+                    text("无法在编辑器中打开该图纸")
+                        .size(12.5)
+                        .font(pid_fonts::ui(theme, font::Weight::Semibold))
+                        .color(ColorToken::Danger.color(theme)),
+                    text(open_err.as_str())
+                        .size(12)
+                        .font(pid_fonts::ui(theme, font::Weight::Normal))
+                        .color(ColorToken::TextPrimary.color(theme)),
+                ]
+                .spacing(4),
+            )
+            .width(Fill)
+            .padding([9, 12])
             .style(move |_| card_style(theme, ColorToken::DangerSoft, ColorToken::Danger)),
         ));
     }

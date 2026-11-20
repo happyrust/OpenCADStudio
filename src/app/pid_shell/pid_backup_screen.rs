@@ -644,3 +644,152 @@ fn pid_backup_screen_ui5_details_show_db_fields_filter_items_and_surface_unreada
 
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+#[test]
+fn pid_backup_screen_ui6_open_drawing_switches_to_editor_reuses_open_tab_and_preserves_state() {
+    let _one = crate::headless_ui_lock();
+    let scratch = temp_scratch("ui6-open");
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/plot/page-setups-metric.dwg");
+    let valid_dxf = scratch.join("SheetA.dwg");
+    std::fs::copy(&fixture, &valid_dxf).unwrap();
+    let second_dxf = scratch.join("SheetB.dwg");
+    std::fs::copy(&fixture, &second_dxf).unwrap();
+
+    let mut app = app_on_backup();
+    let index = BackupIndex {
+        source: scratch.clone(),
+        restored: scratch.clone(),
+        backup_root: scratch.clone(),
+        read_only: true,
+        plant_groups: vec![GroupNode {
+            name: "Area01".to_owned(),
+            path: "Area01".to_owned(),
+            drawings: vec![0, 1],
+            children: Vec::new(),
+        }],
+        drawings: vec![
+            DrawingEntry {
+                name: "SheetA".to_owned(),
+                pid_path: Some(valid_dxf.clone()),
+                group_path: "Area01".to_owned(),
+                meta: Vec::new(),
+            },
+            DrawingEntry {
+                name: "SheetB".to_owned(),
+                pid_path: Some(second_dxf.clone()),
+                group_path: "Area01".to_owned(),
+                meta: Vec::new(),
+            },
+        ],
+        ..BackupIndex::default()
+    };
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(index));
+    app.pid_shell.backup.selected_group = Some("Area01".to_owned());
+    app.pid_shell.backup.drawing_filter = "Sheet".to_owned();
+    app.pid_shell.backup.selected_drawing = Some(0);
+    app.pid_shell.backup.item_type_filter = Some("Equipment".to_owned());
+    app.pid_shell.backup.item_query = "V-1001".to_owned();
+
+    // 1. Click "在编辑器中打开" opens SheetA and switches to Editor.
+    let bounds = drawn(&app);
+    click_at(
+        &mut app,
+        bounds[&format!("{SCREEN_BOUNDS_PREFIX}open_drawing")].center(),
+    );
+    assert_eq!(app.pid_shell.current(), Some(PidScreen::Editor));
+    let sheeta_tab = app.tab_showing(&valid_dxf).expect("SheetA opened in a tab");
+
+    //Open SheetB in another tab so SheetA is not the front tab, then switch back to Backup.
+    let open_b = app.update(AppMessage::OpenRecent(second_dxf.clone()));
+    app.drive_headless_task(open_b).unwrap();
+    let tabs_count = app.tabs.len();
+    assert_ne!(app.active_tab, sheeta_tab);
+
+    // 2. Round-trip Backup -> Editor -> Backup preserves every filter & selection field.
+    assert!(app.show_pid_screen(PidScreen::Backup));
+    assert_eq!(
+        app.pid_shell.backup.selected_group.as_deref(),
+        Some("Area01")
+    );
+    assert_eq!(app.pid_shell.backup.drawing_filter, "Sheet");
+    assert_eq!(app.pid_shell.backup.selected_drawing, Some(0));
+    assert_eq!(
+        app.pid_shell.backup.item_type_filter.as_deref(),
+        Some("Equipment")
+    );
+    assert_eq!(app.pid_shell.backup.item_query, "V-1001");
+
+    // 3. Double-clicking drawing:0 (already open!) reuses its existing tab without adding a tab.
+    let bounds_back = drawn(&app);
+    let row0 = bounds_back[&format!("{SCREEN_BOUNDS_PREFIX}drawing:0")].center();
+    click_at(&mut app, row0);
+    click_at(&mut app, row0);
+    assert_eq!(app.pid_shell.current(), Some(PidScreen::Editor));
+    assert_eq!(
+        app.tabs.len(),
+        tabs_count,
+        "already-open drawing is not reopened"
+    );
+    assert_eq!(app.active_tab, sheeta_tab);
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn pid_backup_screen_ui6_corrupt_drawing_stays_on_backup_without_recovery_modal() {
+    let _one = crate::headless_ui_lock();
+    let scratch = temp_scratch("ui6-corrupt");
+    let bad_pid = scratch.join("D03.pid");
+    std::fs::write(&bad_pid, b"corrupt-non-cfb-stream-d03").unwrap();
+
+    let mut app = app_on_backup();
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(BackupIndex {
+        source: scratch.clone(),
+        restored: scratch.clone(),
+        backup_root: scratch.clone(),
+        read_only: true,
+        drawings: vec![DrawingEntry {
+            name: "D03 坏图样本".to_owned(),
+            pid_path: Some(bad_pid.clone()),
+            group_path: "SQPlant".to_owned(),
+            meta: Vec::new(),
+        }],
+        ..BackupIndex::default()
+    }));
+    app.pid_shell.backup.selected_drawing = Some(0);
+    let tabs_before = app.tabs.len();
+
+    // 1. Opening D03 from Backup screen fails in-place: stays on Backup, no Recovery modal!
+    let bounds = drawn(&app);
+    click_at(
+        &mut app,
+        bounds[&format!("{SCREEN_BOUNDS_PREFIX}open_drawing")].center(),
+    );
+    assert_eq!(
+        app.pid_shell.current(),
+        Some(PidScreen::Backup),
+        "failed open from backup stays on Backup screen"
+    );
+    assert_eq!(
+        app.active_modal, None,
+        "S4: failed open from backup does not stack ModalKind::Recovery"
+    );
+    assert_eq!(app.tabs.len(), tabs_before, "no broken tab added");
+    assert!(app.pid_shell.backup.open_failures.contains_key(&bad_pid));
+
+    let bounds_after = drawn(&app);
+    assert!(bounds_after.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}open_error")));
+
+    // 2. Opening the same corrupt file from the Editor still shows ModalKind::Recovery as before.
+    assert!(app.show_pid_screen(PidScreen::Editor));
+    let editor_open = app.update(AppMessage::OpenRecent(bad_pid));
+    app.drive_headless_task(editor_open).unwrap();
+    assert_eq!(
+        app.active_modal,
+        Some(crate::app::ModalKind::Recovery),
+        "editor open failure keeps its existing recovery modal"
+    );
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}

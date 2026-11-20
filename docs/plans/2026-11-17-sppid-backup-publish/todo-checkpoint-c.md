@@ -129,13 +129,14 @@
   2. 若尚未打开，标记 `backup.opening_drawing = Some(path)` 显示「正在打开…」并发起异步开图：成功（`on_file_opened`）后按窄画布自适应图幅（`RD-7`）并自动切到 `PidScreen::Editor`；失败（`FileOpenFailed`）时将错误原因记入 `backup.open_failures`、清除 `opening_drawing`、**留在 `PidScreen::Backup` 并在当前图详情条展示原因，不弹整窗 `ModalKind::Recovery`（S4）**（从编辑器命令打开失败仍照旧弹窗）；
   3. 验证切去 `Editor` 再经左侧导航或 `PIDSCREEN backup` 切回时，装置组、搜索词、选中图与过滤条件完整保持；在编辑器敲 `PIDBACKUPOPEN` 后切到 `backup` 画面直接同步显示该包。
 - **验收**：
-  - [ ] 未打开的可读图点打开后切入 `Editor` 并新增标签页；已打开的图再点打开时标签页总数不变、直接激活原标签页。
-  - [ ] 打不开的图（如 `D03` 或损坏 `.pid`）从 `backup` 点打开后，仍留在 `PidScreen::Backup`、`dialog_is_up() == false`、不多出空白废标签页，且画面显示具体失败原因；从编辑器命令打开坏文件时恢复弹窗行为不变。
-  - [ ] `Backup -> Editor -> Backup` 往返后选中装置组、搜索词、选中图、对象过滤词原样保留。
+  - [x] 未打开的可读图点打开后切入 `Editor` 并新增标签页；已打开的图再点打开时标签页总数不变、直接激活原标签页。
+  - [x] 打不开的图（如 `D03` 或损坏 `.pid`）从 `backup` 点打开后，仍留在 `PidScreen::Backup`、`dialog_is_up() == false`、不多出空白废标签页，且画面显示具体失败原因；从编辑器命令打开坏文件时恢复弹窗行为不变。
+  - [x] `Backup -> Editor -> Backup` 往返后选中装置组、搜索词、选中图、对象过滤词原样保留。
 - **验证**：`cargo test --offline --locked --lib pid_backup_screen`
 - **依赖**：UI-5
 - **文件**：`src/app/pid_shell/backup.rs`、`src/app/pid_shell/pid_backup_screen.rs`、`src/app/update/file_io.rs`（或对应 `FileOpenFailed` / `on_file_opened` 处理文件）
 - **规模**：S
+- **做完**（2026-11-20）：在 `src/app/pid_shell/backup.rs` 实现「在编辑器中打开」按钮与图纸行双击开图、已打开图纸 `tab_showing` 标签页直接切换、「正在打开…」状态与 `open_error` 内联提示条，在 `src/app/update/mod.rs` 的 `Message::FileOpened` 成功分支自动切入 `PidScreen::Editor`、失败分支按 S4 将从 `Backup` 发起的错误记回本画面不弹 `ModalKind::Recovery`（编辑器命令开坏图仍维持弹窗）；2 条 `pid_backup_screen_ui6_*` 先红后绿（`pid_backup_screen` 8/8；全库 7137 条：7081 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试；clippy `656` / `1051` 零新增；`fmt-newhunks` 新增 0；`arch_check` 0 变化）。读数见 `readings.md` §37，证据在 `D:\scratch\ocs-sppid\2026-11-20-ui6\`。
 
 ---
 
