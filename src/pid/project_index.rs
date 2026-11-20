@@ -1,8 +1,9 @@
 //! 项目索引（SPEC-pid-project-index）：先是一张图的摘要。
 //!
 //! [`summarize`] 只读一张图：带 `PID_AUTHOR` 记录的实体按 §3.1 的归类表
-//! 归成对象，符号实例的每个端口各记一条。同一张图摘要两次得到逐字节相同的
-//! JSON，摘要不改图。管段、信号线两端、连接符和端口的连接关系是 IX-2 的事。
+//! 归成对象，符号实例的每个端口各记一条；管段、管线自己的线和信号线的两端
+//! 按 §3.2 现算接到了什么，连接符记下对端是怎么配的。同一张图摘要两次得到
+//! 逐字节相同的 JSON，摘要不改图。[`graph`] 由摘要推出 §3.3 的连通图。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -15,9 +16,10 @@ use super::persist::PidAuthor;
 use super::propagate::split_props;
 use super::symbols::{placed_ports, PortDir, SymbolLibrary};
 use super::topology::{
-    handle_text, parse_handle, TopologyTable, FITTING_BREAK, ROLE_CONNECTOR_IN, ROLE_CONNECTOR_OUT,
-    ROLE_FITTING, ROLE_PIPE_LINE, ROLE_PIPE_RUN, ROLE_PIPE_SEGMENT, ROLE_SIGNAL_LINE, TYPE_FITTING,
-    TYPE_PIPE_LINE, TYPE_PIPE_RUN, TYPE_SIGNAL_LINE, TYPE_VALVE,
+    handle_text, parse_handle, ConnectorKind, ConnectorRecord, TopologyTable, FITTING_BREAK,
+    ROLE_CONNECTOR_IN, ROLE_CONNECTOR_OUT, ROLE_FITTING, ROLE_PIPE_LINE, ROLE_PIPE_RUN,
+    ROLE_PIPE_SEGMENT, ROLE_SIGNAL_LINE, TYPE_FITTING, TYPE_PIPE_LINE, TYPE_PIPE_RUN,
+    TYPE_SIGNAL_LINE, TYPE_VALVE,
 };
 use super::type_lib::TypeLib;
 
@@ -85,6 +87,9 @@ pub struct DrawingSummary {
     pub pbs: Option<String>,
     pub length_unit: String,
     pub objects: Vec<SummaryObject>,
+    pub segments: Vec<SummarySegment>,
+    pub signal_ends: Vec<SignalEnd>,
+    pub connectors: Vec<SummaryConnector>,
     pub ports: Vec<SummaryPort>,
 }
 
@@ -152,6 +157,91 @@ pub struct SummaryPort {
     pub joined: bool,
 }
 
+/// 一根线段（§3.1 `segments`）：管路的一段，或管线自己的一根线。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SummarySegment {
+    pub line: String,
+    pub run: Option<String>,
+    pub a: [f64; 2],
+    pub b: [f64; 2],
+    pub length: f64,
+    pub joint_a: Option<Joint>,
+    pub joint_b: Option<Joint>,
+    pub handle: String,
+}
+
+/// 信号线的一端（§3.1 `signal_ends`）：它所有线的端点里只出现一次的点。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SignalEnd {
+    pub tag: String,
+    pub at: [f64; 2],
+    pub joint: Option<Joint>,
+}
+
+/// 线的一端接到了什么（§3.2），按序号先中先得；什么都没接是 `None`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "to", rename_all = "snake_case")]
+pub enum Joint {
+    /// 第 1 条：拓扑表里记着接在管件上，端口名是表里的（「连接点1」）。
+    Fitting {
+        type_code: String,
+        tag: String,
+        port: String,
+    },
+    /// 第 2 条：落在打断符上。打断符是隔断，不算接通，也不算悬空。
+    Break,
+    /// 第 3 条：与符号的端口重合，端口名是符号库里的。
+    Port {
+        type_code: String,
+        tag: String,
+        port: String,
+    },
+    /// 第 4 条：落在页间连接符的圆里。
+    Connector { kind: String, line: String },
+    /// 第 5、6 条：接在另一根线的端点上，或者接在它中间（`tee`）。
+    Segment {
+        line: String,
+        run: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        tee: bool,
+    },
+}
+
+/// 连接符的对端是怎么记的（§3.1 `peer_kind`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerKind {
+    /// 什么都没记。
+    None,
+    /// 只指了目标图，没配对。
+    Target,
+    /// 协同服务器配的对。
+    Server,
+    /// 同一个桌面进程里配的对。
+    Local,
+}
+
+/// 页间连接符（§3.1 `connectors`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SummaryConnector {
+    pub kind: String,
+    pub line: String,
+    pub at: [f64; 2],
+    pub radius: f64,
+    pub peer_kind: PeerKind,
+    pub peer_drawing: Option<String>,
+    pub upstream: Option<String>,
+    pub downstream: Option<String>,
+    pub handle: String,
+}
+
+/// 连通图（§3.3）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Graph {
+    pub nodes: Vec<String>,
+    pub edges: Vec<[String; 2]>,
+}
+
 /// 摘要一张图（§3.1）。只读，不改 `doc`。
 ///
 /// `tolerance` 是两点算同一处的距离（图纸单位），平时用 [`DEFAULT_TOLERANCE`]。
@@ -171,7 +261,9 @@ pub fn summarize(
     let mut pipe_lines: BTreeMap<String, Vec<Piece>> = BTreeMap::new();
     let mut signal_lines: BTreeMap<String, Vec<Piece>> = BTreeMap::new();
     let mut run_boxes: HashMap<&str, [f64; 4]> = HashMap::new();
-    let mut ends: Vec<[f64; 2]> = Vec::new();
+    let mut segments: Vec<SummarySegment> = Vec::new();
+    let mut signal_wires: Vec<Wire> = Vec::new();
+    let mut connectors: Vec<SummaryConnector> = Vec::new();
     for entity in doc.entities() {
         let handle = entity.common().handle;
         let Some(author) = PidAuthor::load(doc, handle) else {
@@ -182,18 +274,37 @@ pub fn summarize(
         let class = classify(&author.topology, &author.type_code, is_break, &types);
         let (at, bbox) = placement(doc, entity);
         match class {
-            Class::Connector => {}
+            Class::Connector => {
+                let record = records.connectors.get(key.as_str()).copied();
+                connectors.push(connector_of(entity, &author, record, at, key));
+            }
             Class::Segment => {
-                ends.extend(line_ends(entity));
-                if let Some(run) = records.segment_run.get(key.as_str()) {
+                let run = records.segment_run.get(key.as_str()).copied();
+                if let Some(run) = run {
                     run_boxes
-                        .entry(*run)
+                        .entry(run)
                         .and_modify(|merged| *merged = merge(*merged, bbox))
                         .or_insert(bbox);
                 }
+                if let Some(ends) = line_ends(entity) {
+                    let run = run.unwrap_or_default();
+                    let line = records.line_of_run.get(run).copied().unwrap_or_default();
+                    segments.push(segment_of(line, Some(run), ends, key));
+                }
             }
             Class::PipeLine | Class::SignalLine => {
-                ends.extend(line_ends(entity));
+                if let Some([a, b]) = line_ends(entity) {
+                    if class == Class::PipeLine {
+                        segments.push(segment_of(&author.tag, None, [a, b], key));
+                    } else {
+                        signal_wires.push(Wire {
+                            line: author.tag.clone(),
+                            run: None,
+                            a,
+                            b,
+                        });
+                    }
+                }
                 let groups = if class == Class::PipeLine {
                     &mut pipe_lines
                 } else {
@@ -262,7 +373,6 @@ pub fn summarize(
     for pieces in signal_lines.into_values() {
         objects.push(signal_line_object(pieces, &types));
     }
-    join_ports(&mut ports, &ends, &bound_ends(&table), tolerance);
     objects.sort_by(|(left_handle, left), (right_handle, right)| {
         left.type_code
             .cmp(&right.type_code)
@@ -270,14 +380,64 @@ pub fn summarize(
             .then_with(|| compare_at(left.at, right.at))
             .then_with(|| left_handle.cmp(right_handle))
     });
-    let mut ports: Vec<SummaryPort> = ports.into_iter().map(|draft| draft.port).collect();
     ports.sort_by(|left, right| {
+        let (left, right) = (&left.port, &right.port);
         left.tag
             .cmp(&right.tag)
             .then_with(|| compare_at(left.at, right.at))
             .then_with(|| left.type_code.cmp(&right.type_code))
             .then_with(|| left.port.cmp(&right.port))
     });
+    segments.sort_by(|left, right| {
+        left.line
+            .cmp(&right.line)
+            .then_with(|| left.run.cmp(&right.run))
+            .then_with(|| compare_at(left.a, right.a))
+            .then_with(|| compare_at(left.b, right.b))
+            .then_with(|| left.handle.cmp(&right.handle))
+    });
+    signal_wires.sort_by(|left, right| {
+        left.line
+            .cmp(&right.line)
+            .then_with(|| compare_at(left.a, right.a))
+            .then_with(|| compare_at(left.b, right.b))
+    });
+    connectors.sort_by(|left, right| {
+        left.line
+            .cmp(&right.line)
+            .then_with(|| compare_at(left.at, right.at))
+            .then_with(|| left.handle.cmp(&right.handle))
+    });
+    let mut signal_ends = signal_ends_of(&signal_wires, tolerance);
+    let joined = {
+        let lookup = Lookup::new(&objects, &ports, &connectors, tolerance);
+        let wires: Vec<Wire> = segments.iter().map(Wire::of).collect();
+        let pipes = Family::new(&wires, tolerance);
+        let signals = Family::new(&signal_wires, tolerance);
+        let mut joined = vec![false; ports.len()];
+        for (index, segment) in segments.iter_mut().enumerate() {
+            let [start, end] = records
+                .segment_peers
+                .get(segment.handle.as_str())
+                .copied()
+                .unwrap_or_default();
+            segment.joint_a = lookup.resolve(start, segment.a, &pipes, index, &mut joined);
+            segment.joint_b = lookup.resolve(end, segment.b, &pipes, index, &mut joined);
+        }
+        for (end, own) in &mut signal_ends {
+            end.joint = lookup.resolve(None, end.at, &signals, *own, &mut joined);
+        }
+        lookup.join_coincident(&mut joined);
+        joined
+    };
+    let ports = ports
+        .into_iter()
+        .zip(joined)
+        .map(|(draft, joined)| SummaryPort {
+            joined,
+            ..draft.port
+        })
+        .collect();
     DrawingSummary {
         version: SUMMARY_VERSION,
         drawing_id: meta.drawing_id,
@@ -287,8 +447,98 @@ pub fn summarize(
         pbs: meta.pbs,
         length_unit: length_unit(doc.header.insertion_units).to_string(),
         objects: objects.into_iter().map(|(_, object)| object).collect(),
+        segments,
+        signal_ends: signal_ends.into_iter().map(|(end, _)| end).collect(),
+        connectors,
         ports,
     }
+}
+
+/// 由摘要推出连通图（§3.3）。节点是有自己位号的对象和连接符；线段、信号线的
+/// 每个端点出一条边「线的主人 — 接到的东西」，哪一头不在图里都不出边。
+#[must_use]
+pub fn graph(summary: &DrawingSummary) -> Graph {
+    let mut nodes: BTreeSet<String> = summary
+        .objects
+        .iter()
+        .filter(|object| object.own_tag && !object.tag.is_empty())
+        .map(|object| node(&object.type_code, &object.tag))
+        .collect();
+    nodes.extend(
+        summary
+            .connectors
+            .iter()
+            .map(|connector| connector_node(&connector.kind, &connector.line)),
+    );
+    let pipe_ends = summary.segments.iter().flat_map(|segment| {
+        let owner = wire_owner(&segment.line, segment.run.as_deref());
+        [&segment.joint_a, &segment.joint_b]
+            .into_iter()
+            .flatten()
+            .map(move |joint| (owner.clone(), joint, false))
+    });
+    let signal_ends = summary.signal_ends.iter().filter_map(|end| {
+        let joint = end.joint.as_ref()?;
+        Some((node(TYPE_SIGNAL_LINE, &end.tag), joint, true))
+    });
+    let mut edges: BTreeSet<[String; 2]> = BTreeSet::new();
+    for (owner, joint, signal) in pipe_ends.chain(signal_ends) {
+        let Some(other) = joint_node(joint, signal, &nodes) else {
+            continue;
+        };
+        if owner != other && nodes.contains(&owner) {
+            edges.insert(if owner < other {
+                [owner, other]
+            } else {
+                [other, owner]
+            });
+        }
+    }
+    Graph {
+        nodes: nodes.into_iter().collect(),
+        edges: edges.into_iter().collect(),
+    }
+}
+
+fn node(type_code: &str, tag: &str) -> String {
+    format!("{type_code}|{tag}")
+}
+
+fn connector_node(kind: &str, line: &str) -> String {
+    format!("connector|{line}|{kind}")
+}
+
+/// 线段的主人：管路的线段算管路的，管线自己的线算管线的。
+fn wire_owner(line: &str, run: Option<&str>) -> String {
+    run.map_or_else(
+        || node(TYPE_PIPE_LINE, line),
+        |run| node(TYPE_PIPE_RUN, run),
+    )
+}
+
+/// 接点在图里的名字：接到端口的带 `#<端口名>`，接到线上的是那根线的主人（`signal`
+/// 时是信号线）。打断符和图里没有的对象没有名字。
+fn joint_node(joint: &Joint, signal: bool, nodes: &BTreeSet<String>) -> Option<String> {
+    let name = match joint {
+        Joint::Fitting {
+            type_code,
+            tag,
+            port,
+        }
+        | Joint::Port {
+            type_code,
+            tag,
+            port,
+        } => {
+            let base = node(type_code, tag);
+            return nodes.contains(&base).then(|| format!("{base}#{port}"));
+        }
+        Joint::Break => return None,
+        Joint::Connector { kind, line } => connector_node(kind, line),
+        Joint::Segment { line, .. } if signal => node(TYPE_SIGNAL_LINE, line),
+        Joint::Segment { line, run, .. } => wire_owner(line, run.as_deref()),
+    };
+    nodes.contains(&name).then_some(name)
 }
 
 /// 拓扑表里按句柄、位号查的几样。
@@ -303,6 +553,12 @@ struct Records<'a> {
     breaks: HashSet<&'a str>,
     /// 管线位号 → 拓扑表记的那根线的句柄。
     line_handle: HashMap<&'a str, &'a str>,
+    /// 管路位号 → 所在管线的位号。
+    line_of_run: HashMap<&'a str, &'a str>,
+    /// 管段句柄 → 起点、终点的 `peer`。
+    segment_peers: HashMap<&'a str, [Option<&'a str>; 2]>,
+    /// 连接符句柄 → 它的记录。
+    connectors: HashMap<&'a str, &'a ConnectorRecord>,
 }
 
 impl<'a> Records<'a> {
@@ -333,6 +589,24 @@ impl<'a> Records<'a> {
                 .pipe_lines
                 .iter()
                 .map(|line| (line.tag.as_str(), line.handle.as_str()))
+                .collect(),
+            line_of_run: table
+                .pipe_runs
+                .iter()
+                .map(|run| (run.tag.as_str(), run.line_tag.as_str()))
+                .collect(),
+            segment_peers: table
+                .pipe_segments
+                .iter()
+                .map(|segment| {
+                    let peers = [&segment.start, &segment.end].map(|end| end.peer.as_deref());
+                    (segment.handle.as_str(), peers)
+                })
+                .collect(),
+            connectors: table
+                .connectors
+                .iter()
+                .map(|connector| (connector.handle.as_str(), connector))
                 .collect(),
         }
     }
@@ -466,68 +740,336 @@ fn ports_of(
         .collect()
 }
 
-/// 拓扑表里连着符号实例的管段端点（`peer` 是 `<句柄>:<端口名>`）：句柄和端点坐标。
-fn bound_ends(table: &TopologyTable) -> Vec<(u64, [f64; 2])> {
-    table
-        .pipe_segments
-        .iter()
-        .flat_map(|segment| [&segment.start, &segment.end])
-        .filter_map(|end| {
-            let (handle, _) = end.peer.as_deref()?.split_once(':')?;
-            Some((parse_handle(handle)?.value(), end.point))
-        })
-        .collect()
+/// 判第 5、6 条用的一根线：属于谁，两端在哪。信号线的 `line` 是它的位号。
+#[derive(Debug, Clone)]
+struct Wire {
+    line: String,
+    run: Option<String>,
+    a: [f64; 2],
+    b: [f64; 2],
 }
 
-/// 端口接没接上：管段、管线自己的线或信号线的端点落在它上面，别的符号的端口
-/// 和它重合，或者拓扑表里有管段端点连着它的符号。管件两侧的管段让开了一道缝，
-/// 端点不在端口上，表里的端口名（「连接点1」）又不是符号库的，所以算离那个端点最近的
-/// 端口。
-fn join_ports(
-    ports: &mut [PortDraft],
-    ends: &[[f64; 2]],
-    bound: &[(u64, [f64; 2])],
+impl Wire {
+    fn of(segment: &SummarySegment) -> Self {
+        Self {
+            line: segment.line.clone(),
+            run: segment.run.clone(),
+            a: segment.a,
+            b: segment.b,
+        }
+    }
+}
+
+/// 一根线段，接点待判。没有拓扑表记录的管段，`line`、`run` 都是空串。
+fn segment_of(
+    line: &str,
+    run: Option<&str>,
+    [a, b]: [[f64; 2]; 2],
+    handle: String,
+) -> SummarySegment {
+    SummarySegment {
+        line: line.to_string(),
+        run: run.map(str::to_string),
+        a,
+        b,
+        length: distance(a, b),
+        joint_a: None,
+        joint_b: None,
+        handle,
+    }
+}
+
+/// 每条信号线的两端（§3.1）：它所有线的端点里，同一条信号线上别处没有重合点的
+/// 那些。带着端点所在的线在 `wires` 里的下标，按位号、坐标排。
+fn signal_ends_of(wires: &[Wire], tolerance: f64) -> Vec<(SignalEnd, usize)> {
+    let grid = PointGrid::new(wires.iter().flat_map(|wire| [wire.a, wire.b]), tolerance);
+    let mut ends = Vec::new();
+    for (index, wire) in wires.iter().enumerate() {
+        for (slot, at) in [wire.a, wire.b].into_iter().enumerate() {
+            let alone = grid
+                .near(at)
+                .filter(|other| *other != 2 * index + slot)
+                .all(|other| wires[other / 2].line != wire.line);
+            if alone {
+                let end = SignalEnd {
+                    tag: wire.line.clone(),
+                    at,
+                    joint: None,
+                };
+                ends.push((end, index));
+            }
+        }
+    }
+    ends.sort_by(|(left, _), (right, _)| {
+        left.tag
+            .cmp(&right.tag)
+            .then_with(|| compare_at(left.at, right.at))
+    });
+    ends
+}
+
+/// 一个页间连接符：圆心、半径取图上的圆，其余取拓扑表的记录。表里没有它的
+/// 记录时，种类按角色和类型编码推，线号空着。
+fn connector_of(
+    entity: &EntityType,
+    author: &PidAuthor,
+    record: Option<&ConnectorRecord>,
+    at: [f64; 2],
+    handle: String,
+) -> SummaryConnector {
+    let (at, radius) = match entity {
+        EntityType::Circle(circle) => (xy(circle.center), circle.radius),
+        _ => (at, 0.0),
+    };
+    let peer_kind = record.map_or(PeerKind::None, peer_kind_of);
+    SummaryConnector {
+        kind: record.map_or_else(|| guessed_kind(author), |record| record.kind.clone()),
+        line: record
+            .map(|record| record.line_tag.clone())
+            .unwrap_or_default(),
+        at,
+        radius,
+        peer_kind,
+        peer_drawing: record
+            .filter(|_| matches!(peer_kind, PeerKind::Target | PeerKind::Server))
+            .and_then(|record| record.peer_drawing.clone()),
+        upstream: record.and_then(|record| record.upstream.clone()),
+        downstream: record.and_then(|record| record.downstream.clone()),
+        handle,
+    }
+}
+
+/// §3.1 的判法：记了 `peer` 是同进程配的对；只记了 `peer_drawing` 时，上下游都有是
+/// 服务器配的对，否则只指了目标图。
+fn peer_kind_of(record: &ConnectorRecord) -> PeerKind {
+    if record.peer.is_some() {
+        PeerKind::Local
+    } else if record.peer_drawing.is_none() {
+        PeerKind::None
+    } else if record.upstream.is_some() && record.downstream.is_some() {
+        PeerKind::Server
+    } else {
+        PeerKind::Target
+    }
+}
+
+fn guessed_kind(author: &PidAuthor) -> String {
+    [
+        ConnectorKind::PipeIn,
+        ConnectorKind::PipeOut,
+        ConnectorKind::SignalIn,
+        ConnectorKind::SignalOut,
+    ]
+    .into_iter()
+    .find(|kind| kind.role() == author.topology && kind.type_code() == author.type_code)
+    .map_or_else(String::new, |kind| kind.as_str().to_string())
+}
+
+/// 判接点（§3.2）时查的几样，各自分好了桶。几样同时对上时取排在前面的那个。
+struct Lookup<'a> {
     tolerance: f64,
-) {
-    let grid = PointGrid::new(ports.iter().map(|draft| draft.port.at), tolerance);
-    let mut joined = vec![false; ports.len()];
-    for end in ends {
-        for index in grid.near(*end) {
-            joined[index] = true;
+    /// 对象句柄 → 对象，第 1 条按管段端点的 `peer` 找管件。
+    objects: HashMap<u64, &'a SummaryObject>,
+    /// 打断符包围盒的外接圆。
+    breaks: Circles,
+    ports: &'a [PortDraft],
+    port_grid: PointGrid,
+    /// 符号实例的句柄 → 它的端口在 `ports` 里的下标。
+    ports_of: HashMap<u64, Vec<usize>>,
+    connectors: &'a [SummaryConnector],
+    connector_circles: Circles,
+}
+
+impl<'a> Lookup<'a> {
+    fn new(
+        objects: &'a [(u64, SummaryObject)],
+        ports: &'a [PortDraft],
+        connectors: &'a [SummaryConnector],
+        tolerance: f64,
+    ) -> Self {
+        let breaks = objects
+            .iter()
+            .filter(|(_, object)| object.kind == ObjectKind::Break)
+            .map(|(_, object)| {
+                let [x0, y0, x1, y1] = object.bbox;
+                let center = [(x0 + x1) / 2.0, (y0 + y1) / 2.0];
+                (center, distance([x0, y0], [x1, y1]) / 2.0)
+            })
+            .collect();
+        let mut ports_of: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (index, draft) in ports.iter().enumerate() {
+            ports_of
+                .entry(draft.insert.value())
+                .or_default()
+                .push(index);
         }
-    }
-    for (index, draft) in ports.iter().enumerate() {
-        if grid
-            .near(draft.port.at)
-            .any(|other| ports[other].insert != draft.insert)
-        {
-            joined[index] = true;
-        }
-    }
-    let mut by_insert: HashMap<u64, Vec<usize>> = HashMap::new();
-    for (index, draft) in ports.iter().enumerate() {
-        by_insert
-            .entry(draft.insert.value())
-            .or_default()
-            .push(index);
-    }
-    for (insert, end) in bound {
-        let distance = |index: usize| {
-            let at = ports[index].port.at;
-            (at[0] - end[0]).hypot(at[1] - end[1])
-        };
-        let nearest = by_insert.get(insert).and_then(|indices| {
-            indices
+        let circles = connectors
+            .iter()
+            .map(|connector| (connector.at, connector.radius))
+            .collect();
+        Self {
+            tolerance,
+            objects: objects
                 .iter()
-                .copied()
-                .min_by(|left, right| distance(*left).total_cmp(&distance(*right)))
-        });
-        if let Some(index) = nearest {
-            joined[index] = true;
+                .map(|(handle, object)| (*handle, object))
+                .collect(),
+            breaks: Circles::new(breaks, tolerance),
+            ports,
+            port_grid: PointGrid::new(ports.iter().map(|draft| draft.port.at), tolerance),
+            ports_of,
+            connectors,
+            connector_circles: Circles::new(circles, tolerance),
         }
     }
-    for (draft, joined) in ports.iter_mut().zip(joined) {
-        draft.port.joined = joined;
+
+    /// 按 §3.2 的顺序判端点 `at` 接到了什么，先中先得；接上的端口记进 `joined`。
+    /// `peer` 是拓扑表里这个管段端点的 `peer`，`own` 是端点所在的线在 `family` 里的
+    /// 下标。
+    fn resolve(
+        &self,
+        peer: Option<&str>,
+        at: [f64; 2],
+        family: &Family,
+        own: usize,
+        joined: &mut [bool],
+    ) -> Option<Joint> {
+        if let Some((insert, object, port)) = self.fitting(peer) {
+            if let Some(index) = self.nearest_port(insert, at) {
+                joined[index] = true;
+            }
+            return Some(Joint::Fitting {
+                type_code: object.type_code.clone(),
+                tag: object.tag.clone(),
+                port: port.to_string(),
+            });
+        }
+        if self.breaks.hit(at, self.tolerance).is_some() {
+            return Some(Joint::Break);
+        }
+        if let Some(index) = self.port_grid.near(at).min() {
+            joined[index] = true;
+            let port = &self.ports[index].port;
+            return Some(Joint::Port {
+                type_code: port.type_code.clone(),
+                tag: port.tag.clone(),
+                port: port.port.clone(),
+            });
+        }
+        if let Some(index) = self.connector_circles.hit(at, self.tolerance) {
+            let connector = &self.connectors[index];
+            return Some(Joint::Connector {
+                kind: connector.kind.clone(),
+                line: connector.line.clone(),
+            });
+        }
+        let (index, tee) = family.hit(own, at, self.tolerance)?;
+        let wire = &family.wires[index];
+        Some(Joint::Segment {
+            line: wire.line.clone(),
+            run: wire.run.clone(),
+            tee,
+        })
+    }
+
+    /// 第 1 条：`peer`（`<句柄>:<端口名>`）指着的对象和端口名；摘要里没有那个对象就不算。
+    fn fitting<'p>(&self, peer: Option<&'p str>) -> Option<(u64, &'a SummaryObject, &'p str)> {
+        let (handle, port) = peer?.split_once(':')?;
+        let handle = parse_handle(handle)?.value();
+        let object = *self.objects.get(&handle)?;
+        Some((handle, object, port))
+    }
+
+    /// 管件两侧的管段让开了一道缝，端点不在端口上，表里的端口名（「连接点1」）又
+    /// 不是符号库的，所以算离端点最近的那个端口。
+    fn nearest_port(&self, insert: u64, at: [f64; 2]) -> Option<usize> {
+        let reach = |index: &usize| distance(self.ports[*index].port.at, at);
+        self.ports_of
+            .get(&insert)?
+            .iter()
+            .min_by(|left, right| reach(left).total_cmp(&reach(right)))
+            .copied()
+    }
+
+    /// 与别的符号的端口重合的端口也算接上。
+    fn join_coincident(&self, joined: &mut [bool]) {
+        for (index, draft) in self.ports.iter().enumerate() {
+            if self
+                .port_grid
+                .near(draft.port.at)
+                .any(|other| self.ports[other].insert != draft.insert)
+            {
+                joined[index] = true;
+            }
+        }
+    }
+}
+
+/// 一族线：管段和管线自己的线是一族，信号线是另一族。第 5、6 条只在族内找：
+/// 管子的端点不算接在信号线上，反过来也一样。
+struct Family<'w> {
+    wires: &'w [Wire],
+    /// 每根线的两端，第 `i` 根是 `2i`、`2i + 1`。
+    ends: PointGrid,
+    spans: BoxGrid,
+}
+
+impl<'w> Family<'w> {
+    fn new(wires: &'w [Wire], tolerance: f64) -> Self {
+        Self {
+            wires,
+            ends: PointGrid::new(wires.iter().flat_map(|wire| [wire.a, wire.b]), tolerance),
+            spans: BoxGrid::new(wires.iter().map(|wire| span(wire.a, wire.b)), tolerance),
+        }
+    }
+
+    /// 第 5 条：与另一根线的端点重合；第 6 条：落在另一根线的中间（`tee`）。
+    /// `own` 是端点自己所在的线。
+    fn hit(&self, own: usize, at: [f64; 2], tolerance: f64) -> Option<(usize, bool)> {
+        let end = self
+            .ends
+            .near(at)
+            .map(|end| end / 2)
+            .filter(|index| *index != own)
+            .min();
+        if let Some(index) = end {
+            return Some((index, false));
+        }
+        self.spans
+            .at(at)
+            .filter(|index| *index != own)
+            .filter(|index| {
+                let wire = &self.wires[*index];
+                distance_to_wire(at, wire.a, wire.b) <= tolerance
+            })
+            .min()
+            .map(|index| (index, true))
+    }
+}
+
+/// 一组圆（打断符包围盒的外接圆、连接符），按各自的包围盒分桶。
+struct Circles {
+    circles: Vec<([f64; 2], f64)>,
+    grid: BoxGrid,
+}
+
+impl Circles {
+    fn new(circles: Vec<([f64; 2], f64)>, tolerance: f64) -> Self {
+        let boxes = circles
+            .iter()
+            .map(|&([x, y], radius)| [x - radius, y - radius, x + radius, y + radius]);
+        let grid = BoxGrid::new(boxes, tolerance);
+        Self { circles, grid }
+    }
+
+    /// 盖住 `at` 的圆（含圆周，再放宽一个容差）里排在最前的那个。
+    fn hit(&self, at: [f64; 2], tolerance: f64) -> Option<usize> {
+        self.grid
+            .at(at)
+            .filter(|index| {
+                let (center, radius) = self.circles[*index];
+                distance(at, center) <= radius + tolerance
+            })
+            .min()
     }
 }
 
@@ -548,34 +1090,82 @@ impl PointGrid {
             cells: HashMap::new(),
         };
         for point in points {
-            let cell = grid.cell_of(point);
+            let cell = cell_of(grid.cell, point);
             grid.cells.entry(cell).or_default().push(grid.points.len());
             grid.points.push(point);
         }
         grid
     }
 
-    /// 点所在的格子。`as` 饱和取整：极远的坐标挤进边上的格子，只是慢些，不会错。
-    fn cell_of(&self, [x, y]: [f64; 2]) -> (i64, i64) {
-        (
-            (x / self.cell).floor() as i64,
-            (y / self.cell).floor() as i64,
-        )
-    }
-
     /// 离 `at` 不超过容差的点的下标。
     fn near(&self, at: [f64; 2]) -> impl Iterator<Item = usize> + '_ {
-        let (column, row) = self.cell_of(at);
+        let (column, row) = cell_of(self.cell, at);
         (column.saturating_sub(1)..=column.saturating_add(1))
             .flat_map(move |x| (row.saturating_sub(1)..=row.saturating_add(1)).map(move |y| (x, y)))
             .filter_map(|cell| self.cells.get(&cell))
             .flatten()
             .copied()
-            .filter(move |index| {
-                let point = self.points[*index];
-                (point[0] - at[0]).hypot(point[1] - at[1]) <= self.tolerance
-            })
+            .filter(move |index| distance(self.points[*index], at) <= self.tolerance)
     }
+}
+
+/// 按方格分桶的包围盒：找盖住某点的盒子只看那点所在的一格。格子边长取所有
+/// 盒子合起来的范围除以 √n（大致一格一个盒子），不小于两倍容差；一个盒子最多占
+/// 范围内的全部格子。
+struct BoxGrid {
+    cell: f64,
+    cells: HashMap<(i64, i64), Vec<usize>>,
+}
+
+impl BoxGrid {
+    /// 盒子各向外放宽一个容差再分桶。
+    fn new(boxes: impl IntoIterator<Item = [f64; 4]>, tolerance: f64) -> Self {
+        let boxes: Vec<[f64; 4]> = boxes
+            .into_iter()
+            .map(|[x0, y0, x1, y1]| {
+                [
+                    x0 - tolerance,
+                    y0 - tolerance,
+                    x1 + tolerance,
+                    y1 + tolerance,
+                ]
+            })
+            .collect();
+        let extent = boxes
+            .iter()
+            .copied()
+            .reduce(merge)
+            .map_or(0.0, |[x0, y0, x1, y1]| (x1 - x0).max(y1 - y0));
+        let per_side = (boxes.len() as f64).sqrt().ceil().max(1.0);
+        let mut grid = Self {
+            cell: (extent / per_side).max(2.0 * tolerance).max(MIN_CELL),
+            cells: HashMap::new(),
+        };
+        for (index, [x0, y0, x1, y1]) in boxes.into_iter().enumerate() {
+            let (left, bottom) = cell_of(grid.cell, [x0, y0]);
+            let (right, top) = cell_of(grid.cell, [x1, y1]);
+            for column in left..=right {
+                for row in bottom..=top {
+                    grid.cells.entry((column, row)).or_default().push(index);
+                }
+            }
+        }
+        grid
+    }
+
+    /// 盒子可能盖住 `at` 的那几个的下标：只按格子粗筛，调用处再细判。
+    fn at(&self, at: [f64; 2]) -> impl Iterator<Item = usize> + '_ {
+        self.cells
+            .get(&cell_of(self.cell, at))
+            .into_iter()
+            .flatten()
+            .copied()
+    }
+}
+
+/// 点所在的格子。`as` 饱和取整：极远的坐标挤进边上的格子，只是慢些，不会错。
+fn cell_of(cell: f64, [x, y]: [f64; 2]) -> (i64, i64) {
+    ((x / cell).floor() as i64, (y / cell).floor() as i64)
 }
 
 /// 实体的定位点与包围盒 `[minx, miny, maxx, maxy]`：符号取插入点，点取它自己，
@@ -617,15 +1207,41 @@ fn symbol_bounds(doc: &Document, insert: &Insert) -> Option<[f64; 4]> {
 }
 
 /// 直线的两个端点；别的实体没有。
-fn line_ends(entity: &EntityType) -> Vec<[f64; 2]> {
+fn line_ends(entity: &EntityType) -> Option<[[f64; 2]; 2]> {
     match entity {
-        EntityType::Line(line) => vec![xy(line.start), xy(line.end)],
-        _ => Vec::new(),
+        EntityType::Line(line) => Some([xy(line.start), xy(line.end)]),
+        _ => None,
     }
 }
 
 fn xy(point: Vector3) -> [f64; 2] {
     [point.x, point.y]
+}
+
+fn distance(left: [f64; 2], right: [f64; 2]) -> f64 {
+    (left[0] - right[0]).hypot(left[1] - right[1])
+}
+
+/// 点到线段 `a`–`b` 的距离。
+fn distance_to_wire(at: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let length = dx * dx + dy * dy;
+    let t = if length > 0.0 {
+        (((at[0] - a[0]) * dx + (at[1] - a[1]) * dy) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    distance(at, [a[0] + dx * t, a[1] + dy * t])
+}
+
+/// 两点围成的包围盒。
+fn span(a: [f64; 2], b: [f64; 2]) -> [f64; 4] {
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[0].max(b[0]),
+        a[1].max(b[1]),
+    ]
 }
 
 fn merge(left: [f64; 4], right: [f64; 4]) -> [f64; 4] {
@@ -1442,5 +2058,494 @@ mod tests {
         ] {
             assert_eq!(length_unit(insunits), unit, "{insunits}");
         }
+    }
+
+    /// 两端是 `a`、`b` 的那根线的句柄。
+    fn line_between(doc: &Document, a: [f64; 2], b: [f64; 2]) -> String {
+        let found: Vec<Handle> = doc
+            .entities()
+            .filter_map(|entity| match entity {
+                EntityType::Line(line) if xy(line.start) == a && xy(line.end) == b => {
+                    Some(line.common.handle)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "{a:?}–{b:?} 应恰好一根线：{found:?}");
+        handle_text(found[0])
+    }
+
+    /// 期望的线段：句柄按两端到图上找。
+    fn segment(
+        doc: &Document,
+        (line, run): (&str, Option<&str>),
+        [a, b]: [[f64; 2]; 2],
+        joint_a: Option<Joint>,
+        joint_b: Option<Joint>,
+    ) -> SummarySegment {
+        SummarySegment {
+            line: line.to_string(),
+            run: run.map(str::to_string),
+            a,
+            b,
+            length: (b[0] - a[0]).hypot(b[1] - a[1]),
+            joint_a,
+            joint_b,
+            handle: line_between(doc, a, b),
+        }
+    }
+
+    fn at_fitting(object: &SummaryObject, port: &str) -> Joint {
+        Joint::Fitting {
+            type_code: object.type_code.clone(),
+            tag: object.tag.clone(),
+            port: port.to_string(),
+        }
+    }
+
+    fn at_port(object: &SummaryObject, port: &str) -> Joint {
+        Joint::Port {
+            type_code: object.type_code.clone(),
+            tag: object.tag.clone(),
+            port: port.to_string(),
+        }
+    }
+
+    fn at_connector(kind: &str, line: &str) -> Joint {
+        Joint::Connector {
+            kind: kind.to_string(),
+            line: line.to_string(),
+        }
+    }
+
+    fn on_line(line: &str, run: Option<&str>, tee: bool) -> Joint {
+        Joint::Segment {
+            line: line.to_string(),
+            run: run.map(str::to_string),
+            tee,
+        }
+    }
+
+    /// 小图里 `block` 的那个符号对象；`on_run` 是插在管路上的那个。
+    fn symbol_object(
+        summary: &DrawingSummary,
+        doc: &Document,
+        block: &str,
+        on_run: bool,
+    ) -> SummaryObject {
+        let handle = only(doc, |entity, author| {
+            block_of(entity) == Some(block) && (author.topology == ROLE_FITTING) == on_run
+        });
+        found(summary, handle).clone()
+    }
+
+    #[test]
+    fn every_end_of_the_small_drawing_says_what_it_is_joined_to() {
+        let mut app = app();
+        small_drawing(&mut app);
+        let summary = summary_of(&app);
+        let doc = app.active_document_for_test();
+        let pump = symbol_object(&summary, doc, PUMP, false);
+        let vessel = symbol_object(&summary, doc, VESSEL, false);
+        let valve = symbol_object(&summary, doc, GATE_VALVE, true);
+        let fitting = symbol_object(&summary, doc, TRANSMITTER, true);
+        let instrument = symbol_object(&summary, doc, TRANSMITTER, false);
+        let run = ("L-1001", Some("L-1001-01"));
+        let want = vec![
+            segment(
+                doc,
+                ("L-1001", None),
+                [[200.0, 100.0], [300.0, 100.0]],
+                None,
+                Some(at_connector("pipe_out", "L-1001")),
+            ),
+            segment(
+                doc,
+                run,
+                [[14.0, 0.0], [30.0, 0.0]],
+                Some(at_port(&pump, "out1")),
+                Some(at_fitting(&fitting, "连接点1")),
+            ),
+            segment(
+                doc,
+                run,
+                [[50.0, 0.0], [84.0, 0.0]],
+                Some(at_fitting(&fitting, "连接点2")),
+                Some(at_fitting(&valve, "连接点1")),
+            ),
+            segment(
+                doc,
+                run,
+                [[116.0, 0.0], [148.0, 0.0]],
+                Some(at_fitting(&valve, "连接点2")),
+                Some(Joint::Break),
+            ),
+            segment(
+                doc,
+                run,
+                [[152.0, 0.0], [200.0, 0.0]],
+                Some(Joint::Break),
+                Some(at_port(&vessel, "in1")),
+            ),
+        ];
+        assert_eq!(summary.segments, want);
+
+        let ends = vec![
+            SignalEnd {
+                tag: "S-2001".to_string(),
+                at: [0.0, 50.0],
+                joint: None,
+            },
+            SignalEnd {
+                tag: "S-2001".to_string(),
+                at: [50.0, 80.0],
+                joint: Some(at_port(&instrument, "in1")),
+            },
+        ];
+        assert_eq!(summary.signal_ends, ends);
+
+        let connector = handle_text(only(doc, |_, author| author.topology == ROLE_CONNECTOR_OUT));
+        let want = SummaryConnector {
+            kind: "pipe_out".to_string(),
+            line: "L-1001".to_string(),
+            at: [300.0, 100.0],
+            radius: 3.0,
+            peer_kind: PeerKind::None,
+            peer_drawing: None,
+            upstream: Some("L-1001".to_string()),
+            downstream: None,
+            handle: connector.clone(),
+        };
+        assert_eq!(summary.connectors, vec![want]);
+
+        let text = serde_json::to_string(&summary).expect("JSON");
+        let order: Vec<usize> = [
+            "\"objects\":[",
+            "\"segments\":[",
+            "\"signal_ends\":[",
+            "\"connectors\":[",
+            "\"ports\":[",
+        ]
+        .iter()
+        .map(|key| text.find(key).unwrap_or_else(|| panic!("缺 {key}：{text}")))
+        .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+        let line = line_between(doc, [200.0, 100.0], [300.0, 100.0]);
+        let first = format!(
+            r#""segments":[{{"line":"L-1001","run":null,"a":[200.0,100.0],"b":[300.0,100.0],"length":100.0,"joint_a":null,"joint_b":{{"to":"connector","kind":"pipe_out","line":"L-1001"}},"handle":"{line}"}},"#
+        );
+        assert!(text.contains(&first), "{text}");
+        let joints = [
+            format!(
+                r#""joint_a":{{"to":"port","type_code":"EQUIPMENT","tag":"{}","port":"out1"}}"#,
+                pump.tag
+            ),
+            format!(
+                r#""joint_b":{{"to":"fitting","type_code":"VALVE","tag":"{}","port":"连接点1"}}"#,
+                valve.tag
+            ),
+            r#""joint_b":{"to":"break"}"#.to_string(),
+            format!(
+                r#""connectors":[{{"kind":"pipe_out","line":"L-1001","at":[300.0,100.0],"radius":3.0,"peer_kind":"none","peer_drawing":null,"upstream":"L-1001","downstream":null,"handle":"{connector}"}}]"#
+            ),
+        ];
+        for joint in &joints {
+            assert!(text.contains(joint.as_str()), "缺 {joint}：{text}");
+        }
+    }
+
+    /// 管路的拐点、支管接在主管中间、管线接管路、信号线自己分叉，都不算悬空。
+    /// 插在管段端点上的管件不拆段，管段的 `peer` 也不记，符号的端口又不在
+    /// 端点上，那一端照 §3.2 的顺序判成悬空。
+    #[test]
+    fn bends_branches_and_tees_are_joined_but_an_endpoint_fitting_is_not() {
+        let mut app = app();
+        draw(&mut app, "PIDPIPE", &[[-50.0, 0.0], [0.0, 0.0]]);
+        draw(
+            &mut app,
+            "PIDPIPE run",
+            &[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0]],
+        );
+        draw(&mut app, "PIDPIPE run", &[[50.0, 0.0], [50.0, -40.0]]);
+        draw(&mut app, "PIDFITTING gate_valve", &[[100.0, 50.0]]);
+        draw(
+            &mut app,
+            "PIDPIPE signal S-3001",
+            &[[0.0, 100.0], [100.0, 100.0]],
+        );
+        draw(
+            &mut app,
+            "PIDPIPE signal S-3001",
+            &[[50.0, 100.0], [50.0, 130.0]],
+        );
+        let summary = summary_of(&app);
+        let doc = app.active_document_for_test();
+        let table = TopologyTable::load(doc);
+        let runs: Vec<&str> = table.pipe_runs.iter().map(|run| run.tag.as_str()).collect();
+        assert_eq!(runs, ["L-1001-01", "L-1001-02"]);
+
+        let main = Some("L-1001-01");
+        let want = vec![
+            segment(
+                doc,
+                ("L-1001", None),
+                [[-50.0, 0.0], [0.0, 0.0]],
+                None,
+                Some(on_line("L-1001", main, false)),
+            ),
+            segment(
+                doc,
+                ("L-1001", main),
+                [[0.0, 0.0], [100.0, 0.0]],
+                Some(on_line("L-1001", None, false)),
+                Some(on_line("L-1001", main, false)),
+            ),
+            segment(
+                doc,
+                ("L-1001", main),
+                [[100.0, 0.0], [100.0, 50.0]],
+                Some(on_line("L-1001", main, false)),
+                None,
+            ),
+            segment(
+                doc,
+                ("L-1001", Some("L-1001-02")),
+                [[50.0, 0.0], [50.0, -40.0]],
+                Some(on_line("L-1001", main, true)),
+                None,
+            ),
+        ];
+        assert_eq!(summary.segments, want);
+        let text = serde_json::to_string(&summary.segments).expect("JSON");
+        assert!(
+            text.contains(r#""joint_a":{"to":"segment","line":"L-1001","run":null},"#),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                r#""joint_a":{"to":"segment","line":"L-1001","run":"L-1001-01","tee":true},"#
+            ),
+            "{text}"
+        );
+
+        let end = |at: [f64; 2], joint: Option<Joint>| SignalEnd {
+            tag: "S-3001".to_string(),
+            at,
+            joint,
+        };
+        let ends = vec![
+            end([0.0, 100.0], None),
+            end([50.0, 100.0], Some(on_line("S-3001", None, true))),
+            end([50.0, 130.0], None),
+            end([100.0, 100.0], None),
+        ];
+        assert_eq!(summary.signal_ends, ends);
+
+        let valve = symbol_object(&summary, doc, GATE_VALVE, true);
+        let joined: Vec<(&str, bool)> = summary
+            .ports
+            .iter()
+            .filter(|port| port.tag == valve.tag)
+            .map(|port| (port.port.as_str(), port.joined))
+            .collect();
+        assert_eq!(joined, [("in1", false), ("out1", false)]);
+
+        let edges = [
+            ["PIPE_LINE|L-1001", "PIPE_RUN|L-1001-01"],
+            ["PIPE_RUN|L-1001-01", "PIPE_RUN|L-1001-02"],
+        ]
+        .map(|edge| edge.map(str::to_string));
+        assert_eq!(graph(&summary).edges, edges, "拐点、信号线自己分叉不出边");
+    }
+
+    /// `peer_kind` 的四种取值。没记对端、只指了目标图的用命令画；服务器配对、
+    /// 同进程配对写下的记录在图的副本上改出来。
+    #[test]
+    fn connectors_tell_how_their_peer_was_recorded() {
+        let mut app = app();
+        draw(&mut app, "PIDPIPE", &[[0.0, 0.0], [100.0, 0.0]]);
+        draw(&mut app, "PIDPIPE", &[[0.0, 50.0], [100.0, 50.0]]);
+        draw(&mut app, "PIDCONNECTOR pipe_out", &[[100.0, 0.0]]);
+        draw(&mut app, "PIDCONNECTOR pipe_in PID-1100", &[[0.0, 0.0]]);
+        draw(&mut app, "PIDCONNECTOR pipe_out PID-1102", &[[100.0, 50.0]]);
+        draw(&mut app, "PIDCONNECTOR pipe_in", &[[0.0, 50.0]]);
+        let mut doc = app.active_document_for_test().clone();
+        let mut table = TopologyTable::load(&doc);
+        assert_eq!(table.connectors.len(), 4, "{:#?}", table.connectors);
+        for record in &mut table.connectors {
+            match (record.line_tag.as_str(), record.kind.as_str()) {
+                ("L-1002", "pipe_out") => record.downstream = Some("L-2001".to_string()),
+                ("L-1002", "pipe_in") => {
+                    record.peer = Some("7:2A0".to_string());
+                    record.peer_drawing = Some("7".to_string());
+                }
+                _ => {}
+            }
+        }
+        table.store(&mut doc);
+        let summary = summarize(&doc, &app.pid_symbols, meta(), DEFAULT_TOLERANCE);
+
+        let connector = |kind: &str,
+                         line: &str,
+                         at: [f64; 2],
+                         peer_kind: PeerKind,
+                         peer_drawing: Option<&str>,
+                         downstream: Option<&str>| SummaryConnector {
+            kind: kind.to_string(),
+            line: line.to_string(),
+            at,
+            radius: 3.0,
+            peer_kind,
+            peer_drawing: peer_drawing.map(str::to_string),
+            upstream: Some(line.to_string()),
+            downstream: downstream.map(str::to_string),
+            handle: table
+                .connectors
+                .iter()
+                .find(|record| record.line_tag == line && record.kind == kind)
+                .expect("连接符记录")
+                .handle
+                .clone(),
+        };
+        let want = vec![
+            connector(
+                "pipe_in",
+                "L-1001",
+                [0.0, 0.0],
+                PeerKind::Target,
+                Some("PID-1100"),
+                None,
+            ),
+            connector(
+                "pipe_out",
+                "L-1001",
+                [100.0, 0.0],
+                PeerKind::None,
+                None,
+                None,
+            ),
+            connector(
+                "pipe_in",
+                "L-1002",
+                [0.0, 50.0],
+                PeerKind::Local,
+                None,
+                None,
+            ),
+            connector(
+                "pipe_out",
+                "L-1002",
+                [100.0, 50.0],
+                PeerKind::Server,
+                Some("PID-1102"),
+                Some("L-2001"),
+            ),
+        ];
+        assert_eq!(summary.connectors, want);
+        let text = serde_json::to_string(&summary.connectors).expect("JSON");
+        for kind in ["none", "target", "server"] {
+            assert!(text.contains(&format!(r#""peer_kind":"{kind}""#)), "{text}");
+        }
+        assert!(
+            text.contains(r#""peer_kind":"local","peer_drawing":null,"#),
+            "同进程配的对不输出文档编号：{text}"
+        );
+
+        for line in ["L-1001", "L-1002"] {
+            let own = summary
+                .segments
+                .iter()
+                .find(|segment| segment.line == line)
+                .expect("管线自己的线");
+            assert_eq!(own.joint_a, Some(at_connector("pipe_in", line)));
+            assert_eq!(own.joint_b, Some(at_connector("pipe_out", line)));
+        }
+    }
+
+    #[test]
+    fn the_graph_links_each_owner_to_what_its_ends_touch() {
+        let mut app = app();
+        small_drawing(&mut app);
+        let summary = summary_of(&app);
+        let doc = app.active_document_for_test();
+        let name = |block: &str, on_run: bool| {
+            let object = symbol_object(&summary, doc, block, on_run);
+            format!("{}|{}", object.type_code, object.tag)
+        };
+        let pump = name(PUMP, false);
+        let vessel = name(VESSEL, false);
+        let valve = name(GATE_VALVE, true);
+        assert_eq!(
+            name(TRANSMITTER, false),
+            "INSTRUMENT|",
+            "仪表没有位号：不进图，接到它的信号线端点不出边"
+        );
+        let mut nodes = vec![
+            pump.clone(),
+            vessel.clone(),
+            name(GATE_VALVE, false),
+            valve.clone(),
+            "NOTE|N-1".to_string(),
+            "PIPE_LINE|L-1001".to_string(),
+            "PIPE_RUN|L-1001-01".to_string(),
+            "SIGNAL_LINE|S-2001".to_string(),
+            "connector|L-1001|pipe_out".to_string(),
+        ];
+        nodes.sort();
+        let run = "PIPE_RUN|L-1001-01";
+        let mut edges = vec![
+            [format!("{pump}#out1"), run.to_string()],
+            [format!("{valve}#连接点1"), run.to_string()],
+            [format!("{valve}#连接点2"), run.to_string()],
+            [format!("{vessel}#in1"), run.to_string()],
+            [
+                "PIPE_LINE|L-1001".to_string(),
+                "connector|L-1001|pipe_out".to_string(),
+            ],
+        ];
+        for edge in &mut edges {
+            edge.sort();
+        }
+        edges.sort();
+
+        let graph = graph(&summary);
+        assert_eq!(graph.nodes, nodes);
+        assert_eq!(graph.edges, edges);
+        let json = serde_json::to_value(&graph).expect("JSON");
+        assert_eq!(json["edges"][0], json!(edges[0]), "{json}");
+        assert_eq!(json["nodes"][0], json!(nodes[0]), "{json}");
+    }
+
+    /// 打断符那根斜线缩在缝里，它的包围盒套不住缝两侧的端点；按包围盒的
+    /// 外接圆判，管子朝哪个方向都一样。
+    #[test]
+    fn both_sides_of_a_break_are_cut_whatever_the_pipe_direction() {
+        let mut app = app();
+        draw(&mut app, "PIDPIPE", &[[0.0, -50.0], [10.0, -50.0]]);
+        draw(&mut app, "PIDPIPE run", &[[0.0, 0.0], [60.0, 80.0]]);
+        draw(&mut app, "PIDBREAK", &[[30.0, 40.0]]);
+        let summary = summary_of(&app);
+        let mark = summary
+            .objects
+            .iter()
+            .find(|object| object.kind == ObjectKind::Break)
+            .expect("打断符");
+        let cut: Vec<&SummarySegment> = summary
+            .segments
+            .iter()
+            .filter(|segment| segment.run.is_some())
+            .collect();
+        assert_eq!(cut.len(), 2, "{:#?}", summary.segments);
+        let [x0, y0, x1, y1] = mark.bbox;
+        for (end, joint) in [(cut[0].b, &cut[0].joint_b), (cut[1].a, &cut[1].joint_a)] {
+            assert!(
+                !(x0..=x1).contains(&end[0]) || !(y0..=y1).contains(&end[1]),
+                "端点 {end:?} 本在包围盒 {:?} 外",
+                mark.bbox
+            );
+            assert_eq!(joint, &Some(Joint::Break), "{end:?}");
+        }
+        assert_eq!(cut[0].joint_a, None);
+        assert_eq!(cut[1].joint_b, None);
     }
 }
