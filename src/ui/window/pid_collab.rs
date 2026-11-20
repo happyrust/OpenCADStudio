@@ -69,12 +69,17 @@ pub fn holder_bounds_id(user_id: &str) -> String {
 pub const READONLY_LABEL: &str = "只读";
 
 /// `PosReport` id of the badge a session wears once its drawing is known to
-/// be short of the room's changes. Reported only then, so its presence is
+/// be short of the room's changes, or while the connection that is up is not
+/// taken as aligned with the room. Reported only then, so its presence is
 /// the state.
 pub const DIVERGED_BOUNDS_ID: &str = "pid-collab-diverged";
 
 /// What the banner says of such a session.
 pub const DIVERGED_LABEL: &str = "不一致";
+
+/// What the panel says to do about it, under why (`REQ-COLL-015`
+/// acceptance 3): the way back is the room's own copy of the drawing.
+pub const GET_LATEST_HINT: &str = "需要取得最新图纸";
 
 /// What a peer row says of the session holding the edit right.
 pub const HOLDER_LABEL: &str = "编辑权";
@@ -155,8 +160,10 @@ pub struct CollabView {
     pub server_url: String,
     pub session_id: Option<String>,
     pub readonly: bool,
-    /// Why this drawing is no longer what the room has, once it is not: the
-    /// session then sends nothing more, and the panel says so.
+    /// Why this drawing is not what the room has, while it is not: parted
+    /// from it, or not taken on the connection that is up
+    /// (`State::mismatch`). The session sends nothing meanwhile, and the
+    /// panel says why and what to do about it.
     pub diverged: Option<String>,
     pub peers: Vec<PeerRow>,
     /// The conflict entries nobody has ruled on yet, oldest first.
@@ -365,14 +372,16 @@ pub fn view<'a>(view: &'a CollabView, width: f32, chrome: Chrome) -> Element<'a,
     if let Some(reason) = &view.diverged {
         // Under the banner rather than in the last-outcome line, which the
         // next claim would overwrite: this stays true until the drawing is
-        // replaced.
+        // replaced, or a connection takes it as the room's.
         body = body.push(
             container(
-                text(format!(
-                    "本图与房间已不一致，本地修改不再提交。{reason}"
-                ))
-                .size(10)
-                .style(notice),
+                column![
+                    text(format!("本图与房间已不一致，本地修改不再提交。{reason}"))
+                        .size(10)
+                        .style(notice),
+                    text(GET_LATEST_HINT).size(10).style(notice),
+                ]
+                .spacing(2),
             )
             .width(Fill)
             .padding([0, 2]),
@@ -666,5 +675,25 @@ mod tests {
         let badge = drawn(&mut ui, DIVERGED_LABEL).expect("the badge is drawn");
         let roster = drawn(&mut ui, "u1").expect("the roster is drawn");
         assert!(badge.y < roster.y, "badge {badge:?}, u1 {roster:?}");
+    }
+
+    /// `REQ-COLL-015` acceptance 3: a drawing that is not the room's —
+    /// parted from it, or not taken on this connection — says what to do
+    /// about it, under the badge and above the roster.
+    #[test]
+    fn collab_align_refused_the_panel_says_to_get_the_latest_drawing() {
+        let view_model = CollabView {
+            diverged: Some("协同库标识不一致：这份文件对齐的是另一个服务器库".to_owned()),
+            peers: vec![peer("u1", true, false)],
+            ..view_with(Vec::new())
+        };
+        let mut ui = draw(&view_model);
+        let badge = drawn(&mut ui, DIVERGED_LABEL).expect("the badge is drawn");
+        let hint = drawn(&mut ui, "需要取得最新图纸").expect("what to do is drawn");
+        let roster = drawn(&mut ui, "u1").expect("the roster is drawn");
+        assert!(
+            badge.y < hint.y && hint.y < roster.y,
+            "badge {badge:?}, hint {hint:?}, u1 {roster:?}"
+        );
     }
 }

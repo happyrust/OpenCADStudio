@@ -514,18 +514,18 @@ OS-16（逐种变更的反向修改）在程序内的测试里验，不起进程
 
 ### 11.2 `OFF-1` 核对出来的问题
 
-下面各条 `OFF-1` 没有修，由「任务」一栏的任务处理；只有 R4 在入库之后单独处理了（11.4）。§3.3 的 G1 – G13 不重复。「依据」一栏里，「读代码」是读出来的、还没有测试证实，「跑出来」是端到端场景跑出来的。
+下面各条 `OFF-1` 没有修，由「任务」一栏的任务处理；R4 在入库之后单独处理了（11.4），R1、R3、R5 在 `OFF-2` 里处理了（11.5）。§3.3 的 G1 – G13 不重复。「依据」一栏里，「读代码」是读出来的、还没有测试证实，「跑出来」是端到端场景跑出来的。
 
 | # | 问题 | 依据 | 后果 | 任务 |
 |---|---|---|---|---|
-| R1 | 重开程序后的第一次连接，补发到一半断线，重连时报出的修订偏大 | 读代码。`src/app/collab/transport.rs` 的 `Seen::take`：这次运行还没连上过时，收到 `welcome` 记下的是房间的修订，不是补发的起点；补发来的每一条都不比它大，这个数不再动 | 断线后的下一次 `hello.since` 是房间的修订，服务器不会再补发剩下的几条。界面按真正写进图的修订算（`src/app/collab/mod.rs` 处理 `Connected` 的地方），发现房间比本图新而没有补发，标不一致。服务器上的数据不丢，但这张图只能换成最新的。不重开程序的重连没有这个问题 | `OFF-2` |
+| R1 | 重开程序后的第一次连接，补发到一半断线，重连时报出的修订偏大 | 读代码。`src/app/collab/transport.rs` 的 `Seen::take`：这次运行还没连上过时，收到 `welcome` 记下的是房间的修订，不是补发的起点；补发来的每一条都不比它大，这个数不再动 | 断线后的下一次 `hello.since` 是房间的修订，服务器不会再补发剩下的几条。界面按真正写进图的修订算（`src/app/collab/mod.rs` 处理 `Connected` 的地方），发现房间比本图新而没有补发，标不一致。服务器上的数据不丢，但这张图只能换成最新的。不重开程序的重连没有这个问题 | `OFF-2`，已处理（2026-11-20），见 11.5 |
 | R2 | 重开后第一次上报图上已有的位号时，图里的队列还没有读回来 | 读代码。`src/app/collab/apply.rs` 的 `answer_collab_tags`：先算 `existing_tags`，后调 `seed_collab_from_file`。`existing_tags` 靠待发队列把房间还不知道的对象剔掉，这时队列是空的。（在这之前改过图就没事：`broadcast_changes` 会先把队列读回来。） | 排队的 `insert_symbol` 放下的对象，位号被当成图上已有的报给服务器；排队改过位号的对象按新位号报。按服务器现有的规则推：位号登记之后，轮到那条排队的修改时它要的位号已经被占，会被另给一个。这一步是推的，没有跑过 | `OFF-3`（它本来就要在加入之前读队列） |
-| R3 | 只报 `since`、不报 `repo_id` 的 `hello` 现在一律被拒 | 读代码。`crates/ocs_collab_server/src/ws.rs` 的 `hello`：两项里报了任何一项就算声称对齐，没报库标识按对不上处理，回 `REPO_MISMATCH`，不补发。这是那批改动有意收紧的（`protocol.rs` 里 `Hello.repo_id` 的说明，设计说明 §6）；服务器原有的补发测试都改成了带 `repo_id` | 与 `OFF-2` 验收的最后一条（`hello` 不带 `repo_id` 的客户端，行为与改之前相同）对不上：两项都不带的相同；只带 `since` 的不同，改之前会补发。入库之后的桌面端对着入库之后的服务器总是两项一起报，受影响的是旧版本的桌面端：断线重连时不再得到补发 | `OFF-2` 开工时定：保留收紧、改写那条验收，或者放宽服务器 |
+| R3 | 只报 `since`、不报 `repo_id` 的 `hello` 现在一律被拒 | 读代码。`crates/ocs_collab_server/src/ws.rs` 的 `hello`：两项里报了任何一项就算声称对齐，没报库标识按对不上处理，回 `REPO_MISMATCH`，不补发。这是那批改动有意收紧的（`protocol.rs` 里 `Hello.repo_id` 的说明，设计说明 §6）；服务器原有的补发测试都改成了带 `repo_id` | 与 `OFF-2` 验收的最后一条（`hello` 不带 `repo_id` 的客户端，行为与改之前相同）对不上：两项都不带的相同；只带 `since` 的不同，改之前会补发。入库之后的桌面端对着入库之后的服务器总是两项一起报，受影响的是旧版本的桌面端：断线重连时不再得到补发 | `OFF-2` 开工时定：保留收紧、改写那条验收，或者放宽服务器。已定放宽服务器（2026-11-20），见 11.5 |
 | R4 | 入库时，新生成的 M3 基线图带着同步记录和一条排队的修改，`x05_m3_persistence`、`x12_after_session` 在新的证据目录上不过 | 跑出来。`src/pid/dwg_roundtrip.rs` 的 `fixture()` 加了这两条记录（库标识 `r-fixture`、修订 42、排队的 `op-s-1-7`），而生成基线的 `write_the_m3_baseline_drawing` 用的是同一个 `fixture()`。两台桌面端拿它加入，都被判 `REPO_MISMATCH` | `x05` 11 项过、15 项不过，`x12` 17 项过、2 项不过。以前生成的基线没有这两条记录，沿用旧证据目录的不受影响 | 已处理（2026-11-18），见 11.4 |
-| R5 | 被拒之后界面上没有「需要取得最新图纸」这一句 | 读代码。`src/app/collab/mod.rs` 处理 `AlignRefused`：记下的原因是「<服务器给的原因>（<码>）」；面板（`src/ui/window/pid_collab.rs`）显示「本图与房间已不一致，本地修改不再提交。」加这个原因。「请取得最新图纸后重新打开」只在房间的修改写不进本图时出现在命令行（`apply.rs`） | `REQ-COLL-015` 验收 3 要这一句。§5.2 和 OS-08 已经把它交给 `OFF-2`，这里只是记下入库时的样子 | `OFF-2` |
+| R5 | 被拒之后界面上没有「需要取得最新图纸」这一句 | 读代码。`src/app/collab/mod.rs` 处理 `AlignRefused`：记下的原因是「<服务器给的原因>（<码>）」；面板（`src/ui/window/pid_collab.rs`）显示「本图与房间已不一致，本地修改不再提交。」加这个原因。「请取得最新图纸后重新打开」只在房间的修改写不进本图时出现在命令行（`apply.rs`） | `REQ-COLL-015` 验收 3 要这一句。§5.2 和 OS-08 已经把它交给 `OFF-2`，这里只是记下入库时的样子 | `OFF-2`，已处理（2026-11-20），见 11.5 |
 | R6 | `collab::Outgoing` 多了没人用的序列化派生 | 读代码。`src/app/collab/mod.rs`：加了 `Serialize`、`Deserialize` 和 `restored` 上的默认值标注；存盘用的是 `pid::QueuedOp`，不经过它 | 没有后果 | `OFF-3` 顺手去掉 |
 
-另有四处说明文字还是改之前的说法，改到这些文件的任务顺手改：
+另有四处说明文字还是改之前的说法，改到这些文件的任务顺手改（`ws.rs`、`transport.rs` 两处已在 `OFF-2` 里改了，11.5）：
 
 - `ws.rs` 的 `missed_ops`：还写着补不了的会话「不补发地接纳，让它自己发现落后」，现在是拒绝。
 - `ops.rs` 测试里的 `come_back`：新旧两句说明接在一起。
@@ -556,3 +556,21 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 - **已有的证据目录要不要动。** 总入口只在基线文件不在时才生成它，分组入口不生成。基线是用 `5f672c831` 起、这次改动之前的代码生成的（包括入库之前工作区里的那一批），就带着这两条记录：删掉证据目录里的 `m7/work/PID-1101-m3.dwg`，再跑一次总入口。更早生成的不带，不用动。拿不准就删。
 - **留给 `OFF-12` 的。** 离线场景要用带同步记录、带排队修改的图，由 `OFF-12` 自己准备，基线图不再带。
 - **没有做的。** 这次只重跑了这两个场景，没有把总入口从头再跑一遍；规程、截图、计时三组在 `OFF-1` 里也没有跑过。
+
+### 11.5 `OFF-2`：与任务写法不同的地方和读数（2026-11-20）
+
+按任务做完：拒绝跟着 `welcome` 来（`align_refused`），那批改动加的单独消息去掉了；服务器记下没对上的连接，它发来的 `op` 回 `NOT_ALIGNED`，不裁决、不写日志、不广播；客户端在这次连接里不发队列、不把房间的修改写进本图、不申请占用，存盘的库标识和修订仍是打开时读到的。G1、G2 堵上了，11.2 的 R1、R3、R5 一并处理。与任务写法、或与入库时的代码不同的地方：
+
+1. **R3 定为放宽服务器。** `hello` 没报 `repo_id` 就不判对齐：两项都不报的照旧；只报 `since` 的照常从那里补发、照常登记位号（那批改动之前的办法）；报了 `repo_id` 的才判三种对不上。依据是协议规格 §7 第 2 条（旧客户端不带新键时行为不变）和这个任务验收的最后一条；开工时告诉过你，你没有说要保留收紧。新版桌面端对着新版服务器总是两项一起报，不受影响。测试是服务器的 `alignment_is_not_judged_for_a_hello_that_names_no_repository`；`protocol.rs` 里 `Hello.repo_id` 的说明跟着改了。
+2. **重连后房间走远了又没补发：只隔开这次连接，码记 `REPLAY_GAP`。** 服务器既没补发也没说拒绝、而房间的修订比本图高，入库时的代码把图标成不一致（`diverged`）；现在照 §5.2 按这次连接对不上处理：原因是「房间已从修订 M 走到 N，其间的变更没有补发给这份图纸」，基线不改成房间的，下次连接重新判。码借用服务器三种里意思最近的 `REPLAY_GAP`，需求文档 70 的错误码表里注明了客户端也会自己判出这一种。
+3. **界面。** 面板和状态栏的「不一致」按 `State::mismatch()` 显示，图本身不一致和这次连接对不上都挂（§5.2：界面上都叫「不一致」）。面板在原因下面另起一行「需要取得最新图纸」。命令行在连上时、收到 `NOT_ALIGNED` 时各说一次「协同：这次连接与房间对不上（<码>：<原因>），本地修改照常排队、不提交；需要取得最新图纸」，对不上时每排一步说「这一步已排队（共 N 步），不提交」；对不上的连接里不再说「修订已推进到 N」。面板上那句「本图与房间已不一致，本地修改不再提交。」是两种情况共用的，对这次连接对不上来说，「不再提交」只管这次连接。
+4. **R1 一并修了。** `transport.rs` 的 `Seen::take`：起点取 `welcome.replay_from`，没有才取房间的修订，补发来的每一条往前推；这次连接对上了才记，对不上的不记。补发到一半断线，下一次 `hello.since` 是最后交给界面的那一条；对不上之后的下一次 `hello` 照旧报图里的库标识和修订。
+5. **改到「文件」一栏以外的文件。** `src/app/collab/messages.rs`（把 `welcome` 里的拒绝拆成事件，排在 `Connected` 之前）；`src/app/collab/claims.rs`、`src/ui/window/pid_collab.rs`、`src/app/pid_shell/chrome.rs`（第 3 条的面板和状态栏）；`src/app/update/mod.rs`（第 3 条的命令行）；`src/app/collab/collab_offline_queue.rs`（已有的 `back_to_a_room_that_moved_on_with_no_replay_the_queue_stays_where_it_is` 按第 2 条改了断言）。`src/app/update/file.rs` 没有动：存盘用哪个库标识和修订在 `mod.rs` 里定，对不上时不采纳 `welcome` 给的。文档：需求文档 70 的错误码表加了 `NOT_ALIGNED`，改了 `REPO_MISMATCH`、`REPLAY_GAP` 两行和 `REQ-COLL-015` 的状态；设计说明 D4、D8、§6 加了注，新加 §8。
+6. **测试的写法。** 验收第一条要三种对不上「各一条测试」，写成了一条测试依次走三种码（`nothing_of_the_queue_goes_out_and_edits_go_on_queueing`，每种从打开图重新来，断言里带着码）；「房间的修改不写进本图」「说出原因和需要取得最新图纸」「下次连接重新判」三条也这样走三种。客户端自己判出的那一种另有一条（`a_room_that_moved_on_without_a_replay_is_not_aligned_either`）。新加的测试：`collab_align_refused.rs` 8 条，`transport.rs` 2 条（R1 一条，对不上之后的 `hello` 一条），面板 1 条，服务器 2 条。按新行为改了名字和断言的已有测试：`mod.rs` 的 `collab_align_a_seeded_copy_queues_and_a_refusal_diverges_it`（改为 `…_holds_it_apart`）和 `coming_back_to_a_room_that_moved_on_marks_the_session`（改为 `…_holds_the_connection_apart`），`transport.rs` 的 `collab_align_a_refusal_reaches_the_ui_as_its_own_event`（改为 `collab_align_refused_reaches_the_ui_ahead_of_its_session`，断言拒绝排在 `Connected` 前面）；只改断言的：服务器的 `a_hello_that_claims_alignment_is_judged`、协议的 `collab_align_repo_id_and_align_refused_are_optional_additions`。
+7. **11.2 列的四处过时说明。** `ws.rs` 的 `missed_ops`、`transport.rs` 的 `run_session` 和 `Seen.repo_id` 这次改了；`ops.rs` 的 `come_back`、`dwg_roundtrip.rs` 的 `assert_graph_keys_present` 不在这次改的文件里，没动。
+
+**先红后绿。** 测试先写，改产品代码之前跑：主程序库这 12 条（新加的 11 条和改了名的那条 `transport.rs` 测试）全部失败，协议 1 条、服务器 3 条失败，都败在断言上（`a_save_keeps_what_the_file_said_and_every_queued_step` 第一遍败在图纸的编辑锁上，单独重跑败在断言上）。`mod.rs` 的两条和 `collab_offline_queue.rs` 的一条是产品代码改完之后按新行为改的断言，没有单独跑红。
+
+**读数**（对最终的文件）：`cargo test --offline --locked --lib` 7129 条，7072 通过、55 忽略、2 失败；失败的是比对设计稿的两条（`the_grid_is_drawn_the_way_the_design_draws_it`、`the_code_states_nothing_the_design_does_not`），起点 `51b654a87` 也是这两条。起点是 7118 条（7061 / 55 / 2），多的 11 条就是新加的，都过。`-p ocs_collab -p ocs_collab_server` 是 96；170 + 18，全过（起点 96；168 + 18）。`clippy` 656（`--lib`）和 1051（`--lib --profile test`），与起点相同，点到这次改的文件的几条起点都有；固定门禁第 3 条写的 630 / 965 是换新编译器之前的数，换了之后各提交按起点比（`2028dc92a` 起的提交说明）。格式检查：12 个代码文件里 11 个新增 0；`mod.rs` 报新增 1 处，是文件开头模块声明的排序，起点就有这一处，新加的 `mod collab_align_refused;` 落进了它的上下文，脚本按正文比对就算成新的（改前 19 处，改后 18 处）。为了不新增，紧挨着改动的几处原有不一致顺手按 rustfmt 改了（`claims.rs` 两处、`collab_offline_queue.rs` 一处）。文档检查（`python -m pytest scripts/pid-platform`）590 项过 589 项，没过的是设计稿与生成表的比对，与这次改动无关。
+
+**没有做的、要知道的。** 端到端没有跑：三种对不上和硬发 `op` 的场景 `o03_align_refused` 属于 `OFF-12`。§5.2 第二步客户端自己判的三种（记录里有 `diverged`、队列里有别人排的条目、队列读不全）不在这个任务里，归 `OFF-3`、`OFF-5`。

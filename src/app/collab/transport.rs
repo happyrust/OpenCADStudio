@@ -621,7 +621,7 @@ fn describe_event(event: &CollabEvent) -> String {
             claims.len()
         ),
         CollabEvent::AlignRefused { code, message } => {
-            format!("align_refused code={code} reason={message}")
+            format!("welcome.align_refused code={code} reason={message}")
         }
         CollabEvent::PeerJoined(peer) => format!(
             "peer_joined session={} user={}",
@@ -896,7 +896,8 @@ pub(super) fn run_client(
 struct Seen {
     /// Which repository the room is of, as its `welcome` said. A server
     /// that names none (one from before `welcome.repo_id`) leaves this
-    /// empty — and the next `hello` then claims nothing it cannot name.
+    /// empty, and the next `hello` then gives its `since` alone, which is
+    /// replayed from but not judged.
     repo_id: String,
     drawing_id: String,
     revision: i64,
@@ -916,13 +917,12 @@ impl Seen {
                 repo_id,
                 ..
             } => {
-                // With a replay the session is taken where its drawing is,
+                // With a replay the session is taken where its drawing is —
+                // the `since` the `hello` gave, which the replay starts from,
+                // whether it came from the last session or from the file —
                 // and each replayed op moves it on; without one, at the
-                // room's revision, as before.
-                let revision = match (replay_from, seen.as_ref()) {
-                    (Some(from), Some(seen)) if seen.revision == from => from,
-                    _ => *base_revision,
-                };
+                // room's revision.
+                let revision = replay_from.unwrap_or(*base_revision);
                 *seen = Some(Seen {
                     repo_id: repo_id.clone(),
                     drawing_id: config.drawing_id.clone(),
@@ -941,7 +941,8 @@ impl Seen {
 
 /// One connection: handshake, `hello`, then the read loop until it ends.
 /// `came_up` is set once the server has answered with `welcome`; `seen`
-/// follows the revision handed to the UI, across sessions.
+/// follows the revision handed to the UI, across sessions — those that take
+/// the drawing as the room's.
 ///
 /// `told` is what the UI said of the tags the session's drawing carries,
 /// and the `hello` lists them (`existing_tags`). Tags it still owes are
@@ -968,10 +969,10 @@ fn run_session(
     let mut ws = connect(&config.server_url)?;
     // What this copy claims to be (`REQ-COLL-015`): of the room the last
     // session was in — `seen`, fresher than the file — or, when no session
-    // has been up yet, of what the drawing file was saved aligned to. A
-    // claim names both its repository and its revision: one without the
-    // other the server cannot judge, so a `since` only goes out with a
-    // `repo_id` to stand on.
+    // has been up yet, of what the drawing file was saved aligned to. The
+    // server judges a claim that names its repository; a `since` of a room
+    // that named none (a server from before `welcome.repo_id`) goes out
+    // alone and is only replayed from.
     let claim = seen
         .as_ref()
         .filter(|seen| seen.drawing_id == config.drawing_id)
@@ -981,13 +982,14 @@ fn run_session(
                 .filter(|file| file.drawing_id == config.drawing_id)
                 .map(|file| (file.repo_id.clone(), file.revision))
         });
+    let claimed = claim.as_ref().map(|(_, revision)| *revision);
     let hello = ClientMessage::Hello {
         user_id: config.user_id.clone(),
         drawing_id: config.drawing_id.clone(),
         mode: config.mode.clone(),
         client_version: config.client_version.clone(),
         workspace: String::new(),
-        since: claim.as_ref().map(|(_, revision)| *revision),
+        since: claimed,
         existing_tags: told.map(|told| told.tags.clone()).unwrap_or_default(),
         repo_id: claim
             .map(|(repo_id, _)| repo_id)
@@ -1003,6 +1005,12 @@ fn run_session(
         (Some(told), Some(line)) if told.owed => Some((told.ask, line)),
         _ => None,
     };
+    // Whether this connection took the drawing as the room's. One whose
+    // `welcome` refused it, or that came back to a room that moved on past
+    // the claimed revision with no replay, is held apart by the UI: what it
+    // hears does not move the drawing on, and the next `hello` claims again
+    // what the drawing is.
+    let mut aligned = true;
 
     loop {
         if link.stop_requested() {
@@ -1045,6 +1053,10 @@ fn run_session(
                     CollabEvent::Resuming { from } => Some(*from),
                     _ => None,
                 });
+                let refused = said
+                    .before
+                    .iter()
+                    .any(|event| matches!(event, CollabEvent::AlignRefused { .. }));
                 // What goes with the frame's own event, ahead of it and
                 // behind it, in that order.
                 let mut events = said.before;
@@ -1068,13 +1080,20 @@ fn run_session(
                     // `welcome` carries the session id every later frame
                     // references, so remember it before forwarding.
                     if let CollabEvent::Connected {
-                        session_id: id, ..
+                        session_id: id,
+                        base_revision,
+                        ..
                     } = &event
                     {
                         session_id = Some(id.clone());
                         *came_up = true;
+                        let moved_on = replay_from.is_none()
+                            && claimed.is_some_and(|since| *base_revision > since);
+                        aligned = !refused && !moved_on;
                     }
-                    Seen::take(seen, config, replay_from, &event);
+                    if aligned {
+                        Seen::take(seen, config, replay_from, &event);
+                    }
                     if emit(sender, link, event).is_err() {
                         close(&mut ws);
                         return Ok(Ended::SubscriptionGone);
@@ -3076,16 +3095,16 @@ mod tests {
         assert!(hello.get("since").is_none(), "{hello}");
     }
 
-    /// `REQ-COLL-015`: an `align_refused` reaches the UI as its own event —
-    /// the session is up, and the word that this copy is not consistent is
-    /// not folded into a generic server error.
+    /// `REQ-COLL-015`: a refusal reaches the UI as its own event, right
+    /// ahead of the session it belongs to — the session is up, and the word
+    /// that this copy is not taken as consistent is neither folded into a
+    /// generic server error nor said after the UI could have acted on the
+    /// session (`OFF-2`: it rides in the `welcome`).
     #[test]
-    fn collab_align_a_refusal_reaches_the_ui_as_its_own_event() {
+    fn collab_align_refused_reaches_the_ui_ahead_of_its_session() {
         let scene = Scene {
             frames: vec![
-                r#"{"type":"welcome","session_id":"s-1","base_revision":50,"peers":[],"claims":[],"repo_id":"r-9"}"#
-                    .to_owned(),
-                r#"{"type":"align_refused","code":"REPO_MISMATCH","message":"这份文件属于另一个服务器库"}"#
+                r#"{"type":"welcome","session_id":"s-1","base_revision":50,"peers":[],"claims":[],"repo_id":"r-9","align_refused":{"code":"REPO_MISMATCH","message":"这份文件属于另一个服务器库"}}"#
                     .to_owned(),
             ],
             then_drop: true,
@@ -3096,17 +3115,107 @@ mod tests {
         let (ask, _) = question(&mut receiver);
         leave_answer(&said, ask, TagsSaid::NotYet);
         let events = events_until(&mut receiver, |event| {
-            matches!(event, CollabEvent::AlignRefused { .. })
+            matches!(event, CollabEvent::Connected { .. })
         });
         drop(receiver);
         let _ = worker.join();
         let _ = server.join();
+        let refused = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    CollabEvent::AlignRefused { code, .. } if code == "REPO_MISMATCH"
+                )
+            })
+            .unwrap_or_else(|| panic!("the refusal did not arrive: {events:?}"));
         assert!(
-            events.iter().any(|event| matches!(
-                event,
-                CollabEvent::AlignRefused { code, .. } if code == "REPO_MISMATCH"
-            )),
-            "the refusal did not arrive: {events:?}"
+            matches!(events.get(refused + 1), Some(CollabEvent::Connected { .. })),
+            "{events:?}"
         );
+    }
+
+    /// What the file says the drawing is: aligned to `r-9`, at 42.
+    fn file_r9_at_42() -> TagsSaid {
+        TagsSaid::Tags(
+            Vec::new(),
+            Some(crate::app::collab::FileClaim {
+                drawing_id: "PID-1101".into(),
+                repo_id: "r-9".into(),
+                revision: 42,
+            }),
+        )
+    }
+
+    /// `OFF-2` (R1 of `SPEC-collab-offline-sync.md` §11.2): on the first
+    /// session of a run, a replay starts where the file said the drawing
+    /// was, and each replayed op moves it on. A replay cut short is asked
+    /// for again from the last op handed to the UI — not from the room's
+    /// revision, which the drawing never reached.
+    #[test]
+    fn collab_align_refused_a_replay_cut_short_is_asked_for_again_from_where_it_stopped() {
+        let first = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-1","base_revision":45,"peers":[],"claims":[],"repo_id":"r-9","replay_from":42}"#
+                    .to_owned(),
+                r#"{"type":"op_applied","op_id":"op-peer-43","revision":43,"changes":[]}"#.to_owned(),
+            ],
+            then_drop: true,
+        };
+        let second = Scene {
+            frames: vec![
+                r#"{"type":"welcome","session_id":"s-2","base_revision":45,"peers":[],"claims":[],"repo_id":"r-9","replay_from":43}"#
+                    .to_owned(),
+            ],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![first, second]);
+        let (link, said) = link_with_tags(url, Duration::from_secs(30));
+        let (mut receiver, worker) = start_client(&link);
+        for _ in 0..2 {
+            let (ask, _) = question(&mut receiver);
+            leave_answer(&said, ask, file_r9_at_42());
+        }
+        let up = session_came_up(&mut receiver);
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+        assert!(up, "the second session did not come up");
+        assert_eq!(hello_of(&heard, 0)["since"], 42);
+        let again = hello_of(&heard, 1);
+        assert_eq!(again["since"], 43, "{again}");
+        assert_eq!(again["repo_id"], "r-9", "{again}");
+    }
+
+    /// `OFF-2`: a session the server would not take as consistent says
+    /// nothing of where the drawing is. Its `welcome` names the room's
+    /// repository and revision, which the drawing never took: the next
+    /// `hello` claims what the drawing is — the file's word — again.
+    #[test]
+    fn collab_align_refused_the_next_hello_claims_what_the_drawing_is_again() {
+        let refusing = r#"{"type":"welcome","session_id":"s-1","base_revision":50,"peers":[],"claims":[],"repo_id":"r-other","align_refused":{"code":"REPO_MISMATCH","message":"协同库标识不一致"}}"#;
+        let first = Scene {
+            frames: vec![refusing.to_owned()],
+            then_drop: true,
+        };
+        let second = Scene {
+            frames: vec![refusing.replace("s-1", "s-2")],
+            then_drop: false,
+        };
+        let (url, heard, server) = scripted_server(vec![first, second]);
+        let (link, said) = link_with_tags(url, Duration::from_secs(30));
+        let (mut receiver, worker) = start_client(&link);
+        for _ in 0..2 {
+            let (ask, _) = question(&mut receiver);
+            leave_answer(&said, ask, file_r9_at_42());
+        }
+        let up = session_came_up(&mut receiver);
+        drop(receiver);
+        let _ = worker.join();
+        let _ = server.join();
+        assert!(up, "the second session did not come up");
+        let again = hello_of(&heard, 1);
+        assert_eq!(again["repo_id"], "r-9", "{again}");
+        assert_eq!(again["since"], 42, "{again}");
     }
 }

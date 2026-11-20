@@ -65,17 +65,14 @@ impl OpenCADStudio {
         // that reconnects is no longer downgraded, and a reader of the bounds
         // must not find a badge the panel stopped drawing.
         if self.pid_collab_view.readonly != state.readonly || self.pid_collab_view.peers != peers {
-            crate::ui::wrap_bar::forget_bounds(
-                crate::ui::window::pid_collab::READONLY_BOUNDS_ID,
-            );
-            crate::ui::wrap_bar::forget_bounds(
-                crate::ui::window::pid_collab::HOLDER_BOUNDS_PREFIX,
-            );
+            crate::ui::wrap_bar::forget_bounds(crate::ui::window::pid_collab::READONLY_BOUNDS_ID);
+            crate::ui::wrap_bar::forget_bounds(crate::ui::window::pid_collab::HOLDER_BOUNDS_PREFIX);
         }
-        if self.pid_collab_view.diverged.is_some() != state.diverged.is_some() {
-            crate::ui::wrap_bar::forget_bounds(
-                crate::ui::window::pid_collab::DIVERGED_BOUNDS_ID,
-            );
+        // The badge is worn while the drawing is not the room's: parted
+        // from it, or not taken on the connection that is up.
+        let mismatch = state.mismatch();
+        if self.pid_collab_view.diverged.is_some() != mismatch.is_some() {
+            crate::ui::wrap_bar::forget_bounds(crate::ui::window::pid_collab::DIVERGED_BOUNDS_ID);
         }
         let conflicts: Vec<ConflictRow> = state
             .conflicts
@@ -107,7 +104,7 @@ impl OpenCADStudio {
             server_url: state.server_url.clone(),
             session_id: state.session_id.clone(),
             readonly: state.readonly,
-            diverged: state.diverged.clone(),
+            diverged: mismatch,
             peers,
             conflicts,
             claims,

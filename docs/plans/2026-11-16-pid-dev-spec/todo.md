@@ -187,16 +187,17 @@
   - 服务器：判为对不上的会话记一个标记；它发来的 `op` 回 `error NOT_ALIGNED`（带 `op_id`，不带 `rejected`），不裁决、不写日志、不广播；它上报的位号不登记。
   - 客户端：处理 `welcome` 时先看 `align_refused`，再决定发不发队首。对不上时队列不发、房间的修改不写进本图、不申请占用，本地照常画图和排队。收到 `NOT_ALIGNED`：那一条留在队列里，不撤回。存盘用的库标识和修订仍是打开时读到的，不采纳拒绝它的服务器给的。重连后房间修订比本图高而没有补发，也按对不上处理。
 - **验收**：
-  - [ ] 三种对不上（`REPO_MISMATCH`、`REVISION_AHEAD`、`REPLAY_GAP`）各一条测试：客户端一条 `op` 都没有发出。
-  - [ ] 没对上的会话发 `op`：服务器回 `NOT_ALIGNED`，操作日志没有新行，别的会话没有收到广播。
-  - [ ] 对不上期间房间有新修改：本图内容不变。
-  - [ ] 对不上之后保存：图里的 `repo_id`、`revision` 与打开时相同，队列条目都在。
-  - [ ] 客户端收到 `NOT_ALIGNED`：条目还在队列里，本图没有被撤回。
-  - [ ] `hello` 不带 `repo_id` 的客户端，行为与改之前相同（现有测试全过）。
+  - [x] 三种对不上（`REPO_MISMATCH`、`REVISION_AHEAD`、`REPLAY_GAP`）各一条测试：客户端一条 `op` 都没有发出。
+  - [x] 没对上的会话发 `op`：服务器回 `NOT_ALIGNED`，操作日志没有新行，别的会话没有收到广播。
+  - [x] 对不上期间房间有新修改：本图内容不变。
+  - [x] 对不上之后保存：图里的 `repo_id`、`revision` 与打开时相同，队列条目都在。
+  - [x] 客户端收到 `NOT_ALIGNED`：条目还在队列里，本图没有被撤回。
+  - [x] `hello` 不带 `repo_id` 的客户端，行为与改之前相同（现有测试全过）。
 - **验证**：`cargo test --offline --locked --lib collab_align_refused`；`cargo test --offline --locked -p ocs_collab -p ocs_collab_server align`
 - **依赖**：OFF-1
 - **文件**：`crates/ocs_collab/src/protocol.rs`、`crates/ocs_collab_server/src/ws.rs`、`src/app/collab/transport.rs`、`src/app/collab/mod.rs`、`src/app/collab/apply.rs`；新建测试文件 `src/app/collab/collab_align_refused.rs`。存盘用哪个库标识和修订在 `mod.rs` 里定，`src/app/update/file.rs` 预计不用动；要动就记进离线规格 §11
 - **规模**：M
+- **补（2026-11-20）**：在 `collab-off2` 分支上做（从 `51b654a87` 开），一个提交。R3 定为放宽服务器：`hello` 不报 `repo_id` 就不判对齐，只报 `since` 的照常补发（开工时告诉过你，你没说要保留收紧）；R1、R5 一并修了。与任务写法不同的：验收第一条的三种对不上写成一条测试依次走三种码，不是三条；重连后房间走远了又没补发，原来标不一致，现在只隔开这次连接（码记 `REPLAY_GAP`）；「文件」一栏以外还改了 `messages.rs`、`claims.rs`、`collab_offline_queue.rs`、`chrome.rs`、`update/mod.rs`、`pid_collab.rs`，`update/file.rs` 没动。详见离线规格 §11.5。**读数**：主程序库 7129 条，7072 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）；起点 7118 条（7061 / 55 / 2），多的 11 条是新加的，都过；两个协同 crate 96；170 + 18 全过（服务器多 2 条）；clippy 656 / 1051，与起点相同（第 3 条的 630 / 965 是换编译器之前的数）；格式检查新增的只有 `mod.rs` 开头模块排序那一处，起点就有，是新加的一行落进了它的上下文；文档检查 590 项过 589 项，没过的是设计稿与生成表的比对。**新基线**：主程序库 7129 条（7072 / 55 / 2）；两个协同 crate 96；170 + 18。**没有做的**：端到端没跑（`o03_align_refused` 归 `OFF-12`）。
 
 ### OFF-3 【协同】修改编号全局唯一，队列记下是谁排的
 

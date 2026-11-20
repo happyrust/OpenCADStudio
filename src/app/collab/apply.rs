@@ -346,6 +346,11 @@ impl OpenCADStudio {
                     "协同：未连接服务器，这一步已排队（共 {waiting} 步），重新连上后提交"
                 ));
             }
+            Ok(super::Queued::NotAligned(waiting)) => {
+                self.command_line.push_warning(&format!(
+                    "协同：这次连接与房间对不上，这一步已排队（共 {waiting} 步），不提交"
+                ));
+            }
             Err(reason) => {
                 self.command_line
                     .push_warning(&format!("协同：变更未广播（{reason}）"));

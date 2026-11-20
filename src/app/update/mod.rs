@@ -1451,6 +1451,12 @@ impl OpenCADStudio {
                             "协同：已连接 {}（会话 {session_id}）",
                             super::collab::shown_address(&self.collab.server_url)
                         ));
+                        // A connection that does not take the drawing as the
+                        // room's says why, and what to do about it
+                        // (`REQ-COLL-015` acceptance 3).
+                        if let Some(apart) = &self.collab.not_aligned {
+                            self.command_line.push_warning(&apart.said());
+                        }
                         // The first live session brings the panel out where the
                         // layout has it: a claim is only useful if the roster
                         // and the held tags are on screen. Once only, so a
@@ -1479,9 +1485,22 @@ impl OpenCADStudio {
                             ));
                         }
                     }
-                    super::collab::CollabEvent::OpApplied { revision, .. } => {
+                    // Not said on a connection held apart: the drawing did
+                    // not move.
+                    super::collab::CollabEvent::OpApplied { revision, .. }
+                        if self.collab.not_aligned.is_none() =>
+                    {
                         self.command_line
                             .push_info(&format!("协同：修订已推进到 {revision}"));
+                    }
+                    // The room neither took the step nor judged it: it stays
+                    // queued, and the person is told why.
+                    super::collab::CollabEvent::OpRefused { code, .. }
+                        if code == ocs_collab::protocol::codes::NOT_ALIGNED =>
+                    {
+                        if let Some(apart) = &self.collab.not_aligned {
+                            self.command_line.push_warning(&apart.said());
+                        }
                     }
                     // Said to everybody, and plainly: for the two who wrote,
                     // this is the only word that their write did not take

@@ -589,17 +589,23 @@ fn only_a_step_made_right_on_top_of_ones_own_op_takes_its_revision() {
 /// Back without a replay — a server that keeps no log — to a room that
 /// moved on: what happened in between cannot be had, the session says so,
 /// and the queue is kept and not sent (it would be written on top of the
-/// gap).
+/// gap). It is the connection that is held apart (`OFF-2`), not the drawing
+/// parted for good: the next connection is judged afresh.
 #[test]
 fn back_to_a_room_that_moved_on_with_no_replay_the_queue_stays_where_it_is() {
     let (mut a, mut b, mut room) = two_in_the_room();
     drop_session(&mut a);
     set(&mut a, PUMP, &[(PRESSURE, "1.6MPa")]);
     set(&mut b, PUMP, &[(TEMPERATURE, "120℃")]);
-    assert_eq!(exchange(&mut room, &mut b, &mut [&mut a]), Vec::<String>::new());
+    assert_eq!(
+        exchange(&mut room, &mut b, &mut [&mut a]),
+        Vec::<String>::new()
+    );
 
     join(&mut a, "s-a2", &room);
-    assert!(a.collab.diverged.is_some(), "the gap is known");
+    let apart = a.collab.not_aligned.clone().expect("the gap is known");
+    assert_eq!(apart.code, codes::REPLAY_GAP);
+    assert_eq!(a.collab.diverged, None);
     assert!(on_the_wire(&a).is_none());
     assert_eq!(a.collab.outbox.len(), 1);
     assert_eq!(a.collab.status_json()["queued_ops"], 1);
