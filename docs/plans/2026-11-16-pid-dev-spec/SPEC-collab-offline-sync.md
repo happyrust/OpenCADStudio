@@ -649,3 +649,45 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 - 无库运行时没有日志可查，只有并列窗口里的同号认得出；`OFF-11` 改为这时不接受会话。
 - `crates/ocs_collab/src/protocol.rs` 里 `OpApplied` 的说明还写着「广播给这张图的每个会话」，重复提交的回答只给发送者。这个文件不在这次的范围里，没有改；以本规格 §4.3 为准。
 - 端到端没有跑，归 `OFF-12`（`OS-07`）。
+
+### 11.8 `OFF-5`：与任务写法不同的地方和读数（2026-11-20）
+
+按任务做完：
+
+- **记录。** `collab_state.rs`：同步记录可选的第四项 `diverged {code, message, at}`，`store_state_diverged` 写、`load_diverged` 读。没有这一项的旧图读成没有；有这一项而写得不全的，缺的部分读成空，仍算不一致。四个码 `UNQUEUED_EDITS`、`REMOTE_UNAPPLIED`、`REVISION_GAP`、`ROLLBACK_FAILED`。第三条记录 `PID_AUTHOR_COLLAB_UNSYNCED`，一条的样子按 §4.1（`Unsynced`），由 `store_unsynced`、`read_unsynced`、`append_unsynced` 读写。读不懂的条目原样留着，存盘时写回去。
+- **运行中标的不一致随图保存。** 原来标不一致的几处（修订不连续、别人的修改写不进本图、被拒的修改撤不回的三处）都改走 `State::mark_diverged`，连同码和时间记下。第一个原因留着，后来的不覆盖。保存会话的图时（`write_collab_state_into_snapshot`）写进记录。
+- **带 `diverged` 的图。** 读记录时（`seed_collab_from_file`）连 `diverged` 一起读进会话（`saved_diverged`）。回答传输层的问话时（`judge_queue`），有它就答「对不上」，原因取记录里的。传输层照 `OFF-3` 的做法发不带 `repo_id`、`since` 和位号的 `hello`；`welcome` 之后连接按对不上处理，队列一条不发。保存时这一项原样写回。
+- **没排上队的修改。** `broadcast_changes` 里原来直接不发的几种——本次运行没配协同、不是会话的图、只读会话里漏进来的、入队失败——改为交给新的 `keep_unqueued`。图里有同步记录（或者是这次运行对上过房间的会话的图）、这一步又有语义变更时，记一条 `unqueued`（`message` 写原因），命令行对每张图警告一次：「……记进了未同步清单；保存之后这份图不能再与服务器同步」。只动位置的修改没有语义变更，不记。保存时这些条目接在图里原有的清单后面，记录写上 `UNQUEUED_EDITS`。原因写「有 N 步修改没有排上队，服务器上没有：<第一条的原因>」，时间取第一条的；记录里原来就有 `diverged` 的，留原来的。条目只写进存盘的那一份，再存一次不会重复。
+- **图号来源。** 新的 `record_allows`：会话要取一张图当自己的图之前（`collab_tab`），先看它的同步记录。每个标签页读一次，只在配了协同时读。记录的图号与会话的相同、或者没有记录，照常。不同时：这次运行没有明确给图号、也还没有过会话，会话的图号改取记录的（命令行说一句），压过设置文件里的和文件名；否则这张图不算会话的图，命令行说「这份图记着它属于 X，本次会话是 Y：会话不在它上面起，图里的记录不动」。明确给的指 `--drawing` 和没有会话时敲的 `PIDCOLLAB DRAWING`（记在 `drawing_given`）。
+- **修订不连续。** 标 `REVISION_GAP` 之后基线不再前移（`revision_gap`），保存时记录里的修订是缺口前最后一个收全了的。
+
+与任务写法不同、或任务没有说的：
+
+1. **本次运行里标的不一致，同一次运行里重连也按对不上处理。** 任务只说打开时记录里有 `diverged` 的图。§5.2 说同一次运行里断线重连也走这一套，所以 `judge_queue` 先看会话的图存盘时会带的不一致：记录里读来的、这次运行标的、有没排上队的修改的。这也是基线停在缺口前的前提：重连时要是照常声称对齐到缺口前，服务器从那里补发，缺口后已经写进图里的修改会再写一次。
+2. **先连上、后打开的图（11.6 里发现的，并进这个任务）。** 原来 `seed_collab_from_file` 在这次运行有过会话之后什么都不做，图里存着的队列不读回来，再存一次盘就被盖掉。现在改为每次运行读一次（`seeded`）：会话先连上、带记录的图后打开时照样读，图里的队列、库标识、修订都留着，保存时原样写回（队列后面接上这次排的）。但那次连接没有按这份记录核对过：房间在图打开之前的修改不写进图里（丢掉），连接按对不上处理（码 `OPENED_AFTER_SESSION`，客户端自己的码），命令行说明，并提示用这份图重新启动程序再连接。还没回答的那次问话，图来了以后答「对不上」，传输层照 `OFF-3` 的做法离开、不报位置重新加入。限制见下。
+3. **明确给的图号与记录不同时，答传输层「图还没来」。** 这张图不算会话的图，会话就还没有图；之后打开的图要是对得上，还能成为会话的图。答「图关了」的话，会话就再也不取图了。
+4. **图号改取记录的，只在配了协同、还没有过会话的时候。** 会话起来以后图号已经报给服务器，再改就成了另一个房间，那时记录不同的图不算会话的图。改了的图号交给传输层（`sync_client_config`），传输层在问完位号之后重读一次配置再发 `hello`（`transport.rs`）。
+5. **`PIDCOLLAB DRAWING` 算明确给的。** 没有会话时敲的，这次运行就用它，算明确给的；有会话时敲的只存进设置，下次启动才生效，那时算设置文件里的。
+6. **改到「文件」一栏以外的文件。** `src/app/mod.rs`（`--drawing` 记作明确给的）、`src/app/collab/claims.rs`（`PIDCOLLAB DRAWING` 同上）、`src/app/pid_shell/pid_shell_chrome.rs`（一条测试原来直接给 `diverged` 赋值，现在要连码和时间一起记，改走 `mark_diverged`）。
+7. **状态接口里的 `diverged` 还是一句话。** `status_json` 的 `diverged` 不改成对象，码和时间只进记录。
+8. **测试和验收的对应。**
+   - 验收 1：`a_drawing_marked_in_the_run_is_saved_marked_short_of_the_gap`。修订从 43 跳到 45，标 `REVISION_GAP`；经接口保存、读回，码和原因对得上，修订是 43。记录本身的往返：`collab_state_diverged_round_trips_and_a_record_from_before_has_none`。
+   - 验收 2：`a_drawing_saved_marked_says_nothing_of_where_it_is_and_sends_nothing`。回答是「对不上」、原因取记录的；`hello` 据此不带 `repo_id`、`since` 和位号，由 `OFF-3` 的传输层测试守着。`welcome` 之后连接对不上，队列一条不发，基线不动；保存时标记和队列都在。
+   - 验收 3：`an_edit_with_no_collaboration_configured_is_kept_and_marks_the_drawing`（改两次属性，警告一次，清单两条，记录的三项和队列不变）、`a_move_with_no_collaboration_configured_marks_nothing`。
+   - 验收 4：`an_edit_to_a_drawing_that_is_not_the_sessions_is_kept_and_marks_it`（另开一个标签页）、`a_change_that_reaches_a_readonly_session_is_kept_and_marks_the_drawing`。只读会话里，命令关口在写之前就拒了，漏进来的只能走关口不管的门，这条测试直接调 `broadcast_changes`。
+   - 验收 5：`without_a_drawing_number_given_the_session_takes_the_drawings`（会话图号为空、为设置里的另一个，两种）。
+   - 验收 6：`a_drawing_number_given_that_the_record_does_not_carry_leaves_it_alone`。
+   - 验收 7：`a_revision_that_skips_one_marks_the_session_and_stops_its_ops`（原有的测试，改为断言基线不前移、码是 `REVISION_GAP`）和验收 1 那条。
+   - 验收 8：`a_drawing_from_before_reads_as_having_neither`；清单的往返：`collab_state_unsynced_round_trips_in_order_and_keeps_what_it_cannot_read`。
+   - 第 2 条：`a_drawing_read_in_after_the_session_came_up_keeps_its_record`。
+
+**先红后绿。** 先写测试，把新接口以不改行为的形式加上（`load_diverged` 返回没有、`read_unsynced` 返回空，新字段不用），编译通过后跑。新测试文件 10 条里 8 条失败，都败在断言上：标了不一致的那条基线越过了缺口（45，应为 43）；带 `diverged` 的图照样报了位号和位置；没配协同、不是会话的图、只读三条都没有警告；没给图号的那条图号还是空的；明确给了图号的那条照样报了位号；先连后开的那条把房间的修改写进了图（9.9MPa）。过的 2 条（只移动的、旧图的）守的是现有行为。记录模块新加的 2 条失败（读回的是空的）；修订不连续那条失败在基线前移了（6，应为 4）。第一次跑时「不是会话的图」那条的辅助函数没有真的另开标签页（自动化的 `new` 是在当前页换图），失败的原因不对；改成另开标签页后重跑，失败在没有警告。「明确给的图号与记录不同」那条在红之后把期望从「没有图」改成了「图还没来」（第 3 条），红的时候实得的是带位号的回答，两种期望都不符。实现之后全过：新文件 10/10，记录模块 5/5，修订不连续 1/1。
+
+**读数**（对最终的文件，起点 `ad62a038b`）：主程序库 7155 条，7098 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）；起点 7143 条（7086 / 55 / 2），多的 12 条是新加的（新测试文件 10 条、记录模块 2 条），都过。两个协同 crate 97；180 + 18 全过，与起点相同。clippy 656 / 1051，与起点相同，改到的文件里的警告与起点逐条相同。格式检查：9 个代码文件新增 0；`apply.rs` 52 → 51、`collab/mod.rs` 18 → 16，改到的几处旧代码按 rustfmt 排了，开头模块排序那处还在；新测试文件 0。文档检查 590 项过 589 项，没过的是设计稿与生成表的比对。
+
+**限制和没有做的。**
+
+- 先连上、后打开的带记录的图，这次运行里一直对不上，要用这份图重新启动程序再连接才对得上；房间在它打开之前的修改没有写进去，之后也不补。
+- 明确给错了图号时，在那张图上做的语义修改都记进未同步清单，存盘后它就带着 `UNQUEUED_EDITS`，再也不能同步。这是任务要的（不是会话的图），命令行在第一步时说了。
+- 未同步清单只增不减，也还没有地方给用户看（面板、命令都没有）。
+- 端到端没有跑，归 `OFF-12`。

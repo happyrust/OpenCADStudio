@@ -7,6 +7,7 @@
 //! `OpenCADStudio` and to the scene's redraw bookkeeping.
 
 use crate::app::OpenCADStudio;
+use crate::pid::collab_state::{REMOTE_UNAPPLIED, ROLLBACK_FAILED};
 
 use super::broadcast;
 
@@ -76,19 +77,71 @@ impl OpenCADStudio {
     /// is in front, until the tab is closed; a session whose drawing was
     /// closed has no document, and says so rather than move on to the next
     /// one.
+    ///
+    /// A drawing whose sync record names another drawing than the session's
+    /// is not it (`record_allows`), and leaves the session without one.
     pub(in crate::app) fn collab_tab(&mut self) -> Option<usize> {
         if let Some(id) = self.collab.document {
-            return self.tabs.iter().position(|tab| tab.id == id);
+            let i = self.tabs.iter().position(|tab| tab.id == id)?;
+            return self.record_allows(i).then_some(i);
         }
         let i = match self.collab.document_path.clone() {
             Some(path) => self.tab_showing(&path)?,
             None => self.active_tab,
         };
-        if self.tabs.get(i).is_some_and(|tab| !tab.is_start) {
+        if self.tabs.get(i).is_some_and(|tab| !tab.is_start) && self.record_allows(i) {
             self.collab.document = Some(self.tabs[i].id);
             return Some(i);
         }
         None
+    }
+
+    /// Whether tab `i`'s drawing may be the session's, by what its sync
+    /// record names (`SPEC-collab-offline-sync.md` §5.2, step one). Read
+    /// once for a tab, and only with collaboration configured. No record,
+    /// or one that names the session's drawing, allows it. One that names
+    /// another: with no drawing number given for this run and no session up
+    /// yet, the session takes the record's — over the settings file's and
+    /// the file name's; otherwise the drawing is not the session's, the
+    /// command line says whose it is, and its record is left as it was.
+    fn record_allows(&mut self, i: usize) -> bool {
+        let id = self.tabs[i].id;
+        if self.collab.foreign_tab == Some(id) {
+            return false;
+        }
+        if self.collab.record_read == Some(id) || !self.collab.wanted() {
+            return true;
+        }
+        self.collab.record_read = Some(id);
+        let Some(record) = crate::pid::collab_state::load_state(&self.tabs[i].scene.document)
+        else {
+            return true;
+        };
+        if record.drawing_id == self.collab.drawing_id {
+            return true;
+        }
+        let session_up = self.collab.had_session || self.collab.session_id.is_some();
+        if !self.collab.drawing_given && !session_up {
+            self.command_line.push_info(&format!(
+                "协同：本次会话的图号按这份图的同步记录取 {}",
+                record.drawing_id
+            ));
+            self.collab.drawing_id = record.drawing_id;
+            #[cfg(not(target_arch = "wasm32"))]
+            self.collab.sync_client_config();
+            return true;
+        }
+        let said = format!(
+            "协同：这份图记着它属于 {}，本次会话是 {}：会话不在它上面起，图里的记录不动",
+            record.drawing_id, self.collab.drawing_id
+        );
+        self.command_line.push_warning(&said);
+        self.collab.last_error = Some(said);
+        self.collab.foreign_tab = Some(id);
+        if self.collab.document == Some(id) {
+            self.collab.document = None;
+        }
+        false
     }
 
     /// Whether tab `i` holds the session's drawing, settling it on `i` when
@@ -124,6 +177,8 @@ impl OpenCADStudio {
     ///   that is still open on it is waited for;
     /// * it was closed — none. A session whose drawing is gone speaks for no
     ///   drawing, and does not come by another;
+    /// * the drawing it was taken to be turned out to be another's, by its
+    ///   sync record (`record_allows`) — as if it had none yet;
     /// * the editor was started on a file that has no tab yet — nothing, as
     ///   long as the launch is still opening what it was started on: the
     ///   dial waits for the drawing (as long as `transport::TAGS_WAIT`).
@@ -146,7 +201,13 @@ impl OpenCADStudio {
             return;
         };
         let drawing = if self.collab.document.is_some() {
-            self.collab_tab().map_or(Drawing::Closed, Drawing::Here)
+            match self.collab_tab() {
+                Some(i) => Drawing::Here(i),
+                // Its record named another drawing (`record_allows`): the
+                // session has none yet.
+                None if self.collab.document.is_none() => Drawing::NotYet,
+                None => Drawing::Closed,
+            }
         } else if self.collab.document_path.is_some() {
             // Finding the tab that shows a file asks the file system: only
             // when the tabs are not what they were at the last look.
@@ -246,14 +307,18 @@ impl OpenCADStudio {
 
     /// Seed the baseline once from what tab `i`'s file was saved aligned to
     /// (`REQ-COLL-015`), including the ops the room never answered before
-    /// the copy was closed. No-op once a session has been up — from then on
-    /// the in-memory baseline is fresher than the file's word.
+    /// the copy was closed, and whether it knows it is apart from the room
+    /// (`diverged`). Once only, for the session's drawing: a drawing with
+    /// no record has nothing to seed. One read in after a session came up
+    /// without it keeps what its record says, and the connection is held
+    /// apart (`State::seed_file_state`).
     fn seed_collab_from_file(&mut self, i: usize) {
-        if self.collab.had_session {
+        if self.collab.seeded {
             return;
         }
         let Some(record) = crate::pid::collab_state::load_state(&self.tabs[i].scene.document)
         else {
+            self.collab.seeded = true;
             return;
         };
         // A record for another drawing says nothing of this session's.
@@ -282,7 +347,13 @@ impl OpenCADStudio {
                 queued_at: queued.queued_at,
             })
             .collect();
-        self.collab.seed_file_state(&claim, ops, queue.unreadable);
+        let diverged = crate::pid::collab_state::load_diverged(&self.tabs[i].scene.document);
+        if self.collab.seed_file_state(&claim, ops, queue.unreadable) {
+            self.collab.saved_diverged = diverged;
+            if let Some(late) = &self.collab.opened_late {
+                self.command_line.push_warning(&late.said());
+            }
+        }
     }
 
     /// Queue one `op` carrying the `changes` made on tab `i`, or stay quiet.
@@ -303,6 +374,11 @@ impl OpenCADStudio {
     ///   refuses a write before it happens, so a change that got here anyway
     ///   came in by a door the gate does not watch; it stays in this drawing
     ///   only, and the command line says so.
+    ///
+    /// Of these, an edit to a drawing with a sync record that no queue takes
+    /// — there is no session to be had, the drawing is not the session's,
+    /// the session may not write, or the queue would not take it — is kept
+    /// on the drawing's unsynced list (`keep_unqueued`).
     ///
     /// Everything handed over in one call goes out as one op, which the server
     /// takes or refuses as a whole. `steps` are the undo steps it speaks
@@ -327,11 +403,19 @@ impl OpenCADStudio {
         if !self.collab.connected && !self.collab.had_session {
             // A copy the file says was in a room still queues
             // (`REQ-COLL-015`): seed its baseline first, so this edit is a
-            // session's leftover, not a stranger's.
-            if self.is_collab_tab(i) {
+            // session's leftover, not a stranger's. With no collaboration
+            // configured no drawing is the session's.
+            let wanted = self.collab.wanted();
+            if wanted && self.is_collab_tab(i) {
                 self.seed_collab_from_file(i);
             }
             if !self.collab.had_session {
+                let why = if wanted {
+                    "不是本次会话的图"
+                } else {
+                    "本次运行没有配置协同"
+                };
+                self.keep_unqueued(i, &changes, label, why);
                 return;
             }
         }
@@ -339,6 +423,7 @@ impl OpenCADStudio {
             return;
         };
         if !self.is_collab_tab(i) {
+            self.keep_unqueued(i, &changes, label, "不是本次会话的图");
             return;
         }
         if self.collab.readonly {
@@ -346,6 +431,7 @@ impl OpenCADStudio {
                 "协同：当前会话只读，本地的 {} 项变更没有广播，本图与其他人的图已不一致",
                 changes.len()
             ));
+            self.keep_unqueued(i, &changes, label, "当前会话只读");
             return;
         }
         match self.collab.queue_op(payload, steps, on, label) {
@@ -372,7 +458,56 @@ impl OpenCADStudio {
             Err(reason) => {
                 self.command_line
                     .push_warning(&format!("协同：变更未广播（{reason}）"));
+                self.keep_unqueued(i, &changes, label, &reason);
             }
+        }
+    }
+
+    /// Keep `changes` made on tab `i` that no queue took — `why` says why —
+    /// on the drawing's unsynced list, when the drawing has a sync record:
+    /// a save writes them there and marks the drawing `UNQUEUED_EDITS`
+    /// (`SPEC-collab-offline-sync.md` §4.1, §5.1). The room will never see
+    /// them, and the drawing is no longer what it has. A drawing with no
+    /// record was never in a room, and changes that say nothing of the
+    /// drawing's objects (a move) are none of the room's: neither is kept.
+    /// The command line says so the first time for each drawing.
+    fn keep_unqueued(&mut self, i: usize, changes: &[broadcast::Change], label: &str, why: &str) {
+        let Some(payload) = broadcast::payload_for(changes) else {
+            return;
+        };
+        let Some(tab) = self.tabs.get(i) else {
+            return;
+        };
+        let id = tab.id;
+        let session_drawing = self.collab.document == Some(id)
+            && self.collab.had_session
+            && self.collab.repo_id.is_some();
+        let record = crate::pid::collab_state::load_state(&tab.scene.document);
+        if record.is_none() && !session_drawing {
+            return;
+        }
+        let user = &self.collab.user_id;
+        let entry = crate::pid::collab_state::Unsynced {
+            state: crate::pid::collab_state::UNQUEUED.to_owned(),
+            op_id: None,
+            label: label.to_owned(),
+            payload,
+            user_id: (!user.is_empty()).then(|| user.clone()),
+            at: ocs_collab::ids::now_unix(),
+            code: None,
+            message: why.to_owned(),
+            rolled_back: None,
+        };
+        let Ok(entry) = serde_json::to_value(entry) else {
+            return;
+        };
+        let kept = self.collab.unqueued.entry(id).or_default();
+        kept.push(entry);
+        if kept.len() == 1 {
+            self.command_line.push_warning(&format!(
+                "协同：这份图带着同步记录，这一步没有排上队（{why}），记进了未同步清单；\
+                 保存之后这份图不能再与服务器同步"
+            ));
         }
     }
 
@@ -432,19 +567,25 @@ impl OpenCADStudio {
             // An op restored from the file has no undo step to take back:
             // what it did stays in this drawing while the room refused it.
             Some(_) if entry.restored => {
-                self.collab.mark_diverged(format!(
-                    "服务器拒绝了重开前排队的「{}」（{code}），这一步无法在本图撤回",
-                    entry.label
-                ));
+                self.collab.mark_diverged(
+                    ROLLBACK_FAILED,
+                    format!(
+                        "服务器拒绝了重开前排队的「{}」（{code}），这一步无法在本图撤回",
+                        entry.label
+                    ),
+                );
                 (Vec::new(), "本图与房间已不一致")
             }
             Some(_) if entry.steps.is_empty() => (Vec::new(), "它不对应撤销栈里的一步，没有撤回"),
             Some(_) if account.mixed => {
-                self.collab.mark_diverged(format!(
-                    "服务器拒绝了「{}」（{code}），而它之后有一次撤销或重做把它和房间已有的步骤一起动了，\
-                     无法只撤回被拒的部分",
-                    entry.label
-                ));
+                self.collab.mark_diverged(
+                    ROLLBACK_FAILED,
+                    format!(
+                        "服务器拒绝了「{}」（{code}），而它之后有一次撤销或重做把它和房间已有的步骤一起动了，\
+                         无法只撤回被拒的部分",
+                        entry.label
+                    ),
+                );
                 (Vec::new(), "无法只撤回被拒的部分，本图与房间已不一致")
             }
             // This person took it back (or put it on again) themselves
@@ -471,11 +612,17 @@ impl OpenCADStudio {
                         (steps, if entry.on { "已撤回" } else { "已恢复" })
                     }
                     None => {
-                        self.collab.mark_diverged(format!(
-                            "服务器拒绝了「{}」（{code}），而这一步已不在撤销栈里，无法撤回",
-                            entry.label
-                        ));
-                        (Vec::new(), "这一步已不在撤销栈里，无法撤回，本图与房间已不一致")
+                        self.collab.mark_diverged(
+                            ROLLBACK_FAILED,
+                            format!(
+                                "服务器拒绝了「{}」（{code}），而这一步已不在撤销栈里，无法撤回",
+                                entry.label
+                            ),
+                        );
+                        (
+                            Vec::new(),
+                            "这一步已不在撤销栈里，无法撤回，本图与房间已不一致",
+                        )
                     }
                 }
             }
@@ -586,6 +733,13 @@ impl OpenCADStudio {
             }
             return;
         };
+        // A drawing with a sync record that comes only now, after the
+        // session came up without it, keeps what its record says: what the
+        // room did meanwhile was not done to it (`seed_collab_from_file`).
+        self.seed_collab_from_file(i);
+        if self.collab.pending_remote.is_empty() {
+            return;
+        }
         let pending = std::mem::take(&mut self.collab.pending_remote);
         let mut total = 0usize;
         let mut failure: Option<String> = None;
@@ -659,7 +813,7 @@ impl OpenCADStudio {
                 // session is marked, and writes nothing more on top of the
                 // difference (`State::request_op`).
                 let first = self.collab.diverged.is_none();
-                self.collab.mark_diverged(reason.clone());
+                self.collab.mark_diverged(REMOTE_UNAPPLIED, reason.clone());
                 self.report_apply_error(reason);
                 if first {
                     self.command_line.push_warning(

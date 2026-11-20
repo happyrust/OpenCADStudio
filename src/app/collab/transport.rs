@@ -841,6 +841,9 @@ pub(super) fn run_client(
         let Ok(told) = ask_for_tags(sender, link) else {
             return Ok(());
         };
+        // The answer may have settled the drawing number: the one the
+        // drawing's sync record names, when none was given for this run.
+        let config = link.config();
         let mut came_up = false;
         let session = run_session(
             sender,

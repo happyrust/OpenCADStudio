@@ -7587,6 +7587,7 @@ impl OpenCADStudio {
         if let Some(drawing) = cfg.collab_drawing.as_deref().map(str::trim) {
             if !drawing.is_empty() {
                 s.collab.drawing_id = drawing.to_owned();
+                s.collab.drawing_given = true;
             }
         }
         if let Some(mode) = cfg.collab_mode.as_deref().map(str::trim) {
@@ -7595,7 +7596,9 @@ impl OpenCADStudio {
             }
         }
         // The drawing id defaults to the drawing being opened, so `--collab`
-        // alone still names a room; `--drawing` overrides it.
+        // alone still names a room; `--drawing` overrides it. Without
+        // `--drawing`, the one the drawing's sync record names wins over both
+        // (`OpenCADStudio::record_allows`).
         if s.collab.drawing_id.is_empty() {
             if let Some(path) = cfg.files.first() {
                 if let Some(stem) = path.file_stem() {

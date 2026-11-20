@@ -3609,16 +3609,32 @@ impl OpenCADStudio {
     /// ops the room has not answered. Written into the save snapshot only:
     /// the live document's dirty flag and undo stack are untouched, and a
     /// drawing no repository has claimed keeps no record.
+    ///
+    /// What the drawing is known to be apart from the room for rides with
+    /// the record (`diverged`; `SPEC-collab-offline-sync.md` §5.1): the
+    /// mark it was read with or this run gave it, else `UNQUEUED_EDITS` when
+    /// edits no queue took were made on it, which go on its unsynced list.
+    /// A drawing that is not the session's keeps its record's three as they
+    /// were read.
     fn write_collab_state_into_snapshot(&mut self, i: usize, snapshot: &mut document::Document) {
+        let unqueued = self
+            .collab
+            .unqueued_for_save(self.tabs[i].id)
+            .map(|(entries, mark)| (entries.to_vec(), mark));
         if self.collab_tab() == Some(i) && self.collab.had_session {
             if let Some(repo_id) = self.collab.repo_id.clone() {
-                crate::pid::collab_state::store_state(
+                let diverged = self
+                    .collab
+                    .diverged_record()
+                    .or_else(|| unqueued.as_ref().map(|(_, mark)| mark.clone()));
+                crate::pid::collab_state::store_state_diverged(
                     snapshot,
                     Some(&crate::pid::FileCollabState {
                         drawing_id: self.collab.drawing_id.clone(),
                         repo_id,
                         revision: self.collab.base_revision,
                     }),
+                    diverged.as_ref(),
                 );
                 let queued: Vec<crate::pid::QueuedOp> = self
                     .collab
@@ -3639,8 +3655,22 @@ impl OpenCADStudio {
                     &queued,
                     &self.collab.unreadable_queue,
                 );
+                if let Some((entries, _)) = &unqueued {
+                    crate::pid::collab_state::append_unsynced(snapshot, entries);
+                }
+                return;
             }
         }
+        let Some((entries, mark)) = unqueued else {
+            return;
+        };
+        let Some(record) = crate::pid::collab_state::load_state(snapshot) else {
+            return;
+        };
+        let kept = crate::pid::collab_state::load_diverged(snapshot);
+        let mark = kept.unwrap_or(mark);
+        crate::pid::collab_state::store_state_diverged(snapshot, Some(&record), Some(&mark));
+        crate::pid::collab_state::append_unsynced(snapshot, &entries);
     }
 
     /// Point the drawing at the file it now lives in. The fields that report

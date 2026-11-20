@@ -17,6 +17,8 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+use crate::pid::collab_state::Diverged;
+
 // The claim commands and the panel glue are shared by both builds (the panel
 // exists on the web build as a hint); only the transport itself is desktop-only,
 // so `request_claim` / `request_release` carry a web stub below.
@@ -33,6 +35,8 @@ mod transport;
 mod collab_align_refused;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_connector_cross_drawing;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_diverged_persist;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_duplicate_op;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -328,6 +332,9 @@ const QUEUED_BY_OTHERS: &str = "QUEUED_BY_OTHERS";
 const QUEUE_DUPLICATE_ID: &str = "QUEUE_DUPLICATE_ID";
 /// Entries of the queue that could not be read.
 const QUEUE_UNREADABLE: &str = "QUEUE_UNREADABLE";
+/// A drawing with a sync record read in after the session came up without
+/// it: that session never held the record against the room.
+const OPENED_AFTER_SESSION: &str = "OPENED_AFTER_SESSION";
 
 /// Whether `code`, on an `error` that names no op, can only be the refusal
 /// of an op. A server from before `error.op_id` answers a refused op this
@@ -526,13 +533,51 @@ pub(super) struct State {
     /// unset the session waits for the tab showing this file instead of
     /// taking the drawing in front.
     pub document_path: Option<std::path::PathBuf>,
+    /// `drawing_id` was given for this run — `--drawing`, or `PIDCOLLAB
+    /// DRAWING` with no session up — rather than read from the settings or
+    /// taken from the file's name. A drawing whose record names another
+    /// drawing is then not the session's; otherwise the session takes the
+    /// record's (`SPEC-collab-offline-sync.md` §5.2, step one).
+    pub drawing_given: bool,
+    /// The tab whose drawing's record names another drawing than this
+    /// session's, by document id, once it has been turned down for it.
+    pub foreign_tab: Option<u64>,
+    /// The tab whose drawing's record has been held against `drawing_id`,
+    /// by document id (`OpenCADStudio::record_allows`).
+    record_read: Option<u64>,
+    /// The drawing's record has been read into the session
+    /// (`seed_file_state`).
+    seeded: bool,
+    /// Why the drawing is held apart for having been read into the session
+    /// after one was up: that session never judged it, and the room it
+    /// joined does not know where the drawing is (`seed_file_state`).
+    opened_late: Option<NotAligned>,
+    /// Edits that changed what a drawing with a sync record says of its
+    /// objects and that no queue took, by the tab's document id, as entries
+    /// of the unsynced list (`collab_state::Unsynced`). The room will never
+    /// see them, so a save puts them on the drawing's record and marks it
+    /// `UNQUEUED_EDITS` (`SPEC-collab-offline-sync.md` §5.1).
+    pub unqueued: BTreeMap<u64, Vec<Value>>,
     /// Why this drawing can no longer be taken to be what the room has: a
     /// revision that never arrived, or a peer's change that could not be
-    /// applied here. The baseline still reads as current — it is the
-    /// server's number, not a statement about this drawing — so this is what
-    /// keeps the session from writing on top of the difference. `None` while
-    /// nothing is known to be missing.
+    /// applied here. After a peer's change that could not be applied the
+    /// baseline still reads as current — it is the server's number, not a
+    /// statement about this drawing — so this is what keeps the session from
+    /// writing on top of the difference. `None` while nothing is known to be
+    /// missing.
     pub diverged: Option<String>,
+    /// The code `diverged` was marked with, and when, in Unix seconds: with
+    /// it, what the drawing's record is saved with (`diverged_record`).
+    pub diverged_as: Option<(&'static str, i64)>,
+    /// A revision that skipped one has come: from then on the baseline
+    /// stays the last revision this drawing has all of, which is what its
+    /// record is saved with.
+    revision_gap: bool,
+    /// What the drawing's record said of its divergence when the session
+    /// read it (`collab_state::load_diverged`). A drawing that knows it is
+    /// apart is held apart on every connection and says nothing of where it
+    /// is (`judge_queue`); a save keeps the mark.
+    pub saved_diverged: Option<Diverged>,
     /// Why the connection that is up is not taken as aligned with the room,
     /// while it is not. Unlike `diverged` it is of the connection, not of
     /// the drawing: nothing of the outbox goes out and nothing the room does
@@ -716,13 +761,46 @@ impl State {
         (code, level)
     }
 
-    /// Record that this drawing is no longer known to match the room. The
-    /// first reason is kept: it is where the two parted.
-    pub(super) fn mark_diverged(&mut self, reason: String) {
+    /// Record that this drawing is no longer known to match the room, as
+    /// `code` (one of `collab_state`'s). The first reason is kept: it is
+    /// where the two parted.
+    pub(super) fn mark_diverged(&mut self, code: &'static str, reason: String) {
         if self.diverged.is_none() {
             self.last_error = Some(format!("已与房间不一致：{reason}"));
             self.diverged = Some(reason);
+            self.diverged_as = Some((code, ocs_collab::ids::now_unix()));
         }
+    }
+
+    /// The divergence the drawing's record is to be saved with: the one it
+    /// was read with, else the one marked in this run.
+    pub(super) fn diverged_record(&self) -> Option<Diverged> {
+        self.saved_diverged.clone().or_else(|| {
+            let (code, at) = self.diverged_as?;
+            Some(Diverged {
+                code: code.to_owned(),
+                message: self.diverged.clone()?,
+                at,
+            })
+        })
+    }
+
+    /// The edits no queue took on the drawing of tab `tab` (by document id),
+    /// with the mark a save gives the drawing for them: `UNQUEUED_EDITS`,
+    /// dated by the first. `None` while there are none.
+    pub(super) fn unqueued_for_save(&self, tab: u64) -> Option<(&[Value], Diverged)> {
+        let entries = self.unqueued.get(&tab).filter(|kept| !kept.is_empty())?;
+        let first = &entries[0];
+        let mark = Diverged {
+            code: crate::pid::collab_state::UNQUEUED_EDITS.to_owned(),
+            message: format!(
+                "有 {} 步修改没有排上队，服务器上没有：{}",
+                entries.len(),
+                first["message"].as_str().unwrap_or_default()
+            ),
+            at: first["at"].as_i64().unwrap_or_default(),
+        };
+        Some((entries, mark))
     }
 
     /// Why the drawing and the room do not match, as the panel and the
@@ -755,29 +833,64 @@ impl State {
     /// the process that made them, so a refusal marks the drawing diverged
     /// rather than pretending a rollback.
     ///
-    /// Once only, ahead of the first session: from then on the in-memory
-    /// baseline is fresher than anything the file could say.
+    /// Once only; whether this was the time is the answer. A drawing read
+    /// in after a session came up without it is seeded all the same — what
+    /// its record says is the drawing's — but that session never held the
+    /// record against the room, and the room's changes that were waiting
+    /// for a drawing were made on top of a revision this one may not be
+    /// at: they are dropped, and the connection is held apart for the rest
+    /// of the run (`opened_late`).
     pub(super) fn seed_file_state(
         &mut self,
         claim: &FileClaim,
         ops: Vec<Outgoing>,
         unreadable: Vec<Value>,
-    ) {
+    ) -> bool {
+        if self.seeded {
+            return false;
+        }
+        self.seeded = true;
         if self.had_session {
-            return;
+            let late = NotAligned {
+                code: OPENED_AFTER_SESSION.to_owned(),
+                message: "这份图是会话连上之后才读进来的，这次连接没有按它的同步记录核对过；\
+                          用这份图重新启动程序再连接"
+                    .to_owned(),
+            };
+            self.pending_remote.clear();
+            if self.session_id.is_some() {
+                self.hold_apart(late.clone());
+            }
+            self.opened_late = Some(late);
         }
         self.repo_id = Some(claim.repo_id.clone());
         self.base_revision = claim.revision;
         self.had_session = true;
         self.outbox.extend(ops);
         self.unreadable_queue = unreadable;
+        true
     }
 
     /// What this copy finds against itself before it says what it is
-    /// (`SPEC-collab-offline-sync.md` §5.2, step two): a queue that is not
-    /// this person's to send — steps somebody else queued, or that say
-    /// nobody; entries that could not be read; two steps under one name.
+    /// (`SPEC-collab-offline-sync.md` §5.2, step two): a drawing that knows
+    /// it is apart from the room — its record says so, this run found it so,
+    /// or edits no queue took were made on it — for the reason it would be
+    /// saved with; a drawing read in after the session came up
+    /// (`seed_file_state`); a queue that is not this person's to send —
+    /// steps somebody else queued, or that say nobody; entries that could
+    /// not be read; two steps under one name. A reconnection in the same run
+    /// is judged the same way.
     pub(super) fn judge_queue(&self) -> Option<NotAligned> {
+        let unqueued = || Some(self.unqueued_for_save(self.document?)?.1);
+        if let Some(apart) = self.diverged_record().or_else(unqueued) {
+            return Some(NotAligned {
+                code: apart.code,
+                message: apart.message,
+            });
+        }
+        if let Some(late) = &self.opened_late {
+            return Some(late.clone());
+        }
         let mut others: Vec<&str> = Vec::new();
         let mut nobody = false;
         for entry in &self.outbox {
@@ -1148,13 +1261,17 @@ impl State {
                 }
                 // Every op the room applies comes here, one revision after the
                 // other. One that is not the next means something in between
-                // never arrived, and this drawing is short a change while its
-                // baseline says it is current.
+                // never arrived: this drawing is short a change, and its
+                // baseline stays where the drawing has all of the room's.
                 if revision != self.base_revision + 1 {
-                    self.mark_diverged(format!(
-                        "收到修订 {revision}，本地基线是 {}：中间的变更没有收到",
-                        self.base_revision
-                    ));
+                    self.revision_gap = true;
+                    self.mark_diverged(
+                        crate::pid::collab_state::REVISION_GAP,
+                        format!(
+                            "收到修订 {revision}，本地基线是 {}：中间的变更没有收到",
+                            self.base_revision
+                        ),
+                    );
                 }
                 // A ruling settles the entry its id names. Its changes are a
                 // peer's like any other — the ruling was made on the server
@@ -1203,12 +1320,11 @@ impl State {
                     }
                 } else {
                     self.applied_ops = self.applied_ops.saturating_add(1);
-                    self.pending_remote.push(RemoteChange {
-                        op_id,
-                        changes,
-                    });
+                    self.pending_remote.push(RemoteChange { op_id, changes });
                 }
-                self.base_revision = revision;
+                if !self.revision_gap {
+                    self.base_revision = revision;
+                }
                 if self.catching_up.is_some_and(|target| revision >= target) {
                     self.catching_up = None;
                 }
@@ -2218,20 +2334,24 @@ mod tests {
     }
 
     /// The room's ops arrive one revision after the other. One that is not
-    /// the next means a change in between never got here: the baseline still
-    /// moves — it is the server's count — but the session is marked, and
-    /// sends nothing on top of a drawing it knows to be short.
+    /// the next means a change in between never got here: the session is
+    /// marked `REVISION_GAP`, sends nothing on top of a drawing it knows to
+    /// be short, and its baseline stays the last revision it has all of.
     #[test]
     fn a_revision_that_skips_one_marks_the_session_and_stops_its_ops() {
         let mut state = joined_at(3);
         state.apply(applied("op-a", 4));
         assert_eq!(state.diverged, None);
-        assert!(state.request_op(serde_json::json!({"kind": "set_tag"})).is_ok());
+        assert!(state
+            .request_op(serde_json::json!({"kind": "set_tag"}))
+            .is_ok());
 
         state.apply(applied("op-c", 6));
-        assert_eq!(state.base_revision, 6);
+        assert_eq!(state.base_revision, 4, "the baseline does not pass the gap");
         let reason = state.diverged.clone().expect("marked");
         assert!(reason.contains('6') && reason.contains('4'), "{reason}");
+        let code = state.diverged_as.map(|(code, _)| code);
+        assert_eq!(code, Some(crate::pid::collab_state::REVISION_GAP));
         assert_eq!(state.status_json()["diverged"], reason.as_str());
         let refused = state
             .request_op(serde_json::json!({"kind": "set_tag"}))
@@ -2241,6 +2361,7 @@ mod tests {
         // The first reason stays: it is where the two parted.
         state.apply(applied("op-e", 9));
         assert_eq!(state.diverged.as_deref(), Some(reason.as_str()));
+        assert_eq!(state.base_revision, 4);
     }
 
     /// A revision this drawing is already at is not applied a second time,

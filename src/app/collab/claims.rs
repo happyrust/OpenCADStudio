@@ -281,6 +281,7 @@ impl OpenCADStudio {
                 self.collab.configured_drawing_id = value.clone();
                 if !in_session {
                     self.collab.drawing_id = value.clone();
+                    self.collab.drawing_given = !value.is_empty();
                 }
             }
         }
