@@ -5,8 +5,13 @@
 //! with `src/io/pid/` or `src/io/pid_legend/`.
 
 pub mod class_map;
+pub mod recognize;
 
 pub use class_map::{
     audit_document_blocks, default_legend_class_map, BlockAuditSummary, BlockMatchKind,
     BlockOverrideRule, BlockResolution, IgnoreReason, LegendClassMap, LegendMapRules, MappedBlock,
+};
+pub use recognize::{
+    recognise_sppid_sheet, ConfidenceSummary, ConfidenceThresholds, ConfidenceTier,
+    ConvertedSymbol, PipeLabelHit, PipeSegmentHit, RangeTagHit, SheetRecognition,
 };

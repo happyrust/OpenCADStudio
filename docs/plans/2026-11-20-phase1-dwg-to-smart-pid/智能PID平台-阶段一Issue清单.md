@@ -1083,12 +1083,12 @@
 
 | Issue | 现状问题 | 方案要点 | 缺资料 | 对应 |
 |---|---|---|---|---|
-| ISSUE-L3-2 | 多行位号、范围标注、仪表圈内拼接、位号在符号外等写法覆盖不全 | 每类写法先做合成 fixture 先红后绿；整批配对准确率不退化 | RES-17 ⚠ | L3-2（M） |
+| ISSUE-L3-2（[#125](https://github.com/happyrust/pid-cad/issues/125)） | 多行位号、范围标注、仪表圈内拼接、位号在符号外等写法覆盖不全 | **已完成**：落地 `src/io/pid_convert/recognize.rs` 四路位号配对与松散容器恢复，90 张 DXF 召回率升至 `97.79%`、精确率 `99.89%`、位号一致率 `89.55%`（见 `readings.md` §14） | RES-17 ⚠ | L3-2（M） |
 | ISSUE-L3-3 | 管线族覆盖不全，断头多 | 线号（5 位/4 位）、管线族、管段与管件断开、流向；逐族出读数 | RES-17 ⚠ | L3-3（L） |
 | ISSUE-L3-4 | 连通关系没有系统性配对 | 连接点与端点配对；页间连接符按文字与图号跨图配对 | — | L3-4（L） |
 | ISSUE-L3-5 | 管口位号没有继承设备位号 | 管口位号继承；管口与设备的组合关系 | — | L3-5（M） |
 | ISSUE-L3-6 | 线号没有拆解成属性；标题栏没读图号图名 | 拆解公称直径/介质/序号/等级；读标题栏；预留外部表格接口 | RES-17 ⚠ | L3-6（M） |
-| ISSUE-L3-7 | 没有置信度分档与人工确认 | 三档阈值可配置；6 步确认；报告数字自洽 | — | L3-7（M） |
+| ISSUE-L3-7（[#125](https://github.com/happyrust/pid-cad/issues/125)） | 没有置信度分档与人工确认 | **引擎分档已完成**：可配置三档阈值与计数守恒已在 `recognize.rs` 落地（见 `readings.md` §14），交互面板待 `L2` 衔接 | — | L3-7（M） |
 | ISSUE-L3-8 | 规则改动后没有回归门禁 | 整批报告逐行 diff，只允许预期行变化 | RES-02 ✔ | L3-8（S） |
 
 ---
@@ -1169,9 +1169,9 @@
 | `ISSUE-L0-7` | [#121](https://github.com/happyrust/pid-cad/issues/121) | `done-local`（本地已完成） | 提交 `849133af1`：落盘 `04-external-platform-protocol.md`，固化代理标准、三轮减法变体与回执模板，见 `readings.md` §10 |
 | `ISSUE-L0-5` / `L3-0` | [#122](https://github.com/happyrust/pid-cad/issues/122) | `done-local`（本地已完成 · 检查点 A） | 提交 `833eb92e9`：落地 `legend_baseline.py`，90 张有效 DXF 实跑基线与 Top 15 块名缺口已出，见 `readings.md` §11 |
 | `ISSUE-L4-1..3` | [#123](https://github.com/happyrust/pid-cad/issues/123) | `done-local`（本地已完成） | 提交 `b49ed5274`：落地 `src/io/pid_publish/` 自有模型导出底座，1,881 对象单图回环双端严格校验零违规，见 `readings.md` §12 |
-| `ISSUE-L3-1` | [#124](https://github.com/happyrust/pid-cad/issues/124) | `done-local`（本地已完成） | 落地 `assets/pid-sppid-legend-map.json` + `src/io/pid_convert/class_map.rs`，90 张 DXF `15,852 / 15,852`（100%）映射，见 `readings.md` §13 |
-| `ISSUE-L3-2 / L3-7` | [#125](https://github.com/happyrust/pid-cad/issues/125) | `in-progress`（进行中） | 存量图位号识别与配对增强、三档置信度及 90 图复跑度量 |
-| `ISSUE-L4-4 / L4-5` | [#126](https://github.com/happyrust/pid-cad/issues/126) | `phase1`（已建单待推进） | 管网派生对象合成与组合名称、公称直径换算规则 |
+| `ISSUE-L3-1` | [#124](https://github.com/happyrust/pid-cad/issues/124) | `done-local`（本地已完成） | 提交 `1bb06191e`：落地 `assets/pid-sppid-legend-map.json` + `src/io/pid_convert/class_map.rs`，90 张 DXF `15,852 / 15,852`（100%）映射，见 `readings.md` §13 |
+| `ISSUE-L3-2 / L3-7` | [#125](https://github.com/happyrust/pid-cad/issues/125) | `done-local`（本地已完成） | 落地 `src/io/pid_convert/recognize.rs`；90 张 DXF 召回 `97.79%`、精确 `99.89%`、位号一致率 `89.55%`、三档置信度守恒，见 `readings.md` §14 |
+| `ISSUE-L4-4 / L4-5` | [#126](https://github.com/happyrust/pid-cad/issues/126) | `in-progress`（进行中） | 管网派生对象合成与组合名称、公称直径换算规则 |
 | `ISSUE-L4-6 / L4-7` | [#127](https://github.com/happyrust/pid-cad/issues/127) | `phase1`（已建单待推进） | 单图与批量 DWG/DXF 转 publish XML 导出入口及对账门禁 |
 | `.sym` 预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | 暂缓（避让并行分支） | 待 `pid-symbol-identity` 合入 `main` 后实施 |
 | 分级表可观测性（关联） | [#117](https://github.com/happyrust/pid-cad/issues/117) | 待定范围 | 与 `L4-2` / `L0-9` 衔接，建议先做第 1 步表外计数输出 |

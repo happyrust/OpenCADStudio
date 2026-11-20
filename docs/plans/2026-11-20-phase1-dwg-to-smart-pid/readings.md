@@ -429,3 +429,47 @@
 | `scripts\fmt-newhunks.ps1` | — | `src/io/mod.rs`、`src/io/pid_convert/{mod,class_map}.rs` 全部 **`new=0`** | **0 格式偏差** |
 | `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
 
+---
+
+## 14. L3-2 / L3-7（#125）：存量图位号识别与配对增强、三档置信度及 90 图复跑度量（2026-11-20）
+
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-20` |
+| 基线提交 | `1bb06191e`（`main`） |
+| `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
+| 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
+| 新增 / 修改文件 | `src/io/pid_convert/{mod,recognize}.rs` |
+| 证据目录子项 | `2026-11-20-issue125/`（`red.txt`、`green-fast.txt`、`arch.txt`、`real-90dxf-cache.txt`、`rec_cache/`、`run1/baseline-{summary.json,report.md}`、`run2/baseline-{summary.json,report.md}`、`gate-cargo-test-lib.txt`、`gate-clippy-lib.txt`、`gate-clippy-test.txt`） |
+
+### 14.1 先红后绿与四路位号配对 + 三档置信度实现
+
+- **先红后绿**：
+  - 先红（`red.txt`）：3 组合成 fixture 测试落盘对骨架运行，`0 passed; 3 failed`（退出码 `101`，全部命中目标断言）；
+  - 转绿（`green-fast.txt`）：`3 passed; 0 failed; 1 ignored`（退出码 `0`），覆盖圈内双行拼接（`PG`+`0201501A` → `PG-0201501A`、`PIA`+`0201301D` → `PIA-0201301D`、`MOV`+`0201101C` → `MOV-0201101C`）、带空格 7 位阀门位号归一化（`BV 0201501B` → `BV0201501B`）及二分图最小距离唯一配对、设备包围盒配对与图层 `10` 松散几何容器恢复（`V-02019`）、页间连接符 `DWG-*` / 走向文本配对、斜杠/波浪号范围展开（`XV-0407A/0407B`）以及高/中/低三档置信度计数守恒。
+- **可复现性**：对 `90` 张有效非空 DXF 生成识别缓存后连续执行 `legend_baseline.py` 两轮（`run1` 与 `run2`），产出的 `baseline-summary.json` 字节级 100% 相等（SHA-256 `e83f2aae...`）。
+
+### 14.2 90 张有效 DXF 对 SPPID 真值（`_Data.xml`）复跑对比（#122 基线 vs #125）
+
+| 度量项 | #122 旧基线（§11.2） | #125 新识别器实测 | 提升幅度与说明 |
+|---|---:|---:|---|
+| 评估有效图纸分母 | `90` | `90` | 同分母（剔除 4 份 0 字节空 DXF，`0` 读取失败） |
+| SPPID 真值可标记符号分母 | `15,957`（带位号 `9,536`） | `15,957`（带位号 `9,536`） | 10 类图面符号真值不变 |
+| 检出候选符号总数 | `17,185`（`unknown` `17,178`） | **`15,622`**（已知 `15,622`） | `unknown_blocks = 0`、`unmapped_rec_classes = 0` |
+| **类映射符号召回率（`recall`）** | `0.000188`（`3 / 15,957`） | **`0.977941`**（**`15,605 / 15,957`**） | **`+97.78` 个百分点**（仅剩 `352` 个松散无块图形设备/管件待深化） |
+| **类映射符号精确率（`precision`）** | `0.000175`（`3 / 17,185`） | **`0.998912`**（**`15,605 / 15,622`**） | **`99.89%`** |
+| **匹配项位号精确一致率（`tag_accuracy`）** | `0.000000`（`0 / 3`） | **`0.895546`**（**`13,975 / 15,605`**） | 剩余差异中约 `834` 项为 SPPID 库内页间连接符内部序号（图面仅标 `DWG-*`），图面可见位号一致率约 **`94.6%`** |
+| 纯位号文本层命中（`matched_on_symbol`） | `0 / 9,536` | **`8,182 / 9,536`**（`0.858012`） | 扣除图面不印出的内部 OPC 数字序号后覆盖率约 **`94.0%`** |
+| 三档置信度分布（全量含 `PIDNote`） | — | `high = 12,174`、`medium = 3,736`、`low = 0` | 三档之和严格等于全量识别对象数 `15,910` |
+
+### 14.3 固定门禁读数
+
+| 门禁项 | 改前读数（§13.3） | 改后实测 | 结论 |
+|---|---|---|---|
+| `cargo test --offline --locked --lib` | `7,169` 条 | **`7,173` 条**（**`7,110` 过** / **`62` 忽略** / **`1` 同一既有 `.pen` 字重失败**） | `+4` 条测试，**0 新增失败** |
+| `cargo clippy --offline --locked --lib` | `656` 条警告 | **`656` 条警告** | **0 新增警告** |
+| `cargo clippy --offline --locked --lib --profile test` | `1,051` 条警告 | **`1,051` 条警告** | **0 新增警告** |
+| `scripts\fmt-newhunks.ps1` | — | `src/io/pid_convert/{mod,recognize}.rs` 全部 **`new=0`** | **0 格式偏差** |
+| `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
+
+
