@@ -604,3 +604,160 @@ fn pid_backup_export_ui_ui8_three_outcome_forms_details_and_path_opener_work_in_
 
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+#[test]
+fn pid_backup_export_ui_review_cross_package_isolation_quoted_paths_and_cached_validation() {
+    use crate::io::pid_backup_export::{ExportOutcome, GateSummary};
+    use crate::io::pid_backup_pdf::{PdfOutcome, PdfPage};
+    use crate::ui::window::pid_backup_browser::PidBackupMsg;
+
+    let _one = crate::headless_ui_lock();
+    let scratch = temp_scratch("review-export-iso");
+    let pkg_a = scratch.join("pkg-a");
+    let pkg_b = scratch.join("pkg-b");
+    std::fs::create_dir_all(&pkg_a).unwrap();
+    std::fs::create_dir_all(&pkg_b).unwrap();
+    std::fs::write(pkg_a.join("Manifest.txt"), "[General]\r\nName=PA\r\n").unwrap();
+    std::fs::write(pkg_b.join("Manifest.txt"), "[General]\r\nName=PB\r\n").unwrap();
+    let pid_a = pkg_a.join("A01.pid");
+    let pid_b = pkg_b.join("B01.pid");
+    std::fs::write(&pid_a, b"pid-a").unwrap();
+    std::fs::write(&pid_b, b"pid-b").unwrap();
+
+    let mut app = app_on_backup();
+    let load_a = app.on_pid_backup(PidBackupMsg::Loaded(Ok(Arc::new(BackupIndex {
+        source: pkg_a.clone(),
+        restored: pkg_a.clone(),
+        backup_root: pkg_a.clone(),
+        read_only: true,
+        manifest: Some(ManifestSummary {
+            name: Some("PA".to_owned()),
+            ..ManifestSummary::default()
+        }),
+        files: vec![BackupFile {
+            name: "Manifest.txt".to_owned(),
+            ..BackupFile::default()
+        }],
+        drawings: vec![DrawingEntry {
+            name: "A01".to_owned(),
+            pid_path: Some(pid_a),
+            group_path: "PA".to_owned(),
+            meta: Vec::new(),
+        }],
+        ..BackupIndex::default()
+    }))));
+    app.drive_headless_task(load_a).unwrap();
+
+    // 1. Finish publish (>120 gate lines -> footer shown) and PDF on Package A.
+    let out_a = scratch.join("deliver-a");
+    std::fs::create_dir_all(&out_a).unwrap();
+    std::fs::write(out_a.join("_Index.json"), b"{}").unwrap();
+    app.pid_shell.backup.export_ui.last_publish_out_dir = Some(out_a.clone());
+    app.on_pid_backup_export_finished(Ok(ExportOutcome {
+        written: 1,
+        failed: 0,
+        pid_entries: 1,
+        templates: 0,
+        unmatched: Vec::new(),
+        without_drawing_no: 0,
+        unwritten: Vec::new(),
+        noted: Vec::new(),
+        problems: Vec::new(),
+        other_problems: Vec::new(),
+        warnings: Vec::new(),
+        gate: Some(GateSummary {
+            clean: 125,
+            dirty: 0,
+            revision_mismatch: 0,
+            unpaired: 0,
+            lines: (0..125).map(|i| format!("D{i:03}: clean")).collect(),
+        }),
+        export_kind: "OracleExp".to_owned(),
+        files: 4,
+        index_path: out_a.join("_Index.json"),
+        elapsed: Duration::from_secs(1),
+    }));
+    app.on_pid_backup_pdf_finished(Ok(PdfOutcome {
+        pages: vec![PdfPage {
+            name: "A01".to_owned(),
+            pdf: Some("A01.pdf".to_owned()),
+            ..PdfPage::default()
+        }],
+        written: 1,
+        failed: 0,
+        without_file: 0,
+        index_path: out_a.join("_PdfIndex.json"),
+        elapsed: Duration::from_secs(1),
+    }));
+
+    send_export(&mut app, ExportUiMessage::TogglePublishDetails);
+    assert!(
+        says(
+            &app,
+            "已显示前 120 条（共 125 条），完整比对明细见清单文件。"
+        ),
+        "gate lines > 120 must display truncation footer"
+    );
+
+    // 2. Switch to Package B: Package A's outcome banners and last_publish_out_dir must NOT leak!
+    let load_b = app.on_pid_backup(PidBackupMsg::Loaded(Ok(Arc::new(BackupIndex {
+        source: pkg_b.clone(),
+        restored: pkg_b.clone(),
+        backup_root: pkg_b.clone(),
+        read_only: true,
+        manifest: Some(ManifestSummary {
+            name: Some("PB".to_owned()),
+            ..ManifestSummary::default()
+        }),
+        files: vec![BackupFile {
+            name: "Manifest.txt".to_owned(),
+            ..BackupFile::default()
+        }],
+        drawings: vec![DrawingEntry {
+            name: "B01".to_owned(),
+            pid_path: Some(pid_b),
+            group_path: "PB".to_owned(),
+            meta: Vec::new(),
+        }],
+        ..BackupIndex::default()
+    }))));
+    app.drive_headless_task(load_b).unwrap();
+
+    let b_bounds = drawn(&app);
+    assert!(
+        !b_bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pub_outcome_ok")),
+        "Package A publish outcome must not show under Package B"
+    );
+    assert!(
+        !b_bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pdf_outcome_ok")),
+        "Package A PDF outcome must not show under Package B"
+    );
+    send_export(&mut app, ExportUiMessage::OpenPdfDialog);
+    let pdf_dlg = drawn(&app);
+    assert!(
+        !pdf_dlg.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pdf_use_last_publish")),
+        "Package A publish folder must not be offered for pairing on Package B"
+    );
+    send_export(&mut app, ExportUiMessage::CloseDialog);
+
+    // 3. Double-quoted output path validates in update(), and view() caches validation (zero per-frame disk I/O).
+    send_export(&mut app, ExportUiMessage::OpenPublishDialog);
+    let out_b = scratch.join("deliver-b");
+    send_export(
+        &mut app,
+        ExportUiMessage::PublishOutChanged(format!("  \"{}\"  ", out_b.display())),
+    );
+    assert!(
+        !drawn(&app).contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pub_error")),
+        "double-quoted valid output folder must pass precheck"
+    );
+    // Create a file behind the dialog's back without triggering update(): pure view() must NOT re-scan disk!
+    std::fs::create_dir_all(&out_b).unwrap();
+    std::fs::write(out_b.join("sneaky.txt"), b"x").unwrap();
+    assert!(
+        !drawn(&app).contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pub_error")),
+        "view() must read cached validation rather than running synchronous fs::read_dir every frame"
+    );
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}

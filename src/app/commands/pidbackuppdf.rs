@@ -52,6 +52,8 @@ pub(in crate::app) struct BackupPdf {
     /// What the last export that ran came to; `None` before the first. One
     /// that was refused before it started is not among them.
     last: Option<Result<PdfOutcome, PdfError>>,
+    /// `backup_root` of the package that produced `last`.
+    last_backup_root: Option<PathBuf>,
     /// The export itself: [`pid_backup_pdf::export_in_background`], or what
     /// a test puts in its place: PIDBACKUPEXPORT's tests put one there too,
     /// to run an export to PDF beside theirs.
@@ -61,6 +63,8 @@ pub(in crate::app) struct BackupPdf {
 /// An export on its way.
 #[cfg(not(target_arch = "wasm32"))]
 struct Running {
+    /// `backup_root` of the package being exported.
+    backup_root: PathBuf,
     /// Where it writes, as the command was given it.
     out_dir: PathBuf,
     /// How many drawings it was given.
@@ -77,6 +81,7 @@ impl Default for BackupPdf {
         Self {
             running: None,
             last: None,
+            last_backup_root: None,
             export: Box::new(|request, progress| {
                 Box::pin(pid_backup_pdf::export_in_background(request, progress))
             }),
@@ -113,6 +118,16 @@ impl BackupPdf {
     /// Structured outcome of the most recent PDF export that ran to completion.
     pub(in crate::app) fn last_outcome(&self) -> Option<&Result<PdfOutcome, PdfError>> {
         self.last.as_ref()
+    }
+
+    /// Structured outcome only when it belongs to `backup_root`.
+    pub(in crate::app) fn last_outcome_for(
+        &self,
+        backup_root: &std::path::Path,
+    ) -> Option<&Result<PdfOutcome, PdfError>> {
+        (self.last_backup_root.as_deref() == Some(backup_root))
+            .then_some(self.last.as_ref())
+            .flatten()
     }
 }
 
@@ -241,7 +256,17 @@ impl OpenCADStudio {
         &mut self,
         result: Result<PdfOutcome, PdfError>,
     ) {
-        self.pid_backup_pdf.running = None;
+        let prev_root = self
+            .pid_backup_pdf
+            .running
+            .take()
+            .map(|r| r.backup_root)
+            .or_else(|| {
+                self.pid_backup_browser
+                    .index()
+                    .map(|idx| idx.backup_root.clone())
+            });
+        self.pid_backup_pdf.last_backup_root = prev_root;
         say_result(&mut self.command_line, &result);
         self.pid_backup_pdf.last = Some(result);
     }
@@ -290,13 +315,18 @@ impl OpenCADStudio {
         out_dir: PathBuf,
     ) -> Result<Task<Message>, PdfError> {
         let request = self.check_pid_backup_pdf_ui(out_dir)?;
-        let (drawings, out_dir) = (request.drawings.len(), request.out_dir.clone());
+        let (backup_root, drawings, out_dir) = (
+            request.package_dir.clone(),
+            request.drawings.len(),
+            request.out_dir.clone(),
+        );
         self.command_line.push_output(&format!(
             "PIDBACKUPPDF: exporting {drawings} drawing(s) to {} ...",
             out_dir.display()
         ));
         let progress = PdfProgress::default();
         self.pid_backup_pdf.running = Some(Running {
+            backup_root,
             out_dir,
             drawings,
             progress: progress.clone(),

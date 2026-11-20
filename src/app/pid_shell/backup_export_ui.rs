@@ -8,13 +8,11 @@ use std::time::Instant;
 use iced::widget::{button, column, container, opaque, row, scrollable, text, text_input, Space};
 use iced::{alignment, font, Background, Border, Color, Element, Fill, Length, Padding, Task};
 
-use super::backup::{is_sql_server_package, SCREEN_BOUNDS_PREFIX};
+use super::backup::{clean_path_input, is_sql_server_package, SCREEN_BOUNDS_PREFIX};
 use super::{Message as ShellMessage, PidScreen};
 use crate::app::{Message as AppMessage, OpenCADStudio};
 use crate::io::pid_backup_browse::BackupIndex;
 use crate::io::pid_backup_export::{self, ExportError, ExportOutcome};
-#[cfg(target_arch = "wasm32")]
-use crate::io::pid_backup_pdf;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::io::pid_backup_pdf::{PdfError, PdfOutcome};
 use crate::ui::style::pid_fonts;
@@ -44,6 +42,8 @@ pub struct PublishDialogState {
     pub out_dir: String,
     pub plant: String,
     pub reference_dir: String,
+    /// Cached validation result recomputed on input change in `update()`.
+    pub validation: Result<(), String>,
 }
 
 impl Default for PublishDialogState {
@@ -52,14 +52,29 @@ impl Default for PublishDialogState {
             out_dir: String::new(),
             plant: pid_backup_export::DEFAULT_PLANT.to_owned(),
             reference_dir: String::new(),
+            validation: Err("请填写或选择输出目录（必须是不存在或空的目录）。".to_owned()),
         }
     }
 }
 
 /// Draft inputs of the PDF batch export dialog (`SPEC-sppid-export-ui.md` §3.2 B).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdfDialogState {
     pub out_dir: String,
+    /// Cached validation result recomputed on input change in `update()`.
+    pub validation: Result<(), String>,
+    /// Whether `out_dir` already holds publish files ready for pairing.
+    pub pair_ready: bool,
+}
+
+impl Default for PdfDialogState {
+    fn default() -> Self {
+        Self {
+            out_dir: String::new(),
+            validation: Err("请填写或选择 PDF 输出目录。".to_owned()),
+            pair_ready: false,
+        }
+    }
 }
 
 /// UI state owned by `backup::State` for the two export workflows.
@@ -78,6 +93,16 @@ pub struct ExportUiState {
     pub folder_picker: Option<FolderPicker>,
     /// Optional test double replacing OS file/folder opening.
     pub path_opener: Option<PathOpener>,
+}
+
+impl ExportUiState {
+    /// Clear package-bound dialog/outcome state when switching to a newly loaded package.
+    pub fn reset_for_loaded_package(&mut self) {
+        self.dialog = None;
+        self.last_publish_out_dir = None;
+        self.publish_details_open = false;
+        self.pdf_details_open = false;
+    }
 }
 
 impl std::fmt::Debug for ExportUiState {
@@ -116,9 +141,13 @@ fn send(msg: ExportUiMessage) -> AppMessage {
     AppMessage::PidShell(ShellMessage::Backup(super::backup::Message::Export(msg)))
 }
 
-/// Whether `index` has `Manifest.txt` at its `backup_root`.
+/// Whether `index` has `Manifest.txt` recorded in its in-memory index.
 pub fn has_manifest(index: &BackupIndex) -> bool {
-    index.manifest.is_some() || index.backup_root.join("Manifest.txt").is_file()
+    index.manifest.is_some()
+        || index
+            .files
+            .iter()
+            .any(|file| file.name.eq_ignore_ascii_case("Manifest.txt"))
 }
 
 /// Reason the "导出 publish 文件" button is disabled (`None` when enabled).
@@ -162,18 +191,87 @@ pub(crate) fn pdf_disabled_reason(app: &OpenCADStudio) -> Option<&'static str> {
     Some("网页端不支持本地备份包导出")
 }
 
-/// Last publish output folder known to the session (from UI start or completed outcome).
+/// Last publish output folder belonging to the currently open backup package.
 pub(crate) fn resolved_last_publish_dir(app: &OpenCADStudio) -> Option<PathBuf> {
     if let Some(dir) = &app.pid_shell.backup.export_ui.last_publish_out_dir {
         return Some(dir.clone());
     }
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(Ok(outcome)) = app.pid_backup_export.last_outcome() {
-        if let Some(parent) = outcome.index_path.parent() {
-            return Some(parent.to_path_buf());
+    if let Some(index) = app.pid_backup_browser.index() {
+        if let Some(Ok(outcome)) = app.pid_backup_export.last_outcome_for(&index.backup_root) {
+            if let Some(parent) = outcome.index_path.parent() {
+                return Some(parent.to_path_buf());
+            }
         }
     }
     None
+}
+
+fn compute_publish_validation(
+    app: &OpenCADStudio,
+    state: &PublishDialogState,
+) -> Result<(), String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let out_clean = clean_path_input(&state.out_dir);
+        let plant_trim = state.plant.trim();
+        let ref_clean = clean_path_input(&state.reference_dir);
+        let ref_opt = (!ref_clean.is_empty()).then(|| PathBuf::from(ref_clean));
+        if out_clean.is_empty() {
+            Err("请填写或选择输出目录（必须是不存在或空的目录）。".to_owned())
+        } else if plant_trim.is_empty() {
+            Err("工厂名不能为空（默认 P01）。".to_owned())
+        } else {
+            app.check_pid_backup_export_ui(PathBuf::from(out_clean), plant_trim, ref_opt)
+                .map(|_| ())
+                .map_err(|err| format!("[{}] {err}", err.code()))
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (app, state);
+        Err("网页端不可用".to_owned())
+    }
+}
+
+fn compute_pdf_validation(app: &OpenCADStudio, out_raw: &str) -> (Result<(), String>, bool) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let out_clean = clean_path_input(out_raw);
+        if out_clean.is_empty() {
+            (Err("请填写或选择 PDF 输出目录。".to_owned()), false)
+        } else {
+            match app.check_pid_backup_pdf_ui(PathBuf::from(out_clean)) {
+                Ok(req) => {
+                    let pair = directory_holds_publish_files(&req.out_dir);
+                    (Ok(()), pair)
+                }
+                Err(err) => (Err(format!("[{}] {err}", err.code())), false),
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (app, out_raw);
+        (Err("网页端不可用".to_owned()), false)
+    }
+}
+
+fn revalidate_open_dialog(app: &mut OpenCADStudio) {
+    let next = match app.pid_shell.backup.export_ui.dialog.clone() {
+        Some(ExportDialog::Publish(mut state)) => {
+            state.validation = compute_publish_validation(app, &state);
+            Some(ExportDialog::Publish(state))
+        }
+        Some(ExportDialog::Pdf(mut state)) => {
+            let (validation, pair_ready) = compute_pdf_validation(app, &state.out_dir);
+            state.validation = validation;
+            state.pair_ready = pair_ready;
+            Some(ExportDialog::Pdf(state))
+        }
+        None => None,
+    };
+    app.pid_shell.backup.export_ui.dialog = next;
 }
 
 fn directory_holds_publish_files(dir: &Path) -> bool {
@@ -202,6 +300,7 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: ExportUiMessage) -> Task<
             if publish_disabled_reason(app).is_none() {
                 app.pid_shell.backup.export_ui.dialog =
                     Some(ExportDialog::Publish(PublishDialogState::default()));
+                revalidate_open_dialog(app);
             }
             Task::none()
         }
@@ -209,6 +308,7 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: ExportUiMessage) -> Task<
             if pdf_disabled_reason(app).is_none() {
                 app.pid_shell.backup.export_ui.dialog =
                     Some(ExportDialog::Pdf(PdfDialogState::default()));
+                revalidate_open_dialog(app);
             }
             Task::none()
         }
@@ -220,30 +320,35 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: ExportUiMessage) -> Task<
             if let Some(ExportDialog::Publish(state)) = &mut app.pid_shell.backup.export_ui.dialog {
                 state.out_dir = val;
             }
+            revalidate_open_dialog(app);
             Task::none()
         }
         ExportUiMessage::PublishPlantChanged(val) => {
             if let Some(ExportDialog::Publish(state)) = &mut app.pid_shell.backup.export_ui.dialog {
                 state.plant = val;
             }
+            revalidate_open_dialog(app);
             Task::none()
         }
         ExportUiMessage::PublishRefChanged(val) => {
             if let Some(ExportDialog::Publish(state)) = &mut app.pid_shell.backup.export_ui.dialog {
                 state.reference_dir = val;
             }
+            revalidate_open_dialog(app);
             Task::none()
         }
         ExportUiMessage::PublishClearRef => {
             if let Some(ExportDialog::Publish(state)) = &mut app.pid_shell.backup.export_ui.dialog {
                 state.reference_dir.clear();
             }
+            revalidate_open_dialog(app);
             Task::none()
         }
         ExportUiMessage::PdfOutChanged(val) => {
             if let Some(ExportDialog::Pdf(state)) = &mut app.pid_shell.backup.export_ui.dialog {
                 state.out_dir = val;
             }
+            revalidate_open_dialog(app);
             Task::none()
         }
         ExportUiMessage::PdfUseLastPublishDir => {
@@ -251,6 +356,7 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: ExportUiMessage) -> Task<
                 if let Some(ExportDialog::Pdf(state)) = &mut app.pid_shell.backup.export_ui.dialog {
                     state.out_dir = last_dir.display().to_string();
                 }
+                revalidate_open_dialog(app);
             }
             Task::none()
         }
@@ -283,6 +389,7 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: ExportUiMessage) -> Task<
                 (Some(ExportDialog::Pdf(state)), "pdf_out") => state.out_dir = text_val,
                 _ => {}
             }
+            revalidate_open_dialog(app);
             Task::none()
         }
         ExportUiMessage::FolderPicked(_, None) => Task::none(),
@@ -294,22 +401,24 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: ExportUiMessage) -> Task<
                 else {
                     return Task::none();
                 };
-                let out_trim = state.out_dir.trim();
+                let out_clean = clean_path_input(&state.out_dir);
                 let plant_trim = state.plant.trim();
-                if out_trim.is_empty() || plant_trim.is_empty() {
+                let ref_clean = clean_path_input(&state.reference_dir);
+                if out_clean.is_empty() || plant_trim.is_empty() {
+                    revalidate_open_dialog(app);
                     return Task::none();
                 }
-                let ref_opt = (!state.reference_dir.trim().is_empty())
-                    .then(|| PathBuf::from(state.reference_dir.trim()));
+                let ref_opt = (!ref_clean.is_empty()).then(|| PathBuf::from(ref_clean));
                 let Ok(checked) = app.check_pid_backup_export_ui(
-                    PathBuf::from(out_trim),
+                    PathBuf::from(out_clean),
                     plant_trim,
                     ref_opt.clone(),
                 ) else {
+                    revalidate_open_dialog(app);
                     return Task::none();
                 };
                 if let Ok(task) = app.start_pid_backup_export_ui(
-                    PathBuf::from(out_trim),
+                    PathBuf::from(out_clean),
                     plant_trim.to_owned(),
                     ref_opt,
                 ) {
@@ -317,6 +426,7 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: ExportUiMessage) -> Task<
                     app.pid_shell.backup.export_ui.dialog = None;
                     return task;
                 }
+                revalidate_open_dialog(app);
             }
             Task::none()
         }
@@ -327,14 +437,16 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: ExportUiMessage) -> Task<
                 else {
                     return Task::none();
                 };
-                let out_trim = state.out_dir.trim();
-                if out_trim.is_empty() {
+                let out_clean = clean_path_input(&state.out_dir);
+                if out_clean.is_empty() {
+                    revalidate_open_dialog(app);
                     return Task::none();
                 }
-                if let Ok(task) = app.start_pid_backup_pdf_ui(PathBuf::from(out_trim)) {
+                if let Ok(task) = app.start_pid_backup_pdf_ui(PathBuf::from(out_clean)) {
                     app.pid_shell.backup.export_ui.dialog = None;
                     return task;
                 }
+                revalidate_open_dialog(app);
             }
             Task::none()
         }
@@ -691,13 +803,26 @@ fn publish_outcome_banner<'a>(
                     );
                 }
                 if let Some(gate) = &outcome.gate {
-                    for line in gate.lines.iter().take(120) {
+                    const MAX_GATE_LINES: usize = 120;
+                    for line in gate.lines.iter().take(MAX_GATE_LINES) {
                         lines.push(
                             text(format!("比对: {line}"))
                                 .size(11)
                                 .font(pid_fonts::mono(theme, font::Weight::Normal))
                                 .color(ColorToken::TextPrimary.color(theme))
                                 .into(),
+                        );
+                    }
+                    if gate.lines.len() > MAX_GATE_LINES {
+                        lines.push(
+                            text(format!(
+                                "已显示前 {MAX_GATE_LINES} 条（共 {} 条），完整比对明细见清单文件。",
+                                gate.lines.len()
+                            ))
+                            .size(11)
+                            .font(pid_fonts::ui(theme, font::Weight::Normal))
+                            .color(ColorToken::TextMuted.color(theme))
+                            .into(),
                         );
                     }
                 }
@@ -1017,7 +1142,7 @@ pub(crate) fn status_banners<'a>(
                 )
                 .into(),
             );
-        } else if let Some(last) = app.pid_backup_export.last_outcome() {
+        } else if let Some(last) = app.pid_backup_export.last_outcome_for(&index.backup_root) {
             bars.push(publish_outcome_banner(app, last, theme));
         }
 
@@ -1091,7 +1216,7 @@ pub(crate) fn status_banners<'a>(
                 )
                 .into(),
             );
-        } else if let Some(last) = app.pid_backup_pdf.last_outcome() {
+        } else if let Some(last) = app.pid_backup_pdf.last_outcome_for(&index.backup_root) {
             bars.push(pdf_outcome_banner(app, index, last, theme));
         }
     }
@@ -1119,25 +1244,7 @@ pub(crate) fn dialog_overlay<'a>(
 
     let card: Element<'a, AppMessage> = match dialog {
         ExportDialog::Publish(state) => {
-            let out_trim = state.out_dir.trim();
-            let plant_trim = state.plant.trim();
-            let ref_opt = (!state.reference_dir.trim().is_empty())
-                .then(|| PathBuf::from(state.reference_dir.trim()));
-
-            #[cfg(not(target_arch = "wasm32"))]
-            let validation: Result<(), String> = if out_trim.is_empty() {
-                Err("请填写或选择输出目录（必须是不存在或空的目录）。".to_owned())
-            } else if plant_trim.is_empty() {
-                Err("工厂名不能为空（默认 P01）。".to_owned())
-            } else {
-                app.check_pid_backup_export_ui(PathBuf::from(out_trim), plant_trim, ref_opt)
-                    .map(|_| ())
-                    .map_err(|err| format!("[{}] {err}", err.code()))
-            };
-            #[cfg(target_arch = "wasm32")]
-            let validation: Result<(), String> = Err("网页端不可用".to_owned());
-
-            let can_submit = validation.is_ok();
+            let can_submit = state.validation.is_ok();
             let mut body = column![
                 text("导出 publish 文件")
                     .size(16)
@@ -1227,10 +1334,10 @@ pub(crate) fn dialog_overlay<'a>(
                     .font(pid_fonts::ui(theme, font::Weight::Normal))
                     .color(ColorToken::TextMuted.color(theme)),
             );
-            if let Err(err_msg) = validation {
+            if let Err(err_msg) = &state.validation {
                 body = body.push(PosReport::owned(
                     part_id("pub_error"),
-                    text(err_msg)
+                    text(err_msg.as_str())
                         .size(12)
                         .font(pid_fonts::ui(theme, font::Weight::Medium))
                         .color(ColorToken::Danger.color(theme)),
@@ -1276,25 +1383,9 @@ pub(crate) fn dialog_overlay<'a>(
             .into()
         }
         ExportDialog::Pdf(state) => {
-            let out_trim = state.out_dir.trim();
             let last_pub = resolved_last_publish_dir(app);
-
-            #[cfg(not(target_arch = "wasm32"))]
-            let check_res = if out_trim.is_empty() {
-                Err("请填写或选择 PDF 输出目录。".to_owned())
-            } else {
-                app.check_pid_backup_pdf_ui(PathBuf::from(out_trim))
-                    .map_err(|err| format!("[{}] {err}", err.code()))
-            };
-            #[cfg(target_arch = "wasm32")]
-            let check_res: Result<pid_backup_pdf::PdfRequest, String> =
-                Err("网页端不可用".to_owned());
-
-            let can_submit = check_res.is_ok();
-            let pair_ready = check_res
-                .as_ref()
-                .ok()
-                .is_some_and(|req| directory_holds_publish_files(&req.out_dir));
+            let can_submit = state.validation.is_ok();
+            let pair_ready = state.pair_ready;
 
             let mut body = column![
                 text("导出 PDF")
@@ -1361,10 +1452,10 @@ pub(crate) fn dialog_overlay<'a>(
                         .color(ColorToken::Success.color(theme)),
                 ));
             }
-            if let Err(err_msg) = check_res {
+            if let Err(err_msg) = &state.validation {
                 body = body.push(PosReport::owned(
                     part_id("pdf_error"),
-                    text(err_msg)
+                    text(err_msg.as_str())
                         .size(12)
                         .font(pid_fonts::ui(theme, font::Weight::Medium))
                         .color(ColorToken::Danger.color(theme)),

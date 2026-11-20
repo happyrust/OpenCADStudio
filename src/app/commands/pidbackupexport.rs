@@ -61,6 +61,8 @@ pub(in crate::app) struct BackupExport {
     /// What the last export that ran came to; `None` before the first. One
     /// that was refused before it started is not among them.
     last: Option<Result<ExportOutcome, ExportError>>,
+    /// `backup_root` of the package that produced `last`.
+    last_backup_root: Option<PathBuf>,
     /// The export itself: [`pid_backup_export::export_in_background`], or
     /// what a test puts in its place.
     export: Export,
@@ -81,6 +83,7 @@ impl Default for BackupExport {
         Self {
             running: None,
             last: None,
+            last_backup_root: None,
             export: Box::new(|request| Box::pin(pid_backup_export::export_in_background(request))),
         }
     }
@@ -108,6 +111,16 @@ impl BackupExport {
     /// Structured outcome of the most recent export that ran to completion.
     pub(in crate::app) fn last_outcome(&self) -> Option<&Result<ExportOutcome, ExportError>> {
         self.last.as_ref()
+    }
+
+    /// Structured outcome only when it belongs to `backup_root`.
+    pub(in crate::app) fn last_outcome_for(
+        &self,
+        backup_root: &std::path::Path,
+    ) -> Option<&Result<ExportOutcome, ExportError>> {
+        (self.last_backup_root.as_deref() == Some(backup_root))
+            .then_some(self.last.as_ref())
+            .flatten()
     }
 }
 
@@ -323,7 +336,17 @@ impl OpenCADStudio {
         &mut self,
         result: Result<ExportOutcome, ExportError>,
     ) {
-        self.pid_backup_export.running = None;
+        let prev_root = self
+            .pid_backup_export
+            .running
+            .take()
+            .map(|r| r.request.package_dir)
+            .or_else(|| {
+                self.pid_backup_browser
+                    .index()
+                    .map(|idx| idx.backup_root.clone())
+            });
+        self.pid_backup_export.last_backup_root = prev_root;
         say_result(&mut self.command_line, &result);
         self.pid_backup_export.last = Some(result);
     }

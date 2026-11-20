@@ -515,12 +515,28 @@ impl OpenCADStudio {
         // What a clearing freed, where restores are kept after a move, what
         // the cache holds when the command line asked.
         match pid_backup_browser::take_cache_outcome(&mut self.pid_backup_browser) {
-            Some(Ok(said)) => self
-                .command_line
-                .push_output(crate::tf!("PIDBACKUPOPEN: {}", said).as_ref()),
-            Some(Err(error)) => self
-                .command_line
-                .push_error(crate::tf!("PIDBACKUPOPEN: {}", error).as_ref()),
+            Some(Ok(said)) => {
+                if self.pid_shell.backup.pending_ui_cache_clear {
+                    self.pid_shell.backup.pending_ui_cache_clear = false;
+                    self.pid_shell.backup.notice = Some((
+                        crate::app::pid_shell::backup::NoticeTone::Info,
+                        "已清理非当前打开备份包的还原缓存。".to_owned(),
+                    ));
+                }
+                self.command_line
+                    .push_output(crate::tf!("PIDBACKUPOPEN: {}", said).as_ref());
+            }
+            Some(Err(error)) => {
+                if self.pid_shell.backup.pending_ui_cache_clear {
+                    self.pid_shell.backup.pending_ui_cache_clear = false;
+                    self.pid_shell.backup.notice = Some((
+                        crate::app::pid_shell::backup::NoticeTone::Warning,
+                        format!("清理还原缓存失败：{error}"),
+                    ));
+                }
+                self.command_line
+                    .push_error(crate::tf!("PIDBACKUPOPEN: {}", error).as_ref());
+            }
             None => {}
         }
         let mut auto_items_task = Task::none();

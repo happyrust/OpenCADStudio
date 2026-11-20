@@ -793,3 +793,158 @@ fn pid_backup_screen_ui6_corrupt_drawing_stays_on_backup_without_recovery_modal(
 
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+#[test]
+fn pid_backup_screen_review_switch_to_backup_loads_items_tabs_and_quoted_paths() {
+    let _one = crate::headless_ui_lock();
+    let scratch = temp_scratch("review-switch-quotes");
+    let zip_path = scratch.join("pkg.zip");
+    write_minimal_backup_zip(&zip_path);
+    let dummy_pid = scratch.join("D04.pid");
+    std::fs::write(&dummy_pid, b"not-a-valid-cfb").unwrap();
+
+    // 1. Load a package while standing on Editor, then switch to Backup via left nav:
+    //    selected drawing 0 must automatically start loading items (not sit at None!).
+    let mut app = app_on_backup();
+    assert!(app.show_pid_screen(PidScreen::Editor));
+    let load_task = app.on_pid_backup(pid_backup_browser::PidBackupMsg::Loaded(Ok(Arc::new(
+        BackupIndex {
+            source: scratch.clone(),
+            restored: scratch.clone(),
+            backup_root: scratch.clone(),
+            read_only: true,
+            drawings: vec![DrawingEntry {
+                name: "D04".to_owned(),
+                pid_path: Some(dummy_pid),
+                group_path: "SQPlant".to_owned(),
+                meta: vec![("NAME".to_owned(), "D04".to_owned())],
+            }],
+            ..BackupIndex::default()
+        },
+    ))));
+    app.drive_headless_task(load_task).unwrap();
+    assert!(
+        !app.pid_backup_browser.items.contains_key(&0),
+        "items are not loaded while still on Editor"
+    );
+
+    let editor_bounds = drawn(&app);
+    click_at(
+        &mut app,
+        editor_bounds[&chrome::nav_bounds_id(PidScreen::Backup)].center(),
+    );
+    assert_eq!(app.pid_shell.current(), Some(PidScreen::Backup));
+    assert!(
+        app.pid_backup_browser.items.contains_key(&0),
+        "switching to Backup screen must trigger items loading for selected drawing 0"
+    );
+
+    // 2. Detail-pane segmented tabs (`detail_tab:all`, `detail_tab:props`, `detail_tab:items`) work.
+    let bk_bounds = drawn(&app);
+    assert!(bk_bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}detail_tab:props")));
+    click_at(
+        &mut app,
+        bk_bounds[&format!("{SCREEN_BOUNDS_PREFIX}detail_tab:props")].center(),
+    );
+    let props_only = drawn(&app);
+    assert!(props_only.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}db_fields")));
+    assert!(!props_only.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}items_card")));
+
+    // 3. Windows Explorer "Copy as path" surrounding double-quotes are stripped cleanly.
+    let _ = app.on_pid_backup(pid_backup_browser::PidBackupMsg::Close);
+    let quoted = format!("  \"{}\"  ", zip_path.display());
+    let _ = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::SourceInputChanged(quoted),
+    )));
+    let open_task = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::OpenTypedSource,
+    )));
+    app.drive_headless_task(open_task).unwrap();
+    assert!(
+        matches!(app.pid_backup_browser.load, LoadState::Ready(_)),
+        "double-quoted backup path must strip quotes and load cleanly, err={:?}",
+        app.pid_backup_browser.error
+    );
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn pid_backup_screen_review_busy_blocks_package_switch_and_cache_error_surfaces() {
+    let _one = crate::headless_ui_lock();
+    let scratch = temp_scratch("review-busy-cache");
+    let pkg_dir = scratch.join("pkg");
+    std::fs::create_dir_all(&pkg_dir).unwrap();
+    std::fs::write(pkg_dir.join("Manifest.txt"), "[General]\r\nName=P1\r\n").unwrap();
+    let dummy_pid = pkg_dir.join("A01.pid");
+    std::fs::write(&dummy_pid, b"pid").unwrap();
+
+    let other_zip = scratch.join("other.zip");
+    write_minimal_backup_zip(&other_zip);
+
+    let mut app = app_on_backup();
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(BackupIndex {
+        source: pkg_dir.clone(),
+        restored: pkg_dir.clone(),
+        backup_root: pkg_dir.clone(),
+        read_only: true,
+        manifest: Some(ManifestSummary {
+            name: Some("P1".to_owned()),
+            ..ManifestSummary::default()
+        }),
+        drawings: vec![DrawingEntry {
+            name: "A01".to_owned(),
+            pid_path: Some(dummy_pid),
+            group_path: "P1".to_owned(),
+            meta: Vec::new(),
+        }],
+        ..BackupIndex::default()
+    }));
+
+    // 1. When cache clearing fails (e.g. cache root is a regular file, not a directory),
+    //    `backup.notice` must surface `NoticeTone::Warning` instead of claiming success!
+    let file_not_dir = scratch.join("cache-is-a-file");
+    std::fs::write(&file_not_dir, b"blocking-file").unwrap();
+    let bad_sub = file_not_dir.join("nested");
+    pid_backup_browser::set_cache_folder(&mut app.pid_backup_browser, Some(bad_sub));
+    // Trigger two ClearCache messages back-to-back before driving the first so the second
+    // hits `state.cache.clearing == true` -> `Err("the restore cache is being cleared already")`.
+    let _first_clear = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::ClearCache,
+    )));
+    let _second_clear = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::ClearCache,
+    )));
+    assert!(
+        app.pid_shell
+            .backup
+            .notice
+            .as_ref()
+            .is_some_and(|(tone, _)| *tone == backup::NoticeTone::Warning),
+        "cache clear failure must report Warning instead of Info success, got {:?}",
+        app.pid_shell.backup.notice
+    );
+
+    // 2. While PDF export is running, switching package via OpenTypedSource or PickSource is blocked!
+    let _unpolled_pdf = app
+        .start_pid_backup_pdf_ui(scratch.join("pdf-out"))
+        .expect("start pdf");
+    assert!(app.pid_backup_pdf.is_running());
+
+    let _ = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::SourceInputChanged(other_zip.display().to_string()),
+    )));
+    let blocked_task = app.update(AppMessage::PidShell(Message::Backup(
+        BackupMessage::OpenTypedSource,
+    )));
+    app.drive_headless_task(blocked_task).unwrap();
+    assert_eq!(
+        app.pid_backup_browser
+            .index()
+            .map(|idx| idx.backup_root.as_path()),
+        Some(pkg_dir.as_path()),
+        "running export must block switching to another backup package"
+    );
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}

@@ -25,6 +25,16 @@ fn part_id(name: &str) -> String {
     format!("{SCREEN_BOUNDS_PREFIX}{name}")
 }
 
+/// Trim surrounding whitespace and Windows "Copy as path" double quotes.
+pub fn clean_path_input(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(trimmed)
+        .trim()
+}
+
 /// Injectable source picker for headless tests (`true` = folder, `false` = zip).
 /// Returning `Some(Some(path))` loads `path`; `Some(None)` cancels; `None`
 /// falls back to the native file dialog.
@@ -74,6 +84,8 @@ pub struct State {
     pub last_clicked_drawing: Option<(usize, iced::time::Instant)>,
     /// Inline notice from the last secondary action (e.g. cache clear).
     pub notice: Option<(NoticeTone, String)>,
+    /// True while a UI-initiated `ClearCache` awaits its outcome.
+    pub pending_ui_cache_clear: bool,
     /// Optional test double replacing the native source picker dialog.
     pub source_picker: Option<SourcePicker>,
     /// Inline backup source path input for clipboard/direct opening.
@@ -123,6 +135,8 @@ impl State {
         self.open_failures.clear();
         self.last_clicked_drawing = None;
         self.notice = None;
+        self.pending_ui_cache_clear = false;
+        self.export_ui.reset_for_loaded_package();
     }
 
     /// Whether `path` is currently being opened from the `backup` screen.
@@ -301,6 +315,36 @@ pub(in crate::app) fn ensure_drawing_items_loaded(
     )
 }
 
+/// Ensure the currently selected (or first filtered) drawing has started loading items.
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::app) fn ensure_selected_drawing_items_loaded(
+    app: &mut OpenCADStudio,
+) -> Task<AppMessage> {
+    let Some(index) = app.pid_backup_browser.index().cloned() else {
+        return Task::none();
+    };
+    let filtered = pid_backup_browser::filter_drawings(
+        &index,
+        app.pid_shell.backup.selected_group.as_deref(),
+        &app.pid_shell.backup.drawing_filter,
+    );
+    let chosen = app
+        .pid_shell
+        .backup
+        .selected_drawing
+        .filter(|i| filtered.contains(i))
+        .or_else(|| filtered.first().copied());
+    if app.pid_shell.backup.selected_drawing != chosen {
+        app.pid_shell.backup.selected_drawing = chosen;
+        app.pid_shell.backup.item_type_filter = None;
+        app.pid_shell.backup.expanded_items.clear();
+    }
+    match chosen {
+        Some(idx) => ensure_drawing_items_loaded(app, idx),
+        None => Task::none(),
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn open_drawing_at(app: &mut OpenCADStudio, drawing_idx: usize) -> Task<AppMessage> {
     let Some(path) = app
@@ -327,9 +371,16 @@ fn open_drawing_at(app: &mut OpenCADStudio, drawing_idx: usize) -> Task<AppMessa
 pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessage> {
     match message {
         Message::PickSource { folder } => {
-            app.pid_shell.backup.notice = None;
             #[cfg(not(target_arch = "wasm32"))]
             {
+                if app.pid_backup_export.is_running() || app.pid_backup_pdf.is_running() {
+                    app.pid_shell.backup.notice = Some((
+                        NoticeTone::Warning,
+                        "正在后台导出备份数据包，导出完成前暂不切换备份包。".to_owned(),
+                    ));
+                    return Task::none();
+                }
+                app.pid_shell.backup.notice = None;
                 if let Some(picker) = app.pid_shell.backup.source_picker.clone() {
                     match picker(folder) {
                         Some(Some(path)) => return app.load_pid_backup(path, None),
@@ -350,14 +401,21 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessa
             Task::none()
         }
         Message::OpenTypedSource => {
-            let trimmed = app.pid_shell.backup.source_input.trim().to_owned();
-            if trimmed.is_empty() {
+            let cleaned = clean_path_input(&app.pid_shell.backup.source_input).to_owned();
+            if cleaned.is_empty() {
                 return Task::none();
             }
-            app.pid_shell.backup.notice = None;
             #[cfg(not(target_arch = "wasm32"))]
             {
-                app.load_pid_backup(PathBuf::from(trimmed), None)
+                if app.pid_backup_export.is_running() || app.pid_backup_pdf.is_running() {
+                    app.pid_shell.backup.notice = Some((
+                        NoticeTone::Warning,
+                        "正在后台导出备份数据包，导出完成前暂不切换备份包。".to_owned(),
+                    ));
+                    return Task::none();
+                }
+                app.pid_shell.backup.notice = None;
+                app.load_pid_backup(PathBuf::from(cleaned), None)
             }
             #[cfg(target_arch = "wasm32")]
             {
@@ -368,19 +426,22 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessa
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let busy = app.pid_backup_export.is_running() || app.pid_backup_pdf.is_running();
-                let task = app.on_pid_backup(PidBackupMsg::Cache(CacheMsg::Clear));
                 if busy {
+                    app.pid_shell.backup.pending_ui_cache_clear = false;
+                    let task = app.on_pid_backup(PidBackupMsg::Cache(CacheMsg::Clear));
                     app.pid_shell.backup.notice = Some((
                         NoticeTone::Warning,
                         "正在后台导出备份数据包，导出完成前暂不清理还原缓存。".to_owned(),
                     ));
+                    task
                 } else {
+                    app.pid_shell.backup.pending_ui_cache_clear = true;
                     app.pid_shell.backup.notice = Some((
                         NoticeTone::Info,
-                        "已清理非当前打开备份包的还原缓存。".to_owned(),
+                        "正在清理非当前打开备份包的还原缓存…".to_owned(),
                     ));
+                    app.on_pid_backup(PidBackupMsg::Cache(CacheMsg::Clear))
                 }
-                task
             }
             #[cfg(target_arch = "wasm32")]
             Task::none()
@@ -398,52 +459,20 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessa
         }
         Message::SelectGroup(group) => {
             app.pid_shell.backup.selected_group = group;
-            if let Some(index) = app.pid_backup_browser.index().cloned() {
-                let filtered = pid_backup_browser::filter_drawings(
-                    &index,
-                    app.pid_shell.backup.selected_group.as_deref(),
-                    &app.pid_shell.backup.drawing_filter,
-                );
-                if app
-                    .pid_shell
-                    .backup
-                    .selected_drawing
-                    .is_none_or(|cur| !filtered.contains(&cur))
-                {
-                    app.pid_shell.backup.selected_drawing = filtered.first().copied();
-                    app.pid_shell.backup.item_type_filter = None;
-                    app.pid_shell.backup.expanded_items.clear();
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(first) = app.pid_shell.backup.selected_drawing {
-                        return ensure_drawing_items_loaded(app, first);
-                    }
-                }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ensure_selected_drawing_items_loaded(app)
             }
+            #[cfg(target_arch = "wasm32")]
             Task::none()
         }
         Message::DrawingFilterChanged(query) => {
             app.pid_shell.backup.drawing_filter = query;
-            if let Some(index) = app.pid_backup_browser.index().cloned() {
-                let filtered = pid_backup_browser::filter_drawings(
-                    &index,
-                    app.pid_shell.backup.selected_group.as_deref(),
-                    &app.pid_shell.backup.drawing_filter,
-                );
-                if app
-                    .pid_shell
-                    .backup
-                    .selected_drawing
-                    .is_none_or(|cur| !filtered.contains(&cur))
-                {
-                    app.pid_shell.backup.selected_drawing = filtered.first().copied();
-                    app.pid_shell.backup.item_type_filter = None;
-                    app.pid_shell.backup.expanded_items.clear();
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(first) = app.pid_shell.backup.selected_drawing {
-                        return ensure_drawing_items_loaded(app, first);
-                    }
-                }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ensure_selected_drawing_items_loaded(app)
             }
+            #[cfg(target_arch = "wasm32")]
             Task::none()
         }
         Message::SelectDrawing(idx) => {
@@ -613,9 +642,10 @@ fn search_field<'a>(
     placeholder: &'static str,
     value: &str,
     on_input: fn(String) -> Message,
+    on_submit: Option<Message>,
 ) -> Element<'a, AppMessage> {
     let radius = NumberToken::RadiusSm.value(theme);
-    let input = text_input(placeholder, value)
+    let mut input = text_input(placeholder, value)
         .size(12)
         .font(pid_fonts::ui(theme, font::Weight::Normal))
         .padding([7, 10])
@@ -632,11 +662,27 @@ fn search_field<'a>(
             ..text_input::default(general, status)
         })
         .on_input(move |val| send(on_input(val)));
+    if let Some(submit_msg) = on_submit {
+        input = input.on_submit(send(submit_msg));
+    }
     PosReport::owned(part_id(bounds_key), input).into()
 }
 
+fn export_busy(app: &OpenCADStudio) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        app.pid_backup_export.is_running() || app.pid_backup_pdf.is_running()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = app;
+        false
+    }
+}
+
 fn source_path_bar<'a>(app: &'a OpenCADStudio, theme: PidTheme) -> Element<'a, AppMessage> {
-    let can_open = !app.pid_shell.backup.source_input.trim().is_empty();
+    let can_open =
+        !clean_path_input(&app.pid_shell.backup.source_input).is_empty() && !export_busy(app);
     row![
         search_field(
             theme,
@@ -644,6 +690,7 @@ fn source_path_bar<'a>(app: &'a OpenCADStudio, theme: PidTheme) -> Element<'a, A
             "或直接输入 / 粘贴 .zip 或备份文件夹路径…",
             &app.pid_shell.backup.source_input,
             Message::SourceInputChanged,
+            can_open.then_some(Message::OpenTypedSource),
         ),
         action_button(
             theme,
@@ -828,6 +875,7 @@ fn package_header<'a>(
     ]
     .spacing(4);
 
+    let busy = export_busy(app);
     let actions = row![
         super::backup_export_ui::header_export_buttons(app, theme),
         action_button(
@@ -835,14 +883,14 @@ fn package_header<'a>(
             "switch_zip",
             "切换 zip",
             false,
-            Some(Message::PickSource { folder: false })
+            (!busy).then_some(Message::PickSource { folder: false })
         ),
         action_button(
             theme,
             "switch_folder",
             "切换文件夹",
             false,
-            Some(Message::PickSource { folder: true })
+            (!busy).then_some(Message::PickSource { folder: true })
         ),
         action_button(
             theme,
@@ -1160,6 +1208,7 @@ fn drawing_list_pane<'a>(
             "按图纸名称搜索过滤…",
             &app.pid_shell.backup.drawing_filter,
             Message::DrawingFilterChanged,
+            None,
         ),
         scrollable(column(list_rows).spacing(4)).height(Fill),
     ]
@@ -1440,6 +1489,7 @@ fn items_ready_body<'a>(
             "按位号、UID、类别或属性值过滤对象…",
             &app.pid_shell.backup.item_query,
             Message::ItemQueryChanged,
+            None,
         ),
         scrollable(column(item_rows).spacing(4)).height(Fill),
     ]
@@ -1479,6 +1529,16 @@ fn detail_pane<'a>(
         .as_ref()
         .and_then(|p| app.pid_shell.backup.open_failures.get(p));
 
+    let cur_tab = app.pid_shell.backup.detail_tab;
+    let tab_pill = |bounds_key: &'static str, label: &'static str, tab: DetailTab| {
+        action_button(
+            theme,
+            bounds_key,
+            label,
+            cur_tab == tab,
+            Some(Message::SelectDetailTab(tab)),
+        )
+    };
     let open_btn = action_button(
         theme,
         "open_drawing",
@@ -1504,8 +1564,12 @@ fn detail_pane<'a>(
         ]
         .spacing(2),
         Space::new().width(Fill),
+        tab_pill("detail_tab:all", "全部", DetailTab::All),
+        tab_pill("detail_tab:props", "仅属性", DetailTab::Properties),
+        tab_pill("detail_tab:items", "仅对象", DetailTab::Items),
         open_btn,
     ]
+    .spacing(6)
     .align_y(alignment::Vertical::Center),]
     .spacing(10);
 
@@ -1574,10 +1638,15 @@ fn detail_pane<'a>(
                 .style(move |_| card_style(theme, ColorToken::AmberSoft, ColorToken::Amber)),
             )
             .into(),
-            Some(ItemsState::Loading) | None => text("正在读取图内对象…")
+            Some(ItemsState::Loading) => text("正在读取图内对象…")
                 .size(12)
                 .font(pid_fonts::ui(theme, font::Weight::Normal))
                 .color(ColorToken::TextSecondary.color(theme))
+                .into(),
+            None => text("尚未读取图内对象")
+                .size(12)
+                .font(pid_fonts::ui(theme, font::Weight::Normal))
+                .color(ColorToken::TextMuted.color(theme))
                 .into(),
         }
     };

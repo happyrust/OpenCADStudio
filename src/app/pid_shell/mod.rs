@@ -585,7 +585,10 @@ impl OpenCADStudio {
     pub(in crate::app) fn on_pid_shell(&mut self, message: Message) -> Task<AppMessage> {
         match message {
             Message::Show(screen) => {
-                self.show_pid_screen(screen);
+                if self.show_pid_screen(screen) && screen == PidScreen::Backup {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    return backup::ensure_selected_drawing_items_loaded(self);
+                }
                 Task::none()
             }
             Message::Workbench(message) => workbench::update(self, message),
@@ -664,6 +667,10 @@ impl OpenCADStudio {
                             screen.title(),
                             screen.id()
                         ));
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if screen == PidScreen::Backup {
+                            return Some(backup::ensure_selected_drawing_items_loaded(self));
+                        }
                     }
                 }
                 None => self.command_line.push_error(&format!(
