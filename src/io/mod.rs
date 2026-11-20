@@ -47,6 +47,8 @@ pub mod pid_legend;
 pub mod pid_pdf;
 pub mod pid_pipes;
 pub mod pid_publish_check;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pid_sym_missing;
 pub mod pid_view_filter;
 
 /// XDATA application name under which a `.pid` import and P&ID legend
