@@ -76,7 +76,7 @@
 | 项 | 值 |
 |---|---|
 | 测量日期 | `2026-11-20` |
-| 基线提交 | `538ec0112`（`main`） |
+| 基线提交 | `538ec0112`（入库提交 `6fd58799c`） |
 | `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
 | 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
 | 新增 / 修改文件 | `assets/pid-publish-spec.json`、`src/io/mod.rs`、`src/io/pid_publish_check.rs`、`scripts/sppid/xml_spec_check.py`、`scripts/sppid/test_xml_spec_check.py` |
@@ -103,3 +103,22 @@
 | `scripts\fmt-newhunks.ps1` | — | `src/io/mod.rs` **`new=0`**，`src/io/pid_publish_check.rs` **`new=0`** | **0 格式偏差** |
 | `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
 | `python -m pytest scripts/sppid -q -p no:cacheprovider` | `167 passed` | **`171 passed`** | 全绿 |
+
+---
+
+## 4. L0-8（#118）：`pid-parse @ a85fa10` 源码能力核实与 Q1–Q13 决断（2026-11-20）
+
+| 项 | 值 |
+|---|---|
+| 核实日期 | `2026-11-20` |
+| 关联 Issue | [happyrust/pid-cad#118](https://github.com/happyrust/pid-cad/issues/118)（父单 [#106](https://github.com/happyrust/pid-cad/issues/106)） |
+| 对照解析库修订 | `pid-parse @ a85fa10285cc5379953495fa391f374981b9e587`（`Cargo.toml` 6 处 git 依赖） |
+| 详细核实文档 | `docs/plans/2026-11-20-phase1-dwg-to-smart-pid/03-parse-answers.md` |
+
+### 4.1 关键结论与架构决断摘要
+
+1. **Q1–Q2（`.pid` 写出与流覆盖台账）**：`PidWriter`（`src/writer/mod.rs:4-75`）支持基于 `PidPackage` 的 CFB 容器重打包（保根/子存储 CLSID，字典序重写目录并刷新时间戳）、摘要属性编辑与整流替换（`stream_replacements`），尚无高层新增图形/对象记录 API；`inspect::coverage`（`src/inspect/coverage.rs:10-420`）提供全部顶层流/存储的静态分级 + 动态降级报告。**决断：`L5-3` 按 CFB 流级字节一致验收；`L5-4` 在 `WritePlan::stream_replacements` 之上编码记录链与索引表。**
+2. **Q3（两跳连接）**：`0x0089` 属性行（`src/parsers/attribute_rows.rs:1-103`）与 `0x00FA` 依赖组（`src/publish/pid_load.rs:9-57`）已完全解码，53 张全厂图 `9,218 / 9,225` 个符号实例精确命中模型对象，直接解锁 `L0-9`（[#119](https://github.com/happyrust/pid-cad/issues/119)）。
+3. **Q4–Q8（publish XML 导出与目录）**：`src/publish/{model,xml_writer,pid_writer,catalog,codelist_values,pipeline,unit_values}.rs` 已提供纯内存 DTO 写出器、21 类接口规则、58 条类型分级链、三级确定性 `UUID v5` 管线合成与 `oleaut32` 15 位有效数字单位换算。**决断：`L4-1` 选定方案 A（统一模型映射至发布 DTO + 外层封装 UTF-8 BOM / CRLF / `0-3-6-3-2` 缩进以通过 `#111` 严格模式门禁）。**
+4. **Q9–Q13（索引同步、摘要、流差异、符号缓存与受控差分）**：已列出新增顶层对象的 5 步同步清单（持久 ID `(segment << 13) | index`、记录链与 `record_count`、`0x0081 JSheetLayer` `+12` 对象计数、`/PSMspacemap` 反向入边槽、嵌套 `/JSitesList`）；确认常规生产图不带 `/TaggedTxtData/Drawing` 而将图号存于 `P&IDAttributes.DrawingNo`；确认 `pid_inspect --controlled-diff-dir --json` 可直接用于 `L5-2` / `LX-3` 受控样本差分。
+
