@@ -1,4 +1,4 @@
-//! Export dialogs, live running banners, and structured outcome summaries for
+﻿//! Export dialogs, live running banners, and structured outcome summaries for
 //! the `backup` screen (`UI-7` and `UI-8`, `SPEC-sppid-export-ui.md`).
 
 use std::path::{Path, PathBuf};
@@ -360,7 +360,6 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: ExportUiMessage) -> Task<
 }
 
 /// Global status-bar items added to `chrome::status_parts` while exports run (`U1`).
-#[allow(dead_code)]
 pub(crate) fn status_bar_parts(
     app: &OpenCADStudio,
     screen: PidScreen,
@@ -528,7 +527,6 @@ pub(crate) fn header_export_buttons<'a>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
 fn publish_outcome_banner<'a>(
     app: &'a OpenCADStudio,
     result: &'a Result<ExportOutcome, ExportError>,
@@ -774,7 +772,6 @@ fn publish_outcome_banner<'a>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
 fn pdf_outcome_banner<'a>(
     app: &'a OpenCADStudio,
     index: &'a BackupIndex,
@@ -980,7 +977,6 @@ fn pdf_outcome_banner<'a>(
 }
 
 /// Running banners + latest outcome summary bars rendered below the package header (`U1`, `U3`).
-#[allow(dead_code)]
 pub(crate) fn status_banners<'a>(
     app: &'a OpenCADStudio,
     index: &'a BackupIndex,

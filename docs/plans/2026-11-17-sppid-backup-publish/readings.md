@@ -5438,6 +5438,21 @@ SQL Server 包：
   - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
   - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
 
+---
+
+## 39. UI-8：导出进行中两处联动提示与双结果摘要条/展开详情（2026-11-20）
+
+- **起点与编译器**：`main @ f3a9b7778`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui8\`。
+- **改动**：
+  1. `src/app/pid_shell/backup.rs` & `backup_export_ui.rs`：在包概要下方挂载 `status_banners`（publish 跳秒进行中与 PDF `done / total` 进度条，以及全成功、带未写出/缺符号/参考比对 `GateSummary` 四格统计与逐图明细/SQL Server 提示、整次报错带 `SPPID_*` 错误码三种结果形态与可展开抽屉、可注入 `PathOpener` 打开目录与清单动作）；另在未打开/出错态提供内联路径输入直开条。
+  2. `src/app/pid_shell/chrome.rs`：在 `status_parts` 接入 `backup_export_ui::status_bar_parts`，非 `Backup` 画面显示简短运行提示并支持点击切回 `Backup`；`src/rest_openapi.json` 保持零改动（U2）。
+- **先红后绿**：2 条 `pid_backup_export_ui_ui8_*` 先红 0 过 2 败（`red.txt`），实现后 `pid_backup_export_ui` 5/5、`pid_shell_chrome` 11/11 全过（`green.txt`、`chrome_green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7142 条（7086 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -5483,3 +5498,4 @@ SQL Server 包：
 | 2026-11-20 | 加 §36（检查点 C 第 2 段 `UI-5` 浏览画面三栏主体）：装置组树中文映射、搜索清单、数据库属性与图内对象过滤详情，2 条快测试先红后绿及全套门禁读数 |
 | 2026-11-20 | 加 §37（检查点 C 第 2 段 `UI-6` 从 `backup` 开图与切屏保持）：按钮/双击开图切编辑器、复用已开标签页、坏图按 S4 留屏不弹恢复窗，2 条快测试先红后绿及全套门禁读数 |
 | 2026-11-20 | 加 §38（检查点 C 第 3 段 `UI-7` publish 与 PDF 配置对话框及即时预检）：按钮禁用预判、两个对话框即时预检、上次 publish 目录一键配对，3 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §39（检查点 C 第 3 段 `UI-8` 进行中两处联动与双结果视图）：画面内进度条+外壳底栏切回联动、三种结果摘要与展开抽屉、打开目录动作，2 条快测试先红后绿及全套门禁读数 |

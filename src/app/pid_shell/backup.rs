@@ -76,6 +76,8 @@ pub struct State {
     pub notice: Option<(NoticeTone, String)>,
     /// Optional test double replacing the native source picker dialog.
     pub source_picker: Option<SourcePicker>,
+    /// Inline backup source path input for clipboard/direct opening.
+    pub source_input: String,
     /// Export configuration dialogs and outcome drawers (`UI-7`, `UI-8`).
     pub export_ui: super::backup_export_ui::ExportUiState,
 }
@@ -157,6 +159,10 @@ impl State {
 pub enum Message {
     /// Pick and open a `.zip` (`false`) or folder (`true`) backup source.
     PickSource { folder: bool },
+    /// Update the inline `.zip` / folder path input.
+    SourceInputChanged(String),
+    /// Open the `.zip` or folder typed into `source_input`.
+    OpenTypedSource,
     /// Clear restored backup caches except the currently open one (S3).
     ClearCache,
     /// Switch to the editor and reveal the classic docked backup panel (S3).
@@ -336,6 +342,25 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessa
             #[cfg(target_arch = "wasm32")]
             {
                 let _ = folder;
+                Task::none()
+            }
+        }
+        Message::SourceInputChanged(val) => {
+            app.pid_shell.backup.source_input = val;
+            Task::none()
+        }
+        Message::OpenTypedSource => {
+            let trimmed = app.pid_shell.backup.source_input.trim().to_owned();
+            if trimmed.is_empty() {
+                return Task::none();
+            }
+            app.pid_shell.backup.notice = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                app.load_pid_backup(PathBuf::from(trimmed), None)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
                 Task::none()
             }
         }
@@ -610,7 +635,30 @@ fn search_field<'a>(
     PosReport::owned(part_id(bounds_key), input).into()
 }
 
-fn empty_view<'a>(theme: PidTheme) -> Element<'a, AppMessage> {
+fn source_path_bar<'a>(app: &'a OpenCADStudio, theme: PidTheme) -> Element<'a, AppMessage> {
+    let can_open = !app.pid_shell.backup.source_input.trim().is_empty();
+    row![
+        search_field(
+            theme,
+            "source_path_input",
+            "或直接输入 / 粘贴 .zip 或备份文件夹路径…",
+            &app.pid_shell.backup.source_input,
+            Message::SourceInputChanged,
+        ),
+        action_button(
+            theme,
+            "open_source_path",
+            "打开路径",
+            false,
+            can_open.then_some(Message::OpenTypedSource),
+        ),
+    ]
+    .spacing(8)
+    .align_y(alignment::Vertical::Center)
+    .into()
+}
+
+fn empty_view<'a>(app: &'a OpenCADStudio, theme: PidTheme) -> Element<'a, AppMessage> {
     let card = container(
         column![
             text("打开 SmartPlant P&ID 备份数据包")
@@ -638,6 +686,7 @@ fn empty_view<'a>(theme: PidTheme) -> Element<'a, AppMessage> {
                 ),
             ]
             .spacing(10),
+            source_path_bar(app, theme),
         ]
         .spacing(14),
     )
@@ -743,6 +792,7 @@ fn error_view<'a>(
         ]
         .spacing(10),
     );
+    body = body.push(source_path_bar(app, theme));
 
     let card = container(body)
         .width(600)
@@ -1569,6 +1619,9 @@ fn ready_view<'a>(
     theme: PidTheme,
 ) -> Element<'a, AppMessage> {
     let mut root = column![package_header(app, index, theme)];
+    if let Some(banners) = super::backup_export_ui::status_banners(app, index, theme) {
+        root = root.push(banners);
+    }
     if let Some((tone, msg)) = &app.pid_shell.backup.notice {
         let (bg, fg) = match tone {
             NoticeTone::Info => (ColorToken::AccentSoft, ColorToken::TextPrimary),
@@ -1629,7 +1682,7 @@ pub(crate) fn view(app: &OpenCADStudio) -> Element<'_, AppMessage> {
     let body = match &app.pid_backup_browser.load {
         LoadState::Idle => match app.pid_backup_browser.error.as_deref() {
             Some(reason) => error_view(app, reason, theme),
-            None => empty_view(theme),
+            None => empty_view(app, theme),
         },
         LoadState::Loading(source) => loading_view(app, source, theme),
         LoadState::Ready(index) => ready_view(app, index, theme),

@@ -166,14 +166,15 @@
   2. **双结果摘要条与展开详情（U3）**：publish 与 PDF 完成后各自显示摘要条 +「查看详情」「打开输出目录」「打开清单文件」按钮（经可注入打开目录替身）；支持①全成功无提醒、②警示完成（展开可滚动查看 `unwritten`、`noted`、`other_problems`、`warnings`、PDF 缺符号图纸与明细、`GateSummary` 四格计数与逐图比对 `lines`、SQL Server 提示）、③整次报错（错误码 + 原因 +「重新配置导出」）三种形态；
   3. 验证 publish 与 PDF 同时在后台跑（到不同目录）互不阻塞，且 `src/rest_openapi.json` 与 MCP 摘要保持不变（U2）。
 - **验收**：
-  - [ ] 替身卡住 publish 与 PDF 导出时，`backup` 画面同时显示两条独立进行中进度，切到 `Editor` 时外壳底部状态栏右侧显示全局简短提示且点击能切回 `Backup`，画布操作不锁死。
-  - [ ] 三种结果形态（全成功、带未写出/缺符号/参考比对四项统计与明细/SQL Server 提示、整次失败带 `SPPID_*` 错误码）在 `iced_test` 下逐一核对通过。
-  - [ ] 点击「打开输出目录」「打开清单文件」把准确路径传给注入的打开动作替身。
-  - [ ] 亮色与暗色双主题均走 `pid_tokens`，`src/rest_openapi.json` 零改动。
+  - [x] 替身卡住 publish 与 PDF 导出时，`backup` 画面同时显示两条独立进行中进度，切到 `Editor` 时外壳底部状态栏右侧显示全局简短提示且点击能切回 `Backup`，画布操作不锁死。
+  - [x] 三种结果形态（全成功、带未写出/缺符号/参考比对四项统计与明细/SQL Server 提示、整次失败带 `SPPID_*` 错误码）在 `iced_test` 下逐一核对通过。
+  - [x] 点击「打开输出目录」「打开清单文件」把准确路径传给注入的打开动作替身。
+  - [x] 亮色与暗色双主题均走 `pid_tokens`，`src/rest_openapi.json` 零改动。
 - **验证**：`cargo test --offline --locked --lib pid_backup_export_ui`；`cargo test --offline --locked --lib pid_shell_chrome`
 - **依赖**：UI-7（开工前先检查并对齐 `collab-off2` 对 `chrome.rs` / `pid_shell_chrome.rs` 的改动，避免冲突）
 - **文件**：`src/app/pid_shell/backup_export_ui.rs`、`src/app/pid_shell/backup.rs`、`src/app/pid_shell/chrome.rs`、`src/app/pid_shell/pid_shell_chrome.rs`
 - **规模**：M
+- **做完**（2026-11-20）：在 `backup.rs` 包概要下方挂载 `status_banners`（publish 跳秒进行中、PDF `done / total` 进度条与跳秒，以及全成、带未写出/缺符号/参考比对 `GateSummary` 四格统计与明细/SQL Server 提示、整次报错带 `SPPID_*` 错误码三种结果摘要条与展开滚动抽屉、可注入 `PathOpener` 打开目录/清单动作，另补内联路径输入直开条），在 `chrome.rs` 的 `status_parts` 接入全局简短运行提示与一键切回 `Backup`；2 条 `pid_backup_export_ui_ui8_*` 先红后绿（`pid_backup_export_ui` 5/5、`pid_shell_chrome` 11/11；全库 7142 条：7086 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试；clippy `656` / `1051` 零新增；`fmt-newhunks` 新增 0；`arch_check` 0 变化；`src/rest_openapi.json` 0 变化）。读数见 `readings.md` §39，证据在 `D:\scratch\ocs-sppid\2026-11-20-ui8\`。
 
 ### UI-9 【验收】检查点 C 真实窗口闭环与双主题对照验收
 

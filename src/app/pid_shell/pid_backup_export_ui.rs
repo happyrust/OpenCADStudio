@@ -2,7 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use iced::{Point, Rectangle, Size};
 
@@ -55,7 +56,6 @@ fn drawn(app: &OpenCADStudio) -> BTreeMap<String, Rectangle> {
     crate::ui::wrap_bar::recorded_bounds().into_iter().collect()
 }
 
-#[allow(dead_code)]
 fn says(app: &OpenCADStudio, needle: &str) -> bool {
     use iced_test::core::widget;
     use iced_test::runtime::user_interface::{Cache, UserInterface};
@@ -352,6 +352,255 @@ fn pid_backup_export_ui_ui7_pdf_dialog_blocks_conflicts_and_pairs_with_last_publ
     );
     assert!(app.pid_backup_pdf.is_running());
     assert!(app.pid_shell.backup.export_ui.dialog.is_none());
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn pid_backup_export_ui_ui8_running_exports_show_dual_banners_and_chrome_status_switch() {
+    let _one = crate::headless_ui_lock();
+    let scratch = temp_scratch("ui8-running");
+    let pkg = scratch.join("pkg");
+    std::fs::create_dir_all(&pkg).unwrap();
+    std::fs::write(pkg.join("Manifest.txt"), "[General]\r\nName=P1\r\n").unwrap();
+    let pid_file = pkg.join("A01.pid");
+    std::fs::write(&pid_file, b"pid").unwrap();
+
+    let mut app = app_on_backup();
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(BackupIndex {
+        source: pkg.clone(),
+        restored: pkg.clone(),
+        backup_root: pkg.clone(),
+        read_only: true,
+        manifest: Some(ManifestSummary {
+            name: Some("P1".to_owned()),
+            ..ManifestSummary::default()
+        }),
+        drawings: vec![DrawingEntry {
+            name: "A01".to_owned(),
+            pid_path: Some(pid_file),
+            group_path: "P1".to_owned(),
+            meta: Vec::new(),
+        }],
+        ..BackupIndex::default()
+    }));
+
+    // Start both exports concurrently into separate folders without polling their futures.
+    let _pub_task = app
+        .start_pid_backup_export_ui(scratch.join("out-pub"), "P01".to_owned(), None)
+        .expect("start publish");
+    let _pdf_task = app
+        .start_pid_backup_pdf_ui(scratch.join("out-pdf"))
+        .expect("start pdf");
+    assert!(app.pid_backup_export.is_running());
+    assert!(app.pid_backup_pdf.is_running());
+
+    // 1. Both running banners appear simultaneously inside Backup screen.
+    let bounds = drawn(&app);
+    assert!(bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}running_publish")));
+    assert!(bounds.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}running_pdf")));
+
+    // 2. Switch to Editor -> bottom chrome status bar shows both running indicators and clicks back!
+    assert!(app.show_pid_screen(PidScreen::Editor));
+    let status = chrome::status_text(&app, PidScreen::Editor);
+    assert!(status.contains("正在导出 publish"), "{status}");
+    assert!(status.contains("正在导出 PDF 0/1"), "{status}");
+
+    let ed_bounds = drawn(&app);
+    assert!(ed_bounds.contains_key("PID_CHROME:status:backup_export"));
+    assert!(ed_bounds.contains_key("PID_CHROME:status:backup_pdf"));
+    click_at(&mut app, ed_bounds["PID_CHROME:status:backup_pdf"].center());
+    assert_eq!(app.pid_shell.current(), Some(PidScreen::Backup));
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+#[test]
+fn pid_backup_export_ui_ui8_three_outcome_forms_details_and_path_opener_work_in_both_themes() {
+    use crate::io::pid_backup_export::{DrawingNote, ExportError, ExportOutcome, GateSummary};
+    use crate::io::pid_backup_pdf::{PdfError, PdfOutcome, PdfPage};
+    use crate::ui::style::pid_tokens::PidTheme;
+
+    let _one = crate::headless_ui_lock();
+    let src = include_str!("backup_export_ui.rs");
+    for forbidden in ["from_rgb", "from_rgba", "Color::from", "0x"] {
+        assert!(
+            !src.contains(forbidden),
+            "backup_export_ui.rs must use pid_tokens instead of literal `{forbidden}`"
+        );
+    }
+
+    let scratch = temp_scratch("ui8-outcomes");
+    let out_dir = scratch.join("deliver");
+    let pub_index = out_dir.join("_Index.json");
+    let pdf_index = out_dir.join("_PdfIndex.json");
+
+    let mut app = app_on_backup();
+    app.pid_backup_browser.load = LoadState::Ready(Arc::new(BackupIndex {
+        source: scratch.clone(),
+        restored: scratch.clone(),
+        backup_root: scratch.clone(),
+        read_only: true,
+        manifest: Some(ManifestSummary {
+            name: Some("P1".to_owned()),
+            ..ManifestSummary::default()
+        }),
+        files: vec![BackupFile {
+            name: "Export.dmp".to_owned(),
+            kind: FileKind::ExportDump,
+            format: "SQL Server MTF".to_owned(),
+            ..BackupFile::default()
+        }],
+        ..BackupIndex::default()
+    }));
+
+    let opened_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+    let opened_clone = opened_paths.clone();
+    app.pid_shell.backup.export_ui.path_opener = Some(Arc::new(move |path| {
+        opened_clone.lock().unwrap().push(path.to_path_buf());
+    }));
+
+    // Form 1: Clean success + open directory / open index buttons.
+    app.on_pid_backup_export_finished(Ok(ExportOutcome {
+        written: 7,
+        failed: 0,
+        pid_entries: 7,
+        templates: 0,
+        unmatched: Vec::new(),
+        without_drawing_no: 0,
+        unwritten: Vec::new(),
+        noted: Vec::new(),
+        problems: Vec::new(),
+        other_problems: Vec::new(),
+        warnings: Vec::new(),
+        gate: None,
+        export_kind: "OracleExp".to_owned(),
+        files: 22,
+        index_path: pub_index.clone(),
+        elapsed: Duration::from_millis(4200),
+    }));
+    app.on_pid_backup_pdf_finished(Ok(PdfOutcome {
+        pages: vec![PdfPage {
+            name: "A01".to_owned(),
+            pdf: Some("A01.pdf".to_owned()),
+            ..PdfPage::default()
+        }],
+        written: 7,
+        failed: 0,
+        without_file: 0,
+        index_path: pdf_index.clone(),
+        elapsed: Duration::from_millis(8100),
+    }));
+
+    let b1 = drawn(&app);
+    assert!(b1.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pub_outcome_ok")));
+    assert!(b1.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pdf_outcome_ok")));
+    for key in [
+        "pub_open_dir",
+        "pub_open_index",
+        "pdf_open_dir",
+        "pdf_open_index",
+    ] {
+        let cur = drawn(&app);
+        click_at(
+            &mut app,
+            cur[&format!("{SCREEN_BOUNDS_PREFIX}{key}")].center(),
+        );
+    }
+    assert_eq!(
+        *opened_paths.lock().unwrap(),
+        vec![
+            out_dir.clone(),
+            pub_index.clone(),
+            out_dir.clone(),
+            pdf_index.clone()
+        ]
+    );
+
+    // Form 2: Warnings, unwritten drawings, GateSummary 4 counts + lines, missing symbols, SQL Server.
+    app.on_pid_backup_export_finished(Ok(ExportOutcome {
+        written: 52,
+        failed: 1,
+        pid_entries: 53,
+        templates: 0,
+        unmatched: Vec::new(),
+        without_drawing_no: 2,
+        unwritten: vec![DrawingNote {
+            name: "D03".to_owned(),
+            notes: vec!["corrupt stream".to_owned()],
+        }],
+        noted: vec![DrawingNote {
+            name: "D04".to_owned(),
+            notes: vec!["fallback number".to_owned()],
+        }],
+        problems: Vec::new(),
+        other_problems: vec!["archive warning".to_owned()],
+        warnings: vec!["minor warning".to_owned()],
+        gate: Some(GateSummary {
+            clean: 15,
+            dirty: 32,
+            revision_mismatch: 0,
+            unpaired: 6,
+            lines: vec!["A01: 2 attribute diffs".to_owned()],
+        }),
+        export_kind: "SqlServerMtf".to_owned(),
+        files: 160,
+        index_path: pub_index,
+        elapsed: Duration::from_secs(28),
+    }));
+    app.on_pid_backup_pdf_finished(Ok(PdfOutcome {
+        pages: vec![
+            PdfPage {
+                name: "A01".to_owned(),
+                pdf: Some("A01.pdf".to_owned()),
+                missing_symbols: vec!["ValveA.sym".to_owned(), "PumpB.sym".to_owned()],
+                ..PdfPage::default()
+            },
+            PdfPage {
+                name: "D03".to_owned(),
+                pdf: None,
+                error: Some("cannot read OLE".to_owned()),
+                ..PdfPage::default()
+            },
+        ],
+        written: 52,
+        failed: 1,
+        without_file: 0,
+        index_path: pdf_index,
+        elapsed: Duration::from_secs(52),
+    }));
+
+    let b2 = drawn(&app);
+    click_at(
+        &mut app,
+        b2[&format!("{SCREEN_BOUNDS_PREFIX}pub_toggle_details")].center(),
+    );
+    let b2 = drawn(&app);
+    click_at(
+        &mut app,
+        b2[&format!("{SCREEN_BOUNDS_PREFIX}pdf_toggle_details")].center(),
+    );
+    let b2_open = drawn(&app);
+    assert!(b2_open.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pub_details")));
+    assert!(b2_open.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pdf_details")));
+    assert!(says(&app, "未写出 [D03]: corrupt stream"));
+    assert!(says(&app, "比对: A01: 2 attribute diffs"));
+    assert!(says(&app, "缺符号 [A01]: ValveA.sym, PumpB.sym"));
+
+    // Form 3: Whole-run failure with SPPID_* error codes in both Light and Dark themes.
+    app.on_pid_backup_export_finished(Err(ExportError::Unsupported("bad dump".to_owned())));
+    app.on_pid_backup_pdf_finished(Err(PdfError::Failed("disk full".to_owned())));
+    for theme in [PidTheme::Light, PidTheme::Dark] {
+        app.pid_shell.theme = theme;
+        let b3 = drawn(&app);
+        assert!(b3.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pub_outcome_err")));
+        assert!(b3.contains_key(&format!("{SCREEN_BOUNDS_PREFIX}pdf_outcome_err")));
+        assert!(says(
+            &app,
+            "publish 文件导出失败 [SPPID_EXPORT_UNSUPPORTED]"
+        ));
+        assert!(says(&app, "PDF 导出失败 [SPPID_PDF_FAILED]"));
+    }
 
     let _ = std::fs::remove_dir_all(&scratch);
 }
