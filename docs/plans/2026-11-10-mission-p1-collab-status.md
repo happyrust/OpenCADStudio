@@ -1463,3 +1463,25 @@ README 第 5.3 节写明要裁决的 6 行（7 条），用户按建议定了：
 其余 22 行是做法上的出入，按记下的做法认可，契约字面不改（其中 `VAL-INFRA-001`、`014` 2026-11-17 已定，`VAL-CLI-011`、`013` 后来修了，`VAL-INFRA-008`、`012` 不用裁决）。三项后续任务记在 `docs/plans/2026-11-16-pid-dev-spec/plan.md` §10 阶段 4 提纲的第 6 条。
 
 推送：定为先把本地 `main` 合进这条分支（`main` 上另一条线当天多了 13 个提交，是检查点 C 的界面；试合并没有冲突，那边没碰协同、设计稿和依赖），在合并后的提交上重跑门禁，过了再推到 `fork/main`。合并后的复验记在 §19.7。
+
+### 19.7 合并 `main` 之后的复验（2026-11-20）
+
+合并提交 `3b047c7af`：把本地 `main`（`6377fe233`）合进这条分支（`27a230189`），没有冲突。`fork/main`（`144d2c643`）和 `main` 都是它的祖先，推送是快进。门禁和端到端在这个提交上接着跑完，开跑时工作区干净；输出在 `D:\scratch\ocs-sppid\2026-11-20-cpa\merged`，`status.txt` 记着各步的退出码和用时。
+
+| 项 | 结果 | 输出 |
+|---|---|---|
+| 主程序库 | 7266 条：7207 通过、55 默认不跑、4 失败（见下）；连重编测试程序 256 秒 | `unit-lib.txt` |
+| 协同两个 crate | `ocs_collab` 98 条，`ocs_collab_server` 的库 187 条、`main.rs` 21 条，全过，与合并前相同 | `unit-collab.txt` |
+| clippy | `--lib` 656 条（上限 656），加 `--profile test` 1051 条（上限 1051） | `clippy-lib.txt`、`clippy-test.txt` |
+| 文档检查 | 590 项 589 过，没过的是合并前那一项（§19.5 已知问题 1） | `docs-check.txt` |
+| 端到端 | `scripts\collab-e2e\run19.ps1 -EvidenceDir <证据目录>\e2e -PortShift 300 -Label cpa`：46 个场景加收尾的整轮检查，830 项全过，各组的场景数和项数与 §19.2 相同；`t03_vanish_retry` 第一次照旧按设计以 75 收场、重跑一次，第一次不计入。残留进程 0，桌面记录 50 次都是「没变」，跑完工作区仍干净，用时 28 分钟。计时：`VAL-DRAW-030` 中位数 50.9 毫秒（上限 100）；`VAL-DRAW-032` 图里有了 200 个符号之后 60.0 毫秒，比前一组多 17.8%（增长的上限 100%）；`VAL-DRAW-031` 中位数 664.6 毫秒（上限 3000）；`VAL-SEM-014` 中位数 24 毫秒（上限 3000）；不判的一个接一个发 114.5 毫秒。机器上照旧另有 4 个别的实例 | `build-gui.txt`、`build-server.txt`；`e2e\summary-cpa-20261120-220023.txt` |
+
+主程序库失败的 4 条，合并前是 2 条：
+
+- 2 条是 §19.5 已知问题 1 的设计稿比对，同前。
+- `app::pid_shell::pid_shell_startup::the_screens_are_the_ones_the_design_navigates_to`，也是比对设计稿：`main` 加了「备份数据包」一屏，设计稿按约定不进提交，仓库里的设计稿没有这一屏。那条线的工作树里有没提交的设计稿，所以在那里过（`docs/plans/2026-11-17-sppid-backup-publish/todo-checkpoint-c.md`）；`main` 的干净检出上一样不过，与协同无关，归那条线补设计稿时一起修。
+- `app::pid_shell::pid_shell_chrome::what_the_editor_shows_is_drawn_in_the_frame_where_a_window_of_its_own_draws_it`，比对画面像素，「no drawing」一步差 26640 个像素。整套并行跑时偶发，那条线记过两次、症状相同（`docs/plans/2026-11-17-sppid-backup-publish/readings.md` §20 是 26644 个像素）。在同一个测试程序上单独跑 3 遍都过（`rerun-pixel-1.txt` – `rerun-pixel-3.txt`；直接跑测试程序要带 `.cargo/config.toml` 里的 `RUST_MIN_STACK`，不带会栈溢出）。
+
+按 `todo.md` §1 的固定门禁，这一遍只有那条偶发不在「比对设计文件」之列；它单独跑都过，照那条线的先例不算不过。通过数 7207，比合并前（7182）多 25 条。
+
+推送：按 CP-A 的决定推到 `fork/main`。推送前查过远端，`fork/main` 仍是 `144d2c643`，是合并提交的祖先，推送是快进；推的是本节所在的提交。本地 `main` 没有动，它是这次推送的祖先，由那条线自己快进。
