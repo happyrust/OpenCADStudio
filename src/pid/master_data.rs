@@ -2,8 +2,9 @@
 //! 流体介质、PBS 节点树和项目锁定的图例标准。
 //!
 //! 这里是数据对象与 JSON 形状（§3.1）、默认内容、校验（§3.6，错误带出错
-//! 位置）、属性值与主数据的比法（§3.5），以及两处存放和取用顺序（§3.2–§3.4、
-//! §4）：图内记录、图纸目录里的项目文件，项目文件优先。
+//! 位置）、属性值与主数据的比法（§3.5）、各条目在图上有几个对象用着（§5.3 的
+//! `usage`），以及两处存放和取用顺序（§3.2–§3.4、§4）：图内记录、图纸目录里的
+//! 项目文件，项目文件优先。
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -15,6 +16,9 @@ use document::Document;
 use serde_json::{json, Map, Value};
 
 use crate::pid::graph_data;
+use crate::pid::persist::PidAuthor;
+use crate::pid::propagate::split_props;
+use crate::pid::topology::{TYPE_PIPE_RUN, TYPE_PIPE_SEGMENT};
 
 /// 程序认识的格式版本（§3.1 的 `version`）。
 pub const VERSION: u64 = 1;
@@ -356,6 +360,126 @@ fn entries_json(rows: &[Entry]) -> Value {
             json!({ "name": row.name, "attrs": attrs })
         })
         .collect()
+}
+
+// ── 使用情况 ─────────────────────────────────────────────────────────────
+
+/// 对象属性里对照三张表的字段（§3.5）。
+const TABLE_FIELDS: [(&str, Table); 3] = [
+    ("管道等级", Table::PipeClass),
+    ("绝热等级", Table::InsulationClass),
+    ("流体介质", Table::FluidCode),
+];
+
+/// 对象属性里的公称直径，按 [`MasterData::has_diameter`] 的比法对照直径表。
+const DIAMETER_FIELD: &str = "公称直径";
+
+/// §5.3 的 `usage`：各条目在图上有几个对象用着。只列用到的条目，按表里的顺序。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub pipe_classes: Vec<(String, usize)>,
+    pub insulation_classes: Vec<(String, usize)>,
+    pub fluid_codes: Vec<(String, usize)>,
+    /// 按 `dn`。
+    pub nominal_diameters: Vec<(u32, usize)>,
+}
+
+impl Usage {
+    /// §5.3 的 JSON 形状：四个对象，键是条目名称（直径是 `dn` 的十进制写法），值是
+    /// 对象个数。
+    pub fn to_json(&self) -> Value {
+        fn counts<K: ToString>(rows: &[(K, usize)]) -> Value {
+            rows.iter()
+                .map(|(key, count)| (key.to_string(), json!(count)))
+                .collect::<Map<String, Value>>()
+                .into()
+        }
+        json!({
+            "pipe_classes": counts(&self.pipe_classes),
+            "insulation_classes": counts(&self.insulation_classes),
+            "fluid_codes": counts(&self.fluid_codes),
+            "nominal_diameters": counts(&self.nominal_diameters),
+        })
+    }
+}
+
+/// 图上用着 `data` 里各条目的对象个数（§5.3 的 `usage`）。
+///
+/// 数的是 P&ID 对象，不是图元：有位号的按「类型 + 位号」算一个（一条管线画成几段
+/// 就是几个图元，位号相同），没有位号的按图元算。管路、管段的那几个字段是从上级抄
+/// 下来的（`propagate`），没打覆盖标记的那份就是上级的取值，不再算一次；打了标记的
+/// 算它自己的。取值按 §3.5 比：名称去掉首尾空白后逐字相等；直径读出 `dn` 再比，
+/// 标了隐藏的不算。
+pub fn usage(doc: &Document, data: &MasterData) -> Usage {
+    let mut users: Vec<Vec<HashSet<ObjectKey>>> = TABLE_FIELDS
+        .iter()
+        .map(|(_, table)| vec![HashSet::new(); data.table(*table).len()])
+        .collect();
+    let mut diameter_users = vec![HashSet::new(); data.nominal_diameters.len()];
+    for entity in doc.entities() {
+        let handle = entity.common().handle;
+        let Some(author) = PidAuthor::load(doc, handle) else {
+            continue;
+        };
+        let (props, overrides) = split_props(&author.props);
+        let inherits = author.type_code == TYPE_PIPE_RUN || author.type_code == TYPE_PIPE_SEGMENT;
+        let own = |field: &str| {
+            props
+                .get(field)
+                .filter(|_| !inherits || overrides.contains(field))
+                .map(|value| value.trim())
+        };
+        let object = if author.tag.is_empty() {
+            ObjectKey::Entity(handle.value())
+        } else {
+            ObjectKey::Tagged(author.type_code.clone(), author.tag.clone())
+        };
+        for ((field, table), rows) in TABLE_FIELDS.iter().zip(&mut users) {
+            let row = own(field).and_then(|value| {
+                data.table(*table)
+                    .iter()
+                    .position(|entry| entry.name == value)
+            });
+            if let Some(row) = row {
+                rows[row].insert(object.clone());
+            }
+        }
+        let row = own(DIAMETER_FIELD).and_then(parse_dn).and_then(|dn| {
+            data.nominal_diameters
+                .iter()
+                .position(|diameter| diameter.dn == dn && !diameter.hidden)
+        });
+        if let Some(row) = row {
+            diameter_users[row].insert(object);
+        }
+    }
+    let used = |table: Table, rows: &[HashSet<ObjectKey>]| -> Vec<(String, usize)> {
+        data.table(table)
+            .iter()
+            .zip(rows)
+            .filter(|(_, objects)| !objects.is_empty())
+            .map(|(entry, objects)| (entry.name.clone(), objects.len()))
+            .collect()
+    };
+    Usage {
+        pipe_classes: used(Table::PipeClass, &users[0]),
+        insulation_classes: used(Table::InsulationClass, &users[1]),
+        fluid_codes: used(Table::FluidCode, &users[2]),
+        nominal_diameters: data
+            .nominal_diameters
+            .iter()
+            .zip(&diameter_users)
+            .filter(|(_, objects)| !objects.is_empty())
+            .map(|(diameter, objects)| (diameter.dn, objects.len()))
+            .collect(),
+    }
+}
+
+/// [`usage`] 里的一个对象：有位号的是「类型 + 位号」，没有位号的是图元句柄。
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum ObjectKey {
+    Tagged(String, String),
+    Entity(u64),
 }
 
 // ── 校验 ─────────────────────────────────────────────────────────────────
@@ -1867,6 +1991,97 @@ mod tests {
         assert!(
             median <= BUDGET,
             "median {median:?} of {shown:?} is over {BUDGET:?}"
+        );
+    }
+
+    /// 图上加一条线段。
+    fn add_line(doc: &mut Document) -> document::Handle {
+        doc.add_entity(document::EntityType::Line(
+            document::entities::Line::from_points(
+                document::types::Vector3::new(0.0, 0.0, 0.0),
+                document::types::Vector3::new(100.0, 0.0, 0.0),
+            ),
+        ))
+        .expect("the line is added")
+    }
+
+    /// 图上放一个带 P&ID 记录的图元：类型、位号、属性。
+    fn put(doc: &mut Document, type_code: &str, tag: &str, props: &str) {
+        let handle = add_line(doc);
+        PidAuthor {
+            type_code: type_code.to_owned(),
+            tag: tag.to_owned(),
+            props: props.to_owned(),
+            ..PidAuthor::default()
+        }
+        .store(doc, handle);
+    }
+
+    /// §5.3 的 `usage`：一个 P&ID 对象算一次，管路、管段只算自己改过的字段；表里没有、
+    /// 标了隐藏、读不出来的取值不列。
+    #[test]
+    fn usage_counts_each_object_once_and_skips_values_runs_and_segments_inherit() {
+        let data = validate(&sample()).expect("the sample is valid");
+        let mut doc = Document::new();
+        let line = r#"{"管道等级":"A1A","公称直径":"DN80","流体介质":"工艺水"}"#;
+        // 一条管线画成两段：两个图元，同一个位号，算一个对象。
+        put(&mut doc, crate::pid::topology::TYPE_PIPE_LINE, "L-1", line);
+        put(&mut doc, crate::pid::topology::TYPE_PIPE_LINE, "L-1", line);
+        // 管路抄了管线的值，没打覆盖标记：不再算。
+        put(&mut doc, TYPE_PIPE_RUN, "L-1-01", line);
+        // 两个管段（没有位号）把直径改成 DN50：DN50 各算一个，抄来的管道等级、介质不算。
+        let segment = r#"{"管道等级":"A1A","公称直径":"DN50","流体介质":"工艺水","__overrides":["公称直径"]}"#;
+        put(&mut doc, TYPE_PIPE_SEGMENT, "", segment);
+        put(&mut doc, TYPE_PIPE_SEGMENT, "", segment);
+        // 设备各有位号，各算一个；名称带空白、直径写法不同，都按 §3.5 认。
+        put(
+            &mut doc,
+            "EQUIPMENT",
+            "V-1",
+            r#"{"管道等级":" A1A ","公称直径":"80","绝热等级":"H"}"#,
+        );
+        put(
+            &mut doc,
+            "EQUIPMENT",
+            "V-2",
+            r#"{"管道等级":"B1B","公称直径":"dn 80"}"#,
+        );
+        // 大小写不同、表里没有、标了隐藏、读不出来的：不列。
+        put(
+            &mut doc,
+            "EQUIPMENT",
+            "V-3",
+            r#"{"管道等级":"a1a","公称直径":"DN65","流体介质":"海水","绝热等级":"X"}"#,
+        );
+        put(&mut doc, "EQUIPMENT", "V-4", r#"{"公称直径":"八十"}"#);
+        // 没有 P&ID 记录的图元不算。
+        add_line(&mut doc);
+
+        let counted = usage(&doc, &data);
+        assert_eq!(
+            counted.pipe_classes,
+            vec![("A1A".to_owned(), 2), ("B1B".to_owned(), 1)]
+        );
+        assert_eq!(counted.insulation_classes, vec![("H".to_owned(), 1)]);
+        assert_eq!(counted.fluid_codes, vec![("工艺水".to_owned(), 1)]);
+        assert_eq!(counted.nominal_diameters, vec![(50, 2), (80, 3)]);
+        assert_eq!(
+            counted.to_json(),
+            json!({
+                "pipe_classes": { "A1A": 2, "B1B": 1 },
+                "insulation_classes": { "H": 1 },
+                "fluid_codes": { "工艺水": 1 },
+                "nominal_diameters": { "50": 2, "80": 3 }
+            })
+        );
+        assert_eq!(
+            usage(&Document::new(), &data).to_json(),
+            json!({
+                "pipe_classes": {},
+                "insulation_classes": {},
+                "fluid_codes": {},
+                "nominal_diameters": {}
+            })
         );
     }
 }

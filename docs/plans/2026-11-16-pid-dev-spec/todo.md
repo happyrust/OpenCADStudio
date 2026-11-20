@@ -471,13 +471,14 @@
 
 - **做什么**：两个自动化操作（§5.3）：`pid_masterdata`（`GET /api/v1/pid/master-data`，可选 `usage`）、`pid_masterdata_set`（`PUT /api/v1/pid/master-data`，带 `target`、`master_data`、`expected_revision`）。按共用约定 §7.6 的第 3–5 处接线：`control_request` 的操作名与能力清单、REST 路由与 `map_status`、`rest_openapi.json`、MCP 的操作名单与 `TOOL_SCHEMA_DIGEST`。
 - **验收**：
-  - [ ] 读操作的三种 `state`（`configured`、`unreadable`、`not_configured`）各一例；带 `usage: true` 时，计数等于当前图上取值相同的对象个数。
-  - [ ] 写操作：`expected_revision` 不对 → HTTP 409、`MASTERDATA_CONFLICT`；只读会话里被拒。
-  - [ ] `rest_openapi.json` 里有这两条路径；测试 `tool_schema_digest_is_pinned` 通过。
+  - [x] 读操作的三种 `state`（`configured`、`unreadable`、`not_configured`）各一例；带 `usage: true` 时，计数等于当前图上取值相同的对象个数。
+  - [x] 写操作：`expected_revision` 不对 → HTTP 409、`MASTERDATA_CONFLICT`；只读会话里被拒。
+  - [x] `rest_openapi.json` 里有这两条路径；测试 `tool_schema_digest_is_pinned` 通过。
 - **验证**：`cargo test --offline --locked --lib pid_masterdata`；`cargo test --offline --locked --lib tool_schema_digest_is_pinned`；手工：`cargo run --offline --locked -- --http 8090` 后请求 `GET /api/v1/pid/master-data`
 - **依赖**：MD-3
 - **文件**：`src/app/control/mod.rs`、`src/rest.rs`、`src/rest_openapi.json`、`src/mcp.rs`
 - **规模**：M
+- **补（2026-11-20）**：一个提交。与任务写法不同、或任务没有说的：多改了三个文件——`src/app/commands/pidmasterdata.rs`（两个操作的入口；「写到哪里」提成 `target()` 与命令共用，写入函数加 `expected_revision`）、`src/pid/master_data.rs`（`usage` 计数）、`src/mcp_ops.rs`（写操作的参数表，执行门面要求登记）；写成功的结果放在 `result` 里，另带 `path` 和 `in_effect`；`usage` 按 P&ID 对象数（同一个位号的几段管线算一个），管路、管段只算打了覆盖标记的字段；`MASTERDATA_IO_ERROR` 是 HTTP 500；`target`、`expected_revision` 写错和没存过的图写 `project` 报 `invalid_request`（400）；写操作自己查只读，条件同 `PIDMASTERDATA IMPORT`；能力名 `pid_master_data`，写操作能写后台标签里的图，MCP 里可进批处理；细节记在主数据规格 §11.4。**先红后绿**：先放空壳，新加的 7 条（操作 4 条、`usage` 1 条、REST 1 条、MCP 1 条）和加了断言的 2 条（REST 的状态码、OpenAPI）编得过、都败在断言上；实现后全过，`tool_schema_digest_is_pinned` 核对过改动、换成新值后过。**读数**：主程序库 7303 条，7244 通过、56 默认不跑、3 失败（比对设计稿的三条）；比 `MD-3` 后的基线多 7 条，都是新加的、都过了；那条偶发失败的像素测试这次过了；clippy 656 / 1051，与基线相同，新代码没有告警；格式检查改过的六个文件新增 0 处。**手工**：`cargo run --offline --locked -- --http 8090` 后，不带令牌 401；`GET` 200、`not_configured`；`PUT` 写图内 200、修订号 1；带 `usage=true` 再读 200、`configured`；拿旧修订号再写 409 `MASTERDATA_CONFLICT`；没存过的图写 `project` 400 `invalid_request`。**新基线**：主程序库 7303 条（7244 / 56 / 3；那条像素测试偶发失败时是 7243 / 56 / 4）。
 
 > **检查点 CP-B1**（MD-1 – MD-4 之后）：命令行和 REST 都能建、读、改主数据；固定门禁全过。
 

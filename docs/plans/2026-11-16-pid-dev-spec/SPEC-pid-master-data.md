@@ -409,3 +409,39 @@ MCP：`pid_masterdata` 进 `READ_OPS`，`pid_masterdata_set` 进 `EXECUTE_OPS`�
 - `write_drawing_record`：修订号接着记录上的数；对不上时报冲突、记录不变；空白图纸给了 `expected_revision` 也算冲突；坏了的记录照样盖掉。
 
 先放空壳（命令什么也不做，`write_drawing_record` 原样返回传进来的那份、不写），8 条新测试编得过、都败在断言上；实现后全过。
+
+### 11.4 `MD-4`：主数据的操作与接口（2026-11-20）
+
+**做了什么**（`src/app/control/mod.rs` 登记两个操作：读进查询名单，写进动作分派，能力清单加 `pid_master_data`；`src/rest.rs` 加 `GET` / `PUT /api/v1/pid/master-data` 和状态码；`src/rest_openapi.json` 写这两条；`src/mcp.rs` 读写各进一个名单，读的参数加 `usage`，`TOOL_SCHEMA_DIGEST` 换成新值）：
+
+- 两个操作的逻辑写在命令文件里（`control_pid_masterdata`、`control_pid_masterdata_set`），和命令共用「写到哪里」的判断和写入函数。
+- 读：应答照 §5.3。未配置时 `source`、`path` 是 `null`；生效的是图内记录时 `path` 是 `null`；读不出来时带 `error_code`、`error`，没有 `master_data`。生效的（或读不出来的）是项目文件而图内也有一份时，`shadowed_in_drawing` 为真。
+- 写：依次查只读、`target`、`expected_revision`、`master_data`，都过了才写。写图内记录是一个撤销步；修订号对不上时连撤销步也不留。
+- REST 的 `GET` 用查询参数 `usage=true`（或 `1`）；`PUT` 的请求体就是操作的参数。
+
+**任务没列、多改的文件：**
+
+- `src/app/commands/pidmasterdata.rs`：两个操作的入口。命令里「写到哪里」的判断提成 `target()`，命令和操作共用；写入函数加 `expected_revision` 参数，命令传 `None`。
+- `src/pid/master_data.rs`：加 `usage(doc, data)` 和 `Usage`，数各条目在图上有几个对象用着。
+- `src/mcp_ops.rs`：写操作的参数表 `PID_MASTERDATA_SET`（不认识的键拒收）。执行门面的参数说明和调用前的校验从这里来，`EXECUTE_OPS` 里的操作都要在这里登记。
+
+**规格没写到、这里定下的：**
+
+1. **写成功的应答。** 同别的写操作，结果放在 `result` 里：`{"source":"project","path":"…/pid-project.json","revision":4,"in_effect":true}`。§5.3 表里的 `source`、`revision` 就是这里的两个键。`path` 是项目文件的路径，写图内时是 `null`。`in_effect` 说写进去的这份是不是生效的：写进图内而目录里的项目文件有主数据时是 `false`，同命令的那条警告（§11.3 第 7 条）。
+2. **`usage` 数什么。** 数 P&ID 对象，不数图元：有位号的按「类型 + 位号」算一个（一条管线画成几段，几个图元是同一个位号，算一个），没有位号的按图元算。管路、管段的属性是从上级抄下来的，没打覆盖标记的字段就是上级的值，不再算一次；打了标记的算它自己的。看四个字段：`管道等级`、`绝热等级`、`流体介质` 比名称，`公称直径` 读出 `dn` 再比，比法同 §3.5。键是条目名称，直径是 `dn` 的十进制写法；没人用的条目不列，四个键总在。只在 `state` 是 `configured` 时才算。
+3. **HTTP 状态码。** 照 §3.6 的表；表里没有的 `MASTERDATA_IO_ERROR`（§11.2 新加的码）是 500：请求没错，是桌面端读写文件出了错。
+4. **请求写错了。** `target` 不是 `project` / `drawing`、`expected_revision` 不是非负整数、图纸没存过却写 `project`：都报 `invalid_request`（400），§3.6 没有对应的码。缺 `master_data` 报校验的 `MASTERDATA_SCHEMA_ERROR`。`target` 不分大小写，同命令；MCP 的参数表只列小写的两个。
+5. **只读。** 写操作被拒的条件同 `PIDMASTERDATA IMPORT`（`readonly_refuses_command`），码取会话的拒绝层级（§5.4），应答带 `level`，同别的被拒的写；也报给服务器。控制面没有统一的只读关口，写项目文件又在图纸外面，所以操作自己查（§11.3 第 8 条）。读不受限。
+6. **名字和归类。** 能力名 `pid_master_data`。写操作能写后台标签里的图（同 `pid_insert_batch`）。MCP 里写操作可以放进批处理。
+7. **起始页。** 没有打开的图纸时，两个操作都报 `no_document`。
+
+**测试**（`pidmasterdata.rs` 4 条，都以 `pid_masterdata` 开头；`master_data.rs` 1 条；`rest.rs` 新加 1 条、2 条加了断言；`mcp.rs` 1 条）：
+
+- 读：三种 `state`；项目文件坏了而图内有一份时 `shadowed_in_drawing` 为真、不拿图内那份顶替；不带 `usage` 时没有它。
+- 使用计数：操作层，表里没有的取值不列，`usage: false` 时没有；函数层，一条管线画成两段算一个，管路抄来的不算，管段改过的直径算，名称带空白、直径写法不同都认，大小写不同、隐藏、读不出的不算，没有 P&ID 记录的图元不算，空图四个键都是空对象。
+- 写：不写目标时写项目文件；修订号对上才写，对不上报 `MASTERDATA_CONFLICT`、文件逐字节不变；写图内是一个撤销步、`in_effect` 为假，对不上时撤销步不留；重名、缺数据、目标或修订号写错都不写；没存过的图写 `project` 报 `invalid_request`。
+- 只读会话：三种目标都报 `COLLAB_READONLY`、`level` 是 `state`，什么也没写，服务器收到了这次尝试；读照常。
+- REST：读写一轮（含 `usage=true`），409 两种、400 两种，被拒的都没写；状态码的映射；OpenAPI 有这条路径和写的 403、409、500。
+- MCP：两个名单里有这两个操作，读的参数有 `usage`；写的参数校验收对的，拒缺 `master_data`、`target` 写错、多了不认识的键。
+
+先放空壳（读只回 `{"ok":false}`，写什么也不做，`usage` 返回空；路由、状态码、OpenAPI、MCP 名单还没加），7 条新测试和 2 条加了断言的测试编得过、都败在断言上；实现后全过。工具面摘要那条在实现后败，核对过变的只是这两个操作和 `usage`，换成新值。

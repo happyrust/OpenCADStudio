@@ -151,6 +151,22 @@
         "responses": {"200": {"description": "Stored setup"}, "400": {"description": "Invalid paper or scale"}, "404": {"description": "Unknown layout"}}
       }
     },
+    "/api/v1/pid/master-data": {
+      "get": {
+        "summary": "P&ID project master data: which copy is in effect (the project file next to the drawing, or the drawing record) and its content",
+        "parameters": [{"name": "usage", "in": "query", "description": "true or 1: also count, per entry, the objects on the drawing that use it", "schema": {"type": "boolean"}}],
+        "responses": {"200": {"description": "state is configured (with master_data), unreadable (with error_code and error) or not_configured; source, path and shadowed_in_drawing say which copy"}}
+      },
+      "put": {
+        "summary": "Replace the whole P&ID project master data in the project file (pid-project.json in the saved drawing's folder) or in the drawing record",
+        "requestBody": {"content": {"application/json": {"schema": {"type": "object", "required": ["master_data"], "properties": {
+          "target": {"type": "string", "enum": ["project", "drawing"], "description": "Defaults to project for a saved drawing, drawing otherwise"},
+          "master_data": {"type": "object", "description": "The whole master data: version, revision, updated_at, legend_standard, nominal_diameters, pipe_classes, insulation_classes, fluid_codes, pbs"},
+          "expected_revision": {"type": "integer", "minimum": 0, "description": "The revision last read; the write is refused with MASTERDATA_CONFLICT when the target holds another"}
+        }}}}},
+        "responses": {"200": {"description": "result: source, path, the revision written, and in_effect"}, "400": {"description": "Malformed master data or request"}, "403": {"description": "Read-only collaboration session (COLLAB_READONLY, PERM_DENIED_*)"}, "409": {"description": "MASTERDATA_CONFLICT or MASTERDATA_DUPLICATE"}, "500": {"description": "MASTERDATA_IO_ERROR: the project file could not be read or written"}}
+      }
+    },
     "/api/v1/entities": {
       "get": {
         "summary": "Query entities (type, layer, detail, offset, limit, fields, handles, bounds, near, contains_point, intersections)",

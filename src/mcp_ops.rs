@@ -926,6 +926,31 @@ pub static PAGE_SETUP_SET: OpDef = OpDef {
     example: r#"{"op":"page_setup_set","layout":"Sheet1","paper":"A4"}"#,
 };
 
+pub static PID_MASTERDATA_SET: OpDef = OpDef {
+    name: "pid_masterdata_set",
+    doc: "Replace the whole P&ID project master data, validated first, in the project file or the drawing record. Read it back with ocs_read op pid_masterdata.",
+    batchable: true,
+    params: &[
+        opt(
+            "target",
+            Ty::Enum(&["project", "drawing"]),
+            "project: pid-project.json in the saved drawing's folder; drawing: the drawing record, one undo step. Defaults to project for a saved drawing, drawing otherwise.",
+        ),
+        req(
+            "master_data",
+            Ty::Raw(r#"{"type":"object","description":"The whole master data: version, revision, updated_at, legend_standard, nominal_diameters, pipe_classes, insulation_classes, fluid_codes, pbs."}"#),
+            "The whole master data object; it replaces what the target holds.",
+        ),
+        opt(
+            "expected_revision",
+            Ty::Int,
+            "The revision last read; when the target holds another, MASTERDATA_CONFLICT and nothing is written.",
+        ),
+    ],
+    rules: &[Rule::RejectUnknown],
+    example: r#"{"op":"pid_masterdata_set","target":"drawing","master_data":{"version":1,"revision":0,"updated_at":0,"legend_standard":null,"nominal_diameters":{"unit":"mm","items":[{"dn":80,"label":"DN80"}]},"pipe_classes":[{"name":"A1A"}],"insulation_classes":[],"fluid_codes":[],"pbs":[]}}"#,
+};
+
 pub static XREF_RELOAD: OpDef = OpDef {
     name: "xref_reload",
     doc: "Reload one direct external reference by id, preserving prior content on load failure.",
@@ -1336,6 +1361,7 @@ pub static OPS: &[&OpDef] = &[
     &LAYOUT_ACTIVATE,
     &LAYOUT_DELETE,
     &PAGE_SETUP_SET,
+    &PID_MASTERDATA_SET,
     &XREF_RELOAD,
     &XREF_UNLOAD,
     &XREF_DETACH,
