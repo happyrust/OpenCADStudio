@@ -1344,11 +1344,469 @@ fn length_unit(insunits: i16) -> &'static str {
 }
 
 #[cfg(test)]
+pub(crate) use synthetic::synthetic_drawing;
+
+/// 性能预算用的合成图（§7），检查、清单、快照、发布、面板的预算测试共用。
+#[cfg(test)]
+mod synthetic {
+    use document::entities::{Circle, Line, Point};
+
+    use super::*;
+    use crate::pid::topology::{FittingRecord, SegmentEnd, TYPE_PIPE_SEGMENT, VALVE_PORT_NAMES};
+
+    /// 一组里的对象数。
+    const CELL: usize = 20;
+    /// 一行排几组。
+    const COLUMNS: usize = 10;
+    /// 相邻两组的间距。一组占的范围不到 400 × 100，隔开后组与组碰不上。
+    const PITCH: [f64; 2] = [500.0, 200.0];
+
+    const VESSEL: &str = "PID_SYM_equipment_vessel";
+    const PUMP: &str = "PID_SYM_equipment_pump";
+    const GATE_VALVE: &str = "PID_SYM_valve_gate_valve";
+    const CONTROL_VALVE: &str = "PID_SYM_valve_gate_valve_alt";
+    const TRANSMITTER: &str = "PID_SYM_instrument_transmitter";
+    const CONTROLLER: &str = "PID_SYM_instrument_controller";
+    const INDICATOR: &str = "PID_SYM_instrument_indicator";
+
+    /// `objects` 个对象，每 20 个是同样的一组小工艺单元，一行 10 组排开。
+    /// 一组里有：
+    ///
+    /// - 主管线：进料容器 → 进口阀 → 泵 → 出口阀 → 不单独编号的管件 → 调节阀
+    ///   → 打断符 → 受液容器，分进口、出口两条管路；管线自己的一根线从受液
+    ///   容器的出口接到一个流出连接符。
+    /// - 支管线：从出口管路中间三通引出，一条管路上一个排净阀，接到管线自己
+    ///   的一根线，线头一个流出连接符。
+    /// - 压力变送器 → 流量控制器 → 流出信号连接符两条信号线；一块温度表、一块
+    ///   压力表就地安装，不接线。
+    ///
+    /// 管段和信号线的两头都接着东西，位号照默认规则编、不重复。实体、
+    /// `PID_AUTHOR` 和拓扑表的写法与画图命令落盘的一样，只是不经命令、拓扑表
+    /// 最后写一次。符号取内置符号库，做摘要时也用 [`SymbolLibrary::builtin`]。
+    pub(crate) fn synthetic_drawing(objects: usize) -> Document {
+        assert_eq!(
+            objects % CELL,
+            0,
+            "合成图按每组 {CELL} 个对象生成：{objects}"
+        );
+        let library = SymbolLibrary::builtin();
+        let mut scene = crate::scene::Scene::new();
+        library.instantiate(&mut scene);
+        let mut sheet = Sheet {
+            doc: std::mem::replace(&mut scene.document, Document::new()),
+            table: TopologyTable::default(),
+            library,
+            origin: [0.0, 0.0],
+        };
+        for cell in 0..objects / CELL {
+            sheet.origin = [
+                (cell % COLUMNS) as f64 * PITCH[0],
+                (cell / COLUMNS) as f64 * PITCH[1],
+            ];
+            sheet.cell(cell);
+        }
+        sheet.table.store(&mut sheet.doc);
+        sheet.doc
+    }
+
+    struct Sheet {
+        doc: Document,
+        table: TopologyTable,
+        library: SymbolLibrary,
+        origin: [f64; 2],
+    }
+
+    /// 建好的一条管路：位号、本体的句柄，和它的管段都带的属性。
+    struct Run {
+        tag: String,
+        owner: String,
+        props: BTreeMap<String, String>,
+    }
+
+    /// 插好了、两个连接点还没记的管件。
+    struct Placed {
+        handle: Handle,
+        record: FittingRecord,
+    }
+
+    fn props(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+            .collect()
+    }
+
+    /// 位号自动编、状态正常的一条记录。
+    fn author_of(type_code: &str, tag: String, props: &BTreeMap<String, String>) -> PidAuthor {
+        PidAuthor {
+            type_code: type_code.to_string(),
+            tag,
+            tag_source: "auto".to_string(),
+            tag_status: "ok".to_string(),
+            props: serde_json::to_string(props).expect("属性 JSON"),
+            ..PidAuthor::default()
+        }
+    }
+
+    impl Sheet {
+        fn at(&self, x: f64, y: f64) -> [f64; 2] {
+            [self.origin[0] + x, self.origin[1] + y]
+        }
+
+        /// 第 `n` 组。位号：设备 `P-`、阀门 `V-`、管线 `L-` 从 1001 起、信号线 `S-` 从
+        /// 2001 起接着前一组编，仪表是功能字母加 `1001 + n`。
+        fn cell(&mut self, n: usize) {
+            let equipment = |i: usize| format!("P-{}", 1001 + 3 * n + i);
+            let valve = |i: usize| format!("V-{}", 1001 + 4 * n + i);
+            let signal = |i: usize| format!("S-{}", 2001 + 2 * n + i);
+            let main = format!("L-{}", 1001 + 2 * n);
+            let branch = format!("L-{}", 1002 + 2 * n);
+
+            let vessel = props(&[
+                ("设计压力", "0.6MPa"),
+                ("设计温度", "60"),
+                ("材质", "S30408"),
+            ]);
+            let pump = props(&[("流量", "20m3/h"), ("扬程", "40m"), ("材质", "S30408")]);
+            self.symbol(
+                VESSEL,
+                self.at(0.0, -12.0),
+                author_of(EQUIPMENT, equipment(0), &vessel),
+            );
+            self.symbol(
+                PUMP,
+                self.at(60.0, 0.0),
+                author_of(EQUIPMENT, equipment(1), &pump),
+            );
+            self.symbol(
+                VESSEL,
+                self.at(320.0, 12.0),
+                author_of(EQUIPMENT, equipment(2), &vessel),
+            );
+
+            // 主管线。进料容器的出口在 (0, 0)，泵的进出口在 (46, 0) / (74, 0)，
+            // 受液容器的进出口在 (320, 0) / (320, 24)。阀门两侧的管段收在落点 ±16
+            // 处（端口 14 加 `PIDFITTING` 让开的 2），管件 ±10，打断符的缝 ±2。
+            let fields = props(&[
+                ("管道等级", "A1A"),
+                ("公称直径", "80"),
+                ("绝热等级", "N"),
+                ("流体介质", "PW"),
+                ("管线类型", "P"),
+            ]);
+            let line = self.pipe_line(&main, [self.at(320.0, 24.0), self.at(380.0, 24.0)], &fields);
+            self.connector(ConnectorKind::PipeOut, &main, self.at(380.0, 24.0));
+
+            let inlet = self.run(&main, line, self.at(0.0, 0.0), &fields);
+            let valve_in = self.valve(&inlet, GATE_VALVE, self.at(23.0, 0.0), valve(0));
+            let first = self.segment(
+                &inlet,
+                self.at(0.0, 0.0),
+                self.at(7.0, 0.0),
+                None,
+                Some(valve_in.handle),
+            );
+            let second = self.segment(
+                &inlet,
+                self.at(39.0, 0.0),
+                self.at(46.0, 0.0),
+                Some(valve_in.handle),
+                None,
+            );
+            self.bind(valve_in, [first, second]);
+
+            let outlet = self.run(&main, line, self.at(74.0, 0.0), &fields);
+            let valve_out = self.valve(&outlet, GATE_VALVE, self.at(110.0, 0.0), valve(1));
+            let fitting = self.fitting(&outlet, TRANSMITTER, self.at(160.0, 0.0));
+            let control = self.valve(&outlet, CONTROL_VALVE, self.at(210.0, 0.0), valve(2));
+            self.mark(&outlet, self.at(270.0, 0.0));
+            let pieces = [
+                self.segment(
+                    &outlet,
+                    self.at(74.0, 0.0),
+                    self.at(94.0, 0.0),
+                    None,
+                    Some(valve_out.handle),
+                ),
+                self.segment(
+                    &outlet,
+                    self.at(126.0, 0.0),
+                    self.at(150.0, 0.0),
+                    Some(valve_out.handle),
+                    Some(fitting.handle),
+                ),
+                self.segment(
+                    &outlet,
+                    self.at(170.0, 0.0),
+                    self.at(194.0, 0.0),
+                    Some(fitting.handle),
+                    Some(control.handle),
+                ),
+                self.segment(
+                    &outlet,
+                    self.at(226.0, 0.0),
+                    self.at(268.0, 0.0),
+                    Some(control.handle),
+                    None,
+                ),
+                self.segment(
+                    &outlet,
+                    self.at(272.0, 0.0),
+                    self.at(320.0, 0.0),
+                    None,
+                    None,
+                ),
+            ];
+            self.bind(valve_out, [pieces[0], pieces[1]]);
+            self.bind(fitting, [pieces[1], pieces[2]]);
+            self.bind(control, [pieces[2], pieces[3]]);
+
+            // 支管线：从出口管路第二段中间的 (140, 0) 引出，拐到 y = -40，经排净阀
+            // 接到管线自己的一根线。
+            let fields = props(&[
+                ("管道等级", "B2C"),
+                ("公称直径", "25"),
+                ("绝热等级", "N"),
+                ("流体介质", "PW"),
+                ("管线类型", "D"),
+            ]);
+            let line = self.pipe_line(
+                &branch,
+                [self.at(200.0, -40.0), self.at(260.0, -40.0)],
+                &fields,
+            );
+            self.connector(ConnectorKind::PipeOut, &branch, self.at(260.0, -40.0));
+            let drain = self.run(&branch, line, self.at(140.0, 0.0), &fields);
+            let valve_drain = self.valve(&drain, GATE_VALVE, self.at(170.0, -40.0), valve(3));
+            self.segment(
+                &drain,
+                self.at(140.0, 0.0),
+                self.at(140.0, -40.0),
+                None,
+                None,
+            );
+            let before = self.segment(
+                &drain,
+                self.at(140.0, -40.0),
+                self.at(154.0, -40.0),
+                None,
+                Some(valve_drain.handle),
+            );
+            let after = self.segment(
+                &drain,
+                self.at(186.0, -40.0),
+                self.at(200.0, -40.0),
+                Some(valve_drain.handle),
+                None,
+            );
+            self.bind(valve_drain, [before, after]);
+
+            for (block, function, [x, y], range) in [
+                (TRANSMITTER, "PT", [160.0, 40.0], "0-1.6MPa"),
+                (CONTROLLER, "FIC", [210.0, 40.0], "0-30m3/h"),
+                (INDICATOR, "TI", [100.0, 40.0], "0-150℃"),
+                (INDICATOR, "PI", [60.0, 40.0], "0-1.6MPa"),
+            ] {
+                let fields = props(&[("仪表功能", function), ("测量范围", range)]);
+                let tag = format!("{function}-{}", 1001 + n);
+                self.symbol(block, self.at(x, y), author_of(INSTRUMENT, tag, &fields));
+            }
+            self.signal(signal(0), self.at(168.0, 40.0), self.at(202.0, 40.0));
+            self.signal(signal(1), self.at(218.0, 40.0), self.at(250.0, 40.0));
+            self.connector(ConnectorKind::SignalOut, &signal(1), self.at(250.0, 40.0));
+        }
+
+        fn add(&mut self, entity: EntityType, author: PidAuthor) -> Handle {
+            let handle = self.doc.add_entity(entity).expect("合成图的实体");
+            author.store(&mut self.doc, handle);
+            handle
+        }
+
+        fn line(&mut self, a: [f64; 2], b: [f64; 2], author: PidAuthor) -> Handle {
+            let line =
+                Line::from_points(Vector3::new(a[0], a[1], 0.0), Vector3::new(b[0], b[1], 0.0));
+            self.add(EntityType::Line(line), author)
+        }
+
+        /// 一个符号实例，不转、不缩放（`PIDINSERT` / `PIDFITTING`）。
+        fn symbol(&mut self, block: &str, [x, y]: [f64; 2], author: PidAuthor) -> Handle {
+            let ports = self.library.symbol_ports(block).join(",");
+            let insert = Insert::new(block, Vector3::new(x, y, 0.0));
+            self.add(EntityType::Insert(insert), PidAuthor { ports, ..author })
+        }
+
+        /// 一条管线和它自己的一根线（`PIDPIPE`，再用 `PIDSETPROP` 填下传的五项）。
+        fn pipe_line(
+            &mut self,
+            tag: &str,
+            [a, b]: [[f64; 2]; 2],
+            fields: &BTreeMap<String, String>,
+        ) -> Handle {
+            let author = PidAuthor {
+                topology: ROLE_PIPE_LINE.to_string(),
+                ..author_of(TYPE_PIPE_LINE, tag.to_string(), fields)
+            };
+            let handle = self.line(a, b, author);
+            self.table.append_line(tag, handle, fields.clone());
+            handle
+        }
+
+        /// 一条管路（`PIDPIPE run`）：本体是起点上的一个点，属性是管线号加上从
+        /// 管线继承的五项。管段另画。
+        fn run(
+            &mut self,
+            line: &str,
+            owner: Handle,
+            start: [f64; 2],
+            fields: &BTreeMap<String, String>,
+        ) -> Run {
+            let record = self.table.line_by_tag_mut(line).expect("先有管线");
+            let tag = format!("{line}-{:02}", record.next_run_ordinal);
+            record.next_run_ordinal += 1;
+            let mut props = fields.clone();
+            props.insert("管线号".to_string(), line.to_string());
+            let author = PidAuthor {
+                topology: ROLE_PIPE_RUN.to_string(),
+                owner: handle_text(owner),
+                ..author_of(TYPE_PIPE_RUN, tag.clone(), &props)
+            };
+            let point = Point::at(Vector3::new(start[0], start[1], 0.0));
+            let handle = self.add(EntityType::Point(point), author);
+            self.table
+                .append_run(line, &tag, handle, props.clone(), Vec::new());
+            Run {
+                tag,
+                owner: handle_text(handle),
+                props,
+            }
+        }
+
+        /// 管路上的一段。`from` 是起点贴着的管件（接它的连接点 2），`to` 是终点
+        /// 贴着的管件（接它的连接点 1），`PIDFITTING` 拆段后就是这样记的。
+        fn segment(
+            &mut self,
+            run: &Run,
+            a: [f64; 2],
+            b: [f64; 2],
+            from: Option<Handle>,
+            to: Option<Handle>,
+        ) -> Handle {
+            let author = PidAuthor {
+                topology: ROLE_PIPE_SEGMENT.to_string(),
+                owner: run.owner.clone(),
+                ..author_of(TYPE_PIPE_SEGMENT, String::new(), &run.props)
+            };
+            let handle = self.line(a, b, author);
+            let end = |point: [f64; 2], fitting: Option<Handle>, port: &str| match fitting {
+                Some(fitting) => SegmentEnd::joined(point, fitting, port),
+                None => SegmentEnd::open(point),
+            };
+            let start = end(a, from, VALVE_PORT_NAMES[1]);
+            let finish = end(b, to, VALVE_PORT_NAMES[0]);
+            self.table.append_segment(&run.tag, handle, start, finish);
+            handle
+        }
+
+        /// 管路上的一个阀门，单独编号。
+        fn valve(&mut self, run: &Run, block: &str, at: [f64; 2], tag: String) -> Placed {
+            let size = run.props.get("公称直径").cloned().unwrap_or_default();
+            let fields = props(&[("公称直径", size.as_str()), ("压力等级", "PN16")]);
+            let author = author_of(TYPE_VALVE, tag.clone(), &fields);
+            self.place(run, block, at, author, Some(tag))
+        }
+
+        /// 管路上一个不单独编号的管件：记的是所在管路的位号。
+        fn fitting(&mut self, run: &Run, block: &str, at: [f64; 2]) -> Placed {
+            let author = author_of(TYPE_FITTING, run.tag.clone(), &BTreeMap::new());
+            self.place(run, block, at, author, None)
+        }
+
+        fn place(
+            &mut self,
+            run: &Run,
+            block: &str,
+            at: [f64; 2],
+            author: PidAuthor,
+            tag: Option<String>,
+        ) -> Placed {
+            let author = PidAuthor {
+                topology: ROLE_FITTING.to_string(),
+                owner: run.owner.clone(),
+                ..author
+            };
+            let handle = self.symbol(block, at, author);
+            let record = FittingRecord {
+                handle: handle_text(handle),
+                run_tag: run.tag.clone(),
+                fitting_type: block.to_string(),
+                tag,
+                ports: BTreeMap::new(),
+            };
+            Placed { handle, record }
+        }
+
+        /// 记下管件两个连接点各接哪一段。
+        fn bind(&mut self, placed: Placed, [before, after]: [Handle; 2]) {
+            let mut record = placed.record;
+            record.ports = [(VALVE_PORT_NAMES[0], before), (VALVE_PORT_NAMES[1], after)]
+                .into_iter()
+                .map(|(port, segment)| (port.to_string(), Some(handle_text(segment))))
+                .collect();
+            self.table.fittings.push(record);
+        }
+
+        /// 管路上的打断符（`PIDBREAK`）：管路沿 x 轴走，缝两侧各让开 2，斜线画在
+        /// 缝里；拓扑表里一条不接任何管段的管件记录。
+        fn mark(&mut self, run: &Run, [x, y]: [f64; 2]) {
+            let author = PidAuthor {
+                topology: ROLE_FITTING.to_string(),
+                owner: run.owner.clone(),
+                ..author_of(TYPE_FITTING, String::new(), &BTreeMap::new())
+            };
+            let handle = self.line([x - 1.2, y + 2.0], [x + 1.2, y - 2.0], author);
+            self.table.fittings.push(FittingRecord {
+                handle: handle_text(handle),
+                run_tag: run.tag.clone(),
+                fitting_type: FITTING_BREAK.to_string(),
+                tag: None,
+                ports: BTreeMap::new(),
+            });
+        }
+
+        /// 线头上的一个连接符（`PIDCONNECTOR`），还没配对。
+        fn connector(&mut self, kind: ConnectorKind, line: &str, [x, y]: [f64; 2]) {
+            let mut circle = Circle::new();
+            circle.center = Vector3::new(x, y, 0.0);
+            circle.radius = 3.0;
+            let author = PidAuthor {
+                topology: kind.role().to_string(),
+                ..author_of(kind.type_code(), String::new(), &BTreeMap::new())
+            };
+            let handle = self.add(EntityType::Circle(circle), author);
+            let mut record = ConnectorRecord::new(handle_text(handle), kind, line.to_string());
+            record.upstream = Some(line.to_string());
+            self.table.connectors.push(record);
+        }
+
+        /// 一条一段的信号线（`PIDPIPE signal`）。
+        fn signal(&mut self, tag: String, a: [f64; 2], b: [f64; 2]) {
+            let author = PidAuthor {
+                topology: ROLE_SIGNAL_LINE.to_string(),
+                ..author_of(TYPE_SIGNAL_LINE, tag, &BTreeMap::new())
+            };
+            self.line(a, b, author);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::OpenCADStudio;
     use serde_json::{json, Value};
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
 
     const PUMP: &str = "PID_SYM_equipment_pump";
     const VESSEL: &str = "PID_SYM_equipment_vessel";
@@ -2547,5 +3005,235 @@ mod tests {
         }
         assert_eq!(cut[0].joint_a, None);
         assert_eq!(cut[1].joint_b, None);
+    }
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            // 测试并行跑：同一纳秒里建的两个靠计数分开。
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "ocs-project-index-{}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("1970 年以后")
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&path).expect("临时目录");
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fingerprint_of(path: &Path) -> Fingerprint {
+        let metadata = std::fs::metadata(path).expect("文件信息");
+        let modified = metadata
+            .modified()
+            .expect("修改时间")
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("1970 年以后");
+        Fingerprint {
+            size: metadata.len(),
+            modified_at: i64::try_from(modified.as_secs()).expect("秒数"),
+        }
+    }
+
+    /// 往返允许不同的三项抹掉：`source`、`fingerprint` 和各处的句柄。
+    fn without_handles(mut summary: DrawingSummary) -> DrawingSummary {
+        summary.source = SummarySource::File;
+        summary.fingerprint = None;
+        for object in &mut summary.objects {
+            object.handle.clear();
+        }
+        for segment in &mut summary.segments {
+            segment.handle.clear();
+        }
+        for connector in &mut summary.connectors {
+            connector.handle.clear();
+        }
+        summary
+    }
+
+    /// §7 往返：建图 → 存 DWG → `load_file` → 摘要，与存盘前的摘要只差
+    /// `source`、`fingerprint` 和句柄。命令建的小图和合成图各来一遍。
+    #[test]
+    fn a_drawing_saved_as_dwg_and_read_back_summarizes_the_same() {
+        let mut app = app();
+        small_drawing(&mut app);
+        let synthetic = synthetic_drawing(200);
+        let builtin = SymbolLibrary::builtin();
+        let drawings = [
+            (
+                "小图",
+                "small.dwg",
+                app.active_document_for_test(),
+                &app.pid_symbols,
+            ),
+            ("合成图", "synthetic.dwg", &synthetic, &builtin),
+        ];
+        let scratch = Scratch::new();
+        for (name, file, doc, library) in drawings {
+            let open = SummaryMeta {
+                source: SummarySource::Open,
+                fingerprint: None,
+                ..meta()
+            };
+            let before = summarize(doc, library, open, DEFAULT_TOLERANCE);
+            assert!(!before.objects.is_empty(), "{name}的摘要不该是空的");
+            let bytes = crate::io::save_to_bytes(doc, "dwg", document::DxfVersion::AC1032)
+                .unwrap_or_else(|error| panic!("{name}存 DWG：{error}"));
+            let path = scratch.0.join(file);
+            std::fs::write(&path, bytes).expect("写文件");
+            let back =
+                crate::io::load_file(&path).unwrap_or_else(|error| panic!("{name}读回：{error}"));
+            let saved = SummaryMeta {
+                fingerprint: Some(fingerprint_of(&path)),
+                ..meta()
+            };
+            let after = summarize(&back, library, saved, DEFAULT_TOLERANCE);
+            assert_eq!(after.source, SummarySource::File);
+            assert_eq!(without_handles(after), without_handles(before), "{name}");
+        }
+    }
+
+    /// 契约规模：2,000 个对象的合成图。
+    const SYNTHETIC_OBJECTS: usize = 2000;
+    /// 预算：一次摘要不超过 150 ms（成功标准第 9 条）。
+    const BUDGET: Duration = Duration::from_millis(150);
+    /// 采样次数：取中位数。
+    const RUNS: usize = 3;
+
+    /// 合成图说是多少个对象就是多少个，每组 20 个的种类一样；线头全都接着
+    /// 东西，除了悬空那一种，§3.2 的接点都有；位号不重复。
+    #[test]
+    fn the_synthetic_drawing_has_the_objects_it_says_and_no_loose_ends() {
+        let summary = summarize(
+            &synthetic_drawing(SYNTHETIC_OBJECTS),
+            &SymbolLibrary::builtin(),
+            meta(),
+            DEFAULT_TOLERANCE,
+        );
+        let cells = SYNTHETIC_OBJECTS / 20;
+        assert_eq!(summary.objects.len(), SYNTHETIC_OBJECTS);
+        let mut kinds: HashMap<ObjectKind, usize> = HashMap::new();
+        for object in &summary.objects {
+            *kinds.entry(object.kind).or_default() += 1;
+        }
+        let per_cell = [
+            (ObjectKind::Equipment, 3),
+            (ObjectKind::PipeLine, 2),
+            (ObjectKind::PipeRun, 3),
+            (ObjectKind::Valve, 4),
+            (ObjectKind::Fitting, 1),
+            (ObjectKind::Break, 1),
+            (ObjectKind::Instrument, 4),
+            (ObjectKind::SignalLine, 2),
+        ];
+        let expected: HashMap<ObjectKind, usize> = per_cell
+            .iter()
+            .map(|(kind, count)| (*kind, count * cells))
+            .collect();
+        assert_eq!(kinds, expected);
+
+        let own: Vec<&SummaryObject> = summary
+            .objects
+            .iter()
+            .filter(|object| object.own_tag)
+            .collect();
+        let tags: HashSet<(&str, &str)> = own
+            .iter()
+            .map(|object| (object.type_code.as_str(), object.tag.as_str()))
+            .collect();
+        assert_eq!(tags.len(), own.len(), "位号重复");
+        assert!(
+            own.iter()
+                .all(|object| !object.tag.is_empty() && object.symbol_known),
+            "位号都该有、符号都该认得"
+        );
+
+        let ends = summary
+            .segments
+            .iter()
+            .flat_map(|segment| [&segment.joint_a, &segment.joint_b])
+            .chain(summary.signal_ends.iter().map(|end| &end.joint));
+        let mut joints: BTreeMap<&str, usize> = BTreeMap::new();
+        for joint in ends {
+            let name = match joint {
+                None => "悬空",
+                Some(Joint::Fitting { .. }) => "管件",
+                Some(Joint::Break) => "打断",
+                Some(Joint::Port { .. }) => "端口",
+                Some(Joint::Connector { .. }) => "连接符",
+                Some(Joint::Segment { tee: false, .. }) => "线",
+                Some(Joint::Segment { tee: true, .. }) => "三通",
+            };
+            *joints.entry(name).or_default() += 1;
+        }
+        let per_cell = [
+            ("管件", 10),
+            ("打断", 2),
+            ("端口", 8),
+            ("连接符", 3),
+            ("线", 4),
+            ("三通", 1),
+        ];
+        let expected: BTreeMap<&str, usize> = per_cell
+            .iter()
+            .map(|(name, count)| (*name, count * cells))
+            .collect();
+        assert_eq!(joints, expected);
+        assert_eq!(summary.connectors.len(), 3 * cells);
+        assert_eq!(summary.ports.len(), 24 * cells);
+        assert_eq!(
+            summary.ports.iter().filter(|port| port.joined).count(),
+            18 * cells
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn project_index_summary_2000_objects_within_150_ms() {
+        let doc = synthetic_drawing(SYNTHETIC_OBJECTS);
+        let library = SymbolLibrary::builtin();
+        let mut samples = Vec::with_capacity(RUNS);
+        for run in 1..=RUNS {
+            let started = Instant::now();
+            let summary = summarize(&doc, &library, meta(), DEFAULT_TOLERANCE);
+            let elapsed = started.elapsed();
+            println!(
+                "IX-4 run {run}/{RUNS}: {:.2} ms, objects {}, segments {}, ports {}",
+                elapsed.as_secs_f64() * 1e3,
+                summary.objects.len(),
+                summary.segments.len(),
+                summary.ports.len()
+            );
+            assert_eq!(summary.objects.len(), SYNTHETIC_OBJECTS, "run {run}");
+            samples.push(elapsed);
+        }
+        samples.sort();
+        let median = samples[RUNS / 2];
+        let shown: Vec<String> = samples
+            .iter()
+            .map(|sample| format!("{:.2}", sample.as_secs_f64() * 1e3))
+            .collect();
+        println!(
+            "IX-4 median {:.2} ms of {shown:?}, budget {} ms",
+            median.as_secs_f64() * 1e3,
+            BUDGET.as_millis()
+        );
+        assert!(
+            median <= BUDGET,
+            "IX-4 超预算：中位数 {:.2} ms（{shown:?}），预算 {} ms",
+            median.as_secs_f64() * 1e3,
+            BUDGET.as_millis()
+        );
     }
 }
