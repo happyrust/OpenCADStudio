@@ -292,7 +292,57 @@
 - **核定要点**：
   1. 明确「外部平台最低要求未知，当前以已通过样本严格一致（`#111` `StrictVendor` + `#108` `xml_diff`）为代理标准」；
   2. 逐条登记 `RES-15` 五项待补信息（`EXT-01`–`EXT-05`）及缺省保守策略；
-  3. 固化三轮以内「减法送测」单变量变体矩阵（第一轮 `00-control` + `V1-01..V1-05` 一次探测是否读 `.pid`、是否强检管网拓扑、必填业务属性、BOM/缩进字节敏感度及自研 UID 接受度）与 `receipt.json` 标准回执格式。
+  3. 固化三轮以内「减法送测」单变量变体矩阵（第一轮 `00-control` + `V1-01..V1-05` 一次探测是否读 `.pid`、是否强检管网拓扑、必填业务属性、BOM/缩进字节敏感度及自研 UID 接受度）与 `receipt.json` 标准回执格式（入库提交 `849133af1`）。
+
+---
+
+## 11. L0-5 / L3-0（#122）：全批有效 DXF 识别对真值现状基线报告（检查点 A 达成，2026-11-20）
+
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-20` |
+| 基线提交 | `849133af1`（`main`） |
+| 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
+| 识别入口程序 | `examples/dxf_legend.rs`（默认规则 `assets/pid-legend.json`） |
+| 新增文件 | `scripts/sppid/legend_baseline.py`、`scripts/sppid/test_legend_baseline.py` |
+| 证据目录子项 | `2026-11-20-issue122/`（`red.txt`、`green.txt`、`rec_cache/`、`run1/baseline-{summary.json,report.md}`、`run2/baseline-{summary.json,report.md}`） |
+
+### 11.1 先红后绿与可复现性验证
+
+- **先红后绿**：`red.txt` 2 组断言测试在骨架上变红（退出码 `1`）→ 实现后 `green.txt`：`python -m pytest scripts/sppid -q -p no:cacheprovider` **`181 passed`**（退出码 `0`）。
+- **可复现性**：对 `90` 张有效非空导出 DXF（总 `94` 套剔除 §9 检出的 `4` 份 `0` 字节空 DXF，`0` 读取失败）连续执行 `run1` 与 `run2` 两遍评估，`baseline-summary.json` 逐字段 100% 相等。
+
+### 11.2 90 张有效图纸识别对真值（`_Data.xml`）核心基线读数
+
+| 维度 | 指标 | 实测数值 | 口径与根因说明 |
+|---|---|---:|---|
+| SPPID 真值分母 | 图上 10 类可标记符号总数 | **`15,957`** | 设备、管件、仪表、控制功能、在线仪表、管口、页间连接符 |
+| SPPID 真值分母 | 其中带非空位号符号数 | **`9,536`** | `IObject/@Name` 或分段属性非空 |
+| 现有识别器输出 | 检出图块候选总数 | **`17,185`** | 含已知规则块 **`7`** 个、未登记 `unknown` 块 **`17,178`** 个（其中含说明框 `REMARKS*` `759` 个，净业务符号块 `16,426` 个，块级几何检出覆盖已超真值总数的 97%） |
+| 现有识别器输出 | 已配对位号数 / 孤立位号数 | **`0` / `197`** | `unknown` 块默认不触发位号配对（`wants_tag=false`），且旧规则位号序号写死 4 位而本批为 7 位 |
+| 对真值比对指标 | 类映射后符号召回率 / 精确率 | **`0.000188` / `0.000175`** | `3 / 15,957`（旧 `assets/pid-legend.json` 仅含早期消防水系统的 15 个 `$VALVE$...` 天正块名，与本批标准图块名完全正交） |
+| 对真值比对指标 | 匹配项位号准确率 | **`0.000000`** | 同上，`unknown` 块未进入位号配对且位号位数不匹配 |
+
+### 11.3 按影响实例数排序的 Top 缺口与阶段 3/4 突破路径
+
+1. **未召回真值对象类分布（共 `15,954` 个）**：`PIDPipingComponent`（`6,713`）、`PIDInstrument`（`2,881`）、`PIDControlSystemFunction`（`1,947`）、`PIDInlineInstrument`（`1,877`）、`PIDBranchPoint`（`834`）、`PIDNozzle`（`784`）、`PIDProcessEquipment`（`422`）、`PIDMechanicalEquipment`（`268`）、`PIDProcessVessel`（`174`）、`PIDHeatTransferEquipment`（`54`）。
+2. **Top 12 未登记 DXF 块名（直接指向 `L3-1` 高收益突破口）**：
+   - `DCS FUNC ACCESS IN PRIME LOC`（`1,653` 次）
+   - `BALL VALVE TYPE 2`（`1,511` 次）
+   - `DISC SINGLE-FUNC FIELD MOUNTED`（`924` 次）
+   - `_OFF-UNIT SQ`（`831` 次）
+   - `2 WAY GENERIC BODY TYPE 1`（`714` 次）
+   - `FLANGE TYPE 2`（`712` 次）
+   - `FLANGED NOZZLE WITH BLIND`（`638` 次）
+   - `PG-PRESSURE GAUGE`（`610` 次）
+   - `GLOBE VALVE TYPE 1`（`487` 次）/ `GLOBE VALVE TYPE 2`（`450` 次）
+   - `CONCENTRIC REDUCER`（`389` 次）
+   - `BALL VALVE TYPE 1`（`349` 次）/ `PT-PRESSURE TRANSMITTER`（`300` 次）
+3. **关键发现与结论（检查点 A「能认得」正式通过）**：
+   - 导出 DXF 中的块名去图层后缀后（如 `BALL VALVE TYPE 2`），正是 §8 `assets/pid-class-map.json` 中 `.sym` 文件名的大写主干（`Ball Valve Type 2.sym`）！前 15 个高频块即覆盖超过 `10,000` 个实例；
+   - 因此后续 `L3-1`（图例映射）与 `L3-2`（位号增强）只需：① 将块名主干与 `assets/pid-class-map.json` 建立大小写无关自动映射（过滤 `REMARKS*` 注释锚点块），② 将位号序号模式放宽至兼容 4–7 位序号与圈内双行拼接，即可一步打通主体召回与位号配对。
+   - 至此，**检查点 A 三项判据（现状基线报告已出、Q1–Q13 源码问答已完、L4/L5 技术选型已定）全部达成**。
+
 
 
 
