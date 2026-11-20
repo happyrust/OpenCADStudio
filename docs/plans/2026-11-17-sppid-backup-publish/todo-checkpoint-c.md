@@ -41,14 +41,15 @@
   2. 提供特殊装置组显示名纯函数（`Unregistered` → `"未登记图纸"`，`(ungrouped)` → `"未分组"`，S2）；
   3. 提供按选中装置组路径 + 搜索关键字过滤图纸序号的纯函数、按图纸序号统计图内对象类型分组及按 `(type_filter, item_query)` 过滤对象的纯函数，以及还原缓存目录/占用只读访问器，保持经典面板行为一字不变。
 - **验收**：
-  - [ ] 进入 `LoadState::Loading(path)` 时 `loading_started_at` 有值、能读出已用秒数；失败退回 `Idle` 且 `error.is_some()` 时仍能读出刚才失败的来源路径。
-  - [ ] `Unregistered` 与 `(ungrouped)` 映射为「未登记图纸」「未分组」，普通装置组保持原名。
-  - [ ] 装置组子树过滤与名称大小写不敏感关键字过滤纯函数对含嵌套组、未登记图、缺文件图的测试索引返回精确序号列表。
-  - [ ] 图内对象按类型统计及按类型+关键字过滤纯函数结果正确；经典面板原有 `pid_backup` 测试全过。
+  - [x] 进入 `LoadState::Loading(path)` 时 `loading_started_at` 有值、能读出已用秒数；失败退回 `Idle` 且 `error.is_some()` 时仍能读出刚才失败的来源路径。
+  - [x] `Unregistered` 与 `(ungrouped)` 映射为「未登记图纸」「未分组」，普通装置组保持原名。
+  - [x] 装置组子树过滤与名称大小写不敏感关键字过滤纯函数对含嵌套组、未登记图、缺文件图的测试索引返回精确序号列表。
+  - [x] 图内对象按类型统计及按类型+关键字过滤纯函数结果正确；经典面板原有 `pid_backup` 测试全过。
 - **验证**：`cargo test --offline --locked --lib pid_backup`
 - **依赖**：无
 - **文件**：`src/ui/window/pid_backup_browser.rs`、`src/app/commands/pidbackup.rs`
 - **规模**：S
+- **做完**（2026-11-20）：新增 `PidBackupBrowser::{last_source, loading_started_at, loading_elapsed, active_or_failed_source}`、`screen_group_label`、`group_total_drawings`、`filter_drawings`、`item_type_counts`、`filter_drawing_items` 及 `OpenCADStudio::{load_pid_backup, pick_backup_source}` 的 `pub(in crate::app)` 可见性；4 条 `pid_backup_ui1_*` 先红后绿（`pid_backup` 303 过 / 3 忽略 / 0 失败；全库 7122 条：7066 过 / 55 忽略 / 1 失败，仅工作区未提交 `.pen` 字重测试；clippy `656` / `1051`；`fmt-newhunks` 新增 0；`arch_check` 零变化）。读数见 `readings.md` §32，证据在 `D:\scratch\ocs-sppid\2026-11-20-ui1\`。
 
 ### UI-2 【接线】导出状态结构化访问器、界面启动入口与 1 秒跳秒订阅
 

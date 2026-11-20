@@ -673,7 +673,11 @@ impl OpenCADStudio {
     /// Put the panel in its loading state and index `source` off the UI
     /// thread. `target` is the restore folder, when the command named one.
     #[cfg(not(target_arch = "wasm32"))]
-    fn load_pid_backup(&mut self, source: PathBuf, target: Option<PathBuf>) -> Task<Message> {
+    pub(in crate::app) fn load_pid_backup(
+        &mut self,
+        source: PathBuf,
+        target: Option<PathBuf>,
+    ) -> Task<Message> {
         // A relative restore folder sits beside the backup.
         let target = target.map(|target| match source.parent() {
             Some(parent) if target.is_relative() => parent.join(target),
@@ -704,7 +708,7 @@ impl OpenCADStudio {
 
     /// The source dialog: a backup zip, or with `folder` a backup folder.
     #[cfg(not(target_arch = "wasm32"))]
-    fn pick_backup_source(&mut self, folder: bool) -> Task<Message> {
+    pub(in crate::app) fn pick_backup_source(&mut self, folder: bool) -> Task<Message> {
         Task::perform(pick_backup_source_async(folder), |source| {
             Message::PidBackup(PidBackupMsg::SourcePicked(source))
         })

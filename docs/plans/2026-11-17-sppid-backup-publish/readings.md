@@ -5328,6 +5328,22 @@ SQL Server 包：
 - **预演只做了 `pid-parse` 一侧**，OCS 没有用它编过。
 - **预演留下的东西**：scratch 里的副本 `pid-parse\` 和另开的检出 `pid-parse-a85\`（连同副本里的 `target\`，约 3.2 GB），以及编译缓存 `D:\Rust\.cargo\targets\pid-parse-035af08c\`（约 11.3 GB：06:19 预演第一次编的时候建的，`a85fa10` 的检出和 stable 的补跑也编在这里）。不用了可以删；要用这份预演，先 `git fetch` 走再删。
 
+---
+
+## 32. UI-1：备份包载入计时与浏览只读访问器（2026-11-20）
+
+- **起点与编译器**：`main @ c5eaf9996`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui1\`。
+- **改动**：
+  1. `src/ui/window/pid_backup_browser.rs`：`PidBackupBrowser` 新增 `last_source: Option<PathBuf>` 与 `loading_started_at: Option<iced::time::Instant>`（在 `SourcePicked`、`Loaded`、`Refresh`、`Close` 中维护）；新增 `loading_elapsed`、`active_or_failed_source`、`screen_group_label`（`Unregistered` → `"未登记图纸"`、`(ungrouped)` → `"未分组"`）、`group_total_drawings`、`filter_drawings`、`item_type_counts`、`filter_drawing_items`。
+  2. `src/app/commands/pidbackup.rs`：`load_pid_backup` 与 `pick_backup_source` 可见性扩为 `pub(in crate::app)` 供后续 `backup` 画面复用。
+- **先红后绿**：4 条快测试 `pid_backup_ui1_*` 在空壳实现下 0 过 4 失败（`red.txt`），接入实现后 `pid_backup` 组 303 过、3 忽略、0 失败（`green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7122 条（7066 过，55 忽略，1 失败：`ui::style::pid_fonts::tests::the_faces_are_the_weights_the_design_uses`，系工作区未提交 `.pen` 基线差异，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（与基线 `656` 相同，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（与基线 `1051` 相同，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：`pid_backup_browser.rs` 新增 `0`（21 → 21），`pidbackup.rs` 新增 `0`（36 → 36）；
+  - `python scripts/arch_check.py report`：与改前逐行相同（33 对模块，183 个文件）。
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -5366,3 +5382,4 @@ SQL Server 包：
 | 2026-11-20 | 加 §28（`ACC-1` 总验收）：成对检查的脚本、两个包在真实窗口里的走法和读数、交付目录和成对检查、逐字节比和两版命令行工具的归因、厂商的 11 张、脚本的试跑和反过来验、验收对照表、检查点 A 的显示差别和处理（照录）、和任务写法的出入、检查的限度、验收判定。总验收没有通过：publish 文件和 `EXP-3` 那次全厂包 61/160、小包 7/22 不同，原因是 `EXP-3` 之后升过 `pid-parse`（`268fea286`）。开头的状态说明加上 §28 |
 | 2026-11-20 | 加 §29：按现在钉的版本重跑 `EXP-3` 的比对（七次导出全过，和 `a85fa10` 的 `pid_publish_xml` 逐字节相同；和 `EXP-3` 那次逐个导出比，不同的正好是升级动到的那些，SQL Server 包没变）；`ACC-1` 的交付目录和新的这一次比，第四条按新的基线重判为过，总验收通过。§28.11 末尾加「后来」一句，开头的状态说明加上 §29 |
 | 2026-11-20 | 把 `main` 合进 `sppid-exp2`：主线记的 §24 改号为 §30（小节号跟着改，其余照录；`todo.md` 里指向它的 5 处跟着改），开头的状态说明加上 §30、§31，§29 那一句补上主线做过的一次；加 §31：这次合并的记录 |
+| 2026-11-20 | 加 §32（检查点 C 第 1 段 `UI-1` 备份包载入计时与浏览只读访问器）：`PidBackupBrowser` 载入计时与来源保留、特殊组中文映射、装置组子树与图内对象过滤纯函数，4 条快测试先红后绿及全套门禁读数 |
