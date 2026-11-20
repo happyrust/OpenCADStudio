@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{button, column, container, row, scrollable, stack, text, text_input, Space};
 use iced::{alignment, font, Background, Border, Color, Element, Fill, Length, Padding, Task};
 
 use super::{Message as ShellMessage, PidScreen, ViewFn};
@@ -76,6 +76,8 @@ pub struct State {
     pub notice: Option<(NoticeTone, String)>,
     /// Optional test double replacing the native source picker dialog.
     pub source_picker: Option<SourcePicker>,
+    /// Export configuration dialogs and outcome drawers (`UI-7`, `UI-8`).
+    pub export_ui: super::backup_export_ui::ExportUiState,
 }
 
 impl std::fmt::Debug for State {
@@ -89,6 +91,7 @@ impl std::fmt::Debug for State {
             .field("item_query", &self.item_query)
             .field("notice", &self.notice)
             .field("has_source_picker", &self.source_picker.is_some())
+            .field("export_ui", &self.export_ui)
             .finish()
     }
 }
@@ -174,6 +177,8 @@ pub enum Message {
     ItemQueryChanged(String),
     /// Expand or collapse one item's published attributes by UID.
     ToggleItemExpanded(String),
+    /// Export dialog and outcome actions (`UI-7`, `UI-8`).
+    Export(super::backup_export_ui::ExportUiMessage),
 }
 
 /// The function that draws the screen.
@@ -493,6 +498,7 @@ pub(crate) fn update(app: &mut OpenCADStudio, message: Message) -> Task<AppMessa
             }
             Task::none()
         }
+        Message::Export(msg) => super::backup_export_ui::update(app, msg),
     }
 }
 
@@ -755,7 +761,11 @@ fn error_view<'a>(
     .into()
 }
 
-fn package_header<'a>(index: &'a BackupIndex, theme: PidTheme) -> Element<'a, AppMessage> {
+fn package_header<'a>(
+    app: &'a OpenCADStudio,
+    index: &'a BackupIndex,
+    theme: PidTheme,
+) -> Element<'a, AppMessage> {
     let titles = column![
         text(header_title_line(index))
             .size(15)
@@ -769,6 +779,7 @@ fn package_header<'a>(index: &'a BackupIndex, theme: PidTheme) -> Element<'a, Ap
     .spacing(4);
 
     let actions = row![
+        super::backup_export_ui::header_export_buttons(app, theme),
         action_button(
             theme,
             "switch_zip",
@@ -1557,7 +1568,7 @@ fn ready_view<'a>(
     index: &'a BackupIndex,
     theme: PidTheme,
 ) -> Element<'a, AppMessage> {
-    let mut root = column![package_header(index, theme)];
+    let mut root = column![package_header(app, index, theme)];
     if let Some((tone, msg)) = &app.pid_shell.backup.notice {
         let (bg, fg) = match tone {
             NoticeTone::Info => (ColorToken::AccentSoft, ColorToken::TextPrimary),
@@ -1605,7 +1616,11 @@ fn ready_view<'a>(
     .height(Fill);
 
     root = root.push(three_pane);
-    root.width(Fill).height(Fill).into()
+    let base: Element<'a, AppMessage> = root.width(Fill).height(Fill).into();
+    match super::backup_export_ui::dialog_overlay(app, index, theme) {
+        Some(overlay) => stack![base, overlay].width(Fill).height(Fill).into(),
+        None => base,
+    }
 }
 
 /// Draw the backup package screen inside the shell's content area.

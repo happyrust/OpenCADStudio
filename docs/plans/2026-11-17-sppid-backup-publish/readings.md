@@ -5423,6 +5423,21 @@ SQL Server 包：
   - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
   - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
 
+---
+
+## 38. UI-7：publish 与 PDF 导出配置对话框及即时预检（2026-11-20）
+
+- **起点与编译器**：`main @ 58f9c0893`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui7\`。
+- **改动**：
+  1. 新建 `src/app/pid_shell/backup_export_ui.rs` 并在 `backup.rs` 顶栏与模态层接入：实现「导出 publish 文件」「导出 PDF」按钮启用/禁用原因判定（无包、散放 `.pid` 无 `Manifest.txt` 禁 publish 放行 PDF、无文件、运行中）；
+  2. 实现 `PublishDialogState`（输出目录、默认 `P01` 工厂名、可选参考目录即时只读调 `check_pid_backup_export_ui` 拦截非空目录/包内目录/还原目录/无效参考目录/空工厂名，附 SQL Server 未验收与同目录先后成对提示）与 `PdfDialogState`（即时只读调 `check_pid_backup_pdf_ui` 拦截冲突 `.pdf`/`_PdfIndex.json`，附「使用上次 publish 输出目录」一键填入与可配对提示）。
+- **先红后绿**：新建 `src/app/pid_shell/pid_backup_export_ui.rs` 3 条 `pid_backup_export_ui_ui7_*` 先红 0 过 3 败（`red.txt`），实现后 3/3 全过（`green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7140 条（7084 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -5467,3 +5482,4 @@ SQL Server 包：
 | 2026-11-20 | 加 §35（检查点 C 第 2 段 `UI-4` 浏览画面三态与包概要顶栏）：未打开/载入中/出错三态、三类包概要、清缓存忙碌保护与经典面板入口，4 条快测试先红后绿及全套门禁读数 |
 | 2026-11-20 | 加 §36（检查点 C 第 2 段 `UI-5` 浏览画面三栏主体）：装置组树中文映射、搜索清单、数据库属性与图内对象过滤详情，2 条快测试先红后绿及全套门禁读数 |
 | 2026-11-20 | 加 §37（检查点 C 第 2 段 `UI-6` 从 `backup` 开图与切屏保持）：按钮/双击开图切编辑器、复用已开标签页、坏图按 S4 留屏不弹恢复窗，2 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §38（检查点 C 第 3 段 `UI-7` publish 与 PDF 配置对话框及即时预检）：按钮禁用预判、两个对话框即时预检、上次 publish 目录一键配对，3 条快测试先红后绿及全套门禁读数 |

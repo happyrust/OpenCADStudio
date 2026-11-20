@@ -149,14 +149,15 @@
   2. publish 配置对话框：输出目录输入+浏览替身、工厂名（默认 `P01`，空串拦截）、可选参考目录输入+浏览+清空；每次修改路径即时只读调用 `in_the_restore` + `pid_backup_export::check`，目录非空、落在包/还原内或参考目录无效时当场红字列出原因（含前几个冲突文件名）并禁用「开始导出」；附 SQL Server 未验收提示及「同目录成对请先导 publish 再导 PDF」提示；
   3. PDF 配置对话框：输出目录输入+浏览替身，若已有上次 publish 成功输出目录则提供「使用上次 publish 输出目录」一键填入；每次修改路径即时只读调用 `pid_backup_pdf::check`，含同名 `.pdf` 或 `_PdfIndex.json` 时当场拦截，仅含 publish 文件时显示「可与该目录中的 publish 文件配对输出」并放行。
 - **验收**：
-  - [ ] 散放 `.pid` 目录下「导出 publish 文件」禁用并提示缺少 `Manifest.txt`，「导出 PDF」可用。
-  - [ ] publish 对话框选非空目录、包内目录、还原目录、不存在的参考目录或空工厂名时，「开始导出」禁用且不启动后台导出、不写任何文件。
-  - [ ] PDF 对话框选已有同名 `.pdf` 或 `_PdfIndex.json` 的目录时禁用拦截；点「使用上次 publish 输出目录」填入仅含 `_Data.xml` / `_Index.json` 的目录时显示可配对提示并允许启动。
-  - [ ] SQL Server 包在两个对话框中均显示「没有验收过」提示。
+  - [x] 散放 `.pid` 目录下「导出 publish 文件」禁用并提示缺少 `Manifest.txt`，「导出 PDF」可用。
+  - [x] publish 对话框选非空目录、包内目录、还原目录、不存在的参考目录或空工厂名时，「开始导出」禁用且不启动后台导出、不写任何文件。
+  - [x] PDF 对话框选已有同名 `.pdf` 或 `_PdfIndex.json` 的目录时禁用拦截；点「使用上次 publish 输出目录」填入仅含 `_Data.xml` / `_Index.json` 的目录时显示可配对提示并允许启动。
+  - [x] SQL Server 包在两个对话框中均显示「没有验收过」提示。
 - **验证**：`cargo test --offline --locked --lib pid_backup_export_ui`
 - **依赖**：UI-2、UI-5
 - **文件**：新建 `src/app/pid_shell/backup_export_ui.rs`；修改 `src/app/pid_shell/backup.rs`、`src/app/pid_shell/pid_backup_screen.rs`
 - **规模**：M
+- **做完**（2026-11-20）：新建 `src/app/pid_shell/backup_export_ui.rs` 与 `src/app/pid_shell/pid_backup_export_ui.rs`，在 `backup` 顶栏接入「导出 publish 文件」「导出 PDF」按钮禁用原因预判及两个模态配置对话框（即时只读调用 `check_pid_backup_export_ui` / `check_pid_backup_pdf_ui`、SQL Server 未验收提示、「使用上次 publish 输出目录」一键配对填入）；3 条 `pid_backup_export_ui_ui7_*` 先红后绿（`pid_backup_export_ui` 3/3；全库 7140 条：7084 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试；clippy `656` / `1051` 零新增；`fmt-newhunks` 新增 0；`arch_check` 0 变化）。读数见 `readings.md` §38，证据在 `D:\scratch\ocs-sppid\2026-11-20-ui7\`。
 
 ### UI-8 【界面】导出进行中两处联动提示与双结果摘要条/展开详情
 

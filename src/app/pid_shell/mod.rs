@@ -146,6 +146,7 @@ pub mod chrome;
 pub(crate) mod rebase;
 
 pub mod backup;
+pub mod backup_export_ui;
 pub mod bom;
 pub mod color_rules;
 pub mod drawings;
@@ -161,6 +162,8 @@ pub mod typelib;
 pub mod validation;
 pub mod workbench;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pid_backup_export_ui;
 #[cfg(test)]
 mod pid_backup_in_shell;
 #[cfg(all(test, not(target_arch = "wasm32")))]
