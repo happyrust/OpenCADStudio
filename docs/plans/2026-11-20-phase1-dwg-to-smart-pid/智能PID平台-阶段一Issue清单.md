@@ -428,7 +428,7 @@
 **缺资料。** RES-03 ✔。
 
 **对应任务。** L1-6（M）
-**状态与补充核实。** **待执行（前置 `#107` 已完成）**：2026-11-20 已核清数量差异来源——`618` 为早期独立符号库快照、`644` 为 53 图全厂包 `Ref/Symbols`、`728` 为 94 图备份包 `RefData~4~681.zip`；执行普查时按 `corpus.manifest.json` 分批列明。
+**状态与解决记录。** **已完成（2026-11-20，[#114](https://github.com/happyrust/pid-cad/issues/114)）**：落地 `src/io/pid_sym_census.rs` 与 `scripts/sppid/sym-census.ps1`（先红后绿）；对 `plant644`（`643` 可画 + `1` 空本体 / `0` 失败）与 `full618`（`618` 可画 / `0` 失败）连续执行两轮结果完全一致，并书面对齐 `618` / `644` / `728` 三套来源口径，详见 `readings.md` §7。
 
 ---
 
@@ -1155,6 +1155,6 @@
 | 备份包新界面（关联） | [#115](https://github.com/happyrust/pid-cad/issues/115) | `done-local`（已在基线完成） | 检查点 C `UI-1..UI-9` + 审核加固 `6377fe233` 已在 `main` 完成 |
 | `ISSUE-L0-4` | [#108](https://github.com/happyrust/pid-cad/issues/108) | `done-local`（本地已完成） | 落地三款纯标准库度量脚本，`pytest` 176/176 过，94 套 XML/PDF 自检零差异，见 `readings.md` §5 |
 | `ISSUE-L1-3` | [#113](https://github.com/happyrust/pid-cad/issues/113) | `done-local`（本地已完成） | 落地 `src/io/pid_sym_missing.rs`，53 图与 94 图全量扫描无缓存缺失均为 `0`，见 `readings.md` §6 |
-| `ISSUE-L1-6` | [#114](https://github.com/happyrust/pid-cad/issues/114) | `phase1`（前置 `#107` 已解锁，待做） | 下一步可并行启动，区分 618 / 644 / 728 三套符号库分母 |
+| `ISSUE-L1-6` | [#114](https://github.com/happyrust/pid-cad/issues/114) | `done-local`（本地已完成） | 落地 `src/io/pid_sym_census.rs` + `sym-census.ps1`，`plant644` 与 `full618` 全量零失败，见 `readings.md` §7 |
 | `.sym` 预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | 暂缓（避让并行分支） | 待 `pid-symbol-identity` 合入 `main` 后实施 |
 | 分级表可观测性（关联） | [#117](https://github.com/happyrust/pid-cad/issues/117) | 待定范围 | 与 `L4-2` / `L0-9` 衔接，建议先做第 1 步表外计数输出 |
