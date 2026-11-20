@@ -46,6 +46,7 @@ pub mod pid_legend;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pid_pdf;
 pub mod pid_pipes;
+pub mod pid_publish;
 pub mod pid_publish_check;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pid_sym_census;

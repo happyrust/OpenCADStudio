@@ -341,12 +341,48 @@
 3. **关键发现与结论（检查点 A「能认得」正式通过）**：
    - 导出 DXF 中的块名去图层后缀后（如 `BALL VALVE TYPE 2`），正是 §8 `assets/pid-class-map.json` 中 `.sym` 文件名的大写主干（`Ball Valve Type 2.sym`）！前 15 个高频块即覆盖超过 `10,000` 个实例；
    - 因此后续 `L3-1`（图例映射）与 `L3-2`（位号增强）只需：① 将块名主干与 `assets/pid-class-map.json` 建立大小写无关自动映射（过滤 `REMARKS*` 注释锚点块），② 将位号序号模式放宽至兼容 4–7 位序号与圈内双行拼接，即可一步打通主体召回与位号配对。
-   - 至此，**检查点 A 三项判据（现状基线报告已出、Q1–Q13 源码问答已完、L4/L5 技术选型已定）全部达成**。
+   - 至此，**检查点 A 三项判据（现状基线报告已出、Q1–Q13 源码问答已完、L4/L5 技术选型已定）全部达成**（入库提交 `833eb92e9`）。
 
+---
 
+## 12. L4-1 / L4-2 / L4-3（#123）：自有模型导出 publish XML 底座（2026-11-20）
 
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-20` |
+| 基线提交 | `833eb92e9`（`main`） |
+| `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
+| 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
+| 新增 / 修改文件 | `src/io/mod.rs`、`src/io/pid_publish/{mod,uid,model,classes,write}.rs` |
+| 证据目录子项 | `2026-11-20-issue123/`（`red.txt`、`green-fast.txt`、`roundtrip.txt`、`roundtrip-real.txt`、`py-spec-check.txt`、`xml-diff-real.tsv`、`gate-cargo-test-lib.txt`、`gate-clippy-lib.txt`、`gate-clippy-test.txt`） |
 
+### 12.1 模块设计与先红后绿验证
 
+- **五子模块职责落地**：
+  1. `src/io/pid_publish/uid.rs`（`L4-3`）：确定性 `UUID v5` 主对象 UID 与单调不重用 `GraphicOID` 共享分配器（供 `L4` XML 与后续 `L5` `.pid` 共用），端口 `.1/.2`、分支点 `.BPT`、工艺点 `.PPT` 派生，原生端复用 `pid_parse::publish::pipeline::pipeline_uid` 合成管线 UID，按 `assets/pid-publish-spec.json` `uid_prefix` 生成 `<PREFIX>_<UID1>_<UID2>` 关系 UID，以及严格匹配 `AAAD...` 文件标识规则的 `_Meta.xml` 信封 UID 派生；
+  2. `src/io/pid_publish/model.rs`（`L4-1`）：脱离 `.pid` 与数据库的自有模型发布输入 DTO（`ExportDrawing`、`ExportItem`、`ExportRelation`、`UnmappedItem`、`ExportBundle`）；
+  3. `src/io/pid_publish/classes.rs`（`L4-2`）：联合加载 `assets/pid-publish-spec.json`（21 类接口/必填属性契约）与 `assets/pid-class-map.json`（237 种类变体码表元组），支持按显式 `variant_id`、`.sym` 相对路径或类高频默认变体解析接口顺序（保证 `IObject` 排首）与 `@...` 码表默认值；
+  4. `src/io/pid_publish/write.rs`（`L4-1`）：严格厂商字节格式写出器（UTF-8 BOM `EF BB BF`、CRLF、`<?xml version ="1.0" encoding="UTF-8"?>`、固定 `<Container>` 属性保序、`PIDDrawing` 首元素、`0/3/6/3/2` 空格缩进），同时输出 `_Data.xml`、`_Meta.xml` 与 `_Coverage.json`（记录写出统计与未映射跳过清单）；
+  5. `src/io/pid_publish/mod.rs`：对外统一入口 `export_drawing_bundle` 与完备单元测试集。
+- **先红后绿**：
+  - 先红（`red.txt`）：单测落盘后对骨架运行，`1 passed; 2 failed; 0 ignored`（退出码 `101`，全部命中目标断言）；
+  - 转绿（`green-fast.txt`）：实现后 `cargo test --offline --locked --lib io::pid_publish::tests` 输出 **`3 passed; 0 failed; 1 ignored`**（退出码 `0`）；未设 `OCS_PID_PUBLISH_SAMPLE_XML` 时忽略测试亦干净打印跳过提示（`roundtrip.txt`）。
 
+### 12.2 合成复杂图纸与真实单图回环导出校验
 
+| 验证场景 | 实测读数 | 结论 |
+|---|---|---|
+| 合成全链路图纸（含设备、管口、阀门、在线仪表、仪表、管线、管线段、信号线段、端口、分支点、工艺点、注释及 10 类关系 + 未映射项） | Rust `StrictVendor` 校验 `_Data.xml` 与 `_Meta.xml` 均为 **`0` 违规**；`_Coverage.json` 准确列出 `items_written=15` 与 `unmapped_items` | 通过 |
+| 真实样本单图回环重导出（`1,881` 个业务对象、`1,981` 条业务关系、`772` 个图形表示，产出 `_Data.xml` `1,822,449` 字节、`_Meta.xml` `1,698` 字节） | Rust `check_publish_xml_bytes`（`StrictVendor`）**`0` 违规**；Python `scripts/sppid/xml_spec_check.py`（严格模式）输出 **`checked 2 file(s), 0 violation(s)`**（退出码 `0`） | 双端严格校验器 **0 违规** |
+| 真实单图重导出对参考 `_Data.xml` 的 `xml_diff.py` 逐项比对（`xml-diff-real.tsv`） | 全部 `1,881` 个业务对象 **0 缺失 / 0 多余**；全部 `1,981` 条业务关系 **0 缺失 / 0 多余**；已有属性值 **0 不一致（`DIFF_ATTR = 0`）**；共 `4,820` 行差异 100% 可解释：① `4,632` 行（`772 × 6`）来自无业务键的 `PIDRepresentation` 重新分配确定性 `UUID v5`（`GraphicOID` 100% 保持不变）；② 其余 `188` 行为回环测试未传 `variant_id` 时回退类默认首变体 `V001` 所补齐的可选接口/默认码表项 | 差异清单 100% 结构化可解释 |
 
+### 12.3 固定门禁读数
+
+| 门禁项 | 改前读数（§8.2） | 改后实测 | 结论 |
+|---|---|---|---|
+| `cargo test --offline --locked --lib` | `7,162` 条 | **`7,166` 条**（**`7,105` 过** / **`60` 忽略** / **`1` 同一既有 `.pen` 字重失败**） | `+4` 条测试，**0 新增失败** |
+| `cargo clippy --offline --locked --lib` | `656` 条警告 | **`656` 条警告**（含 `4 duplicates`） | **0 新增警告** |
+| `cargo clippy --offline --locked --lib --profile test` | `1,051` 条警告 | **`1,051` 条警告**（含 `4 duplicates`） | **0 新增警告** |
+| `scripts\fmt-newhunks.ps1` | — | `src/io/mod.rs` 及 `src/io/pid_publish/*.rs` 共 6 个文件全部 **`new=0`** | **0 格式偏差** |
+| `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
+| `python -m pytest scripts/sppid -q -p no:cacheprovider` | `181 passed` | **`181 passed`** | 全绿 |

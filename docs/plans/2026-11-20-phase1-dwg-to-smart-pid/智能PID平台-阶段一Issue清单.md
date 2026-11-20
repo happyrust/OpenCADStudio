@@ -467,7 +467,7 @@
 
 ---
 
-### ISSUE-L4-1 没有"从我们自己的模型导出 XML"这条路
+### ISSUE-L4-1 没有"从我们自己的模型导出 XML"这条路（GitHub [#123](https://github.com/happyrust/pid-cad/issues/123)）
 
 **现状问题。**
 - 仓库里的 EXP-1（`src/io/pid_backup_export.rs`）只是"备份包 → publish 文件"的外壳，**输入是 SPPID 备份包**。
@@ -491,10 +491,11 @@
 **缺资料。** RES-01 ✔（已由 `L0-8` 核实，锁定方案 (a)：转换至 `pid-parse::publish` DTO + 严格厂商字节格式包装）。
 
 **对应任务。** L4-1（L）
+**状态与解决记录。** **已完成（2026-11-20，[#123](https://github.com/happyrust/pid-cad/issues/123)）**：落地 `src/io/pid_publish/{model,write,mod}.rs`（先红后绿）；合成复杂图纸与 `1,881` 对象真实单图回环重导出均通过 Rust / Python 双端 `StrictVendor` 校验（`0` 违规），输出 `_Data.xml`、`_Meta.xml` 与 `_Coverage.json`，对参考 `_Data.xml` 的差异清单（`4,632` 行表示临时 GUID + `188` 行默认变体可选接口补齐）100% 可解释（详见 `readings.md` §12）。
 
 ---
 
-### ISSUE-L4-2 每类对象写哪些接口、哪些属性，没有模板
+### ISSUE-L4-2 每类对象写哪些接口、哪些属性，没有模板（GitHub [#123](https://github.com/happyrust/pid-cad/issues/123)）
 
 **现状问题。**
 - 样本里 21 类对象的接口集与属性集各不相同（例如 `PIDNote` 5 个接口、设备类 20–30 多个）。
@@ -512,13 +513,14 @@
 - 每类对象的接口集与参考样本一致。
 - 属性集差异逐项列出并解释。
 
-**缺资料。** RES-01 ⚠、RES-02 ✔。
+**缺资料。** RES-01 ✔、RES-02 ✔。
 
 **对应任务。** L4-2（L）
+**状态与解决记录。** **已完成（2026-11-20，[#123](https://github.com/happyrust/pid-cad/issues/123)）**：落地 `src/io/pid_publish/classes.rs`，联合加载 `assets/pid-publish-spec.json`（21 类接口/必填属性契约）与 `assets/pid-class-map.json`（237 种类变体码表元组），支持按显式 `variant_id`、`.sym` 相对路径或高频默认变体解析接口顺序（`IObject` 排首）与 `@...` 码表默认值，未映射项计入 `_Coverage.json`（详见 `readings.md` §12）。
 
 ---
 
-### ISSUE-L4-3 UID 与 OID 分配没有统一实现
+### ISSUE-L4-3 UID 与 OID 分配没有统一实现（GitHub [#123](https://github.com/happyrust/pid-cad/issues/123)）
 
 **现状问题。**
 - 样本证明：XML 的对象 UID（表示、图纸、设备、仪表、管件、管线段）**以 ASCII 文本出现在 `.pid` 的 `/PSMcluster0` 与 `/Unclustered Dynamic Attributes` 里**（抽样最小文件 98/98 表示 UID 全部找到）。
@@ -538,9 +540,10 @@
 - 生成的 UID 全部通过校验器。
 - 抽样核对：同一对象在 XML 与 `.pid` 里是同一个 UID。
 
-**缺资料。** RES-01 ⚠（Q9 决定"加一个对象要改哪些流"）。
+**缺资料。** RES-01 ✔（已由 Q9 明确同步清单）。
 
 **对应任务。** L4-3（M）
+**状态与解决记录。** **已完成（2026-11-20，[#123](https://github.com/happyrust/pid-cad/issues/123)）**：落地 `src/io/pid_publish/uid.rs`（`UidAllocator` 确定性 `UUID v5` 主对象 UID 与单调不重用 `GraphicOID` 共享分配器、端口 `.序号` / `.BPT` / `.PPT` 派生、原生端复用 `pid_parse::publish::pipeline::pipeline_uid`、关系前缀拼接及 `AAAD...` `_Meta.xml` 信封 UID），全部通过 `#111` 严格语法校验（详见 `readings.md` §12）。
 
 ---
 
