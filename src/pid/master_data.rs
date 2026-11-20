@@ -2,12 +2,19 @@
 //! 流体介质、PBS 节点树和项目锁定的图例标准。
 //!
 //! 这里是数据对象与 JSON 形状（§3.1）、默认内容、校验（§3.6，错误带出错
-//! 位置）和属性值与主数据的比法（§3.5）。纯数据加纯函数，不碰图纸。
+//! 位置）、属性值与主数据的比法（§3.5），以及两处存放和取用顺序（§3.2–§3.4、
+//! §4）：图内记录、图纸目录里的项目文件，项目文件优先。
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
+use document::Document;
 use serde_json::{json, Map, Value};
+
+use crate::pid::graph_data;
 
 /// 程序认识的格式版本（§3.1 的 `version`）。
 pub const VERSION: u64 = 1;
@@ -17,6 +24,12 @@ pub const DEFAULT_DIAMETERS: [u32; 19] = [
 ];
 /// 公称直径的单位；本期只有毫米。
 pub const DIAMETER_UNIT: &str = "mm";
+/// 图内记录的键（§3.4）。
+pub const PID_AUTHOR_MASTERDATA: &str = "PID_AUTHOR_MASTERDATA";
+/// 项目文件名（§3.3），在图纸所在的目录里。
+pub const PROJECT_FILE: &str = "pid-project.json";
+/// 程序认识的项目文件格式版本（§3.3 的 `version`）。
+pub const PROJECT_FILE_VERSION: u64 = 1;
 /// 公称直径标签最多几个字符。
 const LABEL_MAX_CHARS: usize = 16;
 /// 三张表里的名称最多几个字符。
@@ -100,8 +113,9 @@ impl Table {
 
 // ── 错误 ─────────────────────────────────────────────────────────────────
 
-/// 主数据读不出来的原因。每个变体有 §3.6 的错误码（[`MasterDataError::code`]）
-/// 和出错位置（[`MasterDataError::at`]，如 `pipe_classes[2].name`；整个对象是空串）。
+/// 主数据读不出来、写不进去的原因。每个变体有错误码（[`MasterDataError::code`]）
+/// 和出错位置（[`MasterDataError::at`]，如 `pipe_classes[2].name`；整个对象是空串；
+/// 读写文件出错时是文件路径）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MasterDataError {
     /// JSON 结构不对：缺键、类型不对，或者取值超出约束。
@@ -112,12 +126,17 @@ pub enum MasterDataError {
     Duplicate { at: String, value: String },
     /// PBS 的 `parent` 指向不存在的节点，或者沿上级成环。
     PbsInvalid { at: String, reason: String },
-    /// `version` 比程序认识的高。
-    VersionUnsupported { found: u64 },
+    /// 格式版本比程序认识的高；`at` 是那个 `version` 键的位置。
+    VersionUnsupported { at: String, found: u64 },
+    /// 写项目文件时，磁盘上主数据的修订号已经不是调用方读到的 `expected`：有人先写过。
+    /// `found` 为 `None` 是磁盘上没有主数据，或读不出它的修订号。
+    Conflict { expected: u64, found: Option<u64> },
+    /// 读写项目文件时文件系统报的错。
+    Io { path: String, reason: String },
 }
 
 impl MasterDataError {
-    /// §3.6 的错误码。
+    /// 错误码：§3.6 的那些，加上读写文件出错的 `MASTERDATA_IO_ERROR`。
     pub fn code(&self) -> &'static str {
         match self {
             Self::Schema { .. } => "MASTERDATA_SCHEMA_ERROR",
@@ -125,6 +144,8 @@ impl MasterDataError {
             Self::Duplicate { .. } => "MASTERDATA_DUPLICATE",
             Self::PbsInvalid { .. } => "MASTERDATA_PBS_INVALID",
             Self::VersionUnsupported { .. } => "MASTERDATA_VERSION_UNSUPPORTED",
+            Self::Conflict { .. } => "MASTERDATA_CONFLICT",
+            Self::Io { .. } => "MASTERDATA_IO_ERROR",
         }
     }
 
@@ -134,8 +155,10 @@ impl MasterDataError {
             Self::Schema { at, .. }
             | Self::RequiredFieldMissing { at }
             | Self::Duplicate { at, .. }
-            | Self::PbsInvalid { at, .. } => at,
-            Self::VersionUnsupported { .. } => "version",
+            | Self::PbsInvalid { at, .. }
+            | Self::VersionUnsupported { at, .. } => at,
+            Self::Conflict { .. } => "master_data.revision",
+            Self::Io { path, .. } => path,
         }
     }
 }
@@ -148,16 +171,32 @@ impl fmt::Display for MasterDataError {
             self.at()
         };
         match self {
-            Self::Schema { reason, .. } | Self::PbsInvalid { reason, .. } => {
+            Self::Schema { reason, .. }
+            | Self::PbsInvalid { reason, .. }
+            | Self::Io { reason, .. } => {
                 write!(f, "{}: {at} {reason}", self.code())
             }
             Self::RequiredFieldMissing { .. } => write!(f, "{}: {at} 不能为空", self.code()),
             Self::Duplicate { value, .. } => {
                 write!(f, "{}: {at} 的 {value} 与前面的重复", self.code())
             }
-            Self::VersionUnsupported { found } => write!(
+            Self::VersionUnsupported { found, .. } => {
+                write!(f, "{}: {at} 是 {found}，比程序认识的高", self.code())
+            }
+            Self::Conflict {
+                expected,
+                found: Some(found),
+            } => write!(
                 f,
-                "{}: 格式版本 {found} 比程序认识的 {VERSION} 高",
+                "{}: 项目文件里的主数据已是修订 {found}，不是读到时的 {expected}",
+                self.code()
+            ),
+            Self::Conflict {
+                expected,
+                found: None,
+            } => write!(
+                f,
+                "{}: 项目文件里没有主数据的修订号，读到时是修订 {expected}",
                 self.code()
             ),
         }
@@ -327,16 +366,14 @@ fn entries_json(rows: &[Entry]) -> Value {
 /// `legend_standard`、`outer_diameter`、`hidden`、`attrs`、`parent` 可以不写（当作 `null`、
 /// `null`、`false`、空对象、`null`）；认不得的键不理。
 pub fn validate(value: &Value) -> Result<MasterData, MasterDataError> {
-    let root = JsonObject::read(value, String::new())?;
-    let version = root.unsigned("version")?;
-    if version > VERSION {
-        return Err(MasterDataError::VersionUnsupported { found: version });
-    }
-    if version == 0 {
-        return Err(schema(root.at("version"), "格式版本从 1 起"));
-    }
+    read_master_data(value, String::new())
+}
+
+/// 同 [`validate`]，出错位置从 `at` 算起（主数据在项目文件里时是 `master_data`）。
+fn read_master_data(value: &Value, at: String) -> Result<MasterData, MasterDataError> {
+    let root = JsonObject::read(value, at)?;
     Ok(MasterData {
-        version,
+        version: root.version(VERSION)?,
         revision: root.unsigned("revision")?,
         updated_at: root.integer("updated_at")?,
         legend_standard: root.optional_text("legend_standard")?.map(str::to_owned),
@@ -614,6 +651,21 @@ impl<'a> JsonObject<'a> {
             .as_i64()
             .ok_or_else(|| schema(self.at(key), "应为整数"))
     }
+
+    /// 格式版本 `version`：比 `known` 高是 `VersionUnsupported`，0 是结构错。
+    fn version(&self, known: u64) -> Result<u64, MasterDataError> {
+        let version = self.unsigned("version")?;
+        if version > known {
+            return Err(MasterDataError::VersionUnsupported {
+                at: self.at("version"),
+                found: version,
+            });
+        }
+        if version == 0 {
+            return Err(schema(self.at("version"), "格式版本从 1 起"));
+        }
+        Ok(version)
+    }
 }
 
 fn schema(at: String, reason: impl Into<String>) -> MasterDataError {
@@ -623,10 +675,234 @@ fn schema(at: String, reason: impl Into<String>) -> MasterDataError {
     }
 }
 
+// ── 两处存放、取用顺序 ───────────────────────────────────────────────────
+
+/// 生效的主数据从哪里来（§3.2）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// 项目文件，带它的路径。
+    Project(PathBuf),
+    /// 图内记录。
+    Drawing,
+}
+
+/// [`resolve`] 的结果。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Resolved {
+    Configured {
+        data: MasterData,
+        source: Source,
+    },
+    /// 该用的那一份读不出来；不退回去用另一处的。
+    Unreadable {
+        source: Source,
+        error: MasterDataError,
+    },
+    NotConfigured,
+}
+
+/// 按 §3.2 找出生效的主数据：图纸所在目录 `drawing_dir` 里的项目文件带主数据就用它，
+/// 否则用图内记录，都没有是未配置。项目文件读不出来就是读不出来，不看图内那份。
+/// 没保存过的图没有目录，传 `None`。
+pub fn resolve(doc: &Document, drawing_dir: Option<&Path>) -> Resolved {
+    if let Some(path) = drawing_dir.map(|dir| dir.join(PROJECT_FILE)) {
+        match read_project_file(&path) {
+            Ok(None) => {}
+            Ok(Some(data)) => {
+                return Resolved::Configured {
+                    data,
+                    source: Source::Project(path),
+                };
+            }
+            Err(error) => {
+                return Resolved::Unreadable {
+                    source: Source::Project(path),
+                    error,
+                };
+            }
+        }
+    }
+    match load_from_drawing(doc) {
+        Some(Ok(data)) => Resolved::Configured {
+            data,
+            source: Source::Drawing,
+        },
+        Some(Err(error)) => Resolved::Unreadable {
+            source: Source::Drawing,
+            error,
+        },
+        None => Resolved::NotConfigured,
+    }
+}
+
+/// 读项目文件 `path` 里的主数据（§3.3）。没有这个文件，或者文件里没有 `master_data`
+/// （或为 `null`），是 `Ok(None)`。开头的 UTF-8 BOM 不算错；出错位置从文件顶层算起，
+/// 如 `master_data.pipe_classes[2].name`。
+pub fn read_project_file(path: &Path) -> Result<Option<MasterData>, MasterDataError> {
+    let Some(file) = project_file_on_disk(path)? else {
+        return Ok(None);
+    };
+    match file.get("master_data") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => read_master_data(value, "master_data".to_owned()).map(Some),
+    }
+}
+
+/// 把 `data` 原样写进图内记录 [`PID_AUTHOR_MASTERDATA`]（§3.4），整条重写。修订号
+/// 和时间由调用方定，撤销快照也由调用方先推（§4）。
+pub fn store_in_drawing(doc: &mut Document, data: &MasterData) {
+    graph_data::store(doc, PID_AUTHOR_MASTERDATA, &[data.to_json()]);
+}
+
+/// 图内记录里的主数据；没有这条记录是 `None`。记录里应当恰好是一个对象。
+pub fn load_from_drawing(doc: &Document) -> Option<Result<MasterData, MasterDataError>> {
+    let loaded = graph_data::load_reporting(doc, PID_AUTHOR_MASTERDATA)?;
+    let read = match (loaded.items.as_slice(), loaded.unreadable.as_slice()) {
+        ([value], []) => validate(value),
+        _ => Err(schema(String::new(), "图内记录应当恰好是一个 JSON 对象")),
+    };
+    Some(read)
+}
+
+/// 把 `data` 写进目录 `dir` 里的项目文件（§4）。先读磁盘上主数据的修订号：
+/// `expected_revision` 给了而不相等是 `MASTERDATA_CONFLICT`，什么也不写。写进去的修订号
+/// 是磁盘上的加 1（还没有是 1），`updated_at` 取当前时间；先写旁边的临时文件再改名
+/// 盖过去。项目文件里别的顶层键原样留着；文件本身读不出来（不是 JSON、版本更高）
+/// 时不写，免得冲掉人手写的内容。返回写进去的那一份。
+pub fn write_project_file(
+    dir: &Path,
+    data: &MasterData,
+    expected_revision: Option<u64>,
+) -> Result<MasterData, MasterDataError> {
+    write_project_file_at(dir, data, expected_revision, unix_seconds())
+}
+
+/// 同 [`write_project_file`]，`updated_at` 取 `now`。
+fn write_project_file_at(
+    dir: &Path,
+    data: &MasterData,
+    expected_revision: Option<u64>,
+    now: i64,
+) -> Result<MasterData, MasterDataError> {
+    let path = dir.join(PROJECT_FILE);
+    let file = project_file_on_disk(&path)?;
+    let on_disk = file
+        .as_ref()
+        .and_then(|file| file.get("master_data")?.get("revision")?.as_u64());
+    if let Some(expected) = expected_revision {
+        if on_disk != Some(expected) {
+            return Err(MasterDataError::Conflict {
+                expected,
+                found: on_disk,
+            });
+        }
+    }
+    let written = MasterData {
+        revision: on_disk.map_or(1, |revision| revision.saturating_add(1)),
+        updated_at: now,
+        ..data.clone()
+    };
+    replace_file(
+        &path,
+        &project_file_text(file.unwrap_or_default(), &written),
+    )
+    .map_err(|error| io_error(&path, &error))?;
+    Ok(written)
+}
+
+/// 磁盘上的项目文件，顶层对象；没有这个文件是 `None`。顶层的 `version` 要认得。
+fn project_file_on_disk(path: &Path) -> Result<Option<Map<String, Value>>, MasterDataError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error(path, &error)),
+    };
+    let text = bytes
+        .strip_prefix(b"\xEF\xBB\xBF")
+        .unwrap_or(bytes.as_slice());
+    let file = match serde_json::from_slice(text) {
+        Ok(Value::Object(file)) => file,
+        Ok(_) => return Err(schema(String::new(), "应为对象")),
+        Err(error) => {
+            return Err(schema(String::new(), format!("不是合法的 JSON：{error}")));
+        }
+    };
+    JsonObject {
+        map: &file,
+        at: String::new(),
+    }
+    .version(PROJECT_FILE_VERSION)?;
+    Ok(Some(file))
+}
+
+/// 项目文件全文（§3.3）：键按 `version`、`project`、`master_data`、`drawings` 的顺序，
+/// 认不得的顶层键照原来的顺序接在后面；缩进 2 格，UTF-8 不带 BOM，末尾换行。
+fn project_file_text(file: Map<String, Value>, data: &MasterData) -> String {
+    let mut version = json!(PROJECT_FILE_VERSION);
+    let mut project = None;
+    let mut drawings = None;
+    let mut others = Vec::new();
+    for (key, value) in file {
+        match key.as_str() {
+            "version" => version = value,
+            "project" => project = Some(value),
+            "drawings" => drawings = Some(value),
+            "master_data" => {}
+            _ => others.push((key, value)),
+        }
+    }
+    let mut out = Map::new();
+    out.insert("version".to_owned(), version);
+    if let Some(project) = project {
+        out.insert("project".to_owned(), project);
+    }
+    out.insert("master_data".to_owned(), data.to_json());
+    if let Some(drawings) = drawings {
+        out.insert("drawings".to_owned(), drawings);
+    }
+    out.extend(others);
+    format!("{:#}\n", Value::Object(out))
+}
+
+/// 先写到 `path` 旁边的临时文件再改名盖过去：失败时原文件不变，临时文件删掉。
+fn replace_file(path: &Path, text: &str) -> io::Result<()> {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = PathBuf::from(temporary);
+    let result = fs::write(&temporary, text).and_then(|()| fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn io_error(path: &Path, error: &io::Error) -> MasterDataError {
+    MasterDataError::Io {
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn unix_seconds() -> i64 {
+    (js_sys::Date::now() / 1000.0) as i64
+}
+
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+    use document::DxfVersion;
     use serde_json::json;
 
     use super::*;
@@ -1022,6 +1298,419 @@ mod tests {
         assert_eq!(data.pbs_subtree("1001-01"), ["1001-01", "1001-01-A"]);
         assert_eq!(data.pbs_subtree("2001"), ["2001"]);
         assert!(data.pbs_subtree("9999").is_empty());
+    }
+
+    /// 测试用的临时目录，测完删掉。
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            // 测试并行跑：计数器把同一纳秒里建的两个目录分开。
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "ocs-master-data-{}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |elapsed| elapsed.as_nanos())
+            ));
+            fs::create_dir(&path).expect("scratch directory");
+            Self(path)
+        }
+
+        /// 这个目录里的项目文件。
+        fn file(&self) -> PathBuf {
+            self.0.join(PROJECT_FILE)
+        }
+
+        /// 目录里的文件名，排好序。
+        fn names(&self) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(&self.0)
+                .expect("scratch directory is readable")
+                .map(|entry| {
+                    entry
+                        .expect("directory entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// §3.3 的项目文件例子，主数据换成 `master_data`。
+    fn project_text(master_data: &Value) -> String {
+        let file = json!({
+            "version": 1,
+            "project": { "id": "CDU-2026", "name": "常压蒸馏改造" },
+            "master_data": master_data,
+            "drawings": [ { "file": "PID-1101.dwg", "drawing_id": "PID-1101", "pbs": "1001-01" } ]
+        });
+        format!("{file:#}\n")
+    }
+
+    /// 与 `sample()` 不同的另一份。
+    fn other_data() -> MasterData {
+        MasterData {
+            revision: 9,
+            ..defaults("另一套图例")
+        }
+    }
+
+    #[test]
+    fn master_data_resolve_uses_the_project_file_when_it_has_master_data() {
+        let scratch = Scratch::new();
+        fs::write(scratch.file(), project_text(&sample())).expect("project file");
+        let expected = Resolved::Configured {
+            data: read(&sample()),
+            source: Source::Project(scratch.file()),
+        };
+        assert_eq!(resolve(&Document::new(), Some(&scratch.0)), expected);
+
+        // 两处都有：用项目文件那份，图内那份还在。
+        let mut doc = Document::new();
+        store_in_drawing(&mut doc, &other_data());
+        assert_eq!(resolve(&doc, Some(&scratch.0)), expected);
+        assert_eq!(load_from_drawing(&doc), Some(Ok(other_data())));
+
+        // 开头带 UTF-8 BOM（Windows PowerShell 5.1 存 UTF-8 时会带）也照样读。
+        let with_bom = format!("\u{feff}{}", project_text(&sample()));
+        fs::write(scratch.file(), with_bom).expect("project file");
+        assert_eq!(resolve(&doc, Some(&scratch.0)), expected);
+    }
+
+    #[test]
+    fn master_data_resolve_falls_back_to_the_drawing_record() {
+        let scratch = Scratch::new();
+        let mut doc = Document::new();
+        assert_eq!(resolve(&doc, Some(&scratch.0)), Resolved::NotConfigured);
+        assert_eq!(resolve(&doc, None), Resolved::NotConfigured);
+
+        store_in_drawing(&mut doc, &other_data());
+        let expected = Resolved::Configured {
+            data: other_data(),
+            source: Source::Drawing,
+        };
+        assert_eq!(resolve(&doc, Some(&scratch.0)), expected, "no project file");
+        assert_eq!(resolve(&doc, None), expected, "a drawing never saved");
+        // 项目文件里没有 `master_data`（或为 null），等于没有项目文件（§3.3）。
+        for text in [
+            r#"{ "version": 1, "project": { "id": "CDU-2026", "name": "常压蒸馏改造" } }"#,
+            r#"{ "version": 1, "master_data": null }"#,
+        ] {
+            fs::write(scratch.file(), text).expect("project file");
+            assert_eq!(resolve(&doc, Some(&scratch.0)), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn master_data_a_broken_project_file_is_unreadable_and_the_drawing_record_is_not_used() {
+        let scratch = Scratch::new();
+        let mut doc = Document::new();
+        store_in_drawing(&mut doc, &other_data());
+        let without_version = format!("{:#}", json!({ "master_data": sample() }));
+        let cases = [
+            (
+                r#"{ "version": 1, "master_data": "#.to_owned(),
+                "MASTERDATA_SCHEMA_ERROR",
+                "",
+            ),
+            ("[]".to_owned(), "MASTERDATA_SCHEMA_ERROR", ""),
+            (without_version, "MASTERDATA_SCHEMA_ERROR", "version"),
+            (
+                r#"{ "version": 2, "master_data": {} }"#.to_owned(),
+                "MASTERDATA_VERSION_UNSUPPORTED",
+                "version",
+            ),
+            (
+                project_text(&with("/version", json!(2))),
+                "MASTERDATA_VERSION_UNSUPPORTED",
+                "master_data.version",
+            ),
+            (
+                project_text(&with("/pipe_classes/1/name", json!(7))),
+                "MASTERDATA_SCHEMA_ERROR",
+                "master_data.pipe_classes[1].name",
+            ),
+            (
+                project_text(&with("/pipe_classes/1/name", json!("A1A"))),
+                "MASTERDATA_DUPLICATE",
+                "master_data.pipe_classes[1].name",
+            ),
+            (
+                project_text(&with("/pbs/0/parent", json!("1001-01-A"))),
+                "MASTERDATA_PBS_INVALID",
+                "master_data.pbs[0].parent",
+            ),
+        ];
+        for (text, code, at) in cases {
+            fs::write(scratch.file(), &text).expect("project file");
+            match resolve(&doc, Some(&scratch.0)) {
+                Resolved::Unreadable { source, error } => {
+                    assert_eq!(source, Source::Project(scratch.file()), "{text}");
+                    assert_eq!((error.code(), error.at()), (code, at), "{text}");
+                }
+                other => panic!("{text} is unreadable, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn master_data_a_broken_drawing_record_is_unreadable() {
+        let unreadable = |doc: &Document| match resolve(doc, None) {
+            Resolved::Unreadable {
+                source: Source::Drawing,
+                error,
+            } => (error.code(), error.at().to_owned()),
+            other => panic!("the drawing record is unreadable, got {other:?}"),
+        };
+        let mut doc = Document::new();
+        graph_data::store(&mut doc, PID_AUTHOR_MASTERDATA, &[json!({ "version": 1 })]);
+        assert_eq!(
+            unreadable(&doc),
+            ("MASTERDATA_SCHEMA_ERROR", "revision".to_owned())
+        );
+        graph_data::store(&mut doc, PID_AUTHOR_MASTERDATA, &[sample(), sample()]);
+        assert_eq!(unreadable(&doc), ("MASTERDATA_SCHEMA_ERROR", String::new()));
+        graph_data::store(
+            &mut doc,
+            PID_AUTHOR_MASTERDATA,
+            &[with("/version", json!(2))],
+        );
+        assert_eq!(
+            unreadable(&doc),
+            ("MASTERDATA_VERSION_UNSUPPORTED", "version".to_owned())
+        );
+    }
+
+    #[test]
+    fn master_data_the_drawing_record_survives_a_dwg_save_and_reopen() {
+        let mut doc = Document::new();
+        let data = read(&sample());
+        store_in_drawing(&mut doc, &data);
+        let bytes =
+            crate::io::save_to_bytes(&doc, "dwg", DxfVersion::AC1032).expect("save dwg 2018");
+        let back = crate::io::load_bytes("master-data.dwg", bytes).expect("load dwg 2018");
+        assert_eq!(load_from_drawing(&back), Some(Ok(data)));
+        assert!(
+            !graph_data::keys().contains(&PID_AUTHOR_MASTERDATA),
+            "the graph keys stay as they were"
+        );
+    }
+
+    #[test]
+    fn master_data_writing_the_project_file_checks_the_revision_on_disk() {
+        let scratch = Scratch::new();
+        let data = read(&sample());
+        let first =
+            write_project_file_at(&scratch.0, &data, None, 1_794_900_000).expect("first write");
+        assert_eq!(
+            (first.revision, first.updated_at),
+            (1, 1_794_900_000),
+            "a new file starts at revision 1"
+        );
+        assert_eq!(
+            MasterData {
+                revision: 3,
+                updated_at: 1_794_800_000,
+                ..first.clone()
+            },
+            data,
+            "only the revision and the time change"
+        );
+        assert_eq!(read_project_file(&scratch.file()), Ok(Some(first)));
+
+        let second =
+            write_project_file_at(&scratch.0, &data, Some(1), 1_794_900_060).expect("second write");
+        assert_eq!((second.revision, second.updated_at), (2, 1_794_900_060));
+
+        let before = fs::read(scratch.file()).expect("project file");
+        let conflict = write_project_file_at(&scratch.0, &data, Some(1), 1_794_900_120)
+            .expect_err("revision 2 was written since");
+        assert_eq!(
+            conflict,
+            MasterDataError::Conflict {
+                expected: 1,
+                found: Some(2)
+            }
+        );
+        assert_eq!(conflict.code(), "MASTERDATA_CONFLICT");
+        assert_eq!(
+            fs::read(scratch.file()).expect("project file"),
+            before,
+            "the file is byte for byte as it was"
+        );
+        assert_eq!(scratch.names(), [PROJECT_FILE], "no temporary file is left");
+
+        // 说了读到哪个修订，磁盘上却没有主数据：也是冲突，什么也不写。
+        let empty = Scratch::new();
+        assert_eq!(
+            write_project_file_at(&empty.0, &data, Some(3), 1_794_900_000),
+            Err(MasterDataError::Conflict {
+                expected: 3,
+                found: None
+            })
+        );
+        assert!(empty.names().is_empty());
+
+        // 不带时间的那个取当前时间。
+        let earliest = unix_seconds();
+        let third = write_project_file(&scratch.0, &data, Some(2)).expect("third write");
+        assert_eq!(third.revision, 3);
+        assert!((earliest..=unix_seconds()).contains(&third.updated_at));
+    }
+
+    #[test]
+    fn master_data_writing_the_project_file_keeps_the_other_keys() {
+        let scratch = Scratch::new();
+        let file = json!({
+            "备注": "人手加的说明",
+            "drawings": [ { "file": "PID-1101.dwg", "drawing_id": "PID-1101", "pbs": "1001-01" } ],
+            "master_data": sample(),
+            "version": 1,
+            "project": { "id": "CDU-2026", "name": "常压蒸馏改造" },
+            "zz_tool": { "seen": true }
+        });
+        fs::write(scratch.file(), format!("{file:#}")).expect("project file");
+        let written = write_project_file_at(&scratch.0, &other_data(), Some(3), 1_794_900_000)
+            .expect("write");
+        assert_eq!(written.revision, 4);
+
+        let text = fs::read_to_string(scratch.file()).expect("project file");
+        let back: Value = serde_json::from_str(&text).expect("still JSON");
+        let keys: Vec<&str> = back
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "version",
+                "project",
+                "master_data",
+                "drawings",
+                "备注",
+                "zz_tool"
+            ],
+            "the §3.3 order, then the others as they were"
+        );
+        for key in ["version", "project", "drawings", "备注", "zz_tool"] {
+            assert_eq!(back[key], file[key], "{key}");
+        }
+        assert_eq!(back["master_data"], written.to_json());
+    }
+
+    #[test]
+    fn master_data_the_same_master_data_writes_the_same_bytes() {
+        let data = read(&sample());
+        let write = || {
+            let scratch = Scratch::new();
+            write_project_file_at(&scratch.0, &data, None, 1_794_900_000).expect("write");
+            fs::read(scratch.file()).expect("project file")
+        };
+        let first = write();
+        assert_eq!(write(), first);
+
+        let text = String::from_utf8(first).expect("UTF-8");
+        assert!(
+            text.starts_with(
+                "{\n  \"version\": 1,\n  \"master_data\": {\n    \"version\": 1,\n    \"revision\": 1,\n"
+            ),
+            "two spaces a level, no BOM: {text}"
+        );
+        assert!(text.ends_with("\n}\n"), "{text}");
+    }
+
+    #[test]
+    fn master_data_a_failed_write_leaves_no_temporary_file() {
+        // 改名这一步失败：项目文件的位置上是个不空的目录。临时文件已经写出来了，要删掉。
+        let scratch = Scratch::new();
+        fs::create_dir(scratch.file()).expect("a directory in the way");
+        fs::write(scratch.file().join("inside.txt"), "x").expect("a file inside it");
+        assert!(replace_file(&scratch.file(), "{}\n").is_err());
+        assert_eq!(scratch.names(), [PROJECT_FILE]);
+        assert_eq!(
+            fs::read_to_string(scratch.file().join("inside.txt")).expect("still there"),
+            "x"
+        );
+        assert_eq!(
+            write_project_file_at(&scratch.0, &read(&sample()), None, 1_794_900_000)
+                .map_err(|error| error.code()),
+            Err("MASTERDATA_IO_ERROR")
+        );
+        assert_eq!(scratch.names(), [PROJECT_FILE]);
+
+        // 目录不在：报错，什么也没建出来。
+        let missing = scratch.0.join("没有这个目录");
+        let error = write_project_file_at(&missing, &read(&sample()), None, 1_794_900_000)
+            .expect_err("nowhere to write");
+        assert_eq!(error.code(), "MASTERDATA_IO_ERROR");
+        assert_eq!(error.at(), missing.join(PROJECT_FILE).display().to_string());
+        assert!(!missing.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn master_data_a_project_file_held_open_elsewhere_is_left_as_it_was() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let scratch = Scratch::new();
+        write_project_file_at(&scratch.0, &read(&sample()), None, 1_794_900_000)
+            .expect("first write");
+        let before = fs::read(scratch.file()).expect("project file");
+        // 别的程序开着它，只许别人读（FILE_SHARE_READ），不许删也不许换掉。
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(scratch.file())
+            .expect("held open");
+        let error = write_project_file_at(&scratch.0, &other_data(), Some(1), 1_794_900_060)
+            .expect_err("a held file cannot be replaced");
+        drop(held);
+        assert_eq!(error.code(), "MASTERDATA_IO_ERROR");
+        assert_eq!(fs::read(scratch.file()).expect("project file"), before);
+        assert_eq!(scratch.names(), [PROJECT_FILE], "no temporary file is left");
+    }
+
+    #[test]
+    fn master_data_a_project_file_that_cannot_be_read_is_not_overwritten() {
+        let scratch = Scratch::new();
+        for (text, code) in [
+            (r#"{ "version": 1, "project": "#, "MASTERDATA_SCHEMA_ERROR"),
+            (r#"{ "version": 2 }"#, "MASTERDATA_VERSION_UNSUPPORTED"),
+        ] {
+            fs::write(scratch.file(), text).expect("project file");
+            assert_eq!(
+                write_project_file_at(&scratch.0, &read(&sample()), None, 1_794_900_000)
+                    .map_err(|error| error.code()),
+                Err(code),
+                "{text}"
+            );
+            assert_eq!(
+                fs::read_to_string(scratch.file()).expect("project file"),
+                text
+            );
+            assert_eq!(scratch.names(), [PROJECT_FILE]);
+        }
+
+        // 只是主数据那一段坏了：整份写进去就是修好了。
+        let broken = project_text(&with("/pipe_classes/1/name", json!(7)));
+        fs::write(scratch.file(), broken).expect("project file");
+        let written = write_project_file_at(&scratch.0, &read(&sample()), None, 1_794_900_000)
+            .expect("the broken master data is replaced");
+        assert_eq!(written.revision, 4);
+        assert_eq!(read_project_file(&scratch.file()), Ok(Some(written)));
     }
 
     /// 契约规模：2,000 行管道等级，每行 5 个扩展属性。

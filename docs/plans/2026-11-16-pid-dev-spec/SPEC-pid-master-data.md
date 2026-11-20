@@ -352,3 +352,26 @@ MCP：`pid_masterdata` 进 `READ_OPS`，`pid_masterdata_set` 进 `EXECUTE_OPS`�
 7. **直径的读法。** 去掉 `DN` 和它后面的空白，余下的要全是 ASCII 数字：`+80`、全角的 `８０`、`DN8 0`、超出 `u32` 的都算读不出来。§3.5 只说「按整数解析」，按一般的整数解析 `+80` 是 80，这里不认。
 
 **测试**（同文件，都以 `master_data` 开头）：10 条常规，1 条耗时（`master_data_2000_pipe_classes_parse_and_validate_within_50_ms`，默认不跑）。先只放数据对象和空壳函数，10 条都编得过、都败在断言上；实现后全过。耗时：2,000 行管道等级、每行 5 个扩展属性，文本 460,477 字节，解析加校验三次 16.46 / 16.53 / 17.25 ms，中位数 16.53 ms，预算 50 ms（测试配置下主程序包不优化，`serde_json` 按 `opt-level = 2` 编）。
+
+### 11.2 `MD-2`：两处存放与取用顺序（2026-11-20）
+
+**做了什么**（只改 `src/pid/master_data.rs`）：
+
+- §5.1 列的 `PID_AUTHOR_MASTERDATA`、`PROJECT_FILE`、`Source`、`Resolved`、`resolve`、`store_in_drawing`、`write_project_file`。另外公开了只读一处的 `read_project_file`、`load_from_drawing`（`MD-3` 的 STATUS 要用它们说出「图内那份没在用」），和项目文件的格式版本 `PROJECT_FILE_VERSION`。
+- 错误多了两个码。`MASTERDATA_CONFLICT` 是 §3.6 的。`MASTERDATA_IO_ERROR` 是新加的，§3.6 没有：读写项目文件时文件系统报的错，出错位置是文件路径。接 REST 时（`MD-3`）它按「没列的一律 400」走，要不要单列到时再定。`MASTERDATA_EXISTS`、`MASTERDATA_NOT_CONFIGURED` 属于命令，留给 `MD-3`。
+- `MASTERDATA_VERSION_UNSUPPORTED` 也带出错位置了：项目文件顶层的 `version` 和主数据里的 `version` 都可能报它，位置分别是 `version` 和 `master_data.version`。
+- `dwg_roundtrip.rs` 没动：空白图纸直接能存成 DWG 再读回，用不着那里的辅助函数。
+
+**与 §5.1 的写法不同：** `write_project_file` 返回写进去的那一份（带新的 `revision` 和 `updated_at`），不是 `()`。§5.3 的写命令要回新的 `revision`，这样不用再读一遍文件。
+
+**规格没写到、这里定下的：**
+
+1. **新修订号。** 取磁盘上主数据的 `revision` 加 1；磁盘上没有（没有文件、没有 `master_data`、修订号读不出来）就是 1。传进来那一份自己的 `revision` 不看。给了 `expected_revision` 而磁盘上没有修订号，也算冲突。
+2. **文件本身读不出来时不写。** 不是 JSON、顶层不是对象、`version` 缺了或不是正整数，报 `MASTERDATA_SCHEMA_ERROR`；`version` 比 1 高，报 `MASTERDATA_VERSION_UNSUPPORTED`。这几种都不写，文件不动，免得冲掉人手写的内容。只是 `master_data` 那一段坏了照写：整份写进去就是修好了。
+3. **读项目文件。** `master_data` 为 `null` 与没有这个键一样，按「没有项目文件」往下找。开头的 UTF-8 BOM 跳过（Windows PowerShell 5.1 存 UTF-8 会带）。出错位置从文件顶层算起，如 `master_data.pipe_classes[1].name`。`project`、`drawings` 不归这里校验。
+4. **写出的样子。** 键按 `version`、`project`、`master_data`、`drawings` 排，其余顶层键按原来的顺序接在后面；原来没有的 `project`、`drawings` 不补。缩进 2 格，末尾一个换行。键序靠 `serde_json` 的 `preserve_order`：主程序包没有直接打开它，是别的依赖打开的。测试里查了键序，哪天关掉了会报出来。
+5. **临时文件。** 与项目文件同目录，名字是 `pid-project.json.tmp`；写或改名失败都删掉。没有加锁：修订号比对挡得住先后两次写，挡不住两处读到同一修订后同时写。
+6. **图内记录。** `store_in_drawing` 用 `graph_data::store` 整条重写，不动修订号和时间，也不推撤销快照，这些都归命令（§4）。读时记录里要恰好是一个读得出的对象；多了、少了、有读不出的分段，都报 `MASTERDATA_SCHEMA_ERROR`，位置为空。
+7. **「目录不可写」怎么测。** Windows 上目录的只读属性挡不住在里面写文件，换了三种做法：项目文件的位置上是个不空的目录（临时文件写出来了，改名失败）；目录不存在；项目文件被别的程序以只许读的方式开着（只在 Windows 上跑）。三种都查了原文件不变、没留下临时文件。
+
+**测试**（同文件，都以 `master_data` 开头）：新加 11 条，其中 1 条只在 Windows 上跑。§3.2 的四种情形在 `resolve` 的三条里：只有项目文件与两处都有一条，只有图内与都没有一条，项目文件坏了一条；另有一条是图内记录坏了。其余各条：DWG 存了再打开，图内那份不变；冲突时文件逐字节不变；别的顶层键还在，键序对；同一份数据、同一时间两次写出逐字节相同；三种写失败；读不出的项目文件不覆盖。先放空壳函数，11 条都编得过、都败在断言上；实现后主数据 21 条全过（耗时那条默认不跑）。

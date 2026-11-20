@@ -445,13 +445,14 @@
 
 - **做什么**：图内记录 `PID_AUTHOR_MASTERDATA`，用现有的图级记录布局 `graph_data::store`，不改 `graph_data::keys()`（§3.4）。项目文件 `pid-project.json` 的读与原子写（§3.3、§4）：先比磁盘上的 `revision`，再加 1，写临时文件后改名；保留不认识的顶层键；同样的输入写出逐字节相同的文件。`resolve(doc, drawing_dir)` 按「项目文件优先 → 图内记录 → 未配置」取（§3.2）；项目文件坏了就报读不出来，不退回去用图内那份。
 - **验收**：
-  - [ ] §3.2 的四种情形（只有项目文件、只有图内、两处都有、项目文件坏了）各得出规格写的结果；写进图内记录、存成 DWG、再打开，逐项相等。
-  - [ ] 写项目文件：磁盘上的 `revision` 已变 → `MASTERDATA_CONFLICT`，文件逐字节不变；目录不可写时不留临时文件；写回后不认识的顶层键还在。
-  - [ ] 同样的主数据（`updated_at` 相同）两次写出的文件逐字节相同。
+  - [x] §3.2 的四种情形（只有项目文件、只有图内、两处都有、项目文件坏了）各得出规格写的结果；写进图内记录、存成 DWG、再打开，逐项相等。
+  - [x] 写项目文件：磁盘上的 `revision` 已变 → `MASTERDATA_CONFLICT`，文件逐字节不变；目录不可写时不留临时文件；写回后不认识的顶层键还在。
+  - [x] 同样的主数据（`updated_at` 相同）两次写出的文件逐字节相同。
 - **验证**：`cargo test --offline --locked --lib master_data`
 - **依赖**：MD-1
 - **文件**：`src/pid/master_data.rs`；需要时把 `src/pid/dwg_roundtrip.rs` 里「存盘再读回」的辅助函数放宽成 `pub(crate)`（只改可见性）
 - **规模**：M
+- **补（2026-11-20）**：一个提交，只改 `src/pid/master_data.rs`；`dwg_roundtrip.rs` 没动（空白图纸直接能存成 DWG 再读回）。与任务写法不同、或任务没有说的：`write_project_file` 返回写进去的那一份，不是 `()`；新加错误码 `MASTERDATA_IO_ERROR`（§3.6 没有，读写项目文件时文件系统报的错）；另外公开了 `read_project_file`、`load_from_drawing`、`PROJECT_FILE_VERSION`；「目录不可写」在 Windows 上用三种做法模拟（位置上是个不空的目录、目录不存在、文件被别的程序开着不许替换）；其余定下的读法（新修订号怎么来、读不出的项目文件不覆盖、`master_data` 为 `null`、BOM、写出的键序、临时文件、图内记录怎么读）记在主数据规格 §11.2。**先红后绿**：先放空壳函数，新加的 11 条测试编得过、都败在断言上（`MD-1` 的 10 条照过）；实现后主数据 21 条全过，1 条默认不跑。**读数**：主程序库 7288 条，7228 通过、56 默认不跑、4 失败——比对设计稿的三条，加上那条并行时偶发失败的像素测试（`what_the_editor_shows_is_drawn_in_the_frame_where_a_window_of_its_own_draws_it`，单独重跑通过）；比 `MD-1` 后的基线多 11 条，都是新加的、都过了；clippy 656 / 1051，与基线相同，新代码没有告警；`master_data.rs` 的 `rustfmt --check` 干净。**新基线**：主程序库 7288 条（7229 / 56 / 3；那条像素测试偶发失败时是 7228 / 56 / 4）。
 
 ### MD-3 【接线】命令 `PIDMASTERDATA`
 
