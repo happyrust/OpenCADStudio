@@ -51,6 +51,8 @@ pub mod pid_publish_check;
 pub mod pid_sym_census;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pid_sym_missing;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pid_variant_map;
 pub mod pid_view_filter;
 
 /// XDATA application name under which a `.pid` import and P&ID legend

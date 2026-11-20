@@ -34,7 +34,7 @@
 | 备份包新版浏览与导出界面（关联） | [#115](https://github.com/happyrust/pid-cad/issues/115) | **已在基线完成** | 提交 `0f9f1f859..6377fe233`（检查点 C `UI-1..UI-9` + 审核加固），见 `2026-11-17-sppid-backup-publish/readings.md` §32–§41 |
 | `L0-4` 度量工具集（XML/识别/PDF） | [#108](https://github.com/happyrust/pid-cad/issues/108) | **已完成**（2026-11-20） | 提交 **`52fbf5130`**：落地 `scripts/sppid/{xml_diff,legend_vs_xml,render_vs_pdf,test_metrics_108}.py`；94 套 XML/PDF 自检与 11 套厂商 PDF 验收记录核对全过，见 `readings.md` §5 |
 | `L1-3` 符号缺失清单 | [#113](https://github.com/happyrust/pid-cad/issues/113) | **已完成**（2026-11-20） | 提交 **`11c8c784b`**：落地 `src/io/pid_sym_missing.rs`；全厂包 53 图（9 种不在库）与导出集 94 图（对比子集库差 84 种）100% 自带内嵌缓存本体（无缓存缺失 `0`），见 `readings.md` §6 |
-| `L1-6` `.sym` 解码状态普查 | [#114](https://github.com/happyrust/pid-cad/issues/114) | **已完成**（2026-11-20） | 落地 `src/io/pid_sym_census.rs` + `scripts/sppid/sym-census.ps1`；`plant644`（643 可画 + 1 空 / 0 失败）与 `full618`（618 可画 / 0 失败）两轮一致并澄清 618/644/728 口径，见 `readings.md` §7 |
-| `L0-9` 符号与 SPPID 类变体对应表 | [#119](https://github.com/happyrust/pid-cad/issues/119) | **待执行（已解锁）** | 前置 `#107` 与 `#118`（Q3 两跳连接）均已完成，可启动生成 `assets/pid-class-map.json` 初稿 |
+| `L1-6` `.sym` 解码状态普查 | [#114](https://github.com/happyrust/pid-cad/issues/114) | **已完成**（2026-11-20） | 提交 **`336b7b362`**：落地 `src/io/pid_sym_census.rs` + `scripts/sppid/sym-census.ps1`；`plant644`（643 可画 + 1 空 / 0 失败）与 `full618`（618 可画 / 0 失败）两轮一致并澄清 618/644/728 口径，见 `readings.md` §7 |
+| `L0-9` 符号与 SPPID 类变体对应表 | [#119](https://github.com/happyrust/pid-cad/issues/119) | **已完成**（2026-11-20） | 落地 `src/io/pid_variant_map.rs` 与零客户数据的 `assets/pid-class-map.json`（94 对样本 `106,150` 对象共 `237` 种变体，管件/管线段各 `78` 种），见 `readings.md` §8 |
 | `L2-1..L2-6` 内部模型合一与编辑 | 待拆单 | **暂缓（避让并行分支）** | 等活跃分支 `pid-symbol-identity` 合入 `main` 后承接其底座实施 |
 | `.sym` 参考数据预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | **暂缓（避让并行分支）** | 等 `pid-symbol-identity` 合入 `main` 后实施，避免撞 `pid_backup_browser.rs` 与 `src/io/pid/` |

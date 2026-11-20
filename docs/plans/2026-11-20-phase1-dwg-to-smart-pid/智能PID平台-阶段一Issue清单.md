@@ -286,9 +286,10 @@
 - 变体数与样本分析一致（管件、管线段各约 78 种）。
 - 无法连接的项单列并写明原因。
 
-**缺资料。** RES-01 ⚠（阻塞"连接方式"）；RES-02 ✔。缺 RES-01 则本单只能做"变体统计"（不关联符号），关联部分推迟。
+**缺资料。** RES-01 ✔、RES-02 ✔。
 
 **对应任务。** L0-9（L）
+**状态与解决记录。** **已完成（2026-11-20，[#119](https://github.com/happyrust/pid-cad/issues/119)）**：落地 `src/io/pid_variant_map.rs` 并产出纯结构零客户数据的 `assets/pid-class-map.json`（先红后绿）；94 对样本共 `106,150` 个对象提取出 **`237` 种类变体**（管件 `78`、管线段 `78`、在线仪表 `15`、容器 `14`、机械设备 `10`、换热 `9`、管线 `7` 等与样本分析逐项吻合），未直连根图元项逐类归因清晰，详见 `readings.md` §8。
 
 ---
 
@@ -1150,11 +1151,12 @@
 | `ISSUE-L0-6` | [#109](https://github.com/happyrust/pid-cad/issues/109) | `done-local`（本地已完成） | 提交 `9b5faf294`，读数见 `readings.md` §1 |
 | `ISSUE-L0-2` | [#107](https://github.com/happyrust/pid-cad/issues/107) | `done-local`（本地已完成） | 提交 `538ec0112`，`corpus_index.py` 1,115 文件索引校验通过，见 `readings.md` §2 |
 | `ISSUE-L4-0` | [#111](https://github.com/happyrust/pid-cad/issues/111) | `done-local`（本地已完成） | 提交 `6fd58799c`：`pid-publish-spec.json` + `pid_publish_check.rs` + `xml_spec_check.py`，220 份真实样本零违规，见 `readings.md` §3 |
-| `ISSUE-L0-8` | [#118](https://github.com/happyrust/pid-cad/issues/118) | `done-local`（本地已完成） | 对照 `pid-parse @ a85fa10` 完成 Q1–Q13 核实，见 `03-parse-answers.md` 与 `readings.md` §4 |
+| `ISSUE-L0-8` | [#118](https://github.com/happyrust/pid-cad/issues/118) | `done-local`（本地已完成） | 提交 `79aa6ed5b`：对照 `pid-parse @ a85fa10` 完成 Q1–Q13 核实，见 `03-parse-answers.md` 与 `readings.md` §4 |
 | `ISSUE-L1-1` | [#112](https://github.com/happyrust/pid-cad/issues/112) | `done-local`（已在基线完成） | `RD-7/11/8/14/9/13` + `ACC-1` 已在 `main`（`dd96a50f7..51b654a87`）完成 |
 | 备份包新界面（关联） | [#115](https://github.com/happyrust/pid-cad/issues/115) | `done-local`（已在基线完成） | 检查点 C `UI-1..UI-9` + 审核加固 `6377fe233` 已在 `main` 完成 |
-| `ISSUE-L0-4` | [#108](https://github.com/happyrust/pid-cad/issues/108) | `done-local`（本地已完成） | 落地三款纯标准库度量脚本，`pytest` 176/176 过，94 套 XML/PDF 自检零差异，见 `readings.md` §5 |
-| `ISSUE-L1-3` | [#113](https://github.com/happyrust/pid-cad/issues/113) | `done-local`（本地已完成） | 落地 `src/io/pid_sym_missing.rs`，53 图与 94 图全量扫描无缓存缺失均为 `0`，见 `readings.md` §6 |
-| `ISSUE-L1-6` | [#114](https://github.com/happyrust/pid-cad/issues/114) | `done-local`（本地已完成） | 落地 `src/io/pid_sym_census.rs` + `sym-census.ps1`，`plant644` 与 `full618` 全量零失败，见 `readings.md` §7 |
+| `ISSUE-L0-4` | [#108](https://github.com/happyrust/pid-cad/issues/108) | `done-local`（本地已完成） | 提交 `52fbf5130`：落地三款纯标准库度量脚本，`pytest` 176/176 过，94 套 XML/PDF 自检零差异，见 `readings.md` §5 |
+| `ISSUE-L1-3` | [#113](https://github.com/happyrust/pid-cad/issues/113) | `done-local`（本地已完成） | 提交 `11c8c784b`：落地 `src/io/pid_sym_missing.rs`，53 图与 94 图全量扫描无缓存缺失均为 `0`，见 `readings.md` §6 |
+| `ISSUE-L1-6` | [#114](https://github.com/happyrust/pid-cad/issues/114) | `done-local`（本地已完成） | 提交 `336b7b362`：落地 `src/io/pid_sym_census.rs` + `sym-census.ps1`，`plant644` 与 `full618` 全量零失败，见 `readings.md` §7 |
+| `ISSUE-L0-9` | [#119](https://github.com/happyrust/pid-cad/issues/119) | `done-local`（本地已完成） | 落地 `src/io/pid_variant_map.rs` + `assets/pid-class-map.json`（237 种类变体，零客户数据），见 `readings.md` §8 |
 | `.sym` 预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | 暂缓（避让并行分支） | 待 `pid-symbol-identity` 合入 `main` 后实施 |
 | 分级表可观测性（关联） | [#117](https://github.com/happyrust/pid-cad/issues/117) | 待定范围 | 与 `L4-2` / `L0-9` 衔接，建议先做第 1 步表外计数输出 |

@@ -182,7 +182,7 @@
 | 项 | 值 |
 |---|---|
 | 测量日期 | `2026-11-20` |
-| 基线提交 | `11c8c784b`（`main`） |
+| 基线提交 | `11c8c784b`（入库提交 `336b7b362`） |
 | `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
 | 新增 / 修改文件 | `src/io/mod.rs`、`src/io/pid_sym_census.rs`、`scripts/sppid/sym-census.ps1` |
 | 证据目录子项 | `2026-11-20-issue114/`（`red.txt`、`green-fast.txt`、`real-census.txt`、`plant644-census.{csv,md}`、`full618-census.{csv,md}`） |
@@ -202,6 +202,63 @@
 1. **`618`（`full618`）**：`pid-parse` 早期（2026-07）独立归档的参考符号库快照，共 `618` 个 `.sym`。早期快照曾记「578 个有图形、40 个空、0 失败」，原因是当时尚未解码第 3 种文本框形状、B 样条、边界填充与根簇图元合并；升级至 `pid-parse @ a85fa10` 后，`618 / 618` 全部解码出可见图元，**0 失败**。
 2. **`644`（`plant644`）**：53 图全厂备份包 `RefData~4~681.zip`（解压即 `Ref/Symbols`）包含 `644` 个 `.sym`（另加 `1` 个 `CatalogIndex.xml` 合计 `645` 个文件），在 `a85fa10` 下 `643` 个解码出可见图元、`1` 个为空模板本体、**0 失败**。
 3. **`728`**：94 图备份包 `RefData~4~681.zip` 包含的扩充厂级符号目录（在通用库基础上增加了该厂补充的阀门、压缩机、过滤器等符号，对应 §6 中 94 图相对 `644` 库多引用的那批符号；且该批符号在 94 张 `.pid` 内嵌 `JSite` 缓存中同样 100% 解码可画）。
+
+---
+
+## 8. L0-9（#119）：`.pid` 与 `_Data.xml` 逐对象对应及类变体目录 `assets/pid-class-map.json`（2026-11-20）
+
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-20` |
+| 基线提交 | `336b7b362`（`main`） |
+| `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
+| 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
+| 新增 / 修改文件 | `assets/pid-class-map.json`、`src/io/mod.rs`、`src/io/pid_variant_map.rs` |
+| 证据目录子项 | `2026-11-20-issue119/`（`red.txt`、`green-fast.txt`、`real-variants.txt`、`variant-report.md`、`gate-cargo-test-lib.txt`、`gate-pixel-rerun.txt`、`gate-clippy-lib.txt`、`gate-clippy-lib-test.txt`） |
+
+### 8.1 先红后绿、零客户数据审计与 94 对样本变体实测
+
+- **先红后绿**：`red.txt` 在目标断言变红（`0 passed; 1 failed`，退出码 `101`）→ 实现后 `green-fast.txt` `1 passed; 0 failed`（验证两跳 `GraphicOID` 连接、派生对象分类及输出 JSON 零客户位号/UNC/UID）。
+- **零客户数据审计**：生成的 `assets/pid-class-map.json`（`294,398` 字节）100% 纯 ASCII，零 UNC 前缀（`\\`）、零盘符路径（`:\`）、零客户图名/位号/十六进制实例 UID，仅包含 19 类业务对象的接口集、`@...` 码表值元组与通用符号库相对路径。
+- **全批 `94` 对 `(.pid, _Data.xml)` 实测（合计 `106,150` 个业务对象，共 `237` 种类变体，与《样本分析》§2.8 完全一致）**：
+
+| 对象类 | 实例数 | 类变体数 | 直连符号/图元数 | 派生无图形实例数 | 组记录/非根图元 `GraphicOID` 数 |
+|---|---:|---:|---:|---:|---:|
+| `PIDPipingComponent` | `6,891` | **`78`** | `6,856` | `0` | `35` |
+| `PIDPipingConnector` | `8,550` | **`78`** | `0` | `0` | `8,550`（指向 `0x004F` 管段组记录） |
+| `PIDInlineInstrument` | `1,927` | **`15`** | `1,924` | `0` | `3` |
+| `PIDProcessVessel` | `179` | **`14`** | `178` | `0` | `1` |
+| `PIDMechanicalEquipment` | `269` | **`10`** | `266` | `0` | `3` |
+| `PIDHeatTransferEquipment` | `54` | **`9`** | `54` | `0` | `0` |
+| `PIDPipeline` | `4,118` | **`7`** | `0` | `4,118` | `0` |
+| `PIDProcessEquipment` | `426` | **`5`** | `426` | `0` | `0` |
+| `PIDInstrument` | `2,974` | **`4`** | `2,970` | `0` | `4` |
+| `PIDNozzle` | `797` | **`4`** | `792` | `0` | `5` |
+| `PIDPipingPort` | `18,553` | **`3`** | `0` | `18,553` | `0` |
+| `PIDBranchPoint` | `885` | **`2`** | `885` | `0` | `0` |
+| `PIDControlSystemFunction` | `1,988` | **`2`** | `1,988` | `0` | `0` |
+| `PIDNote` | `2,026` | **`1`** | `2,019` | `0` | `7` |
+| `PIDPipingBranchPoint` | `5,044` | **`1`** | `5,044` | `0` | `0` |
+| `PIDProcessPoint` | `8,550` | **`1`** | `0` | `8,550` | `0` |
+| `PIDSignalBranchPoint` | `356` | **`1`** | `356` | `0` | `0` |
+| `PIDSignalConnector` | `1,882` | **`1`** | `0` | `0` | `1,882`（指向 `0x004F` 信号线组记录） |
+| `PIDSignalPort` | `40,681` | **`1`** | `0` | `40,681` | `0` |
+
+- **未直连根图元的精确归因**：
+  1. `derived_model_object_without_drawing_representation`（`71,902` 个）：`PIDPipeline`、`PIDPipingPort`、`PIDSignalPort`、`PIDProcessPoint` 在 SPPID 模型中本身不挂 `DrawingItems` 图形表示，由所属对象或管线段派生；
+  2. `graphic_oid_not_in_decoded_sheet_entities`（`10,490` 个）：其中 `10,432` 个为 `PIDPipingConnector`（`8,550`）与 `PIDSignalConnector`（`1,882`），其 `GraphicOID` 指向 `.pid` 的管段/信号线容器组记录（子直线段通过 `parent_ref` 归属该组而非直接共用该 `GraphicOID`）；其余 `58` 个（占符号类对象的 `0.25%`）为挂在图框/嵌套站点或非几何记录上的对象。
+
+### 8.2 固定门禁读数（覆盖 `#113`、`#114`、`#119` 累积改动）
+
+| 门禁项 | 改前读数（§3.2） | 改后实测 | 结论 |
+|---|---|---|---|
+| `cargo test --offline --locked --lib` | `7,156` 条 | **`7,162` 条**（`+6` 条测试；并发全跑时偶发像素测试单独复跑 `gate-pixel-rerun.txt` `1 passed; 0 failed`，有效失败仍仅 `1` 条既有未提交 `.pen` 字重核对） | **0 新增失败** |
+| `cargo clippy --offline --locked --lib` | `656` 条警告 | **`656` 条警告** | **0 新增警告** |
+| `cargo clippy --offline --locked --lib --profile test` | `1,051` 条警告 | **`1,051` 条警告** | **0 新增警告** |
+| `scripts\fmt-newhunks.ps1` | — | `src/io/mod.rs`、`pid_sym_missing.rs`、`pid_sym_census.rs`、`pid_variant_map.rs` 全部 **`new=0`** | **0 格式偏差** |
+| `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
+| `python -m pytest scripts/sppid -q -p no:cacheprovider` | `176 passed` | **`176 passed`** | 全绿 |
+
 
 
 
