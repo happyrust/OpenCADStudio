@@ -2336,6 +2336,10 @@ impl OpenCADStudio {
                 if self.opening.as_ref().map(|opening| opening.id) != Some(open_id) {
                     return Task::none();
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.pid_shell.backup.complete_opening_path(&path) {
+                    let _ = self.show_pid_screen(crate::app::pid_shell::PidScreen::Editor);
+                }
                 #[cfg(target_arch = "wasm32")]
                 let loaded_name = name.clone();
                 let task = self.on_file_opened(name, path, doc, caches, ifccad_session);
@@ -2379,6 +2383,26 @@ impl OpenCADStudio {
             Message::FileOpened(open_id, Err(e)) => {
                 if self.opening.as_ref().map(|opening| opening.id) != Some(open_id) {
                     return Task::none();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if self
+                    .opening
+                    .as_ref()
+                    .and_then(|opening| opening.source_path.as_deref())
+                    .is_some_and(|path| self.pid_shell.backup.is_opening_path(path))
+                {
+                    if let Some(opening) = self.opening.take() {
+                        if let Some(path) = opening.source_path {
+                            self.pid_shell
+                                .backup
+                                .record_open_failure(path, e.message.clone());
+                        }
+                        if e.message != "Cancelled" {
+                            self.command_line
+                                .push_error(crate::tf!("Open failed: {e}").as_ref());
+                        }
+                    }
+                    return self.drain_pending_open();
                 }
                 #[cfg(target_arch = "wasm32")]
                 if crate::io::host_bridge::is_embed_mode() {

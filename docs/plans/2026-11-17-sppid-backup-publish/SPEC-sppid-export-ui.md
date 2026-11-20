@@ -1,6 +1,6 @@
 # SPEC：新版导出界面（`sppid-export-ui`）
 
-> 状态：**建议稿（待设计稿定稿与你确认）**（2026-11-19）。检查点 B 的两个导出引擎（`src/io/pid_backup_export.rs`、`src/io/pid_backup_pdf.rs`）与命令层（`PIDBACKUPEXPORT`、`PIDBACKUPPDF`）均已验收通过，本规格定义检查点 C 的后半部分：在新版「备份数据包」画面中不敲命令完成 publish 文件与 PDF 的导出、状态查看与结果核对。
+> 状态：**已确认**（2026-11-20，答复「按照推荐方案继续下一步。」，U1–U3 均按建议定；实施计划与任务见 `plan-checkpoint-c.md`、`todo-checkpoint-c.md`，界面实现待 Pencil 设计稿定稿）。检查点 B 与总验收（`ACC-1`）的两个导出引擎（`src/io/pid_backup_export.rs`、`src/io/pid_backup_pdf.rs`）与命令层（`PIDBACKUPEXPORT`、`PIDBACKUPPDF`）均已验收通过，本规格定义检查点 C 的后半部分：在新版「备份数据包」画面中不敲命令完成 publish 文件与 PDF 的导出、状态查看与结果核对。
 > 依据：`00-capability-map.md` §4、§5 检查点 C、§8 第 3 问；`SPEC-sppid-export.md` §5.4、§9 X6；`SPEC-sppid-pdf.md` §9 P1–P4；`02-screen-content.md` §4；需求 `REQ-MIG-009`、`REQ-MIG-010`（`docs/pid-platform/requirements/90-migration-and-interop.md`）。
 > 共用约定见 `01-shared-conventions.md`。前提：`SPEC-sppid-export.md`、`SPEC-sppid-pdf.md` 已完成，且 `SPEC-sppid-screen.md` 与 Pencil 设计稿（`sppid-design`）定稿。
 
@@ -23,22 +23,22 @@
 
 ### 2.1 已落地的引擎与命令状态
 
-- **publish 引擎（`src/io/pid_backup_export.rs`）**：
+- **publish 引擎与命令状态（`src/io/pid_backup_export.rs`、`src/app/commands/pidbackupexport.rs`）**：
   - 输入：`ExportRequest { package_dir, out_dir, plant, reference_dir }`（`DEFAULT_PLANT = "P01"`）；
   - 前提检查：`check(&request)` + `in_the_restore(&out_dir, &restored)`，不写任何文件即可返回 `ExportError`（`NotABackup`、`TargetInvalid`、`TargetNotEmpty { folder, names, count }`、`ReferenceInvalid` 等）；
   - 结果：`ExportOutcome`（`written`、`failed`、`pid_entries`、`templates`、`unmatched`、`without_drawing_no`、`unwritten`、`noted`、`other_problems`、`warnings`、`gate: Option<GateSummary>`、`sql_server()`、`files`、`index_path`、`elapsed`）；
-  - 应用状态：`app.pid_backup_export` 已维护 `Idle` / `Running { out_dir, plant, started_at }` / `Done(Result<ExportOutcome, ExportError>)` 及可替换的测试替身函数。
-- **PDF 引擎（`src/io/pid_backup_pdf.rs`）**：
+  - 应用状态：`app.pid_backup_export`（`BackupExport`）已持有 `running: Option<Running { request, started }>`、`last: Option<Result<ExportOutcome, ExportError>>` 及可替换的测试替身函数 `export`。
+- **PDF 引擎与命令状态（`src/io/pid_backup_pdf.rs`、`src/app/commands/pidbackuppdf.rs`）**：
   - 输入：`PdfRequest { package_dir, restored, out_dir, drawings }`；
   - 前提检查：`check(&request)`，只要目录里没有本次要写的同名 `.pdf` 或 `_PdfIndex.json`，允许目录里已有 publish 导出的 `_Data.xml` / `_Meta.xml` / `_Coverage.json` / `_Index.json`；
   - 进度：`PdfProgress`（原子计数 `done` / `total`）；
   - 结果：`PdfOutcome`（`pages: Vec<PdfPage>`、`written`、`failed`、`without_file`、`index_path`、`elapsed`）；
-  - 应用状态：`app.pid_backup_pdf` 已维护 `Idle` / `Running { out_dir, progress, started_at }` / `Done(Result<PdfOutcome, PdfError>)` 及可替换的测试替身函数。
+  - 应用状态：`app.pid_backup_pdf`（`BackupPdf`）已持有 `running: Option<Running { out_dir, drawings, progress }>`、`last: Option<Result<PdfOutcome, PdfError>>` 及可替换的测试替身函数 `export`。
 
 ### 2.2 尚缺的部分
 
 1. 新界面上没有触发这两项导出的按钮、对话框、跳秒订阅（`Subscription`）和结构化结果视图。
-2. `app.pid_backup_export` / `app.pid_backup_pdf` 目前把 `Done` 存成格式化好的命令行文本行（或需同时保留结构化 `ExportOutcome` / `PdfOutcome`），供界面直接按字段渲染表格与折叠明细，而不必反解英文字符串。
+2. `BackupExport` 与 `BackupPdf` 的字段目前为模块私有，需暴露 `pub(in crate::app)` 只读访问器与从界面直接传入结构化请求启动后台导出的入口函数；另 `BackupPdf::Running` 需补一个 `started: Instant` 字段以便界面显示 PDF 进行中的已用秒数。
 
 ## 3. 界面结构与状态
 
@@ -65,16 +65,18 @@
 - **信息提示**：显示总图纸数（含无文件张数）；若为 SQL Server 包同样提示「没有验收过」。
 - 按钮：「取消」「开始导出」。
 
-### 3.3 进行中状态条
+### 3.3 进行中状态条（U1 两处联动）
 
-- 当 `pid_backup_export` 或 `pid_backup_pdf` 处于 `Running` 时，由 `iced::time::every(Duration::from_secs(1))` 驱动每秒刷新一次画面（仅在有导出运行且窗口处于新界面时挂订阅，平时零开销）：
+- 当 `pid_backup_export` 或 `pid_backup_pdf` 处于 `running.is_some()` 时，由 `iced::time::every(Duration::from_secs(1))` 驱动每秒刷新一次画面（仅在有导出运行且窗口处于新界面时挂订阅，平时零开销）：
   - **publish 进行中**：「正在导出 publish 文件到 `<目录>`（工厂名 `<Plant>`）· 已用 `12` 秒」（无百分比、无取消）。
-  - **PDF 进行中**：「正在导出 PDF 到 `<目录>` · 第 `18 / 53` 张 · 已用 `19` 秒」（可配按 `done / total` 计算的进度条，无取消）。
-- 非模态展示（放在 `backup` 画面顶部状态区；若设计稿在外壳状态栏也放全局简短提示则一并显示），绝不锁死画面切换或画布操作。
+  - **PDF 进行中**：「正在导出 PDF 到 `<目录>` · 第 `18 / 53` 张 · 已用 `19` 秒」（配按 `done / total` 计算的进度条，无取消）。
+- **两处联动（U1 已定）**：
+  1. `backup` 画面内（包概要下方导出状态区，U3）显示完整的进行中条；
+  2. 外壳底部状态栏右侧（`src/app/pid_shell/chrome.rs` 的 `status_parts`）顺带显示简短全局提示（如 `正在导出 publish · 12s` / `正在导出 PDF 18/53`），在其他画面（如编辑器）点击可一键切回 `backup` 画面。绝不锁死画面切换或画布操作。
 
-### 3.4 结果面板 / 卡片
+### 3.4 结果摘要条与展开详情（U3）
 
-直接读取结构化 `Result<ExportOutcome, ExportError>` 与 `Result<PdfOutcome, PdfError>` 展示（支持三种形态）：
+在包概要下方显示 publish 与 PDF 各自最近一次状态摘要条（未导出时不占地方；完成后显示摘要行 +「查看详情」「打开输出目录」「打开清单文件」按钮，点击「查看详情」展开名单与比对明细）。直接读取结构化 `Result<ExportOutcome, ExportError>` 与 `Result<PdfOutcome, PdfError>` 展示三种形态：
 
 1. **全部成功且无提醒**：绿色完成态，展示写出张数、总文件数、耗时、输出目录，配「打开输出目录」「打开清单文件」按钮。
 2. **完成但有未写出 / 提醒 / 缺符号 / 比对结论**：警示完成态：
@@ -85,9 +87,10 @@
 
 ## 4. 数据与代码改动边界
 
-- 修改 `src/app/commands/pidbackupexport.rs` 与 `src/app/commands/pidbackuppdf.rs`：在保留原有命令行汇总字符串的同时，将最近一次结构化结果 `Result<ExportOutcome, ExportError>` 与 `Result<PdfOutcome, PdfError>` 暴露为 `pub(crate)` 只读访问器，并提供从界面直接传入结构化请求启动后台导出的入口函数（与命令共用同一套忙碌检查、缓存清理拦截和完成消息派发）。
-- 新建 `src/app/pid_shell/backup_export_ui.rs`（或作为 `src/app/pid_shell/backup/` 子模块）：对话框状态、即时校验、进行中卡片、结果视图与打开本地目录/文件动作（测试中注入目录选择与打开目录替身，不弹真实系统资源管理器窗口）。
-- 订阅接线：在应用顶层 `subscription()` 中，当 `pid_backup_export` 或 `pid_backup_pdf` 正在运行时挂载 1 秒计时消息刷新已用秒数与原子进度。
+- 修改 `src/app/commands/pidbackupexport.rs` 与 `src/app/commands/pidbackuppdf.rs`：保留原有命令行汇总字符串不变；为 `BackupPdf::Running` 补 `started: Instant`；将 `running` 状态与 `last` 结构化结果（`Option<&Result<ExportOutcome, ExportError>>` / `Option<&Result<PdfOutcome, PdfError>>`）暴露为 `pub(in crate::app)` 只读访问器，并提供从界面直接传入结构化请求启动后台导出的入口函数（与命令共用同一套忙碌检查、缓存清理拦截和完成消息派发）。
+- 新建 `src/app/pid_shell/backup_export_ui.rs`（或作为 `src/app/pid_shell/backup/` 子模块）：对话框状态、即时校验、进行中卡片、摘要条与详情展开视图、打开本地目录/文件动作（测试中注入目录选择与打开目录替身，不弹真实系统资源管理器窗口）。
+- 修改 `src/app/pid_shell/chrome.rs`：在 `status_parts` 中加入导出进行中的简短全局状态项（U1）。
+- 订阅接线：在 `src/app/view/mod.rs` 的 `subscription()` 中，当 `pid_backup_export` 或 `pid_backup_pdf`（及 `pid_backup` 载入中）正在运行时挂载 1 秒计时消息刷新已用秒数与原子进度。
 
 ## 5. 成功标准
 
@@ -107,13 +110,15 @@
 | 快测试（`iced_test` + 替身导出函数） | 按钮启用/禁用条件（无包、散放 `.pid`、运行中）；两个对话框的即时预检拦截与放行；替身卡住时的进行中显示、跳秒刷新、`PdfProgress` 张数刷新、切屏不丢状态、双导出并行；三种结果形态（全成、带未写出/缺符号/比对明细/SQL Server 提示、整次报错）的渲染核对 |
 | 真实样本与真实窗口验收 | 隐藏桌面真实程序（不加 `--classic`），不敲命令走完打开小包/全厂包 → 界面导出 publish → 界面导出 PDF 到同一交付目录 → 用 `check-pairs.ps1` 核对成对并与 `EXP-3` / `PDF-5` 比字节；截取各状态暗/亮色图对照设计稿 |
 
-## 7. 待决问题（随设计稿定稿一并确认）
+## 7. 已定问题（U1–U3）
 
-| # | 问题 | 我的建议 |
+2026-11-20 答复「按照推荐方案继续下一步。」，三项均按建议定（若后续 Pencil 设计稿定稿时摆放另有调整，以设计稿为准）：
+
+| # | 问题 | 定的结果 |
 |---|---|---|
-| U1 | **导出进行中的提示位置**（`02-screen-content.md` §8 第 4 项）：只放在 `backup` 画面内，还是在外壳底部状态栏也显示一条简短全局提示 | **建议两处联动**：`backup` 画面内放完整的进行中条（含路径、张数/秒数），外壳底部状态栏右侧顺带显示一句简短提示（如「正在导出 PDF 18/53」），这样切去编辑器看图时也能知道后台导完了没有；最终以设计稿为准 |
-| U2 | **是否在这一步同步补齐专用的自动化 / REST / MCP 导出发起与查状态操作**（`SPEC-sppid-export.md` §9 X6、`plan.md` §6 最后一条） | **建议分两步，不绑死界面**：界面本身直接走内部 Rust 状态，不依赖自动化通道；若外部脚本需要不阻塞轮询进度，可在 `sppid-export-ui` 之后单独排一个小任务加专用操作（届时会改动 `rest_openapi.json` 与 MCP 摘要，单独提交最清晰） |
-| U3 | **publish 与 PDF 两次结果在 `backup` 画面怎么摆**（`02-screen-content.md` §8 第 5 项） | 建议在包概要下方或导出区并排/上下叠放各自最近一次状态条（未导出时不占地方，运行中显示进度，完成后显示摘要行 +「查看详情」「打开目录」按钮，点「查看详情」展开名单与比对明细）；以设计稿为准 |
+| U1 | **导出进行中的提示位置**（`02-screen-content.md` §8 第 4 项）：只放在 `backup` 画面内，还是在外壳底部状态栏也显示一条简短全局提示 | **已定（2026-11-20）：两处联动**——`backup` 画面内放完整的进行中条（含路径、张数/秒数），外壳底部状态栏右侧（`chrome::status_parts`）顺带显示简短提示（如 `正在导出 PDF 18/53`），切去编辑器看图时也能看见并可点击切回；若设计稿另有画法则照设计稿 |
+| U2 | **是否在这一步同步补齐专用的自动化 / REST / MCP 导出发起与查状态操作**（`SPEC-sppid-export.md` §9 X6、`plan.md` §6） | **已定（2026-11-20）：与界面解耦，分两步**——界面直接读写内部 Rust 状态，不依赖自动化通道，本次不动 `src/rest_openapi.json` 与 MCP 摘要；若后续外部脚本需要非阻塞轮询，可在界面完成后单独排一个小任务 |
+| U3 | **publish 与 PDF 两次结果在 `backup` 画面怎么摆**（`02-screen-content.md` §8 第 5 项） | **已定（2026-11-20）：包概要下方双状态摘要条**——未导出时不占地方，运行中显示各自进度，完成后显示摘要行 +「查看详情」「打开目录」「打开清单」按钮，点「查看详情」展开未写出名单、缺符号与比对明细；若设计稿另有画法则照设计稿 |
 
 ## 8. 需求对照
 
@@ -122,3 +127,10 @@
 | `REQ-MIG-009` 把备份数据包导出为 publish 文件 | 补齐界面闭环 | 与 `SPEC-sppid-export.md` 合起来完整覆盖 `REQ-MIG-009` |
 | `REQ-MIG-010` 把备份数据包的图纸导出为 PDF | 补齐界面闭环 | 与 `SPEC-sppid-pdf.md` 合起来完整覆盖 `REQ-MIG-010` |
 | 地图检查点 C 第 1、2 条 | 覆盖 | 不敲命令走完导出并看到结果；对话框、进行中、三种结果形态与设计稿暗/亮色一致 |
+
+## 9. 修订记录
+
+| 日期 | 改动 |
+|---|---|
+| 2026-11-19 | 初稿（建议稿，列 U1–U3 推荐选项） |
+| 2026-11-20 | 答复「按照推荐方案继续下一步。」，状态改为已确认；U1–U3 全部按建议定（§3.3、§3.4、§4、§7）；按 `src/app/commands/{pidbackupexport,pidbackuppdf}.rs`、`src/app/pid_shell/chrome.rs`、`src/app/view/mod.rs` 实际代码校准 §2 与 §4 |

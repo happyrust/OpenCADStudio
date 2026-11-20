@@ -1,6 +1,6 @@
 # 读数记录（SmartPlant 备份包：升级解析库、读取、出 PDF、导出）
 
-> 状态：**进行中**。§1 是升级 `pid-parse` 之前的一组（`DEP-2`，2026-11-18）；§2 是换版本这一步的记录（`DEP-3`，2026-11-18）；§3 是升级之后的一组、逐张对比和判定（`DEP-4`，2026-11-18）；§4 是三个包、两种界面的走查（`RD-3`，2026-11-18）；§5 是真实窗口和显示对照（`RD-4`，2026-11-18）；§6 是图框按文件引用的模板套（`RD-5`，2026-11-18）；§7 是已经开着的图从面板再开时切过去（`RD-6`，2026-11-18）；§8 是 `RD-7` 查原因时量的数，这一步没有改程序（2026-11-19）；§9 是套图框时也画模板里的符号（`RD-10`，2026-11-19）；§10 是还原缓存被系统清理掉一部分时不照用（`RD-12`，2026-11-19）；§11 是从钉的提交编出对比用的命令行工具，和 `pid_plot --batch` 对全厂包的读数（`PDF-1`，2026-11-19）；§12 是单张出图和命令行工具对齐（`PDF-2`，2026-11-19）；§13 是整包出 PDF 的引擎（`PDF-3`，2026-11-19）；§14 是命令 `PIDBACKUPPDF`（`PDF-4`，2026-11-19）；§15 是真实包上的 PDF 比对和读数（`PDF-5`，2026-11-19）；§16 是新界面下单张出图（`PDF-6`，2026-11-19）；§17 是备份里的图单张出图用整包导出的参考目录和字体目录（`PDF-7`，2026-11-19）；§18 是导出 publish 文件的引擎（`EXP-1`，2026-11-19）；§19 是不是备份的来源在读取那一层报错（`EXP-1b`，2026-11-19）；§20 是命令 `PIDBACKUPEXPORT`（`EXP-2`，2026-11-19）；§21 是真实包上的导出比对和读数（`EXP-3`，2026-11-19）；§22 是面板开着时从面板开图，整张图幅都在画布里（`RD-7`，2026-11-19）；§23 是文字按样式里的字宽比例画（`RD-11`，2026-11-19）；§24 是文字框里的字靠边（`RD-8`，2026-11-20）；§25 是标注文字的竖直位置（`RD-14`，2026-11-20）；§26 是符号里的圆弧（`RD-9`，2026-11-20）；§27 是图框按图纸里记的位置放（`RD-13`，2026-11-20）；§28 是总验收（`ACC-1`，2026-11-20），按 `EXP-3` 那次的基线没有通过：四条里第四条没过（publish 文件和 `EXP-3` 那次不全相同，原因是之后升过 `pid-parse`）；§29 是按现在钉的版本重跑 `EXP-3` 的比对（2026-11-20），第四条按新的基线重判为过，总验收通过（同样的比对主线上 2026-11-19 已经做过一次，§30.3）；§30 是主线上记的升级 `pid-parse` 到 `a85fa10`（`EXP-0`）与新 94 套验证集复测读数（2026-11-19；原编号 §24，合并时改号）；§31 是把 `main` 合进 `sppid-exp2` 的记录（2026-11-20）。后面各块的读数接着记在 §31 之后。
+> 状态：**进行中**。§1 是升级 `pid-parse` 之前的一组（`DEP-2`，2026-11-18）；§2 是换版本这一步的记录（`DEP-3`，2026-11-18）；§3 是升级之后的一组、逐张对比和判定（`DEP-4`，2026-11-18）；§4 是三个包、两种界面的走查（`RD-3`，2026-11-18）；§5 是真实窗口和显示对照（`RD-4`，2026-11-18）；§6 是图框按文件引用的模板套（`RD-5`，2026-11-18）；§7 是已经开着的图从面板再开时切过去（`RD-6`，2026-11-18）；§8 是 `RD-7` 查原因时量的数，这一步没有改程序（2026-11-19）；§9 是套图框时也画模板里的符号（`RD-10`，2026-11-19）；§10 是还原缓存被系统清理掉一部分时不照用（`RD-12`，2026-11-19）；§11 是从钉的提交编出对比用的命令行工具，和 `pid_plot --batch` 对全厂包的读数（`PDF-1`，2026-11-19）；§12 是单张出图和命令行工具对齐（`PDF-2`，2026-11-19）；§13 是整包出 PDF 的引擎（`PDF-3`，2026-11-19）；§14 是命令 `PIDBACKUPPDF`（`PDF-4`，2026-11-19）；§15 是真实包上的 PDF 比对和读数（`PDF-5`，2026-11-19）；§16 是新界面下单张出图（`PDF-6`，2026-11-19）；§17 是备份里的图单张出图用整包导出的参考目录和字体目录（`PDF-7`，2026-11-19）；§18 是导出 publish 文件的引擎（`EXP-1`，2026-11-19）；§19 是不是备份的来源在读取那一层报错（`EXP-1b`，2026-11-19）；§20 是命令 `PIDBACKUPEXPORT`（`EXP-2`，2026-11-19）；§21 是真实包上的导出比对和读数（`EXP-3`，2026-11-19）；§22 是面板开着时从面板开图，整张图幅都在画布里（`RD-7`，2026-11-19）；§23 是文字按样式里的字宽比例画（`RD-11`，2026-11-19）；§24 是文字框里的字靠边（`RD-8`，2026-11-20）；§25 是标注文字的竖直位置（`RD-14`，2026-11-20）；§26 是符号里的圆弧（`RD-9`，2026-11-20）；§27 是图框按图纸里记的位置放（`RD-13`，2026-11-20）；§28 是总验收（`ACC-1`，2026-11-20），按 `EXP-3` 那次的基线没有通过：四条里第四条没过（publish 文件和 `EXP-3` 那次不全相同，原因是之后升过 `pid-parse`）；§29 是按现在钉的版本重跑 `EXP-3` 的比对（2026-11-20），第四条按新的基线重判为过，总验收通过（同样的比对主线上 2026-11-19 已经做过一次，§30.3）；§30 是主线上记的升级 `pid-parse` 到 `a85fa10`（`EXP-0`）与新 94 套验证集复测读数（2026-11-19；原编号 §24，合并时改号）；§31 是把 `main` 合进 `sppid-exp2` 的记录（2026-11-20）；§32–§39 是检查点 C（新版浏览与导出界面）`UI-1` 至 `UI-8` 的逐项先红后绿与固定门禁记录（2026-11-20）；§40 是检查点 C 真实窗口 0 命令闭环、成对与逐字节基线比对及亮暗双主题对照验收（`UI-9`，2026-11-20，全部通过；检查点 A、B、C 与 `ACC-1` 至此全部完成）；§41 是检查点 C 全量代码审核与 P1–P3 五项加固修复的先红后绿及门禁记录（2026-11-20）。
 > 用途：`SPEC-sppid-deps.md` §3.2 的「不变差」拿升级前后两组数判；后面各块的读数也接着记在这里。
 > 规矩：数都出自当次命令的输出。报告全文、日志、截图、PDF 在仓库外，这里只记数和位置。
 
@@ -5328,6 +5328,202 @@ SQL Server 包：
 - **预演只做了 `pid-parse` 一侧**，OCS 没有用它编过。
 - **预演留下的东西**：scratch 里的副本 `pid-parse\` 和另开的检出 `pid-parse-a85\`（连同副本里的 `target\`，约 3.2 GB），以及编译缓存 `D:\Rust\.cargo\targets\pid-parse-035af08c\`（约 11.3 GB：06:19 预演第一次编的时候建的，`a85fa10` 的检出和 stable 的补跑也编在这里）。不用了可以删；要用这份预演，先 `git fetch` 走再删。
 
+---
+
+## 32. UI-1：备份包载入计时与浏览只读访问器（2026-11-20）
+
+- **起点与编译器**：`main @ c5eaf9996`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui1\`。
+- **改动**：
+  1. `src/ui/window/pid_backup_browser.rs`：`PidBackupBrowser` 新增 `last_source: Option<PathBuf>` 与 `loading_started_at: Option<iced::time::Instant>`（在 `SourcePicked`、`Loaded`、`Refresh`、`Close` 中维护）；新增 `loading_elapsed`、`active_or_failed_source`、`screen_group_label`（`Unregistered` → `"未登记图纸"`、`(ungrouped)` → `"未分组"`）、`group_total_drawings`、`filter_drawings`、`item_type_counts`、`filter_drawing_items`。
+  2. `src/app/commands/pidbackup.rs`：`load_pid_backup` 与 `pick_backup_source` 可见性扩为 `pub(in crate::app)` 供后续 `backup` 画面复用。
+- **先红后绿**：4 条快测试 `pid_backup_ui1_*` 在空壳实现下 0 过 4 失败（`red.txt`），接入实现后 `pid_backup` 组 303 过、3 忽略、0 失败（`green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7122 条（7066 过，55 忽略，1 失败：`ui::style::pid_fonts::tests::the_faces_are_the_weights_the_design_uses`，系工作区未提交 `.pen` 基线差异，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（与基线 `656` 相同，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（与基线 `1051` 相同，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：`pid_backup_browser.rs` 新增 `0`（21 → 21），`pidbackup.rs` 新增 `0`（36 → 36）；
+  - `python scripts/arch_check.py report`：与改前逐行相同（33 对模块，183 个文件）。
+
+---
+
+## 33. UI-2：导出状态结构化访问器、界面启动入口与 1 秒跳秒订阅（2026-11-20）
+
+- **起点与编译器**：`main @ 0f9f1f859`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui2\`。
+- **改动**：
+  1. `src/app/commands/pidbackupexport.rs`：`BackupExport` 新增 `is_running`、`running_status`、`last_outcome`；`OpenCADStudio` 新增 `check_pid_backup_export_ui` 与 `start_pid_backup_export_ui`，并与 `PIDBACKUPEXPORT` 命令复用同一路径（忙碌拦截、还原缓存清理保护、结构化结果保留一致）。
+  2. `src/app/commands/pidbackuppdf.rs`：`BackupPdf::Running` 增加 `started: Instant`；`BackupPdf` 新增 `is_running`、`running_status`（返回输出目录、已完成张数、总张数、已用时间）、`last_outcome`；`OpenCADStudio` 新增 `check_pid_backup_pdf_ui` 与 `start_pid_backup_pdf_ui`（允许目录内已有 publish 文件以支持同目录成对交付，拦截同名 `.pdf` 或 `_PdfIndex.json`）。
+  3. `src/app/view/mod.rs`：新增 `OpenCADStudio::pid_backup_wants_second_tick`（处于新界面且备份包载入中、或任一导出运行中时为真），并在 `subscription()` 中按需挂载 `iced::time::every(Duration::from_secs(1)).map(Message::Tick)`，空闲时零开销。
+  4. 顺带重编最新 `target\release\OpenCADStudio.exe`（`2026-11-20 12:07:17`），使本机直接启动 release 程序即生效默认亮色主题及最新修复。
+- **先红后绿**：4 条快测试 `ui2_*` 在空壳实现下 0 过 4 失败（`red.txt`），接入实现后 4 条全过（`ui2_green.txt`），`pidbackup` 全组 70 过、4 忽略、0 失败（`green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：共 7126 条（第一遍 7070 过 / 55 忽略 / 1 失败；移除无用包装函数后复跑 7069 过 / 55 忽略 / 2 失败，多出的一条 `pid_shell_chrome::what_the_editor_shows_is_drawn_in_the_frame_where_a_window_of_its_own_draws_it` 与 §20 一样为并发负载偶发，单独连跑 3 遍全过；剩余 1 条仍为未提交 `.pen` 字重测试）；
+  - `cargo clippy --offline --locked --lib`：`656`（与基线 `656` 相同，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（与基线 `1051` 相同，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：`pidbackupexport.rs` 新增 `0`（0 → 0），`pidbackuppdf.rs` 新增 `0`（0 → 0），`src/app/view/mod.rs` 新增 `0`（11 → 11）；
+  - `python scripts/arch_check.py report`：与改前逐行相同（33 对模块，183 个文件）。
+
+---
+
+## 34. UI-3：导航三处接线与 `backup` 空画面骨架（2026-11-20）
+
+- **起点与编译器**：`main @ 6523d84d9`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui3\`（工作区 `.pen` 备份在 `D:\scratch\ocs-sppid\2026-11-20-pen-backup\`）。
+- **改动**：
+  1. 工作区 `docs/pid-platform/design/pid-platform.pen`（按方案 A1 留在本地不入库）补入 `Nav backup`（`Group 设计` 内紧跟 `Nav editor`）及 22 个双主题画框（`BkF01..11` / `BkL01..11`）。
+  2. 新建 `src/app/pid_shell/backup.rs`，在 `src/app/pid_shell/mod.rs` 注册 `PidScreen::Backup`（`id = "backup"`、`title = "备份数据包"`、`group = NavGroup::Design`、`needs_drawing = false`），同步更新 `docs/pid-platform/prototype/specs/screen-catalog.json`、`docs/pid-platform/requirements/00-overview.md`（`REQ-MIG-008..010`）及文档检查 `SCREEN_IDS`（`conftest.py`、`test_traceability.py`）。
+- **先红后绿**：`VIEW = None` 且未改 `screen-catalog.json` 时 `the_screens_are_the_ones_the_design_navigates_to` 与 `pid_shell_ui3_backup_screen_is_registered_in_nav_and_draws_its_frame` 2 条按预期红灯（`red.txt`）；接线后 `pid_shell_startup` 14/14、`pid_shell_chrome` 11/11、`pytest scripts/pid-platform` 590/590 全过（`green.txt`、`chrome_green.txt`、`pytest_docs.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7129 条（7073 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `rustfmt --check backup.rs` 0 差异，`scripts\fmt-newhunks.ps1` 对 `mod.rs`、`pid_shell_startup.rs`、`pid_shell_chrome.rs` 全部新增 `0`；
+  - `python scripts/arch_check.py report`：与改前逐行相同。
+
+---
+
+## 35. UI-4：浏览画面未打开、载入中、出错三态及包概要顶栏（2026-11-20）
+
+- **起点与编译器**：`main @ acfabf006`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui4\`。
+- **改动**：
+  1. `src/app/pid_shell/backup.rs`：实现未打开（两个选择入口 + 可注入 `SourcePicker`）、载入中（来源路径 + 跳秒）、出错（原因全文 + 重新选择入口）三态及已打开顶栏（Oracle / SQL Server / 散放 `.pid` 三类概要、「清理还原缓存」忙碌拦截内联提示、「在经典面板中查看库表」切回编辑器展开停靠面板），全部样式取自 `pid_tokens`。
+  2. `src/app/commands/pidbackup.rs`：在 `PidScreen::Backup` 下打开备份包时不自动弹开经典停靠面板；新建 `src/app/pid_shell/pid_backup_screen.rs` 无窗口 `iced_test` 测试。
+- **先红后绿**：4 条 `pid_backup_screen_ui4_*` 先红 0 过 4 败（`red.txt`），实现后 4/4 全过（`green.txt`），`pid_backup_in_shell` 16/16 全过（`in_shell_green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7133 条（7077 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
+
+---
+
+## 36. UI-5：浏览画面装置组树、图纸搜索清单、属性与图内对象详情（2026-11-20）
+
+- **起点与编译器**：`main @ c4487bde8`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui5\`。
+- **改动**：
+  1. `src/app/pid_shell/backup.rs`：实现已打开状态三栏主体（左栏递归装置组树与「未登记图纸」/「未分组」中文显示、中栏搜索框与带状态标记的可滚动图纸列表、右栏动态数据库键值列 + `DrawingNo` 与图内对象按类型标签/关键字过滤及展开接口属性；缺文件时置灰打开按钮并展示原因，图内对象读取失败时展示明确原因而非空表）。
+  2. `src/app/commands/pidbackup.rs`：备份包加载完成时重置 `backup::State` 并在 `PidScreen::Backup` 下自动后台预读首张可读图纸对象。
+- **先红后绿**：2 条 `pid_backup_screen_ui5_*` 先红 0 过 2 败（`red.txt`），实现后 `pid_backup_screen` 6/6 全过（`green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7135 条（7079 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
+
+---
+
+## 37. UI-6：从 `backup` 开图、已开标签页复用、失败留屏不弹窗与切屏保持（2026-11-20）
+
+- **起点与编译器**：`main @ 07fa48bb6`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui6\`。
+- **改动**：
+  1. `src/app/pid_shell/backup.rs`：`State` 增加 `opening_drawing`、`open_failures`、`last_clicked_drawing` 及规范化路径匹配方法；实现「在编辑器中打开」按钮与图纸行双击开图、已开图纸直接 `TabSwitch` 切入 `PidScreen::Editor`、「正在打开…」文案与 `open_error` 错误提示条。
+  2. `src/app/update/mod.rs`：`Message::FileOpened` 成功分支对来自 `backup` 的路径先切入 `PidScreen::Editor` 再执行 `on_file_opened`（确保 `RD-7` 按编辑器画布宽度自适应图幅）；失败分支按 S4 记入 `backup.open_failures` 并留在 `PidScreen::Backup`，不弹 `ModalKind::Recovery`（编辑器命令行打开坏图仍维持恢复弹窗）。
+- **先红后绿**：2 条 `pid_backup_screen_ui6_*` 先红 0 过 2 败（`red.txt`），实现后 `pid_backup_screen` 8/8 全过（`green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7137 条（7081 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
+
+---
+
+## 38. UI-7：publish 与 PDF 导出配置对话框及即时预检（2026-11-20）
+
+- **起点与编译器**：`main @ 58f9c0893`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui7\`。
+- **改动**：
+  1. 新建 `src/app/pid_shell/backup_export_ui.rs` 并在 `backup.rs` 顶栏与模态层接入：实现「导出 publish 文件」「导出 PDF」按钮启用/禁用原因判定（无包、散放 `.pid` 无 `Manifest.txt` 禁 publish 放行 PDF、无文件、运行中）；
+  2. 实现 `PublishDialogState`（输出目录、默认 `P01` 工厂名、可选参考目录即时只读调 `check_pid_backup_export_ui` 拦截非空目录/包内目录/还原目录/无效参考目录/空工厂名，附 SQL Server 未验收与同目录先后成对提示）与 `PdfDialogState`（即时只读调 `check_pid_backup_pdf_ui` 拦截冲突 `.pdf`/`_PdfIndex.json`，附「使用上次 publish 输出目录」一键填入与可配对提示）。
+- **先红后绿**：新建 `src/app/pid_shell/pid_backup_export_ui.rs` 3 条 `pid_backup_export_ui_ui7_*` 先红 0 过 3 败（`red.txt`），实现后 3/3 全过（`green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7140 条（7084 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
+
+---
+
+## 39. UI-8：导出进行中两处联动提示与双结果摘要条/展开详情（2026-11-20）
+
+- **起点与编译器**：`main @ f3a9b7778`（`pid-parse @ a85fa10`），`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`。证据目录：`D:\scratch\ocs-sppid\2026-11-20-ui8\`。
+- **改动**：
+  1. `src/app/pid_shell/backup.rs` & `backup_export_ui.rs`：在包概要下方挂载 `status_banners`（publish 跳秒进行中与 PDF `done / total` 进度条，以及全成功、带未写出/缺符号/参考比对 `GateSummary` 四格统计与逐图明细/SQL Server 提示、整次报错带 `SPPID_*` 错误码三种结果形态与可展开抽屉、可注入 `PathOpener` 打开目录与清单动作）；另在未打开/出错态提供内联路径输入直开条。
+  2. `src/app/pid_shell/chrome.rs`：在 `status_parts` 接入 `backup_export_ui::status_bar_parts`，非 `Backup` 画面显示简短运行提示并支持点击切回 `Backup`；`src/rest_openapi.json` 保持零改动（U2）。
+- **先红后绿**：2 条 `pid_backup_export_ui_ui8_*` 先红 0 过 2 败（`red.txt`），实现后 `pid_backup_export_ui` 5/5、`pid_shell_chrome` 11/11 全过（`green.txt`、`chrome_green.txt`）。
+- **固定门禁**：
+  - `cargo test --offline --locked --lib`：7142 条（7086 过 / 55 忽略 / 1 既有未提交 `.pen` 字重测试，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；
+  - `cargo clippy --offline --locked --lib --profile test`：`1051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：改动文件全部新增 `0`；`python scripts/arch_check.py report` 与改前逐行相同。
+
+---
+
+## 40. UI-9：检查点 C 真实窗口闭环与双主题对照验收（2026-11-20）
+
+- **起点与构建产物**：`main @ 19982dc88`（含 `6523d84d9` 旧暗色配置自动迁移至 `Light` 及 `UI-1`–`UI-8` 全链提交；`pid-parse @ a85fa10`），正式构建 `target\release\OpenCADStudio.exe`（`207,108,608` 字节，无 `--classic` 参数）。证据总目录：`D:\scratch\ocs-sppid\2026-11-20-checkpoint-c\`，驱动脚本 `ui9_window.py`（内置 `assert req.get("op") != "run"`，全程 **0 条命令**，在 `CreateDesktopW` 独立隐藏桌面上通过 Win32 鼠标点击与键盘输入驱动，不动本机前台光标与用户 `settings.json`）。
+- **设计稿同步（方案 A1）**：原始 `.pen` 已备份至 `D:\scratch\ocs-sppid\2026-11-20-pen-backup\pid-platform.pen.orig`；本地 `docs/pid-platform/design/pid-platform.pen` 已补齐 `component/App Shell -> Nav -> Group 设计 -> Nav backup`（`备份数据包`）与 22 个浏览/导出暗亮双主题画框（`BkF01..11`、`BkL01..11`，顶层画框 `43 -> 65`），按方案 A1 保留在工作区不纳入 `git` 提交。
+
+### 40.1 三组真实窗口 0 命令走查读数与截图清单
+
+共生成 **29 张**整窗真实 Vulkan 渲染截图（见 `screenshots-manifest.txt`）与 3 份完整动作审计日志（`record.json`，`zero_commands: true`）：
+
+1. **全厂包亮色完整闭环（`window-plant-light\`，16 张截图，交付目录 `window-plant-light\deliver\`）**：
+   - `01-editor-start-light.png`（57,934 B）：未预置 `theme` 字段直接启动，默认渲染白色亮色 `PidTheme::Light`，左侧导航「设计」组依次显示「P&ID 编辑器」「备份数据包」；
+   - `02-backup-empty-light.png`（64,672 B）：点击左侧 `PID_CHROME:nav:backup` 切入未打开空态；
+   - `03-backup-error-light.png`（75,912 B）：输入非备份空目录点「打开路径」进入红色错误卡片态，展示来源、原因与重试入口；
+   - `04-plant-loaded-readable-light.png`（371,427 B）：输入 `D:\work\plant-code\cad\pid-test-data` 打开 53 张 Oracle 备份包（`SQPlant · 版本 7.02 · 类型 2`），顶栏 6 枚操作按钮与三栏主体完整展示；
+   - `05-plant-group-and-item-expanded-light.png`（380,254 B）：点选装置组子树过滤图纸，展开图内对象查看接口属性明细；
+   - `06-plant-d04-unreadable-light.png`（107,820 B）：搜索框输入 `D04` 并选中，右栏保留数据库登记列并在对象卡片内展示黄色提示「无法读取图内对象（`P&IDAttributes` 里没有带 `DrawingNo` 的行）」；
+   - `07-plant-d03-open-failed-in-place-light.png`（114,945 B）：搜索 `D03` 并点击「在编辑器中打开」，按 S4 留在 `backup` 画面顶部显示红色横幅「无法在编辑器中打开该图纸（`D03.pid` 里没有可预览的图形）」，不弹 `ModalKind::Recovery`，不新增空废标签页（标签页数保持不变）；
+   - `08-plant-drawing-opened-in-editor-light.png`（139,196 B）：清空搜索选中可读图 `D07` 点「在编辑器中打开」，自动切回 `P&ID 编辑器`，图面与华北分公司图框整幅自适应落入窄画布内；切回 `backup` 再次点打开同一张 `D07`，断言标签页总数不变且直接聚焦原标签页；
+   - `09-plant-publish-dialog-light.png`（336,318 B）→ `10-plant-publish-running-light.png`（378,920 B）→ `11-plant-publish-outcome-light.png`（389,909 B）：打开「导出 publish 文件」弹窗，填入交付目录与中文参考目录 `D:\work\cad\pid-test-data\验收数据`（即时预检通过），导出写出 53 份（160 个文件，失败 0，用时 `30.8 s`）；
+   - `12-plant-pdf-dialog-paired-light.png`（350,834 B）→ `13-plant-pdf-running-backup-light.png`（398,491 B）→ `14-plant-pdf-running-editor-statusbar-light.png`（132,964 B）：打开「导出 PDF」弹窗，点击 **「使用上次 publish 输出目录」** 一键填入同一交付目录并显示同目录成对提示；提交后在 `backup` 画面显示 `done / 53` 进度条，切到 `P&ID 编辑器` 底栏右侧同步显示 `正在导出 PDF 1/53`（U1），点击底栏该项直接切回 `backup` 画面；
+   - `15-plant-paired-outcomes-details-light.png`（512,808 B）：PDF 导出完成（写出 53 份，用时 `50.5 s`），同时展开 publish 与 PDF 两条结果详情抽屉（U3），界面准确显示 publish 四项参考比对 **`一致 7 / 有差异 0 / 另一版 4 / 无参考 42`** 及逐图结论，PDF 显示 **`缺符号 15 张图共 22 处`** 及逐图缺符号清单。
+2. **小包 `.zip` 亮色完整闭环（`window-small-zip-light\`，4 张截图，交付目录 `window-small-zip-light\deliver\`）**：
+   - 从 `D:\work\plant-code\cad\pid-parse\test-file\backup-test\DWG-0202GP06-01_p.zip` 打开 7 张小包（`01-small-zip-loaded-light.png`），选中可读图在编辑器打开渲染（`02-small-zip-drawing-open-light.png`），切回先导 publish 再点「使用上次 publish 输出目录」同目录导出 PDF（`03-small-zip-paired-outcomes-light.png`）。
+3. **暗色主题全关键状态对照（`window-dark-theme\`，9 张截图，交付目录 `window-dark-theme\deliver\`）**：
+   - 预置 `PidTheme::Dark` 启动，全程 0 命令截取空态（`01-empty-dark.png`）、错误态（`02-error-dark.png`）、53 张已加载可读态（`03-loaded-readable-dark.png`）、`D04` 不可读态（`04-unreadable-d04-dark.png`）、publish 弹窗即时拦截非空目录态（`05-publish-dialog-dark.png`）、PDF 弹窗就绪态（`06-pdf-dialog-dark.png`）、PDF 导出运行态（`07-pdf-running-dark.png`）与 PDF 导出完成展开缺符号明细态（`08-pdf-outcome-details-dark.png`），深灰面板/边框/字色/状态强调色均走 `pid_tokens` 并与 Pencil `BkF01..11` 画框对齐。
+
+### 40.2 成对检查与逐字节基线比对读数
+
+| 检查项 | 全厂包（目录，53 张） | 小包（`.zip`，7 张） | 结论 |
+|---|---|---|---|
+| `scripts/sppid/check-pairs.ps1` | 退出码 `0`：53 对成对，publish-only `0`，PDF-only `0`，neither `0`；目录共 `214` 个文件且与两份索引完全吻合（`check-pairs-plant.txt`） | 退出码 `0`：7 对成对，publish-only `0`，PDF-only `0`，neither `0`；目录共 `30` 个文件且与两份索引完全吻合（`check-pairs-small-zip.txt`） | **通过** |
+| publish 与 `2026-11-20-exp3-rerun`（`a85fa10` 基线）逐字节比对 | `160 / 160` 文件完全逐字节相同（`{'identical': 160}`，`only_earlier: 0`） | `22 / 22` 文件一致：其中 15 个 XML/`001` 文件逐字节相同，6 个 `*_Coverage.json` 与 `_Index.json` 除临时 `.zip` 解包路径外逐字节完全相同（`{'identical': 15, 'identical but for absolute paths': 7}`） | **通过** |
+| PDF 与 `2026-11-19-pdf5` 基线逐字节比对 | `54 / 54` 文件（53 份 `.pdf` + `_PdfIndex.json`）完全逐字节相同（`{'identical': 54}`，`only_earlier: 0`） | `8 / 8` 文件一致：7 份 `.pdf` 完全逐字节相同，`_PdfIndex.json` 除临时 `.zip` 解包路径外逐字节完全相同（`{'identical': 7, 'identical but for absolute paths': 1}`） | **通过** |
+
+### 40.3 导航三处对齐与回归门禁读数
+
+- `cargo test --offline --locked --lib pid_shell_startup`：`14 passed; 0 failed`（含 `the_screens_are_the_ones_the_design_navigates_to` 与 `pid_shell_ui3_backup_screen_is_registered_in_nav_and_draws_its_frame`，`pid_shell_startup.txt`）；
+- `python -m pytest scripts/pid-platform -q`：`590 passed`（`pytest-pid-platform.txt`）；
+- `python -m pytest scripts/sppid -q`：`159 passed`（`pytest-sppid.txt`）；
+- `src/rest_openapi.json`、`.cargo/config.toml`、`docs/pid-platform/design/pid-platform.pen` 提交面核对：零意外入库。
+
+### 40.4 检查点 C 验收判定表
+
+| 验收项（`todo-checkpoint-c.md` `UI-9` / `00-capability-map.md` §5 检查点 C） | 判定 | 依据 |
+|---|---|---|
+| 全程 0 条手工命令完成全厂包目录与小包 `.zip` 的打开、浏览、开图、publish 导出、PDF 同目录配对导出与结果查看 | **达到** | §40.1：`window-plant-light\record.json`、`window-small-zip-light\record.json`（`zero_commands: true`） |
+| `scripts/sppid/check-pairs.ps1` 对全厂包（53 对，214 个文件）与小包（7 对，30 个文件）退出码均为 0 | **达到** | §40.2：`check-pairs-plant.txt`、`check-pairs-small-zip.txt` |
+| 界面导出的 publish 文件与 `2026-11-20-exp3-rerun`（`a85fa10` 基线）逐字节相同（清单内运行路径除外），PDF 与 `PDF-5` 逐字节相同 | **达到** | §40.2：`compare-plant.json`（`160/160`、`54/54`）、`compare-small-zip.json`（`22/22`、`8/8`） |
+| 亮色与暗色各状态截图与 Pencil 设计稿画框一致，`the_screens_are_the_ones_the_design_navigates_to` 及固定门禁全绿 | **达到** | §40.1、§40.3：29 张整窗截图 + `pid_shell_startup` 14/14 + `pid-platform` 590/590 + `sppid` 159/159 |
+| `readings.md` 完整记录检查点 C 验收表与证据目录位置 | **达到** | 本节（§40），证据目录 `D:\scratch\ocs-sppid\2026-11-20-checkpoint-c\` |
+
+---
+
+## 41. 检查点 C 代码审核与 P1–P3 五项加固修复（2026-11-20）
+
+- **起点与证据目录**：`main @ cc39c1306`（`rustc 1.102.0-nightly (65ce8611f 2026-11-18)`），证据目录 `D:\scratch\ocs-sppid\2026-11-20-review-fix\`。
+- **修复内容（对应代码审核查出的 5 项边界问题）**：
+  1. **跨包导出结果与配对目录隔离 + 导出中禁切包（P1）**：`BackupExport` 与 `BackupPdf` 记录 `last_backup_root` 并提供 `last_outcome_for(&index.backup_root)`，`reset_for_loaded_package` 同步清空 `export_ui` 弹窗/展开态/`last_publish_out_dir`，杜绝切换新备份包后残留上一包的结果条或将新包 PDF 混配到上一包 publish 目录；后台导出运行中禁用「切换 zip / 切换文件夹 / 打开路径」并在 `update` 层兜底给出警告提示；
+  2. **切屏与过滤自动补发首图对象读取（P1）**：在 `pid_shell::on_pid_shell(Message::Show(PidScreen::Backup))`、`PIDSCREEN backup`、`SelectGroup` 与 `DrawingFilterChanged` 中统一调用 `ensure_selected_drawing_items_loaded`，解决在编辑器先执行 `PIDBACKUPOPEN` 再切到 `backup` 屏时首张图对象停留在未触发态的问题，并将 `None`（「尚未读取图内对象」）与 `Some(ItemsState::Loading)`（「正在读取图内对象…」）文案区分开；
+  3. **消除弹窗打开期间 `view()` 主线程每帧同步磁盘扫描（P2）**：将 publish 与 PDF 配置弹窗的目录预检结果缓存于 `PublishDialogState::validation` 与 `PdfDialogState::{validation, pair_ready}`，仅在 `update()`（打开弹窗或输入变更）时计算一次，`view()` 纯粹只读缓存；`has_manifest` 改查内存索引 `index.manifest` / `index.files`；
+  4. **Windows 双引号路径净化与回车直开（P2）**：新增 `clean_path_input` 自动剥离首尾空白与成对英文双引号 `"`（兼容资源管理器「复制文件地址」），并为 `source_path_input` 绑定非空 `.on_submit(Message::OpenTypedSource)`；
+  5. **清缓存真实报错透传、详情分段标签接线与长比对截断尾注（P3）**：`pidbackup.rs` 将 `take_cache_outcome` 的 `Ok` / `Err` 真实透传到 `backup.notice`（失败显示 `Warning` 而非误报已清理）；在右栏顶部接线 `DetailTab`（「全部 / 仅属性 / 仅对象」分段按钮）；`gate.lines` 超过 120 条时补充 `已显示前 120 条（共 N 条），完整比对明细见清单文件。` 尾注。
+- **先红后绿与门禁读数**：
+  - 先红：新增 3 条 `review_` 快测试（`pid_backup_screen` 2 条、`pid_backup_export_ui` 1 条），改前编译通过且 3/3 均在目标断言变红（`red.txt`，退出码 `101`）；
+  - 后绿：`cargo test --offline --locked --lib pid_backup` `319 passed; 0 failed`（`green.txt`）；全库 `cargo test --offline --locked --lib` `7145` 条（`7089` 过 / `55` 忽略 / `1` 既有未提交 `.pen` 字重测试，零新增失败，`lib_test.txt`）；
+  - `cargo clippy --offline --locked --lib`：`656`（零新增，`clippy_lib.txt`）；`cargo clippy --offline --locked --lib --profile test`：`1,051`（零新增，`clippy_test.txt`）；
+  - `scripts\fmt-newhunks.ps1`：8 个改动 Rust 文件全部 `new=0`（`fmt.txt`、`fmt_backup.txt`）；
+  - `python scripts/arch_check.py report`：与改前逐行一致（0 差异，`arch_before.txt` / `arch_after.txt`）；`src/rest_openapi.json` 零改动；`target\release\OpenCADStudio.exe` 已重编更新落盘。
+
 ## 修订记录
 
 | 日期 | 改了什么 |
@@ -5366,3 +5562,13 @@ SQL Server 包：
 | 2026-11-20 | 加 §28（`ACC-1` 总验收）：成对检查的脚本、两个包在真实窗口里的走法和读数、交付目录和成对检查、逐字节比和两版命令行工具的归因、厂商的 11 张、脚本的试跑和反过来验、验收对照表、检查点 A 的显示差别和处理（照录）、和任务写法的出入、检查的限度、验收判定。总验收没有通过：publish 文件和 `EXP-3` 那次全厂包 61/160、小包 7/22 不同，原因是 `EXP-3` 之后升过 `pid-parse`（`268fea286`）。开头的状态说明加上 §28 |
 | 2026-11-20 | 加 §29：按现在钉的版本重跑 `EXP-3` 的比对（七次导出全过，和 `a85fa10` 的 `pid_publish_xml` 逐字节相同；和 `EXP-3` 那次逐个导出比，不同的正好是升级动到的那些，SQL Server 包没变）；`ACC-1` 的交付目录和新的这一次比，第四条按新的基线重判为过，总验收通过。§28.11 末尾加「后来」一句，开头的状态说明加上 §29 |
 | 2026-11-20 | 把 `main` 合进 `sppid-exp2`：主线记的 §24 改号为 §30（小节号跟着改，其余照录；`todo.md` 里指向它的 5 处跟着改），开头的状态说明加上 §30、§31，§29 那一句补上主线做过的一次；加 §31：这次合并的记录 |
+| 2026-11-20 | 加 §32（检查点 C 第 1 段 `UI-1` 备份包载入计时与浏览只读访问器）：`PidBackupBrowser` 载入计时与来源保留、特殊组中文映射、装置组子树与图内对象过滤纯函数，4 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §33（检查点 C 第 1 段 `UI-2` 导出状态结构化访问器、界面启动入口与 1 秒跳秒订阅）：`BackupExport` / `BackupPdf` 只读访问器与界面预检/启动入口、`BackupPdf::Running.started`、`view::subscription` 1 秒跳秒订阅，4 条快测试先红后绿及全套门禁读数；顺带重编最新 `target\release\OpenCADStudio.exe` |
+| 2026-11-20 | 加 §34（检查点 C 第 2 段 `UI-3` 导航三处接线与 `backup` 空画面骨架）：`PidScreen::Backup`、`screen-catalog.json`、`00-overview.md` 及文档契约 15 屏同步注册，先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §35（检查点 C 第 2 段 `UI-4` 浏览画面三态与包概要顶栏）：未打开/载入中/出错三态、三类包概要、清缓存忙碌保护与经典面板入口，4 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §36（检查点 C 第 2 段 `UI-5` 浏览画面三栏主体）：装置组树中文映射、搜索清单、数据库属性与图内对象过滤详情，2 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §37（检查点 C 第 2 段 `UI-6` 从 `backup` 开图与切屏保持）：按钮/双击开图切编辑器、复用已开标签页、坏图按 S4 留屏不弹恢复窗，2 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §38（检查点 C 第 3 段 `UI-7` publish 与 PDF 配置对话框及即时预检）：按钮禁用预判、两个对话框即时预检、上次 publish 目录一键配对，3 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §39（检查点 C 第 3 段 `UI-8` 进行中两处联动与双结果视图）：画面内进度条+外壳底栏切回联动、三种结果摘要与展开抽屉、打开目录动作，2 条快测试先红后绿及全套门禁读数 |
+| 2026-11-20 | 加 §40（检查点 C 第 3 段 `UI-9` 真实窗口 0 命令闭环与双主题对照验收）：隐藏桌面正式版 `OpenCADStudio.exe` 全厂包（53 对 / 214 文件）、小包 `.zip`（7 对 / 30 文件）与暗色主题三组 29 张整窗截图、`check-pairs.ps1` 退出码 0、与 `2026-11-20-exp3-rerun` 及 `PDF-5` 逐字节一致、导航三处核对全绿；开头的状态说明补上 §32–§40 |
+| 2026-11-20 | 加 §41（检查点 C 代码审核与 P1–P3 五项加固修复）：跨包导出结果与配对隔离及导出中禁切包、切屏补发对象读取、弹窗预检缓存化消除每帧磁盘 I/O、双引号路径净化与回车直开、清缓存真实错误透传/详情三标签接线/120 条截断尾注；3 条先红后绿与全套门禁读数，重编 `target\release\OpenCADStudio.exe` |

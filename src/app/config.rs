@@ -116,11 +116,20 @@ pub enum DockSide {
     Right,
 }
 
+const fn unmigrated_legacy_theme() -> bool {
+    false
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiThemeConfig {
     pub name: String,
     pub palette: UiThemePalette,
+    /// Set once a saved config has passed through the default-Light cutover
+    /// (`7d545f845`), so a legacy `Oxocarbon` written by the old default moves
+    /// to `Light` while a later explicit `Oxocarbon` choice stays `Oxocarbon`.
+    #[serde(default = "unmigrated_legacy_theme")]
+    pub light_default_migrated: bool,
 }
 
 impl Default for UiThemeConfig {
@@ -129,11 +138,26 @@ impl Default for UiThemeConfig {
         Self {
             name: theme.to_string(),
             palette: UiThemePalette::from_iced(theme.seed()),
+            light_default_migrated: true,
         }
     }
 }
 
 impl UiThemeConfig {
+    pub fn migrate_legacy_default(&mut self) -> bool {
+        if self.light_default_migrated {
+            return false;
+        }
+        self.light_default_migrated = true;
+        if self.name.eq_ignore_ascii_case("Oxocarbon") {
+            let light = iced::Theme::Light;
+            self.name = light.to_string();
+            self.palette = UiThemePalette::from_iced(light.seed());
+            return true;
+        }
+        false
+    }
+
     pub fn to_iced(&self) -> iced::Theme {
         if self.name == "Custom" {
             iced::Theme::custom("Custom", self.palette.to_iced())
@@ -665,8 +689,13 @@ impl AppConfig {
             .and_then(|window| window.local_storage().ok().flatten())
             .and_then(|storage| storage.get_item(WEB_CONFIG_KEY).ok().flatten());
 
-        body.and_then(|body| serde_json::from_str(&body).ok())
-            .unwrap_or_default()
+        let mut cfg: Self = body
+            .and_then(|body| serde_json::from_str(&body).ok())
+            .unwrap_or_default();
+        if cfg.theme.migrate_legacy_default() {
+            cfg.save();
+        }
+        cfg
     }
 
     /// Persist the config as JSON. Best-effort; silent on unavailable or
@@ -1056,5 +1085,36 @@ mod tests {
         assert_eq!(parse_hex("a1b2c3"), Some([0xa1, 0xb2, 0xc3]));
         assert_eq!(parse_hex("#A1B2C3"), Some([0xa1, 0xb2, 0xc3]));
         assert_eq!(parse_hex("  000000  "), Some([0, 0, 0]));
+    }
+
+    #[test]
+    fn legacy_oxocarbon_theme_in_saved_config_migrates_once_to_light() {
+        let mut legacy: AppConfig = serde_json::from_str(
+            r#"{"theme":{"name":"Oxocarbon","palette":{"background":[35,35,35],"text":[208,208,208],"primary":[0,180,255],"success":[0,193,90],"warning":[190,149,255],"danger":[246,45,15]}}}"#,
+        )
+        .expect("deserialize legacy config");
+        assert!(!legacy.theme.light_default_migrated);
+        assert!(legacy.theme.migrate_legacy_default());
+        assert!(legacy.theme.light_default_migrated);
+        assert_eq!(legacy.theme.name, iced::Theme::Light.to_string());
+        assert_eq!(legacy.theme.to_iced(), iced::Theme::Light);
+
+        // An explicit Oxocarbon saved after the migration keeps Oxocarbon.
+        legacy.theme.name = iced::Theme::Oxocarbon.to_string();
+        legacy.theme.palette = UiThemePalette::from_iced(iced::Theme::Oxocarbon.seed());
+        let saved = serde_json::to_string(&legacy).expect("serialize migrated config");
+        let mut explicit_oxo: AppConfig =
+            serde_json::from_str(&saved).expect("deserialize explicit oxocarbon");
+        assert!(explicit_oxo.theme.light_default_migrated);
+        assert!(!explicit_oxo.theme.migrate_legacy_default());
+        assert_eq!(explicit_oxo.theme.to_iced(), iced::Theme::Oxocarbon);
+
+        // A non-default theme saved before the cutover is kept as chosen.
+        let mut legacy_dark: AppConfig =
+            serde_json::from_str(r#"{"theme":{"name":"Dark"}}"#).expect("deserialize legacy dark");
+        assert!(!legacy_dark.theme.light_default_migrated);
+        assert!(!legacy_dark.theme.migrate_legacy_default());
+        assert!(legacy_dark.theme.light_default_migrated);
+        assert_eq!(legacy_dark.theme.to_iced(), iced::Theme::Dark);
     }
 }

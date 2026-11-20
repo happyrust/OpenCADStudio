@@ -61,6 +61,8 @@ pub(in crate::app) struct BackupExport {
     /// What the last export that ran came to; `None` before the first. One
     /// that was refused before it started is not among them.
     last: Option<Result<ExportOutcome, ExportError>>,
+    /// `backup_root` of the package that produced `last`.
+    last_backup_root: Option<PathBuf>,
     /// The export itself: [`pid_backup_export::export_in_background`], or
     /// what a test puts in its place.
     export: Export,
@@ -81,8 +83,44 @@ impl Default for BackupExport {
         Self {
             running: None,
             last: None,
+            last_backup_root: None,
             export: Box::new(|request| Box::pin(pid_backup_export::export_in_background(request))),
         }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BackupExport {
+    /// Whether a publish export is currently running on a worker thread.
+    pub(in crate::app) fn is_running(&self) -> bool {
+        self.running.is_some()
+    }
+
+    /// Active export request and how long it has run at `now`.
+    pub(in crate::app) fn running_status(
+        &self,
+        now: Instant,
+    ) -> Option<(&ExportRequest, std::time::Duration)> {
+        let running = self.running.as_ref()?;
+        Some((
+            &running.request,
+            now.saturating_duration_since(running.started),
+        ))
+    }
+
+    /// Structured outcome of the most recent export that ran to completion.
+    pub(in crate::app) fn last_outcome(&self) -> Option<&Result<ExportOutcome, ExportError>> {
+        self.last.as_ref()
+    }
+
+    /// Structured outcome only when it belongs to `backup_root`.
+    pub(in crate::app) fn last_outcome_for(
+        &self,
+        backup_root: &std::path::Path,
+    ) -> Option<&Result<ExportOutcome, ExportError>> {
+        (self.last_backup_root.as_deref() == Some(backup_root))
+            .then_some(self.last.as_ref())
+            .flatten()
     }
 }
 
@@ -157,14 +195,18 @@ fn option(rest: &str) -> Result<Option<(&str, &str, &str)>, String> {
 /// folder, the folders asked for in full, and the plant name, P01 when the
 /// line names none.
 #[cfg(not(target_arch = "wasm32"))]
-fn request_for(index: &BackupIndex, asked: &Asked<'_>) -> ExportRequest {
-    let in_full = |folder: &str| super::pidbackuppdf::folder_asked_for(index, folder);
-    let plant = asked.plant.unwrap_or(pid_backup_export::DEFAULT_PLANT);
+fn request_for(
+    index: &BackupIndex,
+    out_dir: PathBuf,
+    plant: &str,
+    reference_dir: Option<PathBuf>,
+) -> ExportRequest {
+    let in_full = |folder: PathBuf| super::pidbackuppdf::resolve_folder_for(index, folder);
     ExportRequest {
         package_dir: index.backup_root.clone(),
-        out_dir: in_full(asked.folder),
+        out_dir: in_full(out_dir),
         plant: plant.to_string(),
-        reference_dir: asked.reference.map(in_full),
+        reference_dir: reference_dir.map(in_full),
     }
 }
 
@@ -261,43 +303,28 @@ impl OpenCADStudio {
     /// -- another runs, no package is open, a folder will not do -- makes
     /// nothing and is no export to speak of later.
     fn start_pid_backup_export(&mut self, asked: &Asked<'_>) -> Result<Task<Message>, ExportError> {
-        if self.pid_backup_export.running.is_some() {
-            return Err(ExportError::Busy);
-        }
-        let index = self
-            .pid_backup_browser
-            .index()
-            .ok_or(ExportError::NoPackage)?;
-        if asked.folder.is_empty() {
-            let why = "no folder to export to was given".to_string();
-            return Err(ExportError::TargetInvalid(why));
-        }
-        let request = request_for(index, asked);
-        if let Some(why) = pid_backup_export::in_the_restore(&request.out_dir, &index.restored) {
-            return Err(ExportError::TargetInvalid(why));
-        }
-        pid_backup_export::check(&request)?;
-        self.command_line.push_output(&starting(&request));
-        self.pid_backup_export.running = Some(Running {
-            request: request.clone(),
-            started: Instant::now(),
-        });
-        let export = (self.pid_backup_export.export)(request);
-        Ok(Task::perform(export, Message::PidBackupExportFinished))
+        let plant = asked
+            .plant
+            .unwrap_or(pid_backup_export::DEFAULT_PLANT)
+            .to_string();
+        self.start_pid_backup_export_ui(
+            PathBuf::from(asked.folder),
+            plant,
+            asked.reference.map(PathBuf::from),
+        )
     }
 
     /// The bare verb: for how long the export that runs has run, what the
     /// last one came to, or that there has been none.
     fn say_where_the_pid_backup_export_stands(&mut self) {
-        let BackupExport { running, last, .. } = &self.pid_backup_export;
-        if let Some(Running { request, started }) = running {
-            let seconds = started.elapsed().as_secs();
+        if let Some((request, elapsed)) = self.pid_backup_export.running_status(Instant::now()) {
+            let seconds = elapsed.as_secs();
             self.command_line.push_output(&format!(
                 "PIDBACKUPEXPORT: exporting to {} (plant {}): {seconds} s so far",
                 request.out_dir.display(),
                 request.plant
             ));
-        } else if let Some(last) = last {
+        } else if let Some(last) = self.pid_backup_export.last_outcome() {
             say_result(&mut self.command_line, last);
         } else {
             self.command_line.push_output(NO_EXPORT_YET);
@@ -309,7 +336,17 @@ impl OpenCADStudio {
         &mut self,
         result: Result<ExportOutcome, ExportError>,
     ) {
-        self.pid_backup_export.running = None;
+        let prev_root = self
+            .pid_backup_export
+            .running
+            .take()
+            .map(|r| r.request.package_dir)
+            .or_else(|| {
+                self.pid_backup_browser
+                    .index()
+                    .map(|idx| idx.backup_root.clone())
+            });
+        self.pid_backup_export.last_backup_root = prev_root;
         say_result(&mut self.command_line, &result);
         self.pid_backup_export.last = Some(result);
     }
@@ -318,7 +355,7 @@ impl OpenCADStudio {
     /// export reads may lie in it. Says so when it has to, to the one who
     /// asked for the clearing.
     pub(super) fn pid_backup_export_keeps_the_cache(&mut self) -> bool {
-        if self.pid_backup_export.running.is_none() {
+        if !self.pid_backup_export.is_running() {
             return false;
         }
         let code = ExportError::Busy.code();
@@ -330,6 +367,54 @@ impl OpenCADStudio {
             ),
         );
         true
+    }
+
+    /// Validate a publish-export request from the UI without writing files.
+    pub(in crate::app) fn check_pid_backup_export_ui(
+        &self,
+        out_dir: PathBuf,
+        plant: &str,
+        reference_dir: Option<PathBuf>,
+    ) -> Result<ExportRequest, ExportError> {
+        if self.pid_backup_export.is_running() {
+            return Err(ExportError::Busy);
+        }
+        let index = self
+            .pid_backup_browser
+            .index()
+            .ok_or(ExportError::NoPackage)?;
+        if out_dir.as_os_str().is_empty() {
+            let why = "no folder to export to was given".to_string();
+            return Err(ExportError::TargetInvalid(why));
+        }
+        if plant.trim().is_empty() {
+            let why = "no plant name was given".to_string();
+            return Err(ExportError::TargetInvalid(why));
+        }
+        let request = request_for(index, out_dir, plant, reference_dir);
+        if let Some(why) = pid_backup_export::in_the_restore(&request.out_dir, &index.restored) {
+            return Err(ExportError::TargetInvalid(why));
+        }
+        pid_backup_export::check(&request)?;
+        Ok(request)
+    }
+
+    /// Start a publish export from the UI, sharing state and guards with
+    /// `PIDBACKUPEXPORT`.
+    pub(in crate::app) fn start_pid_backup_export_ui(
+        &mut self,
+        out_dir: PathBuf,
+        plant: String,
+        reference_dir: Option<PathBuf>,
+    ) -> Result<Task<Message>, ExportError> {
+        let request = self.check_pid_backup_export_ui(out_dir, &plant, reference_dir)?;
+        self.command_line.push_output(&starting(&request));
+        self.pid_backup_export.running = Some(Running {
+            request: request.clone(),
+            started: Instant::now(),
+        });
+        let export = (self.pid_backup_export.export)(request);
+        Ok(Task::perform(export, Message::PidBackupExportFinished))
     }
 }
 
@@ -2077,5 +2162,119 @@ mod tests {
             unmet.len(),
             unmet.join("\n")
         );
+    }
+
+    #[test]
+    fn ui2_ui_export_shares_running_and_structured_outcome_with_command() {
+        let _one = crate::headless_ui_lock();
+        let scratch = Scratch::new("ui2-publish-shared");
+        let mut app = in_the_module();
+        open_package(&mut app, &scratch);
+        let stand_in = StandIn::put_into(&mut app);
+
+        assert!(!app.pid_backup_export.is_running());
+        assert!(app.pid_backup_export.last_outcome().is_none());
+        assert!(!app.pid_backup_wants_second_tick());
+
+        let out_dir = scratch.join("out-ui");
+        let ref_dir = scratch.join("ref");
+        std::fs::create_dir_all(&ref_dir).expect("ref dir");
+        let task = app
+            .start_pid_backup_export_ui(out_dir.clone(), "P99".into(), Some(ref_dir.clone()))
+            .expect("UI export starts");
+
+        assert!(app.pid_backup_export.is_running());
+        assert!(app.pid_backup_wants_second_tick());
+        let (req, _elapsed) = app
+            .pid_backup_export
+            .running_status(Instant::now())
+            .expect("running status available");
+        assert_eq!(req.out_dir, out_dir);
+        assert_eq!(req.plant, "P99");
+        assert_eq!(req.reference_dir.as_deref(), Some(ref_dir.as_path()));
+
+        let _ = app.dispatch_command("PIDBACKUPEXPORT");
+        let last_line = &app.command_line.history.last().expect("status line").text;
+        assert!(last_line.contains("so far"), "got: {last_line}");
+
+        let _ = app.dispatch_command("PIDBACKUPOPEN Cache=Clear");
+        assert_eq!(
+            app.command_line.last_error_code.as_deref(),
+            Some("SPPID_EXPORT_BUSY")
+        );
+
+        let expected = compared(&out_dir);
+        stand_in.end(Ok(expected.clone()));
+        app.drive_headless_task(task).expect("export task finishes");
+
+        assert!(!app.pid_backup_export.is_running());
+        assert!(!app.pid_backup_wants_second_tick());
+        let stored = app
+            .pid_backup_export
+            .last_outcome()
+            .expect("structured outcome kept")
+            .as_ref()
+            .expect("export succeeded");
+        assert_eq!(stored.written, expected.written);
+        assert_eq!(stored.index_path, expected.index_path);
+        assert_eq!(
+            stored.gate.as_ref().map(|g| g.dirty),
+            Some(1),
+            "gate summary kept structurally"
+        );
+        assert!(stored.sql_server());
+    }
+
+    #[test]
+    fn ui2_ui_export_preflight_rejects_bad_targets_without_clobbering_last() {
+        let scratch = Scratch::new("ui2-publish-preflight");
+        let mut app = app();
+        open_package(&mut app, &scratch);
+        let stand_in = StandIn::put_into(&mut app);
+
+        let first_out = scratch.join("out-ok");
+        let task = app
+            .start_pid_backup_export_ui(first_out.clone(), "P01".into(), None)
+            .expect("first export starts");
+        stand_in.end(Ok(outcome(&first_out)));
+        app.drive_headless_task(task).expect("first export ends");
+        assert!(matches!(app.pid_backup_export.last_outcome(), Some(Ok(_))));
+
+        let non_empty = scratch.join("non-empty");
+        std::fs::create_dir_all(&non_empty).unwrap();
+        std::fs::write(non_empty.join("existing.txt"), "x").unwrap();
+        assert!(matches!(
+            app.check_pid_backup_export_ui(non_empty.clone(), "P01", None),
+            Err(ExportError::TargetNotEmpty { .. })
+        ));
+        assert!(matches!(
+            app.start_pid_backup_export_ui(non_empty, "P01".into(), None),
+            Err(ExportError::TargetNotEmpty { .. })
+        ));
+
+        let in_restore = scratch.join("restored").join("sub");
+        assert!(matches!(
+            app.check_pid_backup_export_ui(in_restore, "P01", None),
+            Err(ExportError::TargetInvalid(_))
+        ));
+
+        let missing_ref = scratch.join("no-such-ref");
+        assert!(matches!(
+            app.check_pid_backup_export_ui(scratch.join("out-2"), "P01", Some(missing_ref)),
+            Err(ExportError::ReferenceInvalid(_))
+        ));
+
+        assert!(matches!(
+            app.check_pid_backup_export_ui(scratch.join("out-3"), "   ", None),
+            Err(ExportError::TargetInvalid(_))
+        ));
+
+        let preserved = app
+            .pid_backup_export
+            .last_outcome()
+            .expect("previous outcome still stored")
+            .as_ref()
+            .expect("previous outcome still Ok");
+        assert_eq!(preserved.index_path, first_out.join("_Index.json"));
     }
 }

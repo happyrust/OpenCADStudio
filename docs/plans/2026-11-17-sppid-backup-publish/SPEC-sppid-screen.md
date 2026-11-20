@@ -1,6 +1,6 @@
 # SPEC：新版浏览画面（`sppid-screen`）
 
-> 状态：**建议稿（待设计稿定稿与你确认）**（2026-11-19）。检查点 B 对应的读取、PDF 导出、publish 导出引擎与命令均已落地验收，本规格定义检查点 C 的前半部分：新版 P&ID 界面里的「备份数据包」浏览画面。
+> 状态：**已确认**（2026-11-20，答复「按照推荐方案继续下一步。」，S1–S4 均按建议定；实施计划与任务见 `plan-checkpoint-c.md`、`todo-checkpoint-c.md`，界面实现待 Pencil 设计稿定稿）。检查点 B 与总验收（`ACC-1`）对应的读取、显示、PDF 导出、publish 导出均已落地验收，本规格定义检查点 C 的前半部分：新版 P&ID 界面里的「备份数据包」浏览画面。
 > 依据：`00-capability-map.md` §4、§5 检查点 C、§8 第 1–2 问（已定：导航加「备份数据包」画面 `backup`；第一版只放图纸这条线，库表、枚举映射、参考数据文件、图纸体检留在经典面板）；`02-screen-content.md`；需求 `REQ-MIG-008`（`docs/pid-platform/requirements/90-migration-and-interop.md`）。
 > 共用约定见 `01-shared-conventions.md`。前提：`SPEC-sppid-read.md` 已完成，且 Pencil 设计稿（`sppid-design`）定稿。
 
@@ -30,7 +30,7 @@
 ### 2.2 已有的备份包状态与读取层
 
 - 读取层：`src/io/pid_backup.rs`（还原与 `.ocs-restored` 文件/文件夹计数校验，`RD-12`）、`src/io/pid_backup_browse.rs`（`BackupIndex` 建索引，无备份且无 `.pid` 的来源返回 `not-a-backup` 错误，`EXP-1b`；按需读取单张图的 `DrawingItems`）。
-- 应用状态：`app.pid_backup`（`PidBackupBrowser`）已持有当前来源路径、载入状态（`Idle` / `Loading` / `Loaded(Arc<BackupIndex>)` / `Failed`）、已缓存的各图 `DrawingItems`、还原缓存目录配置等。
+- 应用状态：`app.pid_backup`（`PidBackupBrowser`，`src/ui/window/pid_backup_browser.rs`）已持有载入状态 `load: LoadState`（`Idle` / `Loading(PathBuf)` / `Ready(Arc<BackupIndex>)`）、失败原因 `error: Option<String>`、已缓存的各图 `items: HashMap<usize, ItemsState>`（`Loading` / `Ready(Arc<DrawingItems>)` / `Failed(String)`）及还原缓存目录配置 `cache` 等；只需补记一次 `loading_started_at: Option<Instant>` 即可显示载入中已用秒数。
 - 开图路径：`run_pid_backup_effect` 已实现 `tab_showing` 查重切换（`RD-6`），`on_file_opened` 已实现 `.pid` 按图幅宽度自适应画布（`RD-7`）。
 
 ## 3. 画面与状态
@@ -39,11 +39,11 @@
 
 | 状态 | 判定依据 | 画面内容 |
 |---|---|---|
-| **没打开** | `LoadState::Idle` 且无错误 | 说明文字 +「打开备份 zip」「打开备份文件夹」两个主入口按钮 |
-| **载入中** | `LoadState::Loading { source, started_at, .. }` | 来源路径、「正在还原并建立索引…」与已用秒数（无百分比、无取消） |
-| **出错** | `LoadState::Failed { source, error }`（或 `Idle` 带错误） | 来源路径、错误原因全文、「重新选择 zip」「重新选择文件夹」按钮 |
-| **已打开（图可读）** | `LoadState::Loaded(index)`，选中图纸可读或已读出 `DrawingItems` | 顶部包概要栏（含切换备份包与两项导出入口 `sppid-export-ui`）+ 左侧装置组树 + 中间图纸清单（含搜索框）+ 右侧详情区（「图纸属性」「图内对象」两栏或上下分区，按类型过滤与滚动）+「在编辑器中打开」按钮 |
-| **已打开（图读不出 / 缺文件）** | 选中图纸 `pid_file.is_none()`，或读图内对象报错，或上次尝试打开该图失败 | 清单行带警示标记；「在编辑器中打开」对缺文件置灰并提示原因；右侧详情保留数据库字段，并在图内对象区清晰显示读不出/打不开的那句原因（不显示空表） |
+| **没打开** | `LoadState::Idle` 且 `error.is_none()` | 说明文字 +「打开备份 zip」「打开备份文件夹」两个主入口按钮 |
+| **载入中** | `LoadState::Loading(source)` | 来源路径、「正在还原并建立索引…」与自 `loading_started_at` 起的已用秒数（无百分比、无取消） |
+| **出错** | `LoadState::Idle` 且 `error.is_some()` | 来源路径（若已记录）、`error` 原因全文、「重新选择 zip」「重新选择文件夹」按钮 |
+| **已打开（图可读）** | `LoadState::Ready(index)`，选中图纸可读或已读出 `ItemsState::Ready` | 顶部包概要栏（含切换备份包、两项导出入口 `sppid-export-ui`、右上角次要操作「清理还原缓存」与「在经典面板中查看库表」（S3））+ 左侧装置组树（`Unregistered` 显示为「未登记图纸」，`(ungrouped)` 显示为「未分组」（S2））+ 中间图纸清单（含搜索框）+ 右侧详情区（「图纸属性」「图内对象」两栏或上下分区，按类型过滤与滚动）+「在编辑器中打开」按钮 |
+| **已打开（图读不出 / 缺文件）** | 选中图纸 `entry.pid_path.is_none()`，或 `ItemsState::Failed(reason)`，或上次尝试打开该图失败 | 清单行带警示标记；「在编辑器中打开」对缺文件置灰并提示原因；右侧详情保留数据库字段，并在图内对象区或顶部提示条清晰显示读不出/打不开的那句原因（不显示空表；从本画面开图失败时不叠整窗恢复弹窗（S4）） |
 
 ## 4. 数据与消息流转
 
@@ -73,7 +73,7 @@ flowchart TD
 
 - 新建 `src/app/pid_shell/backup.rs`：`State`、`Message`、`VIEW = Some(view)`、`update`、`view`，内部部件边界前缀 `PID_BACKUP_SCREEN:<part>`（供 `ui_bounds` 与无窗口布局测试核对）。
 - 修改 `src/app/pid_shell/mod.rs`：
-  - `PidScreen` 新增 `Backup`（`id() == "backup"`，`title() == "备份数据包"`，`group()` 按定稿设计稿所属分组，`needs_drawing() == false`）；
+  - `PidScreen` 新增 `Backup`（`id() == "backup"`，`title() == "备份数据包"`，`group() == NavGroup::Design`（`设计` 组，S1；若定稿 `.pen` 放在其他组则照 `.pen`），`needs_drawing() == false`）；
   - `PidShell` 新增 `pub backup: backup::State`；
   - `Message` 新增 `Backup(backup::Message)`；
   - `PIDSCREEN backup` 自动支持切换。
@@ -132,14 +132,16 @@ pub struct State {
 - 图纸缩略图、项目库版本/签核/PBS 树不在本画面（`02-screen-content.md` §5）。
 - 网页版（`wasm32`）不提供本地备份包读写。
 
-## 9. 待决问题（随设计稿定稿一并确认）
+## 9. 已定问题（S1–S4）
 
-| # | 问题 | 我的建议 |
+2026-11-20 答复「按照推荐方案继续下一步。」，四项均按建议定（若后续 Pencil 设计稿定稿时画法另有调整，以设计稿为准）：
+
+| # | 问题 | 定的结果 |
 |---|---|---|
-| S1 | **`backup` 在左侧导航放在哪一组。** 现有四组：`设计`、`配置`、`校验交付`、`平台` | 放在 **`设计`** 组（紧挨「图纸管理」和「P&ID 编辑器」），因为主要动作是找图、看图、打开到编辑器；以你在 Pencil 设计稿里画的位置为准 |
-| S2 | **两个特殊装置组的中文显示名**（`Unregistered`、`(ungrouped)`） | 建议叫 **「未登记图纸」** 和 **「未分组」**；设计稿写了别的词就照设计稿 |
-| S3 | **还原缓存管理与「打开经典面板」入口放不放** | 建议在包概要右上角放一个次要操作（如「缓存与高级视图」或两个小按钮：「清理还原缓存」「在经典面板中查看库表」），既不占主视觉，又让经典面板里的库表/体检功能在新界面下不用记命令也能进；设计稿没画就不放 |
-| S4 | **开 `D03` 这类打不开的图时，原有的全局「打开失败」恢复弹窗（`ModalKind::Recovery`）怎么处理** | 从 `backup` 画面发起打开失败时，建议直接把原因收进 `backup` 画面当前图纸的错误提示条里并留在本画面，不再额外叠一层遮住整窗的恢复弹窗；从编辑器命令打开时照旧 |
+| S1 | **`backup` 在左侧导航放在哪一组。** 现有四组：`设计`、`配置`、`校验交付`、`平台` | **已定（2026-11-20）：放在 `设计` 组**（紧挨「图纸管理」和「P&ID 编辑器」）；若你在 Pencil 设计稿里画在别的组则照设计稿 |
+| S2 | **两个特殊装置组的中文显示名**（`Unregistered`、`(ungrouped)`） | **已定（2026-11-20）：叫「未登记图纸」和「未分组」**；设计稿写了别的词就照设计稿 |
+| S3 | **还原缓存管理与「打开经典面板」入口放不放** | **已定（2026-11-20）：放次要入口**——在包概要右上角提供「清理还原缓存」与「在经典面板中查看库表」（或收在次要菜单中），既不占主视觉，又让库表/枚举映射/体检在新界面下免记命令即可进入；若定稿设计稿明确拿掉则照设计稿 |
+| S4 | **开 `D03` 这类打不开的图时，原有的全局「打开失败」恢复弹窗（`ModalKind::Recovery`）怎么处理** | **已定（2026-11-20）：收进本画面错误提示条并留在本画面**——从 `backup` 画面发起打开失败时不再额外叠整窗恢复弹窗；从编辑器命令行打开时维持原样 |
 
 ## 10. 需求对照
 
@@ -148,3 +150,10 @@ pub struct State {
 | `REQ-MIG-008` 打开备份数据包并浏览其中的图纸 | 完整覆盖界面部分 | 从无界面命令版升级为 `backup` 专用画面，保留经典面板兼容 |
 | 地图检查点 C 第 1 条（前半） | 覆盖 | 不敲命令完成打开备份包 → 按装置组看图纸 → 看属性和图内对象 → 打开图纸 |
 | 地图检查点 C 第 2、3 条 | 覆盖 | 五个状态的暗色/亮色画框一致；导航三处核对测试通过 |
+
+## 11. 修订记录
+
+| 日期 | 改动 |
+|---|---|
+| 2026-11-19 | 初稿（建议稿，列 S1–S4 推荐选项） |
+| 2026-11-20 | 答复「按照推荐方案继续下一步。」，状态改为已确认；S1–S4 全部按建议定（§3、§5.1、§9）；按 `src/ui/window/pid_backup_browser.rs` 实际类型对齐 §2.2 与 §3 的状态枚举写法 |
