@@ -1,7 +1,7 @@
 # SmartPlant 备份包：检查点 C（新版浏览与导出界面）· 任务清单
 
 > 日期：2026-11-20
-> 状态：**已确认**（2026-11-20）。从 `UI-1` 开始，按顺序一个一个做，做完一个勾一个。
+> 状态：**已完成**（2026-11-20，`UI-1` – `UI-9` 全部 9 个任务均已按「先红后绿 + 固定门禁 + 一任务一提交」落地并通过隐藏桌面真实窗口 0 命令闭环验收；详见 `readings.md` §32–§40）。
 > 配套：`plan-checkpoint-c.md`（分段、依赖图、检查点、风险、需要你做的事）；界面规格：`SPEC-sppid-screen.md`（S1–S4 已确认）、`SPEC-sppid-export-ui.md`（U1–U3 已确认）；画框内容：`02-screen-content.md`；共用约定：`01-shared-conventions.md`。
 > 基线：`main @ 51b654a87`（检查点 A、检查点 B 与总验收 `ACC-1` 均已在库）。
 
@@ -184,12 +184,13 @@
   3. 对两个交付目录跑 `scripts/sppid/check-pairs.ps1`（53 对 214 个文件、7 对 30 个文件），并与 `a85fa10` 基线及 `PDF-5` 做逐字节比对；
   4. 截取各关键状态的亮色与暗色画面截图，与 Pencil 设计稿画框逐张对照，把读数、截图位置与结论写入 `readings.md` 并提交检查点 C 验收汇报。
 - **验收**：
-  - [ ] 全程 0 条手工命令完成全厂包目录与小包 `.zip` 的打开、浏览、开图、publish 导出、PDF 同目录配对导出与结果查看。
-  - [ ] `scripts/sppid/check-pairs.ps1` 对全厂包（53 对，214 个文件）与小包（7 对，30 个文件）退出码均为 0。
-  - [ ] 界面导出的 publish 文件与 `2026-11-20-exp3-rerun`（`a85fa10` 基线）逐字节相同（清单内运行路径除外），PDF 与 `PDF-5` 逐字节相同。
-  - [ ] 亮色与暗色各状态截图与 Pencil 设计稿画框一致，`the_screens_are_the_ones_the_design_navigates_to` 及固定门禁全绿。
-  - [ ] `readings.md` 完整记录检查点 C 验收表与证据目录位置（`D:\scratch\ocs-sppid\<日期>-checkpoint-c\`）。
+  - [x] 全程 0 条手工命令完成全厂包目录与小包 `.zip` 的打开、浏览、开图、publish 导出、PDF 同目录配对导出与结果查看。
+  - [x] `scripts/sppid/check-pairs.ps1` 对全厂包（53 对，214 个文件）与小包（7 对，30 个文件）退出码均为 0。
+  - [x] 界面导出的 publish 文件与 `2026-11-20-exp3-rerun`（`a85fa10` 基线）逐字节相同（清单内运行路径除外），PDF 与 `PDF-5` 逐字节相同。
+  - [x] 亮色与暗色各状态截图与 Pencil 设计稿画框一致，`the_screens_are_the_ones_the_design_navigates_to` 及固定门禁全绿。
+  - [x] `readings.md` 完整记录检查点 C 验收表与证据目录位置（`D:\scratch\ocs-sppid\<日期>-checkpoint-c\`）。
 - **验证**：真实程序隐藏桌面走查 + `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\sppid\check-pairs.ps1 <交付目录>`
 - **依赖**：UI-6、UI-8
 - **文件**：`docs/plans/2026-11-17-sppid-backup-publish/readings.md`、`docs/plans/2026-11-17-sppid-backup-publish/todo-checkpoint-c.md`
 - **规模**：S
+- **做完**（2026-11-20）：在隔离隐藏桌面（`CreateDesktopW`）上启动真实编译产物 `target\release\OpenCADStudio.exe`（不加 `--classic`），全程 0 条命令（脚本内置禁止 `op == "run"` 断言）走完三组真实窗口验收：亮色全厂包（53 张目录：默认白色亮色界面→备份空态→非备份目录错误态→53 张载入→装置组过滤与对象展开→`D04` 不可读原因→`D03` 开图失败留屏红条且不弹窗不增废标签页→可读图 `D07` 打开切编辑器整幅可见与二次点开复用标签页→带参考目录 `验收数据` 导出 publish→「使用上次 publish 输出目录」同目录导出 PDF 并在编辑器底栏核对 `正在导出 PDF 1/53` 点击回跳→展开双结果核对比对 `7 / 0 / 4 / 42` 与缺符号 `15 张 22 处`，共 16 张整窗截图）、亮色小包 `.zip`（7 张：打开→可读图开图→同目录成对导出，4 张整窗截图）、暗色主题对照（8+1 张整窗截图逐项对齐 Pencil 暗色画框）；`check-pairs.ps1` 全厂包 `53 对 / 214 文件` 与小包 `7 对 / 30 文件` 退出码均为 `0`；`compare_deliver.py` 核对全厂包 `160/160` publish 与 `54/54` PDF 全部逐字节一致，小包除临时还原绝对路径外 `22/22` publish 与 `8/8` PDF 逐字节一致；`pid_shell_startup`（含 `the_screens_are_the_ones_the_design_navigates_to`）14/14、`pytest scripts/pid-platform` 590/590、`pytest scripts/sppid` 159/159 全绿。完整读数见 `readings.md` §40，证据与 29 张整窗截图在 `D:\scratch\ocs-sppid\2026-11-20-checkpoint-c\`。
