@@ -469,14 +469,16 @@ flowchart LR
 - **依赖**：L0-8、L4-0。**资料**：RES-01 ✔。
 - **解决记录（2026-11-20）**：落地 `src/io/pid_publish/uid.rs`（`UidAllocator` 确定性 `UUID v5` 主对象 UID 与单调 `GraphicOID` 分配器、端口 `.N` / `.BPT` / `.PPT` 派生、原生端复用 `pid_parse::publish::pipeline::pipeline_uid`、关系前缀拼接及 `AAAD...` `_Meta.xml` 信封 UID），全部通过 `#111` 严格语法校验，详见 `readings.md` §12。
 
-#### L4-4 管线、端口、连通、工艺点、分支点、页间连接符的生成（L）
+#### L4-4 管线、端口、连通、工艺点、分支点、页间连接符的生成（L）— **已完成（[#126](https://github.com/happyrust/pid-cad/issues/126)）**
 - **做法**：管线对象由线号与管段合成（Q4）；端口由管件的连接点生成；连通由拓扑表生成；页间连接符按文字与图号配对。
 - **验收**：这些对象的数量与关系数对参考 XML 逐项比对；差异逐条解释。
-- **依赖**：L4-3、L0-8。**资料**：RES-01 ⚠。
+- **依赖**：L4-3、L0-8。**资料**：RES-01 ✔。
+- **解决记录（2026-11-20）**：落地 `src/io/pid_publish/relations.rs`（`synthesize_piping_network`：自动合成 `PIDPipeline`、`PIDPipingConnector`、`PIDProcessPoint` `.PPT`、`PIDPipingPort` `.1/.2`、三通 `PIDPipingBranchPoint` `.BPT`、管口挂设备 `EquipmentComponentComposition` 及 `PipingEnd1Conn`/`PipingEnd2Conn`），合成导出 100% 通过 `#111` `StrictVendor` 零违规校验，详见 `readings.md` §15。
 
-#### L4-5 码表值、公称直径换算、名称拼接（M）
+#### L4-5 码表值、公称直径换算、名称拼接（M）— **已完成（[#126](https://github.com/happyrust/pid-cad/issues/126)）**
 - **做法**：按 Q5、Q6 的规则实现；码表值取自变体目录；单位与写法严格照样本（`4 in`、`25 mm`）。
 - **验收**：对整批逐条比对，吻合率与不一致项清单；不一致项归因（规则缺/数据缺）。
+- **解决记录（2026-11-20）**：落地 `src/io/pid_publish/names.rs`（公制/英制公称直径格式化与整数编码换算、线号拆解、分段属性双向回填）；94 份真实 `_Data.xml` 全量核对：公称直径 `19,671 / 19,671`（`100.00%`）、仪表类名称 `99.48%`、设备类名称 `99.14%`、完整槽位管线名 `78.61%`（其余均为 Q5 记载的数据库历史缺省或手工 `ItemTag` 例外），详见 `readings.md` §15。
 
 #### L4-6 导出命令与批量入口（M）
 - **做法**：新增命令（建议 `PIDCONVERT` 或独立 CLI），输入 DWG/拆分图，输出 XML 与覆盖报告（写了什么、没写什么、为什么）。

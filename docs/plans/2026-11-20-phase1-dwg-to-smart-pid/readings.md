@@ -472,4 +472,45 @@
 | `scripts\fmt-newhunks.ps1` | — | `src/io/pid_convert/{mod,recognize}.rs` 全部 **`new=0`** | **0 格式偏差** |
 | `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
 
+---
+
+## 15. L4-4 / L4-5（#126）：管网派生对象合成与组合名称、公称直径换算规则（2026-11-20）
+
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-20` |
+| 基线提交 | `76d734140`（`main`） |
+| `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
+| 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
+| 新增 / 修改文件 | `src/io/pid_publish/{mod,names,relations}.rs` |
+| 证据目录子项 | `2026-11-20-issue126/`（`red.txt`、`green-fast.txt`、`arch.txt`、`real-94xml-audit.txt`、`gate-cargo-test-lib.txt`、`gate-clippy-lib.txt`、`gate-clippy-test.txt`） |
+
+### 15.1 先红后绿与管网派生合成实现
+
+- **先红后绿**：
+  - 先红（`red.txt`）：`3 passed; 4 failed; 1 ignored`（退出码 `101`，全部命中目标断言）；
+  - 转绿（`green-fast.txt`）：**`7 passed; 0 failed; 2 ignored`**（退出码 `0`），覆盖：
+    1. `names.rs`（`L4-5`）：公制（`25` → `25 mm`）/ 英制（`6"` → 属性 `6 in`、名称内保留 `6"`；`1-1/2"` → `1-1/2 in`）及整数编码 `< 5000` / `>= 5000` 最大公约数约分换算、线号结构化拆解（兼容带保温与尾部悬空 `-`）、以及仪表/控制功能/在线仪表（`INamedInstrument`）和四类设备（`INamedEquipment`）分段属性与 `IObject/@Name` 双向回填；
+    2. `relations.rs`（`L4-4`）：管网拓扑自动合成 `PIDPipeline`（确定性 `pipeline_uid`）、`PIDPipingConnector`、`PIDProcessPoint`（`.PPT` + `ProcessPointCollection`）、`PIDPipingPort`（`.1`/`.2` + `PipingPortComposition`）、三通节点 `PIDPipingBranchPoint`（`.BPT`）、管口挂设备 `EquipmentComponentComposition`、以及两端连通关系 `PipingEnd1Conn` / `PipingEnd2Conn`，合成图纸经 `export_drawing_bundle` 导出 100% 通过 `#111` `StrictVendor` 零违规校验。
+
+### 15.2 全批 `94` 份真实 `_Data.xml` 名称与公称直径规则吻合率实测（`real-94xml-audit.txt`）
+
+| 规则类别 | 核对实例数 | 规则精确吻合数 | 吻合率 | 不一致项归因 |
+|---|---:|---:|---:|---|
+| 公称直径规范化（`NominalDiameter`） | `19,671` | **`19,671`** | **`100.00%`** | 零误差（公制 `N mm` 与英制整数/带分数 `N in` 全部吻合） |
+| 仪表/控制功能/在线仪表名称拼接 | `5,184` | **`5,157`** | **`99.48%`** | 其余 `27` 处为数据库历史改造遗留 `ItemTag` 与分段属性不一致（见 `03-parse-answers.md` Q5） |
+| 四类设备名称拼接 | `347` | **`344`** | **`99.14%`** | 其余 `3` 处同上为数据库手工覆盖 `ItemTag` |
+| 管线完整 4/5 槽位标准名称 | `4,118` | **`3,237`** | **`78.61%`** | 其余 `881` 条（`21.39%`）为数据库中未填齐公称直径或等级槽位的缺省半成品管线名（如 `-PG-1001105-F9`，见 Q5） |
+
+### 15.3 固定门禁读数
+
+| 门禁项 | 改前读数（§14.3） | 改后实测 | 结论 |
+|---|---|---|---|
+| `cargo test --offline --locked --lib` | `7,173` 条 | **`7,178` 条**（**`7,114` 过** / **`63` 忽略** / **`1` 同一既有 `.pen` 字重失败**） | `+5` 条测试，**0 新增失败** |
+| `cargo clippy --offline --locked --lib` | `656` 条警告 | **`656` 条警告** | **0 新增警告** |
+| `cargo clippy --offline --locked --lib --profile test` | `1,051` 条警告 | **`1,051` 条警告** | **0 新增警告** |
+| `scripts\fmt-newhunks.ps1` | — | `src/io/pid_publish/{mod,names,relations}.rs` 全部 **`new=0`** | **0 格式偏差** |
+| `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
+
+
 

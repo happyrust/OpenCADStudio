@@ -3,11 +3,21 @@
 
 pub mod classes;
 pub mod model;
+pub mod names;
+pub mod relations;
 pub mod uid;
 pub mod write;
 
 pub use classes::{default_class_map, materialize_export_item, resolve_variant};
 pub use model::{ExportBundle, ExportDrawing, ExportItem, ExportRelation, UnmappedItem};
+pub use names::{
+    format_nominal_diameter_attr, format_nominal_diameter_from_code,
+    format_nominal_diameter_in_name, parse_sppid_line_number, populate_item_tag_attributes,
+    ParsedLineNumber,
+};
+pub use relations::{
+    synthesize_piping_network, PipeRunInput, PipingSynthesisStats, SymbolEndpointRef,
+};
 pub use uid::{
     branch_point_uid, derive_meta_envelope_uids, is_valid_hex32, pipeline_uid, port_uid,
     process_point_uid, relation_uid, MetaEnvelopeUids, UidAllocator,
