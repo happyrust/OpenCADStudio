@@ -44,7 +44,7 @@
 
 1. **先红后绿。** 先写测试，看到它因为要测的那条断言失败（不是因为编译不过），再实现到通过。红、绿两次的输出留作证据。
 2. `cargo test --offline --locked --lib`：失败的仍然只是那 4 条比对设计文件的测试，通过数不减少（基线 6865 通过、49 忽略、4 失败）。
-3. `cargo clippy --offline --locked --lib` 告警不超过 630；`cargo clippy --offline --locked --lib --profile test` 不超过 965。
+3. `cargo clippy --offline --locked --lib` 告警不超过 656；`cargo clippy --offline --locked --lib --profile test` 不超过 1051。（2026-11-20 改：原来写的 630 / 965 是换新编译器之前的读数；换了以后新版 clippy 多报一些，各提交改按开工时的起点比，`51b654a87` 上是 656 / 1051。）
 4. 改动的文件不新增 `rustfmt` 不一致（`scripts\fmt-newhunks.ps1 <改前> <改后>`；`rustfmt` 用 `PATH` 上的那个，可用 `-Rustfmt <路径>` 另指。这个脚本原来在仓库外，`CC-5` 收进来的）。
 5. 标【协同】的任务加跑 `cargo test --offline --locked -p ocs_collab -p ocs_collab_server`（基线 95；159 + 12，全过）。
 6. **一个任务一个提交。** `git add` 只加本任务列出的文件（不用 `git add -A`），外加这份 `todo.md`：把本任务的验收项打勾，随同一个提交进去。`git commit -q -F <说明文件>`。`docs/pid-platform/design/pid-platform.pen` 不进提交。不推送。
@@ -1160,7 +1160,7 @@
 
 - **做什么**：把所有门禁全量跑一遍：`--lib` 测试、两个协同 crate、clippy 两档、`rustfmt` 新增差异、全部 `--ignored` 的性能预算测试、`scripts/collab-e2e` 与 `scripts/pid-verify-e2e`。把已批准计划里的 T3.1 – T3.4 标成完成并写上提交号；能力地图 §2 里各模块的「现状」从「未开始」改成「已完成」，各新模块规格开头的状态从「待建」改成「已建成」；把各规格的「实现记录」汇总一遍，实现与规格有出入的地方列给你；写一份阶段 3 结项报告（做了什么、各项读数、已知限制、阶段 4 从哪里接）。
 - **验收**：
-  - [ ] 结项报告里有每一项门禁的读数：`--lib` 测试失败的仍只是那 4 条；clippy 在 630 / 965 以内；每个性能预算测试都达标并列出实测值。
+  - [ ] 结项报告里有每一项门禁的读数：`--lib` 测试失败的仍只是那 4 条；clippy 在固定门禁第 3 条的上限以内；每个性能预算测试都达标并列出实测值。
   - [ ] 已批准计划的 T3.1 – T3.4、能力地图的状态都已更新；实现与规格的每一处出入都有记录。
   - [ ] `git status --short` 只剩那个不提交的 `.pen`（本目录的文档在开工前已经单独提交，见 `plan.md` §11）；没有推送，等你决定。
 - **验证**：§1 的全部命令；`cargo test --offline --locked --lib -- --ignored`（性能预算）；两套端到端脚本；`git status --short`
