@@ -3,7 +3,7 @@
 
 准备：服务器（3240，新库），u1（3210）打开种子图 A 加入，在线改设计压力为 1.0MPa（修订 1），
 保存（图里记着 PID-1101、库标识、修订 1，没有队列），复制成 B、C、D、E。杀掉服务器，u1 离线
-改设计温度为 150℃（排队一步），保存 A，复制成 F，退出；服务器用同一个库起来。
+改设计温度为 150℃（排队一步），保存 A，复制成 F、G，退出；服务器用同一个库起来。
 
 OS-11：不连协同的实例在 B 上改材质为不锈钢、在 C 上只把 P-1001 挪一个位置，各自保存。B 加入
 时状态是不一致（UNQUEUED_EDITS）并说明原因，hello 不报库标识、修订和位号；C 加入时对得上
@@ -18,10 +18,11 @@ OS-13：F 由 u2 打开：按对不上处理（QUEUED_BY_OTHERS），一步都�
 
 OS-10：房间里一个 WS 会话改 V-1001（本图没有这个位号）到修订 2；C（没有队列）重开，补齐时
 这一步写不进图，标为不一致（REMOTE_UNAPPLIED）；保存后文件带着这个标记，再重开加入仍是不一致，
-hello 不报库标识、修订和位号。A 带着 u1 的队列，不连协同的实例又在上面改了材质并保存（标
-UNQUEUED_EDITS）；u1 在会话里打开 A：不一致，一步都不发；在会话里保存后文件里标记和队列都在；
-再重开加入：仍是不一致，hello 什么都不报，一步都不发，服务器日志不变。（带着队列的图补齐时
-遇到写不进图的修改，现在是队列先发出去、再标不一致：见 SPEC-collab-offline-sync.md §11.15。）
+hello 不报库标识、修订和位号。G（带着 u1 的队列）由 u1 打开，补齐时修订 2 写不进图：标为不一致
+（REMOTE_UNAPPLIED），一步都不发，服务器日志不变；保存后文件里标记和队列都在（补发的修改写进图
+之前不发队列，见 SPEC-collab-offline-sync.md §11.16）。A 带着 u1 的队列，不连协同的实例又在上面
+改了材质并保存（标 UNQUEUED_EDITS）；u1 在会话里打开 A：不一致，一步都不发；在会话里保存后文件
+里标记和队列都在；再重开加入：仍是不一致，hello 什么都不报，一步都不发，服务器日志不变。
 
 证据：logs/o04-*.json、logs/gui-o04-*.err.log、logs/o04-srv.out.log、logs/ws-o04-*.jsonl，
 shots/offline-o04-u1.png。
@@ -88,8 +89,9 @@ try:
     queued = oh.queued_ids(exported)
     gone, how = oh.quit_gui(u1)
     dwg_f = m7h.fresh_copy("o04-f.dwg", dwg_a)
+    dwg_g = m7h.fresh_copy("o04-g.dwg", dwg_a)
     R.check("setup", yh.ok(resp) and saved[0] and len(queued) == 1 and gone,
-            f"u1 离线改设计温度为 150℃，排队 {queued}，保存 A、退出（{how}），A 复制为 F")
+            f"u1 离线改设计温度为 150℃，排队 {queued}，保存 A、退出（{how}），A 复制为 F、G")
     srv.start(fresh=False)
     R.check("setup", srv.wait_health(), "服务器用同一个库重新起来")
 
@@ -226,6 +228,25 @@ try:
             f"align_code={status.get('align_code')}，hello 里的键 {keys_of(said)}")
     gone, how = oh.quit_gui(again)
     R.check("setup", gone, f"C 退出（{how}）")
+
+    rows = oh.ops_rows(srv)
+    g = started("o04-g", 3228, dwg_g, user="u1")
+    apart = in_session(g, "diverged")
+    time.sleep(2)
+    status = apart or g.status()
+    sent = oh.sent_ops(g)
+    said = oh.hellos(g)
+    finish(g, "G：标了不一致之后")
+    on_file = oh.read_file("o04-g-file", 3229, dwg_g)
+    claim = oh.claim_of(on_file) or (None, None, None, None)
+    R.dump("o04-g.json", {"status": status, "hellos": said, "file": on_file})
+    R.check("OS-10", apart is not None and status.get("align_code") == "REMOTE_UNAPPLIED" and not sent
+            and oh.ops_rows(srv) == rows and (claim[3] or {}).get("code") == "REMOTE_UNAPPLIED"
+            and oh.file_queue(on_file) == [(queued[0], "u1")],
+            f"G（带着 u1 的队列）由 u1 打开，补齐时修订 2 写不进图：align={status.get('align')} "
+            f"align_code={status.get('align_code')}，发出的 op {len(sent)} 条，服务器日志 {len(rows)} → "
+            f"{len(oh.ops_rows(srv))} 行；保存后文件里的不一致标记 {(claim[3] or {}).get('code')}，"
+            f"队列 {oh.file_queue(on_file)}（应仍是 {queued}）")
 
     plain_a = started("o04-a-plain", 3227, dwg_a, collab=False)
     resp = oh.set_prop(plain_a, MATERIAL, "碳钢")

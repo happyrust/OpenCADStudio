@@ -1105,7 +1105,9 @@ impl OpenCADStudio {
     /// touched is `replay_remote_after`.
     ///
     /// A local step still open when a change arrives is closed first, as
-    /// the user's own: it is broadcast like any other step.
+    /// the user's own: it is queued like any other step. Nothing of the
+    /// queue goes out until the peers' changes are written, or one that
+    /// could not be has marked the drawing diverged (`State::pump`).
     ///
     /// While the session's drawing is not among the tabs — not loaded yet, or
     /// closed — the ops stay in `pending_remote`, in order, and `on_tick`
@@ -1148,13 +1150,15 @@ impl OpenCADStudio {
         if self.collab.pending_remote.is_empty() {
             return;
         }
+        // The user's own step, if one is open, ends here and is queued as
+        // theirs — before the flag below is raised, which would keep it in.
+        // Left open it would record the peer's writes as part of itself.
+        // It ends while the peers' changes are still waiting to be written,
+        // which keeps the queue from going out ahead of them.
+        self.finish_pending_history(i);
         let pending = std::mem::take(&mut self.collab.pending_remote);
         let mut total = 0usize;
         let mut failure: Option<String> = None;
-        // The user's own step, if one is open, ends here and goes out as
-        // theirs — before the flag below is raised, which would keep it in.
-        // Left open it would record the peer's writes as part of itself.
-        self.finish_pending_history(i);
         // A question about the drawing's tags that was put off — the session
         // had no drawing when it was asked — is answered before the peers'
         // changes are written: what the room itself told is no news to it.
@@ -1219,6 +1223,9 @@ impl OpenCADStudio {
             None if total > 0 => self.collab.last_apply_error = None,
             None => {}
         }
+        // The queue waited for these to be written (`State::pump`): it
+        // moves now, unless one could not be and the drawing is marked.
+        self.collab.pump();
     }
 
     /// Write `changes` onto tab `i` the way a peer's change is written:

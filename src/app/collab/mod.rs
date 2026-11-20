@@ -1565,14 +1565,19 @@ impl State {
     }
 
     /// Put the first op of the queue on the wire, when there is a session
-    /// to send it on, the session has caught up with the room, and no other
-    /// op of this session's is waiting for its answer.
+    /// to send it on, the session has caught up with the room and written
+    /// what it heard of it into the drawing, and no other op of this
+    /// session's is waiting for its answer. Heard is not enough: a change
+    /// the drawing cannot take marks it diverged, and nothing is to go out
+    /// ahead of that (`apply_remote_changes` comes back here once it has
+    /// written them).
     fn pump(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             if self.hold
                 || !self.connected
                 || self.catching_up.is_some()
+                || !self.pending_remote.is_empty()
                 || self.diverged.is_some()
                 || self.not_aligned.is_some()
             {
