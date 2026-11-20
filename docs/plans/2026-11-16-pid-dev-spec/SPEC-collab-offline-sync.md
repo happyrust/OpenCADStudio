@@ -691,3 +691,51 @@ R4 那次 `x05` 跑的正好是「带记录、带队列的图被拒」，§3.3 �
 - 明确给错了图号时，在那张图上做的语义修改都记进未同步清单，存盘后它就带着 `UNQUEUED_EDITS`，再也不能同步。这是任务要的（不是会话的图），命令行在第一步时说了。
 - 未同步清单只增不减，也还没有地方给用户看（面板、命令都没有）。
 - 端到端没有跑，归 `OFF-12`。
+
+### 11.9 `OFF-6`：出口清单、与任务写法不同的地方和读数（2026-11-20）
+
+**出口清单。** 全文搜了 `document_for_save`、`crate::io::save`、`save_as_version`、`save_to_bytes`、`save_wblock_snapshot`、`serialize_prepared_document`，和把这些结果写进文件的地方。按写的是不是正在编辑的这张图分：
+
+- 写整张图，原来就走 `write_collab_state_into_snapshot`：
+  - `save_tab_synchronously_protected_as`：全部保存（桌面版）、没有主窗口时接口的 `save`、自动化的 `save` 存 DWG 和 DXF。
+  - `queue_native_save`：菜单的保存和另存为（存成样板也是它）、自动保存的 `.sv$`、有主窗口时接口的 `save`。
+- 写整张图，改为走这个函数：
+  - `save_verified_request`（接口的 `save_verified`）。原来写的是图里打开时的记录：修订和队列都是旧的。现在在取核对用的清单之前写，读回核对的就是带着当前记录的那一份。
+  - 自动化的 `save` 存 `.dwt` 的分支。原来同上。
+- 写另一张图，改为去掉三条记录（新的 `without_collab_records`）：
+  - `wblock_write`（WBLOCK 和 -WBLOCK）。原来「整张图」（`WBLOCK *`）写出的就是正在编辑那张图的副本，带着打开时的三条记录。去掉的地方在三种来源共用的抽取里，桌面版和网页版都经过。
+  - 接口的 `wblock`（`control_wblock`）。原来带样板时，样板里的记录跟着写出去。
+- 写另一张图，原来就不带、没有改：旧的块写出对话框（`on_wblock_save_result_some`）只写块或选的对象，都抽进一张新图。
+- 不走这个函数、没有改的：
+  - 网页版的出口：接口的 `save`、自动化的 `save`（存 `.dwt` 的分支除外，它两个版本共用）、`saveall_web`、网页的保存和自动保存、`archive_web`。网页版没有协同，图里的记录原样写出，就是 §5.1 状态表「不是会话的图」那一行里没有没排队修改的情形。
+  - 命令行的 `export`：文件进、文件出，记录原样带过去。
+  - 桌面版的电子传递和归档（`transmit::collect`）：打包的是盘上最后存的那份文件，那份已经按保存写过。
+  - REFEDIT 写回参照图、图纸集、DGN 导入：写的是别的图，不是正在编辑的这张。
+  - `conversion_losses_to_confirm`：只看不写。
+
+与任务写法不同、或任务没有说的：
+
+1. **「写三条记录」原来就是一个函数**（`write_collab_state_into_snapshot`，`OFF-2` 起），这次只是放开给 `automation.rs` 调。另加一个去掉三条记录的 `without_collab_records`，给块写出用。
+2. **存成样板也按状态表写三条记录**，与菜单存样板一样。用这样的样板新建的图会带上这些记录；新建时要不要去掉，留给 `OFF-9` 的 `PIDCOLLAB DETACH` 一起定。
+3. **任务列的 `src/app/fileops.rs` 实际是 `src/app/commands/fileops.rs`**。全部保存走 `save_tab_synchronously_protected`，原来就写三条记录，没有改。另改了 `src/app/collab/mod.rs` 一行，登记新测试文件。
+4. **往返测试补上第三条记录**（`dwg_roundtrip.rs`）：fixture 加了 `diverged` 和一条未同步条目，图级 key 从 6 个变 7 个，七个版本的 DWG 和 DXF 往返都比这三条。生成 M3 基线图的生成器也去掉第三条，另带 `--ignored` 跑了一次，过。
+5. **发现：经接口写属性（`xdata_set`）不把图标成已修改。** `control_xdata_set` 和 `push_undo_entry` 都不设 `dirty`。自动保存只存已修改的图，所以只经接口改过属性的图不会被自动保存，关图时也不会问要不要保存。不在本任务范围，没有改。自动保存那条测试另做一次 MOVE，让图变成已修改。
+6. **测试和验收的对应。**
+   - 验收 1：本节的出口清单。
+   - 验收 2：保存 `a_save_writes_them_as_the_drawing_stands`；后台另存为 `a_save_as_in_the_background_writes_them_too`；自动保存 `an_autosave_writes_them_too`；全部保存 `saveall_writes_each_drawing_as_it_stands`（会话的图，加一张带记录、有没排队修改的图）；自动化的保存（含样板）`the_automations_save_writes_them_to_a_drawing_and_to_a_template`；经接口的校验保存见验收 3。都是同一个场景：文件记着修订 42、队列空；房间接回以后应用了别人的一步（修订 43），自己又排了一步。存出的文件应记 43 和这一步。
+   - 验收 3：`a_verified_save_writes_them_as_the_drawing_stands`。
+   - 验收 4：`dwg_and_dxf_carry_the_three_alike`（从编辑器存，记录带 `diverged`、队列一条、清单两条）和 `the_three_collab_records_read_back_alike_from_dwg_and_dxf`（编解码层）。
+   - 验收 5：`a_block_written_out_carries_none_of_them`（`WBLOCK *`、选的对象、接口的 `wblock` 带一个有记录的样板）。
+   - 验收 6：`a_drawing_never_in_a_room_is_written_without_them`（保存、校验保存、样板、后台另存为）；现有的存盘测试 `save_tests` 18 条全过。
+   - 验收 7：`writing_them_leaves_the_drawing_being_edited_as_it_was`。
+
+**先红后绿。** 先写测试，不动生产代码。第一次跑，新测试文件 10 条里 4 条失败。校验保存和存成样板写出的修订是打开时的 42（应为 43），整张图写出的块带着记录（应为没有），这三条都败在断言上。自动保存那条败在没有文件：只经接口改过属性，图没有标成已修改（第 5 条），自动保存跳过了它。这条改成先做一次 MOVE、并断言图已修改，重跑：7 过 3 败，败的是上面三条，都在断言上。过的 7 条守的是原来就对的出口和行为。往返测试的改动和新加的一条在红的时候就过（7 过、1 条生成器默认不跑），守的是编解码层。实现之后全过：新文件 10/10，往返 7/7，生成器 1/1，`save_tests` 18/18。
+
+**读数**（对最终的文件，起点 `2db536be5`）：主程序库 7166 条，7109 通过、55 默认不跑、2 失败（比对设计稿的两条，起点相同）；起点 7155 条（7098 / 55 / 2），多的 11 条是新加的（新测试文件 10 条、往返测试 1 条），都过。两个协同 crate 97；180 + 18 全过，与起点相同。clippy 656 / 1051，与起点相同，改到的文件里的警告与起点逐条相同。格式检查：改到的 5 个代码文件新增 0，处数都与起点相同；`collab/mod.rs` 开头模块排序那处还在，登记新测试的那一行落在它里面；新测试文件 0。文档检查 590 项过 589 项，没过的是设计稿与生成表的比对。
+
+**限制和没有做的。**
+
+- 经接口写属性不把图标成已修改（第 5 条），没有改。
+- 用带记录的样板新建的图会带上记录（第 2 条），留给 `OFF-9`。
+- REFEDIT 改了参照图并写回时，参照图里要是有同步记录，这次修改不进它的未同步清单，重开时记录仍对得上。按 §5.1，它是「不是会话的图」，应记一条 `unqueued`。没有做。
+- 端到端没有跑，归 `OFF-12`。

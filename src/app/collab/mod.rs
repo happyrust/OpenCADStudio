@@ -49,6 +49,8 @@ mod collab_offline_queue;
 mod collab_op_ids;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod collab_pipe_ops;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod collab_save_exits;
 
 /// A server address as it may be shown — in the log, on the command line,
 /// in `/collab/status`: without whatever stands before an `@` in its

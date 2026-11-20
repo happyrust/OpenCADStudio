@@ -562,6 +562,7 @@ impl OpenCADStudio {
             ));
         };
         let mut extracted = extracted.map_err(|e| failure("wblock_failed", e))?;
+        Self::without_collab_records(&mut extracted);
         // CF-01.2: optionally shift the export so its overall bounds minimum
         // lands on the origin (SPM.ACAD normalizes cloned drawings to 0,0,0).
         let normalized = req["normalize"].as_bool().unwrap_or(false);

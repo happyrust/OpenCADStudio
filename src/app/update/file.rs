@@ -3199,6 +3199,7 @@ impl OpenCADStudio {
             }
             .map_err(|error| error.to_string())?;
             extracted.header.insertion_units = unit;
+            Self::without_collab_records(&mut extracted);
             Ok(extracted)
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -3616,7 +3617,15 @@ impl OpenCADStudio {
     /// edits no queue took were made on it, which go on its unsynced list.
     /// A drawing that is not the session's keeps its record's three as they
     /// were read.
-    fn write_collab_state_into_snapshot(&mut self, i: usize, snapshot: &mut document::Document) {
+    ///
+    /// Every exit that writes the whole drawing calls this on the copy it
+    /// writes; one that writes another drawing out of it calls
+    /// [`Self::without_collab_records`] instead.
+    pub(in crate::app) fn write_collab_state_into_snapshot(
+        &mut self,
+        i: usize,
+        snapshot: &mut document::Document,
+    ) {
         let unqueued = self
             .collab
             .unqueued_for_save(self.tabs[i].id)
@@ -3671,6 +3680,16 @@ impl OpenCADStudio {
         let mark = kept.unwrap_or(mark);
         crate::pid::collab_state::store_state_diverged(snapshot, Some(&record), Some(&mark));
         crate::pid::collab_state::append_unsynced(snapshot, &entries);
+    }
+
+    /// A block, objects or the whole drawing written out make another
+    /// drawing, one no room has seen: it carries none of the three sync
+    /// records, whatever the drawing it came from or a template it was
+    /// written onto had.
+    pub(in crate::app) fn without_collab_records(drawing: &mut document::Document) {
+        crate::pid::collab_state::store_state(drawing, None);
+        crate::pid::collab_state::store_queue(drawing, &[]);
+        crate::pid::collab_state::store_unsynced(drawing, &[]);
     }
 
     /// Point the drawing at the file it now lives in. The fields that report
