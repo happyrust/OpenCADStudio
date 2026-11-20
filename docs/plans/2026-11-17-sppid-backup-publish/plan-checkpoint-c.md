@@ -1,7 +1,7 @@
 # SmartPlant 备份包：检查点 C（新版浏览与导出界面）· 实施计划
 
 > 日期：2026-11-20
-> 状态：**建议稿（待确认；规格 S1–S4、U1–U3 已确认）**。两份前置规格 `SPEC-sppid-screen.md` 与 `SPEC-sppid-export-ui.md` 已于 2026-11-20 按推荐方案确认；引擎与命令层的检查点 A、检查点 B 及总验收 `ACC-1` 已全部合入 `main @ 51b654a87`。
+> 状态：**已确认**（2026-11-20，答复原话：「按你推荐的方案做。没有明确推荐的，你结合当前情况选最合适的继续，并简要说明理由。」从第 1 段 `UI-1`、`UI-2` 先行开始；第 2、3 段 `UI-3`–`UI-9` 待 Pencil 设计稿定稿后继续）。两份前置规格 `SPEC-sppid-screen.md` 与 `SPEC-sppid-export-ui.md` 已于 2026-11-20 按推荐方案确认；引擎与命令层的检查点 A、检查点 B 及总验收 `ACC-1` 已全部合入 `main @ 51b654a87`。
 > 配套：`todo-checkpoint-c.md`（9 个任务 `UI-1` – `UI-9`，逐个列出做什么、验收、验证命令、依赖、文件、规模）；`02-screen-content.md`（Pencil 画框内容清单，已同步 S1–S4 与 U1–U3）；共用约定见 `01-shared-conventions.md`，能力地图见 `00-capability-map.md` §4–§5。
 
 ## 1. 总览
@@ -85,7 +85,7 @@ flowchart TD
 
 | 什么时候 | 什么事 | 说明 |
 |---|---|---|
-| 现在 | 确认这份 `plan-checkpoint-c.md` 和 `todo-checkpoint-c.md`，并确认在等待 Pencil 设计稿期间是否**先推进不依赖设计稿的第 1 段（`UI-1`、`UI-2`）** | **我的建议**：确认计划，并在本机并行 `collab-off2` 编译空闲时先把 `UI-1`、`UI-2` 做完入库；这样等你画完 `.pen` 后只剩纯界面任务 `UI-3`–`UI-9` |
+| 已办（2026-11-20） | 确认这份 `plan-checkpoint-c.md` 和 `todo-checkpoint-c.md`，并确认在等待 Pencil 设计稿期间**先推进不依赖设计稿的第 1 段（`UI-1`、`UI-2`）** | 答复：「按你推荐的方案做。没有明确推荐的，你结合当前情况选最合适的继续，并简要说明理由。」 |
 | `UI-3` 之前 | 在 Pencil 中按 `02-screen-content.md` 画好 `Nav backup` 与 `backup` 浏览/导出的暗色和亮色画框并定稿（由你提交，或发话让我一并提交 `.pen`） | 在你发话前我不改 `docs/pid-platform/design/pid-platform.pen` |
 
 ## 8. 修订记录
@@ -93,3 +93,4 @@ flowchart TD
 | 日期 | 改动 |
 |---|---|
 | 2026-11-20 | 初稿（基于已确认的 `SPEC-sppid-screen.md` S1–S4、`SPEC-sppid-export-ui.md` U1–U3 及已合入 `main @ 51b654a87` 的检查点 A/B 与总验收底座编写） |
+| 2026-11-20 | 计划与任务清单已确认（原话见文首），先行实施不依赖 `.pen` 的第 1 段 `UI-1`、`UI-2` |
