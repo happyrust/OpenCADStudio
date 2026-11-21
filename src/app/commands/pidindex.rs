@@ -2473,6 +2473,59 @@ mod tests {
         );
     }
 
+    /// 协议 1 的 `run` 里发 `PIDLOCATE`，和在命令行上敲一样：打开那张图、切过去、选中，
+    /// 应答以后前面就是那张图。
+    #[test]
+    fn pidlocate_sent_as_a_protocol_run_leaves_the_drawing_it_opened_in_front() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        let tabs = app.tabs.len();
+
+        let answer = request(&mut app, json!({"op": "run", "cmd": "PIDLOCATE P-1002"}));
+        assert_eq!(answer["status"], "completed", "{answer}");
+        assert_eq!(app.tabs.len(), tabs + 1, "{answer}");
+        let i = app
+            .tab_showing(&scratch.path("PID-1102.dwg"))
+            .expect("打开了 PID-1102");
+        assert_eq!(app.active_tab, i, "前面不是打开的那张图：{answer}");
+        let pump = object_on(&app, i, "P-1002");
+        assert_eq!(selected(&app, i), [pump.handle.as_str()], "{answer}");
+    }
+
+    /// 同样的请求还没跑完，用户切到了别的图：打开的那张图留在后台，照样选中，
+    /// 前面仍是用户切过去的那一页。
+    #[test]
+    fn pidlocate_sent_as_a_protocol_run_leaves_the_tab_the_user_moved_to_in_front() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        let located = app.active_tab;
+        let _ = app.update(Message::TabNew);
+        let elsewhere = app.active_tab;
+        assert_ne!(elsewhere, located);
+        let _ = app.update(Message::TabSwitch(located));
+        let state = app.automation_op(r#"{"protocol":1,"op":"state"}"#);
+        let req = json!({
+            "protocol": 1,
+            "op": "run",
+            "cmd": "PIDLOCATE P-1002",
+            "document_id": state["document_id"],
+            "revision": state["revision"],
+            "client_id": "test",
+            "request_id": "pidindex-moved-away",
+        });
+
+        let (answer, task) = app.control_request(req);
+        assert_eq!(answer["ok"], true, "{answer}");
+        let _ = app.update(Message::TabSwitch(elsewhere));
+        app.drive_headless_task(task).expect("定位的任务");
+        assert_eq!(app.active_tab, elsewhere);
+        let i = app
+            .tab_showing(&scratch.path("PID-1102.dwg"))
+            .expect("打开了 PID-1102");
+        let pump = object_on(&app, i, "P-1002");
+        assert_eq!(selected(&app, i), [pump.handle.as_str()]);
+    }
+
     /// 哪张图上都没有：`LOCATE_NOT_FOUND`。有多处又没给图号：`LOCATE_AMBIGUOUS`，逐处
     /// 列出来，不打开图。给了图号就去那一张；项目里没有这个图号、那张图上没有这个位号，
     /// 也是 `LOCATE_NOT_FOUND`。

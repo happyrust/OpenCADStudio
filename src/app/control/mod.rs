@@ -1822,6 +1822,7 @@ impl OpenCADStudio {
         }
         let previous = self.active_tab;
         let target = self.control.pending.as_ref().and_then(|p| p.document_id);
+        let mut routed = previous;
         if let Some(doc) = target {
             let Some(i) = self.tabs.iter().position(|t| t.id == doc) else {
                 self.command_line
@@ -1829,6 +1830,7 @@ impl OpenCADStudio {
                 return Task::none();
             };
             self.active_tab = i;
+            routed = i;
         }
         self.control.routing = true;
         let task = self.update(msg);
@@ -1844,7 +1846,11 @@ impl OpenCADStudio {
                 pending.document_id = Some(self.tabs[self.active_tab].id);
             }
         }
-        if target.is_some() && previous < self.tabs.len() {
+        // Only a tab the user moved to while the request ran goes back in
+        // front. When the request's own drawing was in front, a drawing the
+        // command brought forward itself (PIDLOCATE opening another one) stays
+        // there, as it does when the command is typed.
+        if previous != routed && previous < self.tabs.len() {
             self.active_tab = previous;
         }
         self.control_track(task)
