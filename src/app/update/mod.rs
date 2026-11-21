@@ -2342,7 +2342,10 @@ impl OpenCADStudio {
                 }
                 #[cfg(target_arch = "wasm32")]
                 let loaded_name = name.clone();
+                let opened = path.clone();
                 let task = self.on_file_opened(name, path, doc, caches, ifccad_session);
+                // PIDLOCATE opened this drawing to select a tag on it.
+                self.on_pid_locate_opened(open_id, &opened);
                 #[cfg(target_arch = "wasm32")]
                 if crate::io::host_bridge::is_embed_mode() {
                     crate::io::host_bridge::emit_loaded(&loaded_name);
@@ -2384,6 +2387,8 @@ impl OpenCADStudio {
                 if self.opening.as_ref().map(|opening| opening.id) != Some(open_id) {
                     return Task::none();
                 }
+                // PIDLOCATE was waiting for this drawing to select a tag on it.
+                self.on_pid_locate_open_failed(open_id);
                 #[cfg(not(target_arch = "wasm32"))]
                 if self
                     .opening
@@ -5084,10 +5089,7 @@ impl OpenCADStudio {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Message::PidBackup(m) => self.on_pid_backup(m),
-            Message::PidIndexRead(scan, read) => {
-                self.on_pid_index_read(scan, read);
-                Task::none()
-            }
+            Message::PidIndexRead(scan, read) => self.on_pid_index_read(scan, read),
 
             // Web SCRIPT: the picked .scr file arrived — run it through the
             // same runner the native path feeds.

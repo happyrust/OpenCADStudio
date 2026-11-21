@@ -946,6 +946,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_pidindex(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_pidlocate(cmd, i) {
+            return Some(t);
+        }
         None
     }
 
@@ -1640,6 +1643,9 @@ inventory::submit!(crate::command::CommandRegistration {
         "PIDINSERT",
         "PIDLEGEND",
         "PIDLINE",
+        // Going to a tag anywhere in the project (`commands::pidindex`):
+        // the drawing it is on is opened if need be, and the object selected.
+        "PIDLOCATE",
         // The project's master data (`pid::master_data`): which copy is in
         // effect, and making, exporting, importing and embedding it.
         "PIDMASTERDATA",

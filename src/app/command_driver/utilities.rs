@@ -1410,6 +1410,9 @@ impl OpenCADStudio {
             // `PIDINDEX DUPLICATES` and `PIDINDEX LINKS` likewise: the bare
             // verb would first scan the project and report the totals.
             || tokens[0].eq_ignore_ascii_case("PIDINDEX")
+            // `PIDLOCATE <tag> [<drawing>]` likewise: the bare verb only says
+            // how it is written.
+            || tokens[0].eq_ignore_ascii_case("PIDLOCATE")
         {
             return self.dispatch_command(cmd);
         }

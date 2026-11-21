@@ -2040,6 +2040,7 @@ pub(super) const READONLY_ALLOWED: &[&str] = &[
     "PIDLEGEND",
     "PIDMASTERDATA",
     "PIDINDEX",
+    "PIDLOCATE",
     "PIDLINE",
     "PIDTAG",
     "PIDTOPOLOGY",
@@ -2890,6 +2891,8 @@ mod tests {
             "PIDINDEX DUPLICATES",
             "pidindex links",
             "PIDINDEX CANCEL",
+            "PIDLOCATE P-1001",
+            "pidlocate P-1002 PID-1102",
             "PIDLINE",
             "PIDTAG P-1001",
             "MEASUREGEOM",
@@ -2920,6 +2923,7 @@ mod tests {
             let cmd = match *verb {
                 "PIDLEGEND" => "PIDLEGEND REPORT".to_owned(),
                 "PIDTAG" => "PIDTAG P-1001".to_owned(),
+                "PIDLOCATE" => "PIDLOCATE P-1001".to_owned(),
                 other => other.to_owned(),
             };
             assert!(!app.readonly_refuses_command(&cmd), "{cmd} is on the list");
