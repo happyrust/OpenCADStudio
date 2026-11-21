@@ -1407,6 +1407,9 @@ impl OpenCADStudio {
             // `PIDMASTERDATA INIT DRAWING`, `... IMPORT <file>` and the rest
             // are one whole line; the bare verb would first report the status.
             || tokens[0].eq_ignore_ascii_case("PIDMASTERDATA")
+            // `PIDINDEX DUPLICATES` and `PIDINDEX LINKS` likewise: the bare
+            // verb would first scan the project and report the totals.
+            || tokens[0].eq_ignore_ascii_case("PIDINDEX")
         {
             return self.dispatch_command(cmd);
         }

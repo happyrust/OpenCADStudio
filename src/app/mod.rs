@@ -1650,6 +1650,9 @@ pub(super) struct OpenCADStudio {
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::app) pid_backup_export: commands::pidbackupexport::BackupExport,
     pub(crate) pid_symbols: crate::pid::symbols::SymbolLibrary,
+    /// Summaries of the project drawings on disk the P&ID project index has
+    /// read, kept while the file is unchanged (`commands::pidindex`).
+    pub(in crate::app) pid_index_cache: commands::pidindex::SummaryCache,
     /// Which group of symbols the P&ID legend list shows (its filter row).
     pub(crate) pid_legend_filter: crate::ui::window::pid_legend_list::PidLegendFilter,
     /// Whether the P&ID panel's five exception summaries are expanded.
@@ -6768,6 +6771,7 @@ impl OpenCADStudio {
             #[cfg(not(target_arch = "wasm32"))]
             pid_backup_export: Default::default(),
             pid_symbols: crate::pid::symbols::SymbolLibrary::load_from_env(),
+            pid_index_cache: Default::default(),
             pid_legend_filter: Default::default(),
             pid_legend_exceptions_open: false,
             show_tool_palettes: false,

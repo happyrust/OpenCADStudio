@@ -75,6 +75,7 @@ pub(in crate::app) mod pidbackupexport;
 pub(in crate::app) mod pidbackuppdf;
 mod pidbulk;
 mod pidconnector;
+pub(in crate::app) mod pidindex;
 mod pidlegend;
 pub(in crate::app) mod pidmasterdata;
 pub(in crate::app) mod pidmove;
@@ -942,6 +943,9 @@ impl OpenCADStudio {
         if let Some(t) = self.dispatch_pidmasterdata(cmd, i) {
             return Some(t);
         }
+        if let Some(t) = self.dispatch_pidindex(cmd, i) {
+            return Some(t);
+        }
         None
     }
 
@@ -1629,6 +1633,10 @@ inventory::submit!(crate::command::CommandRegistration {
         "PIDCONNECTOR",
         "PIDFITTING",
         "PIDGROUP",
+        // The P&ID project index (`pid::project_index`): the drawings in the
+        // current drawing's folder, the tags repeated across them and the
+        // off-page connectors paired across them.
+        "PIDINDEX",
         "PIDINSERT",
         "PIDLEGEND",
         "PIDLINE",
