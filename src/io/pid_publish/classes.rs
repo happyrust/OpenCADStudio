@@ -74,6 +74,9 @@ fn default_attr_constant(class: &str, iface: &str, attr: &str) -> &'static str {
         ("PIDDrawing", "IDocument", "DocCategory") => "P&ID Documents",
         ("PIDDrawing", "IDocument", "DocType") => "P&ID",
         (_, "IDrawingItem", "IsTypical") => "False",
+        (_, "IPIDTypical", "IsTypical") => "False",
+        (_, "IConnector", "RepresentationsAreAllZeroLength") => "False",
+        (_, "IInlineComponent", "IsFlowDirectional") => "False",
         (_, "IExpandableThing", "IsExpanded") => "False",
         _ => "",
     }

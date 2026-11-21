@@ -598,7 +598,7 @@
 
 ---
 
-### ISSUE-L4-6 没有导出命令，只能靠手工
+### ISSUE-L4-6 没有导出命令，只能靠手工（GitHub [#127](https://github.com/happyrust/pid-cad/issues/127)）
 
 **现状问题。**
 - 现在没有任何"输入图 → 输出 XML"的命令。
@@ -618,10 +618,11 @@
 **缺资料。** 无（依赖 L4-1、L4-4 完成）。
 
 **对应任务。** L4-6（M）
+**状态与解决记录。** **已完成（2026-11-20，[#127](https://github.com/happyrust/pid-cad/issues/127)）**：落地 `src/io/pid_convert/export.rs` 与独立 CLI `examples/pid_convert.rs`（输出 `_Data.xml`、`_Meta.xml`、`_Coverage.json`，退出码反映成败）；全量 `90` 张真实有效 DXF 一键转换产出 `77,491` 个对象与 `71,415` 条关系（`failed=0`），`180 / 180` 份 XML 通过 `#111` `StrictVendor` 零违规校验（详见 `readings.md` §16）。
 
 ---
 
-### ISSUE-L4-7 XML 比对没有门禁，差异可以无限积累
+### ISSUE-L4-7 XML 比对没有门禁，差异可以无限积累（GitHub [#127](https://github.com/happyrust/pid-cad/issues/127)）
 
 **现状问题。**
 - 没有"整批比对 + 白名单"的门禁；差异会随着改动悄悄变多。
@@ -639,6 +640,7 @@
 **缺资料。** RES-02 ✔。
 
 **对应任务。** L4-7（M）
+**状态与解决记录。** **已完成（2026-11-20，[#127](https://github.com/happyrust/pid-cad/issues/127)）**：落地 `scripts/sppid/{convert_check,test_convert_check}.py` 与逐条写明技术原因的 `assets/pid-xml-diff-allowlist.json`；真实对账捕获并修复 3 项代码默认值（消除 `13,341` 条差异），修复后全批 `90` 张图纸对参考 `_Data.xml` 实测 `spec_violations=0`、`coverage_errors=0`、**`unexplained_diffs=0`**（详见 `readings.md` §16）。
 
 ---
 
@@ -1173,7 +1175,7 @@
 | `ISSUE-L4-1..3` | [#123](https://github.com/happyrust/pid-cad/issues/123) | `done-local`（本地已完成） | 提交 `b49ed5274`：落地 `src/io/pid_publish/` 自有模型导出底座，1,881 对象单图回环双端严格校验零违规，见 `readings.md` §12 |
 | `ISSUE-L3-1` | [#124](https://github.com/happyrust/pid-cad/issues/124) | `done-local`（本地已完成） | 提交 `1bb06191e`：落地 `assets/pid-sppid-legend-map.json` + `src/io/pid_convert/class_map.rs`，90 张 DXF `15,852 / 15,852`（100%）映射，见 `readings.md` §13 |
 | `ISSUE-L3-2 / L3-7` | [#125](https://github.com/happyrust/pid-cad/issues/125) | `done-local`（本地已完成） | 提交 `76d734140`：落地 `src/io/pid_convert/recognize.rs`；90 张 DXF 召回 `97.79%`、精确 `99.89%`、位号一致率 `89.55%`、三档置信度守恒，见 `readings.md` §14 |
-| `ISSUE-L4-4 / L4-5` | [#126](https://github.com/happyrust/pid-cad/issues/126) | `done-local`（本地已完成） | 落地 `src/io/pid_publish/{names,relations}.rs`，公称直径 `100%`、仪表 `99.48%`、设备 `99.14%`，管网拓扑合成零违规，见 `readings.md` §15 |
-| `ISSUE-L4-6 / L4-7` | [#127](https://github.com/happyrust/pid-cad/issues/127) | `in-progress`（进行中） | 单图与批量 DWG/DXF 转 publish XML 导出入口及对账门禁 |
+| `ISSUE-L4-4 / L4-5` | [#126](https://github.com/happyrust/pid-cad/issues/126) | `done-local`（本地已完成） | 提交 `1afee04eb`：落地 `src/io/pid_publish/{names,relations}.rs`，公称直径 `100%`、仪表 `99.48%`、设备 `99.14%`，管网拓扑合成零违规，见 `readings.md` §15 |
+| `ISSUE-L4-6 / L4-7` | [#127](https://github.com/happyrust/pid-cad/issues/127) | `done-local`（本地已完成 · L4 全线收官） | 落地 `src/io/pid_convert/export.rs`、`examples/pid_convert.rs`、`assets/pid-xml-diff-allowlist.json` 与 `convert_check.py`；90 图整批转换 `180` 份 XML 零违规、白名单外零未解释差异，见 `readings.md` §16 |
 | `.sym` 预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | 暂缓（避让并行分支） | 待 `pid-symbol-identity` 合入 `main` 后实施 |
 | 分级表可观测性（关联） | [#117](https://github.com/happyrust/pid-cad/issues/117) | 待定范围 | 与 `L4-2` / `L0-9` 衔接，建议先做第 1 步表外计数输出 |

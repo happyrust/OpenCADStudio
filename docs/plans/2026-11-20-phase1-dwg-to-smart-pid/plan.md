@@ -18,7 +18,7 @@
 | `04-external-platform-protocol.md` | `L0-7`（[#121](https://github.com/happyrust/pid-cad/issues/121)）外部数字化交付平台验收口径、三轮减法送测变体矩阵与回执标准 | **已完成** |
 | `智能PID平台-内部模型合一分析.md` | `PID_SEMANTICS` 与 `PID_AUTHOR` 升格合一方案及与并行分支 `pid-symbol-identity` 的衔接边界 | **已对齐并行分支边界** |
 | `智能PID平台-资料清单.md` | `RES-01`–`RES-17` 资料清点、环境变量约定与缺口降级策略（`L0-1`） | **已完成清点登记** |
-| `readings.md` | 阶段一门禁基线与各单先红后绿、真实样本实测读数账本 | **持续更新（已记 §1–§15）** |
+| `readings.md` | 阶段一门禁基线与各单先红后绿、真实样本实测读数账本 | **持续更新（已记 §1–§16）** |
 
 ---
 
@@ -43,7 +43,7 @@
 | `L4-1 / L4-2 / L4-3` 自有模型导出 publish XML 底座 | [#123](https://github.com/happyrust/pid-cad/issues/123) | **已完成**（2026-11-20） | 提交 **`b49ed5274`**：落地 `src/io/pid_publish/{mod,uid,model,classes,write}.rs`（共享确定性 UID/`GraphicOID` 分配、237 种变体映射、严格字节格式写出器）；合成与 1,881 对象真实单图回环双端 `StrictVendor` 零违规、差异 100% 可解释，见 `readings.md` §12 |
 | `L3-1` 图例到 SPPID 类变体映射规则与解析器 | [#124](https://github.com/happyrust/pid-cad/issues/124) | **已完成**（2026-11-20） | 提交 **`1bb06191e`**：落地 `assets/pid-sppid-legend-map.json` 与 `src/io/pid_convert/class_map.rs`；90 张有效 DXF 净业务图块 **`15,852 / 15,852`（100%）** 映射至 SPPID 类变体（未映射 `0`），见 `readings.md` §13 |
 | `L3-2 / L3-7` 存量图位号识别增强与三档置信度及 90 图复跑 | [#125](https://github.com/happyrust/pid-cad/issues/125) | **已完成**（2026-11-20） | 提交 **`76d734140`**：落地 `src/io/pid_convert/recognize.rs`；90 张有效 DXF 两轮复跑 100% 一致，符号召回率由 `0.000188` 跃升至 **`0.977941`（`15,605 / 15,957`）**、精确率 **`0.998912`**、位号一致率 **`0.895546`**（图面可见位号约 `94.6%`），三档置信度守恒，见 `readings.md` §14 |
-| `L4-4 / L4-5` 管网派生对象合成与名称、公称直径规则 | [#126](https://github.com/happyrust/pid-cad/issues/126) | **已完成**（2026-11-20） | 落地 `src/io/pid_publish/{names,relations}.rs`；94 份真实 XML 核对公称直径 `19,671 / 19,671`（`100%`）、仪表 `99.48%`、设备 `99.14%`，管网拓扑合成 100% 过 `StrictVendor` 零违规，见 `readings.md` §15 |
-| `L4-6 / L4-7` 单图与批量 DWG/DXF 转 publish XML 入口与对账 | [#127](https://github.com/happyrust/pid-cad/issues/127) | **进行中** | 落地 `src/io/pid_convert/export.rs`、`examples/pid_convert.rs`、`assets/pid-xml-diff-allowlist.json` 与 `scripts/sppid/convert_check.py` |
+| `L4-4 / L4-5` 管网派生对象合成与名称、公称直径规则 | [#126](https://github.com/happyrust/pid-cad/issues/126) | **已完成**（2026-11-20） | 提交 **`1afee04eb`**：落地 `src/io/pid_publish/{names,relations}.rs`；94 份真实 XML 核对公称直径 `19,671 / 19,671`（`100%`）、仪表 `99.48%`、设备 `99.14%`，管网拓扑合成 100% 过 `StrictVendor` 零违规，见 `readings.md` §15 |
+| `L4-6 / L4-7` 单图与批量 DWG/DXF 转 publish XML 入口与对账 | [#127](https://github.com/happyrust/pid-cad/issues/127) | **已完成 · L4 全线收官**（2026-11-20） | 落地 `src/io/pid_convert/export.rs`、`examples/pid_convert.rs`、`assets/pid-xml-diff-allowlist.json` 与 `scripts/sppid/convert_check.py`；90 张真实 DXF 一键转换（`77,491` 对象 / `71,415` 关系），`180 / 180` 份 XML `StrictVendor` **0 违规**、白名单之外 **0 未解释差异**，见 `readings.md` §16 |
 | `L2-1..L2-6` 内部模型合一与编辑 | 待拆单 | **暂缓（避让并行分支）** | 等活跃分支 `pid-symbol-identity` 合入 `main` 后承接其底座实施 |
 | `.sym` 参考数据预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | **暂缓（避让并行分支）** | 等 `pid-symbol-identity` 合入 `main` 后实施，避免撞 `pid_backup_browser.rs` 与 `src/io/pid/` |

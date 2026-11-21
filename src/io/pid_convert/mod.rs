@@ -5,11 +5,17 @@
 //! with `src/io/pid/` or `src/io/pid_legend/`.
 
 pub mod class_map;
+pub mod export;
 pub mod recognize;
 
 pub use class_map::{
     audit_document_blocks, default_legend_class_map, BlockAuditSummary, BlockMatchKind,
     BlockOverrideRule, BlockResolution, IgnoreReason, LegendClassMap, LegendMapRules, MappedBlock,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use export::convert_path_to_dir;
+pub use export::{
+    convert_document_to_publish, BatchConvertSummary, ConvertOptions, ConvertSheetReport,
 };
 pub use recognize::{
     recognise_sppid_sheet, ConfidenceSummary, ConfidenceThresholds, ConfidenceTier,

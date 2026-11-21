@@ -204,6 +204,13 @@ pub fn synthesize_piping_network(
 
             attrs.insert(
                 (
+                    "IPipingConnector".to_string(),
+                    "PipingConnectorType".to_string(),
+                ),
+                "@EE690".to_string(),
+            );
+            attrs.insert(
+                (
                     "IPipeCrossSectionItem".to_string(),
                     "NominalDiameter".to_string(),
                 ),

@@ -512,5 +512,44 @@
 | `scripts\fmt-newhunks.ps1` | — | `src/io/pid_publish/{mod,names,relations}.rs` 全部 **`new=0`** | **0 格式偏差** |
 | `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
 
+---
+
+## 16. L4-6 / L4-7（#127）：单图与批量 DWG/DXF 转 publish XML 导出入口及对账门禁（阶段 3 最小闭环打通，2026-11-20）
+
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-20` |
+| 基线提交 | `1afee04eb`（`main`） |
+| `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
+| 语料清单摘要 | `manifest_sha256 = 487b320319a9dfad20b1f9b70c8647ad2885ece4d2f8d3a217f71c88b9112038` |
+| 新增 / 修改文件 | `src/io/pid_convert/{mod,export}.rs`、`src/io/pid_publish/{classes,relations}.rs`、`examples/pid_convert.rs`、`assets/pid-xml-diff-allowlist.json`、`scripts/sppid/{convert_check,test_convert_check}.py` |
+| 证据目录子项 | `2026-11-20-issue127/`（`red-py.txt`、`green-py.txt`、`red-rust.txt`、`green-fast.txt`、`arch.txt`、`real-90dxf-convert.txt`、`batch-convert-summary.json`、`strict-check-180xml.txt`、`convert-check.txt`、`convert-check-summary.json`、`gate-cargo-test-lib.txt`、`gate-clippy-lib.txt`、`gate-clippy-test.txt`） |
+
+### 16.1 双端先红后绿与对账驱动修复
+
+- **Python 端先红后绿**：`red-py.txt` `4 failed`（退出码 `1`）→ 实现 `convert_check.py` 后 `green-py.txt` `python -m pytest scripts/sppid -q -p no:cacheprovider` 输出 **`185 passed`**（退出码 `0`）。
+- **Rust 端先红后绿**：`red-rust.txt` `0 passed; 2 failed`（退出码 `101`）→ 实现 `src/io/pid_convert/export.rs`（含 2 度管段自动串联成逻辑 `PIDPipingConnector`、线号沿管段传播、`< min_tier` 跳过登记 `_Coverage.json` 及目录批量入口）与 `examples/pid_convert.rs` 后，`green-fast.txt` **`2 passed; 0 failed`**（退出码 `0`）。
+- **对账门禁真实捕获并修复 3 项代码默认值偏差**：首次对全量 90 张真实 DXF 转换产物运行 `convert_check.py` 时，门禁捕获到 `IPIDTypical/@IsTypical`、`IConnector/@RepresentationsAreAllZeroLength` 默认 `"False"` 漏填以及带线号主工艺管段 `IPipingConnector/@PipingConnectorType` 默认应取 `@EE690` 三处偏差；在 `classes.rs` 与 `relations.rs` 修复后直接消除 **`13,341` 条**原始属性差异。
+
+### 16.2 全批 `90` 张有效 DXF 一键转换与严格对账实测
+
+| 验收环节 | 执行命令 | 实测读数 | 退出码 |
+|---|---|---|---:|
+| 整批转换（`L4-6`） | `cargo run --example pid_convert -- <DXF_DIR> --out <OUT>` | **`converted=90, failed=0, items=77,491, relations=71,415`**（自动跳过 4 份 0 字节空 DXF，产出 `90` 套 `_Data.xml` + `_Meta.xml` + `_Coverage.json` 共 `270` 个文件） | `0` |
+| 严格厂商格式与结构门禁（`#111` `StrictVendor`） | `python scripts/sppid/xml_spec_check.py <OUT>` | **`checked 180 file(s), 0 violation(s)`**（`90` 份 `_Data.xml` + `90` 份 `_Meta.xml` 100% 零违规） | `0` |
+| 覆盖报告守恒与参考 `_Data.xml` 白名单对账门禁（`L4-7`） | `python scripts/sppid/convert_check.py <OUT> --ref-dir <REF>` | **`sheets=90, spec_violations=0, coverage_errors=0, unexplained_diffs=0, allowlisted_diffs=11845, matched_named=10671/17582`**（白名单之外 **0 未解释差异**；`assets/pid-xml-diff-allowlist.json` 逐条写明数据库专有描述、建设状态、子变体码表等技术原因） | `0` |
+
+### 16.3 固定门禁读数
+
+| 门禁项 | 改前读数（§15.3） | 改后实测 | 结论 |
+|---|---|---|---|
+| `cargo test --offline --locked --lib` | `7,178` 条 | **`7,180` 条**（**`7,116` 过** / **`63` 忽略** / **`1` 同一既有 `.pen` 字重失败**） | `+2` 条测试，**0 新增失败** |
+| `cargo clippy --offline --locked --lib` | `656` 条警告 | **`656` 条警告** | **0 新增警告** |
+| `cargo clippy --offline --locked --lib --profile test` | `1,051` 条警告 | **`1,051` 条警告** | **0 新增警告** |
+| `scripts\fmt-newhunks.ps1` | — | `classes.rs`、`relations.rs`、`pid_convert/{mod,export}.rs`、`examples/pid_convert.rs` 全部 **`new=0`** | **0 格式偏差** |
+| `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
+| `python -m pytest scripts/sppid -q -p no:cacheprovider` | `181 passed` | **`185 passed`** | `+4` 条全绿 |
+
+
 
 
