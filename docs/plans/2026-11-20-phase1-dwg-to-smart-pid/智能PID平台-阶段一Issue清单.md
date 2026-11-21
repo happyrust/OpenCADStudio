@@ -646,7 +646,7 @@
 
 ## D. 阶段 2 导出线（.pid）
 
-### ISSUE-L5-1 要写哪些流、哪些记录、哪些索引，没有普查
+### ISSUE-L5-1 要写哪些流、哪些记录、哪些索引，没有普查（GitHub [#128](https://github.com/happyrust/pid-cad/issues/128)）
 
 **现状问题。**
 - `.pid` 里流很多（`/Sheet#`、`/PSMcluster#`、`/Unclustered Dynamic Attributes`、`/PSMspacemap/*`、`/StyleCluster`、`/JSite#/*`、`/PSMroots`、`/PSMclustertable`、`/PSMsegmenttable` 等）。
@@ -662,9 +662,10 @@
 **验收。**
 - 清单完整；每项有依据（源码或受控样本）。
 
-**缺资料。** RES-01 ⚠（阻塞）。缺则本单只能出"流清单 + 样本观察"，不能判解码状态。
+**缺资料。** RES-01 ✔（已由 #118 完成核实）。
 
 **对应任务。** L5-1（M）
+**状态与解决记录。** **已完成（2026-11-21，[#128](https://github.com/happyrust/pid-cad/issues/128)）**：落地 `src/io/pid_write/surface.rs`（`inspect_write_surface`），将全部 18 类顶层流/存储完整归入 `append_records`（`3`）、`sync_index`（`1`）、`clone_symbol_site`（`2`）、`rewrite_summary`（`2`）、`passthrough_preserve`（`10`），未知流 `0` 个（详见 `readings.md` §17）。
 
 ---
 
@@ -691,7 +692,7 @@
 
 ---
 
-### ISSUE-L5-3 种子文件策略没定，写出器没有"底"
+### ISSUE-L5-3 种子文件策略没定，写出器没有"底"（GitHub [#128](https://github.com/happyrust/pid-cad/issues/128)）
 
 **现状问题。**
 - 参考数据里有 12 个空白模板 `.pid`（28–118 KB）和对应 `.igr`，但**没有选定哪个当底**，也没定"保留什么、增补什么"。
@@ -710,9 +711,10 @@
 - 种子清单与选择理由。
 - 对种子本身经 `PidWriter::write_to` 跑一遍原样回写往返，CFB 容器内全部流字节与存储 CLSID 100% 相同（`diff_packages` 零流差异）且 `pid-parse` 重读相等。
 
-**缺资料。** RES-14 ⚠（"只放一个设备"的种子缺）。
+**缺资料。** RES-14 ✔（空白模板已在 `RefData~4~682.zip` 核实就位）。
 
 **对应任务。** L5-3（M）
+**状态与解决记录。** **已完成（2026-11-21，[#128](https://github.com/happyrust/pid-cad/issues/128)）**：落地 `src/io/pid_write/{seed,verify}.rs`，选定 `RefData~4~682.zip` 内标准空白模板 `A1-W-New.pid`（配 `A1-W - New.igr`）为主默认种子，并对包内全部 `10 / 10` 份空白模板实测 `PidWriter` 往返流字节与存储 CLSID 零差异无损一致及第 2 节 `_SPID` / `_PlantName` 注入重读相等（详见 `readings.md` §17）。
 
 ---
 
@@ -1176,6 +1178,10 @@
 | `ISSUE-L3-1` | [#124](https://github.com/happyrust/pid-cad/issues/124) | `done-local`（本地已完成） | 提交 `1bb06191e`：落地 `assets/pid-sppid-legend-map.json` + `src/io/pid_convert/class_map.rs`，90 张 DXF `15,852 / 15,852`（100%）映射，见 `readings.md` §13 |
 | `ISSUE-L3-2 / L3-7` | [#125](https://github.com/happyrust/pid-cad/issues/125) | `done-local`（本地已完成） | 提交 `76d734140`：落地 `src/io/pid_convert/recognize.rs`；90 张 DXF 召回 `97.79%`、精确 `99.89%`、位号一致率 `89.55%`、三档置信度守恒，见 `readings.md` §14 |
 | `ISSUE-L4-4 / L4-5` | [#126](https://github.com/happyrust/pid-cad/issues/126) | `done-local`（本地已完成） | 提交 `1afee04eb`：落地 `src/io/pid_publish/{names,relations}.rs`，公称直径 `100%`、仪表 `99.48%`、设备 `99.14%`，管网拓扑合成零违规，见 `readings.md` §15 |
-| `ISSUE-L4-6 / L4-7` | [#127](https://github.com/happyrust/pid-cad/issues/127) | `done-local`（本地已完成 · L4 全线收官） | 落地 `src/io/pid_convert/export.rs`、`examples/pid_convert.rs`、`assets/pid-xml-diff-allowlist.json` 与 `convert_check.py`；90 图整批转换 `180` 份 XML 零违规、白名单外零未解释差异，见 `readings.md` §16 |
+| `ISSUE-L4-6 / L4-7` | [#127](https://github.com/happyrust/pid-cad/issues/127) | `done-local`（本地已完成 · L4 全线收官） | 提交 `477b08b61`：落地 `src/io/pid_convert/export.rs`、`examples/pid_convert.rs`、`assets/pid-xml-diff-allowlist.json` 与 `convert_check.py`；90 图整批转换 `180` 份 XML 零违规、白名单外零未解释差异，见 `readings.md` §16 |
+| `ISSUE-L5-1 / L5-3` | [#128](https://github.com/happyrust/pid-cad/issues/128) | `done-local`（本地已完成） | 落地 `src/io/pid_write/{mod,surface,seed,verify}.rs`，10 份空白模板种子流级零差异往返 + 第 2 节 `_SPID` 同步，见 `readings.md` §17 |
+| `ISSUE-L5-4 / L5-5` | [#129](https://github.com/happyrust/pid-cad/issues/129) | `in-progress`（进行中） | `.pid` 记录链按族增补写出器与索引一致性自检 |
+| `ISSUE-L5-6 / L5-8 / L6-1` | [#130](https://github.com/happyrust/pid-cad/issues/130) | `phase1`（已建单待推进） | DWG/DXF 一键双产物转换（XML + `.pid`）及 `a/b` 级验证 |
+| `ISSUE-L1-2 / L1-5` | [#131](https://github.com/happyrust/pid-cad/issues/131) | `phase1`（已建单待推进） | 94 张真实 `.pid` 批量打开性能与渲染出图对参考 PDF 扩面对比报告 |
 | `.sym` 预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | 暂缓（避让并行分支） | 待 `pid-symbol-identity` 合入 `main` 后实施 |
 | 分级表可观测性（关联） | [#117](https://github.com/happyrust/pid-cad/issues/117) | 待定范围 | 与 `L4-2` / `L0-9` 衔接，建议先做第 1 步表外计数输出 |

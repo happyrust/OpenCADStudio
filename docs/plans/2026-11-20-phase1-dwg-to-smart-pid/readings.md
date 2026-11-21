@@ -550,6 +550,46 @@
 | `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
 | `python -m pytest scripts/sppid -q -p no:cacheprovider` | `181 passed` | **`185 passed`** | `+4` 条全绿 |
 
+---
+
+## 17. L5-1 / L5-3（#128）：CFB 写入面普查与空白模板种子流级往返验证（2026-11-21）
+
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-21` |
+| 基线提交 | `477b08b61`（`main`） |
+| `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
+| 新增 / 修改文件 | `src/io/mod.rs`、`src/io/pid_write/{mod,surface,seed,verify}.rs` |
+| 证据目录子项 | `2026-11-20-issue128/`（`red.txt`、`green-fast.txt`、`arch.txt`、`real-10seeds-audit.txt`、`seed-audit.json`、`gate-cargo-test-lib.txt`、`gate-clippy-lib.txt`、`gate-clippy-test.txt`） |
+
+### 17.1 先红后绿与 CFB 写入面分类台账（`L5-1`）
+
+- **先红后绿**：`red.txt` `0 passed; 3 failed; 1 ignored`（退出码 `101`）→ 实现后 `green-fast.txt` **`3 passed; 0 failed; 1 ignored`**（退出码 `0`）。
+- **18 个顶层流/存储写入面完整分类（未知流 `0` 个）**：
+  1. `append_records`（`3` 项）：`Sheet*`（几何/文字/符号放置记录链）、`PSMcluster0`（图层与簇记录链）、`Unclustered Dynamic Attributes`（`0x0089` 属性行与 `0x00FA` 依赖组）；
+  2. `sync_index`（`1` 项）：`PSMspacemap`（`'tseg'` 段头 `m_iNext` 持久 ID 分配与 `190`/`181`/`182` 反向入边槽）；
+  3. `clone_symbol_site`（`2` 项）：`JSite*`（内嵌符号定义缓存存储）与 `JSitesList`（`'OLEM'` 站点 ID 表）；
+  4. `rewrite_summary`（`2` 项）：`\x05SummaryInformation` 与 `\x05DocumentSummaryInformation`（保留第 1 节标准属性原字节，重写第 2 节用户字典 `_SPID = DocUID`、`_PlantName`、`_PIDTemplate`）；
+  5. `passthrough_preserve`（`10` 项）：`StyleCluster`、`PSMroots`、`PSMclustertable`、`PSMsegmenttable`、`DocVersion2`、`DocVersion3`、`AppObject`、`JTaggedTxtStgList`、`Dynamic Attributes Metadata`、`TaggedTxtData`（含 0 字节 `Revision`）一律从种子原样字节保留。
+
+### 17.2 参考数据 `10` 份真实空白模板 `.pid` 种子选定与无损往返验证（`L5-3`）
+
+- **主选默认空白种子**：`RefData~4~682.zip` 内的通用 A1 横幅空白模板 **`A1-W-New.pid`**（`57,344` 字节，`45` 个 CFB 流，配图框模板 `A1-W - New.igr`；另备 `A0-W-New.pid`、`A2-W-New.pid`、`A3-W-New.pid` 及 `6` 份项目图框空白模板 `28,672–118,784` 字节）。
+- **全量 `10 / 10` 份空白种子实测（`seed-audit.json`）**：
+  1. 经 `PidWriter::write_to_bytes(&seed, &WritePlan::default())` 原样回写并用 `PidPackage::from_bytes` 重读对比 `diff_packages`：**`10 / 10` 份全部 `lossless_passthrough = true`**（`only_in_source = 0`、`only_in_written = 0`、`modified_streams = 0`、`root_clsid_match = true`、`storage_clsid_diffs = 0`、`state_bits_diffs = 0`）；
+  2. 执行 `stamp_seed_drawing_identity` 注入第 2 节 `_SPID`、`_PlantName`、`_PIDTemplate` 后重打包重读：**`10 / 10` 份 `PidParser` 均精确读回注入的 32 位大写十六进制 `_SPID`**，其余非摘要流 100% 无损保留。
+
+### 17.3 固定门禁读数
+
+| 门禁项 | 改前读数（§16.3） | 改后实测 | 结论 |
+|---|---|---|---|
+| `cargo test --offline --locked --lib` | `7,180` 条 | **`7,184` 条**（**`7,119` 过** / **`64` 忽略** / **`1` 同一既有 `.pen` 字重失败**） | `+4` 条测试，**0 新增失败** |
+| `cargo clippy --offline --locked --lib` | `656` 条警告 | **`656` 条警告** | **0 新增警告** |
+| `cargo clippy --offline --locked --lib --profile test` | `1,051` 条警告 | **`1,051` 条警告** | **0 新增警告** |
+| `scripts\fmt-newhunks.ps1` | — | `src/io/mod.rs` 及 `src/io/pid_write/*.rs` 共 5 个文件全部 **`new=0`** | **0 格式偏差** |
+| `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
+
+
 
 
 

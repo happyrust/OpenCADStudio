@@ -494,20 +494,22 @@ flowchart LR
 
 ### 7.6 L5 `.pid` 生成
 
-#### L5-1 写入面普查（M）
+#### L5-1 写入面普查（M）— **已完成（[#128](https://github.com/happyrust/pid-cad/issues/128)）**
 - **做法**：按 Q2 的答案，把"要写的流、记录族、必须同步的索引"列成清单，逐项对账解码状态；标出"能写/只能原样保留/未知"。
 - **验收**：清单完整；每项有依据（源码或受控样本）。
-- **依赖**：L0-8。**资料**：RES-01 ⚠。
+- **依赖**：L0-8。**资料**：RES-01 ✔。
+- **解决记录（2026-11-21）**：落地 `src/io/pid_write/surface.rs`（`inspect_write_surface`），将全部 18 个顶层流/存储划分为 `append_records`（`3`）、`sync_index`（`1`）、`clone_symbol_site`（`2`）、`rewrite_summary`（`2`）、`passthrough_preserve`（`10`），未知流 `0` 个，详见 `readings.md` §17。
 
 #### L5-2 受控样本采集（M）
 - **做法**：按既有采集协议，在 SPPID 里做单一原子编辑（改属性、加一条线、加一个符号、加文字），前后各存一份 `.pid`，配元数据；编辑动作手工。
 - **验收**：每类编辑至少一组样本；能定位"这件事改了哪些字节"。
 - **依赖**：LX-1、LX-3。**资料**：RES-06 ⚠、RES-14 ⚠。
 
-#### L5-3 种子文件策略（M）
+#### L5-3 种子文件策略（M）— **已完成（[#128](https://github.com/happyrust/pid-cad/issues/128)）**
 - **做法**：选定种子（空白模板，注明图框模板）；确定"保留项（容器、样式、页框、符号缓存）"与"增补项（记录、属性行、引用图、索引）"；未证实字段一律沿用种子。
 - **验收**：种子清单与选择理由；对种子本身经 `PidWriter::write_to` 跑一遍原样回写往返，**CFB 容器内全部流字节与存储 CLSID 100% 相同（`diff_packages` 零流差异）且 `pid-parse` 重读相等**（注：`cfb::create` 会刷新容器时间戳并按路径字典序排列目录项，不按外层文件 SHA-256 判等，见 `03-parse-answers.md` Q1）。
-- **资料**：RES-14 ⚠。
+- **资料**：RES-14 ✔（`RefData~4~682.zip` 内含 10 份空白模板 `.pid` 与配套 `.igr`）。
+- **解决记录（2026-11-21）**：落地 `src/io/pid_write/{seed,verify}.rs`；选定标准空白模板 `A1-W-New.pid`（配 `A1-W - New.igr`）为主默认种子，并对 `RefData~4~682.zip` 全部 `10 / 10` 份空白模板实测 `PidWriter` 往返流字节与存储 CLSID 100% 无损一致（`lossless_passthrough = true`）及第 2 节 `_SPID` / `_PlantName` / `_PIDTemplate` 注入重读相等，详见 `readings.md` §17。
 
 #### L5-4 写出器按族推进（L）
 - **顺序**：线、圆弧、多段线 → 文字 → 符号放置 → 属性行与对象。
