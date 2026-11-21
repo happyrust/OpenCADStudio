@@ -4,6 +4,7 @@
 //! PIDINDEX              几张图（几张读不出来）、跨图重号几处、连接符配成几对、几个没配上
 //! PIDINDEX DUPLICATES   逐条列出跨图重号：类型、位号、各在哪张图的哪里
 //! PIDINDEX LINKS        逐条列出连接符：配成对的，和没配上的及其 status
+//! PIDINDEX CANCEL       不再读下一个文件；读好的记着，下次扫接着用
 //! ```
 //!
 //! 项目目录是当前图所在的目录（§3.7），当前图没保存过就没有项目目录
@@ -11,9 +12,12 @@
 //! 保存的修改，每次现做；没打开的读磁盘文件，摘要按「路径 + 大小 + 修改时间」记在内存
 //! 里（[`SummaryCache`]），文件没变就不再读。不往项目目录里写任何东西（§4）。
 //!
-//! 扫描眼下是同步的，扫完才回话；挪到后台任务是 `IX-6` 的事。列图、建索引出错时连同
-//! 错误码一起说（`INDEX_DRAWING_ID_DUPLICATED`、项目文件的 `MASTERDATA_...`、
-//! `INDEX_IO_ERROR`），命令行的错误码也设上。三个命令都不改图，只读会话里照常能用。
+//! 要从磁盘读的图在后台线程里读、做摘要（§4，`read_in_background`），界面线程只收
+//! 摘要：命令先说要读几个，约每读完十分之一报一次进度，读完接着说。读着的时候再发
+//! `PIDINDEX`，排在后面、读完一起说；`PIDINDEX CANCEL` 不再读下一个文件，读回来的照样
+//! 记进缓存。缓存里的都没变就不起后台，当场说。列图、建索引出错时连同错误码一起说
+//! （`INDEX_DRAWING_ID_DUPLICATED`、项目文件的 `MASTERDATA_...`、`INDEX_IO_ERROR`），
+//! 命令行的错误码也设上。几个命令都不改图，只读会话里照常能用。
 
 use super::*;
 use crate::pid::project_index::{
@@ -25,6 +29,8 @@ use crate::pid::symbols::SymbolLibrary;
 use document::Document;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 当前图没保存过，没有项目目录（§5.3）。
@@ -79,17 +85,31 @@ impl SummaryCache {
             meta(drawing, SummarySource::File, fingerprint),
             DEFAULT_TOLERANCE,
         );
-        if let Some(modified) = modified {
-            let cached = Cached {
-                size,
-                modified,
-                summary: summary.clone(),
-            };
-            self.entries.insert(drawing.path.clone(), cached);
-        } else {
-            self.entries.remove(&drawing.path);
-        }
+        self.remember(drawing.path.clone(), size, modified, summary.clone());
         Ok(summary)
+    }
+
+    /// 记下一张图的摘要。取不到修改时间的不记：认不出文件变没变，下次照样重读。
+    fn remember(
+        &mut self,
+        path: PathBuf,
+        size: u64,
+        modified: Option<SystemTime>,
+        summary: DrawingSummary,
+    ) {
+        match modified {
+            Some(modified) => {
+                let cached = Cached {
+                    size,
+                    modified,
+                    summary,
+                };
+                self.entries.insert(path, cached);
+            }
+            None => {
+                self.entries.remove(&path);
+            }
+        }
     }
 
     /// 去掉 `project_dir` 里这次没列到的文件：删了、改了名的不再占着内存。
@@ -102,6 +122,72 @@ impl SummaryCache {
             path.parent() != Some(project_dir) || listed.contains(path.as_path())
         });
     }
+}
+
+/// 读一个文件的办法：命令用 [`crate::io::load_file`]，测试换成数次数的、卡着等放行的。在
+/// 后台线程里调。
+type Loader = Arc<dyn Fn(&Path) -> Result<Document, String> + Send + Sync>;
+
+/// 项目索引在程序里的状态（§4）：磁盘上的图的摘要缓存，和正在后台读文件的那次
+/// 扫描。属于程序、不属于哪个标签页：几个标签页可以是同一个项目。
+pub(in crate::app) struct PidIndex {
+    cache: SummaryCache,
+    /// 正在后台读文件的扫描；`None` 时没在扫。
+    scan: Option<Scan>,
+    /// 下一次扫描的编号：后台读回来的消息凭它认是哪一次的。
+    next_scan: u64,
+    loader: Loader,
+}
+
+impl Default for PidIndex {
+    fn default() -> Self {
+        Self {
+            cache: SummaryCache::default(),
+            scan: None,
+            next_scan: 0,
+            loader: Arc::new(crate::io::load_file),
+        }
+    }
+}
+
+/// 一次后台扫描：要读几个文件、读回来几个，读不出来的为什么，扫完接着做什么。
+struct Scan {
+    id: u64,
+    project_dir: PathBuf,
+    total: usize,
+    done: usize,
+    /// 立起来就不再读下一个文件（`PIDINDEX CANCEL`）。
+    cancel: Arc<AtomicBool>,
+    /// 后台读不出来的文件和原因：扫完建索引时照这个说，不在界面线程里再读一遍。
+    failed: HashMap<PathBuf, String>,
+    /// 扫完接着做的，按命令的先后。
+    then: Vec<Then>,
+}
+
+/// 扫完接着做的事：`PIDINDEX` 的三种说法。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Then {
+    Overview,
+    Duplicates,
+    Links,
+}
+
+/// 后台读回来的一条（`Message::PidIndexRead`）。
+#[derive(Debug, Clone)]
+pub enum Read {
+    /// 读了一个文件。
+    File(Box<FileRead>),
+    /// 这次扫描的文件读完了，或者取消以后不再读了。
+    Done,
+}
+
+/// 读一个文件读到的：读之前文件的大小和修改时间，读成的摘要或读不出来的原因。
+#[derive(Debug, Clone)]
+pub struct FileRead {
+    path: PathBuf,
+    size: u64,
+    modified: Option<SystemTime>,
+    summary: Result<DrawingSummary, String>,
 }
 
 /// 扫一遍项目目录（§3.7、§4），得出项目索引和读得出来的各图的摘要。
@@ -185,6 +271,108 @@ fn same_file(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// 在后台线程里依次读 `files`、做成摘要，读一个交回一个（§4）。`cancel` 立起来就不再读
+/// 下一个；最后交回 [`Read::Done`]，线程意外退出了也交。
+fn read_in_background(
+    files: Vec<PathBuf>,
+    library: SymbolLibrary,
+    load: Loader,
+    cancel: Arc<AtomicBool>,
+) -> impl iced::futures::Stream<Item = Read> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+        std::thread::spawn(move || {
+            for path in files {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let read = Read::File(Box::new(read_one(path, &library, &*load)));
+                if tx.unbounded_send(read).is_err() {
+                    return;
+                }
+            }
+        });
+        iced::futures::StreamExt::chain(rx, iced::futures::stream::iter([Read::Done]))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        drop(cancel);
+        let reads: Vec<Read> = files
+            .into_iter()
+            .map(|path| Read::File(Box::new(read_one(path, &library, &*load))))
+            .chain([Read::Done])
+            .collect();
+        iced::futures::stream::iter(reads)
+    }
+}
+
+/// 读一个文件、做成摘要。图号先按文件名填、PBS 节点先空着，从缓存取用时换成项目文件
+/// 现在写的（[`SummaryCache::summary`]）。读文件或做摘要时崩了，只算这个文件读不出来。
+fn read_one(
+    path: PathBuf,
+    library: &SymbolLibrary,
+    load: &dyn Fn(&Path) -> Result<Document, String>,
+) -> FileRead {
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return FileRead {
+                path,
+                size: 0,
+                modified: None,
+                summary: Err(error.to_string()),
+            };
+        }
+    };
+    let size = metadata.len();
+    let modified = metadata.modified().ok();
+    let drawing = DrawingFile {
+        file: path
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+        drawing_id: path
+            .file_stem()
+            .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
+        path,
+        pbs: None,
+    };
+    let fingerprint = modified.map(|modified| Fingerprint {
+        size,
+        modified_at: unix_seconds(modified),
+    });
+    let summary = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<DrawingSummary, String> {
+            let document = load(&drawing.path)?;
+            Ok(summarize(
+                &document,
+                library,
+                meta(&drawing, SummarySource::File, fingerprint),
+                DEFAULT_TOLERANCE,
+            ))
+        },
+    ))
+    .unwrap_or_else(|payload| Err(panicked(payload.as_ref())));
+    FileRead {
+        path: drawing.path,
+        size,
+        modified,
+        summary,
+    }
+}
+
+/// 崩溃时带出来的话，当这个文件读不出来的原因。
+fn panicked(payload: &(dyn std::any::Any + Send)) -> String {
+    let said = payload
+        .downcast_ref::<&str>()
+        .map(|said| (*said).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned());
+    match said {
+        Some(said) => format!("读的时候程序出了错：{said}"),
+        None => "读的时候程序出了错".to_string(),
+    }
+}
+
 impl OpenCADStudio {
     pub(super) fn dispatch_pidindex(&mut self, cmd: &str, i: usize) -> Option<Task<Message>> {
         let mut words = cmd.split_whitespace();
@@ -196,12 +384,18 @@ impl OpenCADStudio {
         }
         let option = words.next().unwrap_or_default().to_ascii_uppercase();
         let rest: Vec<&str> = words.collect();
-        if !matches!(option.as_str(), "" | "DUPLICATES" | "LINKS") {
-            self.command_line.push_error(&format!(
-                "PIDINDEX: 不认识 {option}；写 DUPLICATES 或 LINKS，或者只写 PIDINDEX。"
-            ));
-            return Some(Task::none());
-        }
+        let then = match option.as_str() {
+            "" => Some(Then::Overview),
+            "DUPLICATES" => Some(Then::Duplicates),
+            "LINKS" => Some(Then::Links),
+            "CANCEL" => None,
+            _ => {
+                self.command_line.push_error(&format!(
+                    "PIDINDEX: 不认识 {option}；写 DUPLICATES、LINKS 或 CANCEL，或者只写 PIDINDEX。"
+                ));
+                return Some(Task::none());
+            }
+        };
         if !rest.is_empty() {
             self.command_line.push_error(&format!(
                 "PIDINDEX {option}: 后面不用再写东西，多了 {}。",
@@ -209,20 +403,17 @@ impl OpenCADStudio {
             ));
             return Some(Task::none());
         }
-        let Some(index) = self.pidindex_scan(i) else {
+        let Some(then) = then else {
+            self.pidindex_cancel();
             return Some(Task::none());
         };
-        match option.as_str() {
-            "DUPLICATES" => self.pidindex_duplicates(&index),
-            "LINKS" => self.pidindex_links(&index),
-            _ => self.pidindex_overview(&index),
-        }
-        Some(Task::none())
+        Some(self.pidindex_start(i, then))
     }
 
-    /// 扫当前图所在的项目目录。没有项目目录、列图或建索引出错时在命令行连同错误码说，
-    /// 返回 `None`。打开着的图以标签页图纸的 `source_path` 认，与定项目目录用的是同一个。
-    fn pidindex_scan(&mut self, i: usize) -> Option<ProjectIndex> {
+    /// 扫当前图所在的项目目录，扫完做 `then`。缓存里的都没变就当场扫完、当场说；有要从
+    /// 磁盘读的挪到后台读（§4），这里先交差，读完接着说。已经在扫同一个目录就排在它后面。
+    /// 没有项目目录、列图或建索引出错时在命令行连同错误码说。
+    fn pidindex_start(&mut self, i: usize, then: Then) -> Task<Message> {
         let Some(project_dir) =
             crate::io::drawing_dir(&self.tabs[i].scene.document).map(Path::to_path_buf)
         else {
@@ -232,8 +423,51 @@ impl OpenCADStudio {
                     "PIDINDEX: {INDEX_NO_PROJECT_DIR}: 当前图没保存过，不属于哪个项目；存盘后再扫。"
                 ),
             );
-            return None;
+            return Task::none();
         };
+        if let Some(scan) = &mut self.pid_index.scan {
+            if same_file(&scan.project_dir) == same_file(&project_dir) {
+                scan.then.push(then);
+                let said = format!(
+                    "PIDINDEX: 还在读，{}/{} 个文件；读完接着说。",
+                    scan.done, scan.total
+                );
+                self.command_line.push_info(&said);
+            } else {
+                let said = format!(
+                    "PIDINDEX: 正在扫 {}；等它扫完，或者 PIDINDEX CANCEL 以后再扫这里。",
+                    scan.project_dir.display()
+                );
+                self.command_line.push_error(&said);
+            }
+            return Task::none();
+        }
+        let mut unread = Vec::new();
+        let scanned = self.pidindex_scan(&project_dir, &mut |path| {
+            unread.push(path.to_path_buf());
+            Err(String::new())
+        });
+        match scanned {
+            Ok(index) if unread.is_empty() => {
+                self.pidindex_report(&index, then);
+                Task::none()
+            }
+            Ok(_) => self.pidindex_read(project_dir, unread, then),
+            Err(error) => {
+                self.command_line
+                    .push_error_coded(error.code(), &format!("PIDINDEX: {error}"));
+                Task::none()
+            }
+        }
+    }
+
+    /// 用 `load` 读缓存里没有、或者变了的图，扫一遍 `project_dir`。打开着的图以标签页
+    /// 图纸的 `source_path` 认，与定项目目录用的是同一个。
+    fn pidindex_scan(
+        &mut self,
+        project_dir: &Path,
+        load: &mut dyn FnMut(&Path) -> Result<Document, String>,
+    ) -> Result<ProjectIndex, IndexError> {
         let open: Vec<(&Path, &Document)> = self
             .tabs
             .iter()
@@ -242,21 +476,141 @@ impl OpenCADStudio {
                 Some((Path::new(document.source_path.as_deref()?), document))
             })
             .collect();
-        let scanned = scan(
-            &project_dir,
+        let (index, _) = scan(
+            project_dir,
             &open,
             &self.pid_symbols,
-            &mut self.pid_index_cache,
-            &mut crate::io::load_file,
+            &mut self.pid_index.cache,
+            load,
+        )?;
+        Ok(index)
+    }
+
+    /// 在后台读 `files`（§4）：先说要读几个；读回来的由 `on_pid_index_read` 收。
+    fn pidindex_read(
+        &mut self,
+        project_dir: PathBuf,
+        files: Vec<PathBuf>,
+        then: Then,
+    ) -> Task<Message> {
+        let id = self.pid_index.next_scan;
+        self.pid_index.next_scan += 1;
+        let total = files.len();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.command_line.push_info(&format!(
+            "PIDINDEX: 要从磁盘读 {total} 个文件，在后台读，读完接着说；PIDINDEX CANCEL 可以取消。"
+        ));
+        self.pid_index.scan = Some(Scan {
+            id,
+            project_dir,
+            total,
+            done: 0,
+            cancel: Arc::clone(&cancel),
+            failed: HashMap::new(),
+            then: vec![then],
+        });
+        let reads = read_in_background(
+            files,
+            self.pid_symbols.clone(),
+            Arc::clone(&self.pid_index.loader),
+            cancel,
         );
+        Task::run(reads, move |read| Message::PidIndexRead(id, read))
+    }
+
+    /// 后台读回来的一条。读到的摘要记进缓存，取消了的扫描读回来的也记；是这次扫描的就数上，
+    /// 约每读完十分之一报一次进度，读完了建索引、接着说。
+    pub(in crate::app) fn on_pid_index_read(&mut self, scan: u64, read: Read) {
+        let current = self
+            .pid_index
+            .scan
+            .as_ref()
+            .is_some_and(|running| running.id == scan);
+        let Read::File(file) = read else {
+            if current {
+                self.pidindex_finish();
+            }
+            return;
+        };
+        let FileRead {
+            path,
+            size,
+            modified,
+            summary,
+        } = *file;
+        let failed = match summary {
+            Ok(summary) => {
+                self.pid_index.cache.remember(path, size, modified, summary);
+                None
+            }
+            Err(why) => {
+                self.pid_index.cache.entries.remove(&path);
+                Some((path, why))
+            }
+        };
+        let Some(running) = self.pid_index.scan.as_mut().filter(|_| current) else {
+            return;
+        };
+        running.done += 1;
+        running.failed.extend(failed);
+        let (done, total) = (running.done, running.total);
+        if done < total && done % (total / 10).max(1) == 0 {
+            self.command_line
+                .push_info(&format!("PIDINDEX: 读了 {done}/{total} 个文件。"));
+        }
+    }
+
+    /// 这次扫描要读的都读回来了：用缓存建索引，后台读不出来的照它说的原因记，再按先后做
+    /// 排着的。界面线程不读文件：缓存里还没有的，是读完以后又变了的。
+    fn pidindex_finish(&mut self) {
+        let Some(Scan {
+            project_dir,
+            failed,
+            then,
+            ..
+        }) = self.pid_index.scan.take()
+        else {
+            return;
+        };
+        let scanned = self.pidindex_scan(&project_dir, &mut |path| {
+            Err(failed
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| "读完以后文件又变了，这次没算上，再扫一次".to_string()))
+        });
         match scanned {
-            Ok((index, _)) => Some(index),
+            Ok(index) => {
+                for then in then {
+                    self.pidindex_report(&index, then);
+                }
+            }
             Err(error) => {
                 self.command_line
                     .push_error_coded(error.code(), &format!("PIDINDEX: {error}"));
-                None
             }
         }
+    }
+
+    fn pidindex_report(&mut self, index: &ProjectIndex, then: Then) {
+        match then {
+            Then::Overview => self.pidindex_overview(index),
+            Then::Duplicates => self.pidindex_duplicates(index),
+            Then::Links => self.pidindex_links(index),
+        }
+    }
+
+    /// `PIDINDEX CANCEL`：后台不再读下一个文件，排着的不做了。正读着的那个读回来照样记进
+    /// 缓存，下次扫接着用。
+    fn pidindex_cancel(&mut self) {
+        let Some(scan) = self.pid_index.scan.take() else {
+            self.command_line.push_info("PIDINDEX CANCEL: 没有在扫。");
+            return;
+        };
+        scan.cancel.store(true, Ordering::Relaxed);
+        self.command_line.push_output(&format!(
+            "PIDINDEX CANCEL: 取消了，{} 个文件读了 {} 个；读好的记着，下次扫接着用。",
+            scan.total, scan.done
+        ));
     }
 
     /// 不带参数：几张图（几张读不出来）、跨图重号几处、连接符配成几对、几个没配上。
@@ -401,10 +755,12 @@ mod tests {
     use crate::pid::master_data::PROJECT_FILE;
     use crate::pid::project_index::synthetic_drawing;
     use crate::pid::topology::TopologyTable;
+    use iced::futures::StreamExt;
     use serde_json::{json, Value};
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
+    use std::sync::{Condvar, Mutex};
+    use std::time::{Duration, Instant};
 
     /// 测试用的临时目录，用完删掉。
     struct Scratch(PathBuf);
@@ -444,13 +800,13 @@ mod tests {
         code: Option<String>,
     }
 
-    /// 像在命令行上敲进去那样跑一行。
+    /// 像在命令行上敲进去那样跑一行，它在后台起的任务也一直跑到完。
     fn run(app: &mut OpenCADStudio, line: &str) -> Ran {
         app.command_line.history.clear();
         app.command_line.last_error = None;
         app.command_line.last_error_code = None;
-        let _ = app.run_command_line(line);
-        app.finish_all_pending_history();
+        let task = app.run_command_line(line);
+        app.drive_headless_task(task).expect("命令的任务");
         Ran {
             said: app
                 .command_line
@@ -789,6 +1145,7 @@ mod tests {
             "PIDINDEX FROB",
             "PIDINDEX LINKS EVERYTHING",
             "pidindex duplicates now",
+            "PIDINDEX CANCEL NOW",
         ] {
             let ran = run(&mut app, line);
             assert_eq!(ran.code, None, "{line}: {}", ran.said);
@@ -798,5 +1155,296 @@ mod tests {
                 ran.said
             );
         }
+    }
+
+    // ── 后台扫描 ──
+
+    fn name(path: &Path) -> String {
+        path.file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+    }
+
+    /// 命令行上到现在说过的。
+    fn said(app: &OpenCADStudio) -> String {
+        app.command_line
+            .history
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 在临时目录里存一张 `objects` 个对象的合成图。
+    fn write_synthetic(scratch: &Scratch, file: &str, objects: usize) {
+        let bytes = crate::io::save_to_bytes(
+            &synthetic_drawing(objects),
+            "dwg",
+            document::DxfVersion::AC1032,
+        )
+        .expect("存 DWG");
+        fs::write(scratch.path(file), bytes).expect("写文件");
+    }
+
+    /// 记下读了哪些文件的读法。
+    fn counting() -> (Loader, Arc<Mutex<Vec<String>>>) {
+        let read = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&read);
+        let loader: Loader = Arc::new(move |path: &Path| {
+            log.lock().expect("读文件的记录").push(name(path));
+            crate::io::load_file(path)
+        });
+        (loader, read)
+    }
+
+    /// 卡着等放行的读法：每读一个文件先记下名字，再等——`permit` 放过一个，`open`
+    /// 全部放过。
+    #[derive(Clone, Default)]
+    struct Gate(Arc<(Mutex<Passes>, Condvar)>);
+
+    #[derive(Default)]
+    struct Passes {
+        entered: Vec<String>,
+        permits: usize,
+        open: bool,
+    }
+
+    impl Gate {
+        fn loader(&self) -> Loader {
+            let gate = self.clone();
+            Arc::new(move |path: &Path| {
+                gate.enter(path);
+                crate::io::load_file(path)
+            })
+        }
+
+        fn enter(&self, path: &Path) {
+            let (passes, changed) = &*self.0;
+            let mut passes = passes.lock().expect("闸");
+            passes.entered.push(name(path));
+            changed.notify_all();
+            while !passes.open && passes.permits == 0 {
+                passes = changed.wait(passes).expect("闸");
+            }
+            if !passes.open {
+                passes.permits -= 1;
+            }
+        }
+
+        /// 等后台读到第 `count` 个文件（进了读法，可能还卡着），返回读到的那些。
+        fn wait_entered(&self, count: usize) -> Vec<String> {
+            let (passes, changed) = &*self.0;
+            let passes = passes.lock().expect("闸");
+            let (passes, waited) = changed
+                .wait_timeout_while(passes, Duration::from_secs(10), |passes| {
+                    passes.entered.len() < count
+                })
+                .expect("闸");
+            assert!(
+                !waited.timed_out(),
+                "等了 10 秒，后台只读到 {:?}",
+                passes.entered
+            );
+            passes.entered.clone()
+        }
+
+        fn permit(&self) {
+            let (passes, changed) = &*self.0;
+            passes.lock().expect("闸").permits += 1;
+            changed.notify_all();
+        }
+
+        fn open(&self) {
+            let (passes, changed) = &*self.0;
+            passes.lock().expect("闸").open = true;
+            changed.notify_all();
+        }
+
+        fn entered(&self) -> Vec<String> {
+            let (passes, _) = &*self.0;
+            passes.lock().expect("闸").entered.clone()
+        }
+    }
+
+    /// 后台任务交出的下一条，像界面线程收到它那样交给程序；任务完了返回 `false`。
+    fn deliver(
+        app: &mut OpenCADStudio,
+        stream: &mut (impl iced::futures::Stream<Item = iced_runtime::Action<Message>> + Unpin),
+    ) -> bool {
+        match iced::futures::executor::block_on(stream.next()) {
+            Some(iced_runtime::Action::Output(message)) => {
+                let next = app.update(message);
+                app.drive_headless_task(next).expect("消息的任务");
+                true
+            }
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    /// 扫描期间程序照常应答别的请求（§4）：读文件的办法卡着不放，`PIDINDEX` 先回来，
+    /// 后台还在读；这时画一根管线、再要一次 `DUPLICATES` 都有应答。放行以后，总数和重号
+    /// 按下命令的先后接着说。
+    #[test]
+    fn pidindex_answers_other_requests_while_it_reads() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        let gate = Gate::default();
+        app.pid_index.loader = gate.loader();
+        app.command_line.history.clear();
+
+        let task = app.run_command_line("PIDINDEX");
+        assert_eq!(gate.wait_entered(1), ["PID-1102.dwg"]);
+        let progress = app
+            .pid_index
+            .scan
+            .as_ref()
+            .map(|scan| (scan.done, scan.total));
+        assert_eq!(progress, Some((0, 1)));
+        assert!(said(&app).contains("要从磁盘读 1 个文件"), "{}", said(&app));
+        assert!(
+            !said(&app).contains("项目目录"),
+            "还没读完就说了总数：{}",
+            said(&app)
+        );
+
+        draw(&mut app, "PIDPIPE", &[[0.0, -200.0], [100.0, -200.0]]);
+        let asked = request(&mut app, json!({"op": "run", "cmd": "PIDINDEX DUPLICATES"}));
+        assert_eq!(asked["ok"], true, "{asked}");
+        assert!(said(&app).contains("还在读"), "{}", said(&app));
+
+        gate.open();
+        app.drive_headless_task(task).expect("后台扫描的任务");
+        let text = said(&app);
+        assert!(
+            text.contains("2 张图，跨图重号 1 处，连接符配成 1 对、0 个没配上"),
+            "{text}"
+        );
+        assert!(
+            text.contains("PIDINDEX DUPLICATES: 跨图重号 1 处。"),
+            "{text}"
+        );
+        assert!(app.pid_index.scan.is_none());
+    }
+
+    /// 取消（§4）：后台读到第二个文件时 `PIDINDEX CANCEL`，第三个不再读；读好的两个记在
+    /// 缓存里，再扫一次只读第三个。
+    #[test]
+    fn pidindex_cancel_stops_reading_and_keeps_what_it_read() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        write_synthetic(&scratch, "PID-1103.dwg", 20);
+        write_synthetic(&scratch, "PID-1104.dwg", 20);
+        let gate = Gate::default();
+        app.pid_index.loader = gate.loader();
+        app.command_line.history.clear();
+
+        let task = app.run_command_line("PIDINDEX");
+        let mut stream = iced_runtime::task::into_stream(task).expect("后台扫描的任务");
+        assert_eq!(gate.wait_entered(1), ["PID-1102.dwg"]);
+        gate.permit();
+        while !said(&app).contains("读了 1/3 个文件") {
+            assert!(
+                deliver(&mut app, &mut stream),
+                "任务完了还没报进度：{}",
+                said(&app)
+            );
+        }
+        assert_eq!(gate.wait_entered(2), ["PID-1102.dwg", "PID-1103.dwg"]);
+
+        let ran = run(&mut app, "PIDINDEX CANCEL");
+        assert_eq!(ran.error, None, "{}", ran.said);
+        assert!(ran.said.contains("取消了"), "{}", ran.said);
+        gate.permit();
+        while deliver(&mut app, &mut stream) {}
+        assert_eq!(
+            gate.entered(),
+            ["PID-1102.dwg", "PID-1103.dwg"],
+            "取消以后不再读下一个"
+        );
+        assert_eq!(app.pid_index.cache.entries.len(), 2, "读好的两个都记着");
+        assert!(
+            !said(&app).contains("项目目录"),
+            "取消了就不再说总数：{}",
+            said(&app)
+        );
+
+        let (loader, read) = counting();
+        app.pid_index.loader = loader;
+        let ran = run(&mut app, "PIDINDEX");
+        assert_eq!(ran.error, None, "{}", ran.said);
+        assert!(ran.said.contains("4 张图"), "{}", ran.said);
+        assert_eq!(*read.lock().expect("读文件的记录"), ["PID-1104.dwg"]);
+    }
+
+    const RESCANS: usize = 3;
+    const RESCAN_BUDGET: Duration = Duration::from_secs(1);
+
+    /// 100 张图的项目，文件都没变时重扫不超过 1 秒（性能预算）。默认不跑：要先存 100
+    /// 张图、把它们读一遍。
+    #[test]
+    #[ignore]
+    fn pidindex_rescan_100() {
+        let scratch = Scratch::new();
+        let bytes =
+            crate::io::save_to_bytes(&synthetic_drawing(200), "dwg", document::DxfVersion::AC1032)
+                .expect("存 DWG");
+        for number in 2001..2101 {
+            fs::write(scratch.path(&format!("PID-{number}.dwg")), &bytes).expect("写文件");
+        }
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let i = app.active_tab;
+        app.tabs[i].scene.document = synthetic_drawing(200);
+        app.tabs[i].scene.document.source_path =
+            Some(scratch.path("PID-2001.dwg").to_string_lossy().into_owned());
+        let (loader, read) = counting();
+        app.pid_index.loader = loader;
+
+        let ran = run(&mut app, "PIDINDEX");
+        assert!(ran.said.contains("100 张图"), "{}", ran.said);
+        assert_eq!(
+            read.lock().expect("读文件的记录").len(),
+            99,
+            "打开着的那张不读"
+        );
+
+        let mut samples = Vec::with_capacity(RESCANS);
+        for rescan in 1..=RESCANS {
+            let started = Instant::now();
+            let ran = run(&mut app, "PIDINDEX");
+            let elapsed = started.elapsed();
+            println!(
+                "IX-6 rescan {rescan}/{RESCANS}: {:.2} ms",
+                elapsed.as_secs_f64() * 1e3
+            );
+            assert!(
+                ran.said.contains("100 张图"),
+                "rescan {rescan}: {}",
+                ran.said
+            );
+            samples.push(elapsed);
+        }
+        assert_eq!(
+            read.lock().expect("读文件的记录").len(),
+            99,
+            "文件没变，重扫一个也不读"
+        );
+        samples.sort();
+        let median = samples[RESCANS / 2];
+        let shown: Vec<String> = samples
+            .iter()
+            .map(|sample| format!("{:.2}", sample.as_secs_f64() * 1e3))
+            .collect();
+        println!(
+            "IX-6 median {:.2} ms of {shown:?}, budget {} ms",
+            median.as_secs_f64() * 1e3,
+            RESCAN_BUDGET.as_millis()
+        );
+        assert!(
+            median <= RESCAN_BUDGET,
+            "IX-6 超预算：中位数 {:.2} ms（{shown:?}），预算 {} ms",
+            median.as_secs_f64() * 1e3,
+            RESCAN_BUDGET.as_millis()
+        );
     }
 }

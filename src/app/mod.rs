@@ -1650,9 +1650,10 @@ pub(super) struct OpenCADStudio {
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::app) pid_backup_export: commands::pidbackupexport::BackupExport,
     pub(crate) pid_symbols: crate::pid::symbols::SymbolLibrary,
-    /// Summaries of the project drawings on disk the P&ID project index has
-    /// read, kept while the file is unchanged (`commands::pidindex`).
-    pub(in crate::app) pid_index_cache: commands::pidindex::SummaryCache,
+    /// The P&ID project index (`commands::pidindex`): summaries of the
+    /// project drawings on disk, kept while the file is unchanged, and the
+    /// scan reading them in the background.
+    pub(in crate::app) pid_index: commands::pidindex::PidIndex,
     /// Which group of symbols the P&ID legend list shows (its filter row).
     pub(crate) pid_legend_filter: crate::ui::window::pid_legend_list::PidLegendFilter,
     /// Whether the P&ID panel's five exception summaries are expanded.
@@ -4415,6 +4416,10 @@ pub enum Message {
     /// command layer only carries out the effect it asks for.
     #[cfg(not(target_arch = "wasm32"))]
     PidBackup(crate::ui::window::pid_backup_browser::PidBackupMsg),
+    /// PIDINDEX's background read of the project drawings on disk: one file
+    /// read into its summary (or why it could not be), or the reading over.
+    /// The number is the scan's, so the reads of a cancelled scan are known.
+    PidIndexRead(u64, commands::pidindex::Read),
     /// Web SCRIPT: the picked .scr file's name and text. `None` = the
     /// browser dialog was cancelled.
     #[cfg(target_arch = "wasm32")]
@@ -6771,7 +6776,7 @@ impl OpenCADStudio {
             #[cfg(not(target_arch = "wasm32"))]
             pid_backup_export: Default::default(),
             pid_symbols: crate::pid::symbols::SymbolLibrary::load_from_env(),
-            pid_index_cache: Default::default(),
+            pid_index: Default::default(),
             pid_legend_filter: Default::default(),
             pid_legend_exceptions_open: false,
             show_tool_palettes: false,

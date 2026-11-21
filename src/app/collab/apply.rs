@@ -2889,6 +2889,7 @@ mod tests {
             "PIDINDEX",
             "PIDINDEX DUPLICATES",
             "pidindex links",
+            "PIDINDEX CANCEL",
             "PIDLINE",
             "PIDTAG P-1001",
             "MEASUREGEOM",

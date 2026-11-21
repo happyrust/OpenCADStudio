@@ -5084,6 +5084,10 @@ impl OpenCADStudio {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Message::PidBackup(m) => self.on_pid_backup(m),
+            Message::PidIndexRead(scan, read) => {
+                self.on_pid_index_read(scan, read);
+                Task::none()
+            }
 
             // Web SCRIPT: the picked .scr file arrived — run it through the
             // same runner the native path feeds.
