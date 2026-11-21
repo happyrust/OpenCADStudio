@@ -589,6 +589,43 @@
 | `scripts\fmt-newhunks.ps1` | — | `src/io/mod.rs` 及 `src/io/pid_write/*.rs` 共 5 个文件全部 **`new=0`** | **0 格式偏差** |
 | `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
 
+---
+
+## 18. L5-4 / L5-5（#129）：`.pid` 五族记录链增补写出器与索引一致性自检（2026-11-21）
+
+| 项 | 值 |
+|---|---|
+| 测量日期 | `2026-11-21` |
+| 基线提交 | `c851fa214`（`main`） |
+| `rustc -V` | `rustc 1.102.0-nightly (65ce8611f 2026-11-18)` |
+| 新增 / 修改文件 | `src/io/pid_write/{mod,oid,records,index}.rs` |
+| 证据目录子项 | `2026-11-20-issue129/`（`red.txt`、`green-fast.txt`、`arch.txt`、`real-a1-seed-roundtrip.txt`、`gate-cargo-test-lib.txt`、`gate-clippy-lib.txt`、`gate-clippy-test.txt`） |
+
+### 18.1 先红后绿、五族记录编码与 Q9 五步索引同步
+
+- **先红后绿**：`red.txt` `3 passed; 2 failed; 2 ignored`（退出码 `101`）→ 实现后 `green-fast.txt` **`5 passed; 0 failed; 2 ignored`**（退出码 `0`）。
+- **五族记录链编码（`src/io/pid_write/records.rs`，`L5-4`）**：
+  1. `0x0018 igLine2d`（50B payload，毫米转图纸米坐标，写 `Default` 层 oid）；
+  2. `0x0084 igLineString2d`（`24 + vc × 16`B payload，支持任意折线管段与多段线）；
+  3. `0x004D igTextBox`（shape 1：UTF-16LE 文本 + 36B 放置与方向单位向量尾块，写 `Labels` 层 oid）；
+  4. `0x00CE igSymbol2d`（113B payload：支持从外部 `.sym` 符号库直接克隆完整嵌套缓存存储 `/JSite<id>/*` 或无库时自动生成自包含缓存本体，实现「无缓存缺失 = 0」）；
+  5. `0x0089 FreeFormAttrSet`（`P&IDAttributes`：写入与 publish XML 完全一致的 `ModelID = UID`、`DrawingID`、`ModelItemType`、`DrawingNo`、`ItemTag`）。
+- **Q9 五步索引同步与一致性自检（`src/io/pid_write/{oid,index}.rs`，`L5-5`）**：
+  - 扫描种子全量既有 OID 水位线（防撞号，支持跨 `8,192` 段扩展 `/PSMspacemap/0x00002000`）；
+  - 同步 `/Sheet*` 与 `/Unclustered Dynamic Attributes` 链头 `live_record_count`、原地累加 `/PSMcluster0` 中 `0x0081 JSheetLayer` `+12` 对象计数、同步 `/JSitesList`（`'OLEM'`）以及 `/PSMspacemap/*` 的 `next_free_index` 与反向入边槽（`190` / `181` / `182`）；
+  - 真实 `A1-W-New.pid` 空白模板 + 真实 `Ball Valve Type 2.sym` 增补实测（`real-a1-seed-roundtrip.txt`）：`chain_fault_count = 0`、`duplicate_oids = []`、`dangling_spacemap_refs = []`、`layer_count_mismatches = []`、`missing_jsites = []`；`build_normalized_geometry` 重读实体由种子 `195` 条增至 `328` 条；故意注入越界引用 `7999` 时自检器精确报错拦截。
+
+### 18.2 固定门禁读数
+
+| 门禁项 | 改前读数（§17.3） | 改后实测 | 结论 |
+|---|---|---|---|
+| `cargo test --offline --locked --lib` | `7,184` 条 | **`7,187` 条**（**`7,121` 过** / **`65` 忽略** / **`1` 同一既有 `.pen` 字重失败**） | `+3` 条测试，**0 新增失败** |
+| `cargo clippy --offline --locked --lib` | `656` 条警告 | **`656` 条警告** | **0 新增警告** |
+| `cargo clippy --offline --locked --lib --profile test` | `1,051` 条警告 | **`1,051` 条警告** | **0 新增警告** |
+| `scripts\fmt-newhunks.ps1` | — | `src/io/pid_write/{mod,oid,records,index}.rs` 全部 **`new=0`** | **0 格式偏差** |
+| `python scripts/arch_check.py report` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | `33 module pairs, 183 files`，`io` 四行 `3, 1, 1, 1` | **0 新增向上依赖** |
+
+
 
 
 

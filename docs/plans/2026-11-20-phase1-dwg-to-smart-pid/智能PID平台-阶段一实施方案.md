@@ -511,15 +511,17 @@ flowchart LR
 - **资料**：RES-14 ✔（`RefData~4~682.zip` 内含 10 份空白模板 `.pid` 与配套 `.igr`）。
 - **解决记录（2026-11-21）**：落地 `src/io/pid_write/{seed,verify}.rs`；选定标准空白模板 `A1-W-New.pid`（配 `A1-W - New.igr`）为主默认种子，并对 `RefData~4~682.zip` 全部 `10 / 10` 份空白模板实测 `PidWriter` 往返流字节与存储 CLSID 100% 无损一致（`lossless_passthrough = true`）及第 2 节 `_SPID` / `_PlantName` / `_PIDTemplate` 注入重读相等，详见 `readings.md` §17。
 
-#### L5-4 写出器按族推进（L）
+#### L5-4 写出器按族推进（L）— **已完成（[#129](https://github.com/happyrust/pid-cad/issues/129)）**
 - **顺序**：线、圆弧、多段线 → 文字 → 符号放置 → 属性行与对象。
 - **做法**：每族先写"最小增量"测试：在种子上加一个元素，`pid-parse` 重读能读到、本软件能显示；再逐族扩展。
 - **验收**：每族有往返测试；字节覆盖（已解码字节占比）不退化；`pid-parse` 重读字段相等。
-- **依赖**：L5-1、L5-3、L4-3。**资料**：RES-01 ⚠。
+- **依赖**：L5-1、L5-3、L4-3。**资料**：RES-01 ✔。
+- **解决记录（2026-11-21）**：落地 `src/io/pid_write/records.rs`（`0x0018 igLine2d`、`0x0084 igLineString2d`、`0x004D igTextBox`、`0x00CE igSymbol2d` 含 `.sym` 内嵌 `/JSite*` 缓存克隆、以及 `0x0089 FreeFormAttrSet` `P&IDAttributes`），合成与真实 `A1-W-New.pid` 空白模板往返测试均重读相等，详见 `readings.md` §18。
 
-#### L5-5 索引一致性（L）
+#### L5-5 索引一致性（L）— **已完成（[#129](https://github.com/happyrust/pid-cad/issues/129)）**
 - **做法**：OID 分配、对象引用图、cluster 表、segment 表的同步更新；加一个对象时"要改哪些东西"按 Q9 的清单逐项落实。
 - **验收**：每次写出后索引自检通过（无悬挂引用、无重复 OID）；新增对象后重读，引用图与表项齐全。
+- **解决记录（2026-11-21）**：落地 `src/io/pid_write/{oid,index}.rs`（`SeedOidPool`、`apply_increments_to_seed` 与 `verify_package_index_consistency`），完整同步链头 `live_record_count`、`0x0081 JSheetLayer` `+12` 对象计数、`/JSitesList` 与 `/PSMspacemap/*` 反向入边槽（`190`/`181`/`182`），自检 100% 通过且能拦截故意注入的越界悬挂引用，详见 `readings.md` §18。
 
 #### L5-6 往返验证（M）
 - **做法**：写出 → `pid-parse` 重读相等；本软件显示与参考一致；PDF 对比三项指标。

@@ -718,7 +718,7 @@
 
 ---
 
-### ISSUE-L5-4 没有写出器，`.pid` 生成是空白
+### ISSUE-L5-4 没有写出器，`.pid` 生成是空白（GitHub [#129](https://github.com/happyrust/pid-cad/issues/129)）
 
 **现状问题。**
 - 仓库里没有调用 `.pid` 写出器的地方；`.pid` 在界面里是只读源（`Ctrl+S` 改另存 DWG）。
@@ -735,13 +735,14 @@
 - 每族有往返测试。
 - `pid-parse` 重读字段相等。
 
-**缺资料。** RES-01 ⚠（Q1 决定扩还是新写）。
+**缺资料。** RES-01 ✔（已由 Q1 核定在 `PidPackage` + `WritePlan` 上构建记录链编码器）。
 
 **对应任务。** L5-4（L）
+**状态与解决记录。** **已完成（2026-11-21，[#129](https://github.com/happyrust/pid-cad/issues/129)）**：落地 `src/io/pid_write/records.rs`（`0x0018`、`0x0084`、`0x004D`、`0x00CE` 含 `.sym` 内嵌缓存克隆、`0x0089` `P&IDAttributes`），合成与真实 `A1-W-New.pid` 种子往返均 `PidParser` 重读相等（详见 `readings.md` §18）。
 
 ---
 
-### ISSUE-L5-5 索引一致性没有实现，加对象会破坏引用图
+### ISSUE-L5-5 索引一致性没有实现，加对象会破坏引用图（GitHub [#129](https://github.com/happyrust/pid-cad/issues/129)）
 
 **现状问题。**
 - `.pid` 里有对象引用图（`/PSMspacemap/*`）与索引表（`/PSMclustertable`、`/PSMsegmenttable`）。
@@ -758,9 +759,10 @@
 - 索引自检通过。
 - 新增对象后重读，引用图与表项齐全。
 
-**缺资料。** RES-01 ⚠（Q9）。
+**缺资料。** RES-01 ✔（已由 Q9 核清）。
 
 **对应任务。** L5-5（L）
+**状态与解决记录。** **已完成（2026-11-21，[#129](https://github.com/happyrust/pid-cad/issues/129)）**：落地 `src/io/pid_write/{oid,index}.rs`（`SeedOidPool`、`apply_increments_to_seed` 与 `verify_package_index_consistency`），完整同步链头计数、`0x0081 JSheetLayer` `+12` 对象计数、`/JSitesList` 与 `/PSMspacemap/*` 反向入边槽，自检 100% 通过（详见 `readings.md` §18）。
 
 ---
 
@@ -1179,9 +1181,9 @@
 | `ISSUE-L3-2 / L3-7` | [#125](https://github.com/happyrust/pid-cad/issues/125) | `done-local`（本地已完成） | 提交 `76d734140`：落地 `src/io/pid_convert/recognize.rs`；90 张 DXF 召回 `97.79%`、精确 `99.89%`、位号一致率 `89.55%`、三档置信度守恒，见 `readings.md` §14 |
 | `ISSUE-L4-4 / L4-5` | [#126](https://github.com/happyrust/pid-cad/issues/126) | `done-local`（本地已完成） | 提交 `1afee04eb`：落地 `src/io/pid_publish/{names,relations}.rs`，公称直径 `100%`、仪表 `99.48%`、设备 `99.14%`，管网拓扑合成零违规，见 `readings.md` §15 |
 | `ISSUE-L4-6 / L4-7` | [#127](https://github.com/happyrust/pid-cad/issues/127) | `done-local`（本地已完成 · L4 全线收官） | 提交 `477b08b61`：落地 `src/io/pid_convert/export.rs`、`examples/pid_convert.rs`、`assets/pid-xml-diff-allowlist.json` 与 `convert_check.py`；90 图整批转换 `180` 份 XML 零违规、白名单外零未解释差异，见 `readings.md` §16 |
-| `ISSUE-L5-1 / L5-3` | [#128](https://github.com/happyrust/pid-cad/issues/128) | `done-local`（本地已完成） | 落地 `src/io/pid_write/{mod,surface,seed,verify}.rs`，10 份空白模板种子流级零差异往返 + 第 2 节 `_SPID` 同步，见 `readings.md` §17 |
-| `ISSUE-L5-4 / L5-5` | [#129](https://github.com/happyrust/pid-cad/issues/129) | `in-progress`（进行中） | `.pid` 记录链按族增补写出器与索引一致性自检 |
-| `ISSUE-L5-6 / L5-8 / L6-1` | [#130](https://github.com/happyrust/pid-cad/issues/130) | `phase1`（已建单待推进） | DWG/DXF 一键双产物转换（XML + `.pid`）及 `a/b` 级验证 |
+| `ISSUE-L5-1 / L5-3` | [#128](https://github.com/happyrust/pid-cad/issues/128) | `done-local`（本地已完成） | 提交 `c851fa214`：落地 `src/io/pid_write/{mod,surface,seed,verify}.rs`，10 份空白模板种子流级零差异往返 + 第 2 节 `_SPID` 同步，见 `readings.md` §17 |
+| `ISSUE-L5-4 / L5-5` | [#129](https://github.com/happyrust/pid-cad/issues/129) | `done-local`（本地已完成） | 落地 `src/io/pid_write/{oid,records,index}.rs`，五族记录编码 + Q9 五步索引同步自检全过，见 `readings.md` §18 |
+| `ISSUE-L5-6 / L5-8 / L6-1` | [#130](https://github.com/happyrust/pid-cad/issues/130) | `in-progress`（进行中） | DWG/DXF 一键双产物转换（XML + `.pid`）及 `a/b` 级验证 |
 | `ISSUE-L1-2 / L1-5` | [#131](https://github.com/happyrust/pid-cad/issues/131) | `phase1`（已建单待推进） | 94 张真实 `.pid` 批量打开性能与渲染出图对参考 PDF 扩面对比报告 |
 | `.sym` 预览（关联） | [#116](https://github.com/happyrust/pid-cad/issues/116) | 暂缓（避让并行分支） | 待 `pid-symbol-identity` 合入 `main` 后实施 |
 | 分级表可观测性（关联） | [#117](https://github.com/happyrust/pid-cad/issues/117) | 待定范围 | 与 `L4-2` / `L0-9` 衔接，建议先做第 1 步表外计数输出 |

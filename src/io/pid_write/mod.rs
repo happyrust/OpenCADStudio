@@ -1,9 +1,22 @@
 //! SmartPlant `.pid` seed-plus-increment CFB writer (`L5` / `#128`..`#130`).
 
+pub mod index;
+pub mod oid;
+pub mod records;
 pub mod seed;
 pub mod surface;
 pub mod verify;
 
+pub use index::{
+    apply_increments_to_seed, verify_package_index_consistency, AddedAttributeSpec, AddedLineSpec,
+    AddedPolylineSpec, AddedSymbolSpec, AddedTextSpec, IndexCheckReport, PidWriteIncrements,
+    PidWriteStats,
+};
+pub use oid::{SeedOidPool, SheetLayerTargets};
+pub use records::{
+    encode_freeform_attr_row_record, encode_igline2d_record, encode_iglinestring2d_record,
+    encode_igsymbol2d_record, encode_igtextbox_record, mm_to_sheet_m,
+};
 pub use seed::{
     list_seeds_in_refdata_zip, load_seed_from_bytes, load_seed_from_path,
     load_seed_from_refdata_zip, set_doc_summary_user_properties, stamp_seed_drawing_identity,
