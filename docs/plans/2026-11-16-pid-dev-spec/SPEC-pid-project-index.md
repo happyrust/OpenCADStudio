@@ -675,3 +675,51 @@ MCP：`pid_summary`、`pid_index` 进 `READ_OPS`，`pid_locate` 进 `EXECUTE_OPS
 - 登记、只读、写法：命令登记了；只读会话里 `pidlocate p-1001`（小写）选中那台泵，不留撤销步；`PIDLOCATE`、`PIDLOCATE P-1001 PID-1101 NOW` 报错、不带错误码、用 `PIDLOCATE` 打头；没存过的新图上 `PIDLOCATE P-1001` 报 `INDEX_NO_PROJECT_DIR`，用 `PIDLOCATE` 打头。
 
 先放测试和两个错误码常量（命令没分派、没登记、不在只读名单里），新加的 4 条和只读名单那条都编得过、都败在断言上：登记那条没登记，只读名单那条 `PIDLOCATE P-1001` 被拒，其余三条败在 `Unknown command: PIDLOCATE …`。实现后第一次就全过。第一遍门槛以后回头看，为定位打开的图原先按文件认：打开没起来、被取消了的，等待一直记着，以后再打开同一个文件还会去选。补了「没打开成」那条，先红（报的错只有一次只开一张图那句，没说没定位到），改成按打开的编号认、打开没起来当场说以后转绿。第一遍门槛里测试配置的 clippy 多了 4 条，都是新测试里为比较复制了一个字符串，改成按 `&str` 比。
+
+### 11.8 `IX-8`：索引的操作与接口（2026-11-20）
+
+**做了什么**（`src/app/commands/pidindex.rs` 三个操作的入口；`src/app/control/mod.rs` 分派和能力清单；`src/rest.rs` 路由和状态码；`src/rest_openapi.json` 三条路径；`src/mcp.rs` 两个门面的操作名单、读门面的参数和工具面摘要；`src/mcp_ops.rs` `pid_locate` 的参数表；`src/pid/project_index.rs` 放开 `compare_places`）：
+
+- `pid_summary`（查询类，`GET /api/v1/pid/summary`）：照当前图现在的样子现做摘要，应答 `{"ok":true,"summary":{…}}`。图号、文件名、`pbs` 和扫描时认得一样（项目文件写了这个文件就照写的，没写就是文件名去掉扩展名）；`source` 是 `open`，`fingerprint` 为空。没存过的图图号是空串，`file` 为空。
+- `pid_index`（查询类，`GET /api/v1/pid/index`，可选 `tag`、`type_code`）：扫当前图所在的目录，和 `PIDINDEX` 共用摘要缓存和后台读。要读的都在缓存里（或是开着的图）就当场建索引，应答 `{"ok":true,"index":{…}}`，带 `tag` 时另加 `places`；有要读的就交给后台，当场应答 `{"ok":true,"status":"scanning","done":0,"total":N}`；读着的时候再问，应答当时的进度；读完再问才是索引。
+- `pid_locate`（改图分派，`POST /api/v1/pid/locate`，`tag`，可选 `type_code`、`drawing_id`、`at`）：和 `PIDLOCATE` 走同一套——不给图号先在当前图上找；否则扫项目（要读文件时同样应答 `scanning`），找到那张图，切过去或打开它，到图上现找、选中、缩放。成功时操作结果 `result` 是 `{"drawing_id","document_id","handle","handles"}`。
+- 状态码：`LOCATE_NOT_FOUND` 404；`INDEX_NO_PROJECT_DIR`、`INDEX_DRAWING_ID_DUPLICATED`、`LOCATE_AMBIGUOUS` 409；`INDEX_IO_ERROR` 500。能力清单加 `pid_project_index`。MCP：`pid_summary`、`pid_index` 进 `READ_OPS`，读门面加 `tag`、`type_code` 两个参数；`pid_locate` 进 `EXECUTE_OPS`；`TOOL_SCHEMA_DIGEST` 换成新值。
+
+**与任务写法不同的：**
+
+1. **多改了三个文件**（任务的文件表里没有）：`src/app/commands/pidindex.rs`——三个操作的入口照共用约定 §7.6 第 1 处写在命令那一份里，和命令共用扫描、缓存、定位；`src/mcp_ops.rs`——执行门面要求写操作登记参数表（同 `MD-4`）；`src/pid/project_index.rs`——`compare_places` 放成 `pub(crate)`：位号的几种写法分头查回来的各处合在一起，要按索引里同一种排法排。
+2. **`pid_locate` 的结果放在 `result` 里**，不在应答顶层（§5.3 的表写在顶层）。它走改图分派，应答是协议的操作应答（`status: completed`、`request_id`、`result`……），同 `pid_masterdata_set`。结果另带 `handles`：同一张图上同位号的几个对象都选中（§11.7 第 2 条），`handle` 是头一个。
+3. **`pid_locate` 也会应答 `scanning`**（§5.3 只写了 `pid_index`）：它要的索引还没读完时同样应答 `{"ok":true,"status":"scanning","done","total"}`，不登记成操作，调用方稍后原样再发（同一个 `request_id` 也行）。
+
+**规格没写到、这里定下的：**
+
+1. **扫描没做完时应答谁的进度。** 已经有扫描在跑（命令起的、操作起的都算，扫哪个目录都算），就应答它的进度，不另起一次；`done` 是已读回的文件数，`total` 是这次要读的文件数。操作起的扫描不在命令行上说话，读完也不建索引、不报总数，等下一次问时再建；`PIDINDEX CANCEL` 一样能取消它。
+2. **读不出来的文件不反复读。** 操作扫描时读不出来的文件，按大小和修改时间记住；下次问时文件没变就直接当读不出来，不再交给后台，变了才重读。不这样的话，目录里有一个坏文件，每次问都要重读、都应答 `scanning`，永远拿不到索引。命令 `PIDINDEX` 照旧每次都读。读回来以后文件又变了的，这次不算，记成「读完以后文件又变了，这次没算上，再扫一次」。
+3. **`places` 不分大小写**：先在各图摘要里找出这个位号在项目里实际的写法，各写法的出现处合在一起，按图号、坐标、句柄排序；带 `type_code` 只要这个类型的。哪里都没有时 `places` 是空数组，不算错。
+4. **参数**：`tag`、`type_code`、`drawing_id` 去掉首尾空白后不能是空串，也必须是字符串，否则 `invalid_request`（400）；`pid_index` 只给 `type_code` 不给 `tag`、`pid_locate` 不给 `tag`，都是 `invalid_request`；`at` 写 `[x, y]` 或 `[x, y, z]`，都是有限数，`z` 不用。MCP 里 `pid_locate` 带不认识的参数也拒，不能进批（`batchable: false`，它可能要打开文件、要等）。
+5. **`at` 取离它最近的一个。** 给了 `at`，候选除了有这个位号的对象，还有这条管线（或管路）的线段和连接符——它们没有自己的位号，只能这样点到（§11.7「与任务写法不同的」第 2 条）。距离按形状量：连接符量到它的圆（在圆里算 0），线段量到线，对象量到外框（没有外框量到定位点）。一样近时连接符先于线段、线段先于对象。给了 `type_code` 只看对象。选中最近的那一个；画不出样子时用 `IX-7` 备的退路按外框缩放。
+6. **类型编码**：给了就按它找；`type_code`、`at` 都不给时，到那张图上按扫描时那里的类型编码找（同 `PIDLOCATE`）；给了 `at` 就不推类型编码，不论类型取最近的。
+7. **不给 `drawing_id` 先在当前图上找**，找到了不扫项目、一个文件也不读；这时结果里的 `drawing_id` 照项目文件认（没存过的图是空串）。
+8. **索引里没有、有多处**：哪张图上都没有（给的图号项目里没有、那张图上没有也算）报 `LOCATE_NOT_FOUND`，说明同命令；有多处又没给图号报 `LOCATE_AMBIGUOUS`，应答带 `places`（各处的图号、坐标、句柄等）。这两种当场应答，不登记成操作。
+9. **去的路上出了事**：要打开的图没打开成（打开失败，或一次只开一张图而当前图没存），操作以失败结束，不带错误码（400）；扫过以后图又改了、现找没有，以失败结束，码 `LOCATE_NOT_FOUND`（404）。说明都在命令行上，`PIDLOCATE:` 打头，同命令。
+10. **不钉起始的图。** `pid_locate` 会切到或打开别的图，它后面的步骤不钉在起始那张图上（同 `open`、`switch_document`）；请求里的 `document_id` 照常要是当前图。
+11. **开始页上三个都报 `no_document`。** 只读协作会话里三个都能用：两个读不用说，定位只选中、缩放、开图，不改图、不留撤销步。
+12. **`INDEX_IO_ERROR` 是 500**（读不了项目目录，同 `MASTERDATA_IO_ERROR`）。`pid_summary` 也可能报 `INDEX_DRAWING_ID_DUPLICATED`：项目文件让当前图和别的文件同号时，认不出当前图的图号。
+13. **能力名** `pid_project_index`。
+
+**测试**（`pidindex.rs` 新增 10 条，`mcp.rs`、`rest.rs` 各 1 条，OpenAPI 那条加了三条路径）：
+
+- 摘要：CP-B 那两张图，当前是 PID-1101。`pid_summary` 的图号 PID-1101、文件 `PID-1101.dwg`、`source` 是 `open`、没有指纹，对象里有那台泵，连接符是一个流出的；项目文件把 `pid-1101.dwg`（小写）写成图号 A-01、`pbs` 1001-01 以后，图号、`pbs` 跟着变，文件名不变；开始页上报 `no_document`；没存过的新图图号是空串、`file` 为空。
+- 读完以前：读文件的办法换成数次数的。头一次 `pid_index` 应答正好是 `scanning`、0/1，读了 PID-1102；再问是索引：完整、两张图、重号 1 处、配对 1 对，不带 `places`，没有再读，命令行上没说 `PIDINDEX`。
+- 读着的时候：再放一张 20 个对象的合成图，读文件的办法换成卡着等放行的。头一次 0/2；放行一个、交回以后再问是 1/2，没有再起一次扫描；全放行以后是三张图的索引。
+- 位号各处：`p-1001` 的 `places` 在 PID-1101 和 PID-1102 上，头一处是那台泵的句柄，第二处在 (0, 0)；加上泵的类型编码一样；类型编码对不上、`P-9999` 都是空数组。
+- 没有索引的原因：开始页 `no_document`；没存过 `INDEX_NO_PROJECT_DIR`；只给 `type_code`、`tag` 是数、`tag` 是空白都是 `invalid_request`；项目文件把 `PID-1101.dwg` 写成图号 PID-1102，`pid_index`、`pid_summary` 都报 `INDEX_DRAWING_ID_DUPLICATED`。
+- 读不出来的文件：再放一个不是图的 PID-1103.dwg。头一次要读 2 个；再问两次都是不完整的索引、读不出来的是 PID-1103，读过的文件还是那两个；把它写长一点再问，又是 `scanning` 0/1、读了第 3 次。
+- 定位·当前图：只读会话、视图挪开。`p-1001` 完成，结果正是 PID-1101、当前标签页的编号、那台泵的句柄；泵被选中、在视图里，一个文件也没读，没有撤销步。
+- 定位·去没打开的图：`P-1002` 头一次正好是 `scanning` 0/1，没开新标签页；再发完成，多了一页、开的是 PID-1102，P-1002 被选中，结果是 PID-1102、新页的编号和句柄，视图在泵那里；切回第一页再定位，切回那一页、不再开一份，结果的编号是那一页的。
+- 定位·定不下来：再放一张 PID-1103（PID-1102 的拷贝）。`P-9999` 先 `scanning`、再 `LOCATE_NOT_FOUND`；`P-1002` 报 `LOCATE_AMBIGUOUS`，`places` 是 PID-1102、PID-1103 各一处 (0, −60)，没开新页；图号 PID-9999、PID-1101 报 `LOCATE_NOT_FOUND`；图号 `pid-1103` 完成，开的是 PID-1103；不给 `tag`、`tag` 空串、图号是数、`at` 只有一个数或是字符串都是 `invalid_request`；没存过的图报 `INDEX_NO_PROJECT_DIR`。
+- 定位·`at`：`l-1001` 加连接符圆里的一点，选中连接符；加 (50, 101, 0)，选中 L-1001 的线段；结果的 `handles` 和选中的都只有它一个。
+- MCP：两个读进了 `READ_OPS`、`pid_locate` 进了 `EXECUTE_OPS`；读门面的 `tag`、`type_code` 是字符串；完整的定位请求校验通过，没 `tag`、`at` 只有一个数、带不认识的 `drawing` 被拒；`pid_locate` 不能当批里的一步。
+- REST：两个读走 `Plan::Run`，查询串里的 `tag`、`type_code` 带进请求；定位走 `Plan::Mutate`，请求体原样带过去。起一个 `--http --read-only` 的会话（只禁存盘，定位照常分派）：摘要 200、图号空串，索引 409 `INDEX_NO_PROJECT_DIR`，只给 `type_code` 400，定位 409，空请求体 400；`map_status` 里新码的 409、404、500 都对。
+
+先放测试和空壳：三个操作名进了查询名单和改图分派，入口只应答 `{"ok":false}`；路由、OpenAPI、MCP 名单都没加。新加的 12 条和 OpenAPI 那条都编得过、都败在断言上：`pidindex.rs` 的败在 `{"ok":false}`，MCP 那条名单里没有 `pid_summary`，REST 那条 `GET /pid/index` 不是读，OpenAPI 那条缺 `get /api/v1/pid/summary`。只有「读着的时候」那条头一回败在造测试图上（合成图按 20 个对象一组生成，写成了 3 个），改成 20 个重跑，败在断言上。工具面摘要那条红的时候照过（工具面还没动）。实现后第一次跑，新加的全过；摘要那条按预期变了——变的只有两份操作名单、读门面两个参数和 `pid_locate` 的参数表，换成新值后过。

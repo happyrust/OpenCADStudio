@@ -578,13 +578,14 @@
 
 - **做什么**：三个自动化操作（§5.3）：`pid_summary`（`GET /api/v1/pid/summary`）、`pid_index`（`GET /api/v1/pid/index`，可选 `tag`、`type_code`）、`pid_locate`（`POST /api/v1/pid/locate`）。按共用约定 §7.6 的第 3–5 处接线。
 - **验收**：
-  - [ ] 三个操作的应答符合 §5.3；`pid_index` 带 `tag` 时有 `places`；扫描没做完时应答 `scanning`。
-  - [ ] 状态码：`INDEX_NO_PROJECT_DIR`、`INDEX_DRAWING_ID_DUPLICATED`、`LOCATE_AMBIGUOUS` 是 409，`LOCATE_NOT_FOUND` 是 404。
-  - [ ] `rest_openapi.json` 里有这三条路径；`tool_schema_digest_is_pinned` 通过。
+  - [x] 三个操作的应答符合 §5.3；`pid_index` 带 `tag` 时有 `places`；扫描没做完时应答 `scanning`。
+  - [x] 状态码：`INDEX_NO_PROJECT_DIR`、`INDEX_DRAWING_ID_DUPLICATED`、`LOCATE_AMBIGUOUS` 是 409，`LOCATE_NOT_FOUND` 是 404。
+  - [x] `rest_openapi.json` 里有这三条路径；`tool_schema_digest_is_pinned` 通过。
 - **验证**：`cargo test --offline --locked --lib pid_index`；`cargo test --offline --locked --lib tool_schema_digest_is_pinned`；手工：`--http` 启动后请求 `GET /api/v1/pid/summary`
 - **依赖**：IX-6、IX-7
 - **文件**：`src/app/control/mod.rs`、`src/rest.rs`、`src/rest_openapi.json`、`src/mcp.rs`
 - **规模**：M
+- **补（2026-11-20）**：一个提交。与任务写法不同、或任务没有说的：多改了三个文件——`src/app/commands/pidindex.rs`（三个操作的入口，和命令共用扫描、缓存、定位）、`src/mcp_ops.rs`（`pid_locate` 的参数表，执行门面要求登记）、`src/pid/project_index.rs`（`compare_places` 放成 `pub(crate)`，合起来的各处按索引的排法排）；`pid_locate` 的结果放在 `result` 里（同 `pid_masterdata_set`），另带 `handles`；`pid_locate` 要的索引没读完时也应答 `scanning`，不登记成操作，稍后原样再发；有扫描在跑就应答它的进度，不另起；操作起的扫描不在命令行说话，`PIDINDEX CANCEL` 也能取消它；读不出来的文件按大小和修改时间记住、没变不再读（不然一个坏文件让索引永远是 `scanning`）；`places` 不分大小写，按图号、坐标、句柄排；`tag`、`type_code`、`drawing_id` 不能是空白或非字符串，只给 `type_code` 不给 `tag` 是 `invalid_request`；`at` 取最近的一个，候选含这条管线的线段和连接符，距离按形状量；`INDEX_IO_ERROR` 是 500；能力名 `pid_project_index`；`pid_locate` 不进批、不钉起始的图；开始页上报 `no_document`。其余记在项目索引规格 §11.8。**先红后绿**：先放测试和空壳（三个操作分派了、入口只应答 `{"ok":false}`，路由、OpenAPI、MCP 名单没加），新加的 12 条和 OpenAPI 那条都编得过、都败在断言上（有一条头一回败在造测试图上，合成图的对象数改成 20 后重跑，败在断言上）；实现后第一次就全过，工具面摘要按预期变了，核对过改动、换成新值后过。**读数**：主程序库 7354 条，7293 通过、58 默认不跑、3 失败（比对设计稿的三条）；比上次的基线多 12 条，都是新加的、都过；那条偶发失败的像素测试这次过了；编译告警 52 条，与基线相同；clippy 656 / 1051，与基线相同，改过的文件里没有新告警；格式检查：`pidindex.rs` 用 rustfmt 排过再跑门槛，干净；另五个 Rust 文件里改动的行没有格式问题，那几个文件里原有的格式问题没动。**手工**：`cargo run --offline --locked -- --http 8090` 后全程只走 HTTP。不带令牌 401；新图上 `GET /api/v1/pid/summary` 200、图号空串，`GET /api/v1/pid/index`、`POST /api/v1/pid/locate` 409 `INDEX_NO_PROJECT_DIR`；`GET /api/v1/state` 的能力里有 `pid_project_index`。在临时目录里画、存 PID-1102（P-1001、P-1002）和 PID-1101（P-1001），关掉 PID-1102 以后：摘要 200、图号 PID-1101；索引头一次 200 `scanning` 0/1，再取是两张图、重号 1 处；`tag=p-1001` 的 `places` 在两张图上；只给 `type_code` 400；定位 `P-1001` 200、就在当前图上；定位 `P-1002` 200、打开了 PID-1102，结果是新标签页的编号，之后摘要的图号是 PID-1102；带图号定位回 PID-1101 200，没有再开一份；`P-9999` 404 `LOCATE_NOT_FOUND`；`at` 只有一个数 400。**新基线**：主程序库 7354 条（7293 / 58 / 3；那条像素测试偶发失败时是 7292 / 58 / 4）。
 
 > **检查点 CP-B（阶段 B 结束，请你确认）**：演示——一个目录里放两张图，各有一台 `P-1001` 和一对连接符：`PIDINDEX` 报出一处跨图重号和一对配好的连接符，`PIDLOCATE` 能跳到另一张图上的对象。固定门禁全过，汇报读数。
 

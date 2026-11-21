@@ -28,16 +28,25 @@
 //! 去一张图：有标签页开着它就切过去，没有就打开，打开以后接着找。在哪张图上都按
 //! （类型编码, 位号）照图现在的样子现找，不用摘要里记的句柄（§5.2）；位号不分大小写，
 //! 与 `PIDTAG` 一样。找到的只选中它们、缩放到它们；画不出样子的按外框和定位点缩放。
+//!
+//! 自动化操作（§5.3）：`pid_summary` 是当前图的摘要；`pid_index` 是项目索引，带 `tag`
+//! 时加上这个位号的各处（`places`）；`pid_locate` 同 `PIDLOCATE`，结果（图号、标签页、
+//! 选中的句柄）放在操作的 `result` 里，给了 `at` 就在同位号的对象、这根线的线段和连接符
+//! 里取离它最近的一个。要从磁盘读文件时 `pid_index`、`pid_locate` 在后台扫，先应答
+//! `scanning`，调用方稍后再发；操作起的扫描不在命令行上说话。读不出来的文件操作这边按
+//! 「路径 + 大小 + 修改时间」记着原因，文件没变就照这个原因算，轮询时不反复读；命令照旧
+//! 每次重读。
 
 use super::*;
 use crate::pid::project_index::{
-    build_index, list_drawings, summarize, DrawingFile, DrawingSummary, FailedDrawing, Fingerprint,
-    IndexError, LinkEnd, LinkFamily, LinkStatus, Place, ProjectIndex, SummaryMeta, SummaryObject,
-    SummarySource, DEFAULT_TOLERANCE,
+    build_index, compare_places, list_drawings, summarize, DrawingFile, DrawingSummary,
+    FailedDrawing, Fingerprint, IndexError, LinkEnd, LinkFamily, LinkStatus, Place, ProjectIndex,
+    SummaryConnector, SummaryMeta, SummaryObject, SummarySegment, SummarySource, DEFAULT_TOLERANCE,
 };
 use crate::pid::symbols::SymbolLibrary;
 use crate::pid::topology::parse_handle;
 use document::Document;
+use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,6 +64,9 @@ pub(in crate::app) const LOCATE_AMBIGUOUS: &str = "LOCATE_AMBIGUOUS";
 
 /// 按外框和定位点缩放时四边至少留出的宽度，图纸单位。
 const FRAME_MARGIN: f64 = 10.0;
+
+/// 建索引时缓存里还没有的文件的原因：读完以后又变了，这次没读它。
+const CHANGED_SINCE_READ: &str = "读完以后文件又变了，这次没算上，再扫一次";
 
 /// 磁盘上的图的摘要，按路径记（§4）。文件的大小和修改时间都没变才拿来用；程序退出即
 /// 清空。
@@ -152,12 +164,15 @@ type Loader = Arc<dyn Fn(&Path) -> Result<Document, String> + Send + Sync>;
 /// 扫描。属于程序、不属于哪个标签页：几个标签页可以是同一个项目。
 pub(in crate::app) struct PidIndex {
     cache: SummaryCache,
+    /// 后台读不出来的文件：读它时的大小、修改时间和原因。只有自动化操作用它，文件没变就
+    /// 照这个原因算，轮询时不反复读；命令照旧每次重读。
+    unreadable: HashMap<PathBuf, Unreadable>,
     /// 正在后台读文件的扫描；`None` 时没在扫。
     scan: Option<Scan>,
     /// 下一次扫描的编号：后台读回来的消息凭它认是哪一次的。
     next_scan: u64,
     loader: Loader,
-    /// 为定位正在打开的图（`PIDLOCATE`），打开以后接着找。只等最近的一张；按那次打开
+    /// 为定位正在打开的图（`PIDLOCATE`、`pid_locate`），打开以后接着找。只等最近的一张；按那次打开
     /// 认，不按文件：没打开成的，以后再打开这个文件也不接着找。
     opening: Option<Opening>,
 }
@@ -166,12 +181,20 @@ impl Default for PidIndex {
     fn default() -> Self {
         Self {
             cache: SummaryCache::default(),
+            unreadable: HashMap::new(),
             scan: None,
             next_scan: 0,
             loader: Arc::new(crate::io::load_file),
             opening: None,
         }
     }
+}
+
+/// 读不出来的一个文件：读它时的大小和修改时间，和原因。
+struct Unreadable {
+    size: u64,
+    modified: SystemTime,
+    why: String,
 }
 
 /// 一次后台扫描：要读几个文件、读回来几个，读不出来的为什么，扫完接着做什么。
@@ -184,7 +207,7 @@ struct Scan {
     cancel: Arc<AtomicBool>,
     /// 后台读不出来的文件和原因：扫完建索引时照这个说，不在界面线程里再读一遍。
     failed: HashMap<PathBuf, String>,
-    /// 扫完接着做的，按命令的先后。
+    /// 扫完接着做的，按命令的先后；自动化操作起的扫描没有，读完就完。
     then: Vec<Then>,
 }
 
@@ -214,18 +237,37 @@ struct Locate {
     drawing: Option<String>,
 }
 
-/// 在一张图上现找的对象：位号不分大小写；类型编码是 `None` 时不论类型。
+/// 在一张图上现找的：位号不分大小写；类型编码是 `None` 时不论类型。`at` 是 `None` 时找
+/// 有自己位号的对象；给了就在同位号的对象（管件、打断符记的是所在管路的位号，也算）、
+/// 这根线的线段和连接符里取离它最近的一个，给了类型编码就只看对象（§5.2）。
 struct Wanted {
     tag: String,
     type_code: Option<String>,
+    at: Option<[f64; 2]>,
 }
 
 /// 为定位打开的一张图：编号是 `open_id` 的那次打开（`OpenProgress::id`）做完了，就在
-/// 它上面找 `wanted`。
+/// 它上面找 `wanted`；`reply` 是 `pid_locate` 在等这次打开，找到了把结果交给它。
 struct Opening {
     open_id: u64,
     drawing_id: String,
     wanted: Wanted,
+    reply: bool,
+}
+
+/// 自动化操作扫出的项目索引：项目目录、索引、读得出来的各图的摘要。
+struct Indexed {
+    project_dir: PathBuf,
+    index: ProjectIndex,
+    summaries: Vec<DrawingSummary>,
+}
+
+/// 在图上找到的一样东西：句柄，说给人听的样子，画不出样子时缩放到的范围。
+struct Pick {
+    handle: String,
+    said: String,
+    low: glam::DVec2,
+    high: glam::DVec2,
 }
 
 /// 后台读回来的一条（`Message::PidIndexRead`）。
@@ -508,7 +550,7 @@ impl OpenCADStudio {
             Ok((index, summaries)) if unread.is_empty() => {
                 self.pidindex_report(&project_dir, &index, &summaries, then)
             }
-            Ok(_) => self.pidindex_read(project_dir, unread, then),
+            Ok(_) => self.pidindex_read(project_dir, unread, Some(then)),
             Err(error) => {
                 self.command_line
                     .push_error_coded(error.code(), &format!("{verb}: {error}"));
@@ -541,21 +583,24 @@ impl OpenCADStudio {
         )
     }
 
-    /// 在后台读 `files`（§4）：先说要读几个；读回来的由 `on_pid_index_read` 收。
+    /// 在后台读 `files`（§4），读回来的由 `on_pid_index_read` 收。命令起的（给了 `then`）先
+    /// 说要读几个；自动化操作起的不在命令行上说话。
     fn pidindex_read(
         &mut self,
         project_dir: PathBuf,
         files: Vec<PathBuf>,
-        then: Then,
+        then: Option<Then>,
     ) -> Task<Message> {
         let id = self.pid_index.next_scan;
         self.pid_index.next_scan += 1;
         let total = files.len();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.command_line.push_info(&format!(
-            "{}: 要从磁盘读 {total} 个文件，在后台读，读完接着说；PIDINDEX CANCEL 可以取消。",
-            then.verb()
-        ));
+        if let Some(then) = &then {
+            self.command_line.push_info(&format!(
+                "{}: 要从磁盘读 {total} 个文件，在后台读，读完接着说；PIDINDEX CANCEL 可以取消。",
+                then.verb()
+            ));
+        }
         self.pid_index.scan = Some(Scan {
             id,
             project_dir,
@@ -563,7 +608,7 @@ impl OpenCADStudio {
             done: 0,
             cancel: Arc::clone(&cancel),
             failed: HashMap::new(),
-            then: vec![then],
+            then: then.into_iter().collect(),
         });
         let reads = read_in_background(
             files,
@@ -574,9 +619,9 @@ impl OpenCADStudio {
         Task::run(reads, move |read| Message::PidIndexRead(id, read))
     }
 
-    /// 后台读回来的一条。读到的摘要记进缓存，取消了的扫描读回来的也记；是这次扫描的就数上，
-    /// 约每读完十分之一报一次进度，读完了建索引、接着说；接着做的要打开图（`PIDLOCATE`）就
-    /// 交出打开它的任务。
+    /// 后台读回来的一条。读到的摘要记进缓存，读不出来的记下原因（[`Unreadable`]），取消了
+    /// 的扫描读回来的也记；是这次扫描的就数上，有排着的命令时约每读完十分之一报一次进度，
+    /// 读完了建索引、接着说；接着做的要打开图（`PIDLOCATE`）就交出打开它的任务。
     pub(in crate::app) fn on_pid_index_read(&mut self, scan: u64, read: Read) -> Task<Message> {
         let current = self
             .pid_index
@@ -598,11 +643,25 @@ impl OpenCADStudio {
         } = *file;
         let failed = match summary {
             Ok(summary) => {
+                self.pid_index.unreadable.remove(&path);
                 self.pid_index.cache.remember(path, size, modified, summary);
                 None
             }
             Err(why) => {
                 self.pid_index.cache.entries.remove(&path);
+                match modified {
+                    Some(modified) => {
+                        let unreadable = Unreadable {
+                            size,
+                            modified,
+                            why: why.clone(),
+                        };
+                        self.pid_index.unreadable.insert(path.clone(), unreadable);
+                    }
+                    None => {
+                        self.pid_index.unreadable.remove(&path);
+                    }
+                }
                 Some((path, why))
             }
         };
@@ -612,7 +671,9 @@ impl OpenCADStudio {
         running.done += 1;
         running.failed.extend(failed);
         let (done, total) = (running.done, running.total);
-        let verb = running.then.first().map_or("PIDINDEX", Then::verb);
+        let Some(verb) = running.then.first().map(Then::verb) else {
+            return Task::none();
+        };
         if done < total && done % (total / 10).max(1) == 0 {
             self.command_line
                 .push_info(&format!("{verb}: 读了 {done}/{total} 个文件。"));
@@ -621,7 +682,8 @@ impl OpenCADStudio {
     }
 
     /// 这次扫描要读的都读回来了：用缓存建索引，后台读不出来的照它说的原因记，再按先后做
-    /// 排着的。界面线程不读文件：缓存里还没有的，是读完以后又变了的。
+    /// 排着的。界面线程不读文件：缓存里还没有的，是读完以后又变了的。没有排着的（自动化
+    /// 操作起的）就不建：操作再来取时现建。
     fn pidindex_finish(&mut self) -> Task<Message> {
         let Some(Scan {
             project_dir,
@@ -632,11 +694,14 @@ impl OpenCADStudio {
         else {
             return Task::none();
         };
+        if then.is_empty() {
+            return Task::none();
+        }
         let scanned = self.pidindex_scan(&project_dir, &mut |path| {
             Err(failed
                 .get(path)
                 .cloned()
-                .unwrap_or_else(|| "读完以后文件又变了，这次没算上，再扫一次".to_string()))
+                .unwrap_or_else(|| CHANGED_SINCE_READ.to_string()))
         });
         match scanned {
             Ok((index, summaries)) => {
@@ -838,15 +903,16 @@ impl OpenCADStudio {
             let here = Wanted {
                 tag: tag.clone(),
                 type_code: None,
+                at: None,
             };
-            if self.pidlocate_in(i, &here, "当前图上") {
+            if self.pidlocate_in(i, &here, "当前图上").is_some() {
                 return Some(Task::none());
             }
         }
         Some(self.pidindex_start(i, Then::Locate(Locate { tag, drawing })))
     }
 
-    /// 扫完以后接着找 `locate`：项目里哪几张图上有（`ProjectIndex::places`），给了图号就
+    /// 扫完以后接着找 `locate`：项目里哪几张图上有（[`places_of`]），给了图号就
     /// 只看那一张。一张都没有、好几张都有时说出来；只有一张就去那一张，那张图上同位号的
     /// 都选中：图号分不开它们。
     fn pidlocate_found(
@@ -857,16 +923,8 @@ impl OpenCADStudio {
         locate: Locate,
     ) -> Task<Message> {
         let Locate { tag, drawing } = locate;
-        // 索引按位号原样查，可位号不分大小写：项目里写成什么样就照什么样查。
-        let spellings: BTreeSet<&str> = summaries
-            .iter()
-            .flat_map(|summary| &summary.objects)
-            .filter(|object| object.own_tag && object.tag.eq_ignore_ascii_case(&tag))
-            .map(|object| object.tag.as_str())
-            .collect();
-        let places: Vec<Place> = spellings
+        let places: Vec<Place> = places_of(index, summaries, None, &tag)
             .into_iter()
-            .flat_map(|spelled| index.places(summaries, None, spelled))
             .filter(|place| {
                 drawing
                     .as_deref()
@@ -888,8 +946,9 @@ impl OpenCADStudio {
                 let wanted = Wanted {
                     type_code: type_code_on(summaries, drawing_id, &tag),
                     tag,
+                    at: None,
                 };
-                self.pidlocate_go(project_dir, index, drawing_id, wanted)
+                self.pidlocate_go(project_dir, index, drawing_id, wanted, false)
             }
             [first, ..] => {
                 self.command_line.push_error_coded(
@@ -911,23 +970,9 @@ impl OpenCADStudio {
         }
     }
 
-    /// 哪张图上都没有：说是项目里没有这个位号、没有这张图、那张图读不出来，还是那张图上
-    /// 没有。
+    /// 哪张图上都没有：说为什么（[`not_found`]）；没给图号时，有读不出来的图再提一句。
     fn pidlocate_not_found(&mut self, index: &ProjectIndex, tag: &str, drawing: Option<&str>) {
-        let why = match drawing {
-            None => format!("项目里哪张图上都没有 {tag}"),
-            Some(id) => match index
-                .drawings
-                .iter()
-                .find(|indexed| indexed.drawing_id.eq_ignore_ascii_case(id))
-            {
-                None => format!("项目里没有图号是 {id} 的图"),
-                Some(indexed) => match &indexed.error {
-                    Some(error) => format!("{} 读不出来：{error}", indexed.drawing_id),
-                    None => format!("{} 上没有 {tag}", indexed.drawing_id),
-                },
-            },
-        };
+        let why = not_found(index, tag, drawing);
         self.command_line.push_error_coded(
             LOCATE_NOT_FOUND,
             &format!("PIDLOCATE: {LOCATE_NOT_FOUND}: {why}。"),
@@ -938,13 +983,15 @@ impl OpenCADStudio {
     }
 
     /// 去 `drawing_id` 那张图上找 `wanted`：有标签页开着它就切过去当场找；没有就打开它，
-    /// 打开以后接着找（`on_pid_locate_opened`）。
+    /// 打开以后接着找（`on_pid_locate_opened`）。`reply` 是 `pid_locate` 在等：找到了把结果
+    /// （[`located`]）交给它。没找到、没打开成都在命令行上说，操作照它算失败。
     fn pidlocate_go(
         &mut self,
         project_dir: &Path,
         index: &ProjectIndex,
         drawing_id: &str,
         wanted: Wanted,
+        reply: bool,
     ) -> Task<Message> {
         let Some(file) = index
             .drawings
@@ -965,8 +1012,12 @@ impl OpenCADStudio {
             } else {
                 self.update(Message::TabSwitch(tab))
             };
-            if !self.pidlocate_in(tab, &wanted, &format!("{drawing_id} 上")) {
-                self.pidlocate_gone(drawing_id, &wanted.tag);
+            match self.pidlocate_in(tab, &wanted, &format!("{drawing_id} 上")) {
+                Some(handles) if reply => {
+                    self.set_control_result(located(drawing_id, self.tabs[tab].id, &handles));
+                }
+                Some(_) => {}
+                None => self.pidlocate_gone(drawing_id, &wanted.tag),
             }
             return switched;
         }
@@ -991,6 +1042,7 @@ impl OpenCADStudio {
                     open_id,
                     drawing_id: drawing_id.to_string(),
                     wanted,
+                    reply,
                 });
             }
             None => self.pidlocate_not_opened(drawing_id, &wanted.tag),
@@ -999,7 +1051,7 @@ impl OpenCADStudio {
     }
 
     /// 编号是 `open_id` 的那次打开做完了，打开的是 `path`：是为定位打开的，就在它的
-    /// 标签页上接着找。
+    /// 标签页上接着找；`pid_locate` 在等就把结果交给它。
     pub(in crate::app) fn on_pid_locate_opened(&mut self, open_id: u64, path: &Path) {
         let Some(opening) = self
             .pid_index
@@ -1010,8 +1062,13 @@ impl OpenCADStudio {
         };
         let tab = self.pidlocate_tab(path).unwrap_or(self.active_tab);
         let place = format!("{} 上", opening.drawing_id);
-        if !self.pidlocate_in(tab, &opening.wanted, &place) {
-            self.pidlocate_gone(&opening.drawing_id, &opening.wanted.tag);
+        match self.pidlocate_in(tab, &opening.wanted, &place) {
+            Some(handles) if opening.reply => {
+                let result = located(&opening.drawing_id, self.tabs[tab].id, &handles);
+                self.set_control_result(result);
+            }
+            Some(_) => {}
+            None => self.pidlocate_gone(&opening.drawing_id, &opening.wanted.tag),
         }
     }
 
@@ -1059,59 +1116,254 @@ impl OpenCADStudio {
     }
 
     /// 在第 `i` 个标签页的图上按 `wanted` 现找（§5.2：照图现在的样子，不用摘要里记的
-    /// 句柄）。找到了就只选中它们、缩放到它们，说在 `place` 的哪里；画不出样子的按外框
-    /// 和定位点缩放。找不到什么也不动，返回 `false`。
-    fn pidlocate_in(&mut self, i: usize, wanted: &Wanted, place: &str) -> bool {
-        let meta = SummaryMeta {
-            drawing_id: String::new(),
-            file: None,
-            pbs: None,
-            source: SummarySource::Open,
-            fingerprint: None,
-        };
-        let summary = summarize(
-            &self.tabs[i].scene.document,
-            &self.pid_symbols,
-            meta,
-            DEFAULT_TOLERANCE,
-        );
-        let found: Vec<&SummaryObject> = summary
-            .objects
+    /// 句柄）。
+    fn pick_on(&self, i: usize, wanted: &Wanted) -> Vec<Pick> {
+        let document = &self.tabs[i].scene.document;
+        let summary = summarize(document, &self.pid_symbols, unnamed(), DEFAULT_TOLERANCE);
+        picks(&summary, wanted)
+    }
+
+    /// 只选中第 `i` 个标签页上的 `picks`、缩放到它们，说在 `place` 的哪里；画不出样子的
+    /// 按 [`frame`] 缩放。返回选中的句柄。
+    fn pidlocate_select(&mut self, i: usize, picks: &[Pick], place: &str) -> Vec<String> {
+        let handles: Vec<document::Handle> = picks
             .iter()
-            .filter(|object| {
-                object.own_tag
-                    && object.tag.eq_ignore_ascii_case(&wanted.tag)
-                    && wanted
-                        .type_code
-                        .as_deref()
-                        .is_none_or(|code| object.type_code == code)
-            })
+            .filter_map(|pick| parse_handle(&pick.handle))
             .collect();
-        let handles: Vec<document::Handle> = found
-            .iter()
-            .filter_map(|object| parse_handle(&object.handle))
-            .collect();
-        if handles.is_empty() {
-            return false;
-        }
         let scene = &mut self.tabs[i].scene;
         scene.deselect_all();
         scene.select_entities(&handles);
         scene.remember_current_view();
         if !scene.zoom_to_entities(&handles) {
-            let (min, max) = frame(&found);
+            let (min, max) = frame(picks);
             scene.zoom_to_window(min, max);
         }
         self.refresh_properties();
-        let what: Vec<String> = found
-            .iter()
-            .map(|object| format!("{} {} {}", object.type_label, object.tag, point(object.at)))
-            .collect();
+        let what: Vec<&str> = picks.iter().map(|pick| pick.said.as_str()).collect();
         self.command_line.push_output(&format!(
             "PIDLOCATE: {place}的 {}，选中了。",
             what.join("、")
         ));
-        true
+        picks.iter().map(|pick| pick.handle.clone()).collect()
+    }
+
+    /// 在第 `i` 个标签页的图上按 `wanted` 现找，找到了就选中、缩放（[`Self::pidlocate_select`]），
+    /// 返回选中的句柄；找不到什么也不动，是 `None`。
+    fn pidlocate_in(&mut self, i: usize, wanted: &Wanted, place: &str) -> Option<Vec<String>> {
+        let picks = self.pick_on(i, wanted);
+        if picks.is_empty() {
+            return None;
+        }
+        Some(self.pidlocate_select(i, &picks, place))
+    }
+
+    // ── 自动化操作（§5.3） ──
+
+    /// 第 `i` 个标签页的图在项目里叫什么（§3.1、§3.7）：存过盘的照项目文件 `drawings[]`，
+    /// 没写的取文件名去掉扩展名；没存过的图号是空的、没有文件。项目文件读不出来、两个
+    /// 文件同号时报错。
+    fn drawing_meta(&self, i: usize) -> Result<SummaryMeta, IndexError> {
+        let document = &self.tabs[i].scene.document;
+        let (Some(project_dir), Some(source)) = (
+            crate::io::drawing_dir(document),
+            document.source_path.as_deref().map(Path::new),
+        ) else {
+            return Ok(unnamed());
+        };
+        let here = same_file(source);
+        let listed = list_drawings(project_dir)?
+            .into_iter()
+            .find(|drawing| same_file(&drawing.path) == here);
+        let drawing = listed.unwrap_or_else(|| DrawingFile {
+            file: source
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+            path: source.to_path_buf(),
+            drawing_id: source
+                .file_stem()
+                .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned()),
+            pbs: None,
+        });
+        Ok(meta(&drawing, SummarySource::Open, None))
+    }
+
+    /// 操作要的项目索引，项目目录是第 `i` 个标签页的图所在的目录。要读的文件缓存里都有
+    /// 就当场建好；要读盘时 `read` 为真就起后台扫描、应答 `scanning` 并交出后台读的任务，
+    /// 为假就把要读的算作读不出来。正在扫（哪个目录都算）也应答 `scanning`。以前读不出来、
+    /// 到现在没变的文件照上次的原因算，不再读。
+    fn op_index(&mut self, i: usize, read: bool) -> Result<Indexed, (Value, Task<Message>)> {
+        let Some(project_dir) =
+            crate::io::drawing_dir(&self.tabs[i].scene.document).map(Path::to_path_buf)
+        else {
+            let refusal = refuse(
+                INDEX_NO_PROJECT_DIR,
+                "当前图没保存过，不属于哪个项目；存盘后再扫",
+            );
+            return Err((refusal, Task::none()));
+        };
+        if let Some(scan) = &self.pid_index.scan {
+            return Err((scanning(scan.done, scan.total), Task::none()));
+        }
+        let unreadable = std::mem::take(&mut self.pid_index.unreadable);
+        let mut unread = Vec::new();
+        let scanned = self.pidindex_scan(&project_dir, &mut |path| {
+            if let Some(why) = recall(&unreadable, path) {
+                return Err(why);
+            }
+            if read {
+                unread.push(path.to_path_buf());
+            }
+            Err(CHANGED_SINCE_READ.to_string())
+        });
+        self.pid_index.unreadable = unreadable;
+        match scanned {
+            Err(error) => Err((index_refusal(&error), Task::none())),
+            Ok(_) if !unread.is_empty() => {
+                let total = unread.len();
+                let task = self.pidindex_read(project_dir, unread, None);
+                Err((scanning(0, total), task))
+            }
+            Ok((index, summaries)) => Ok(Indexed {
+                project_dir,
+                index,
+                summaries,
+            }),
+        }
+    }
+
+    /// 控制面的 `pid_summary`：当前图的摘要（§3.1），图号、文件、PBS 节点见
+    /// [`Self::drawing_meta`]。
+    pub(in crate::app) fn control_pid_summary(&self) -> Value {
+        let i = self.active_tab;
+        if self.tabs[i].is_start {
+            return refuse("no_document", "Create or open a drawing first");
+        }
+        match self.drawing_meta(i) {
+            Ok(meta) => {
+                let document = &self.tabs[i].scene.document;
+                let summary = summarize(document, &self.pid_symbols, meta, DEFAULT_TOLERANCE);
+                json!({ "ok": true, "summary": summary })
+            }
+            Err(error) => index_refusal(&error),
+        }
+    }
+
+    /// 控制面的 `pid_index`：项目索引（§3.4）；带 `tag` 时加上这个位号在项目里的各处
+    /// （`places`，见 [`places_of`]），`type_code` 只看这个类型。要从磁盘读文件时应答
+    /// `scanning`，交出后台读的任务。
+    pub(in crate::app) fn control_pid_index(&mut self, req: &Value) -> (Value, Task<Message>) {
+        let i = self.active_tab;
+        if self.tabs[i].is_start {
+            let refusal = refuse("no_document", "Create or open a drawing first");
+            return (refusal, Task::none());
+        }
+        let (tag, type_code) = match (text(req, "tag"), text(req, "type_code")) {
+            (Err(refusal), _) | (_, Err(refusal)) => return (refusal, Task::none()),
+            (Ok(None), Ok(Some(_))) => {
+                let refusal = refuse("invalid_request", "type_code 要和 tag 一起给");
+                return (refusal, Task::none());
+            }
+            (Ok(tag), Ok(type_code)) => (tag, type_code),
+        };
+        let Indexed {
+            index, summaries, ..
+        } = match self.op_index(i, true) {
+            Ok(indexed) => indexed,
+            Err(answer) => return answer,
+        };
+        let places = tag.map(|tag| places_of(&index, &summaries, type_code.as_deref(), &tag));
+        let mut answer = json!({ "ok": true, "index": index });
+        if let Some(places) = places {
+            answer["places"] = json!(places);
+        }
+        (answer, Task::none())
+    }
+
+    /// `pid_locate` 进写操作的流程以前先看（§5.3）：请求写错了、没有图、要等扫描、建不了
+    /// 索引，就在这里应答，要扫描的交出后台读的任务；能定位了是 `None`。不给图号、当前
+    /// 图上就有时不扫项目。
+    pub(in crate::app) fn control_pid_locate_waits(
+        &mut self,
+        req: &Value,
+    ) -> Option<(Value, Task<Message>)> {
+        let i = self.active_tab;
+        if self.tabs[i].is_start {
+            let refusal = refuse("no_document", "Create or open a drawing first");
+            return Some((refusal, Task::none()));
+        }
+        let (wanted, drawing) = match locate_request(req) {
+            Ok(request) => request,
+            Err(refusal) => return Some((refusal, Task::none())),
+        };
+        if drawing.is_none() && !self.pick_on(i, &wanted).is_empty() {
+            return None;
+        }
+        self.op_index(i, true).err()
+    }
+
+    /// 控制面的 `pid_locate`，在写操作的流程里（§5.3）：同 `PIDLOCATE`，先当前图、再项目；
+    /// 结果是去了哪张图、哪个标签页，选中了什么（[`located`]）。要打开图时交出打开的任务，
+    /// 打开、选中以后才有结果。扫描前面 [`Self::control_pid_locate_waits`] 等过了，这里不读盘。
+    pub(in crate::app) fn control_pid_locate(
+        &mut self,
+        req: &Value,
+    ) -> Result<Task<Message>, Value> {
+        let i = self.active_tab;
+        let (mut wanted, drawing) = locate_request(req)?;
+        if drawing.is_none() {
+            let picks = self.pick_on(i, &wanted);
+            if !picks.is_empty() {
+                let drawing_id = self
+                    .drawing_meta(i)
+                    .map_err(|error| index_refusal(&error))?
+                    .drawing_id;
+                let handles = self.pidlocate_select(i, &picks, "当前图上");
+                self.set_control_result(located(&drawing_id, self.tabs[i].id, &handles));
+                return Ok(Task::none());
+            }
+        }
+        let Indexed {
+            project_dir,
+            index,
+            summaries,
+        } = self.op_index(i, false).map_err(|(answer, _)| answer)?;
+        let places: Vec<Place> =
+            places_of(&index, &summaries, wanted.type_code.as_deref(), &wanted.tag)
+                .into_iter()
+                .filter(|place| {
+                    drawing
+                        .as_deref()
+                        .is_none_or(|id| place.drawing_id.eq_ignore_ascii_case(id))
+                })
+                .collect();
+        let drawings: BTreeSet<&str> = places
+            .iter()
+            .map(|place| place.drawing_id.as_str())
+            .collect();
+        match drawings.len() {
+            0 => Err(refuse(
+                LOCATE_NOT_FOUND,
+                not_found(&index, &wanted.tag, drawing.as_deref()),
+            )),
+            1 => {
+                let drawing_id = places[0].drawing_id.clone();
+                if wanted.type_code.is_none() && wanted.at.is_none() {
+                    wanted.type_code = type_code_on(&summaries, &drawing_id, &wanted.tag);
+                }
+                Ok(self.pidlocate_go(&project_dir, &index, &drawing_id, wanted, true))
+            }
+            several => {
+                let mut refusal = refuse(
+                    LOCATE_AMBIGUOUS,
+                    format!(
+                        "{} 在 {several} 张图上都有；写上 drawing_id 再定位",
+                        wanted.tag
+                    ),
+                );
+                refusal["places"] = json!(places);
+                Err(refusal)
+            }
+        }
     }
 }
 
@@ -1132,22 +1384,251 @@ fn type_code_on(summaries: &[DrawingSummary], drawing_id: &str, tag: &str) -> Op
     }
 }
 
-/// 画不出样子时缩放到的范围（§5.2 按坐标缩放）：对象外框的并集，没有外框的取定位点；
-/// 四边留出长边的一成，至少 [`FRAME_MARGIN`]。
-fn frame(objects: &[&SummaryObject]) -> (glam::Vec3, glam::Vec3) {
-    let mut low = glam::DVec2::splat(f64::INFINITY);
-    let mut high = glam::DVec2::splat(f64::NEG_INFINITY);
-    for object in objects {
-        let [x0, y0, x1, y1] = object.bbox;
-        let (from, to) = if x1 > x0 || y1 > y0 {
-            (glam::DVec2::new(x0, y0), glam::DVec2::new(x1, y1))
-        } else {
-            let at = glam::DVec2::from(object.at);
-            (at, at)
-        };
-        low = low.min(from);
-        high = high.max(to);
+/// 没存过的图的摘要要带的：图号是空的，没有文件。
+fn unnamed() -> SummaryMeta {
+    SummaryMeta {
+        drawing_id: String::new(),
+        file: None,
+        pbs: None,
+        source: SummarySource::Open,
+        fingerprint: None,
     }
+}
+
+/// 控制面的失败应答。
+fn refuse(code: &str, error: impl Into<String>) -> Value {
+    json!({ "ok": false, "status": "failed", "code": code, "error": error.into() })
+}
+
+/// 列图、建索引出错时的失败应答，错误码是 [`IndexError::code`]。
+fn index_refusal(error: &IndexError) -> Value {
+    refuse(error.code(), error.to_string())
+}
+
+/// 项目还没扫完时的应答（§5.3）：读了几个、共几个，调用方稍后再发。
+fn scanning(done: usize, total: usize) -> Value {
+    json!({ "ok": true, "status": "scanning", "done": done, "total": total })
+}
+
+/// `path` 上次读不出来、到现在大小和修改时间都没变时，当时的原因。
+fn recall(unreadable: &HashMap<PathBuf, Unreadable>, path: &Path) -> Option<String> {
+    let known = unreadable.get(path)?;
+    let now = std::fs::metadata(path).ok()?;
+    (now.len() == known.size && now.modified().ok() == Some(known.modified))
+        .then(|| known.why.clone())
+}
+
+/// 请求里可以不给的一项文本，去掉两头的空白：没给、给的是 `null` 时是 `None`；不是文本
+/// 或者是空的报 `invalid_request`。
+fn text(req: &Value, key: &str) -> Result<Option<String>, Value> {
+    match &req[key] {
+        Value::Null => Ok(None),
+        Value::String(text) if !text.trim().is_empty() => Ok(Some(text.trim().to_string())),
+        _ => Err(refuse("invalid_request", format!("{key} 写不空的文本"))),
+    }
+}
+
+/// `pid_locate` 的请求：要找的，和给了的图号。`tag` 必给；`at` 写 `[x, y]` 或
+/// `[x, y, z]`，`z` 不看。
+fn locate_request(req: &Value) -> Result<(Wanted, Option<String>), Value> {
+    let tag = text(req, "tag")?.ok_or_else(|| refuse("invalid_request", "pid_locate 要给 tag"))?;
+    let type_code = text(req, "type_code")?;
+    let drawing = text(req, "drawing_id")?;
+    let at = match &req["at"] {
+        Value::Null => None,
+        at => Some(
+            point_of(at).ok_or_else(|| refuse("invalid_request", "at 写 [x, y] 或 [x, y, z]"))?,
+        ),
+    };
+    Ok((Wanted { tag, type_code, at }, drawing))
+}
+
+/// `[x, y]` 或 `[x, y, z]` 里的 `x`、`y`。
+fn point_of(value: &Value) -> Option<[f64; 2]> {
+    let numbers = value
+        .as_array()
+        .filter(|numbers| (2..=3).contains(&numbers.len()))?;
+    let numbers: Vec<f64> = numbers.iter().map(Value::as_f64).collect::<Option<_>>()?;
+    numbers
+        .iter()
+        .all(|number| number.is_finite())
+        .then_some([numbers[0], numbers[1]])
+}
+
+/// 位号 `tag` 在项目里的各处（[`ProjectIndex::places`]），`type_code` 给了就只看这个类型。
+/// 位号不分大小写，同 `PIDTAG`：索引按位号原样查，所以项目里写成什么样就照什么样查。
+/// 按图号、定位点、句柄排。
+fn places_of(
+    index: &ProjectIndex,
+    summaries: &[DrawingSummary],
+    type_code: Option<&str>,
+    tag: &str,
+) -> Vec<Place> {
+    let spellings: BTreeSet<&str> = summaries
+        .iter()
+        .flat_map(|summary| &summary.objects)
+        .filter(|object| object.own_tag && object.tag.eq_ignore_ascii_case(tag))
+        .map(|object| object.tag.as_str())
+        .collect();
+    let mut places: Vec<Place> = spellings
+        .into_iter()
+        .flat_map(|spelled| index.places(summaries, type_code, spelled))
+        .collect();
+    places.sort_by(compare_places);
+    places
+}
+
+/// 定位哪张图上都没找到时说为什么：项目里没有这个位号、没有这张图、那张图读不出来，
+/// 还是那张图上没有。
+fn not_found(index: &ProjectIndex, tag: &str, drawing: Option<&str>) -> String {
+    match drawing {
+        None => format!("项目里哪张图上都没有 {tag}"),
+        Some(id) => match index
+            .drawings
+            .iter()
+            .find(|indexed| indexed.drawing_id.eq_ignore_ascii_case(id))
+        {
+            None => format!("项目里没有图号是 {id} 的图"),
+            Some(indexed) => match &indexed.error {
+                Some(error) => format!("{} 读不出来：{error}", indexed.drawing_id),
+                None => format!("{} 上没有 {tag}", indexed.drawing_id),
+            },
+        },
+    }
+}
+
+/// `pid_locate` 的结果：去了哪张图（图号）、哪个标签页（`document_id`），选中了什么，
+/// 头一个是 `handle`。
+fn located(drawing_id: &str, document_id: u64, handles: &[String]) -> Value {
+    json!({
+        "drawing_id": drawing_id,
+        "document_id": document_id,
+        "handle": handles.first(),
+        "handles": handles,
+    })
+}
+
+/// 在 `summary` 里按 `wanted` 找（见 [`Wanted`]）。给了 `at` 时量到形状：连接符量到它的
+/// 圆，线段量到线，对象量到外框；一样近时先连接符、再线段、再对象。管线的外框盖着它
+/// 整根线，连接符的圆心就在线头上：不按这个先后，线段和连接符就点不到。
+fn picks(summary: &DrawingSummary, wanted: &Wanted) -> Vec<Pick> {
+    let tagged = |tag: &str| tag.eq_ignore_ascii_case(&wanted.tag);
+    let objects = summary
+        .objects
+        .iter()
+        .filter(|object| {
+            (object.own_tag || wanted.at.is_some())
+                && tagged(&object.tag)
+                && wanted
+                    .type_code
+                    .as_deref()
+                    .is_none_or(|code| object.type_code == code)
+        })
+        .map(object_pick);
+    let Some(at) = wanted.at.map(glam::DVec2::from) else {
+        return objects.collect();
+    };
+    let lines = wanted.type_code.is_none();
+    let connectors = summary
+        .connectors
+        .iter()
+        .filter(|connector| lines && tagged(&connector.line))
+        .map(|connector| {
+            let away = at.distance(glam::DVec2::from(connector.at)) - connector.radius;
+            (away.max(0.0), connector_pick(connector))
+        });
+    let segments = summary
+        .segments
+        .iter()
+        .filter(|segment| {
+            lines && (tagged(&segment.line) || segment.run.as_deref().is_some_and(tagged))
+        })
+        .map(|segment| {
+            let away = segment_distance(at, segment.a, segment.b);
+            (away, segment_pick(segment))
+        });
+    let objects = objects.map(|pick| (at.distance(at.clamp(pick.low, pick.high)), pick));
+    connectors
+        .chain(segments)
+        .chain(objects)
+        .min_by(|(left, _), (right, _)| left.total_cmp(right))
+        .map(|(_, pick)| pick)
+        .into_iter()
+        .collect()
+}
+
+/// 一个对象：类型、位号、定位点；范围是外框，没有外框的取定位点。
+fn object_pick(object: &SummaryObject) -> Pick {
+    let [x0, y0, x1, y1] = object.bbox;
+    let (low, high) = if x1 > x0 || y1 > y0 {
+        let (corner, other) = (glam::DVec2::new(x0, y0), glam::DVec2::new(x1, y1));
+        (corner.min(other), corner.max(other))
+    } else {
+        let at = glam::DVec2::from(object.at);
+        (at, at)
+    };
+    Pick {
+        handle: object.handle.clone(),
+        said: format!("{} {} {}", object.type_label, object.tag, point(object.at)),
+        low,
+        high,
+    }
+}
+
+/// 一根线段（§7.1）：所属的管路（管线自己的线是管线）和两个端点。
+fn segment_pick(segment: &SummarySegment) -> Pick {
+    let (a, b) = (glam::DVec2::from(segment.a), glam::DVec2::from(segment.b));
+    let owner = segment.run.as_deref().unwrap_or(&segment.line);
+    Pick {
+        handle: segment.handle.clone(),
+        said: format!("{owner} 的管段 {}–{}", point(segment.a), point(segment.b)),
+        low: a.min(b),
+        high: a.max(b),
+    }
+}
+
+/// 一个连接符（§7.1）：所属的线和流向；范围是它的圆。
+fn connector_pick(connector: &SummaryConnector) -> Pick {
+    let at = glam::DVec2::from(connector.at);
+    let flow = if connector.kind.ends_with("_in") {
+        "流入"
+    } else {
+        "流出"
+    };
+    Pick {
+        handle: connector.handle.clone(),
+        said: format!("{} 的{flow}连接符 {}", connector.line, point(connector.at)),
+        low: at - connector.radius,
+        high: at + connector.radius,
+    }
+}
+
+/// 点 `at` 到线段 `a`–`b` 的距离。
+fn segment_distance(at: glam::DVec2, a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (a, b) = (glam::DVec2::from(a), glam::DVec2::from(b));
+    let along = b - a;
+    let length = along.length_squared();
+    let t = if length > 0.0 {
+        ((at - a).dot(along) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    at.distance(a + along * t)
+}
+
+/// 画不出样子时缩放到的范围（§5.2 按坐标缩放）：找到的各样东西的范围的并集；四边留出
+/// 长边的一成，至少 [`FRAME_MARGIN`]。
+fn frame(picks: &[Pick]) -> (glam::Vec3, glam::Vec3) {
+    let low = picks
+        .iter()
+        .fold(glam::DVec2::splat(f64::INFINITY), |low, pick| {
+            low.min(pick.low)
+        });
+    let high = picks
+        .iter()
+        .fold(glam::DVec2::splat(f64::NEG_INFINITY), |high, pick| {
+            high.max(pick.high)
+        });
     let margin = ((high - low).max_element() / 10.0).max(FRAME_MARGIN);
     (
         (low - margin).extend(0.0).as_vec3(),
@@ -2104,5 +2585,469 @@ mod tests {
             "{}",
             ran.said
         );
+    }
+
+    // ── 自动化操作 pid_summary、pid_index、pid_locate（§5.3） ──
+
+    /// 第 `i` 个标签页的图现在的摘要。
+    fn summary_on(app: &OpenCADStudio, i: usize) -> DrawingSummary {
+        let meta = SummaryMeta {
+            drawing_id: String::new(),
+            file: None,
+            pbs: None,
+            source: SummarySource::Open,
+            fingerprint: None,
+        };
+        summarize(
+            &app.tabs[i].scene.document,
+            &app.pid_symbols,
+            meta,
+            DEFAULT_TOLERANCE,
+        )
+    }
+
+    /// 一列对象各自的 `field`（文本）。
+    fn texts<'a>(list: &'a Value, field: &str) -> Vec<&'a str> {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item[field].as_str())
+            .collect()
+    }
+
+    /// `pid_summary`：当前图的摘要。图号照项目文件，没写的是文件名去掉扩展名；没存过的
+    /// 图图号是空的、没有文件；起始页上没有图。
+    #[test]
+    fn pid_index_op_summary_is_the_current_drawing() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        let i = app.active_tab;
+        let pump = object_on(&app, i, "P-1001");
+
+        let answer = request(&mut app, json!({"op": "pid_summary"}));
+        assert_eq!(answer["ok"], true, "{answer}");
+        let summary = &answer["summary"];
+        assert_eq!(summary["drawing_id"], "PID-1101", "{answer}");
+        assert_eq!(summary["file"], "PID-1101.dwg", "{answer}");
+        assert_eq!(summary["source"], "open", "{answer}");
+        assert!(summary["fingerprint"].is_null(), "{answer}");
+        assert!(
+            texts(&summary["objects"], "handle").contains(&pump.handle.as_str()),
+            "{answer}"
+        );
+        assert_eq!(
+            texts(&summary["connectors"], "kind"),
+            ["pipe_out"],
+            "{answer}"
+        );
+
+        let project_file = json!({
+            "version": 1,
+            "drawings": [{ "file": "pid-1101.dwg", "drawing_id": "A-01", "pbs": "1001-01" }]
+        });
+        fs::write(scratch.path(PROJECT_FILE), project_file.to_string()).expect("项目文件");
+        let answer = request(&mut app, json!({"op": "pid_summary"}));
+        assert_eq!(answer["summary"]["drawing_id"], "A-01", "{answer}");
+        assert_eq!(answer["summary"]["file"], "PID-1101.dwg", "{answer}");
+        assert_eq!(answer["summary"]["pbs"], "1001-01", "{answer}");
+
+        let mut app = OpenCADStudio::new_for_test();
+        assert!(app.tabs[app.active_tab].is_start);
+        let answer = app.automation_op(r#"{"protocol":1,"op":"pid_summary"}"#);
+        assert_eq!(answer["code"], "no_document", "{answer}");
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let answer = request(&mut app, json!({"op": "pid_summary"}));
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(answer["summary"]["drawing_id"], "", "{answer}");
+        assert!(answer["summary"]["file"].is_null(), "{answer}");
+    }
+
+    /// `pid_index`：要读盘时先应答 `scanning`（读了几个、共几个），在后台读；读完再取是
+    /// 索引，不再读盘。操作起的扫描不在命令行上说话。
+    #[test]
+    fn pid_index_op_answers_scanning_until_the_files_are_read() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        let (loader, read) = counting();
+        app.pid_index.loader = loader;
+        app.command_line.history.clear();
+
+        let answer = request(&mut app, json!({"op": "pid_index"}));
+        assert_eq!(
+            answer,
+            json!({"ok": true, "status": "scanning", "done": 0, "total": 1})
+        );
+        assert_eq!(*read.lock().expect("读文件的记录"), ["PID-1102.dwg"]);
+
+        let answer = request(&mut app, json!({"op": "pid_index"}));
+        assert_eq!(answer["ok"], true, "{answer}");
+        let index = &answer["index"];
+        assert_eq!(index["complete"], true, "{answer}");
+        assert_eq!(
+            texts(&index["drawings"], "drawing_id"),
+            ["PID-1101", "PID-1102"],
+            "{answer}"
+        );
+        assert_eq!(
+            index["duplicates"].as_array().map(Vec::len),
+            Some(1),
+            "{answer}"
+        );
+        assert_eq!(index["links"].as_array().map(Vec::len), Some(1), "{answer}");
+        assert!(answer.get("places").is_none(), "{answer}");
+        assert_eq!(read.lock().expect("读文件的记录").len(), 1, "读完了又读");
+        assert!(!said(&app).contains("PIDINDEX"), "{}", said(&app));
+    }
+
+    /// 编辑器里不等后台：读着的时候再取还是 `scanning`，读了几个跟着涨，也不再起一次
+    /// 扫描；读完再取是索引。
+    #[test]
+    fn pid_index_op_answers_scanning_while_the_editor_reads() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        write_synthetic(&scratch, "PID-1103.dwg", 20);
+        let gate = Gate::default();
+        app.pid_index.loader = gate.loader();
+        let ask = json!({"protocol": 1, "op": "pid_index"});
+
+        let (answer, task) = app.control_request(ask.clone());
+        assert_eq!(
+            answer,
+            json!({"ok": true, "status": "scanning", "done": 0, "total": 2})
+        );
+        let mut stream = iced_runtime::task::into_stream(task).expect("后台读的任务");
+        assert_eq!(gate.wait_entered(1), ["PID-1102.dwg"]);
+        gate.permit();
+        assert!(deliver(&mut app, &mut stream), "后台没交回读到的");
+        let (answer, again) = app.control_request(ask.clone());
+        assert_eq!(
+            answer,
+            json!({"ok": true, "status": "scanning", "done": 1, "total": 2})
+        );
+        assert!(
+            iced_runtime::task::into_stream(again).is_none(),
+            "正在扫又起了一次"
+        );
+
+        gate.open();
+        while deliver(&mut app, &mut stream) {}
+        let (answer, _) = app.control_request(ask);
+        assert_eq!(
+            texts(&answer["index"]["drawings"], "drawing_id"),
+            ["PID-1101", "PID-1102", "PID-1103"],
+            "{answer}"
+        );
+    }
+
+    /// 带 `tag`：加上这个位号在项目里的各处（`places`），位号不分大小写；`type_code` 只看
+    /// 这个类型。哪里都没有是空的，不算错。
+    #[test]
+    fn pid_index_op_lists_the_places_of_a_tag() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        let i = app.active_tab;
+        let pump = object_on(&app, i, "P-1001");
+        let scanned = request(&mut app, json!({"op": "pid_index", "tag": "P-1001"}));
+        assert_eq!(scanned["status"], "scanning", "{scanned}");
+
+        let answer = request(&mut app, json!({"op": "pid_index", "tag": "p-1001"}));
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert!(answer["index"]["drawings"].is_array(), "{answer}");
+        let places = &answer["places"];
+        assert_eq!(
+            texts(places, "drawing_id"),
+            ["PID-1101", "PID-1102"],
+            "{answer}"
+        );
+        assert_eq!(places[0]["handle"], pump.handle.as_str(), "{answer}");
+        assert_eq!(places[1]["at"], json!([0.0, 0.0]), "{answer}");
+
+        let typed = json!({"op": "pid_index", "tag": "P-1001", "type_code": pump.type_code});
+        let answer = request(&mut app, typed);
+        assert_eq!(
+            texts(&answer["places"], "drawing_id"),
+            ["PID-1101", "PID-1102"],
+            "{answer}"
+        );
+        for nowhere in [
+            json!({"op": "pid_index", "tag": "P-1001", "type_code": "NO_SUCH_TYPE"}),
+            json!({"op": "pid_index", "tag": "P-9999"}),
+        ] {
+            let answer = request(&mut app, nowhere.clone());
+            assert_eq!(answer["ok"], true, "{nowhere}: {answer}");
+            assert_eq!(answer["places"], json!([]), "{nowhere}: {answer}");
+        }
+    }
+
+    /// 没有索引时说为什么：起始页上没有图；没存过的图不属于哪个项目；两个文件同号；
+    /// `type_code` 没带 `tag`、`tag` 不是不空的文本，是请求写错了。
+    #[test]
+    fn pid_index_op_says_why_there_is_no_index() {
+        let mut app = OpenCADStudio::new_for_test();
+        let answer = app.automation_op(r#"{"protocol":1,"op":"pid_index"}"#);
+        assert_eq!(answer["code"], "no_document", "{answer}");
+
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let answer = request(&mut app, json!({"op": "pid_index"}));
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert_eq!(answer["code"], INDEX_NO_PROJECT_DIR, "{answer}");
+        for wrong in [
+            json!({"op": "pid_index", "type_code": "EQUIPMENT"}),
+            json!({"op": "pid_index", "tag": 7}),
+            json!({"op": "pid_index", "tag": " "}),
+        ] {
+            let answer = request(&mut app, wrong.clone());
+            assert_eq!(answer["code"], "invalid_request", "{wrong}: {answer}");
+        }
+
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        let project_file = json!({
+            "version": 1,
+            "drawings": [{ "file": "PID-1101.dwg", "drawing_id": "PID-1102" }]
+        });
+        fs::write(scratch.path(PROJECT_FILE), project_file.to_string()).expect("项目文件");
+        for op in ["pid_index", "pid_summary"] {
+            let answer = request(&mut app, json!({"op": op}));
+            assert_eq!(
+                answer["code"], "INDEX_DRAWING_ID_DUPLICATED",
+                "{op}: {answer}"
+            );
+        }
+    }
+
+    /// 读不出来的文件（§4）：操作记着它读的时候的大小和修改时间，文件没变就不再读，索引
+    /// 照样标出不完整；文件变了再读。
+    #[test]
+    fn pid_index_op_does_not_reread_an_unchanged_unreadable_file() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        fs::write(scratch.path("PID-1103.dwg"), "这不是图").expect("写坏文件");
+        let (loader, read) = counting();
+        app.pid_index.loader = loader;
+
+        let answer = request(&mut app, json!({"op": "pid_index"}));
+        assert_eq!(answer["total"], 2, "{answer}");
+        for _ in 0..2 {
+            let answer = request(&mut app, json!({"op": "pid_index"}));
+            let index = &answer["index"];
+            assert_eq!(index["complete"], false, "{answer}");
+            let failed: Vec<&Value> = index["drawings"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|drawing| !drawing["error"].is_null())
+                .collect();
+            assert_eq!(failed.len(), 1, "{answer}");
+            assert_eq!(failed[0]["drawing_id"], "PID-1103", "{answer}");
+        }
+        assert_eq!(
+            *read.lock().expect("读文件的记录"),
+            ["PID-1102.dwg", "PID-1103.dwg"]
+        );
+
+        fs::write(scratch.path("PID-1103.dwg"), "这还不是图，长了一些").expect("改坏文件");
+        let answer = request(&mut app, json!({"op": "pid_index"}));
+        assert_eq!(
+            answer,
+            json!({"ok": true, "status": "scanning", "done": 0, "total": 1})
+        );
+        assert_eq!(read.lock().expect("读文件的记录").len(), 3);
+    }
+
+    /// `pid_locate` 位号就在当前图上：选中、缩放，结果里是这张图的图号、标签页和句柄；
+    /// 不扫项目、不读文件。只读会话里也能用，不留撤销步。
+    #[test]
+    fn pid_index_op_locate_selects_on_the_current_drawing() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        let (loader, read) = counting();
+        app.pid_index.loader = loader;
+        app.collab.readonly = true;
+        let steps = undo_steps(&app);
+        let i = app.active_tab;
+        let pump = object_on(&app, i, "P-1001");
+        look_away(&app, i);
+
+        let answer = request(&mut app, json!({"op": "pid_locate", "tag": "p-1001"}));
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(answer["status"], "completed", "{answer}");
+        assert_eq!(
+            answer["result"],
+            json!({
+                "drawing_id": "PID-1101",
+                "document_id": app.tabs[i].id,
+                "handle": pump.handle,
+                "handles": [pump.handle],
+            }),
+            "{answer}"
+        );
+        assert_eq!(app.active_tab, i);
+        assert_eq!(selected(&app, i), [pump.handle.as_str()], "{answer}");
+        assert!(
+            looks_at(&app, i, &pump),
+            "{:?}",
+            app.tabs[i].scene.camera.borrow().target
+        );
+        assert!(read.lock().expect("读文件的记录").is_empty(), "{answer}");
+        assert_eq!(undo_steps(&app), steps);
+    }
+
+    /// 位号只在一张没打开的图上：头一次要读盘，应答 `scanning`，不开图；再发就打开它、
+    /// 切过去、选中，结果里是那张图的图号、新标签页和句柄。切走以后再发，切回开着的那
+    /// 一页，不开第二份。
+    #[test]
+    fn pid_index_op_locate_opens_the_drawing_the_tag_is_on() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        let first = app.active_tab;
+        let tabs = app.tabs.len();
+        let locate = json!({"op": "pid_locate", "tag": "P-1002"});
+
+        let answer = request(&mut app, locate.clone());
+        assert_eq!(
+            answer,
+            json!({"ok": true, "status": "scanning", "done": 0, "total": 1})
+        );
+        assert_eq!(app.tabs.len(), tabs);
+
+        let answer = request(&mut app, locate.clone());
+        assert_eq!(answer["status"], "completed", "{answer}");
+        let i = app.active_tab;
+        assert_eq!(app.tabs.len(), tabs + 1, "{answer}");
+        assert_eq!(
+            app.tab_showing(&scratch.path("PID-1102.dwg")),
+            Some(i),
+            "{answer}"
+        );
+        let pump = object_on(&app, i, "P-1002");
+        assert_eq!(selected(&app, i), [pump.handle.as_str()], "{answer}");
+        assert_eq!(
+            answer["result"],
+            json!({
+                "drawing_id": "PID-1102",
+                "document_id": app.tabs[i].id,
+                "handle": pump.handle,
+                "handles": [pump.handle],
+            }),
+            "{answer}"
+        );
+        assert!(
+            looks_at(&app, i, &pump),
+            "{:?}",
+            app.tabs[i].scene.camera.borrow().target
+        );
+
+        let _ = app.update(Message::TabSwitch(first));
+        look_away(&app, i);
+        let answer = request(&mut app, locate);
+        assert_eq!(answer["status"], "completed", "{answer}");
+        assert_eq!(app.tabs.len(), tabs + 1, "打开了第二份：{answer}");
+        assert_eq!(app.active_tab, i, "{answer}");
+        assert_eq!(answer["result"]["document_id"], app.tabs[i].id, "{answer}");
+        assert!(
+            looks_at(&app, i, &pump),
+            "{:?}",
+            app.tabs[i].scene.camera.borrow().target
+        );
+    }
+
+    /// 定位不了时说为什么：哪张图上都没有、给的图号项目里没有或者那张图上没有，是
+    /// `LOCATE_NOT_FOUND`；好几张图上都有又没给图号，是 `LOCATE_AMBIGUOUS`，`places` 逐处
+    /// 列出，不开图；给了图号（不分大小写）就去那张。请求写错了是 `invalid_request`；没存
+    /// 过的图没有项目目录。
+    #[test]
+    fn pid_index_op_locate_refuses_what_it_cannot_pin_down() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        fs::copy(scratch.path("PID-1102.dwg"), scratch.path("PID-1103.dwg")).expect("复制图");
+        let tabs = app.tabs.len();
+        let scanned = request(&mut app, json!({"op": "pid_locate", "tag": "P-9999"}));
+        assert_eq!(scanned["status"], "scanning", "{scanned}");
+
+        let answer = request(&mut app, json!({"op": "pid_locate", "tag": "P-9999"}));
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert_eq!(answer["code"], LOCATE_NOT_FOUND, "{answer}");
+
+        let answer = request(&mut app, json!({"op": "pid_locate", "tag": "P-1002"}));
+        assert_eq!(answer["code"], LOCATE_AMBIGUOUS, "{answer}");
+        let places: Vec<String> = answer["places"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|place| format!("{} {}", place["drawing_id"], place["at"]))
+            .collect();
+        assert_eq!(
+            places,
+            [r#""PID-1102" [0.0,-60.0]"#, r#""PID-1103" [0.0,-60.0]"#],
+            "{answer}"
+        );
+        assert_eq!(app.tabs.len(), tabs, "{answer}");
+
+        for drawing_id in ["PID-9999", "PID-1101"] {
+            let locate = json!({"op": "pid_locate", "tag": "P-1002", "drawing_id": drawing_id});
+            let answer = request(&mut app, locate);
+            assert_eq!(answer["code"], LOCATE_NOT_FOUND, "{drawing_id}: {answer}");
+        }
+
+        let locate = json!({"op": "pid_locate", "tag": "P-1002", "drawing_id": "pid-1103"});
+        let answer = request(&mut app, locate);
+        assert_eq!(answer["status"], "completed", "{answer}");
+        assert_eq!(answer["result"]["drawing_id"], "PID-1103", "{answer}");
+        let i = app.active_tab;
+        assert_eq!(
+            app.tab_showing(&scratch.path("PID-1103.dwg")),
+            Some(i),
+            "{answer}"
+        );
+
+        for wrong in [
+            json!({"op": "pid_locate"}),
+            json!({"op": "pid_locate", "tag": ""}),
+            json!({"op": "pid_locate", "tag": "P-1002", "drawing_id": 1103}),
+            json!({"op": "pid_locate", "tag": "P-1002", "at": [1.0]}),
+            json!({"op": "pid_locate", "tag": "P-1002", "at": "here"}),
+        ] {
+            let answer = request(&mut app, wrong.clone());
+            assert_eq!(answer["code"], "invalid_request", "{wrong}: {answer}");
+        }
+
+        let mut app = OpenCADStudio::new_for_test();
+        let _ = app.automation_op(r#"{"op":"new"}"#);
+        let answer = request(&mut app, json!({"op": "pid_locate", "tag": "P-1001"}));
+        assert_eq!(answer["code"], INDEX_NO_PROJECT_DIR, "{answer}");
+    }
+
+    /// 给了 `at`（§5.2）：同位号的对象、这根线的线段和连接符里，取离它最近的一个——量到
+    /// 连接符的圆、线段、对象的外框，一样近时先连接符、再线段、再对象。没有自己位号的
+    /// 线段、连接符也就能定位了。
+    #[test]
+    fn pid_index_op_locate_at_takes_the_nearest_piece() {
+        let scratch = Scratch::new();
+        let mut app = project(&scratch);
+        let i = app.active_tab;
+        let summary = summary_on(&app, i);
+        let connector = &summary.connectors[0];
+        assert_eq!(connector.line, "L-1001", "{summary:#?}");
+        let segment = summary
+            .segments
+            .iter()
+            .find(|segment| segment.line == "L-1001")
+            .expect("L-1001 的线段");
+        let inside = [connector.at[0] + connector.radius / 2.0, connector.at[1]];
+        for (at, handle) in [
+            (json!(inside), &connector.handle),
+            (json!([50.0, 101.0, 0.0]), &segment.handle),
+        ] {
+            let locate = json!({"op": "pid_locate", "tag": "l-1001", "at": at});
+            let answer = request(&mut app, locate);
+            assert_eq!(answer["status"], "completed", "{at}: {answer}");
+            assert_eq!(
+                answer["result"]["handles"],
+                json!([handle]),
+                "{at}: {answer}"
+            );
+            assert_eq!(selected(&app, i), [handle.as_str()], "{at}: {answer}");
+        }
     }
 }

@@ -679,7 +679,7 @@ impl OpenCADStudio {
             "mtext_editor":self.mtext_editor.as_ref().map(|e|json!({"text":e.content.text(),"height":e.height,"style":e.style})),
             "text_editor":self.text_inline.is_some(),"event_cursor":self.control.serial,
             "operation":self.control.pending.as_ref().map(|p| &p.id),
-            "capabilities":["commands","command_manifest","step_input","batch","compact_results","entity_pick","structure_pick","selection","user_select","properties","records","record_schemas","record_filters","atomic_record_updates","layers","history","documents","events","capture","viewport_capture","measure","spatial_query","pid_legend","pid_master_data","audit","verified_save","explicit_save_version"]
+            "capabilities":["commands","command_manifest","step_input","batch","compact_results","entity_pick","structure_pick","selection","user_select","properties","records","record_schemas","record_filters","atomic_record_updates","layers","history","documents","events","capture","viewport_capture","measure","spatial_query","pid_legend","pid_master_data","pid_project_index","audit","verified_save","explicit_save_version"]
         })
     }
 
@@ -708,6 +708,8 @@ impl OpenCADStudio {
                 | "measure"
                 | "pid_legend"
                 | "pid_masterdata"
+                | "pid_summary"
+                | "pid_index"
                 | "snap"
                 | "grips"
                 | "query"
@@ -1029,10 +1031,14 @@ impl OpenCADStudio {
             );
         }
         if query {
+            if op == "pid_index" {
+                return self.control_pid_index(&req);
+            }
             let response = match op {
                 "properties" => self.control_properties(),
                 "measure" => self.control_measure(&req),
                 "pid_masterdata" => self.control_pid_masterdata(&req),
+                "pid_summary" => self.control_pid_summary(),
                 // The object snap a cursor over `point` (world) would get;
                 // `from` is the base for perpendicular and tangent.
                 "snap" => 'snap: {
@@ -1188,7 +1194,18 @@ impl OpenCADStudio {
                 );
             }
         }
-        let doc = if matches!(op, "new" | "open" | "activate" | "switch_document") {
+        if op == "pid_locate" {
+            if let Some(answer) = self.control_pid_locate_waits(&req) {
+                return answer;
+            }
+        }
+        let tab = &self.tabs[self.active_tab];
+        // `pid_locate` may switch to or open another drawing, so its steps are
+        // not pinned to the one it started on.
+        let doc = if matches!(
+            op,
+            "new" | "open" | "activate" | "switch_document" | "pid_locate"
+        ) {
             None
         } else {
             Some(tab.id)
@@ -1492,6 +1509,7 @@ impl OpenCADStudio {
             // about HTTP (`VAL-DRAW-031`).
             "pid_insert_batch" => self.control_pid_insert_batch(req)?,
             "pid_masterdata_set" => self.control_pid_masterdata_set(req)?,
+            "pid_locate" => self.control_pid_locate(req)?,
             "entities_set" => self.control_entities_set(req)?,
             "xref_reload" => self.control_xref_reload(req)?,
             "xref_unload" => self.control_xref_unload(req)?,

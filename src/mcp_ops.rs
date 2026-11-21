@@ -951,6 +951,32 @@ pub static PID_MASTERDATA_SET: OpDef = OpDef {
     example: r#"{"op":"pid_masterdata_set","target":"drawing","master_data":{"version":1,"revision":0,"updated_at":0,"legend_standard":null,"nominal_diameters":{"unit":"mm","items":[{"dn":80,"label":"DN80"}]},"pipe_classes":[{"name":"A1A"}],"insulation_classes":[],"fluid_codes":[],"pbs":[]}}"#,
 };
 
+pub static PID_LOCATE: OpDef = OpDef {
+    name: "pid_locate",
+    doc: "Go to a P&ID object by tag: select it and zoom to it, switching to or opening the project drawing it is on. Answers status scanning (done, total) while the project's files are still being read: send it again later. result: drawing_id, document_id, handle, handles.",
+    batchable: false,
+    params: &[
+        req(
+            "tag",
+            Ty::Str,
+            "Tag to go to, case-insensitive. With at, a line's tag also finds its segments and connectors.",
+        ),
+        opt("type_code", Ty::Str, "Only objects of this type code."),
+        opt(
+            "drawing_id",
+            Ty::Str,
+            "Drawing of the project to look on; needed when the tag is on several (LOCATE_AMBIGUOUS lists them).",
+        ),
+        opt(
+            "at",
+            Ty::Point,
+            "World point: take the match nearest to it.",
+        ),
+    ],
+    rules: &[Rule::RejectUnknown],
+    example: r#"{"op":"pid_locate","tag":"P-1001","drawing_id":"PID-1102"}"#,
+};
+
 pub static XREF_RELOAD: OpDef = OpDef {
     name: "xref_reload",
     doc: "Reload one direct external reference by id, preserving prior content on load failure.",
@@ -1362,6 +1388,7 @@ pub static OPS: &[&OpDef] = &[
     &LAYOUT_DELETE,
     &PAGE_SETUP_SET,
     &PID_MASTERDATA_SET,
+    &PID_LOCATE,
     &XREF_RELOAD,
     &XREF_UNLOAD,
     &XREF_DETACH,

@@ -1780,7 +1780,7 @@ fn place_of(summary: &DrawingSummary, object: &SummaryObject) -> Place {
 }
 
 /// 出现处按图号、定位点（先 x 后 y）、句柄排。
-fn compare_places(left: &Place, right: &Place) -> std::cmp::Ordering {
+pub(crate) fn compare_places(left: &Place, right: &Place) -> std::cmp::Ordering {
     left.drawing_id
         .cmp(&right.drawing_id)
         .then_with(|| compare_at(left.at, right.at))

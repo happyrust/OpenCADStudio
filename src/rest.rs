@@ -607,6 +607,32 @@ pub(crate) fn plan(method: &str, rest: &[&str], request: &HttpRequest) -> Plan {
             fields: body,
             created: 200,
         },
+        // P&ID project index (SPEC-pid-project-index §5.3): the current
+        // drawing's summary, and the index of its folder, which answers
+        // `status: scanning` while the project's files are still being read.
+        ("GET", ["pid", "summary"]) => Plan::Run {
+            request: json!({"protocol": 1, "op": "pid_summary"}),
+            created: 200,
+        },
+        ("GET", ["pid", "index"]) => {
+            let mut index = json!({"protocol": 1, "op": "pid_index"});
+            for key in ["tag", "type_code"] {
+                if let Some(value) = request.param(key) {
+                    index[key] = json!(value);
+                }
+            }
+            Plan::Run {
+                request: index,
+                created: 200,
+            }
+        }
+        // Selects a tag and zooms to it, switching to or opening the drawing
+        // it is on.
+        ("POST", ["pid", "locate"]) => Plan::Mutate {
+            op: "pid_locate".into(),
+            fields: body,
+            created: 200,
+        },
         // Same state read, plus `documents[].document_id` — the spelling the
         // REST contract (and every validator) reads.
         ("GET", ["documents"]) => Plan::Aliased {
@@ -1191,6 +1217,8 @@ pub(crate) fn map_status(response: Value, created: bool) -> u16 {
     }
     match response["code"].as_str().unwrap_or("") {
         "entity_absent" | "layout_missing" | "xref_missing" | "unknown_route" => 404,
+        // 要定位的位号哪张图上都没有（项目索引规格 §5.3）。
+        "LOCATE_NOT_FOUND" => 404,
         // 同一线号同图第二个流入连接符是「与现有资源冲突」，不是请求格式错。
         // `CONNECTOR_KIND_MISMATCH` 保持 400（契约 A.7 明文）。
         "stale_state"
@@ -1204,11 +1232,16 @@ pub(crate) fn map_status(response: Value, created: bool) -> u16 {
         | "MASTERDATA_CONFLICT"
         | "MASTERDATA_DUPLICATE"
         | "MASTERDATA_EXISTS"
-        | "MASTERDATA_NOT_CONFIGURED" => 409,
+        | "MASTERDATA_NOT_CONFIGURED"
+        // 项目索引（项目索引规格 §5.3）：图没存过、两个文件同号、位号在几张图上都有，
+        // 都是与现在的图纸和项目对不上。
+        | "INDEX_NO_PROJECT_DIR"
+        | "INDEX_DRAWING_ID_DUPLICATED"
+        | "LOCATE_AMBIGUOUS" => 409,
         // 协同会话不可写：请求本身没有错，是这个会话不被允许做这件事。
         "COLLAB_READONLY" | "PERM_DENIED_ROLE" | "PERM_DENIED_PBS" | "PERM_DENIED_STATE" => 403,
         // 项目文件读写失败：请求和图纸都没错，是桌面端这台机器的文件系统报了错。
-        "MASTERDATA_IO_ERROR" => 500,
+        "MASTERDATA_IO_ERROR" | "INDEX_IO_ERROR" => 500,
         "busy" => 503,
         _ => 400,
     }
@@ -1342,6 +1375,9 @@ mod tests {
             ("/api/v1/xref_set_type", "post"),
             ("/api/v1/pid/master-data", "get"),
             ("/api/v1/pid/master-data", "put"),
+            ("/api/v1/pid/summary", "get"),
+            ("/api/v1/pid/index", "get"),
+            ("/api/v1/pid/locate", "post"),
         ] {
             assert!(
                 document["paths"][path][method].is_object(),
@@ -1353,6 +1389,12 @@ mod tests {
                 document["paths"]["/api/v1/pid/master-data"]["put"]["responses"][status]
                     .is_object(),
                 "missing {status} response for put /api/v1/pid/master-data"
+            );
+        }
+        for status in ["404", "409"] {
+            assert!(
+                document["paths"]["/api/v1/pid/locate"]["post"]["responses"][status].is_object(),
+                "missing {status} response for post /api/v1/pid/locate"
             );
         }
         for (path, method) in [
@@ -1622,6 +1664,96 @@ mod tests {
             "{body}"
         );
         assert!(body.get("usage").is_none(), "{body}");
+    }
+
+    /// SPEC-pid-project-index §5.3 over HTTP: GET /pid/summary is the current
+    /// drawing's summary, GET /pid/index the project index (`tag` and
+    /// `type_code` from the query), POST /pid/locate a write that may switch
+    /// tabs. An unsaved drawing belongs to no project: 409
+    /// `INDEX_NO_PROJECT_DIR`. A tag nowhere is 404, on several drawings 409,
+    /// a project folder that cannot be read 500.
+    #[test]
+    fn pid_index_rest_routes_and_status_codes() {
+        let mut index = request("GET", "/api/v1/pid/index", "");
+        index.query = vec![
+            ("tag".into(), "P-1001".into()),
+            ("type_code".into(), "EQUIPMENT".into()),
+        ];
+        let Plan::Run {
+            request: asked,
+            created,
+        } = plan("GET", &["pid", "index"], &index)
+        else {
+            panic!("GET /pid/index is not a read");
+        };
+        assert_eq!(created, 200);
+        assert_eq!(
+            asked,
+            json!({"protocol": 1, "op": "pid_index", "tag": "P-1001", "type_code": "EQUIPMENT"})
+        );
+        let bare = request("GET", "/api/v1/pid/index", "");
+        let Plan::Run { request: asked, .. } = plan("GET", &["pid", "index"], &bare) else {
+            panic!("GET /pid/index is not a read");
+        };
+        assert_eq!(asked, json!({"protocol": 1, "op": "pid_index"}));
+        let summary = request("GET", "/api/v1/pid/summary", "");
+        let Plan::Run { request: asked, .. } = plan("GET", &["pid", "summary"], &summary) else {
+            panic!("GET /pid/summary is not a read");
+        };
+        assert_eq!(asked, json!({"protocol": 1, "op": "pid_summary"}));
+        let locate = request(
+            "POST",
+            "/api/v1/pid/locate",
+            r#"{"tag":"P-1001","drawing_id":"PID-1102"}"#,
+        );
+        let Plan::Mutate {
+            op,
+            fields,
+            created,
+        } = plan("POST", &["pid", "locate"], &locate)
+        else {
+            panic!("POST /pid/locate is not a write");
+        };
+        assert_eq!((op.as_str(), created), ("pid_locate", 200));
+        assert_eq!(fields, json!({"tag": "P-1001", "drawing_id": "PID-1102"}));
+
+        let mut document_id: Option<u64> = None;
+        let mut counter: u64 = 0;
+        let mut app = serve_app(true);
+        let (status, body) = route(&mut app, &summary, &mut document_id, &mut counter);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["summary"]["drawing_id"], "", "{body}");
+        let mut typed = request("GET", "/api/v1/pid/index", "");
+        typed.query = vec![("type_code".into(), "EQUIPMENT".into())];
+        for (asked, expected_status, code) in [
+            (bare, 409, "INDEX_NO_PROJECT_DIR"),
+            (typed, 400, "invalid_request"),
+            (locate, 409, "INDEX_NO_PROJECT_DIR"),
+            (
+                request("POST", "/api/v1/pid/locate", "{}"),
+                400,
+                "invalid_request",
+            ),
+        ] {
+            let (status, body) = route(&mut app, &asked, &mut document_id, &mut counter);
+            let what = format!("{} {}?{:?} {body}", asked.method, asked.path, asked.query);
+            assert_eq!(status, expected_status, "{what}");
+            assert_eq!(body["code"], code, "{what}");
+        }
+
+        for (code, expected_status) in [
+            ("INDEX_NO_PROJECT_DIR", 409),
+            ("INDEX_DRAWING_ID_DUPLICATED", 409),
+            ("LOCATE_AMBIGUOUS", 409),
+            ("LOCATE_NOT_FOUND", 404),
+            ("INDEX_IO_ERROR", 500),
+        ] {
+            assert_eq!(
+                map_status(json!({"ok": false, "code": code}), false),
+                expected_status,
+                "{code}"
+            );
+        }
     }
 
     /// `ready` must not advertise the welcome (Start) tab: that tab answers
